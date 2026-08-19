@@ -22,13 +22,13 @@ from rcp.runs.experiment_loop import (
     stage_chat_experiment_watcher_resources,
 )
 from rcp.runs.shared import _parent_task_contract_path
-from rcp.runs.tasks.experiment_watcher_maintenance import (
-    _process_experiment_watcher_maintenance,
-)
-from rcp.runs.tasks.work import (
+from rcp.runs.tasks.experiment_loop import (
     _apply_work_patch,
     _required_work_continuation_session_id,
-    stream_work_run,
+    stream_experiment_loop_task,
+)
+from rcp.runs.tasks.experiment_watcher_maintenance import (
+    _process_experiment_watcher_maintenance,
 )
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
@@ -364,7 +364,7 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
     )
     initial_launcher = _LoopLauncher(saved_session_id, tmp_path, write_handoff=True)
     initial_events = await _events(
-        stream_work_run(
+        stream_experiment_loop_task(
             service,
             initial_launcher,
             initial_request,
@@ -429,7 +429,7 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
     }
 
     resume_events = await _events(
-        stream_work_run(
+        stream_experiment_loop_task(
             service,
             resume_launcher,
             resume_request,
@@ -531,7 +531,7 @@ async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
 
     launcher = PatchOnlyCorrectionLauncher()
     events = await _events(
-        stream_work_run(
+        stream_experiment_loop_task(
             service,
             launcher,
             request,
@@ -846,7 +846,7 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     launcher = _LoopLauncher(native_session_id, tmp_path, write_handoff=True)
 
     initial_events = await _events(
-        stream_work_run(
+        stream_experiment_loop_task(
             service,
             launcher,
             initial_request,
@@ -927,7 +927,7 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     }
 
     wake_events = await _events(
-        stream_work_run(
+        stream_experiment_loop_task(
             service,
             launcher,
             wake_request,
@@ -997,7 +997,7 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     )
     failing_launcher = _LoopLauncher(native_session_id, tmp_path, write_handoff=False)
     failed_events = await _events(
-        stream_work_run(
+        stream_experiment_loop_task(
             service,
             failing_launcher,
             failed_request,
@@ -1036,7 +1036,7 @@ async def test_provider_switch_stages_full_recovery_contract_with_durable_proven
     initial_execution = _execution(store, project_id, "loop-before-switch", initial_request)
     initial_launcher = _LoopLauncher("codex-session-before-switch", tmp_path, write_handoff=True)
     initial_events = await _events(
-        stream_work_run(
+        stream_experiment_loop_task(
             service,
             initial_launcher,
             initial_request,
@@ -1063,7 +1063,7 @@ async def test_provider_switch_stages_full_recovery_contract_with_durable_proven
     )
     switch_launcher = _LoopLauncher("claude-session-after-switch", tmp_path, write_handoff=True)
     switch_events = await _events(
-        stream_work_run(
+        stream_experiment_loop_task(
             service,
             switch_launcher,
             switch_request,
@@ -1131,7 +1131,7 @@ async def test_unbound_initial_handoff_does_not_claim_provider_switch_recovery(
     launcher = _LoopLauncher("first-established-session", tmp_path, write_handoff=True)
 
     events = await _events(
-        stream_work_run(
+        stream_experiment_loop_task(
             service,
             launcher,
             request,
@@ -1190,7 +1190,7 @@ async def test_manual_graph_repair_updates_the_episode_handoff_summary(
     }
 
     initial_events = await _events(
-        stream_work_run(
+        stream_experiment_loop_task(
             service,
             launcher,
             initial_request,
@@ -1249,7 +1249,7 @@ async def test_manual_graph_repair_updates_the_episode_handoff_summary(
     }
 
     repair_events = await _events(
-        stream_work_run(
+        stream_experiment_loop_task(
             service,
             repair_launcher,
             repair_request,
@@ -1334,7 +1334,6 @@ def test_experiment_apply_attributes_retry_patch_to_its_root(
             }
         ),
         run_truth_scope=["repo-a"],
-        patch_kind="experiment_loop",
         control_node_id=_EXPERIMENT_ID,
         control_decision_bundle=[],
     )
@@ -1417,7 +1416,7 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
     root_launcher = _LoopLauncher(native_session_id, tmp_path, write_handoff=True)
     root_launcher.patch_payload = patch_payload
     root_events = await _events(
-        stream_work_run(
+        stream_experiment_loop_task(
             service,
             root_launcher,
             request,
@@ -1449,7 +1448,7 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
     )
     retry_launcher = _LoopLauncher(native_session_id, tmp_path, write_handoff=False)
     retry_events = await _events(
-        stream_work_run(
+        stream_experiment_loop_task(
             service,
             retry_launcher,
             retry_request,

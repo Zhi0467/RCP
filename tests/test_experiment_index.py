@@ -998,7 +998,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
         yield _event_frame(AgentEvent(event="answer", text="Updated the experiment."))
         yield _event_frame(AgentEvent(event="done"))
 
-    monkeypatch.setattr(api_app_module, "stream_work_run", update_graph)
+    monkeypatch.setattr(api_app_module, "stream_experiment_loop_task", update_graph)
     catalog = app.state.catalog
     original_commit = catalog.commit_cached_snapshot
 
@@ -1059,6 +1059,62 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
     assert after_release["node"]["current_summary"] == ("Graph visible with terminal task.")
     assert after_release["control"]["episode_id"] == episode_id
     assert after_release["control"]["operational"]["current_status"] == "succeeded"
+
+
+def test_persisted_experiment_request_selects_owner_without_work_fallback(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, current_episode = _seed_indexed_project(app)
+    store = app.state.background_tasks.store
+    store.request_episode_stop(current_episode)
+    store.mark_episode_stop_skipped(current_episode)
+    selected: list[str] = []
+
+    async def selected_owner(_service, _launcher, _request, _data_dir, *, execution):
+        selected.append(execution.operation_id)
+        raise RuntimeError("specialized Experiment owner failed")
+        yield  # pragma: no cover - keeps this an async generator
+
+    async def unexpected_work_fallback(*_args, **_kwargs):
+        raise AssertionError("Experiment dispatch fell back to ordinary Work")
+        yield  # pragma: no cover - keeps this an async generator
+
+    monkeypatch.setattr(api_app_module, "stream_experiment_loop_task", selected_owner)
+    monkeypatch.setattr(api_app_module, "stream_work_run", unexpected_work_fallback)
+    episode_id = str(uuid.uuid4())
+    request = RunRequest(
+        provider="codex",
+        model="gpt-5",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        chat_id=str(uuid.uuid4()),
+        chat_scope="node",
+        node_id="exp/launched",
+        message="Continue the persisted Experiment loop.",
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/launched",
+        control_revision=2,
+        control_episode_id=episode_id,
+        control_invocation=1,
+        control_invocation_ceiling=3,
+        control_decision_bundle=[],
+        control_completion_criteria=["The indexed loop reaches a conclusion."],
+    )
+
+    task = app.state.background_tasks.start(
+        project_id,
+        "node_chat",
+        request,
+        authorized_by=authorized_human(store),
+    )
+    completed = wait_for_task(store, task.operation_id, expect="failed")
+
+    assert selected == [task.operation_id]
+    assert completed.error == "specialized Experiment owner failed"
 
 
 @pytest.mark.parametrize(

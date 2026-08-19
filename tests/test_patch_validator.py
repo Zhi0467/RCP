@@ -229,9 +229,6 @@ def test_live_self_check_and_apply_share_current_state_validation(manifest, tmp_
         service,
         semantic_patch,
         run_truth_scope=["repo-a"],
-        patch_kind="work",
-        control_node_id=None,
-        control_decision_bundle=[],
     )
     assert checked.status == "valid"
     assert checked.live_revision == 1
@@ -242,9 +239,6 @@ def test_live_self_check_and_apply_share_current_state_validation(manifest, tmp_
         service,
         semantic_patch,
         run_truth_scope=["repo-a"],
-        patch_kind="work",
-        control_node_id=None,
-        control_decision_bundle=[],
     )
     assert rechecked.status == "invalid"
     assert rechecked.live_revision == 2

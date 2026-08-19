@@ -24,7 +24,6 @@ from rcp.agents.command_protocol import (
 from rcp.agents.prompts import invoked_package_pointers
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
-from rcp.core.models import ExperimentDecisionPin
 from rcp.history import ReplayHalted
 from rcp.limits import (
     AUTO_RESEARCH_MAIL_MAX_BYTES,
@@ -418,9 +417,6 @@ async def _stage_auto_research_child_work_turn(
             route=route,
             budget=validator_budget,
             run_truth_scope=context.run_truth_scope,
-            patch_kind=request.patch_kind,
-            control_node_id=request.control_node_id,
-            control_decision_bundle=request.control_decision_bundle,
         )
         if not reusing_checkpoint or continuation == "message_wake":
             _prepare_auto_research_child_work_handoffs(
@@ -818,9 +814,6 @@ def _start_auto_research_child_validator_mailbox(
     route: AutoResearchChildWorkRecord,
     budget: PatchValidationBudget,
     run_truth_scope: list[str],
-    patch_kind: Literal["work", "experiment_loop"],
-    control_node_id: str | None,
-    control_decision_bundle: list[ExperimentDecisionPin],
 ) -> _WorkValidatorMailboxLifecycle:
     stop = asyncio.Event()
     try:
@@ -833,9 +826,6 @@ def _start_auto_research_child_validator_mailbox(
                 stop=stop,
                 budget=budget,
                 run_truth_scope=run_truth_scope,
-                patch_kind=patch_kind,
-                control_node_id=control_node_id,
-                control_decision_bundle=control_decision_bundle,
             )
         )
     except BaseException:
@@ -1282,9 +1272,6 @@ async def _serve_auto_research_child_work_mailbox(
     stop: asyncio.Event,
     budget: PatchValidationBudget,
     run_truth_scope: list[str],
-    patch_kind: Literal["work", "experiment_loop"],
-    control_node_id: str | None,
-    control_decision_bundle: list[ExperimentDecisionPin],
 ) -> None:
     async def handle(
         request: CommandRequest,
@@ -1309,9 +1296,6 @@ async def _serve_auto_research_child_work_mailbox(
                     service,
                     request.arguments.patch,
                     run_truth_scope=run_truth_scope,
-                    patch_kind=patch_kind,
-                    control_node_id=control_node_id,
-                    control_decision_bundle=control_decision_bundle,
                     source_operation_id=execution.operation_id,
                 )
             execution.store.record_agent_task_event(

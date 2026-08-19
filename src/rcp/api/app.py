@@ -108,6 +108,7 @@ from rcp.runs.tasks.branch_merge import stream_branch_merge_task
 from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest, stream_episode_report_run
+from rcp.runs.tasks.experiment_loop import stream_experiment_loop_task
 from rcp.runs.tasks.graph import stream_graph_run
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
@@ -369,9 +370,6 @@ def create_app(
                     service,
                     arguments.patch,
                     run_truth_scope=list(context.request.run_truth_scope or ()),
-                    patch_kind="work",
-                    control_node_id=None,
-                    control_decision_bundle=None,
                     source_operation_id=context.task.operation_id,
                     profile=(
                         "orchestrator" if context.request.role == "orchestrator" else "ordinary"
@@ -400,7 +398,6 @@ def create_app(
                         context.request.run_truth_scope
                         or service.manifest.agent.default_run_truth_scope
                     ),
-                    patch_kind="work",
                     profile="orchestrator",
                     source_operation_id=context.task.operation_id,
                     source_effect_id=source_effect_id,
@@ -471,6 +468,19 @@ def create_app(
                             app_data,
                             execution,
                             route=child_route,
+                        )
+                    ) as stream:
+                        async for frame in stream:
+                            yield frame
+                    return
+                if request.patch_kind == "experiment_loop":
+                    async with aclosing(
+                        stream_experiment_loop_task(
+                            service,
+                            launcher,
+                            request,
+                            app_data,
+                            execution=execution,
                         )
                     ) as stream:
                         async for frame in stream:

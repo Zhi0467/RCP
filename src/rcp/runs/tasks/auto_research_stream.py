@@ -1719,7 +1719,6 @@ async def _settle_worker_patch(
                     patch_text,
                     run_truth_scope=turn.request.run_truth_scope
                     or service.manifest.agent.default_run_truth_scope,
-                    patch_kind="work",
                     profile=_profile,
                     source_effect_id=source_effect_id,
                 )

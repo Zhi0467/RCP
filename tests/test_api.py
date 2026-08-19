@@ -48,6 +48,7 @@ from rcp.runs.shared import (
 )
 from rcp.runs.tasks.coach import _paper_snapshot_path, stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
+from rcp.runs.tasks.experiment_loop import stream_experiment_loop_task
 from rcp.runs.tasks.graph import (
     _record_context_reuse,
     _record_progress_handoff,
@@ -6995,7 +6996,7 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
 
     frames = [
         frame
-        async for frame in stream_work_run(
+        async for frame in stream_experiment_loop_task(
             service,
             launcher,
             request,
@@ -7099,7 +7100,7 @@ async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
 
     frames = [
         frame
-        async for frame in stream_work_run(
+        async for frame in stream_experiment_loop_task(
             service,
             launcher,
             request,
@@ -7150,7 +7151,7 @@ async def test_experiment_loop_missing_handoff_fails_without_done_after_one_corr
 
     frames = [
         frame
-        async for frame in stream_work_run(
+        async for frame in stream_experiment_loop_task(
             service,
             launcher,
             request,
@@ -7225,7 +7226,7 @@ async def test_experiment_loop_patch_correction_rechecks_empty_watch_exit(
 
     frames = [
         frame
-        async for frame in stream_work_run(
+        async for frame in stream_experiment_loop_task(
             service,
             launcher,
             request,
@@ -7315,7 +7316,7 @@ async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp
 
     frames = [
         frame
-        async for frame in stream_work_run(
+        async for frame in stream_experiment_loop_task(
             service,
             launcher,
             request,
@@ -7389,7 +7390,7 @@ async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_reject
 
     frames = [
         frame
-        async for frame in stream_work_run(
+        async for frame in stream_experiment_loop_task(
             service,
             launcher,
             request,
@@ -7474,7 +7475,7 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
 
     frames = [
         frame
-        async for frame in stream_work_run(
+        async for frame in stream_experiment_loop_task(
             service,
             launcher,
             request,
