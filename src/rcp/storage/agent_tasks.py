@@ -119,6 +119,22 @@ from rcp.storage.models import (  # noqa: F401
 # remains below its existing 64 KiB storage boundary.
 _GRAPH_UPDATE_HISTORY_RESERVE_BYTES = 8 * 1024
 
+_AGENT_TASK_CONTINUATION_CAUSES = frozenset(
+    {
+        "fresh",
+        "resume",
+        "retry",
+        "handoff",
+        "graph_repair",
+        "watcher_wake",
+        "graph_condition_wake",
+        "message_wake",
+        "lifecycle_wake",
+        "auto_research_continuation",
+        "episode_report",
+    }
+)
+
 
 @dataclass(frozen=True)
 class _AgentTaskTransitionResult:
@@ -147,7 +163,12 @@ class AgentTaskStoreMixin:
             raise KeyError(operation_id)
         return "orchestrator" if row["role"] == "orchestrator" else "ordinary"
 
-    def create_agent_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
+    def create_agent_task(
+        self,
+        record: AgentTaskRecord,
+        *,
+        continuation_cause: str = "fresh",
+    ) -> AgentTaskRecord:
         if record.kind == "episode_report":
             raise ValueError("episode report tasks must use their episode wrap-up allocation")
         if record.episode_id is not None:
@@ -157,7 +178,11 @@ class AgentTaskStoreMixin:
                 connection.execute("BEGIN IMMEDIATE")
                 if self._has_active_chat_overlap(connection, record):
                     raise ValueError("Another task is already active in this conversation.")
-                self._insert_agent_task(connection, record)
+                self._insert_agent_task(
+                    connection,
+                    record,
+                    continuation_cause=continuation_cause,
+                )
         except sqlite3.IntegrityError as exc:
             raise ValueError("Could not create the agent task.") from exc
         stored = self.agent_task(record.operation_id)
@@ -239,7 +264,7 @@ class AgentTaskStoreMixin:
                 ).fetchone()
                 if active_writer is not None:
                     raise ValueError("the graph branch still has an active writer")
-                self._insert_agent_task(connection, record)
+                self._insert_agent_task(connection, record, continuation_cause="fresh")
         except sqlite3.IntegrityError as exc:
             raise ValueError("another merge is already active for this branch") from exc
         stored = self.agent_task(record.operation_id)
@@ -250,7 +275,11 @@ class AgentTaskStoreMixin:
         self,
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
+        *,
+        continuation_cause: str,
     ) -> None:
+        if continuation_cause not in _AGENT_TASK_CONTINUATION_CAUSES:
+            raise ValueError("An agent task admission has an invalid continuation cause.")
         if self._contains_legacy_lineage_key(record.request):
             raise ValueError("agent task requests must use episode_id, not campaign_id")
         self._validate_dispatch_authority_insert(connection, record)
@@ -307,6 +336,22 @@ class AgentTaskStoreMixin:
                 int(record.visible),
             ),
         )
+        self._insert_agent_task_receipt(
+            connection,
+            record.operation_id,
+            "operation_admitted",
+            self._bounded_receipt_payload(
+                {
+                    "kind": record.kind,
+                    "attempt": record.attempt,
+                    "parent_operation_id": record.parent_operation_id,
+                    "continuation_cause": continuation_cause,
+                    "admission_committed": True,
+                }
+            ),
+            tier="summary",
+            created_at=record.created_at,
+        )
 
     @staticmethod
     def _validate_graph_target_insert(
@@ -343,41 +388,6 @@ class AgentTaskStoreMixin:
             return
         if json.loads(parent["graph_target_json"]) != record.graph_target.model_dump(mode="json"):
             raise ValueError("a task continuation cannot change its graph target")
-
-    def _insert_agent_task_dispatch_intent_receipt(
-        self,
-        connection: sqlite3.Connection,
-        record: AgentTaskRecord,
-        *,
-        continuation_cause: str,
-    ) -> None:
-        """Persist a recovery's exact launch policy in its admission transaction."""
-
-        resumed_by_cause = {
-            "resume": True,
-            "retry": True,
-            "handoff": False,
-            "graph_repair": True,
-        }
-        if continuation_cause not in resumed_by_cause:
-            raise ValueError("An Experiment recovery has an invalid continuation cause.")
-        self._insert_agent_task_receipt(
-            connection,
-            record.operation_id,
-            "operation_created",
-            self._bounded_receipt_payload(
-                {
-                    "kind": record.kind,
-                    "attempt": record.attempt,
-                    "has_parent": True,
-                    "continuation_cause": continuation_cause,
-                    "resumed": resumed_by_cause[continuation_cause],
-                    "admission_committed": True,
-                }
-            ),
-            tier="summary",
-            created_at=record.created_at,
-        )
 
     @classmethod
     def _contains_legacy_lineage_key(cls, value: object) -> bool:
@@ -870,7 +880,11 @@ class AgentTaskStoreMixin:
             self._claim_agent_task_graph_repair(connection, parent_operation_id)
             if self._has_active_chat_overlap(connection, record):
                 raise ValueError("Another task is already active in this conversation.")
-            self._insert_agent_task(connection, record)
+            self._insert_agent_task(
+                connection,
+                record,
+                continuation_cause="graph_repair",
+            )
             stored = connection.execute(
                 "SELECT * FROM graph_runs WHERE operation_id = ?", (record.operation_id,)
             ).fetchone()
@@ -1541,6 +1555,12 @@ class AgentTaskStoreMixin:
         inferring a full Work turn from the request shape alone.
         """
 
+        intent = self.agent_task_admission_intent(operation_id)
+        if intent is not None:
+            cause = intent["continuation_cause"]
+            assert isinstance(cause, str)
+            return cause
+
         with self.connection() as connection:
             row = connection.execute(
                 """
@@ -1557,6 +1577,138 @@ class AgentTaskStoreMixin:
         cause = payload.get("continuation_cause") if isinstance(payload, dict) else None
         return cause if isinstance(cause, str) and cause else None
 
+    def agent_task_admission_intent(self, operation_id: str) -> dict[str, object] | None:
+        """Return one exact durable launch intent, including the legacy recovery form."""
+
+        with self.connection() as connection:
+            task = connection.execute(
+                """
+                SELECT kind, attempt, parent_operation_id
+                FROM graph_runs WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            admitted_rows = connection.execute(
+                """
+                SELECT payload_json FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'operation_admitted'
+                ORDER BY receipt_id ASC
+                """,
+                (operation_id,),
+            ).fetchall()
+            legacy_rows = (
+                []
+                if admitted_rows
+                else connection.execute(
+                    """
+                    SELECT payload_json FROM graph_run_receipts
+                    WHERE operation_id = ? AND category = 'operation_created'
+                    ORDER BY receipt_id ASC
+                    """,
+                    (operation_id,),
+                ).fetchall()
+            )
+        if len(admitted_rows) > 1:
+            raise ValueError("The agent task has multiple admission intents.")
+        if admitted_rows:
+            intent = self._validated_agent_task_admission_payload(
+                admitted_rows[0]["payload_json"],
+                legacy=False,
+            )
+        else:
+            legacy_intents: list[dict[str, object]] = []
+            for row in legacy_rows:
+                try:
+                    payload = json.loads(row["payload_json"])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict) and payload.get("admission_committed") is True:
+                    legacy_intents.append(
+                        self._validated_agent_task_admission_payload(
+                            row["payload_json"],
+                            legacy=True,
+                        )
+                    )
+            if len(legacy_intents) > 1:
+                raise ValueError("The agent task has multiple legacy admission intents.")
+            intent = legacy_intents[0] if legacy_intents else None
+        if intent is None:
+            return None
+        if task is None or (
+            intent["kind"] != task["kind"]
+            or intent["attempt"] != task["attempt"]
+            or (
+                "parent_operation_id" in intent
+                and intent["parent_operation_id"] != task["parent_operation_id"]
+            )
+            or (
+                "has_parent" in intent
+                and intent["has_parent"] != (task["parent_operation_id"] is not None)
+            )
+        ):
+            raise ValueError("The agent task admission intent does not match its task.")
+        return intent
+
+    @staticmethod
+    def _validated_agent_task_admission_payload(
+        payload_json: str,
+        *,
+        legacy: bool,
+    ) -> dict[str, object]:
+        try:
+            payload = json.loads(payload_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("The agent task admission intent is malformed.") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("The agent task admission intent is malformed.")
+        kind = payload.get("kind")
+        attempt = payload.get("attempt")
+        cause = payload.get("continuation_cause")
+        expected_keys = (
+            {
+                "kind",
+                "attempt",
+                "has_parent",
+                "continuation_cause",
+                "resumed",
+                "admission_committed",
+            }
+            if legacy
+            else {
+                "kind",
+                "attempt",
+                "parent_operation_id",
+                "continuation_cause",
+                "admission_committed",
+            }
+        )
+        if (
+            set(payload) != expected_keys
+            or not isinstance(kind, str)
+            or not kind
+            or not isinstance(attempt, int)
+            or isinstance(attempt, bool)
+            or attempt < 1
+            or not isinstance(cause, str)
+            or cause not in _AGENT_TASK_CONTINUATION_CAUSES
+            or payload.get("admission_committed") is not True
+        ):
+            raise ValueError("The agent task admission intent is malformed.")
+        if legacy:
+            if not isinstance(payload.get("has_parent"), bool) or not isinstance(
+                payload.get("resumed"), bool
+            ):
+                raise ValueError("The legacy agent task admission intent is malformed.")
+        elif "parent_operation_id" not in payload or not (
+            payload["parent_operation_id"] is None
+            or (
+                isinstance(payload["parent_operation_id"], str)
+                and bool(payload["parent_operation_id"])
+            )
+        ):
+            raise ValueError("The agent task admission intent is malformed.")
+        return payload
+
     def record_agent_task_receipt(
         self,
         operation_id: str,
@@ -1568,6 +1720,8 @@ class AgentTaskStoreMixin:
         safe_category = " ".join(category.split())[:100]
         if not safe_category:
             return
+        if safe_category == "operation_admitted":
+            raise ValueError("operation_admitted is reserved for atomic task admission")
         if tier not in AGENT_TASK_RECEIPT_RETENTION_COUNTS:
             raise ValueError(f"Unknown agent-task receipt tier: {tier}")
         payload_json = self._bounded_receipt_payload(payload)
@@ -1599,12 +1753,41 @@ class AgentTaskStoreMixin:
             """,
             (operation_id, created_at, tier, category, payload_json),
         )
+        protected_count = int(
+            connection.execute(
+                """
+                SELECT COUNT(*) FROM graph_run_receipts
+                WHERE operation_id = ? AND tier = ?
+                  AND category IN (
+                    'operation_admitted',
+                    'operation_dispatch_attempt',
+                    'operation_dispatch_failed_before_start',
+                    'operation_dispatch_started'
+                  )
+                """,
+                (operation_id, tier),
+            ).fetchone()[0]
+        )
+        ordinary_limit = max(0, AGENT_TASK_RECEIPT_RETENTION_COUNTS[tier] - protected_count)
         connection.execute(
             """
             DELETE FROM graph_run_receipts
-            WHERE operation_id = ? AND tier = ? AND receipt_id NOT IN (
+            WHERE operation_id = ? AND tier = ?
+              AND category NOT IN (
+                'operation_admitted',
+                'operation_dispatch_attempt',
+                'operation_dispatch_failed_before_start',
+                'operation_dispatch_started'
+              )
+              AND receipt_id NOT IN (
                 SELECT receipt_id FROM graph_run_receipts
                 WHERE operation_id = ? AND tier = ?
+                  AND category NOT IN (
+                    'operation_admitted',
+                    'operation_dispatch_attempt',
+                    'operation_dispatch_failed_before_start',
+                    'operation_dispatch_started'
+                  )
                 ORDER BY receipt_id DESC
                 LIMIT ?
             )
@@ -1614,7 +1797,7 @@ class AgentTaskStoreMixin:
                 tier,
                 operation_id,
                 tier,
-                AGENT_TASK_RECEIPT_RETENTION_COUNTS[tier],
+                ordinary_limit,
             ),
         )
 
@@ -2476,6 +2659,12 @@ class AgentTaskStoreMixin:
     def agent_task_dispatch_was_proven_not_started(self, operation_id: str) -> bool:
         """Return whether a queued task has durable proof no worker thread began."""
 
+        try:
+            admission_intent = self.agent_task_admission_intent(operation_id)
+        except ValueError:
+            return False
+        if admission_intent is None:
+            return False
         with self.connection() as connection:
             task = connection.execute(
                 "SELECT status FROM graph_runs WHERE operation_id = ?",
@@ -2483,14 +2672,6 @@ class AgentTaskStoreMixin:
             ).fetchone()
             if task is None or task["status"] != "queued":
                 return False
-            created = connection.execute(
-                """
-                SELECT payload_json FROM graph_run_receipts
-                WHERE operation_id = ? AND category = 'operation_created'
-                ORDER BY receipt_id ASC LIMIT 1
-                """,
-                (operation_id,),
-            ).fetchone()
             latest_attempt = connection.execute(
                 """
                 SELECT payload_json FROM graph_run_receipts
@@ -2499,11 +2680,8 @@ class AgentTaskStoreMixin:
                 """,
                 (operation_id,),
             ).fetchone()
-            if created is None and latest_attempt is None:
-                return True
             if latest_attempt is None:
-                payload = json.loads(created["payload_json"]) if created is not None else {}
-                return isinstance(payload, dict) and payload.get("admission_committed") is True
+                return True
             attempt_id = json.loads(latest_attempt["payload_json"]).get("dispatch_attempt_id")
             latest_outcome = connection.execute(
                 """

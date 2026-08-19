@@ -629,8 +629,16 @@ def deliver_auto_research_watcher_group(
         }
     )
 
-    def admit(record, _role, _cause):
-        return background.store.create_watcher_notification_task(record, watcher_ids)
+    def admit(record, _role, cause):
+        continuation_cause = {
+            "watcher": "watcher_wake",
+            "graph_condition": "graph_condition_wake",
+        }[cause]
+        return background.store.create_watcher_notification_task(
+            record,
+            watcher_ids,
+            continuation_cause=continuation_cause,
+        )
 
     try:
         task = background.start_auto_research_turn(

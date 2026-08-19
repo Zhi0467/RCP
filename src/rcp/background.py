@@ -1961,7 +1961,11 @@ class BackgroundAgentTasks:
                         watcher_ids,
                     )
                 else:
-                    stored = self.store.create_watcher_notification_task(record, watcher_ids)
+                    stored = self.store.create_watcher_notification_task(
+                        record,
+                        watcher_ids,
+                        continuation_cause="fresh",
+                    )
                 if stored is None:
                     return
                 started = self._spawn_record(
@@ -3248,7 +3252,10 @@ class BackgroundAgentTasks:
             assert episode is not None
             try:
                 if continuation in {"resume", "retry"}:
-                    record = self.store.create_auto_research_recovery_task(task_record)
+                    record = self.store.create_auto_research_recovery_task(
+                        task_record,
+                        continuation_cause=continuation,
+                    )
                 elif auto_research_mail_delivery is not None:
                     record = self.store.create_auto_research_message_wake_task(
                         task_record,
@@ -3267,6 +3274,7 @@ class BackgroundAgentTasks:
                     record = self.store.create_auto_research_agent_task(
                         task_record,
                         role=request.role,
+                        continuation_cause=continuation,
                     )
             except EpisodeInvocationCeilingReached:
                 self._auto_research_admission_exhausted(episode)
@@ -3315,7 +3323,10 @@ class BackgroundAgentTasks:
                     task_record,
                 )
             else:
-                record = self.store.create_agent_task(task_record)
+                record = self.store.create_agent_task(
+                    task_record,
+                    continuation_cause=continuation,
+                )
         if isinstance(request, AutoResearchRunRequest) and request.wake_cause is not None:
             return self.ensure_auto_research_wake_spawned(
                 request.episode_id,

@@ -184,7 +184,7 @@ class ExperimentStoreMixin:
                     """,
                     (episode.episode_id, episode.created_at, record.created_at),
                 )
-                self._insert_agent_task(connection, record)
+                self._insert_agent_task(connection, record, continuation_cause="fresh")
                 connection.execute(
                     """
                     INSERT INTO episode_invocations (
@@ -288,7 +288,7 @@ class ExperimentStoreMixin:
                         operation_id=record.operation_id,
                         created_at=record.created_at,
                     )
-                self._insert_agent_task(connection, record)
+                self._insert_agent_task(connection, record, continuation_cause="watcher_wake")
                 connection.execute(
                     """
                     INSERT INTO episode_invocations (
@@ -316,7 +316,7 @@ class ExperimentStoreMixin:
         self,
         record: AgentTaskRecord,
         *,
-        continuation_cause: str | None = None,
+        continuation_cause: str = "resume",
     ) -> AgentTaskRecord:
         """Create a recovery/repair child without spending another paid invocation."""
 
@@ -373,7 +373,7 @@ class ExperimentStoreMixin:
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
         *,
-        continuation_cause: str | None,
+        continuation_cause: str,
     ) -> None:
         """Insert one validated Experiment recovery task in an open transaction."""
 
@@ -424,13 +424,11 @@ class ExperimentStoreMixin:
             raise ValueError("The Experiment recovery has no paid invocation ancestor.")
         if self._has_active_chat_overlap(connection, record):
             raise ValueError("Another task is already active in this conversation.")
-        self._insert_agent_task(connection, record)
-        if continuation_cause is not None:
-            self._insert_agent_task_dispatch_intent_receipt(
-                connection,
-                record,
-                continuation_cause=continuation_cause,
-            )
+        self._insert_agent_task(
+            connection,
+            record,
+            continuation_cause=continuation_cause,
+        )
 
     @staticmethod
     def _new_experiment_episode(

@@ -123,7 +123,11 @@ def test_operational_prune_ages_out_payloads_but_not_summary_receipts(tmp_path) 
     assert result["receipts"] == 1
     assert store.agent_task_patch_output("old") is None
     categories = {receipt.category for receipt in store.agent_task_receipts("old")}
-    assert categories == {"operation_created", "chat_context_assembled"}
+    assert categories == {
+        "operation_admitted",
+        "operation_created",
+        "chat_context_assembled",
+    }
 
 
 def test_operational_prune_keeps_command_ledger_while_aging_message_events(tmp_path) -> None:

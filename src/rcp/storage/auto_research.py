@@ -100,7 +100,7 @@ class AutoResearchStoreMixin:
                 actor_operation_id, control_node_id = self._bind_auto_research_actor(
                     connection, episode, task, "orchestrator"
                 )
-                self._insert_agent_task(connection, task)
+                self._insert_agent_task(connection, task, continuation_cause="fresh")
                 connection.execute(
                     """
                     INSERT INTO episode_invocations (
@@ -188,6 +188,7 @@ class AutoResearchStoreMixin:
         record: AgentTaskRecord,
         *,
         role: AutoResearchRole,
+        continuation_cause: str = "fresh",
     ) -> AgentTaskRecord:
         """Spend one operational invocation and admit one Auto-research task."""
 
@@ -197,14 +198,25 @@ class AutoResearchStoreMixin:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 episode = self._load_auto_research_episode(connection, record.episode_id)
-                self._insert_paid_auto_research_task(connection, episode, record, role)
+                self._insert_paid_auto_research_task(
+                    connection,
+                    episode,
+                    record,
+                    role,
+                    continuation_cause=continuation_cause,
+                )
         except sqlite3.IntegrityError as exc:
             raise ValueError("Could not create the Auto-research task.") from exc
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
 
-    def create_auto_research_recovery_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
+    def create_auto_research_recovery_task(
+        self,
+        record: AgentTaskRecord,
+        *,
+        continuation_cause: str = "resume",
+    ) -> AgentTaskRecord:
         """Create one exact same-allocation recovery without moving the episode meter."""
 
         if record.episode_id is None or record.parent_operation_id is None:
@@ -303,7 +315,11 @@ class AutoResearchStoreMixin:
                     role,
                     same_allocation_recovery=True,
                 )
-                self._insert_agent_task(connection, record)
+                self._insert_agent_task(
+                    connection,
+                    record,
+                    continuation_cause=continuation_cause,
+                )
                 self._insert_auto_research_invocation(
                     connection,
                     episode_id=episode.episode_id,
@@ -377,7 +393,13 @@ class AutoResearchStoreMixin:
                 ).fetchall()
                 if [item["message_id"] for item in pending_prefix] != message_ids:
                     return None
-                self._insert_paid_auto_research_task(connection, episode, record, role)
+                self._insert_paid_auto_research_task(
+                    connection,
+                    episode,
+                    record,
+                    role,
+                    continuation_cause="message_wake",
+                )
                 connection.execute(
                     f"""
                     UPDATE auto_research_messages
@@ -509,6 +531,7 @@ class AutoResearchStoreMixin:
                     episode,
                     record,
                     "orchestrator",
+                    continuation_cause="lifecycle_wake",
                 )
                 connection.execute(
                     f"""
@@ -549,6 +572,8 @@ class AutoResearchStoreMixin:
         episode: EpisodeRecord,
         record: AgentTaskRecord,
         role: AutoResearchRole,
+        *,
+        continuation_cause: str,
     ) -> None:
         if episode.status != "running" or episode.ending is not None:
             raise EpisodeNotRunning("the Auto-research episode is not accepting new work")
@@ -567,7 +592,11 @@ class AutoResearchStoreMixin:
         actor_operation_id, control_node_id = self._bind_auto_research_actor(
             connection, episode, record, role
         )
-        self._insert_agent_task(connection, record)
+        self._insert_agent_task(
+            connection,
+            record,
+            continuation_cause=continuation_cause,
+        )
         invocation_number = episode.invocations_used + 1
         connection.execute(
             """

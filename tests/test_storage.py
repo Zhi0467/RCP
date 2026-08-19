@@ -11,6 +11,7 @@ import pytest
 
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, AuthorizedHuman
+from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.providers import ProviderUsage
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
@@ -1586,7 +1587,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "episodes": 0,
         "graph_run_outputs": 1,
         "graph_run_events": 1,
-        "graph_run_receipts": 1,
+        "graph_run_receipts": 2,
         "graph_run_contracts": 1,
         "graph_runs": 1,
         "projects": 1,
@@ -1602,7 +1603,8 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
             "graph_run_events",
             "graph_run_receipts",
         ):
-            assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 1
+            expected = 2 if table == "graph_run_receipts" else 1
+            assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == expected
     assert store.project("delete-me") is None
     assert store.project("keep-me") is not None
     assert store.project_members("delete-me") == []
@@ -2330,6 +2332,207 @@ def test_patch_recovery_output_is_bounded(tmp_path) -> None:
         store.record_agent_task_patch_output("operation", "x" * 2_000_001)
 
 
+def test_agent_task_admission_persists_exact_launch_intent(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    parent = store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="parent",
+            project_id="project",
+            kind="refresh",
+            status="failed",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="failed",
+        )
+    )
+    child = AgentTaskRecord(
+        operation_id="child",
+        project_id="project",
+        kind="refresh",
+        status="queued",
+        request={},
+        created_at=now,
+        updated_at=now,
+        status_message="queued",
+        attempt=2,
+        parent_operation_id=parent.operation_id,
+    )
+
+    store.create_agent_task(child, continuation_cause="retry")
+
+    assert store.agent_task_admission_intent(child.operation_id) == {
+        "kind": "refresh",
+        "attempt": 2,
+        "parent_operation_id": parent.operation_id,
+        "continuation_cause": "retry",
+        "admission_committed": True,
+    }
+    assert store.agent_task_continuation_cause(child.operation_id) == "retry"
+    assert store.agent_task_dispatch_was_proven_not_started(child.operation_id) is True
+    receipts = store.agent_task_receipts(child.operation_id)
+    assert [receipt.category for receipt in receipts] == ["operation_admitted"]
+
+
+def test_agent_task_admission_rolls_back_when_its_intent_cannot_persist(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+
+    def fail_receipt(*_args, **_kwargs):
+        raise RuntimeError("simulated admission receipt failure")
+
+    monkeypatch.setattr(store, "_insert_agent_task_receipt", fail_receipt)
+    with pytest.raises(RuntimeError, match="simulated admission receipt failure"):
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id="operation",
+                project_id="project",
+                kind="refresh",
+                status="queued",
+                request={},
+                created_at=now,
+                updated_at=now,
+                status_message="queued",
+            )
+        )
+
+    assert store.agent_task("operation") is None
+
+
+def test_malformed_agent_task_admission_intent_fails_closed(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="operation",
+            project_id="project",
+            kind="refresh",
+            status="queued",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="queued",
+        )
+    )
+    with store.connection() as connection:
+        connection.execute(
+            """
+            UPDATE graph_run_receipts SET payload_json = ?
+            WHERE operation_id = ? AND category = 'operation_admitted'
+            """,
+            ('{"kind":"refresh","attempt":1,"continuation_cause":"fresh"}', "operation"),
+        )
+
+    with pytest.raises(ValueError, match="admission intent is malformed"):
+        store.agent_task_admission_intent("operation")
+    assert store.agent_task_dispatch_was_proven_not_started("operation") is False
+
+
+def test_inconsistent_or_duplicate_agent_task_admission_intent_fails_closed(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="operation",
+            project_id="project",
+            kind="refresh",
+            status="queued",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="queued",
+        )
+    )
+    inconsistent = {
+        "kind": "seed",
+        "attempt": 1,
+        "parent_operation_id": None,
+        "continuation_cause": "fresh",
+        "admission_committed": True,
+    }
+    with store.connection() as connection:
+        connection.execute(
+            """
+            UPDATE graph_run_receipts SET payload_json = ?
+            WHERE operation_id = ? AND category = 'operation_admitted'
+            """,
+            (json.dumps(inconsistent), "operation"),
+        )
+
+    with pytest.raises(ValueError, match="does not match its task"):
+        store.agent_task_admission_intent("operation")
+    with pytest.raises(ValueError, match="does not match its task"):
+        store.agent_task_continuation_cause("operation")
+    assert store.agent_task_dispatch_was_proven_not_started("operation") is False
+
+    with store.connection() as connection:
+        store._insert_agent_task_receipt(
+            connection,
+            "operation",
+            "operation_admitted",
+            json.dumps(inconsistent),
+            tier="summary",
+            created_at=now,
+        )
+    with pytest.raises(ValueError, match="multiple admission intents"):
+        store.agent_task_admission_intent("operation")
+    assert store.agent_task_dispatch_was_proven_not_started("operation") is False
+
+
+def test_legacy_committed_dispatch_intent_remains_readable(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="operation",
+            project_id="project",
+            kind="refresh",
+            status="queued",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="queued",
+        )
+    )
+    with store.connection() as connection:
+        connection.execute(
+            """
+            DELETE FROM graph_run_receipts
+            WHERE operation_id = ? AND category = 'operation_admitted'
+            """,
+            ("operation",),
+        )
+    legacy_intent = {
+        "kind": "refresh",
+        "attempt": 1,
+        "has_parent": False,
+        "continuation_cause": "fresh",
+        "resumed": False,
+        "admission_committed": True,
+    }
+    store.record_agent_task_receipt(
+        "operation",
+        "operation_created",
+        legacy_intent,
+    )
+
+    assert store.agent_task_admission_intent("operation") == legacy_intent
+    assert store.agent_task_dispatch_was_proven_not_started("operation") is True
+
+    store.record_agent_task_receipt(
+        "operation",
+        "operation_created",
+        legacy_intent,
+    )
+    with pytest.raises(ValueError, match="multiple legacy admission intents"):
+        store.agent_task_admission_intent("operation")
+    assert store.agent_task_dispatch_was_proven_not_started("operation") is False
+
+
 def test_agent_task_events_and_tiered_receipts_are_bounded_per_operation(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
@@ -2365,8 +2568,83 @@ def test_agent_task_events_and_tiered_receipts_are_bounded_per_operation(tmp_pat
     assert sum(receipt.tier == "diagnostic" for receipt in receipts) == 32
     assert sum(receipt.tier == "trace" for receipt in receipts) == 16
     assert next(receipt for receipt in receipts if receipt.tier == "summary").category == (
-        "summary-6"
+        "operation_admitted"
     )
+    assert next(
+        receipt
+        for receipt in receipts
+        if receipt.tier == "summary" and receipt.category != "operation_admitted"
+    ).category == ("summary-7")
+    assert store.agent_task_admission_intent("operation") is not None
+
+
+def test_dispatch_proof_receipts_survive_diagnostic_retention(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+
+    def queued(operation_id: str) -> None:
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id="project",
+                kind="refresh",
+                status="queued",
+                request={},
+                created_at=now,
+                updated_at=now,
+                status_message="queued",
+            )
+        )
+
+    queued("started")
+    store.record_agent_task_receipt(
+        "started",
+        "operation_dispatch_attempt",
+        {"dispatch_attempt_id": "started-attempt"},
+        tier="diagnostic",
+    )
+    store.record_agent_task_receipt(
+        "started",
+        "operation_dispatch_started",
+        {"dispatch_attempt_id": "started-attempt"},
+        tier="diagnostic",
+    )
+    queued("failed-before-start")
+    store.record_agent_task_receipt(
+        "failed-before-start",
+        "operation_dispatch_attempt",
+        {"dispatch_attempt_id": "failed-attempt"},
+        tier="diagnostic",
+    )
+    store.record_agent_task_receipt(
+        "failed-before-start",
+        "operation_dispatch_failed_before_start",
+        {"dispatch_attempt_id": "failed-attempt"},
+        tier="diagnostic",
+    )
+    for operation_id in ("started", "failed-before-start"):
+        for index in range(AGENT_TASK_RECEIPT_RETENTION_COUNTS["diagnostic"] + 5):
+            store.record_agent_task_receipt(
+                operation_id,
+                f"diagnostic-{index}",
+                {"index": index},
+                tier="diagnostic",
+            )
+
+    started_categories = {receipt.category for receipt in store.agent_task_receipts("started")}
+    assert {
+        "operation_dispatch_attempt",
+        "operation_dispatch_started",
+    } <= started_categories
+    assert store.agent_task_dispatch_was_proven_not_started("started") is False
+    failed_categories = {
+        receipt.category for receipt in store.agent_task_receipts("failed-before-start")
+    }
+    assert {
+        "operation_dispatch_attempt",
+        "operation_dispatch_failed_before_start",
+    } <= failed_categories
+    assert store.agent_task_dispatch_was_proven_not_started("failed-before-start") is True
 
 
 def test_oversized_agent_task_receipt_omits_values_but_keeps_safe_metadata(tmp_path) -> None:
@@ -2393,7 +2671,11 @@ def test_oversized_agent_task_receipt_omits_values_but_keeps_safe_metadata(tmp_p
         tier="diagnostic",
     )
 
-    receipt = store.agent_task_receipts("operation")[0]
+    receipt = next(
+        item
+        for item in store.agent_task_receipts("operation")
+        if item.category == "context_assembled"
+    )
     assert receipt.payload == {
         "omitted": True,
         "reason": "payload_exceeded_limit",
@@ -2601,8 +2883,8 @@ def test_work_graph_repair_admission_rolls_back_claim_and_child_together(
 
     original_insert = store._insert_agent_task
 
-    def fail_after_child_insert(connection, record) -> None:
-        original_insert(connection, record)
+    def fail_after_child_insert(connection, record, *, continuation_cause) -> None:
+        original_insert(connection, record, continuation_cause=continuation_cause)
         raise RuntimeError("simulated graph repair insert failure")
 
     monkeypatch.setattr(store, "_insert_agent_task", fail_after_child_insert)

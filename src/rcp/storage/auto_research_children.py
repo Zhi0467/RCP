@@ -379,7 +379,7 @@ class AutoResearchChildrenStoreMixin:
                     )
                 if self._has_active_chat_overlap(connection, task):
                     raise ValueError("Another task is already active in this conversation.")
-                self._insert_agent_task(connection, task)
+                self._insert_agent_task(connection, task, continuation_cause="fresh")
                 connection.execute(
                     """
                     INSERT INTO auto_research_child_work (
@@ -511,7 +511,7 @@ class AutoResearchChildrenStoreMixin:
                 )
             if self._has_active_chat_overlap(connection, task):
                 raise ValueError("Another task is already active in this conversation.")
-            self._insert_agent_task(connection, task)
+            self._insert_agent_task(connection, task, continuation_cause="resume")
             connection.execute(
                 """
                 INSERT INTO auto_research_child_work_attempts (
@@ -659,7 +659,7 @@ class AutoResearchChildrenStoreMixin:
                     raise EpisodeInvocationCeilingReached(
                         "the Auto-research operational invocation ceiling is exhausted"
                     )
-                self._insert_agent_task(connection, record)
+                self._insert_agent_task(connection, record, continuation_cause="message_wake")
                 connection.execute(
                     """
                     INSERT INTO auto_research_child_work_attempts (

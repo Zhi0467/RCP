@@ -403,7 +403,7 @@ def test_report_continuation_may_be_a_same_invocation_recovery_child(tmp_path) -
         }
     )
     with store.connection() as connection:
-        store._insert_agent_task(connection, recovery)
+        store._insert_agent_task(connection, recovery, continuation_cause="retry")
     wrapup, hidden = _wrapup(
         store,
         "episode",

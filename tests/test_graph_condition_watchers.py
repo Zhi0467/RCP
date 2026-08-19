@@ -1988,9 +1988,9 @@ def test_watcher_notification_admission_fence_owns_claim_and_spawn(
     fence_active = False
     original_claim = store.create_watcher_notification_task
 
-    def observed_claim(record, watcher_ids):
+    def observed_claim(record, watcher_ids, **kwargs):
         assert fence_active, "durable watcher claim escaped the generation fence"
-        return original_claim(record, watcher_ids)
+        return original_claim(record, watcher_ids, **kwargs)
 
     def observed_spawn(record, _request, *, continuation, parent=None):
         assert fence_active, "watcher task spawn escaped the generation fence"

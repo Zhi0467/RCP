@@ -795,7 +795,15 @@ def test_same_key_worker_resume_recovers_a_committed_task_without_creating_anoth
 
     committed = store.agent_task(expected_operation_id)
     assert committed is not None and committed.status == "queued"
-    assert store.agent_task_continuation_cause(expected_operation_id) is None
+    assert store.agent_task_continuation_cause(expected_operation_id) == "resume"
+    admitted = [
+        receipt
+        for receipt in store.agent_task_receipts(expected_operation_id)
+        if receipt.category == "operation_admitted"
+    ]
+    assert len(admitted) == 1
+    assert admitted[0].payload["continuation_cause"] == "resume"
+    assert admitted[0].payload["admission_committed"] is True
     monkeypatch.setattr(background, "_spawn_record", real_spawn_record)
     replay = AutoResearchCommandDispatcher(store, effects).dispatch(
         root.operation_id,

@@ -1098,6 +1098,8 @@ class WatcherStoreMixin:
         self,
         record: AgentTaskRecord,
         watcher_ids: list[str],
+        *,
+        continuation_cause: str = "fresh",
     ) -> AgentTaskRecord | None:
         """Queue a wake and mark its completed watchers notified in one transaction.
 
@@ -1170,9 +1172,19 @@ class WatcherStoreMixin:
                         raise ValueError("Auto-research watcher wake has invalid episode lineage")
                     episode = self._load_auto_research_episode(connection, episode_id)
                     role = TypeAdapter(AutoResearchRole).validate_python(record.request.get("role"))
-                    self._insert_paid_auto_research_task(connection, episode, record, role)
+                    self._insert_paid_auto_research_task(
+                        connection,
+                        episode,
+                        record,
+                        role,
+                        continuation_cause=continuation_cause,
+                    )
                 else:
-                    self._insert_agent_task(connection, record)
+                    self._insert_agent_task(
+                        connection,
+                        record,
+                        continuation_cause=continuation_cause,
+                    )
                 cursor = connection.execute(
                     f"""
                     UPDATE watchers

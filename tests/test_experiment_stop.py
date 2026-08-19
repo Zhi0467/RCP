@@ -181,7 +181,12 @@ class _Loop:
         assert stored is not None
         return self._set_task_status(record)
 
-    def create_recovery_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
+    def create_recovery_task(
+        self,
+        record: AgentTaskRecord,
+        *,
+        continuation_cause: str = "resume",
+    ) -> AgentTaskRecord:
         queued = record.model_copy(
             update={
                 "episode_id": self.episode_id,
@@ -191,7 +196,10 @@ class _Loop:
                 "phase": "queued",
             }
         )
-        self.store.create_experiment_recovery_task(queued)
+        self.store.create_experiment_recovery_task(
+            queued,
+            continuation_cause=continuation_cause,
+        )
         return self._set_task_status(record)
 
     def bind_session(
@@ -669,9 +677,15 @@ def test_a_ready_wake_resumes_the_episode_session_at_the_next_invocation(
     causes = [
         receipt.payload.get("continuation_cause")
         for receipt in loop.store.agent_task_receipts(task.operation_id)
-        if receipt.category == "operation_created"
+        if receipt.category == "operation_admitted"
     ]
     assert causes == ["watcher_wake"]
+    admission = next(
+        item
+        for item in loop.store.agent_task_receipts(task.operation_id)
+        if item.category == "operation_admitted"
+    )
+    assert admission.payload["parent_operation_id"] is None
     assert loop.store.watcher("finished-unclaimed").notified is True
 
 
@@ -833,7 +847,8 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
             native_session_id="new-claude-session",
             stage_root=str(new_stage),
             dispatch_authority=_task_authority(request),
-        )
+        ),
+        continuation_cause="handoff",
     )
     execution = AgentTaskExecution(
         operation_id="successful-provider-switch",
@@ -1232,8 +1247,8 @@ def test_experiment_graph_repair_admission_rolls_back_claim_child_and_receipt(
 
     original_insert = loop.store._insert_agent_task
 
-    def fail_after_child_insert(connection, record) -> None:
-        original_insert(connection, record)
+    def fail_after_child_insert(connection, record, **kwargs) -> None:
+        original_insert(connection, record, **kwargs)
         raise RuntimeError("simulated Experiment graph repair insert failure")
 
     monkeypatch.setattr(loop.store, "_insert_agent_task", fail_after_child_insert)
@@ -1269,9 +1284,10 @@ def test_experiment_graph_repair_admission_rolls_back_claim_child_and_receipt(
     receipt = next(
         item
         for item in loop.store.agent_task_receipts("experiment-repair")
-        if item.category == "operation_created"
+        if item.category == "operation_admitted"
     )
     assert receipt.payload["continuation_cause"] == "graph_repair"
+    assert receipt.payload["parent_operation_id"] == "loop-root"
     assert receipt.payload["admission_committed"] is True
 
 
@@ -1337,18 +1353,8 @@ def test_graph_repair_recovery_remains_patch_only(manifest, tmp_path, status, ac
             native_session_id="repair-session",
             stage_root=str(stage),
             dispatch_authority=_task_authority(repair_request, kind="project_chat"),
-        )
-    )
-    store.record_agent_task_receipt(
-        "repair-attempt",
-        "operation_created",
-        {
-            "kind": "project_chat",
-            "attempt": 2,
-            "has_parent": True,
-            "continuation_cause": "graph_repair",
-            "resumed": True,
-        },
+        ),
+        continuation_cause="graph_repair",
     )
     observed = Event()
     continuations: list[str] = []
@@ -1666,18 +1672,8 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
             native_session_id="provisional-claude-session",
             stage_root=str(provisional_stage),
             dispatch_authority=_task_authority(provisional_request),
-        )
-    )
-    loop.store.record_agent_task_receipt(
-        "failed-provisional-switch",
-        "operation_created",
-        {
-            "kind": "node_chat",
-            "attempt": 2,
-            "has_parent": True,
-            "continuation_cause": "handoff",
-            "resumed": False,
-        },
+        ),
+        continuation_cause="handoff",
     )
     observed = Event()
     captured: dict[str, object] = {}

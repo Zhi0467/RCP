@@ -750,9 +750,13 @@ def test_watcher_dispatch_binds_before_claim_and_refusal_leaves_claim_untouched(
     claim_seen: list[AgentDispatchAuthority | None] = []
     stream_seen = threading.Event()
 
-    def claim(record: AgentTaskRecord, _watcher_ids: list[str]) -> AgentTaskRecord:
+    def claim(
+        record: AgentTaskRecord,
+        _watcher_ids: list[str],
+        **kwargs,
+    ) -> AgentTaskRecord:
         claim_seen.append(record.dispatch_authority)
-        return store.create_agent_task(record)
+        return store.create_agent_task(record, **kwargs)
 
     async def stream(
         _project_id: str,

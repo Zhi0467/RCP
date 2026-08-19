@@ -281,7 +281,7 @@ def test_main_chat_cannot_reuse_a_branch_bound_conversation_or_session(tmp_path:
     )
     with store.connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
-        store._insert_agent_task(connection, branch_task)
+        store._insert_agent_task(connection, branch_task, continuation_cause="fresh")
 
     def main_task(operation_id: str, *, requested_chat_id: str, requested_session: str | None):
         return AgentTaskRecord(

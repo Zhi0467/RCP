@@ -102,7 +102,7 @@ class EpisodeStoreMixin:
                     }
                 )
                 self._insert_episode(connection, started)
-                self._insert_agent_task(connection, root_task)
+                self._insert_agent_task(connection, root_task, continuation_cause="fresh")
                 connection.execute(
                     """
                     INSERT INTO episode_invocations (
@@ -304,6 +304,8 @@ class EpisodeStoreMixin:
         self,
         episode_id: str,
         task: AgentTaskRecord,
+        *,
+        continuation_cause: str = "fresh",
     ) -> tuple[EpisodeRecord, EpisodeInvocationRecord, AgentTaskRecord]:
         """Atomically spend one operational invocation and create its visible task."""
 
@@ -347,7 +349,11 @@ class EpisodeStoreMixin:
                     )
                 if task.project_id != episode.project_id:
                     raise ValueError("the episode task belongs to a different project")
-                self._insert_agent_task(connection, task)
+                self._insert_agent_task(
+                    connection,
+                    task,
+                    continuation_cause=continuation_cause,
+                )
                 invocation_number = episode.invocations_used + 1
                 connection.execute(
                     """
@@ -439,7 +445,11 @@ class EpisodeStoreMixin:
                         raise ValueError(
                             "the report continuation is not a visible task of this episode"
                         )
-                self._insert_agent_task(connection, allocation_task)
+                self._insert_agent_task(
+                    connection,
+                    allocation_task,
+                    continuation_cause="episode_report",
+                )
                 self._insert_episode_wrapup(connection, wrapup)
                 connection.execute(
                     """

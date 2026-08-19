@@ -464,17 +464,6 @@ def _setup_auto_research(
     assert root is not None
     assert auto_research.graph_target == root.graph_target == graph_target
     assert auto_research.graph_base_head == graph_base_head
-    store.record_agent_task_receipt(
-        root.operation_id,
-        "operation_created",
-        {
-            "kind": "auto_research",
-            "attempt": 1,
-            "has_parent": False,
-            "continuation_cause": "fresh",
-            "resumed": False,
-        },
-    )
     worker_request = AutoResearchRunRequest(
         episode_id=episode_id,
         role="worker",
@@ -518,17 +507,6 @@ def _setup_auto_research(
         role="worker",
     )
     assert worker.graph_target == graph_target
-    store.record_agent_task_receipt(
-        worker.operation_id,
-        "operation_created",
-        {
-            "kind": "auto_research",
-            "attempt": 1,
-            "has_parent": True,
-            "continuation_cause": "fresh",
-            "resumed": False,
-        },
-    )
     return store, auto_research, root, worker
 
 
@@ -834,6 +812,7 @@ def _recovery_task(
     worker: AgentTaskRecord,
     *,
     operation_id: str = "worker-retry",
+    continuation_cause: str = "retry",
 ) -> AgentTaskRecord:
     parent_request = AutoResearchRunRequest.model_validate(worker.request)
     request = parent_request.model_copy(
@@ -862,18 +841,8 @@ def _recovery_task(
             stage_root=worker.stage_root,
             authorized_by=auto_research.authorized_by,
             dispatch_authority=worker.dispatch_authority,
-        )
-    )
-    store.record_agent_task_receipt(
-        recovery.operation_id,
-        "operation_created",
-        {
-            "kind": "auto_research",
-            "attempt": recovery.attempt,
-            "has_parent": True,
-            "continuation_cause": "retry",
-            "resumed": True,
-        },
+        ),
+        continuation_cause=continuation_cause,
     )
     return recovery
 
@@ -924,17 +893,6 @@ def _claimed_mail_recovery(tmp_path: Path):
         message_ids=[message.message_id],
     )
     assert wake is not None
-    store.record_agent_task_receipt(
-        wake.operation_id,
-        "operation_created",
-        {
-            "kind": "auto_research",
-            "attempt": 1,
-            "has_parent": True,
-            "continuation_cause": "message_wake",
-            "resumed": True,
-        },
-    )
     store.fail_agent_task(wake.operation_id, "provider connection interrupted")
     retry = _recovery_task(store, auto_research, wake, operation_id="mail-wake-retry")
     execution = _execution(store, retry, continuation="retry")
@@ -1642,17 +1600,7 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
             dispatch_authority=root.dispatch_authority,
         ),
         role="orchestrator",
-    )
-    store.record_agent_task_receipt(
-        continuation.operation_id,
-        "operation_created",
-        {
-            "kind": "auto_research",
-            "attempt": 1,
-            "has_parent": True,
-            "continuation_cause": "auto_research_continuation",
-            "resumed": True,
-        },
+        continuation_cause="auto_research_continuation",
     )
     for name in ("patch.json", "watch.json", "messages.json"):
         (stage / name).write_text("stale", encoding="utf-8")
@@ -1869,18 +1817,8 @@ async def test_orchestrator_null_session_resume_is_not_a_clean_retry(
             stage_root=root.stage_root,
             authorized_by=auto_research.authorized_by,
             dispatch_authority=root.dispatch_authority,
-        )
-    )
-    store.record_agent_task_receipt(
-        resumed.operation_id,
-        "operation_created",
-        {
-            "kind": "auto_research",
-            "attempt": resumed.attempt,
-            "has_parent": True,
-            "continuation_cause": "resume",
-            "resumed": True,
-        },
+        ),
+        continuation_cause="resume",
     )
 
     launcher = _WorkerLauncher(session_id="replacement-session")
@@ -2466,17 +2404,6 @@ async def test_claimed_mail_is_staged_exactly_for_worker_wake(manifest, tmp_path
         message_ids=[message.message_id],
     )
     assert wake is not None
-    store.record_agent_task_receipt(
-        wake.operation_id,
-        "operation_created",
-        {
-            "kind": "auto_research",
-            "attempt": 1,
-            "has_parent": True,
-            "continuation_cause": "message_wake",
-            "resumed": True,
-        },
-    )
 
     def writer(contract_text, workspace):
         delivery = parse_auto_research_mail_delivery(
@@ -2605,17 +2532,6 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
         message_ids=[message.message_id],
     )
     assert wake is not None
-    store.record_agent_task_receipt(
-        wake.operation_id,
-        "operation_created",
-        {
-            "kind": "auto_research",
-            "attempt": 1,
-            "has_parent": True,
-            "continuation_cause": "lifecycle_wake",
-            "resumed": True,
-        },
-    )
 
     def writer(_contract_text, workspace):
         lifecycle = parse_auto_research_lifecycle_delivery(
