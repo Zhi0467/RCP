@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast, get_args
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.write_scope import ProjectWriteScope
@@ -85,6 +85,7 @@ AgentTaskContinuation = Literal[
     "auto_research_continuation",
     "episode_report",
 ]
+_AGENT_TASK_CONTINUATIONS = frozenset(get_args(AgentTaskContinuation))
 
 # A watcher wake reuses a native session without being task Resume: it is a new
 # task at the next invocation, so it must never inherit Resume's same-invocation
@@ -431,7 +432,7 @@ class BackgroundAgentTasks:
             dispatch_authority=authority,
         )
         stored = self.store.create_branch_merge_task(record)
-        return self._spawn_record(stored, request, continuation="fresh")
+        return self.launch_admitted(stored.operation_id)
 
     def start_auto_research(
         self,
@@ -463,7 +464,7 @@ class BackgroundAgentTasks:
             episode.episode_id,
             task.operation_id,
         )
-        return episode, self._spawn_record(task, run_request, continuation="fresh")
+        return episode, self.launch_admitted(task.operation_id)
 
     def reserve_auto_research(
         self,
@@ -551,7 +552,7 @@ class BackgroundAgentTasks:
         """Finish branch creation and launch roots reserved before a process interruption."""
 
         started: list[str] = []
-        for episode, task, request in self._proven_reserved_auto_research_roots():
+        for episode, task, _request in self._proven_reserved_auto_research_roots():
             try:
                 ensure_graph_target(episode)
             except Exception as exc:
@@ -561,7 +562,7 @@ class BackgroundAgentTasks:
                 episode.episode_id,
                 task.operation_id,
             )
-            self._spawn_record(task, request, continuation="fresh")
+            self.launch_admitted(task.operation_id)
             started.append(task.operation_id)
         return started
 
@@ -816,24 +817,13 @@ class BackgroundAgentTasks:
         request = self._request_from_record(existing)
         if not isinstance(request, AutoResearchRunRequest) or request.wake_cause is None:
             raise ValueError("The committed task is not an automatic Auto-research wake.")
-        parent = self._validate_existing_auto_research_wake(
+        self._validate_existing_auto_research_wake(
             episode_id,
             operation_id,
             existing,
             request,
         )
-        continuation: AgentTaskContinuation = {
-            "watcher": "watcher_wake",
-            "graph_condition": "graph_condition_wake",
-            "message": "message_wake",
-            "lifecycle": "lifecycle_wake",
-        }[request.wake_cause]
-        return self._spawn_record(
-            existing,
-            request,
-            continuation=continuation,
-            parent=parent,
-        )
+        return self.launch_admitted(existing.operation_id)
 
     def reconcile_committed_auto_research_dispatches(self) -> list[str]:
         """Start exact paid child/wake rows durably proven never to have run."""
@@ -1137,7 +1127,6 @@ class BackgroundAgentTasks:
                 operation_id,
                 existing,
             )
-            parent = None
         elif continuation == "resume":
             self._validate_existing_child_work_resume(
                 episode_id,
@@ -1145,7 +1134,6 @@ class BackgroundAgentTasks:
                 operation_id,
                 existing,
             )
-            parent = self._require_operation(existing.parent_operation_id or "")
         else:
             self._validate_existing_child_work_message_wake(
                 episode_id,
@@ -1153,13 +1141,7 @@ class BackgroundAgentTasks:
                 operation_id,
                 existing,
             )
-            parent = self._require_operation(existing.parent_operation_id or "")
-        return self._spawn_record(
-            existing,
-            request,
-            continuation=continuation,
-            parent=parent,
-        )
+        return self.launch_admitted(existing.operation_id)
 
     def auto_research_child_work_task(
         self,
@@ -1538,7 +1520,6 @@ class BackgroundAgentTasks:
                 operation_id,
                 existing,
             )
-            parent = None
         elif continuation == "resume":
             self._validate_existing_child_experiment_resume(
                 parent_episode_id,
@@ -1546,7 +1527,6 @@ class BackgroundAgentTasks:
                 operation_id,
                 existing,
             )
-            parent = self._require_operation(existing.parent_operation_id or "")
         elif continuation == "graph_repair":
             self._validate_existing_child_experiment_graph_repair(
                 parent_episode_id,
@@ -1554,7 +1534,6 @@ class BackgroundAgentTasks:
                 operation_id,
                 existing,
             )
-            parent = self._require_operation(existing.parent_operation_id or "")
         else:
             self._validate_existing_child_experiment_watcher_wake(
                 parent_episode_id,
@@ -1562,13 +1541,7 @@ class BackgroundAgentTasks:
                 operation_id,
                 existing,
             )
-            parent = None
-        return self._spawn_record(
-            existing,
-            request,
-            continuation=continuation,
-            parent=parent,
-        )
+        return self.launch_admitted(existing.operation_id)
 
     def resume_auto_research_child_experiment(
         self,
@@ -1722,13 +1695,8 @@ class BackgroundAgentTasks:
         request = EpisodeReportRunRequest.model_validate(task.request)
         if request.episode_id != episode_id:
             raise ValueError("The episode report request changed its parent episode.")
-        parent = self._require_operation(task.parent_operation_id or "")
-        return self._spawn_record(
-            task,
-            request,
-            continuation="episode_report",
-            parent=parent,
-        )
+        self._require_operation(task.parent_operation_id or "")
+        return self.launch_admitted(task.operation_id)
 
     def _restart_interrupted_episode_reports(self) -> None:
         for episode in self.store.episodes_awaiting_report():
@@ -1968,11 +1936,7 @@ class BackgroundAgentTasks:
                     )
                 if stored is None:
                     return
-                started = self._spawn_record(
-                    stored,
-                    request,
-                    continuation="watcher_wake" if experiment_wake else "fresh",
-                )
+                started = self.launch_admitted(stored.operation_id)
 
         if admission_fence is not None:
             if not admission_fence(claim_and_spawn):
@@ -3332,7 +3296,7 @@ class BackgroundAgentTasks:
                 request.episode_id,
                 operation_id=record.operation_id,
             )
-        return self._spawn_record(record, request, continuation=continuation, parent=parent)
+        return self.launch_admitted(record.operation_id)
 
     def _resolved_dispatch_authority(
         self,
@@ -3479,6 +3443,142 @@ class BackgroundAgentTasks:
                 )
         return authority
 
+    def launch_admitted(self, operation_id: str) -> AgentTaskRecord:
+        """Launch one task whose durable admission already committed.
+
+        Admission and provider dispatch are separate durability boundaries.  The
+        caller therefore supplies only the operation identity: the request,
+        continuation cause, parent, and launch bindings all come back from the
+        durable row and its admission receipt.  This is also the startup repair
+        seam for a task that was admitted before the process disappeared.
+        """
+
+        record = self._require_operation(operation_id)
+        with self._controls_lock:
+            if operation_id in self._workers:
+                return self._require_operation(operation_id)
+        if record.status != "queued":
+            return record
+
+        try:
+            request = self._request_from_record(record)
+            self._validate_request_type(record.kind, request)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "The admitted task has no valid persisted request for its kind."
+            ) from exc
+        if request.model_dump(mode="json") != record.request:
+            raise ValueError("The admitted task request failed its persisted roundtrip.")
+
+        intent = self.store.agent_task_admission_intent(operation_id)
+        if intent is None:
+            raise ValueError("The admitted task has no durable admission intent.")
+        cause = intent.get("continuation_cause")
+        if not isinstance(cause, str) or cause not in _AGENT_TASK_CONTINUATIONS:
+            raise ValueError("The admitted task has no valid continuation cause.")
+        intent_parent = intent.get("parent_operation_id")
+        if "parent_operation_id" in intent:
+            if intent_parent != record.parent_operation_id:
+                raise ValueError("The admission intent changed its exact parent operation.")
+        elif intent.get("has_parent") != (record.parent_operation_id is not None):
+            raise ValueError("The legacy admission intent changed its parent presence.")
+
+        parent = None
+        if record.parent_operation_id is not None:
+            parent = self.store.agent_task(record.parent_operation_id)
+            if parent is None:
+                raise ValueError("The admitted task lost its exact persisted parent.")
+
+        continuation = cast(AgentTaskContinuation, cause)
+        self._validate_launch_admission(
+            record,
+            request,
+            parent=parent,
+        )
+
+        # The proof can race another in-process launcher.  Re-check the registry
+        # after a negative proof so a claimed or already-advanced row is treated
+        # as an idempotent duplicate rather than as an ambiguous dispatch.
+        if not self.store.agent_task_dispatch_was_proven_not_started(operation_id):
+            latest = self._require_operation(operation_id)
+            with self._controls_lock:
+                if operation_id in self._workers:
+                    return self._require_operation(operation_id)
+            if latest.status != "queued":
+                return latest
+            raise ValueError(
+                "The admitted task has an ambiguous or already-started dispatch attempt."
+            )
+
+        return self._spawn_record(
+            record,
+            request,
+            continuation=continuation,
+            parent=parent,
+        )
+
+    def _validate_launch_admission(
+        self,
+        record: AgentTaskRecord,
+        request: AgentTaskRequest,
+        *,
+        parent: AgentTaskRecord | None,
+    ) -> None:
+        """Validate immutable bindings before the first dispatch receipt."""
+
+        if record.authorized_by is None or not record.authorized_by.display_name.strip():
+            raise ValueError("The admitted task lost its human authorizer snapshot.")
+        if record.native_session_id != request.session_id:
+            raise ValueError("The admitted task request and native session do not agree.")
+        if record.stage_host is not None and record.stage_root is None:
+            raise ValueError("The admitted task has an incoherent execution stage binding.")
+        if record.stage_root is not None and not record.stage_root.strip():
+            raise ValueError("The admitted task has an empty execution stage root.")
+        if record.write_scope_fingerprint is not None:
+            raise ValueError("A queued admitted task cannot already carry a write-scope binding.")
+
+        if record.kind == "episode_report":
+            if record.dispatch_authority is not None:
+                raise ValueError("An episode report task cannot carry dispatch authority.")
+        else:
+            if record.dispatch_authority is None:
+                raise ValueError("The admitted task has no dispatch authority.")
+            require_dispatch(record.dispatch_authority)
+
+        request_episode_id = (
+            request.episode_id
+            if isinstance(
+                request,
+                (AutoResearchRunRequest, BranchMergeRunRequest, EpisodeReportRunRequest),
+            )
+            else request.control_episode_id
+            if isinstance(request, RunRequest) and request.patch_kind == "experiment_loop"
+            else None
+        )
+        if request_episode_id is not None and request_episode_id != record.episode_id:
+            raise ValueError("The admitted task request changed its exact episode identity.")
+        if record.episode_id is None:
+            if record.graph_target.kind != "main":
+                raise ValueError("A task without an episode must target the main graph.")
+        else:
+            episode = self.store.episode(record.episode_id)
+            if episode is None:
+                raise ValueError("The admitted task lost its exact episode parent.")
+            if (
+                episode.project_id != record.project_id
+                or episode.graph_target != record.graph_target
+            ):
+                raise ValueError("The admitted task changed its episode project or graph target.")
+
+        expected_parent = record.parent_operation_id
+        if (expected_parent is None) != (parent is None):
+            raise ValueError("The admitted task changed its parent presence.")
+        if parent is not None:
+            if expected_parent != parent.operation_id:
+                raise ValueError("The admitted task changed its exact parent operation.")
+            if parent.project_id != record.project_id or parent.graph_target != record.graph_target:
+                raise ValueError("The admitted task changed its parent project or graph target.")
+
     def _spawn_record(
         self,
         record: AgentTaskRecord,
@@ -3488,10 +3588,9 @@ class BackgroundAgentTasks:
         parent: AgentTaskRecord | None = None,
     ) -> AgentTaskRecord:
         operation_id = record.operation_id
-        current = self._validated_spawn_record(record, request, parent=parent)
         with self._controls_lock:
             if operation_id in self._workers:
-                return current
+                return self._require_operation(operation_id)
             current = self._validated_spawn_record(record, request, parent=parent)
             if current.status != "queued":
                 return current
@@ -3554,11 +3653,29 @@ class BackgroundAgentTasks:
         if (
             current.project_id != record.project_id
             or current.episode_id != record.episode_id
+            or current.graph_target != record.graph_target
             or current.kind != record.kind
+            or current.request != record.request
             or current.request != request.model_dump(mode="json")
+            or current.attempt != record.attempt
+            or current.parent_operation_id != record.parent_operation_id
+            or (parent is None) != (current.parent_operation_id is None)
             or (parent is not None and current.parent_operation_id != parent.operation_id)
+            or current.native_session_id != record.native_session_id
+            or current.stage_host != record.stage_host
+            or current.stage_root != record.stage_root
+            or current.write_scope_fingerprint != record.write_scope_fingerprint
+            or current.authorized_by != record.authorized_by
+            or current.dispatch_authority != record.dispatch_authority
         ):
             raise ValueError("The committed task changed before background dispatch.")
+        try:
+            current_request = self._request_from_record(current)
+            self._validate_request_type(current.kind, current_request)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("The committed task lost its persisted request contract.") from exc
+        if current_request.model_dump(mode="json") != current.request:
+            raise ValueError("The committed task request failed its persisted roundtrip.")
         return current
 
     def _record_spawn_dispatch(

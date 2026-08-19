@@ -15,7 +15,7 @@ from rcp.core.transition_models import GraphHeadRef
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.episode_wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
-from rcp.service import RunRequest
+from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -138,6 +138,283 @@ def _child_experiment_request(episode_id: str, goal: str) -> RunRequest:
         control_invocation_ceiling=2,
         control_completion_criteria=["The bounded child comparison is analyzed."],
     )
+
+
+def _admitted_launch_task(
+    store: AppStore,
+    *,
+    operation_id: str,
+    request: RunRequest | None = None,
+    parent_operation_id: str | None = None,
+    record_updates: dict[str, object] | None = None,
+) -> AgentTaskRecord:
+    request = request or RunRequest(
+        provider="codex",
+        model="",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo"],
+        chat_scope="project",
+        chat_id=f"launch-{operation_id}",
+        message="Exercise the admitted launch boundary.",
+        mode="work",
+        patch_kind="work",
+    )
+    authority = resolve_dispatch_authority("project_chat", request)
+    assert authority is not None
+    now = store.now()
+    record = AgentTaskRecord(
+        operation_id=operation_id,
+        project_id="project",
+        kind="project_chat",
+        status="queued",
+        request=request.model_dump(mode="json"),
+        created_at=now,
+        updated_at=now,
+        status_message="Queued",
+        attempt=2 if parent_operation_id is not None else 1,
+        parent_operation_id=parent_operation_id,
+        phase="queued",
+        last_activity_at=now,
+        authorized_by=fabricated_authorizer("Researcher"),
+        dispatch_authority=authority,
+    )
+    return store.create_agent_task(record.model_copy(update=record_updates or {}))
+
+
+async def _done_stream(_project_id, _kind, _request, _execution):
+    yield _sse(AgentEvent(event="done"))
+
+
+def test_launch_admitted_missing_operation_is_read_only(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+
+    with pytest.raises(KeyError, match="missing-launch"):
+        tasks.launch_admitted("missing-launch")
+
+    assert store.agent_task("missing-launch") is None
+    assert store.agent_task_receipts("missing-launch") == []
+
+
+def test_launch_admitted_valid_task_uses_persisted_cause_and_receipt_order(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    task = _admitted_launch_task(store, operation_id="valid-launch")
+
+    launched = tasks.launch_admitted(task.operation_id)
+    finished = wait_for_task(store, launched.operation_id, expect="succeeded")
+
+    assert finished.operation_id == task.operation_id
+    assert [
+        item.category
+        for item in store.agent_task_receipts(task.operation_id)
+        if item.category
+        in {
+            "operation_admitted",
+            "operation_dispatch_attempt",
+            "operation_created",
+            "operation_dispatch_started",
+        }
+    ] == [
+        "operation_admitted",
+        "operation_dispatch_attempt",
+        "operation_created",
+        "operation_dispatch_started",
+    ]
+
+
+def test_launch_admitted_is_idempotent_for_live_and_terminal_duplicates(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    stage = tmp_path / "duplicate-launch-stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, _request, execution):
+        execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="duplicate-launch-session"))
+        entered.set()
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    task = _admitted_launch_task(store, operation_id="duplicate-launch")
+    tasks.launch_admitted(task.operation_id)
+    assert entered.wait(timeout=2)
+
+    live_duplicate = tasks.launch_admitted(task.operation_id)
+    assert live_duplicate.operation_id == task.operation_id
+    assert live_duplicate.native_session_id == "duplicate-launch-session"
+    release.set()
+    wait_for_task(store, task.operation_id, expect="succeeded")
+
+    terminal_duplicate = tasks.launch_admitted(task.operation_id)
+    assert terminal_duplicate.status == "succeeded"
+    receipts = store.agent_task_receipts(task.operation_id)
+    assert sum(item.category == "operation_created" for item in receipts) == 1
+    assert sum(item.category == "operation_dispatch_attempt" for item in receipts) == 1
+
+
+@pytest.mark.parametrize("intent_state", ["missing", "malformed"])
+def test_launch_admitted_rejects_missing_or_malformed_intent_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    intent_state: str,
+) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    task = _admitted_launch_task(store, operation_id=f"bad-intent-{intent_state}")
+    before = store.agent_task_receipts(task.operation_id)
+    if intent_state == "missing":
+        monkeypatch.setattr(store, "agent_task_admission_intent", lambda _operation_id: None)
+    else:
+        monkeypatch.setattr(
+            store,
+            "agent_task_admission_intent",
+            lambda _operation_id: (_ for _ in ()).throw(ValueError("malformed intent")),
+        )
+
+    with pytest.raises(ValueError, match="intent"):
+        tasks.launch_admitted(task.operation_id)
+
+    assert store.agent_task(task.operation_id).status == "queued"  # type: ignore[union-attr]
+    assert store.agent_task_receipts(task.operation_id) == before
+    assert task.operation_id not in tasks._workers
+
+
+def test_launch_admitted_rejects_unknown_dispatch_attempt_before_new_receipts(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    task = _admitted_launch_task(store, operation_id="unknown-dispatch-attempt")
+    store.record_agent_task_receipt(
+        task.operation_id,
+        "operation_dispatch_attempt",
+        {"dispatch_attempt_id": "unknown-attempt"},
+        tier="diagnostic",
+    )
+    before = store.agent_task_receipts(task.operation_id)
+
+    with pytest.raises(ValueError, match="ambiguous|already-started"):
+        tasks.launch_admitted(task.operation_id)
+
+    assert store.agent_task_receipts(task.operation_id) == before
+    assert task.operation_id not in tasks._workers
+
+
+@pytest.mark.parametrize(
+    ("record_updates", "message"),
+    [
+        ({"dispatch_authority": None}, "dispatch authority"),
+        ({"native_session_id": "changed-session"}, "native session"),
+        ({"stage_host": "remote"}, "stage binding"),
+        ({"write_scope_fingerprint": "a" * 64}, "write-scope"),
+    ],
+)
+def test_launch_admitted_rejects_invalid_launch_bindings_before_dispatch(
+    tmp_path: Path,
+    record_updates: dict[str, object],
+    message: str,
+) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    task = _admitted_launch_task(
+        store,
+        operation_id=f"invalid-binding-{message.replace(' ', '-')}",
+        record_updates=record_updates,
+    )
+    before = store.agent_task_receipts(task.operation_id)
+
+    with pytest.raises(ValueError, match=message):
+        tasks.launch_admitted(task.operation_id)
+
+    assert store.agent_task_receipts(task.operation_id) == before
+    assert task.operation_id not in tasks._workers
+
+
+def test_launch_admitted_retries_proven_prestart_failure_without_duplicate_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    task = _admitted_launch_task(store, operation_id="prestart-retry")
+    original_start = threading.Thread.start
+    failed = True
+
+    def fail_once(worker: threading.Thread) -> None:
+        nonlocal failed
+        if failed:
+            failed = False
+            raise RuntimeError("thread start failed before provider launch")
+        original_start(worker)
+
+    monkeypatch.setattr(threading.Thread, "start", fail_once)
+    with pytest.raises(RuntimeError, match="before provider launch"):
+        tasks.launch_admitted(task.operation_id)
+
+    first = store.agent_task_receipts(task.operation_id)
+    assert sum(item.category == "operation_created" for item in first) == 1
+    assert sum(item.category == "operation_dispatch_attempt" for item in first) == 1
+    assert sum(item.category == "operation_dispatch_failed_before_start" for item in first) == 1
+
+    launched = tasks.launch_admitted(task.operation_id)
+    wait_for_task(store, launched.operation_id, expect="succeeded")
+    second = store.agent_task_receipts(task.operation_id)
+    assert sum(item.category == "operation_created" for item in second) == 1
+    assert sum(item.category == "operation_dispatch_attempt" for item in second) == 2
+    assert sum(item.category == "operation_dispatch_failed_before_start" for item in second) == 1
+
+
+def test_validated_spawn_record_rejects_both_parent_presence_directions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store(tmp_path)
+    parent = _admitted_launch_task(store, operation_id="parent-binding")
+    store.mark_agent_task_running(parent.operation_id)
+    store.complete_agent_task(parent.operation_id, applied_revision=None, result={})
+    child = _admitted_launch_task(
+        store,
+        operation_id="child-binding",
+        request=RunRequest.model_validate(parent.request),
+        parent_operation_id=parent.operation_id,
+    )
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    request = BackgroundAgentTasks._request_from_record(child)
+
+    monkeypatch.setattr(
+        store,
+        "agent_task",
+        lambda operation_id: (
+            child.model_copy(update={"parent_operation_id": parent.operation_id})
+            if operation_id == child.operation_id
+            else parent
+        ),
+    )
+    with pytest.raises(ValueError, match="changed before background dispatch"):
+        tasks._validated_spawn_record(
+            child.model_copy(update={"parent_operation_id": None}), request, parent=None
+        )
+
+    monkeypatch.setattr(
+        store,
+        "agent_task",
+        lambda operation_id: (
+            child.model_copy(update={"parent_operation_id": None})
+            if operation_id == child.operation_id
+            else parent
+        ),
+    )
+    with pytest.raises(ValueError, match="changed before background dispatch"):
+        tasks._validated_spawn_record(child, request, parent=parent)
 
 
 def test_auto_research_root_uses_episode_lineage_and_strict_request_decode(tmp_path: Path) -> None:

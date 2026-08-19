@@ -17,7 +17,7 @@ from rcp.api.app import create_app as create_raw_app
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.service import RunRequest
+from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
     AutoResearchChildExperimentRecord,
@@ -272,6 +272,8 @@ def _record_branch_target_child_experiment(
         control_decision_bundle=[],
         control_completion_criteria=["The branch-indexed loop reaches a conclusion."],
     )
+    child_authority = resolve_dispatch_authority("node_chat", child_request)
+    assert child_authority is not None
     child_task = AgentTaskRecord(
         operation_id=child_operation_id,
         project_id=project_id,
@@ -284,6 +286,7 @@ def _record_branch_target_child_experiment(
         updated_at=now,
         status_message="Queued",
         authorized_by=authorizer,
+        dispatch_authority=child_authority,
     )
     store.create_experiment_episode_with_invocation(
         child_task,

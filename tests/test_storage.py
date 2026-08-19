@@ -2521,7 +2521,43 @@ def test_legacy_committed_dispatch_intent_remains_readable(tmp_path) -> None:
     )
 
     assert store.agent_task_admission_intent("operation") == legacy_intent
+    assert store.agent_task_dispatch_was_proven_not_started("operation") is False
+
+    store.record_agent_task_receipt(
+        "operation",
+        "operation_dispatch_attempt",
+        {"dispatch_attempt_id": "legacy-failed-attempt"},
+        tier="diagnostic",
+    )
+    store.record_agent_task_receipt(
+        "operation",
+        "operation_dispatch_failed_before_start",
+        {"dispatch_attempt_id": "legacy-failed-attempt"},
+        tier="diagnostic",
+    )
     assert store.agent_task_dispatch_was_proven_not_started("operation") is True
+
+    store.record_agent_task_receipt(
+        "operation",
+        "operation_dispatch_attempt",
+        {"dispatch_attempt_id": "legacy-unknown-attempt"},
+        tier="diagnostic",
+    )
+    assert store.agent_task_dispatch_was_proven_not_started("operation") is False
+
+    store.record_agent_task_receipt(
+        "operation",
+        "operation_dispatch_attempt",
+        {"dispatch_attempt_id": "legacy-started-attempt"},
+        tier="diagnostic",
+    )
+    store.record_agent_task_receipt(
+        "operation",
+        "operation_dispatch_started",
+        {"dispatch_attempt_id": "legacy-started-attempt"},
+        tier="diagnostic",
+    )
+    assert store.agent_task_dispatch_was_proven_not_started("operation") is False
 
     store.record_agent_task_receipt(
         "operation",
@@ -2645,6 +2681,65 @@ def test_dispatch_proof_receipts_survive_diagnostic_retention(tmp_path) -> None:
         "operation_dispatch_failed_before_start",
     } <= failed_categories
     assert store.agent_task_dispatch_was_proven_not_started("failed-before-start") is True
+
+
+@pytest.mark.parametrize(
+    ("attempt_payload", "outcome_payload"),
+    [
+        ('{"dispatch_attempt_id":null}', '{"dispatch_attempt_id":null}'),
+        ("[]", '{"dispatch_attempt_id":"attempt"}'),
+        ('{"dispatch_attempt_id":"attempt"}', '{"dispatch_attempt_id":""}'),
+        ("not-json", '{"dispatch_attempt_id":"attempt"}'),
+    ],
+)
+def test_malformed_dispatch_proof_receipts_fail_closed(
+    tmp_path,
+    attempt_payload: str,
+    outcome_payload: str,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="operation",
+            project_id="project",
+            kind="refresh",
+            status="queued",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="queued",
+        )
+    )
+    store.record_agent_task_receipt(
+        "operation",
+        "operation_dispatch_attempt",
+        {"dispatch_attempt_id": "attempt"},
+        tier="diagnostic",
+    )
+    store.record_agent_task_receipt(
+        "operation",
+        "operation_dispatch_failed_before_start",
+        {"dispatch_attempt_id": "attempt"},
+        tier="diagnostic",
+    )
+    with store.connection() as connection:
+        connection.execute(
+            """
+            UPDATE graph_run_receipts SET payload_json = ?
+            WHERE operation_id = ? AND category = 'operation_dispatch_attempt'
+            """,
+            (attempt_payload, "operation"),
+        )
+        connection.execute(
+            """
+            UPDATE graph_run_receipts SET payload_json = ?
+            WHERE operation_id = ? AND category = 'operation_dispatch_failed_before_start'
+            """,
+            (outcome_payload, "operation"),
+        )
+
+    assert store.agent_task_dispatch_was_proven_not_started("operation") is False
 
 
 def test_oversized_agent_task_receipt_omits_values_but_keeps_safe_metadata(tmp_path) -> None:

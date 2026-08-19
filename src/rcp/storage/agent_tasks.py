@@ -2665,6 +2665,7 @@ class AgentTaskStoreMixin:
             return False
         if admission_intent is None:
             return False
+        has_new_admission = "parent_operation_id" in admission_intent
         with self.connection() as connection:
             task = connection.execute(
                 "SELECT status FROM graph_runs WHERE operation_id = ?",
@@ -2680,9 +2681,6 @@ class AgentTaskStoreMixin:
                 """,
                 (operation_id,),
             ).fetchone()
-            if latest_attempt is None:
-                return True
-            attempt_id = json.loads(latest_attempt["payload_json"]).get("dispatch_attempt_id")
             latest_outcome = connection.execute(
                 """
                 SELECT category, payload_json FROM graph_run_receipts
@@ -2694,12 +2692,39 @@ class AgentTaskStoreMixin:
                 """,
                 (operation_id,),
             ).fetchone()
-        if latest_outcome is None:
+        if latest_attempt is None:
+            # New admission is atomically written before dispatch and its
+            # permanent receipt means absence of an attempt is positive proof.
+            # Legacy operation_created receipts predate that retention guarantee,
+            # so a missing attempt is ambiguous and cannot authorize retry.
+            if latest_outcome is not None:
+                return False
+            return has_new_admission
+        attempt_id = self._dispatch_attempt_id(latest_attempt["payload_json"])
+        if attempt_id is None or latest_outcome is None:
+            return False
+        outcome_id = self._dispatch_attempt_id(latest_outcome["payload_json"])
+        if outcome_id is None:
             return False
         return (
             latest_outcome["category"] == "operation_dispatch_failed_before_start"
-            and json.loads(latest_outcome["payload_json"]).get("dispatch_attempt_id") == attempt_id
+            and outcome_id == attempt_id
         )
+
+    @staticmethod
+    def _dispatch_attempt_id(payload_json: str) -> str | None:
+        """Read a dispatch receipt ID without treating malformed JSON as proof."""
+
+        try:
+            payload = json.loads(payload_json)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        dispatch_attempt_id = payload.get("dispatch_attempt_id")
+        if not isinstance(dispatch_attempt_id, str) or not dispatch_attempt_id.strip():
+            return None
+        return dispatch_attempt_id
 
     def interrupt_active_agent_tasks(
         self,
