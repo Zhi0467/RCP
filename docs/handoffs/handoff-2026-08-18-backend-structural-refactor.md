@@ -12,7 +12,14 @@
   byte-identical Work, Discuss, paper-Coach, Seed/Refresh Graph, branch-merge,
   episode-report, and Auto-research stream package rehomes are committed and
   verified, so Phase 6 is complete. Phase 7's durable task-admission contract
-  is committed; the neutral `launch_admitted` engine boundary is next.
+  and neutral `launch_admitted(operation_id)` engine boundary are committed and
+  verified. This session intentionally stops at that safe boundary. Phase 7 is
+  still open: side-effect-free construction and explicit startup reconciliation,
+  episode report/wrap-up ownership, episode-aware Resume/Retry routing, dispatch
+  authority relocation, settlement callback consolidation, and the remaining
+  Auto-research, Experiment, watcher, and branch-merge policy extraction have
+  not landed. Continue from the
+  [2026-08-19 pickup handoff](handoff-2026-08-19-backend-structural-refactor-pickup.md).
 - **Originally confirmed:** 2026-08-18. **Phases 0–4 re-review opened and
   closed:** 2026-08-18. **Phases 5–7 re-review closed:** 2026-08-19.
 - **Every grouping in this document was checked against the code**, not inferred
@@ -49,7 +56,7 @@ does not silently amend it.
 | 2026-08-19 | 3 / Auto     | Both Auto-research endings now pair the generic episode fence and Auto watcher settlement inside one `BEGIN IMMEDIATE` compound method. Failure injection after the episode update proves both episode and watcher state roll back; a successful retry lands both. | Verified in the campaign and Auto-research focused suites.                                       |
 | 2026-08-19 | 3 / repair   | Initial graph-repair admission now claims the rejected parent and inserts the ordinary or Experiment child in one transaction. An explicit orchestration flag distinguishes that first admission from Resume/Retry children that retain `graph_repair` policy but must not consume the parent again. The obsolete restore-on-exception fallback was removed; the direct claim remains only as the low-level eligibility seam used by focused tests. | Failure injection covers rollback for ordinary and Experiment admission; recovery-child routing is focused-tested. |
 | 2026-08-19 | 3 / loop     | The Experiment-loop sequence crosses the canonical state repository and SQLite, so one transaction cannot include the canonical Patch. Watcher rows plus episode/session binding now commit in one SQLite transaction. Before that handoff, the current task records a bounded summary containing the exact episode, invocation root, Patch/watch SHA-256 values, graph outcome, watcher ids, and requested stop ids—never the potentially large raw watcher document. A real Retry may consume an unchanged retained `watch.json` only when an explicit, complete, acyclic parent walk finds that exact receipt for the same root, episode, invocation, and current Patch/watch digests. Normal Experiment Patch attribution is stable at the invocation root; graph-repair attribution remains the repair task. Ordinary Work and maintenance survivor rules are unchanged. | Committed as `fc30941`; a real different-operation Retry covers injected compound-handoff failure. The 24 focused Experiment tests, full backend suite, Ruff, and hooks pass. |
-| 2026-08-19 | 5 / paper    | The paper group is the first extracted leaf router: four handlers plus `PaperSaveRequest`, the exact shared membership dependency, and a narrow catalog dependency. Route identity stays frozen; only the editable handler-module map moves. Paper API tests now cover snapshot, create, save, sessions, and the removed conflict route's 405. | Committed as `a310205`; focused and full backend checks passed at that checkpoint.                 |
+| 2026-08-19 | 5 / paper    | The paper group is the first extracted leaf router: four handlers plus `PaperSaveRequest`, the exact shared membership dependency, and a narrow catalog dependency. Route identity stays frozen; only the editable handler-module map moves. Paper API tests now cover snapshot, create, save, sessions, and the removed conflict route's 405. | Committed as `5c4e512`; focused and full backend checks passed at that checkpoint.                 |
 | 2026-08-19 | 5 / chats    | The chat leaf moves four handlers—list, detail, attachment upload, and attachment removal—plus their three chat-history tests. `ApiServices` gains the existing `ChatAttachmentStore` instance and exposes it only through a narrow dependency; the extracted router imports nothing from `api.app`. The cross-module concurrent-open test remains in `test_api.py`, while attachment behavior stays in its dedicated test module. | Committed as `603c18d`; 56 focused tests, full backend suite, Ruff, and both tracked and exact-new-file hook passes are green. |
 | 2026-08-19 | 5 / history  | The history leaf moves raw history, decorated revision summaries, and the transition manifest together. Its sole `_history_episode_decoration` helper moves with it; catalog and store remain narrow dependencies. The route tests were already separated across episode-history, revision-summary, transition, setup, and membership modules, so no artificial test move was needed. | Committed as `15aa985`; 58 main-agent focused tests, full backend suite, Ruff, and both hook passes are green. |
 | 2026-08-19 | 5 / watchers | The generic watcher leaf moves list, check-now, and individual Stop only; retired Experiment bulk Stop remains with Experiment policy. `ApiServices` construction moves after `WatcherPoller` exists and exposes that required poller through a narrow dependency without optional wiring. The two check-now tests move out of `test_api.py`, and a new list-then-Stop flow closes Phase 0's zero-covered `project_watchers` finding. | Committed as `f8ae6fe`; 26 main-agent focused tests, full backend suite, Ruff, and both tracked and exact-new-file hook passes are green. |
@@ -79,6 +86,7 @@ does not silently amend it.
 | 2026-08-19 | 7 / report sequence | The common episode-report coordinator cannot move cleanly before the neutral engine exposes `launch_admitted(operation_id)`. The current durable wrap-up admission already creates the hidden report task, but `BackgroundAgentTasks.start` rejects `episode_report` and `start_episode_report` still requires private `_workers`, `_controls_lock`, `_require_operation`, and `_spawn_record`; extracting it first would only hide the coupling in a wrapper. Implement the engine launch boundary first, then move `episode_wrapup.py` plus report launch/restart into `runs/episodes/wrapup.py` and invoke startup restart through episode reconciliation. The live pre-Phase-7 file is 4,238 lines and the 70-method class spans 3,928 lines; the earlier 3,916-line figure remains a re-review-baseline measurement, not current size. | Read-only implementation preflight; no production change. This sequencing avoids a private-engine compatibility layer and preserves the handoff's explicit owner boundary. |
 | 2026-08-19 | 7 / launch preflight | `AgentTaskRecord` already persists the request, parent/episode, native session/stage, graph target, write-scope fingerprint, human authorizer, resolved dispatch authority, attempt, and lifecycle state. The one missing admission-time launch datum is the continuation cause: most paths write it only in `operation_created` immediately before thread start, so a crash after task insertion loses it; only Experiment recovery currently writes an atomic `operation_created` receipt with `admission_committed=true`. Do not add a `graph_runs` column or duplicate the row's JSON. First generalize the transactional helper to insert a distinct `operation_admitted` summary receipt with kind, attempt, exact parent id, continuation cause, and `admission_committed=true` in every task-admission transaction, while retaining the old Experiment receipt as a reader fallback and leaving `operation_created` as the post-admission dispatch/event receipt. Then add `launch_admitted(operation_id)` as a separate engine slice that reloads and validates the row, intent, parent, authority, session/stage, episode/target, and dispatch-attempt proof before calling `_spawn_record`; it never calls `_create_and_spawn`. Tighten `_validated_spawn_record` in both parent-presence directions. Missing or malformed intent and an unknown prior dispatch attempt fail before a worker or new receipt; a proven pre-start failure remains retryable. Constructor side effects/startup ordering are a later slice. | Read-only Luna-max preflight; no production change. This corrects the earlier implication that exact launch intent is already universal. The first implementation unit is the storage admission contract, followed by the `background.py` engine method; startup reconciliation and episode extraction stay separate. |
 | 2026-08-19 | 7 / admission contract | Every task insertion now writes one transactional `operation_admitted` summary receipt with the exact `kind`, `attempt`, nullable `parent_operation_id`, `continuation_cause`, and `admission_committed=true`; no `graph_runs` column, second table, duplicated request JSON, or `AgentTaskRecord` field was added. Admission owners pass the cause they already know: ordinary/API recovery uses its captured continuation, task/branch/episode roots use `fresh`, repair children use `graph_repair`, Auto-research uses fresh, Resume/Retry, message/lifecycle, watcher, graph-condition, or orchestrator continuation as appropriate, Experiment uses fresh, Resume/Retry, or watcher wake, child Work uses fresh, Resume, or message wake, and hidden reports use `episode_report`. The reader validates the exact payload keys and types, allowed cause, uniqueness, and equality with the persisted task's kind, attempt, and exact parent; it retains the old Experiment `operation_created` plus `admission_committed=true` shape only as a strict legacy fallback and rejects duplicate legacy evidence. Public receipt writes reserve the new kind. Admission, dispatch-attempt, proven-prestart-failure, and dispatch-start receipts are permanently retained, while ordinary summary slots shrink around them, so retention pressure cannot turn a known start into a retryable unknown. `agent_task_dispatch_was_proven_not_started` now requires a valid admission before evaluating dispatch evidence. This closes the crash-after-insert/before-spawn continuation gap for Auto-research and all other owners; the next slice can reload intent instead of reconstructing it. | Committed as `e84b461`. A Luna-max review found that evictable dispatch evidence could misclassify a started queued task and that a shape-valid receipt was not compared to its task row; both were fixed, then duplicate legacy evidence was also made loud. Focused admission/storage/recovery/watcher/background tests, the final full backend suite, Ruff, exact-file hooks, all-files hooks, `git diff --check`, and the untracked-path inventory are green. One larger run observed the pre-existing graph-condition watcher-status race; its exact rerun and the final full run passed without a code change. |
+| 2026-08-19 | 7 / launch boundary | `BackgroundAgentTasks.launch_admitted(operation_id)` now reloads the exact task, strict request roundtrip, durable admission intent, continuation cause, exact parent, episode/target binding, human authorizer, dispatch authority, native session/stage consistency, and dispatch-attempt evidence before it creates an in-process worker. Every production post-admission launch path calls this public boundary; `_spawn_record` has no other caller. Missing ids write nothing and raise; post-queued or already-live duplicates return current durable state; malformed or legacy-ambiguous evidence fails before a new dispatch receipt or worker. New admission with no attempt is positive no-start proof, while a legacy admission is retryable only when a retained matching attempt explicitly failed before thread start. `_spawn_record` claims under `_controls_lock`, reloads launch-critical immutable fields inside the lock, records attempt → created → thread start → started, and releases the claim after a proven pre-start failure. Mode owners, not this neutral method, retain continuation-specific session/stage and parent-policy rules. | Committed as `ed4c019`. A Luna-max implementation review and a separate read-only boundary review closed malformed-receipt, legacy ambiguity, live-session TOCTOU, overstrict Seed/Refresh Resume, local empty-host, and stale Experiment-fixture issues. Focused launch/storage/authority/episode/watcher/result-view/recovery suites, the final full backend suite, Ruff, exact-file and all-files hooks, `git diff --check`, and the untracked-path inventory are green. The final review passed with no findings; its only non-blocking note is the absence of a dedicated two-thread barrier test for the public method. |
 
 ## Phases 0–4 re-review ledger
 
@@ -329,13 +337,25 @@ authoritative over stale measurements and mechanisms later in the document.
     never infers authority from request shape or episode mode. Episode reports
     retain their explicit no-graph-authority contract.
 
-### Remaining implementation bookkeeping — not open design
+### Remaining implementation bookkeeping and review choices
 
-No design decision remains before implementation. Phase 6 is complete. Phase 7
-still requires a branch-level ledger when a mixed engine method loses its
-surface-specific branch. That is a review artifact for applying the settled
-ownership rules below, not permission to choose new modules, profiles,
-registries, callbacks, or context frameworks.
+The architecture is settled enough to continue and Phase 6 is complete. The
+next agent should nevertheless discuss the bounded recovery and slicing choices
+listed in the
+[2026-08-19 pickup handoff](handoff-2026-08-19-backend-structural-refactor-pickup.md)
+before changing startup. In particular, legacy admissions whose dispatch state
+cannot be proved must never be silently relaunched; the human should confirm
+whether startup records the existing generic interruption plus a durable
+diagnostic or deliberately leaves a quarantined queued row. That is a recovery
+presentation choice, not permission to invent a new status or fallback.
+
+Phase 7 also still requires a branch-level ledger whenever a mixed engine method
+loses its surface-specific branch. That is a review artifact for applying the
+settled ownership rules below, not permission to choose new modules, profiles,
+registries, callbacks, or context frameworks. The re-review's 24-method engine
+count classified the old 70-method baseline; it is not a final line-count or
+method-count target now that neutral launch validation has named methods of its
+own.
 
 ## What this is
 
@@ -1381,7 +1401,8 @@ files, and `tests/test_api.py` on every commit here.
 
 ### The problem
 
-`BackgroundAgentTasks` is one class of **3,916 lines and 70 methods**. It is
+At the re-review baseline, `BackgroundAgentTasks` was one class of **3,916 lines
+and 70 methods**. It was
 `app.py`'s problem in class form: you cannot enter it partway, and any two changes
 to it collide.
 
@@ -1411,8 +1432,8 @@ been retained. The five-method/12-call sample was also incomplete because
 `_resolved_dispatch_authority`. Those old totals and that sample are evidence
 of the original concern, not implementation authority.
 
-The re-review classified every one of the 70 live methods. This is the exact
-move ledger:
+The re-review classified every one of the 70 methods then live. This is the
+exact baseline move ledger:
 
 | Destination/role                   |  Count |
 | ---------------------------------- | -----: |
@@ -1471,6 +1492,39 @@ The exact inventories are:
 - **Shared admission-time task policy (1):**
   `_resolved_dispatch_authority`.
 
+### Current Phase 7 checkpoint — `ed4c019`
+
+The first two durability slices are complete:
+
+1. `e84b461` atomically records one strict `operation_admitted` intent with every
+   task insertion. `d55375f` records that checkpoint in this handoff.
+2. `ed4c019` implements and routes every production post-admission launch through
+   `launch_admitted(operation_id)`. The engine reloads durable state, validates
+   the exact immutable launch bindings, claims in-process dispatch under its
+   worker lock, and fails closed on malformed or ambiguous launch evidence.
+
+The current file at that checkpoint is 4,366 lines; its class spans 4,055 lines
+and has 72 methods. Those larger transitional numbers are expected because the
+neutral launch boundary landed before the surface policy is moved out. They are
+not the end state and should not be optimized directly.
+
+Not yet implemented:
+
+- side-effect-free `BackgroundAgentTasks` construction;
+- an explicit lifespan startup sequence with an episode preserve set, generic
+  interruption, then episode reconciliation;
+- ID-only task-settlement reconciliation and removal of the Auto-research
+  callback special case;
+- episode-linked Resume/Retry dispatch through `EpisodeReconciler`;
+- common report/wrap-up ownership under `runs/episodes/`;
+- relocation of dispatch-authority resolution to `runs/task_policy.py`; and
+- the remaining Auto-research, Experiment, watcher, and branch-merge admission,
+  recovery, Stop, and settlement policy moves from `background.py`.
+
+The exact implementation and review record, remaining sequence, and choices to
+discuss are in the
+[2026-08-19 pickup handoff](handoff-2026-08-19-backend-structural-refactor-pickup.md).
+
 The 24 engine names describe the retained shell, not permission to keep their
 current surface branches. In particular:
 
@@ -1489,7 +1543,7 @@ moves to the existing watcher lifecycle owner; Experiment watcher admission
 and recovery move to the Experiment episode owner. Their common queue/storage
 mechanics may remain shared, but no helper selects policy by watcher kind.
 
-### The change — confirmed
+### The target end state — confirmed
 
 `BackgroundAgentTasks` becomes a policy-neutral executor for already-admitted
 tasks. Do not introduce the rejected five-profile registry, a callback registry,
@@ -1609,8 +1663,11 @@ Say plainly if any of these become tempting; do not fold them in.
 - The amended S10 lifecycle assertions and applicable browser path pass.
 - The end-of-session sweep run over `pending` and `blocked-external` scenarios.
 - No route handler body remains in `src/rcp/api/app.py`.
-- `BackgroundAgentTasks` contains only the 24 policy-neutral engine shells in
-  the Phase 7 ledger, with their surface-specific branches removed.
+- `BackgroundAgentTasks` contains only policy-neutral engine behavior, with all
+  surface-specific branches in the Phase 7 baseline ledger removed. The old
+  24-method classification is an ownership inventory, not a required final
+  method count; neutral `launch_admitted` validation may remain explicitly
+  named.
 - `runs/tasks/` contains one-invocation executors and `runs/episodes/` contains
   parent lifecycle policy; no mode-switching runtime, policy registry, mixins,
   or content-free common package was introduced.
@@ -1620,20 +1677,29 @@ Say plainly if any of these become tempting; do not fold them in.
 - App startup follows the confirmed coordinator-preserve, generic-recovery,
   episode-reconciliation order before requests are accepted.
 
-## Documentation to close
+## Documentation closure ledger
 
-- **`docs/specs/projects-spaces-and-operations.md`** — agent-task lifecycle
-  semantics change in Phase 1 (refusal is now recorded).
-- **`docs/specs/conversations-episodes-and-watchers.md`** — check against Phases 6
-  and 7; update if it describes where this behavior lives.
-- **`docs/specs/api-web-and-desktop-projections.md`** — check whether it describes
-  where routes live.
-- **`AGENTS.md`** — the fan-out table's Service/API row names `app.py` as one area,
-  and Run orchestration names `runs/`. Both change. Add any repeated failure this
-  work uncovers.
+- **`docs/specs/projects-spaces-and-operations.md`** — updated in Phase 1 with
+  the truthful refusal and guarded-side-effect lifecycle contract.
+- **`docs/specs/conversations-episodes-and-watchers.md`** — rechecked through the
+  `ed4c019` checkpoint. It specifies behavior and the common episode parent, not
+  current Python paths, so no update is justified yet. Recheck after settlement
+  and startup ownership move in the rest of Phase 7.
+- **`docs/specs/api-web-and-desktop-projections.md`** — rechecked after Phase 5.
+  It specifies route authority and projection behavior, not handler module
+  locations, so the router extraction requires no semantic edit.
+- **`AGENTS.md`** — the moved Graph executor link is current. Its fan-out table
+  already assigns the complete `api/` and `runs/` directories; update the more
+  specific task/episode ownership language only when Phase 7 actually creates
+  the `runs/episodes/` tree.
+- **`docs/handoffs/README.md`** — now links both this work order and the current
+  pickup checkpoint.
+- **`handoff-2026-08-19-backend-structural-refactor-pickup.md`** — current
+  session evidence, remaining work, and decisions for the next agent.
 - **This handoff** — archive to `docs/archive/handoffs/` when the last phase lands.
 - **`rcp_architecture_audit.md`** — leave in place. It is the evidence and the
-  explanation.
+  explanation; its current checkpoint now distinguishes the implemented tree
+  from the audited `f6085b0` baseline.
 
 ## Where this handoff disagrees with the audit
 

@@ -2,19 +2,62 @@
 
 ## Conclusion
 
-RCP has a strong canonical-state core, but the application around that core has
-become an orchestration-heavy modular monolith. Four oversized surfaces —
+At the audited `f6085b0` baseline, RCP had a strong canonical-state core, but the
+application around that core had become an orchestration-heavy modular monolith.
+Four oversized surfaces —
 `create_app`, `BackgroundAgentTasks`, `runs/work.py`, and frontend `App` —
-coordinate overlapping state machines through nested closures, shared SQLite
+coordinated overlapping state machines through nested closures, shared SQLite
 access, post-construction snapshot completion, and reverse dependencies hidden
-by local imports.
+by local imports. The backend implementation has since removed route bodies from
+`app.py`, split Work-derived execution by owner, and landed the first two durable
+Phase 7 launch slices; the checkpoint below separates current state from this
+historical evidence.
 
 This audit is evidence and explanation, not the current implementation order.
 The fact-checked and human-confirmed
 [backend structural-refactor handoff](handoff-2026-08-18-backend-structural-refactor.md)
-supersedes its remedies wherever they disagree.
+supersedes its remedies wherever they disagree. The
+[2026-08-19 pickup handoff](handoff-2026-08-19-backend-structural-refactor-pickup.md)
+records the exact current stopping point, verification, remaining work, and
+choices for the next agent.
 
-## Status, fact-checked 2026-08-19
+## Current implementation checkpoint — `ed4c019`, 2026-08-19
+
+Fifty-eight commits after the audited `f6085b0` baseline, Phases 0–6 of the
+confirmed backend work order are complete. Phase 7 has atomically persisted one
+strict launch intent with every task admission (`e84b461`) and now routes every
+production post-admission launch through the policy-neutral,
+ID-only `BackgroundAgentTasks.launch_admitted` boundary (`ed4c019`). That method
+reloads the exact task/request/intent/parent/episode/authority/session/stage
+bindings, claims one in-process worker, and refuses malformed, inconsistent, or
+legacy-ambiguous dispatch evidence before another worker starts.
+
+Current structural measurements are deliberately reported separately from the
+audit baseline:
+
+- `src/rcp/api/app.py` is 1,221 lines and contains composition/startup wiring,
+  not route handler bodies;
+- the old `src/rcp/runs/work.py` path is gone, and ordinary Work is 2,709 lines
+  under `runs/tasks/work.py` beside explicit result-view, Auto-research-child,
+  and Experiment-loop task owners; and
+- `src/rcp/background.py` is in a transitional state: 4,366 lines, with a
+  4,055-line, 72-method `BackgroundAgentTasks`. It grew while the neutral launch
+  boundary landed before episode and surface policy moves out; size reduction is
+  not yet complete.
+
+The remaining Phase 7 work is side-effect-free construction and explicit
+startup reconciliation, episode report/wrap-up and settlement ownership,
+episode-aware recovery routing, dispatch-authority relocation, and extraction of
+the remaining Auto-research, Experiment, watcher, and branch-merge policy. No
+frontend change, final browser drive, or handoff archival has been performed.
+See the pickup handoff before continuing.
+
+All unqualified source sizes, line numbers, method counts, dependency groups,
+and risk rankings in the rest of this audit refer to the `f6085b0` audited
+baseline unless a later checkpoint is named explicitly. They remain evidence,
+not claims about the current tree.
+
+## Audited baseline, fact-checked 2026-08-19
 
 The original audit was run against an incomplete extracted copy. The current
 fact check used committed checkout `f6085b0` and directly reran the relevant
@@ -39,29 +82,30 @@ The structural evidence required additional corrections rather than a blanket
   entries. Their median transitive closure reach is 2 names and the maximum is
   11; the file is structurally difficult, but an individual route does not
   usually reach the whole closure.
-- `BackgroundAgentTasks` remains 3,916 lines and 70 methods. The old 45-policy,
-  32-caller, and five-method/12-call boundary counts were not reproducible. The
-  implementation handoff now assigns every method exactly once: 24 engine
-  shells, 36 Auto-research policy methods, 4 Experiment policy methods, 2
-  common episode/report methods, 1 branch-merge admission method, 2 watcher
-  methods, and 1 shared authority resolver.
-- `runs/work.py` is 5,207 lines with 88 module-level class/function definitions
-  plus one private alias. Its internal call graph has no cyclic strongly
-  connected component. The result-view cluster is the only retained exact
-  ten-definition closed cluster; semantic ownership, not a speculative call
-  graph partition, governs the rest of the split.
-- `AppStore` exposes **242**, not approximately 246, public callable members
-  across ten mixins and is referenced from 22 `src/rcp` files. Its breadth is
-  real, but breadth alone did not establish a harmful transaction gap. The
-  watcher examples named by the original audit already use compound atomic
-  store operations.
-- Project snapshot completion remains a real latent consistency hazard, but the
-  current count is seven direct completion calls in `api/app.py` and two
-  internal calls in `projects.py`, not eleven generic caller obligations.
-- A current static import scan including function-local imports and package
-  barrels finds five multi-module strongly connected groups, not the original
-  three groups of sizes 11, 7, and 5. Section 2 records the current groups and
-  the limits of that analysis.
+- At that baseline, `BackgroundAgentTasks` was 3,916 lines and 70 methods. The
+  old 45-policy, 32-caller, and five-method/12-call boundary counts were not
+  reproducible. The implementation handoff assigns every baseline method once:
+  24 engine shells, 36 Auto-research policy methods, 4 Experiment policy
+  methods, 2 common episode/report methods, 1 branch-merge admission method, 2
+  watcher methods, and 1 shared authority resolver.
+- At that baseline, `runs/work.py` was 5,207 lines with 88 module-level
+  class/function definitions plus one private alias. Its internal call graph had
+  no cyclic strongly connected component. The result-view cluster was the only
+  retained exact ten-definition closed cluster; semantic ownership, not a
+  speculative call graph partition, governed the implemented split.
+- At that baseline, `AppStore` exposed **242**, not approximately 246, public
+  callable members across ten mixins and was referenced from 22 `src/rcp`
+  files. Its breadth was real, but breadth alone did not establish a harmful
+  transaction gap. The watcher examples named by the original audit already
+  used compound atomic store operations.
+- At that baseline, project snapshot completion was a real latent consistency
+  hazard: seven direct calls in `api/app.py` and two internal calls in
+  `projects.py`, not eleven generic caller obligations. Phase 2 has since closed
+  that hazard through one unavoidable completion boundary.
+- The baseline static import scan, including function-local imports and package
+  barrels, found five multi-module strongly connected groups, not the original
+  three groups of sizes 11, 7, and 5. Section 2 records those groups and the
+  limits of that analysis.
 
 **Reading this document without a software background.** Appendix A at the end
 explains the five main structural findings from scratch. Its measurements and
@@ -326,11 +370,11 @@ A task is nominally one record, but correctness depends on coordinated identity 
 rejected because these policies have different contracts. One-invocation
 executors move under `runs/tasks/`; long-lived parent policy moves under
 `runs/episodes/`; ordinary Work, Experiment-loop, and Auto-research child Work
-keep explicit entry points. `BackgroundAgentTasks` launches an already-admitted
-durable `operation_id`, while the existing `EpisodeReconciler` receives an
-ID-only settlement notification and reloads durable state. Shared plumbing is
-allowed, but it may not select policy using `kind`, `surface`, `is_chat`, or an
-equivalent discriminator.
+keep explicit entry points. `BackgroundAgentTasks` now launches an
+already-admitted durable `operation_id`; the remaining target makes the existing
+`EpisodeReconciler` receive an ID-only settlement notification and reload
+durable state. Shared plumbing is allowed, but it may not select policy using
+`kind`, `surface`, `is_chat`, or an equivalent discriminator.
 
 ## 4. Most difficult modules for a new senior engineer
 
@@ -361,10 +405,11 @@ The original recommendation was to put `create_app` under roughly 100 lines,
 instantiate an `ApplicationKernel`, include routers, and add separate
 `StartupReconciler`, `RunDispatcher`, and `WatcherRuntime` objects. The line
 target was judgment, not a measured requirement, and those wrapper objects were
-not selected. The confirmed change extracts route modules, stores one typed
+not selected. The implemented change extracts route modules, stores one typed
 `ApiServices` composition container at `app.state.services`, and gives handlers
-narrow dependency accessors. The existing `EpisodeReconciler` owns episode
-startup/settlement; no second coordinator is added.
+narrow dependency accessors. The remaining confirmed target reuses the existing
+`EpisodeReconciler` for episode startup/settlement; that callback/startup
+consolidation has not landed, and no second coordinator should be added.
 
 ### Generic command/event kernel — not selected
 
@@ -377,11 +422,12 @@ database:
 - Completion produces typed events that pass through the same transition function.
 
 This does not require Temporal or another service, but it is still a new runtime
-framework. The confirmed plan instead adds one narrow durable boundary:
-admission writes the exact launch intent atomically, the engine exposes
-`launch_admitted(operation_id)`, and task settlement notifies
-`EpisodeReconciler` by ID after committing the verdict. Startup reconciliation
-repairs a crash before notification.
+framework. The confirmed replacement instead uses one narrow durable boundary.
+Admission now writes the exact launch intent atomically, and the engine now
+exposes `launch_admitted(operation_id)`. ID-only settlement notification and the
+startup reconciliation that repairs a crash before notification remain in the
+unfinished portion of Phase 7; the current callback paths must not be described
+as already consolidated.
 
 ### Split the storage façade — rejected
 
@@ -728,19 +774,23 @@ See the status section at the top.
 
 ### P1: Remove the largest consistency hazards
 
-- Add the Phase 0 route and lifecycle safety nets, then centralize the legal
-  agent-task status transitions and their guarded side effects in one private
-  storage seam.
-- Replace serializable half-built snapshots with an opaque internal draft and
-  one public display/I/O completion boundary.
-- Extract route modules through one typed `ApiServices` composition container
-  and narrow dependency accessors; do not add an application-kernel business
-  layer.
-- Separate one-invocation task execution under `runs/tasks/` from parent policy
-  under `runs/episodes/`, reuse the thin `EpisodeReconciler`, and reduce
-  `BackgroundAgentTasks` to the exact 24 policy-neutral engine shells.
-- Audit harmful multi-commit sequences after the lifecycle fix and add only
-  proven compound operations. Do not split `AppStore` pre-emptively.
+- **Done:** add the Phase 0 route and lifecycle safety nets, then centralize the
+  legal agent-task status transitions and their guarded side effects in one
+  private storage seam.
+- **Done:** replace serializable half-built snapshots with an opaque internal
+  draft and one public display/I/O completion boundary.
+- **Done:** extract route modules through one typed `ApiServices` composition
+  container and narrow dependency accessors; no application-kernel business
+  layer was added.
+- **Partly done:** one-invocation task execution now lives under `runs/tasks/`,
+  including explicit Work, Auto-research-child, and Experiment-loop owners. The
+  parent `runs/episodes/` ownership, thin ID-only `EpisodeReconciler` boundary,
+  and removal of surface policy from `BackgroundAgentTasks` remain Phase 7 work.
+  The old 24-method classification was a baseline ownership inventory, not a
+  required final method count.
+- **Done:** the post-lifecycle harmful multi-commit audit found four qualifying
+  windows and fixed only those with compound operations/failure injection.
+  `AppStore` was not split.
 
 ### P2: Reduce change cost
 
@@ -759,12 +809,13 @@ See the status section at the top.
 
 The application is not architecturally unsalvageable. Its most important
 invariant, append-only canonical research state with locked validation and
-rematerialization, is coherent and should be preserved. The backend next step
-is the exact phased work in the structural handoff: transition safety,
-non-serializable snapshot drafts, narrow route extraction, semantic task/episode
-ownership, and a policy-neutral background engine. `App.tsx`, broad storage
-interfaces, a generic run registry, and wholesale prompt redesign are not part
-of that authorization.
+rematerialization, is coherent and should be preserved. Transition safety,
+non-serializable snapshot drafts, narrow route extraction, semantic
+one-invocation task owners, and the durable ID-only launch boundary are now
+implemented. The backend next step is only the remaining Phase 7 ownership and
+startup work in the structural handoff and pickup document. `App.tsx`, broad
+storage interfaces, a generic run registry, and wholesale prompt redesign are
+not part of that authorization.
 
 ## Appendix A: the five structural findings, explained from scratch
 

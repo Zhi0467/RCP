@@ -13,16 +13,16 @@ covered_by:
   - web/tests/runDialog.test.mjs
 invariants: [3, 4, 4b, 10, 10b, 10e, 10g]
 last_checked: >-
-  2026-08-17 — swept after the S123/S124 Auto-research slice, which refactored
-  `run_experiment` and extracted `experiment_admission.py` underneath this
-  scenario. Every listed pytest and web suite passes. A served browser drive
-  confirmed the readiness surface on live state: **Start episode** on an
-  Experiment with no prior episode, disabled with all seven gate reasons named
-  individually; **Start new episode** on one with prior episode history; pinned
-  `3 / 5` invocation history shown separately from **Next episode limit**; Ask
-  still enabled while the episode action is refused. The remaining bullets need
-  real provider invocations, induced provider failures, and watcher wakes, so the
-  scenario stays pending rather than being stamped on a partial drive.
+  2026-08-19 — swept after the backend route/task-owner refactor and durable
+  admission/launch boundary, which touched Experiment API, invocation, watcher,
+  recovery, and dispatch paths underneath this scenario. The listed pytest
+  coverage passed inside the final backend suite, including the focused watcher
+  acceptance set. The web suites and served browser/provider drive were not
+  rerun at this checkpoint. The 2026-08-17 drive had already confirmed the
+  readiness labels, seven gate reasons, separate pinned history versus **Next
+  episode limit**, and Ask availability. Real provider invocations, induced
+  failures, and watcher wakes remain outstanding, so this work made the scenario
+  neither newly runnable nor wrong and it stays pending.
 ---
 
 # Run an experiment through a bounded control loop

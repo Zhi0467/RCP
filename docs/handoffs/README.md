@@ -1,9 +1,11 @@
 # Active implementation handoffs
 
-- [Backend structural refactor](handoff-2026-08-18-backend-structural-refactor.md)
-  — one lifecycle for agent tasks, a snapshot that cannot be half-built, a narrow
-  transaction scope, deduplicated rules, and the three largest backend files
-  (`api/app.py`, `background.py`, `runs/work.py`) split along real seams.
+- [Backend structural refactor work order](handoff-2026-08-18-backend-structural-refactor.md)
+  — the fact-checked, human-confirmed phase order and target architecture.
+- [2026-08-19 backend structural-refactor pickup](handoff-2026-08-19-backend-structural-refactor-pickup.md)
+  — the exact `ed4c019` stopping point after Phases 0–6 and Phase 7's durable
+  admission/launch boundary, including verification, unimplemented work, and
+  decisions to discuss before startup reconciliation.
 
 [`rcp_architecture_audit.md`](rcp_architecture_audit.md) is the evidence behind
 that handoff, not a work order. Its Appendix A explains the findings from
