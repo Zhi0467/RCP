@@ -15,7 +15,7 @@ from typing import Literal, cast, get_args
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
-from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope, require_dispatch
+from rcp.core.authority import require_dispatch
 from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import CHAT_ARTIFACT_MAX_COUNT, GRAPH_UPDATE_HISTORY_MAX_COUNT
@@ -39,7 +39,14 @@ from rcp.runs.auto_research_recovery import (
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.report import restart_interrupted_episode_reports
 from rcp.runs.experiment_admission import experiment_start_message
-from rcp.runs.task_policy import load_stored_request, task_graph_capable
+from rcp.runs.task_policy import (
+    AgentTaskContinuation,
+    AgentTaskRequest,
+    DispatchAuthorityResolver,
+    load_stored_request,
+    resolved_dispatch_authority,
+    task_graph_capable,
+)
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import (
     CoachRequest,
@@ -62,30 +69,6 @@ from rcp.storage import (
 )
 from rcp.transport import RemoteRunStage
 
-AgentTaskRequest = (
-    RunRequest
-    | CoachRequest
-    | AutoResearchRunRequest
-    | BranchMergeRunRequest
-    | EpisodeReportRunRequest
-)
-DispatchAuthorityResolver = Callable[
-    [AgentTaskKind, AgentTaskRequest],
-    AgentDispatchAuthority | None,
-]
-AgentTaskContinuation = Literal[
-    "fresh",
-    "resume",
-    "retry",
-    "handoff",
-    "graph_repair",
-    "watcher_wake",
-    "graph_condition_wake",
-    "message_wake",
-    "lifecycle_wake",
-    "auto_research_continuation",
-    "episode_report",
-]
 _AGENT_TASK_CONTINUATIONS = frozenset(get_args(AgentTaskContinuation))
 
 # A watcher wake reuses a native session without being task Resume: it is a new
@@ -414,7 +397,9 @@ class BackgroundAgentTasks:
             raise ValueError("branch merge requires a named human authorizer snapshot")
 
         operation_id = operation_id or str(uuid.uuid4())
-        authority = self._resolved_dispatch_authority(
+        authority = resolved_dispatch_authority(
+            self.store,
+            self.dispatch_authority_resolver,
             "branch_merge",
             request,
             project_id=project_id,
@@ -503,7 +488,9 @@ class BackgroundAgentTasks:
         run_request = auto_research_root_request(request, episode_id=episode_id).model_copy(
             update={"actor_operation_id": operation_id}
         )
-        dispatch_authority = self._resolved_dispatch_authority(
+        dispatch_authority = resolved_dispatch_authority(
+            self.store,
+            self.dispatch_authority_resolver,
             "auto_research",
             run_request,
             project_id=project_id,
@@ -1063,7 +1050,9 @@ class BackgroundAgentTasks:
             "node_chat",
             request_data,
         )
-        dispatch_authority = self._resolved_dispatch_authority(
+        dispatch_authority = resolved_dispatch_authority(
+            self.store,
+            self.dispatch_authority_resolver,
             "node_chat",
             request,
             project_id=episode.project_id,
@@ -1208,7 +1197,9 @@ class BackgroundAgentTasks:
             }
         )
         operation_id = operation_id or str(uuid.uuid4())
-        dispatch_authority = self._resolved_dispatch_authority(
+        dispatch_authority = resolved_dispatch_authority(
+            self.store,
+            self.dispatch_authority_resolver,
             "node_chat",
             request,
             project_id=current.project_id,
@@ -1342,7 +1333,9 @@ class BackgroundAgentTasks:
             raise ValueError("The routed worker task is not an ordinary Work request.")
         request = request.model_copy(update={"session_id": previous.native_session_id})
         operation_id = operation_id or str(uuid.uuid4())
-        dispatch_authority = self._resolved_dispatch_authority(
+        dispatch_authority = resolved_dispatch_authority(
+            self.store,
+            self.dispatch_authority_resolver,
             "node_chat",
             request,
             project_id=previous.project_id,
@@ -1469,7 +1462,9 @@ class BackgroundAgentTasks:
                 f"rcp:auto-research-child-experiment:{route.child_episode_id}",
             )
         )
-        dispatch_authority = self._resolved_dispatch_authority(
+        dispatch_authority = resolved_dispatch_authority(
+            self.store,
+            self.dispatch_authority_resolver,
             "node_chat",
             request,
             project_id=route.project_id,
@@ -1859,7 +1854,9 @@ class BackgroundAgentTasks:
         self._validate_request_type(kind, request)
         request_data = request.model_dump(mode="json")
         estimate, samples = self.store.agent_task_estimate(project_id, kind, request_data)
-        dispatch_authority = self._resolved_dispatch_authority(
+        dispatch_authority = resolved_dispatch_authority(
+            self.store,
+            self.dispatch_authority_resolver,
             kind,
             request,
             project_id=project_id,
@@ -3152,7 +3149,9 @@ class BackgroundAgentTasks:
         if claim_graph_repair_parent and (parent is None or continuation != "graph_repair"):
             raise ValueError("Only an initial graph-repair admission can claim its parent.")
         operation_id = operation_id or str(uuid.uuid4())
-        dispatch_authority = self._resolved_dispatch_authority(
+        dispatch_authority = resolved_dispatch_authority(
+            self.store,
+            self.dispatch_authority_resolver,
             kind,
             request,
             project_id=project_id,
@@ -3298,151 +3297,6 @@ class BackgroundAgentTasks:
                 operation_id=record.operation_id,
             )
         return self.launch_admitted(record.operation_id)
-
-    def _resolved_dispatch_authority(
-        self,
-        kind: AgentTaskKind,
-        request: AgentTaskRequest,
-        *,
-        project_id: str,
-        parent: AgentTaskRecord | None = None,
-        operation_id: str | None = None,
-        continuation: AgentTaskContinuation = "fresh",
-    ) -> AgentDispatchAuthority | None:
-        if kind == "branch_merge":
-            if not isinstance(request, BranchMergeRunRequest):
-                raise TypeError("branch_merge dispatch requires a BranchMergeRunRequest")
-            authority = AgentDispatchAuthority(
-                profile="orchestrator",
-                task_contract="orchestrate",
-                scope=AgentDispatchScope(
-                    run_truth_scope=list(request.run_truth_scope or ()),
-                    episode_id=request.episode_id,
-                    patch_kind="work",
-                ),
-            )
-        else:
-            authority = self.dispatch_authority_resolver(kind, request)
-        if kind == "episode_report":
-            if not isinstance(request, EpisodeReportRunRequest):
-                raise TypeError("episode_report dispatch requires an EpisodeReportRunRequest")
-            if authority is not None:
-                raise ValueError(
-                    "Authority refused action 'dispatch': an episode report has no graph "
-                    "authority binding."
-                )
-            return None
-        if kind == "auto_research":
-            if not isinstance(request, AutoResearchRunRequest):
-                raise TypeError("auto_research dispatch requires an AutoResearchRunRequest")
-            if authority is None:
-                raise ValueError(
-                    "Authority refused action 'dispatch': the Auto-research actor has no "
-                    "authority binding."
-                )
-        elif authority is None:
-            raise ValueError(
-                "Authority refused action 'dispatch': the task has no authority binding."
-            )
-        assert authority is not None
-        require_dispatch(authority)
-
-        if kind == "auto_research":
-            assert isinstance(request, AutoResearchRunRequest)
-            if operation_id is None:
-                raise ValueError(
-                    "Authority refused action 'dispatch': Auto-research admission has no "
-                    "operation id."
-                )
-            actor_operation_id = request.actor_operation_id
-            if parent is None:
-                if (
-                    request.role != "orchestrator"
-                    or actor_operation_id != operation_id
-                    or request.wake_cause is not None
-                ):
-                    raise ValueError(
-                        "Authority refused action 'dispatch': an Auto-research root must be its "
-                        "sole orchestrator actor."
-                    )
-                return authority
-
-            stored_parent = self.store.agent_task(parent.operation_id)
-            if stored_parent is None:
-                raise ValueError(
-                    "Authority refused action 'dispatch': the Auto-research parent is missing."
-                )
-            if (
-                stored_parent.project_id != project_id
-                or stored_parent.kind != "auto_research"
-                or stored_parent.episode_id != request.episode_id
-            ):
-                raise ValueError(
-                    "Authority refused action 'dispatch': an Auto-research continuation must "
-                    "preserve its parent project and episode."
-                )
-            binding = self.store.auto_research_actor_binding(parent.operation_id)
-            if actor_operation_id == operation_id:
-                if (
-                    request.role != "worker"
-                    or binding.role != "orchestrator"
-                    or request.wake_cause is not None
-                ):
-                    raise ValueError(
-                        "Authority refused action 'dispatch': only the orchestrator may seat one "
-                        "new ordinary worker actor."
-                    )
-                return authority
-            if actor_operation_id != binding.actor_operation_id or request.role != binding.role:
-                raise ValueError(
-                    "Authority refused action 'dispatch': an Auto-research continuation cannot "
-                    "change its canonical actor or role."
-                )
-            origin = self.store.agent_task(binding.actor_operation_id)
-            if origin is None:
-                raise ValueError(
-                    "Authority refused action 'dispatch': the canonical Auto-research actor is "
-                    "missing."
-                )
-            if origin.dispatch_authority is None:
-                if continuation not in {"resume", "retry"}:
-                    raise ValueError(
-                        "Authority refused action 'dispatch': the canonical Auto-research actor "
-                        "has no durable authority binding."
-                    )
-                # A pre-authority Auto-research allocation remains recoverable. Its recovery is
-                # still checked against today's closed profile contract before launch.
-                return authority
-            if authority != origin.dispatch_authority:
-                raise ValueError(
-                    "Authority refused action 'dispatch': an Auto-research continuation cannot "
-                    "change its canonical actor's authority binding."
-                )
-            return origin.dispatch_authority
-
-        if parent is not None:
-            stored_parent = self.store.agent_task(parent.operation_id)
-            if stored_parent is None:
-                raise ValueError(
-                    "Authority refused action 'dispatch': the continuation parent is missing."
-                )
-            if stored_parent.project_id != project_id or stored_parent.kind != kind:
-                raise ValueError(
-                    "Authority refused action 'dispatch': a continuation must preserve its "
-                    "parent's project and task kind."
-                )
-            # A parent recorded before dispatch authority existed carries none. The
-            # continuation still resolved and gated its own authority above; there is
-            # simply no earlier binding to hold it to.
-            if (
-                stored_parent.dispatch_authority is not None
-                and authority != stored_parent.dispatch_authority
-            ):
-                raise ValueError(
-                    "Authority refused action 'dispatch': a continuation cannot change its "
-                    "parent's authority binding."
-                )
-        return authority
 
     def launch_admitted(self, operation_id: str) -> AgentTaskRecord:
         """Launch one task whose durable admission already committed.

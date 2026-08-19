@@ -931,7 +931,9 @@ Updated at every slice boundary. The next agent reads this, not the diff.
 | --- | --- | --- |
 | Guards | `da50c3d` | The two deliberate non-refactors recorded at their code sites. |
 | A | `68c0ba7` | Constructor purity. Re-measurement found **14** store-mutating constructors, not 10. A post-change probe over the whole suite reports none. |
-| B1 | — | `runs/episodes/` package: `reconcile.py`, `wrapup.py`, and report admission moved off the engine. Pure relocation. |
+| B1 | `a931f02` | `runs/episodes/` package: `reconcile.py`, `wrapup.py`, and report admission moved off the engine. Pure relocation. |
+| B2 | **blocked** | The ID-only settlement callback cannot preserve behaviour. See "Slice B2 is blocked" below. |
+| 0 | — | `resolved_dispatch_authority` moved to `runs/task_policy.py`, with the three type aliases it needs. |
 
 ### Ordering summary
 
