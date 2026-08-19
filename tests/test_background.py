@@ -16,6 +16,7 @@ from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequ
 from rcp.runs.episodes.report import start_episode_report
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
+from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
@@ -1813,7 +1814,8 @@ def test_experiment_watcher_wake_uses_atomic_episode_invocation(tmp_path: Path) 
         error=None,
     )
 
-    wake = tasks.start_watcher_notification(
+    wake = start_watcher_notification(
+        tasks,
         "project",
         "node_chat",
         _experiment_request(
@@ -1953,7 +1955,8 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
 
     monkeypatch.setattr(threading.Thread, "start", fail_before_thread_start)
     with pytest.raises(RuntimeError, match="before watcher thread start"):
-        background.start_watcher_notification(
+        start_watcher_notification(
+            background,
             "project",
             "node_chat",
             wake_request,

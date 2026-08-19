@@ -946,11 +946,7 @@ def test_committed_merge_persists_its_receipt_before_success_and_evaluates_main_
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
     # Keep delivery pending after the condition is completed; this test is about
     # which graph the merge boundary evaluates, not the subsequent chat turn.
-    monkeypatch.setattr(
-        harness.app.state.background_tasks,
-        "start_watcher_notification",
-        lambda *_args, **_kwargs: None,
-    )
+    monkeypatch.setattr("rcp.api.app.start_watcher_notification", lambda *_args, **_kwargs: None)
     settled = threading.Event()
     after_task_settled = harness.app.state.background_tasks.on_task_settled
     assert after_task_settled is not None

@@ -112,6 +112,7 @@ from rcp.runs.tasks.experiment_loop import stream_experiment_loop_task
 from rcp.runs.tasks.graph import stream_graph_run
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
+from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
 from rcp.service import (
     CoachRequest,
@@ -657,8 +658,8 @@ def create_app(
         preflight_episode_wake=preflight_episode_wake,
         admit_experiment_watcher_invocation=admit_experiment_watcher_invocation,
         experiment_watcher_request=experiment_watcher_delivery_request,
-        start_watcher_notification=lambda *args, **kwargs: (
-            background_tasks.start_watcher_notification(*args, **kwargs)
+        start_watcher_notification=lambda *args, **kwargs: start_watcher_notification(
+            background_tasks, *args, **kwargs
         ),
         state_unavailable=lambda exc: isinstance(exc, StateUnavailable),
         task_graph_capable=task_graph_capable,

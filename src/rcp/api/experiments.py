@@ -30,6 +30,7 @@ from rcp.runs.experiment_admission import (
     resolve_experiment_node_work_request,
 )
 from rcp.runs.experiment_loop import experiment_watcher_delivery_request
+from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest
 from rcp.storage import AppStore, EpisodeNotRunning, EpisodeRecord
 from rcp.transport import StateUnavailable
@@ -119,7 +120,8 @@ def run_experiment(
                 experiment_request = resolve_experiment_node_work_request(
                     service, experiment_request
                 )
-                record = background_tasks.start_watcher_notification(
+                record = start_watcher_notification(
+                    background_tasks,
                     project_id,
                     "node_chat",
                     experiment_request,

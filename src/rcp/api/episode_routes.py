@@ -38,6 +38,7 @@ from rcp.runs.auto_research_delivery import (
     deliver_pending_auto_research_mail,
     record_auto_research_message,
 )
+from rcp.runs.branch_merge_admission import start_branch_merge
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
@@ -219,7 +220,8 @@ def merge_episode_branch(
             )
         service.history.require_writable()
         merge_request = _resolved_branch_merge_request(service, episode.episode_id)
-        background_tasks.start_branch_merge(
+        start_branch_merge(
+            background_tasks,
             project_id,
             merge_request,
             authorized_by=authorized_by,

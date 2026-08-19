@@ -22,6 +22,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.runs.auto_research import AutoResearchRunRequest
+from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import CoachRequest, RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskKind,
@@ -772,7 +773,8 @@ def test_watcher_dispatch_binds_before_claim_and_refusal_leaves_claim_untouched(
     monkeypatch.setattr(store, "create_watcher_notification_task", claim)
     tasks = BackgroundAgentTasks(store, stream)
     try:
-        started = tasks.start_watcher_notification(
+        started = start_watcher_notification(
+            tasks,
             "project-one",
             "project_chat",
             request,
@@ -805,7 +807,8 @@ def test_watcher_dispatch_binds_before_claim_and_refusal_leaves_claim_untouched(
         dispatch_authority_resolver=lambda _kind, _request: orchestrate,
     )
     with pytest.raises(ValueError, match="action 'dispatch'"):
-        refused.start_watcher_notification(
+        start_watcher_notification(
+            refused,
             "project-one",
             "project_chat",
             request,

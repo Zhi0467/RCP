@@ -190,7 +190,7 @@ def test_generic_watcher_delivery_wakes_its_own_project_chat(
     store.create_watchers([watcher])
     captured: dict[str, object] = {}
 
-    def capture(project, kind, request, watcher_ids, **kwargs):
+    def capture(_tasks, project, kind, request, watcher_ids, **kwargs):
         captured.update(
             project_id=project,
             kind=kind,
@@ -199,7 +199,7 @@ def test_generic_watcher_delivery_wakes_its_own_project_chat(
             authorized_by=kwargs["authorized_by"],
         )
 
-    monkeypatch.setattr(app.state.background_tasks, "start_watcher_notification", capture)
+    monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture)
 
     assert app.state.watcher_poller.on_completed is not None
     app.state.watcher_poller.on_completed([watcher])
@@ -6800,11 +6800,7 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
     monkeypatch.setattr(app.state.background_tasks, "resume", unexpected_admission)
     monkeypatch.setattr(app.state.background_tasks, "retry", unexpected_admission)
     monkeypatch.setattr(app.state.background_tasks, "repair_graph_update", unexpected_admission)
-    monkeypatch.setattr(
-        app.state.background_tasks,
-        "start_watcher_notification",
-        unexpected_admission,
-    )
+    monkeypatch.setattr("rcp.api.app.start_watcher_notification", unexpected_admission)
 
     for endpoint, operation_id in operation_ids.items():
         response = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/{endpoint}")

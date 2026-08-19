@@ -24,6 +24,7 @@ from rcp.core.models import (
 from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.shared import _record_patch_applied_receipt
+from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest
 from rcp.storage import (
     AgentTaskRecord,
@@ -785,6 +786,7 @@ def test_agent_settlement_evaluates_the_exact_applied_revision_boundary(
     deliveries: list[list[str]] = []
 
     def capture_delivery(
+        _tasks,
         _project_id,
         _kind,
         _request,
@@ -794,11 +796,7 @@ def test_agent_settlement_evaluates_the_exact_applied_revision_boundary(
         deliveries.append(watcher_ids)
         return None
 
-    monkeypatch.setattr(
-        app.state.background_tasks,
-        "start_watcher_notification",
-        capture_delivery,
-    )
+    monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_delivery)
     callback = app.state.background_tasks.on_task_settled
     assert callback is not None
     request = RunRequest(
@@ -1191,7 +1189,7 @@ def test_transient_reconciliation_failure_retries_without_a_new_revision(
 
     deliveries: list[list[str]] = []
 
-    def claim_delivery(_project_id, _kind, _request, watcher_ids, **_kwargs):
+    def claim_delivery(_tasks, _project_id, _kind, _request, watcher_ids, **_kwargs):
         deliveries.append(watcher_ids)
         task = _notification_task(store, "reconciliation-retry-wake", watcher_ids).model_copy(
             update={"project_id": project_id, "authorized_by": authorizer}
@@ -1199,11 +1197,7 @@ def test_transient_reconciliation_failure_retries_without_a_new_revision(
         return store.create_watcher_notification_task(task, watcher_ids)
 
     monkeypatch.setattr(service.history, "accepted_boundary_states", unavailable_once)
-    monkeypatch.setattr(
-        app.state.background_tasks,
-        "start_watcher_notification",
-        claim_delivery,
-    )
+    monkeypatch.setattr("rcp.api.app.start_watcher_notification", claim_delivery)
     callback = app.state.background_tasks.on_task_settled
     assert callback is not None
     revision = service.history.state().revision
@@ -1292,7 +1286,7 @@ def test_due_reconciliation_survives_retry_worker_stop_then_start(
 
     deliveries: list[list[str]] = []
 
-    def claim_delivery(_project_id, _kind, _request, watcher_ids, **_kwargs):
+    def claim_delivery(_tasks, _project_id, _kind, _request, watcher_ids, **_kwargs):
         deliveries.append(watcher_ids)
         task = _notification_task(store, "generation-retry-wake", watcher_ids).model_copy(
             update={"project_id": project_id, "authorized_by": authorizer}
@@ -1300,11 +1294,7 @@ def test_due_reconciliation_survives_retry_worker_stop_then_start(
         return store.create_watcher_notification_task(task, watcher_ids)
 
     monkeypatch.setattr(service.history, "accepted_boundary_states", unavailable_once)
-    monkeypatch.setattr(
-        app.state.background_tasks,
-        "start_watcher_notification",
-        claim_delivery,
-    )
+    monkeypatch.setattr("rcp.api.app.start_watcher_notification", claim_delivery)
     callback = app.state.background_tasks.on_task_settled
     assert callback is not None
     callback(
@@ -1660,6 +1650,7 @@ def test_app_lifespan_evaluates_conditions_satisfied_before_restart(
     deliveries: list[list[str]] = []
 
     def capture_delivery(
+        _tasks,
         _project_id,
         _kind,
         _request,
@@ -1682,11 +1673,7 @@ def test_app_lifespan_evaluates_conditions_satisfied_before_restart(
             watcher_ids,
         )
 
-    monkeypatch.setattr(
-        reopened.state.background_tasks,
-        "start_watcher_notification",
-        capture_delivery,
-    )
+    monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_delivery)
     with TestClient(reopened) as client:
         assert client.get("/api/health").status_code == 200
         time.sleep(0.05)
@@ -2010,7 +1997,8 @@ def test_watcher_notification_admission_fence_owns_claim_and_spawn(
     monkeypatch.setattr(store, "create_watcher_notification_task", observed_claim)
     monkeypatch.setattr(tasks, "_spawn_record", observed_spawn)
 
-    started = tasks.start_watcher_notification(
+    started = start_watcher_notification(
+        tasks,
         "project",
         "node_chat",
         request,
@@ -2047,7 +2035,8 @@ def test_stale_retry_generation_cannot_make_the_final_watcher_claim(tmp_path) ->
         retry_started.set()
         release_retry.wait()
         results.append(
-            tasks.start_watcher_notification(
+            start_watcher_notification(
+                tasks,
                 "project",
                 "node_chat",
                 request,
@@ -2115,7 +2104,7 @@ def test_periodic_poll_delivers_mixed_group_after_external_completes(
     )
     deliveries: list[list[str]] = []
 
-    def claim_delivery(_project_id, _kind, _request, watcher_ids, **_kwargs):
+    def claim_delivery(_tasks, _project_id, _kind, _request, watcher_ids, **_kwargs):
         deliveries.append(watcher_ids)
         task = _notification_task(store, "periodic-mixed-wake", watcher_ids).model_copy(
             update={"project_id": project_id, "authorized_by": authorizer}
@@ -2125,11 +2114,7 @@ def test_periodic_poll_delivers_mixed_group_after_external_completes(
     def complete_external(_spec, _host, _timeout):
         return WatcherCheckResult(state="complete", checked_at=_CREATED_AT, exit_code=0)
 
-    monkeypatch.setattr(
-        app.state.background_tasks,
-        "start_watcher_notification",
-        claim_delivery,
-    )
+    monkeypatch.setattr("rcp.api.app.start_watcher_notification", claim_delivery)
     app.state.watcher_poller.check_runner = complete_external
     app.state.watcher_poller.clock = lambda: "2100-01-01T00:00:00+00:00"
     app.state.graph_watcher_retry_worker.start()
@@ -2189,7 +2174,7 @@ def test_periodic_poll_retries_pure_graph_delivery_after_transient_failure(
     )
     attempts: list[list[str]] = []
 
-    def transient_then_claim(_project_id, _kind, _request, watcher_ids, **_kwargs):
+    def transient_then_claim(_tasks, _project_id, _kind, _request, watcher_ids, **_kwargs):
         attempts.append(watcher_ids)
         if len(attempts) == 1:
             raise RuntimeError("transient delivery failure")
@@ -2198,11 +2183,7 @@ def test_periodic_poll_retries_pure_graph_delivery_after_transient_failure(
         )
         return store.create_watcher_notification_task(task, watcher_ids)
 
-    monkeypatch.setattr(
-        app.state.background_tasks,
-        "start_watcher_notification",
-        transient_then_claim,
-    )
+    monkeypatch.setattr("rcp.api.app.start_watcher_notification", transient_then_claim)
     app.state.graph_watcher_retry_worker.start()
     try:
         assert app.state.watcher_poller.poll_once() == []
@@ -2507,7 +2488,8 @@ def test_shutdown_serializes_watcher_delivery_admission_with_worker_snapshot(
     def deliver_before_close() -> None:
         try:
             delivered.append(
-                tasks.start_watcher_notification(
+                start_watcher_notification(
+                    tasks,
                     "project",
                     "node_chat",
                     first_request,
@@ -2552,7 +2534,8 @@ def test_shutdown_serializes_watcher_delivery_admission_with_worker_snapshot(
             _notification_task(store, "unused", ["post-close"]).request
         )
         assert (
-            tasks.start_watcher_notification(
+            start_watcher_notification(
+                tasks,
                 "project",
                 "node_chat",
                 second_request,

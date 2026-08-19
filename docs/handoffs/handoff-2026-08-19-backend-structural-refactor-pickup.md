@@ -933,7 +933,36 @@ Updated at every slice boundary. The next agent reads this, not the diff.
 | A | `68c0ba7` | Constructor purity. Re-measurement found **14** store-mutating constructors, not 10. A post-change probe over the whole suite reports none. |
 | B1 | `a931f02` | `runs/episodes/` package: `reconcile.py`, `wrapup.py`, and report admission moved off the engine. Pure relocation. |
 | B2 | **blocked** | The ID-only settlement callback cannot preserve behaviour. See "Slice B2 is blocked" below. |
-| 0 | — | `resolved_dispatch_authority` moved to `runs/task_policy.py`, with the three type aliases it needs. |
+| 0 | `44bc556` | `resolved_dispatch_authority` moved to `runs/task_policy.py`, with the three type aliases it needs. |
+| C1 + C2 | — | Branch-merge and watcher admission extracted. One commit: both edit `background.py`, and splitting one file's diff by hunk risks committing a state that does not build. |
+
+### Slice B2 is blocked
+
+**The ID-only settlement callback cannot preserve behaviour.** `after_task_settled`
+in [api/app.py](../../src/rcp/api/app.py) forwards the `AgentTaskExecution` to
+`evaluate_graph_conditions_after_task`, which reads two fields that exist only in
+memory for the duration of the run and are never persisted:
+
+- `applied_graph_state` — the materialised graph *this* task produced. Reloading
+  by id gives the current graph, which is a different thing the moment another
+  Sync lands.
+- `armed_graph_watchers` — whether the turn armed watchers without applying a
+  patch. Nothing durable records it, and it is exactly the case that decides
+  whether ready wake groups are delivered.
+
+So an id-only callback either drops the watcher boundary evaluation or requires
+persisting graph state on every settlement. Both change behaviour, which puts
+this on the stop-and-ask list rather than in an implementer's hands.
+
+**The question for the human:** keep the execution object on the settlement
+boundary and treat "operation ID only" as applying to the *episode* settlement
+path that genuinely can reload, or persist enough of the run outcome to make the
+boundary id-only? The first keeps today's behaviour and narrows a settled
+decision; the second honours the decision and adds a durable write per
+settlement. **Recommended: the first** — the decision exists so settlement does
+not depend on a live worker's identity, and the graph state here is a value
+produced by the run, not a handle to it.
+
 
 ### Ordering summary
 

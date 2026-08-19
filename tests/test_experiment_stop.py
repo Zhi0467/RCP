@@ -16,6 +16,7 @@ from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Patch
 from rcp.runs.experiment_loop import commit_experiment_episode_binding
 from rcp.runs.shared import _sse
+from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.skill_registry import SkillReference
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
@@ -983,7 +984,8 @@ def test_automatic_wake_requires_session_and_exact_episode_stage(manifest, tmp_p
 
     no_session = request.model_copy(update={"session_id": None})
     with pytest.raises(ValueError, match="session and exact stage"):
-        app.state.background_tasks.start_watcher_notification(
+        start_watcher_notification(
+            app.state.background_tasks,
             loop.project_id,
             "node_chat",
             no_session,

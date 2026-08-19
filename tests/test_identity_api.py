@@ -769,15 +769,13 @@ def test_automatic_watcher_delivery_inherits_one_origin_authorizer_and_refuses_a
 
     captured: list[AuthorizedHuman] = []
 
-    def fake_delivery(_project_id, _kind, _request, _watcher_ids, *, authorized_by, **_kwargs):
+    def fake_delivery(
+        _tasks, _project_id, _kind, _request, _watcher_ids, *, authorized_by, **_kwargs
+    ):
         captured.append(authorized_by)
         return None
 
-    monkeypatch.setattr(
-        app.state.background_tasks,
-        "start_watcher_notification",
-        fake_delivery,
-    )
+    monkeypatch.setattr("rcp.api.app.start_watcher_notification", fake_delivery)
     callback = app.state.watcher_poller.on_completed
     same_authorizer = [
         _watcher(
@@ -888,15 +886,11 @@ def test_reopened_poller_terminalizes_legacy_watcher_once_without_wake(
     reopened = create_app(str(manifest.path), data_dir=data_dir)
     wake_attempts: list[list[str]] = []
 
-    def capture_wake(_project_id, _kind, _request, watcher_ids, **_kwargs):
+    def capture_wake(_tasks, _project_id, _kind, _request, watcher_ids, **_kwargs):
         wake_attempts.append(watcher_ids)
         return None
 
-    monkeypatch.setattr(
-        reopened.state.background_tasks,
-        "start_watcher_notification",
-        capture_wake,
-    )
+    monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_wake)
 
     first_pass = reopened.state.watcher_poller.poll_once()
     second_pass = reopened.state.watcher_poller.poll_once()
