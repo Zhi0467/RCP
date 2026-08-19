@@ -26,6 +26,9 @@ from rcp.agents.acceptance import (
 )
 from rcp.core.models import Patch
 from rcp.runs.auto_research import AutoResearchRunRequest
+from rcp.runs.auto_research_admission import (
+    start_auto_research_turn,
+)
 from rcp.storage import EpisodeNotRunning, GraphWatcherRecord, WatcherContinuation
 
 from .helpers import (
@@ -699,7 +702,8 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
             meter_before = store.episode_budget_meter(episode_id)
             task_ids_before = [task.operation_id for task in store.auto_research_tasks(episode_id)]
             with pytest.raises(EpisodeNotRunning, match="not admitting new work"):
-                background.start_auto_research_turn(
+                start_auto_research_turn(
+                    background,
                     episode_id,
                     denied_request,
                     parent_operation_id=root_operation_id,

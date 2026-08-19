@@ -33,6 +33,10 @@ from rcp.background import BackgroundAgentTasks
 from rcp.keyed_locks import KeyedLocks
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchStartRequest, settle_auto_research_stop
+from rcp.runs.auto_research_admission import (
+    start_auto_research,
+    stop_auto_research,
+)
 from rcp.runs.auto_research_delivery import (
     deliver_pending_auto_research_lifecycle,
     deliver_pending_auto_research_mail,
@@ -118,7 +122,8 @@ def start_episode(
         start_request = _resolved_auto_research_start_request(service, body)
         service.history.require_writable()
         graph_base_head = service.history.head_ref()
-        episode, _ = background_tasks.start_auto_research(
+        episode, _ = start_auto_research(
+            background_tasks,
             project_id,
             start_request,
             authorized_by=authorized_by,
@@ -163,7 +168,7 @@ def stop_episode(
     episode = _episode_for_http(store, catalog, project_id, episode_id)
     if episode.mode == "auto_research":
         try:
-            background_tasks.stop_auto_research(episode.episode_id)
+            stop_auto_research(background_tasks, episode.episode_id)
             settle_auto_research_stop(store, episode.episode_id)
         except EpisodeNotRunning as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -282,7 +287,8 @@ def reauthorize_episode(
             ),
         )
         graph_base_head = service.history.head_ref()
-        fresh, _ = background_tasks.start_auto_research(
+        fresh, _ = start_auto_research(
+            background_tasks,
             project_id,
             start_request,
             authorized_by=authorized_by,

@@ -8,6 +8,14 @@ from rcp.agents.command_protocol import WatchGraphArguments
 from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.limits import AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES
 from rcp.runs.auto_research import AutoResearchCommandContext, AutoResearchRunRequest
+from rcp.runs.auto_research_admission import (
+    ensure_auto_research_child_work_spawned,
+    ensure_auto_research_wake_spawned,
+    pending_auto_research_mail,
+    reconcile_committed_auto_research_dispatches,
+    start_auto_research_child_work_message_wake,
+    start_auto_research_turn,
+)
 from rcp.runs.auto_research_lifecycle import auto_research_lifecycle_delivery
 from rcp.runs.auto_research_mail import auto_research_mail_claim_prefix
 from rcp.storage import (
@@ -187,7 +195,9 @@ def _reconcile_committed_auto_research_wakes(
     """Dispatch already-paid queued wakes without reclaiming inputs or budget."""
 
     store = background.store
-    proven_started = background.reconcile_committed_auto_research_dispatches()
+    proven_started = reconcile_committed_auto_research_dispatches(
+        background,
+    )
     if episode_id is not None:
         episode_ids = [episode_id]
     else:
@@ -221,7 +231,8 @@ def _reconcile_committed_auto_research_wakes(
             request = AutoResearchRunRequest.model_validate(task.request)
             if request.wake_cause not in wake_causes:
                 continue
-            background.ensure_auto_research_wake_spawned(
+            ensure_auto_research_wake_spawned(
+                background,
                 current_episode_id,
                 operation_id=task.operation_id,
             )
@@ -239,7 +250,8 @@ def _reconcile_committed_auto_research_wakes(
             task = store.agent_task(route.current_operation_id)
             if task is None or task.status != "queued":
                 continue
-            background.ensure_auto_research_child_work_spawned(
+            ensure_auto_research_child_work_spawned(
+                background,
                 current_episode_id,
                 route.worker_id,
                 operation_id=task.operation_id,
@@ -286,7 +298,8 @@ def deliver_pending_auto_research_lifecycle(
     current = store.agent_task(binding.current_operation_id)
     if current is None:
         return None
-    pending_mail = background.pending_auto_research_mail(
+    pending_mail = pending_auto_research_mail(
+        background,
         episode_id=episode_id,
         recipient_task_id=root_operation_id,
     )
@@ -328,7 +341,8 @@ def deliver_pending_auto_research_lifecycle(
         )
 
     try:
-        task = background.start_auto_research_turn(
+        task = start_auto_research_turn(
+            background,
             episode_id,
             request,
             parent_operation_id=binding.current_operation_id,
@@ -383,7 +397,8 @@ def deliver_pending_auto_research_mail(
     messages untouched for a later settlement pass.
     """
 
-    delivery = background.pending_auto_research_mail(
+    delivery = pending_auto_research_mail(
+        background,
         episode_id=episode_id,
         recipient_task_id=recipient_task_id,
     )
@@ -407,7 +422,8 @@ def deliver_pending_auto_research_mail(
         if not selected_messages:
             return None
         try:
-            task = background.start_auto_research_child_work_message_wake(
+            task = start_auto_research_child_work_message_wake(
+                background,
                 episode_id,
                 child.worker_id,
                 [message.message_id for message in selected_messages],
@@ -437,7 +453,8 @@ def deliver_pending_auto_research_mail(
         }
     )
     try:
-        task = background.start_auto_research_turn(
+        task = start_auto_research_turn(
+            background,
             episode_id,
             request,
             parent_operation_id=binding.current_operation_id,
@@ -641,7 +658,8 @@ def deliver_auto_research_watcher_group(
         )
 
     try:
-        task = background.start_auto_research_turn(
+        task = start_auto_research_turn(
+            background,
             binding.episode_id,
             request,
             parent_operation_id=binding.current_operation_id,

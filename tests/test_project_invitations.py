@@ -224,11 +224,13 @@ def test_the_only_member_cannot_leave_the_project(manifest, tmp_path) -> None:
 
 
 class _RecordingStopper:
+    """Stands in for Auto-research Stop, which is a module function now."""
+
     def __init__(self, store: AppStore) -> None:
         self.store = store
         self.stopped: list[str] = []
 
-    def stop_auto_research(self, episode_id: str):
+    def stop_auto_research(self, _tasks, episode_id: str):
         self.stopped.append(episode_id)
         return self.store.request_episode_stop(episode_id)
 
@@ -320,7 +322,7 @@ def _seat_second_member(client, acting, project_id: str, invitee_id: str) -> Non
     acting[0] = was
 
 
-def test_losing_membership_fences_the_episode_like_stop(manifest, tmp_path) -> None:
+def test_losing_membership_fences_the_episode_like_stop(manifest, tmp_path, monkeypatch) -> None:
     """The same durable Stop request, not a second mechanism."""
 
     _app, client, store, people, acting = _team_app(tmp_path, members=3)
@@ -335,6 +337,7 @@ def test_losing_membership_fences_the_episode_like_stop(manifest, tmp_path) -> N
     assert episode.stop_requested_at is None
 
     stopper = _RecordingStopper(store)
+    monkeypatch.setattr("rcp.runs.membership_fence.stop_auto_research", stopper.stop_auto_research)
     fenced = fence_episodes_for_departed_member(store, stopper, project_id, leaver.user_id)
 
     assert fenced == [episode.episode_id]

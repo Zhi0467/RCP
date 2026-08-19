@@ -13,6 +13,10 @@ from rcp.runs.auto_research import (
     AutoResearchStartRequest,
     settle_auto_research_stop,
 )
+from rcp.runs.auto_research_admission import (
+    start_auto_research,
+    start_auto_research_turn,
+)
 from rcp.runs.auto_research_recovery import (
     AutoResearchOrchestratorTerminalFailure,
     reconcile_auto_research_task_settlement,
@@ -43,7 +47,8 @@ def _store(tmp_path: Path) -> AppStore:
 
 
 def _start(tasks: BackgroundAgentTasks, *, operation_id: str = "root"):
-    episode, root = tasks.start_auto_research(
+    episode, root = start_auto_research(
+        tasks,
         "project",
         AutoResearchStartRequest(invocation_ceiling=4, run_truth_scope=["repo"]),
         authorized_by=fabricated_authorizer(),
@@ -294,7 +299,8 @@ def test_worker_failure_never_becomes_auto_research_verdict(tmp_path: Path) -> N
     _install_recovery_callback(tasks)
     auto_research, root = _start(tasks)
     root = wait_for_task(store, root.operation_id, expect="succeeded")
-    worker = tasks.start_auto_research_turn(
+    worker = start_auto_research_turn(
+        tasks,
         auto_research.episode_id,
         AutoResearchRunRequest(
             episode_id=auto_research.episode_id,

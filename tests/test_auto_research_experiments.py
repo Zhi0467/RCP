@@ -20,6 +20,10 @@ from rcp.core.transition_models import GraphHeadRef
 from rcp.history import HistoryManager
 from rcp.paper import PaperService
 from rcp.runs.auto_research import AutoResearchStartRequest
+from rcp.runs.auto_research_admission import (
+    start_auto_research,
+    start_auto_research_child_experiment,
+)
 from rcp.runs.auto_research_experiments import (
     AutoResearchExperimentCoordinator,
     AutoResearchExperimentLimitInvalid,
@@ -215,7 +219,7 @@ def _spend_child_experiment_allowance(
         control_decision_bundle=[],
         control_completion_criteria=["The bounded allowance probe is analyzed."],
     )
-    spent = background.start_auto_research_child_experiment(route, request)
+    spent = start_auto_research_child_experiment(background, route, request)
     wait_for_task(store, spent.operation_id, expect="succeeded")
 
 
@@ -262,7 +266,8 @@ def _setup(
             yield frame
 
     background = BackgroundAgentTasks(store, stream)
-    parent, root = background.start_auto_research(
+    parent, root = start_auto_research(
+        background,
         PROJECT_ID,
         _auto_start(ceiling=ceiling),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -892,13 +897,15 @@ def test_transient_experiment_kickoff_failure_keeps_admission_for_exact_recovery
         "invocation_limit": None,
         "admission_id": admission_id,
     }
-    real_start = background.start_auto_research_child_experiment
+    real_start = start_auto_research_child_experiment
 
     def unavailable(*_args, **_kwargs):
         raise OSError("canonical state is temporarily unavailable")
 
     before = store.auto_research_experiment_allowance(parent_id)
-    monkeypatch.setattr(background, "start_auto_research_child_experiment", unavailable)
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_experiments.start_auto_research_child_experiment", unavailable
+    )
     with pytest.raises(OSError, match="temporarily unavailable"):
         coordinator.kick_off(**parameters)
 
@@ -907,7 +914,9 @@ def test_transient_experiment_kickoff_failure_keeps_admission_for_exact_recovery
     assert store.auto_research_child_experiment(child_id) is None
     assert store.auto_research_experiment_allowance(parent_id) == before
 
-    monkeypatch.setattr(background, "start_auto_research_child_experiment", real_start)
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_experiments.start_auto_research_child_experiment", real_start
+    )
     recovered = coordinator.kick_off(**parameters)
 
     assert recovered.disposition == "created"

@@ -28,7 +28,7 @@ from rcp.agents.command_protocol import (
     WatchGraphArguments,
     WatchGraphCommandRequest,
 )
-from rcp.background import AutoResearchChildResumeResult, BackgroundAgentTasks
+from rcp.background import BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import Blocker, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -40,6 +40,12 @@ from rcp.runs.auto_research import (
     AutoResearchCommandFile,
     AutoResearchRunRequest,
     request_auto_research_stop,
+)
+from rcp.runs.auto_research_admission import (
+    AutoResearchChildResumeResult,
+    pause_auto_research_child_work,
+    start_auto_research_child_work,
+    stop_auto_research_child_work,
 )
 from rcp.runs.auto_research_delivery import record_auto_research_message
 from rcp.runs.auto_research_effects import auto_research_command_effects
@@ -456,6 +462,24 @@ class _RecordingBackground:
         return task
 
 
+def _record_child_controls(monkeypatch, background: _RecordingBackground) -> None:
+    """Route the child-work controls to the recorder.
+
+    They are module functions taking the engine now, so a stub object with those
+    method names no longer intercepts them.
+    """
+
+    for name in (
+        "pause_auto_research_child_work",
+        "resume_auto_research_child_work",
+        "stop_auto_research_child_work",
+    ):
+        monkeypatch.setattr(
+            f"rcp.runs.auto_research_effects.{name}",
+            lambda _tasks, *args, _name=name, **kwargs: getattr(background, _name)(*args, **kwargs),
+        )
+
+
 def test_apply_records_valid_invalid_and_empty_graph_dispositions(tmp_path) -> None:
     store, auto_research, root = _setup_auto_research(tmp_path)
     consumed: list[tuple[str, str]] = []
@@ -582,7 +606,9 @@ def test_concurrent_same_apply_identity_returns_one_canonical_response(tmp_path)
     assert records[0].result == outcomes[0].model_dump(mode="json")
 
 
-def test_status_and_controls_resolve_the_latest_canonical_worker_leaf(tmp_path) -> None:
+def test_status_and_controls_resolve_the_latest_canonical_worker_leaf(
+    tmp_path, monkeypatch
+) -> None:
     store, auto_research, root = _setup_auto_research(tmp_path)
     stage = tmp_path / "worker-stage"
     stage.mkdir()
@@ -596,6 +622,7 @@ def test_status_and_controls_resolve_the_latest_canonical_worker_leaf(tmp_path) 
     )
     latest = _create_worker_recovery(store, auto_research, worker)
     background = _RecordingBackground(store)
+    _record_child_controls(monkeypatch, background)
     effects = _effects(store, background)
     context = _context(store, auto_research, root)
 
@@ -631,16 +658,19 @@ def test_worker_pause_resignals_pausing_and_accepts_an_already_paused_attempt(
     signals: list[str] = []
     monkeypatch.setattr(background, "_signal_agent_task_pause", signals.append)
 
-    first = background.pause_auto_research_child_work(
+    first = pause_auto_research_child_work(
+        background,
         auto_research.episode_id,
         worker.operation_id,
     )
-    second = background.pause_auto_research_child_work(
+    second = pause_auto_research_child_work(
+        background,
         auto_research.episode_id,
         worker.operation_id,
     )
     store.pause_agent_task(worker.operation_id, detail="paused at the checkpoint")
-    third = background.pause_auto_research_child_work(
+    third = pause_auto_research_child_work(
+        background,
         auto_research.episode_id,
         worker.operation_id,
     )
@@ -663,16 +693,19 @@ def test_worker_stop_recovers_the_split_after_durable_route_stop(
 
     # This is the crash boundary: Stop intent committed, process signal not sent.
     store.request_auto_research_child_work_stop(worker.operation_id)
-    recovered = background.stop_auto_research_child_work(
+    recovered = stop_auto_research_child_work(
+        background,
         auto_research.episode_id,
         worker.operation_id,
     )
-    replayed = background.stop_auto_research_child_work(
+    replayed = stop_auto_research_child_work(
+        background,
         auto_research.episode_id,
         worker.operation_id,
     )
     store.pause_agent_task(worker.operation_id, detail="stopped at the checkpoint")
-    settled = background.stop_auto_research_child_work(
+    settled = stop_auto_research_child_work(
+        background,
         auto_research.episode_id,
         worker.operation_id,
     )
@@ -924,13 +957,15 @@ def test_transient_spawn_failure_keeps_admission_for_same_key_recovery(
         effects,
         command_file_reader=lambda _filename, _max_bytes: instruction,
     )
-    real_start = background.start_auto_research_child_work
+    real_start = start_auto_research_child_work
 
     def unavailable(*_args, **_kwargs):
         raise OSError("canonical state is temporarily unavailable")
 
     before = store.episode_budget_meter(auto_research.episode_id)
-    monkeypatch.setattr(background, "start_auto_research_child_work", unavailable)
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_effects.start_auto_research_child_work", unavailable
+    )
     first = dispatcher.dispatch(root.operation_id, request)
     assert first.status == "unavailable"
     command = store.agent_command_by_key(
@@ -944,7 +979,7 @@ def test_transient_spawn_failure_keeps_admission_for_same_key_recovery(
     assert store.auto_research_child_work(worker_id) is None
     assert store.episode_budget_meter(auto_research.episode_id) == before
 
-    monkeypatch.setattr(background, "start_auto_research_child_work", real_start)
+    monkeypatch.setattr("rcp.runs.auto_research_effects.start_auto_research_child_work", real_start)
     replay = dispatcher.dispatch(
         root.operation_id,
         request.model_copy(update={"request_id": "8" * 32}),
@@ -1844,10 +1879,12 @@ def test_unknown_graph_watch_reconciliation_is_read_only_and_fail_closed(tmp_pat
 
 def test_individual_worker_stop_routes_to_the_current_attempt_and_never_stops_the_parent(
     tmp_path,
+    monkeypatch,
 ) -> None:
     store, auto_research, root = _setup_auto_research(tmp_path)
     worker = _create_routed_worker(store, auto_research, root, status="queued")
     background = _RecordingBackground(store)
+    _record_child_controls(monkeypatch, background)
     effects = _effects(store, background)
     dispatcher = AutoResearchCommandDispatcher(store, effects)
 

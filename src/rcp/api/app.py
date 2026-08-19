@@ -80,6 +80,10 @@ from rcp.runs.auto_research import (
     AutoResearchCommandEffectResult,
     AutoResearchRunRequest,
 )
+from rcp.runs.auto_research_admission import (
+    reconcile_committed_auto_research_dispatches,
+    reconcile_reserved_auto_research_roots,
+)
 from rcp.runs.auto_research_child_reconcile import (
     reconcile_pending_auto_research_child_admissions,
 )
@@ -848,10 +852,14 @@ def create_app(
             background_tasks.accept_watcher_notifications()
             store.prune_operational_storage()
             await asyncio.to_thread(
-                background_tasks.reconcile_reserved_auto_research_roots,
+                reconcile_reserved_auto_research_roots,
+                background_tasks,
                 ensure_auto_research_graph_target,
             )
-            await asyncio.to_thread(background_tasks.reconcile_committed_auto_research_dispatches)
+            await asyncio.to_thread(
+                reconcile_committed_auto_research_dispatches,
+                background_tasks,
+            )
             child_reconciliation = await asyncio.to_thread(
                 reconcile_auto_research_children,
             )

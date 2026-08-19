@@ -35,6 +35,13 @@ from rcp.runs.auto_research import (
     AutoResearchCommandUnavailable,
     AutoResearchValidateCommand,
 )
+from rcp.runs.auto_research_admission import (
+    ensure_auto_research_child_work_spawned,
+    pause_auto_research_child_work,
+    resume_auto_research_child_work,
+    start_auto_research_child_work,
+    stop_auto_research_child_work,
+)
 from rcp.runs.auto_research_delivery import (
     AutoResearchWatcherReadyHook,
     arm_auto_research_graph_condition,
@@ -270,7 +277,8 @@ def auto_research_command_effects(
                 snapshot.text,
                 request,
             )
-            worker = background.start_auto_research_child_work(
+            worker = start_auto_research_child_work(
+                background,
                 context.episode.episode_id,
                 request,
                 admitted_by_operation_id=context.task.operation_id,
@@ -300,7 +308,8 @@ def auto_research_command_effects(
     ) -> AutoResearchCommandEffectResult:
         route, _ = _worker_leaf(store, context, worker_id)
         try:
-            paused = background.pause_auto_research_child_work(
+            paused = pause_auto_research_child_work(
+                background,
                 context.episode.episode_id,
                 worker_id,
             )
@@ -317,7 +326,8 @@ def auto_research_command_effects(
         planned_operation_id: str,
     ) -> AutoResearchCommandEffectResult:
         try:
-            resumed = background.resume_auto_research_child_work(
+            resumed = resume_auto_research_child_work(
+                background,
                 context.episode.episode_id,
                 worker_id,
                 operation_id=planned_operation_id,
@@ -358,7 +368,8 @@ def auto_research_command_effects(
         worker_id: str,
     ) -> AutoResearchCommandEffectResult:
         route, _ = _worker_leaf(store, context, worker_id)
-        stopped = background.stop_auto_research_child_work(
+        stopped = stop_auto_research_child_work(
+            background,
             context.episode.episode_id,
             worker_id,
         )
@@ -789,7 +800,8 @@ def auto_research_command_effects(
             snapshot.text,
             request,
         )
-        return background.ensure_auto_research_child_work_spawned(
+        return ensure_auto_research_child_work_spawned(
+            background,
             context.episode.episode_id,
             worker_id,
             operation_id=root.operation_id,

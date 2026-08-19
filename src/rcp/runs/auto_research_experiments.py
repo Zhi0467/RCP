@@ -8,6 +8,11 @@ from typing import TYPE_CHECKING, Literal
 
 from rcp.control import derive_experiment_control_state
 from rcp.core.models import Experiment
+from rcp.runs.auto_research_admission import (
+    ensure_auto_research_child_experiment_spawned,
+    resume_auto_research_child_experiment,
+    start_auto_research_child_experiment,
+)
 from rcp.runs.experiment_admission import fresh_experiment_run_request
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import (
@@ -121,7 +126,8 @@ class AutoResearchExperimentCoordinator:
                 else None
             )
             if existing.state == "running" and task is not None:
-                task = self.background.ensure_auto_research_child_experiment_spawned(
+                task = ensure_auto_research_child_experiment_spawned(
+                    self.background,
                     auto_research_episode_id,
                     child_episode_id,
                     operation_id=task.operation_id,
@@ -187,7 +193,8 @@ class AutoResearchExperimentCoordinator:
                     )
                     self._ensure_predecessor_stopping(route)
                 else:
-                    task = self.background.start_auto_research_child_experiment(
+                    task = start_auto_research_child_experiment(
+                        self.background,
                         route,
                         request,
                         admission_id=admission_id,
@@ -295,7 +302,8 @@ class AutoResearchExperimentCoordinator:
         existing = self.store.agent_task(operation_id) if operation_id is not None else None
         if route.state != "running" and existing is None:
             raise ValueError("Only a running child Experiment episode can be resumed.")
-        result = self.background.resume_auto_research_child_experiment(
+        result = resume_auto_research_child_experiment(
+            self.background,
             auto_research_episode_id,
             child_episode_id,
             operation_id=operation_id,
@@ -336,7 +344,8 @@ class AutoResearchExperimentCoordinator:
                     running = current.model_copy(
                         update={"state": "running", "updated_at": self.store.now()}
                     )
-                    self.background.start_auto_research_child_experiment(
+                    start_auto_research_child_experiment(
+                        self.background,
                         running,
                         request,
                         admission_id=None,

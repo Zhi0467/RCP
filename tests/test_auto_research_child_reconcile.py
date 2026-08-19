@@ -15,6 +15,9 @@ from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchRunRequest,
 )
+from rcp.runs.auto_research_admission import (
+    start_auto_research_child_work,
+)
 from rcp.runs.auto_research_child_reconcile import (
     reconcile_pending_auto_research_child_admissions,
 )
@@ -761,18 +764,22 @@ def test_normal_live_task_settlement_retries_a_deferred_child_admission(
             store=store,
             control=AgentProcessControl(),
         )
-        real_start = background.start_auto_research_child_work
+        real_start = start_auto_research_child_work
 
         def unavailable(*_args, **_kwargs):
             raise OSError("canonical state is temporarily unavailable")
 
-        monkeypatch.setattr(background, "start_auto_research_child_work", unavailable)
+        monkeypatch.setattr(
+            "rcp.runs.auto_research_child_reconcile.start_auto_research_child_work", unavailable
+        )
         callback(project_id, "auto_research", request, execution)
         admission = store.auto_research_child_admission(child_id)
         assert admission is not None and admission.state == "accepted"
         assert store.auto_research_child_work(child_id) is None
 
-        monkeypatch.setattr(background, "start_auto_research_child_work", real_start)
+        monkeypatch.setattr(
+            "rcp.runs.auto_research_child_reconcile.start_auto_research_child_work", real_start
+        )
         callback(project_id, "auto_research", request, execution)
 
         admission = store.auto_research_child_admission(child_id)

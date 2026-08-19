@@ -26,6 +26,10 @@ from rcp.core.models import (
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import BranchMergeAlreadyCommitted
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
+from rcp.runs.auto_research_admission import (
+    reconcile_reserved_auto_research_roots,
+    reserve_auto_research,
+)
 from rcp.runs.branch_merge import branch_merge_id
 from rcp.runs.tasks.branch_merge import _apply_receipt_to_execution
 from rcp.service import RunRequest, resolve_dispatch_authority
@@ -632,7 +636,8 @@ def test_restart_reconciles_an_already_published_reserved_branch(
     service = app.state.catalog.open(project_id)
     tasks = app.state.background_tasks
     base_head = service.history.head_ref()
-    episode, root, _request = tasks.reserve_auto_research(
+    episode, root, _request = reserve_auto_research(
+        tasks,
         project_id,
         AutoResearchStartRequest(
             invocation_ceiling=2,
@@ -670,7 +675,7 @@ def test_restart_reconciles_an_already_published_reserved_branch(
         return record
 
     monkeypatch.setattr(restarted, "_spawn_record", held_spawn)
-    assert restarted.reconcile_reserved_auto_research_roots(ensure) == [root.operation_id]
+    assert reconcile_reserved_auto_research_roots(restarted, ensure) == [root.operation_id]
     assert spawned == [root.operation_id]
     assert tasks.store.episode(episode.episode_id).status == "running"  # type: ignore[union-attr]
 

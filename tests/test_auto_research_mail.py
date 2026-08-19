@@ -17,6 +17,11 @@ from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
+from rcp.runs.auto_research_admission import (
+    resume_auto_research_child_work,
+    start_auto_research,
+    start_auto_research_child_work,
+)
 from rcp.runs.auto_research_delivery import (
     deliver_pending_auto_research_mail,
     record_auto_research_message,
@@ -142,7 +147,8 @@ def test_api_dispatches_routed_child_work_without_falling_back_to_ordinary_work(
     monkeypatch.setattr(api_app_module, "stream_auto_research_child_work_run", child_entry)
     monkeypatch.setattr(api_app_module, "stream_work_run", ordinary_entry)
 
-    episode, root = app.state.background_tasks.start_auto_research(
+    episode, root = start_auto_research(
+        app.state.background_tasks,
         project_id,
         AutoResearchStartRequest(
             invocation_ceiling=5,
@@ -162,7 +168,8 @@ def test_api_dispatches_routed_child_work_without_falling_back_to_ordinary_work(
     root = wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-0000000004a2"
     instruction = "Inspect the focused hypothesis and report the bounded evidence."
-    child = app.state.background_tasks.start_auto_research_child_work(
+    child = start_auto_research_child_work(
+        app.state.background_tasks,
         episode.episode_id,
         RunRequest(
             provider="codex",
@@ -655,7 +662,8 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
             yield frame
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = background.start_auto_research(
+    episode, root = start_auto_research(
+        background,
         app.state.default_project_id,
         AutoResearchStartRequest(
             invocation_ceiling=5,
@@ -672,7 +680,8 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     root = wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000451"
     instruction = "Check the focused hypothesis and report the bounded evidence."
-    child = background.start_auto_research_child_work(
+    child = start_auto_research_child_work(
+        background,
         episode.episode_id,
         RunRequest(
             provider="codex",
@@ -748,7 +757,8 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
 
     resume_worker_id = "00000000-0000-4000-8000-000000000452"
     resume_instruction = "Check a second focused hypothesis."
-    interrupted = background.start_auto_research_child_work(
+    interrupted = start_auto_research_child_work(
+        background,
         episode.episode_id,
         RunRequest(
             provider="codex",
@@ -770,7 +780,8 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     interrupted = wait_for_task(store, interrupted.operation_id, expect="failed")
     assert interrupted.native_session_id == "resume-session"
 
-    resumed = background.resume_auto_research_child_work(
+    resumed = resume_auto_research_child_work(
+        background,
         episode.episode_id,
         resume_worker_id,
     )
@@ -926,7 +937,8 @@ async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watc
             yield frame
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = background.start_auto_research(
+    episode, root = start_auto_research(
+        background,
         project_id,
         AutoResearchStartRequest(
             invocation_ceiling=5,
@@ -943,7 +955,8 @@ async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watc
     root = wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000464"
     instruction = "Inspect the focused Experiment without changing its watcher lifecycle."
-    child = background.start_auto_research_child_work(
+    child = start_auto_research_child_work(
+        background,
         episode.episode_id,
         RunRequest(
             provider="codex",

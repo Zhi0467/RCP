@@ -17,6 +17,11 @@ from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     AutoResearchStartRequest,
 )
+from rcp.runs.auto_research_admission import (
+    start_auto_research,
+    start_auto_research_child_work,
+    start_auto_research_turn,
+)
 from rcp.runs.auto_research_delivery import (
     arm_auto_research_graph_condition,
     deliver_auto_research_watcher_group,
@@ -68,7 +73,8 @@ def _start_auto_research(
     *,
     invocation_ceiling: int = 6,
 ) -> tuple[EpisodeRecord, AgentTaskRecord]:
-    auto_research, root = tasks.start_auto_research(
+    auto_research, root = start_auto_research(
+        tasks,
         "project",
         AutoResearchStartRequest(
             invocation_ceiling=invocation_ceiling,
@@ -374,7 +380,8 @@ def test_busy_auto_research_actor_leaves_completed_watcher_unclaimed_and_unspent
     tasks = BackgroundAgentTasks(store, stream)
     auto_research, root = _start_auto_research(tasks)
     watcher = _arm_completed_graph_condition(store, auto_research, root)
-    busy = tasks.start_auto_research_turn(
+    busy = start_auto_research_turn(
+        tasks,
         auto_research.episode_id,
         AutoResearchRunRequest(
             episode_id=auto_research.episode_id,
@@ -564,7 +571,8 @@ def test_root_mail_wakes_the_exact_routed_ordinary_child_work_session(tmp_path) 
     auto_research, root = _start_auto_research(tasks)
     worker_id = "00000000-0000-4000-8000-000000000411"
     instruction = "Recheck the bounded runtime evidence and report back."
-    child = tasks.start_auto_research_child_work(
+    child = start_auto_research_child_work(
+        tasks,
         auto_research.episode_id,
         RunRequest(
             provider="codex",
@@ -694,7 +702,8 @@ def test_committed_child_work_mail_wake_reconciles_the_same_operation(
     auto_research, root = _start_auto_research(tasks)
     worker_id = "00000000-0000-4000-8000-000000000419"
     instruction = "Recheck the bounded runtime evidence and report back."
-    child = tasks.start_auto_research_child_work(
+    child = start_auto_research_child_work(
+        tasks,
         auto_research.episode_id,
         RunRequest(
             provider="codex",
@@ -787,7 +796,8 @@ def test_child_work_mail_claims_only_the_bounded_wire_prefix(tmp_path) -> None:
     auto_research, root = _start_auto_research(tasks)
     worker_id = "00000000-0000-4000-8000-000000000412"
     instruction = "Review the bounded mail batch."
-    child = tasks.start_auto_research_child_work(
+    child = start_auto_research_child_work(
+        tasks,
         auto_research.episode_id,
         RunRequest(
             provider="codex",
@@ -1084,7 +1094,8 @@ def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(tmp_pa
     auto_research, root = _start_auto_research(tasks)
     worker_id = "00000000-0000-4000-8000-000000000413"
     instruction = "Produce one bounded result and reply."
-    child = tasks.start_auto_research_child_work(
+    child = start_auto_research_child_work(
+        tasks,
         auto_research.episode_id,
         RunRequest(
             provider="codex",
@@ -1172,7 +1183,8 @@ def test_busy_root_leaves_lifecycle_and_mail_unclaimed(tmp_path) -> None:
 
     tasks = BackgroundAgentTasks(store, stream)
     auto_research, root = _start_auto_research(tasks)
-    busy = tasks.start_auto_research_turn(
+    busy = start_auto_research_turn(
+        tasks,
         auto_research.episode_id,
         AutoResearchRunRequest(
             episode_id=auto_research.episode_id,
@@ -1285,7 +1297,8 @@ def test_reconciliation_retries_every_pending_canonical_actor(tmp_path) -> None:
 
     tasks = BackgroundAgentTasks(store, stream)
     auto_research, root = _start_auto_research(tasks)
-    worker = tasks.start_auto_research_turn(
+    worker = start_auto_research_turn(
+        tasks,
         auto_research.episode_id,
         AutoResearchRunRequest(
             episode_id=auto_research.episode_id,
@@ -1447,7 +1460,8 @@ def test_busy_auto_research_actor_leaves_pending_mail_unclaimed_and_unspent(tmp_
 
     tasks = BackgroundAgentTasks(store, stream)
     auto_research, root = _start_auto_research(tasks)
-    busy = tasks.start_auto_research_turn(
+    busy = start_auto_research_turn(
+        tasks,
         auto_research.episode_id,
         AutoResearchRunRequest(
             episode_id=auto_research.episode_id,

@@ -10,23 +10,23 @@ persisted before any unclaimed watcher can win a claim.
 from __future__ import annotations
 
 import logging
-from typing import Protocol
+from typing import TYPE_CHECKING
 
 from rcp.runs.auto_research import settle_auto_research_stop
+from rcp.runs.auto_research_admission import stop_auto_research
 from rcp.storage import AppStore, EpisodeNotRunning, EpisodeRecord
+
+if TYPE_CHECKING:
+    from rcp.background import BackgroundAgentTasks
 
 logger = logging.getLogger(__name__)
 
 FENCE_DIAGNOSTIC = "The authorizing member left this project."
 
 
-class _StopsAutoResearch(Protocol):
-    def stop_auto_research(self, episode_id: str) -> object: ...
-
-
 def fence_episodes_for_departed_member(
     store: AppStore,
-    background_tasks: _StopsAutoResearch,
+    background_tasks: BackgroundAgentTasks,
     project_id: str,
     user_id: str,
 ) -> list[str]:
@@ -58,13 +58,13 @@ def fence_episodes_for_departed_member(
 
 def _fence_one(
     store: AppStore,
-    background_tasks: _StopsAutoResearch,
+    background_tasks: BackgroundAgentTasks,
     project_id: str,
     episode: EpisodeRecord,
 ) -> None:
     episode_id = episode.episode_id
     if episode.mode == "auto_research":
-        background_tasks.stop_auto_research(episode_id)
+        stop_auto_research(background_tasks, episode_id)
         settle_auto_research_stop(store, episode_id, diagnostic=FENCE_DIAGNOSTIC)
         return
     node_id = _experiment_control_node(store, project_id, episode_id)

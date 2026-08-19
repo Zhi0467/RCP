@@ -13,6 +13,23 @@ from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
+from rcp.runs.auto_research_admission import (
+    auto_research_child_work_task,
+    ensure_auto_research_child_work_spawned,
+    pause_auto_research_child_work,
+    reconcile_committed_auto_research_dispatches,
+    reconcile_reserved_auto_research_roots,
+    reserve_auto_research,
+    resume_auto_research_child_experiment,
+    resume_auto_research_child_work,
+    start_auto_research,
+    start_auto_research_child_experiment,
+    start_auto_research_child_work,
+    start_auto_research_child_work_message_wake,
+    start_auto_research_turn,
+    stop_auto_research,
+    stop_auto_research_child_work,
+)
 from rcp.runs.episodes.report import start_episode_report
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
@@ -456,7 +473,8 @@ def test_auto_research_root_uses_episode_lineage_and_strict_request_decode(tmp_p
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
-    episode, root = tasks.start_auto_research(
+    episode, root = start_auto_research(
+        tasks,
         "project",
         _auto_start(starting_instruction="  Begin with the disputed claim.  "),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -493,7 +511,8 @@ def test_reserved_auto_research_root_reconciles_branch_before_provider_dispatch(
         yield  # pragma: no cover
 
     tasks = BackgroundAgentTasks(store, forbidden_stream)
-    episode, root, _request = tasks.reserve_auto_research(
+    episode, root, _request = reserve_auto_research(
+        tasks,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -511,8 +530,8 @@ def test_reserved_auto_research_root_reconciles_branch_before_provider_dispatch(
         return record
 
     monkeypatch.setattr(restarted, "_spawn_record", held_spawn)
-    started = restarted.reconcile_reserved_auto_research_roots(
-        lambda reserved: order.append(f"branch:{reserved.episode_id}")
+    started = reconcile_reserved_auto_research_roots(
+        restarted, lambda reserved: order.append(f"branch:{reserved.episode_id}")
     )
 
     assert started == [root.operation_id]
@@ -529,7 +548,8 @@ def test_spawned_child_uses_ordinary_node_work_and_atomically_spends_b(tmp_path:
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = background.start_auto_research(
+    episode, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -543,7 +563,8 @@ def test_spawned_child_uses_ordinary_node_work_and_atomically_spends_b(tmp_path:
     instruction = "Resolve the runtime blocker, then report the bounded evidence."
     request = _spawned_work_request(worker_id, instruction)
 
-    child = background.start_auto_research_child_work(
+    child = start_auto_research_child_work(
+        background,
         episode.episode_id,
         request,
         admitted_by_operation_id=root.operation_id,
@@ -553,7 +574,8 @@ def test_spawned_child_uses_ordinary_node_work_and_atomically_spends_b(tmp_path:
     )
     child = wait_for_task(store, child.operation_id, expect="succeeded")
 
-    route, current = background.auto_research_child_work_task(
+    route, current = auto_research_child_work_task(
+        background,
         episode.episode_id,
         worker_id,
     )
@@ -592,7 +614,8 @@ def test_committed_child_dispatch_is_claimed_once_under_concurrent_reconciliatio
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = background.start_auto_research(
+    episode, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -611,7 +634,8 @@ def test_committed_child_dispatch_is_claimed_once_under_concurrent_reconciliatio
 
     monkeypatch.setattr(background, "_spawn_record", crash_before_spawn)
     with pytest.raises(RuntimeError, match="after child commit"):
-        background.start_auto_research_child_work(
+        start_auto_research_child_work(
+            background,
             episode.episode_id,
             _spawned_work_request(worker_id, instruction),
             admitted_by_operation_id=root.operation_id,
@@ -622,7 +646,8 @@ def test_committed_child_dispatch_is_claimed_once_under_concurrent_reconciliatio
     monkeypatch.setattr(background, "_spawn_record", real_spawn_record)
 
     def ensure() -> str:
-        return background.ensure_auto_research_child_work_spawned(
+        return ensure_auto_research_child_work_spawned(
+            background,
             episode.episode_id,
             worker_id,
             operation_id=worker_id,
@@ -652,7 +677,8 @@ def test_restart_dispatches_committed_fresh_child_work_without_respending_b(
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = background.start_auto_research(
+    episode, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -670,7 +696,8 @@ def test_restart_dispatches_committed_fresh_child_work_without_respending_b(
 
     monkeypatch.setattr(background, "_spawn_record", crash_after_commit)
     with pytest.raises(RuntimeError, match="before Work dispatch"):
-        background.start_auto_research_child_work(
+        start_auto_research_child_work(
+            background,
             episode.episode_id,
             _spawned_work_request(worker_id, instruction),
             admitted_by_operation_id=root.operation_id,
@@ -683,7 +710,9 @@ def test_restart_dispatches_committed_fresh_child_work_without_respending_b(
     restarted = BackgroundAgentTasks(store, stream)
     queued = store.agent_task(worker_id)
     assert queued is not None and queued.status == "queued"
-    assert restarted.reconcile_committed_auto_research_dispatches() == [worker_id]
+    assert reconcile_committed_auto_research_dispatches(
+        restarted,
+    ) == [worker_id]
     wait_for_task(store, worker_id, expect="succeeded")
 
     assert executions == ["fresh"]
@@ -712,7 +741,8 @@ def test_restart_dispatches_committed_child_work_resume_without_respending_b(
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = background.start_auto_research(
+    episode, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -724,7 +754,8 @@ def test_restart_dispatches_committed_child_work_resume_without_respending_b(
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000352"
     instruction = "Resume this exact paid child allocation after restart."
-    failed = background.start_auto_research_child_work(
+    failed = start_auto_research_child_work(
+        background,
         episode.episode_id,
         _spawned_work_request(worker_id, instruction),
         admitted_by_operation_id=root.operation_id,
@@ -752,7 +783,8 @@ def test_restart_dispatches_committed_child_work_resume_without_respending_b(
 
     monkeypatch.setattr(background, "_spawn_record", crash_after_commit)
     with pytest.raises(RuntimeError, match="before Work Resume dispatch"):
-        background.resume_auto_research_child_work(
+        resume_auto_research_child_work(
+            background,
             episode.episode_id,
             worker_id,
             operation_id=resume_id,
@@ -762,7 +794,9 @@ def test_restart_dispatches_committed_child_work_resume_without_respending_b(
     restarted = BackgroundAgentTasks(store, stream)
     queued = store.agent_task(resume_id)
     assert queued is not None and queued.status == "queued"
-    assert restarted.reconcile_committed_auto_research_dispatches() == [resume_id]
+    assert reconcile_committed_auto_research_dispatches(
+        restarted,
+    ) == [resume_id]
     completed = wait_for_task(store, resume_id, expect="succeeded")
 
     assert completed.native_session_id == "restart-work-session"
@@ -792,7 +826,8 @@ def test_spawned_child_message_wake_reuses_exact_work_session_and_spends_b(tmp_p
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = background.start_auto_research(
+    episode, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -804,7 +839,8 @@ def test_spawned_child_message_wake_reuses_exact_work_session_and_spends_b(tmp_p
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000321"
     instruction = "Inspect the bounded result and report it."
-    child = background.start_auto_research_child_work(
+    child = start_auto_research_child_work(
+        background,
         episode.episode_id,
         _spawned_work_request(worker_id, instruction),
         admitted_by_operation_id=root.operation_id,
@@ -828,7 +864,8 @@ def test_spawned_child_message_wake_reuses_exact_work_session_and_spends_b(tmp_p
     )
     wake_id = "00000000-0000-4000-8000-000000000323"
 
-    wake = background.start_auto_research_child_work_message_wake(
+    wake = start_auto_research_child_work_message_wake(
+        background,
         episode.episode_id,
         worker_id,
         [message_id],
@@ -872,7 +909,8 @@ def test_failed_spawned_child_exact_resume_reuses_checkpoint_and_b_allocation(
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = background.start_auto_research(
+    episode, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -884,7 +922,8 @@ def test_failed_spawned_child_exact_resume_reuses_checkpoint_and_b_allocation(
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000311"
     instruction = "Diagnose the transient runtime failure."
-    failed = background.start_auto_research_child_work(
+    failed = start_auto_research_child_work(
+        background,
         episode.episode_id,
         _spawned_work_request(worker_id, instruction),
         admitted_by_operation_id=root.operation_id,
@@ -895,7 +934,8 @@ def test_failed_spawned_child_exact_resume_reuses_checkpoint_and_b_allocation(
     wait_for_task(store, failed.operation_id, expect="failed")
     before = store.episode_budget_meter(episode.episode_id).invocations_used
 
-    outcome = background.resume_auto_research_child_work(
+    outcome = resume_auto_research_child_work(
+        background,
         episode.episode_id,
         worker_id,
         operation_id="00000000-0000-4000-8000-000000000312",
@@ -929,7 +969,8 @@ def test_spawned_child_resume_preserves_recovery_when_remote_stage_probe_is_unce
         yield _sse(AgentEvent(event="error", text="Transient network failure."))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = background.start_auto_research(
+    episode, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -941,7 +982,8 @@ def test_spawned_child_resume_preserves_recovery_when_remote_stage_probe_is_unce
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000313"
     instruction = "Resume only if the exact remote workspace can be checked."
-    failed = background.start_auto_research_child_work(
+    failed = start_auto_research_child_work(
+        background,
         episode.episode_id,
         _spawned_work_request(worker_id, instruction),
         admitted_by_operation_id=root.operation_id,
@@ -957,7 +999,8 @@ def test_spawned_child_resume_preserves_recovery_when_remote_stage_probe_is_unce
     )
 
     with pytest.raises(OSError, match="remote infrastructure is unavailable"):
-        background.resume_auto_research_child_work(
+        resume_auto_research_child_work(
+            background,
             episode.episode_id,
             worker_id,
             operation_id="00000000-0000-4000-8000-000000000314",
@@ -972,7 +1015,8 @@ def test_spawned_child_resume_preserves_recovery_when_remote_stage_probe_is_unce
         "rcp.background.RemoteRunStage.directory_exists",
         lambda _stage, _root: False,
     )
-    unavailable = background.resume_auto_research_child_work(
+    unavailable = resume_auto_research_child_work(
+        background,
         episode.episode_id,
         worker_id,
         operation_id="00000000-0000-4000-8000-000000000314",
@@ -995,7 +1039,8 @@ def test_unusable_spawned_child_resume_names_fresh_spawn(tmp_path: Path) -> None
         yield _sse(AgentEvent(event="error", text="You've hit your session limit"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = background.start_auto_research(
+    episode, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -1007,7 +1052,8 @@ def test_unusable_spawned_child_resume_names_fresh_spawn(tmp_path: Path) -> None
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000321"
     instruction = "Continue the bounded probe."
-    failed = background.start_auto_research_child_work(
+    failed = start_auto_research_child_work(
+        background,
         episode.episode_id,
         _spawned_work_request(worker_id, instruction),
         admitted_by_operation_id=root.operation_id,
@@ -1018,7 +1064,7 @@ def test_unusable_spawned_child_resume_names_fresh_spawn(tmp_path: Path) -> None
     wait_for_task(store, failed.operation_id, expect="failed")
     before = store.episode_budget_meter(episode.episode_id).invocations_used
 
-    outcome = background.resume_auto_research_child_work(episode.episode_id, worker_id)
+    outcome = resume_auto_research_child_work(background, episode.episode_id, worker_id)
 
     assert outcome.disposition == "resume_unavailable"
     assert outcome.task is None
@@ -1041,7 +1087,8 @@ def test_routed_worker_pause_and_stop_target_only_its_current_attempt(tmp_path: 
         yield _sse(AgentEvent(event="paused", text="Paused at the exact child checkpoint."))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = background.start_auto_research(
+    episode, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -1053,7 +1100,8 @@ def test_routed_worker_pause_and_stop_target_only_its_current_attempt(tmp_path: 
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000325"
     instruction = "Pause this bounded diagnostic when asked."
-    child = background.start_auto_research_child_work(
+    child = start_auto_research_child_work(
+        background,
         episode.episode_id,
         _spawned_work_request(worker_id, instruction),
         admitted_by_operation_id=root.operation_id,
@@ -1063,10 +1111,11 @@ def test_routed_worker_pause_and_stop_target_only_its_current_attempt(tmp_path: 
     )
     assert child_started.wait(timeout=2)
 
-    pausing = background.pause_auto_research_child_work(episode.episode_id, worker_id)
+    pausing = pause_auto_research_child_work(background, episode.episode_id, worker_id)
     assert pausing.operation_id == child.operation_id
     paused = wait_for_task(store, child.operation_id, expect="paused")
-    stopped_attempt = background.stop_auto_research_child_work(
+    stopped_attempt = stop_auto_research_child_work(
+        background,
         episode.episode_id,
         worker_id,
     )
@@ -1075,7 +1124,7 @@ def test_routed_worker_pause_and_stop_target_only_its_current_attempt(tmp_path: 
     route = store.auto_research_child_work(worker_id)
     assert route is not None
     assert route.stop_requested_at is not None
-    unavailable = background.resume_auto_research_child_work(episode.episode_id, worker_id)
+    unavailable = resume_auto_research_child_work(background, episode.episode_id, worker_id)
     assert unavailable.disposition == "resume_unavailable"
     assert unavailable.reason == "the worker was stopped"
     assert unavailable.replacement_command == "spawn"
@@ -1108,7 +1157,8 @@ def test_child_experiment_start_and_exact_resume_spend_e_only_once(tmp_path: Pat
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    parent, root = background.start_auto_research(
+    parent, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -1135,7 +1185,7 @@ def test_child_experiment_start_and_exact_resume_spend_e_only_once(tmp_path: Pat
         updated_at=now,
     )
 
-    failed = background.start_auto_research_child_experiment(route, request)
+    failed = start_auto_research_child_experiment(background, route, request)
     wait_for_task(store, failed.operation_id, expect="failed")
     child_episode = store.episode(child_episode_id)
     assert child_episode is not None
@@ -1145,7 +1195,8 @@ def test_child_experiment_start_and_exact_resume_spend_e_only_once(tmp_path: Pat
     allowance = store.auto_research_experiment_allowance(parent.episode_id)
     assert allowance.used == 1
 
-    outcome = background.resume_auto_research_child_experiment(
+    outcome = resume_auto_research_child_experiment(
+        background,
         parent.episode_id,
         child_episode_id,
         operation_id="00000000-0000-4000-8000-000000000332",
@@ -1174,7 +1225,8 @@ def test_restart_dispatches_committed_fresh_child_experiment_without_respending_
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    parent, root = background.start_auto_research(
+    parent, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -1205,7 +1257,8 @@ def test_restart_dispatches_committed_fresh_child_experiment_without_respending_
 
     monkeypatch.setattr(background, "_spawn_record", crash_after_commit)
     with pytest.raises(RuntimeError, match="before Experiment dispatch"):
-        background.start_auto_research_child_experiment(
+        start_auto_research_child_experiment(
+            background,
             route,
             _child_experiment_request(child_id, goal),
         )
@@ -1217,7 +1270,9 @@ def test_restart_dispatches_committed_fresh_child_experiment_without_respending_
     restarted = BackgroundAgentTasks(store, stream)
     queued = store.agent_task(operation_id)
     assert queued is not None and queued.status == "queued"
-    assert restarted.reconcile_committed_auto_research_dispatches() == [operation_id]
+    assert reconcile_committed_auto_research_dispatches(
+        restarted,
+    ) == [operation_id]
     wait_for_task(store, operation_id, expect="succeeded")
 
     assert executions == ["fresh"]
@@ -1253,7 +1308,8 @@ def test_restart_dispatches_committed_child_experiment_resume_without_respending
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    parent, root = background.start_auto_research(
+    parent, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -1278,7 +1334,8 @@ def test_restart_dispatches_committed_child_experiment_resume_without_respending
         created_at=now,
         updated_at=now,
     )
-    failed = background.start_auto_research_child_experiment(
+    failed = start_auto_research_child_experiment(
+        background,
         route,
         _child_experiment_request(child_id, goal),
     )
@@ -1302,7 +1359,8 @@ def test_restart_dispatches_committed_child_experiment_resume_without_respending
 
     monkeypatch.setattr(background, "_spawn_record", crash_after_commit)
     with pytest.raises(RuntimeError, match="before Experiment Resume dispatch"):
-        background.resume_auto_research_child_experiment(
+        resume_auto_research_child_experiment(
+            background,
             parent.episode_id,
             child_id,
             operation_id=resume_id,
@@ -1312,7 +1370,9 @@ def test_restart_dispatches_committed_child_experiment_resume_without_respending
     restarted = BackgroundAgentTasks(store, stream)
     queued = store.agent_task(resume_id)
     assert queued is not None and queued.status == "queued"
-    assert restarted.reconcile_committed_auto_research_dispatches() == [resume_id]
+    assert reconcile_committed_auto_research_dispatches(
+        restarted,
+    ) == [resume_id]
     completed = wait_for_task(store, resume_id, expect="succeeded")
 
     assert completed.native_session_id == "restart-experiment-session"
@@ -1357,7 +1417,8 @@ def test_restart_redispatches_committed_child_experiment_graph_repair_exactly_on
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    parent, root = background.start_auto_research(
+    parent, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -1383,7 +1444,7 @@ def test_restart_redispatches_committed_child_experiment_graph_repair_exactly_on
         created_at=now,
         updated_at=now,
     )
-    rejected = background.start_auto_research_child_experiment(route, child_request)
+    rejected = start_auto_research_child_experiment(background, route, child_request)
     rejected = wait_for_task(store, rejected.operation_id, expect="succeeded")
     assert rejected.native_session_id == "graph-repair-session"
     assert rejected.result is not None
@@ -1408,7 +1469,9 @@ def test_restart_redispatches_committed_child_experiment_graph_repair_exactly_on
     restarted = BackgroundAgentTasks(store, stream)
     queued = store.agent_task(repair_id)
     assert queued is not None and queued.status == "queued"
-    assert restarted.reconcile_committed_auto_research_dispatches() == [repair_id]
+    assert reconcile_committed_auto_research_dispatches(
+        restarted,
+    ) == [repair_id]
     wait_for_task(store, repair_id, expect="succeeded")
 
     assert continuations == ["fresh", "graph_repair"]
@@ -1445,7 +1508,8 @@ def test_child_experiment_resume_preserves_recovery_when_remote_stage_probe_is_u
         yield _sse(AgentEvent(event="error", text="Transient network failure."))
 
     background = BackgroundAgentTasks(store, stream)
-    parent, root = background.start_auto_research(
+    parent, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -1470,7 +1534,8 @@ def test_child_experiment_resume_preserves_recovery_when_remote_stage_probe_is_u
         created_at=now,
         updated_at=now,
     )
-    failed = background.start_auto_research_child_experiment(
+    failed = start_auto_research_child_experiment(
+        background,
         route,
         _child_experiment_request(child_episode_id, goal),
     )
@@ -1482,7 +1547,8 @@ def test_child_experiment_resume_preserves_recovery_when_remote_stage_probe_is_u
     )
 
     with pytest.raises(OSError, match="remote infrastructure is unavailable"):
-        background.resume_auto_research_child_experiment(
+        resume_auto_research_child_experiment(
+            background,
             parent.episode_id,
             child_episode_id,
             operation_id="00000000-0000-4000-8000-000000000334",
@@ -1497,7 +1563,8 @@ def test_child_experiment_resume_preserves_recovery_when_remote_stage_probe_is_u
         "rcp.background.RemoteRunStage.directory_exists",
         lambda _stage, _root: False,
     )
-    unavailable = background.resume_auto_research_child_experiment(
+    unavailable = resume_auto_research_child_experiment(
+        background,
         parent.episode_id,
         child_episode_id,
         operation_id="00000000-0000-4000-8000-000000000334",
@@ -1583,7 +1650,8 @@ def test_auto_research_clean_orchestrator_retry_keeps_paid_allocation(tmp_path: 
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
-    episode, root = tasks.start_auto_research(
+    episode, root = start_auto_research(
+        tasks,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -1617,7 +1685,8 @@ def test_auto_research_stop_skips_report_generation(tmp_path: Path) -> None:
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
-    episode, root = tasks.start_auto_research(
+    episode, root = start_auto_research(
+        tasks,
         "project",
         _auto_start(),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -1628,7 +1697,7 @@ def test_auto_research_stop_skips_report_generation(tmp_path: Path) -> None:
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
 
-    stopped = tasks.stop_auto_research(episode.episode_id)
+    stopped = stop_auto_research(tasks, episode.episode_id)
 
     assert stopped.status == "stopped"
     assert stopped.ending == "stopped"
@@ -1652,7 +1721,8 @@ def test_over_ceiling_admission_does_not_fence_an_active_paid_turn(tmp_path: Pat
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
-    episode, root = tasks.start_auto_research(
+    episode, root = start_auto_research(
+        tasks,
         "project",
         _auto_start(invocation_ceiling=1),
         authorized_by=fabricated_authorizer("Researcher"),
@@ -1674,7 +1744,8 @@ def test_over_ceiling_admission_does_not_fence_an_active_paid_turn(tmp_path: Pat
 
     try:
         with pytest.raises(EpisodeInvocationCeilingReached):
-            tasks.start_auto_research_turn(
+            start_auto_research_turn(
+                tasks,
                 episode.episode_id,
                 worker_request,
                 parent_operation_id=root.operation_id,
@@ -1862,7 +1933,8 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    parent, root = background.start_auto_research(
+    parent, root = start_auto_research(
+        background,
         "project",
         _auto_start(),
         authorized_by=authorizer,
@@ -1888,7 +1960,7 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
         created_at=now,
         updated_at=now,
     )
-    child_root = background.start_auto_research_child_experiment(route, child_request)
+    child_root = start_auto_research_child_experiment(background, route, child_request)
     child_root = wait_for_task(store, child_root.operation_id, expect="succeeded")
     store.commit_experiment_episode_turn(
         episode_id=child_id,
@@ -1974,7 +2046,9 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
     restarted = BackgroundAgentTasks(store, stream)
     queued = store.agent_task(operation_id)
     assert queued is not None and queued.status == "queued"
-    assert restarted.reconcile_committed_auto_research_dispatches() == [operation_id]
+    assert reconcile_committed_auto_research_dispatches(
+        restarted,
+    ) == [operation_id]
     completed = wait_for_task(store, operation_id, expect="succeeded")
 
     claimed_after = store.watcher(watcher.watcher_id)

@@ -935,7 +935,8 @@ Updated at every slice boundary. The next agent reads this, not the diff.
 | B2 | `7899c2a` | One settlement callback, carrying the execution object. The engine no longer knows Auto-research settles differently. |
 | 0 | `44bc556` | `resolved_dispatch_authority` moved to `runs/task_policy.py`, with the three type aliases it needs. |
 | C1 + C2 | `08af3e7` | Branch-merge and watcher admission extracted. One commit: both edit `background.py`, and splitting one file's diff by hunk risks committing a state that does not build. |
-| C4 | — | Experiment recovery extracted. `_skill_update` moved to `runs/task_policy.py` first — importing it back from `background` would have been circular. |
+| C4 | `ce4d5d2` | Experiment recovery extracted. `_skill_update` moved to `runs/task_policy.py` first — importing it back from `background` would have been circular. |
+| C5a | — | Auto-research extracted: **36** methods, not the 32 the plan listed. `_create_and_spawn` untouched; its three wrong-way calls now point at the new module and are C5b's job. |
 
 ### Slice B2: settled by the human on 2026-08-19
 

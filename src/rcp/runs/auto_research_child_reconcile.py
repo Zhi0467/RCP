@@ -14,6 +14,9 @@ from rcp.runs.auto_research import (
     AutoResearchCommandFile,
     AutoResearchRunRequest,
 )
+from rcp.runs.auto_research_admission import (
+    start_auto_research_child_work,
+)
 from rcp.runs.auto_research_experiments import (
     AutoResearchExperimentAction,
     AutoResearchExperimentCoordinator,
@@ -283,7 +286,8 @@ def _reconcile_spawn(
         admission.child_id,
     )
     _validate_worker_request(arguments, snapshot.text, admission.child_id, request)
-    worker = background.start_auto_research_child_work(
+    worker = start_auto_research_child_work(
+        background,
         admission.episode_id,
         request,
         admitted_by_operation_id=context.task.operation_id,
