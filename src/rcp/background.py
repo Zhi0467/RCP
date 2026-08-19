@@ -3115,6 +3115,17 @@ class BackgroundAgentTasks:
         auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
         claim_graph_repair_parent: bool = False,
     ) -> AgentTaskRecord | None:
+        """Insert one admitted task row and start it.
+
+        Deliberately not split by surface.  It reads like four surfaces sharing
+        one function, but 82% of it is universal row assembly, and no two owners
+        have ever collided here — which is the failure a split would prevent.
+        The Auto-research branch and its two parameters leave when Auto-research
+        admission moves out and inserts its own row; that is a consequence of
+        the move, not separate work.  Splitting the rest was measured and
+        rejected.
+        """
+
         episode: EpisodeRecord | None = None
         task_graph_target = parent.graph_target if parent is not None else GraphTargetRef()
         if isinstance(request, BranchMergeRunRequest):
@@ -3864,6 +3875,13 @@ class BackgroundAgentTasks:
             if artifacts:
                 result["artifacts"] = [item.model_dump(mode="json") for item in artifacts]
             if isinstance(exc, TaskFailed):
+                # The one call from the general engine into one job type's
+                # policy, kept on purpose.  It fires after a provider failure
+                # deep inside a running worker, so there is no caller to invert.
+                # Replacing it with a generic failure event that Experiment
+                # policy subscribes to would be a dispatch registry under
+                # another name, and would hide the behaviour rather than
+                # decouple it.  One honest named call is the better trade.
                 self._record_bound_experiment_session_limit(record, request, str(exc))
             current = self.store.agent_task(operation_id)
             report_already_finalized = (

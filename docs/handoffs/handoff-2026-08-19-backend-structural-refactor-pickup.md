@@ -45,6 +45,30 @@
 5. The current source and tests. Do not implement from old line numbers in the
    audit.
 
+## Two things this plan deliberately does not do
+
+Both look like obvious cleanup. Both were measured, and the measurement said no.
+An agent applying this plan's own rules mechanically will try to "finish" them,
+so they are stated here, at the two code sites, and again inside the slices that
+touch them.
+
+1. **`_create_and_spawn` is not refactored.** Four `isinstance` branches in one
+   211-line function is the most inviting target in the file. It is 5.3% of the
+   class, 82% of it is universal row assembly, and its whole edit history shows
+   no case of two owners colliding in it — which is the failure a split exists to
+   prevent. Its Auto-research branch leaves as a *consequence* of C5, never as
+   its own task. See decision 3.
+2. **One engine call into Experiment policy stays.** `_run` calls
+   `_record_bound_experiment_session_limit` after a provider failure deep inside
+   a running worker. There is no caller to invert. Removing it means the engine
+   emits a generic failure event that Experiment policy subscribes to — a
+   dispatch registry under another name, forbidden by the settled decisions. The
+   method still moves to its Experiment module in C4; the call follows it there
+   as a plain import and stays a plain call. See the wrong-way-call table.
+
+Neither is a loose end, and neither is deferred work. If either starts to look
+necessary, that is a stop-and-ask, not a judgement call.
+
 ## Suggested skills
 
 - Use `grill-me` first to discuss the bounded decisions in this document with
@@ -497,6 +521,7 @@ calling the shared creation function. It is not restructured. When Auto-research
 admission moves out it inserts its own row, so its 27 lines and both
 Auto-research-only parameters leave with it as a consequence of that move rather
 than as separate work. Experiment's 9 lines and the `episode_id` ternary stay.
+The function's own docstring now carries this reason, so it outlives this file.
 
 **This reverses the recommendation originally made in this session.** That
 recommendation was based on how the function reads — four `isinstance` branches —
@@ -663,8 +688,10 @@ it fires after a provider failure deep inside a running job. There is no caller 
 invert. Removing it would require the engine to emit a generic failure event that
 Experiment policy subscribes to — a dispatch registry under another name, which
 the settled decisions forbid and which makes the behaviour harder to follow. One
-honest, named, documented call is the better trade. Do not "fix" this later
-without reopening the decision.
+honest, named, documented call is the better trade. The reason is now recorded
+at the call site in [background.py](../../src/rcp/background.py) as well as
+here, so it survives this file being archived. Do not "fix" this later without
+reopening the decision.
 
 ### Slice A — make construction stop writing to the database
 
@@ -773,6 +800,13 @@ pattern is set on a one-method move before the 1,705-line one:
 | C3 | Episode report | folded into Slice B | `runs/episodes/report.py` | 33 |
 | C4 | Experiment loop | `_retry_experiment_loop`, `_restart_stopping_experiment_recoveries`, `_preflight_experiment_episode_recovery`, `_record_bound_experiment_session_limit` | `src/rcp/runs/experiment_recovery.py` | 326 |
 | C5 | Auto-research | the 32 listed below | `src/rcp/runs/auto_research_admission.py` | 1,705 |
+
+**C4 moves the method that `_run` calls, and keeps the call.**
+`_record_bound_experiment_session_limit` relocates with the other three
+Experiment methods. `_run` then calls it at its new address through a plain
+import — the method moving out is the point, the call surviving is the
+documented exception. Do not leave the method behind on the class to avoid the
+import, and do not replace the call with an event or a callback.
 
 **C5 also removes `_create_and_spawn`'s three wrong-way calls.** Auto-research
 admission inserts its own task row rather than passing
