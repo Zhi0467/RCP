@@ -932,9 +932,10 @@ Updated at every slice boundary. The next agent reads this, not the diff.
 | Guards | `da50c3d` | The two deliberate non-refactors recorded at their code sites. |
 | A | `68c0ba7` | Constructor purity. Re-measurement found **14** store-mutating constructors, not 10. A post-change probe over the whole suite reports none. |
 | B1 | `a931f02` | `runs/episodes/` package: `reconcile.py`, `wrapup.py`, and report admission moved off the engine. Pure relocation. |
-| B2 | — | One settlement callback, carrying the execution object. The engine no longer knows Auto-research settles differently. |
+| B2 | `7899c2a` | One settlement callback, carrying the execution object. The engine no longer knows Auto-research settles differently. |
 | 0 | `44bc556` | `resolved_dispatch_authority` moved to `runs/task_policy.py`, with the three type aliases it needs. |
-| C1 + C2 | — | Branch-merge and watcher admission extracted. One commit: both edit `background.py`, and splitting one file's diff by hunk risks committing a state that does not build. |
+| C1 + C2 | `08af3e7` | Branch-merge and watcher admission extracted. One commit: both edit `background.py`, and splitting one file's diff by hunk risks committing a state that does not build. |
+| C4 | — | Experiment recovery extracted. `_skill_update` moved to `runs/task_policy.py` first — importing it back from `background` would have been circular. |
 
 ### Slice B2: settled by the human on 2026-08-19
 

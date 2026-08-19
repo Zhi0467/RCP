@@ -11,6 +11,7 @@ from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import CoachRequest, RunRequest
+from rcp.skill_registry import SkillSelection
 from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore
 
 logger = logging.getLogger(__name__)
@@ -288,3 +289,25 @@ def resolved_dispatch_authority(
                 "parent's authority binding."
             )
     return authority
+
+
+def skill_update(
+    skills: SkillSelection | None,
+    *,
+    mode: Literal["python", "json"] = "python",
+) -> dict[str, object]:
+    """Refresh a continued attempt's recorded packages with what it will stage.
+
+    Every launch re-resolves the selected ids, so a record that kept the earlier
+    attempt's versions would misreport an upgraded package.
+    """
+
+    if skills is None:
+        return {}
+    if mode == "json":
+        return skills.model_dump(mode="json")
+    return {
+        "workflow_ids": list(skills.workflow_ids),
+        "skill_ids": list(skills.skill_ids),
+        "resolved_skill_packages": list(skills.resolved_skill_packages),
+    }
