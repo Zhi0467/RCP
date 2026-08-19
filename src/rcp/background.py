@@ -37,6 +37,7 @@ from rcp.runs.auto_research_recovery import (
     record_structural_failure,
 )
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
+from rcp.runs.episodes.report import restart_interrupted_episode_reports
 from rcp.runs.experiment_admission import experiment_start_message
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
@@ -304,7 +305,7 @@ class BackgroundAgentTasks:
         )
         self._restart_stopping_experiment_recoveries()
         self.store.settle_ready_experiment_loop_stops()
-        self._restart_interrupted_episode_reports()
+        restart_interrupted_episode_reports(self)
 
     def start(
         self,
@@ -629,7 +630,7 @@ class BackgroundAgentTasks:
             f"{error}"
         )
         self.store.fail_agent_task(task.operation_id, diagnostic)
-        from rcp.runs.episode_wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
+        from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 
         begin_episode_report_wrapup(
             self.store,
@@ -1681,41 +1682,6 @@ class BackgroundAgentTasks:
             episode_id=episode_id,
             recipient_task_id=recipient_task_id,
         )
-
-    def start_episode_report(self, episode_id: str) -> AgentTaskRecord | None:
-        """Launch or restart the one durable hidden allocation for an episode."""
-
-        episode = self.store.episode(episode_id)
-        if episode is None:
-            raise KeyError(episode_id)
-        if episode.status != "wrapping_up" or episode.wrapup_state not in {"pending", "running"}:
-            return None
-        wrapup = self.store.episode_wrapup(episode_id)
-        if wrapup is None or wrapup.allocation_operation_id is None:
-            raise ValueError("The episode report lost its durable allocation fence.")
-        existing = self.store.agent_task(wrapup.allocation_operation_id)
-        if existing is not None and existing.status in {"queued", "running", "pausing"}:
-            with self._controls_lock:
-                worker = self._workers.get(existing.operation_id)
-                if worker is not None:
-                    return existing
-            if existing.status != "queued":
-                return None
-        task = self.store.requeue_interrupted_episode_report_allocation(episode_id)
-        if task.status != "queued":
-            return None
-        if task.kind != "episode_report" or task.visible or task.episode_id != episode_id:
-            raise ValueError("The episode report allocation lost its hidden task boundary.")
-        request = EpisodeReportRunRequest.model_validate(task.request)
-        if request.episode_id != episode_id:
-            raise ValueError("The episode report request changed its parent episode.")
-        self._require_operation(task.parent_operation_id or "")
-        return self.launch_admitted(task.operation_id)
-
-    def _restart_interrupted_episode_reports(self) -> None:
-        for episode in self.store.episodes_awaiting_report():
-            with suppress(KeyError, RuntimeError, ValueError):
-                self.start_episode_report(episode.episode_id)
 
     def _restart_stopping_experiment_recoveries(self) -> None:
         """Let an already-authorized Experiment turn finish behind its Stop fence.

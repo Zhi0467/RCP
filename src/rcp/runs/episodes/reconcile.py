@@ -19,7 +19,8 @@ from rcp.runs.auto_research_recovery import (
     reconcile_auto_research_task_settlement,
     reconcile_due_auto_research_recoveries,
 )
-from rcp.runs.episode_wrapup import begin_episode_report_wrapup
+from rcp.runs.episodes.report import start_episode_report
+from rcp.runs.episodes.wrapup import begin_episode_report_wrapup
 from rcp.runs.experiment_loop import (
     experiment_loop_operational_ending_wrapup_spec,
     experiment_loop_wrapup_spec,
@@ -72,7 +73,7 @@ class EpisodeReconciler:
                 auto_research_wrapup_spec(self.store, signal),
             )
             if admission.launchable:
-                self.background.start_episode_report(signal.episode_id)
+                start_episode_report(self.background, signal.episode_id)
             return True
         except Exception as exc:
             self.logger.warning(
@@ -116,7 +117,7 @@ class EpisodeReconciler:
             if self._has_unsettled_visible_episode_task(episode_id):
                 return
             try:
-                self.background.start_episode_report(episode_id)
+                start_episode_report(self.background, episode_id)
             except Exception as exc:
                 self.logger.warning(
                     "Could not restart episode report for %s after %s: %s",
@@ -300,7 +301,7 @@ class EpisodeReconciler:
                 return
             admission = begin_episode_report_wrapup(self.store, spec)
             if admission.launchable:
-                self.background.start_episode_report(spec.episode_id)
+                start_episode_report(self.background, spec.episode_id)
         except Exception as exc:
             self.logger.warning(
                 "Could not reconcile Experiment episode %s after %s: %s",

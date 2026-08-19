@@ -13,7 +13,8 @@ from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
-from rcp.runs.episode_wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
+from rcp.runs.episodes.report import start_episode_report
+from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
@@ -2093,7 +2094,7 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(tmp_pat
     assert sum(item.category == "operation_created" for item in receipts) == 1
     assert not any(item.category == "operation_completed" for item in receipts)
     assert generic_settlements == []
-    assert tasks.start_episode_report("report-episode") is None
+    assert start_episode_report(tasks, "report-episode") is None
     with pytest.raises(ValueError, match="no Retry control"):
         tasks.retry(hidden.operation_id)
     with pytest.raises(ValueError, match="no Resume control"):
@@ -2132,7 +2133,7 @@ def test_report_runner_terminal_error_is_not_generically_retried_or_resettled(
     )
     tasks.recover_at_startup()
     assert entered.wait(timeout=2)
-    duplicate = tasks.start_episode_report("report-episode")
+    duplicate = start_episode_report(tasks, "report-episode")
     assert duplicate is not None and duplicate.operation_id == hidden.operation_id
     release.set()
     failed = wait_for_task(store, hidden.operation_id, expect="failed")

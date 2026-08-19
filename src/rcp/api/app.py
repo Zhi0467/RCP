@@ -92,7 +92,7 @@ from rcp.runs.auto_research_effects import auto_research_command_effects
 from rcp.runs.auto_research_experiments import AutoResearchExperimentCoordinator
 from rcp.runs.auto_research_recovery import reconcile_orphaned_auto_research_failures
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
-from rcp.runs.episode_reconcile import EpisodeReconciler
+from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_loop import (
     experiment_watcher_delivery_request,
     preflight_episode_wake,

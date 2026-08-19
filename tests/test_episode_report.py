@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.write_scope import registered_repository_roots
 from rcp.background import AgentTaskExecution
-from rcp.runs.episode_reconcile import EpisodeReconciler
+from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest, stream_episode_report_run
 from rcp.skill_registry import official_registry
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord, EpisodeWrapupRecord, ProjectRecord
@@ -84,11 +84,13 @@ def test_auto_research_reconciliation_keeps_terminal_wrapup_immutable(
         episode=lambda _episode_id: episode,
         episode_tasks=lambda *_args, **_kwargs: [],
     )
-    background = SimpleNamespace(
-        start_episode_report=lambda _episode_id: pytest.fail("terminal report restarted")
+    background = SimpleNamespace()
+    monkeypatch.setattr(
+        "rcp.runs.episodes.reconcile.start_episode_report",
+        lambda *_args: pytest.fail("terminal report restarted"),
     )
     monkeypatch.setattr(
-        "rcp.runs.episode_reconcile.auto_research_wrapup_spec",
+        "rcp.runs.episodes.reconcile.auto_research_wrapup_spec",
         lambda *_args, **_kwargs: pytest.fail("terminal receipt rebuilt"),
     )
 
@@ -113,9 +115,13 @@ def test_auto_research_reconciliation_restarts_persisted_wrapup_without_rebuildi
         episode_tasks=lambda *_args, **_kwargs: [],
     )
     started: list[str] = []
-    background = SimpleNamespace(start_episode_report=started.append)
+    background = SimpleNamespace()
     monkeypatch.setattr(
-        "rcp.runs.episode_reconcile.auto_research_wrapup_spec",
+        "rcp.runs.episodes.reconcile.start_episode_report",
+        lambda _tasks, episode_id: started.append(episode_id),
+    )
+    monkeypatch.setattr(
+        "rcp.runs.episodes.reconcile.auto_research_wrapup_spec",
         lambda *_args, **_kwargs: pytest.fail("persisted receipt rebuilt"),
     )
 
@@ -127,7 +133,9 @@ def test_auto_research_reconciliation_restarts_persisted_wrapup_without_rebuildi
     assert started == ["episode"]
 
 
-def test_auto_research_reconciliation_degrades_persisted_wrapup_restart_failure() -> None:
+def test_auto_research_reconciliation_degrades_persisted_wrapup_restart_failure(
+    monkeypatch,
+) -> None:
     episode = SimpleNamespace(
         mode="auto_research",
         stop_requested_at=None,
@@ -140,11 +148,12 @@ def test_auto_research_reconciliation_degrades_persisted_wrapup_restart_failure(
         record_agent_task_receipt=lambda *args, **kwargs: receipts.append((*args, kwargs)),
     )
 
-    def fail_restart(_episode_id: str) -> None:
+    def fail_restart(_tasks: object, _episode_id: str) -> None:
         raise ValueError("allocation is unavailable")
 
     warnings: list[tuple[object, ...]] = []
-    background = SimpleNamespace(start_episode_report=fail_restart)
+    background = SimpleNamespace()
+    monkeypatch.setattr("rcp.runs.episodes.reconcile.start_episode_report", fail_restart)
     logger = SimpleNamespace(warning=lambda *args: warnings.append(args))
 
     EpisodeReconciler(store, background, logger=logger).reconcile_auto_research_episode(

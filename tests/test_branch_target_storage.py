@@ -8,7 +8,7 @@ import pytest
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.auto_research import AutoResearchRunRequest
-from rcp.runs.episode_wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
+from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,

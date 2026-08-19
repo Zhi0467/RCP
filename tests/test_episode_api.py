@@ -18,7 +18,7 @@ from rcp.runs.auto_research import (
     auto_research_exhaustion_signal,
     auto_research_wrapup_spec,
 )
-from rcp.runs.episode_wrapup import begin_episode_report_wrapup
+from rcp.runs.episodes.wrapup import begin_episode_report_wrapup
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,

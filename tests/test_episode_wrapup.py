@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
-from rcp.runs.episode_wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
+from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord, ProjectRecord
 
 from .helpers import fabricated_authorizer

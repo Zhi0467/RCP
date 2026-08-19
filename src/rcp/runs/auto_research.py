@@ -57,7 +57,7 @@ from rcp.storage import (
 )
 
 if TYPE_CHECKING:
-    from rcp.runs.episode_wrapup import EpisodeWrapupSpec
+    from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
 
 AutoResearchActorRole = Literal["orchestrator", "worker"]
 AutoResearchWakeCause = Literal["watcher", "graph_condition", "message", "lifecycle"]
@@ -283,7 +283,7 @@ def auto_research_wrapup_spec(
 ) -> EpisodeWrapupSpec:
     """Build a compact receipt and select the root actor's exact latest task."""
 
-    from rcp.runs.episode_wrapup import EpisodeWrapupSpec
+    from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
 
     episode = _auto_research_episode(store, signal.episode_id)
     if episode.ending != signal.ending or episode.ending_diagnostic != signal.diagnostic:

@@ -50,7 +50,7 @@ from rcp.watchers import (
 )
 
 if TYPE_CHECKING:
-    from rcp.runs.episode_wrapup import EpisodeWrapupSpec
+    from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
 
 _EXIT_STATUSES = frozenset({"completed"})
 _COMPLETED_NEXT_ACTION_PROBLEM = (
@@ -553,7 +553,7 @@ def experiment_loop_wrapup_spec(
 ) -> EpisodeWrapupSpec:
     """Turn one persisted mode signal into the shared wrap-up admission contract."""
 
-    from rcp.runs.episode_wrapup import EpisodeWrapupSpec
+    from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
 
     episode_id = signal.get("episode_id")
     ending = signal.get("ending")
@@ -586,7 +586,7 @@ def experiment_loop_operational_ending_wrapup_spec(
 ) -> EpisodeWrapupSpec:
     """Adapt an operational ending without rebuilding the resumed session context."""
 
-    from rcp.runs.episode_wrapup import EpisodeWrapupSpec
+    from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
 
     if (
         continuation.episode_id != episode.episode_id

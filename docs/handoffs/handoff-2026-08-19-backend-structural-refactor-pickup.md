@@ -415,7 +415,9 @@ commit.
 
 ## What was deliberately not done
 
-No part of this list is implied complete by `ed4c019`:
+No part of this list is implied complete by `ed4c019`. It is the record of that
+checkpoint and is deliberately not rewritten as later slices land — read the
+slice ledger below for what has since been done:
 
 - `BackgroundAgentTasks.__init__` is not side-effect-free. It still proves
   committed/reserved Auto-research work, interrupts other active tasks, restarts
@@ -450,8 +452,8 @@ No part of this list is implied complete by `ed4c019`:
 
 ## Current code landmarks for the next agent
 
-- `src/rcp/background.py:261` — constructor with current storage/recovery side
-  effects.
+- `src/rcp/background.py:261` — constructor. Assigns fields only since Slice A;
+  `recover_at_startup()` immediately below it owns what it used to do.
 - `src/rcp/background.py:3446` — `launch_admitted`.
 - `src/rcp/background.py:3582` — private `_spawn_record`, now reachable only
   through `launch_admitted` in production.
@@ -459,10 +461,11 @@ No part of this list is implied complete by `ed4c019`:
 - `src/rcp/storage/agent_tasks.py:2659` — fail-closed dispatch no-start proof.
 - `src/rcp/api/app.py:833` — current lifespan reconciliation sequence.
 - `src/rcp/api/app.py:679` — current task-settlement callback wiring.
-- `src/rcp/runs/episode_reconcile.py:34` — existing coordinator to reuse and
-  move, not replace.
-- `src/rcp/runs/episode_wrapup.py` — existing common wrap-up/report admission
-  policy.
+- `src/rcp/runs/episodes/reconcile.py` — the coordinator, reused and moved in
+  Slice B, never replaced.
+- `src/rcp/runs/episodes/wrapup.py` — common wrap-up/report admission policy.
+- `src/rcp/runs/episodes/report.py` — report admission, moved off the engine in
+  Slice B. It reaches into the engine's private registry on purpose.
 - `src/rcp/api/tasks.py:315` and `:410` — current Resume and Retry route entry
   points that still dispatch directly to the background object.
 
@@ -927,7 +930,8 @@ Updated at every slice boundary. The next agent reads this, not the diff.
 | Slice | Commit | Notes |
 | --- | --- | --- |
 | Guards | `da50c3d` | The two deliberate non-refactors recorded at their code sites. |
-| A | — | Constructor purity. Re-measurement found **14** store-mutating constructors, not 10. |
+| A | `68c0ba7` | Constructor purity. Re-measurement found **14** store-mutating constructors, not 10. A post-change probe over the whole suite reports none. |
+| B1 | — | `runs/episodes/` package: `reconcile.py`, `wrapup.py`, and report admission moved off the engine. Pure relocation. |
 
 ### Ordering summary
 
