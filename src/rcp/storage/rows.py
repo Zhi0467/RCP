@@ -77,6 +77,7 @@ from rcp.storage.models import (  # noqa: F401
     normalize_space_name,
     watcher_next_check_at,
 )
+from rcp.storage.request_compat import migrate_stored_task_request
 
 
 class RowMappingMixin:
@@ -156,7 +157,16 @@ class RowMappingMixin:
         data.pop("authorized_space_id", None)
         data.pop("authorized_user_id", None)
         data.pop("authorized_display_name", None)
-        data["request"] = json.loads(data.pop("request_json"))
+        raw_request = json.loads(data.pop("request_json"))
+        data["request"] = (
+            migrate_stored_task_request(
+                str(data.get("kind", "")),
+                raw_request,
+                operation_id=str(data.get("operation_id", "")) or None,
+            )
+            if isinstance(raw_request, dict)
+            else raw_request
+        )
         data["graph_target"] = json.loads(
             data.pop("graph_target_json", '{"kind":"main","branch_id":null}')
         )
