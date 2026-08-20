@@ -1,7 +1,7 @@
 # Backend structural refactor closure
 
-**Status:** Active architectural boundary  
-**Decided:** 2026-08-20  
+**Status:** Active architectural boundary
+**Decided:** 2026-08-20
 **Current behavior:** [`../design.md`](../design.md) and
 [`../specs/`](../specs/)
 
