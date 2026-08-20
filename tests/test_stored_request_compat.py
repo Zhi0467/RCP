@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 
 import pytest
 from pydantic import ValidationError
@@ -26,26 +25,19 @@ def _task_row(request: dict[str, object]) -> dict[str, object]:
     }
 
 
-def test_task_row_decoder_migrates_before_any_run_path_reads_the_request(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    with caplog.at_level(logging.WARNING, logger="rcp.storage.request_compat"):
-        record = RowMappingMixin()._agent_task_record(
-            _task_row(
-                {
-                    "episode_id": "episode-1",
-                    "role": "orchestrator",
-                    "ending": None,
-                }
-            )
+def test_task_row_decoder_migrates_before_any_run_path_reads_the_request() -> None:
+    record = RowMappingMixin()._agent_task_record(
+        _task_row(
+            {
+                "episode_id": "episode-1",
+                "role": "orchestrator",
+                "ending": None,
+            }
         )
+    )
 
     assert record.request == {"episode_id": "episode-1", "role": "orchestrator"}
     assert AutoResearchRunRequest.model_validate(record.request).episode_id == "episode-1"
-    assert any(
-        "ending" in item.getMessage() and "op-1" in item.getMessage()
-        for item in caplog.records
-    )
 
 
 def test_task_row_decoder_preserves_unallowlisted_fields_for_strict_rejection() -> None:

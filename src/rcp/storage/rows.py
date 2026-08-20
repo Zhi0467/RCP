@@ -163,6 +163,7 @@ class RowMappingMixin:
                 str(data.get("kind", "")),
                 raw_request,
                 operation_id=str(data.get("operation_id", "")) or None,
+                warn=False,
             )
             if isinstance(raw_request, dict)
             else raw_request

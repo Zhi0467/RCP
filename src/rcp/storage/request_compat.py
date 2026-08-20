@@ -20,6 +20,7 @@ def migrate_stored_task_request(
     stored: Mapping[str, object],
     *,
     operation_id: str | None = None,
+    warn: bool = True,
 ) -> dict[str, object]:
     """Apply the explicit compatibility allowlist to one persisted task request."""
 
@@ -30,10 +31,11 @@ def migrate_stored_task_request(
         return migrated
     for field in removed:
         migrated.pop(field)
-    logger.warning(
-        "Dropped retired field(s) %s from stored %s task %s.",
-        ", ".join(removed),
-        kind,
-        operation_id or "<unknown>",
-    )
+    if warn:
+        logger.warning(
+            "Dropped retired field(s) %s from stored %s task %s.",
+            ", ".join(removed),
+            kind,
+            operation_id or "<unknown>",
+        )
     return migrated
