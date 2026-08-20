@@ -1,19 +1,27 @@
 # Active implementation handoffs
 
-- [Backend structural refactor work order](handoff-2026-08-18-backend-structural-refactor.md)
-  — the fact-checked, human-confirmed phase order and target architecture.
-- [2026-08-19 backend structural-refactor pickup](handoff-2026-08-19-backend-structural-refactor-pickup.md)
-  — the exact `ed4c019` stopping point after Phases 0–6 and Phase 7's durable
-  admission/launch boundary, including verification, unimplemented work, and
-  decisions to discuss before startup reconciliation.
+There are no active implementation handoffs.
 
-[`rcp_architecture_audit.md`](rcp_architecture_audit.md) is the evidence behind
-that handoff, not a work order. Its Appendix A explains the findings from
-scratch.
+This directory contains only human-confirmed work that is ready to implement and
+not yet complete. A handoff is an execution contract, not a chronological diary.
+Its opening status must state:
 
-This directory is reserved for human-confirmed work that is ready to implement
-but not yet implemented and verified. A handoff may refine an explicitly open
-implementation detail, but it may not silently change
-[`../design.md`](../design.md) or the applicable file in
-[`../specs/`](../specs/). Archive a handoff when its implementation closes or it
-is superseded or abandoned.
+- what is already implemented and verified;
+- what remains;
+- which decisions are settled; and
+- the exact condition for closure.
+
+Update status and decisions in the same change that alters the implementation
+plan. Work that was measured and rejected is closed, not “not done.” Never retain
+contradictory old and new plans as simultaneous active instructions.
+
+Archive a handoff under [`../archive/handoffs/`](../archive/handoffs/) as soon as
+its work is completed, rejected, superseded, or abandoned. If a later effort
+materially changes scope, archive the predecessor and create a new handoff rather
+than appending a second plan. Archived files are historical evidence and never
+current authority.
+
+The closed backend structural-refactor rationale is recorded in
+[the active decision record](../decisions/2026-08-20-backend-structural-refactor-closure.md).
+Current behavior remains owned by [`../design.md`](../design.md) and the applicable
+file under [`../specs/`](../specs/).
