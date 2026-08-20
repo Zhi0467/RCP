@@ -29,7 +29,7 @@ def _task_row(request: dict[str, object]) -> dict[str, object]:
 def test_task_row_decoder_migrates_before_any_run_path_reads_the_request(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    with caplog.at_level(logging.WARNING, logger="rcp.runs.task_policy"):
+    with caplog.at_level(logging.WARNING, logger="rcp.storage.request_compat"):
         record = RowMappingMixin()._agent_task_record(
             _task_row(
                 {

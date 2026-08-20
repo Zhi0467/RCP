@@ -4,7 +4,7 @@ import logging
 from collections.abc import Mapping
 from typing import Final
 
-logger = logging.getLogger("rcp.runs.task_policy")
+logger = logging.getLogger(__name__)
 
 # Persisted request compatibility is deliberately closed. A field appears here
 # only after RCP shipped it, later retired it, and documented why dropping that

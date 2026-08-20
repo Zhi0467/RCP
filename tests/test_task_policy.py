@@ -122,7 +122,7 @@ def test_dropping_a_stored_field_is_logged_rather_than_silent(
 ) -> None:
     """The compatibility read stays observable, so drift is visible in the log."""
 
-    with caplog.at_level(logging.WARNING, logger="rcp.runs.task_policy"):
+    with caplog.at_level(logging.WARNING, logger="rcp.storage.request_compat"):
         load_stored_request(
             AutoResearchRunRequest,
             {"episode_id": "episode-1", "role": "orchestrator", "ending": None},
