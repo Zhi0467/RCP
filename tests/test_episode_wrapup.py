@@ -104,7 +104,7 @@ def test_shared_wrapup_admits_one_deterministic_hidden_report(tmp_path: Path) ->
     assert store.agent_tasks("project") == [store.agent_task("operation")]
 
 
-def test_missing_exact_binding_ends_with_nonblocking_report_error(tmp_path: Path) -> None:
+def test_an_ending_with_no_session_never_enters_report_wrapup(tmp_path: Path) -> None:
     store, _stage = _store_with_episode(tmp_path)
     with store.connection() as connection:
         connection.execute(
@@ -124,15 +124,69 @@ def test_missing_exact_binding_ends_with_nonblocking_report_error(tmp_path: Path
         ),
     )
 
+    # There is no session to resume, so no report was ever possible. The episode
+    # terminalizes with its own reason and carries no report error.
     assert admission.launchable is False
     assert admission.task is None
+    assert admission.wrapup is None
     assert admission.episode.status == "failed"
-    assert admission.episode.wrapup_state == "failed"
+    assert admission.episode.wrapup_state == "not_started"
+    assert admission.episode.wrapup_error is None
     assert admission.episode.report_attempts_used == 0
     assert admission.episode.ending_diagnostic == "The operational turn failed."
-    assert admission.episode.wrapup_error is not None
-    assert "no exact saved native session and stage" in admission.episode.wrapup_error
+    assert admission.episode.ended_at is not None
+    assert store.episode_wrapup("episode") is None
     assert store.episode_report("episode") is None
+
+
+def test_an_ending_with_no_session_settles_the_same_way_twice(tmp_path: Path) -> None:
+    store, _stage = _store_with_episode(tmp_path)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET native_session_id = NULL, stage_root = NULL "
+            "WHERE operation_id = 'operation'"
+        )
+    spec = EpisodeWrapupSpec(
+        episode_id="episode",
+        ending="failed",
+        partial=True,
+        continuation_operation_id="operation",
+        receipt={"failure": "provider session unavailable"},
+        diagnostic="The operational turn failed.",
+    )
+
+    first = begin_episode_report_wrapup(store, spec)
+    second = begin_episode_report_wrapup(store, spec)
+
+    assert first.episode == second.episode
+    assert store.episode_wrapup("episode") is None
+
+
+def test_a_broken_binding_that_is_not_an_absence_still_reports_its_error(
+    tmp_path: Path,
+) -> None:
+    store, _stage = _store_with_episode(tmp_path)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = ? WHERE operation_id = 'operation'",
+            (json.dumps({"provider": "codex", "model": "", "reasoning": "medium"}),),
+        )
+
+    admission = begin_episode_report_wrapup(
+        store,
+        EpisodeWrapupSpec(
+            episode_id="episode",
+            ending="completed",
+            partial=False,
+            continuation_operation_id="operation",
+            receipt={},
+        ),
+    )
+
+    assert admission.launchable is False
+    assert admission.episode.wrapup_state == "failed"
+    assert admission.episode.wrapup_error is not None
+    assert "frozen provider profile" in admission.episode.wrapup_error
 
 
 def test_stop_never_enters_report_wrapup(tmp_path: Path) -> None:

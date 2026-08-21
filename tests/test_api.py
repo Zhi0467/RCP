@@ -6568,7 +6568,11 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert exhausted_parent is not None
     assert exhausted_parent.status == "needs_action"
     assert exhausted_parent.ending == "exhausted"
-    assert exhausted_parent.wrapup_state == "failed"
+    # The fixture turn bound no native session, so no report was ever possible and
+    # the episode terminalizes without one rather than posting a report error.
+    assert exhausted_parent.wrapup_state == "not_started"
+    assert exhausted_parent.wrapup_error is None
+    assert store.episode_wrapup(old_episode) is None
     completed_control = client.get(f"/api/projects/{project_id}").json()["experiment_control"][
         "exp/bounded-loop"
     ]

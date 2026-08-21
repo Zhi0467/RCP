@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 import uuid
 from pathlib import Path
@@ -14,6 +15,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.api.task_requests import _resolved_graph_request
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Patch
+from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_loop import commit_experiment_episode_binding
 from rcp.runs.shared import _sse
 from rcp.runs.watcher_admission import start_watcher_notification
@@ -2042,7 +2044,8 @@ def test_human_reauthorization_uses_current_node_profile_and_new_chat(manifest, 
     exhausted = loop.store.episode(loop.episode_id)
     assert exhausted is not None
     assert exhausted.ending == "exhausted"
-    assert exhausted.wrapup_state == "failed"
+    assert exhausted.wrapup_state == "not_started"
+    assert exhausted.wrapup_error is None
 
     response = loop.client.post(
         f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
@@ -2190,3 +2193,62 @@ def test_final_handoff_is_born_stopped_when_stop_wins_transaction(manifest, tmp_
 
     assert stored[0].status == "stopped"
     assert stored[0].notified is True
+
+
+def test_a_turn_failing_before_its_session_ends_the_episode_without_a_report(
+    manifest, tmp_path
+) -> None:
+    """The reported deadlock: a launch failure looked like a report error.
+
+    The turn dies before it binds a provider session, so nothing can resume it and
+    nothing can report on it. The episode must terminalize with its own reason and
+    leave the Experiment free to start again.
+    """
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app, invocation_ceiling=5)
+    loop.start_episode(status="queued")
+    # The real failure: write-scope resolution rejected the repository long before
+    # any provider session existed.
+    loop.store.fail_agent_task(
+        "loop-root",
+        "repository 'vista' does not match its project execution host",
+    )
+    root = loop.store.agent_task("loop-root")
+    assert root is not None and not root.native_session_id
+    reconciler = EpisodeReconciler(
+        loop.store,
+        app.state.background_tasks,
+        logger=logging.getLogger(__name__),
+    )
+
+    reconciler.reconcile_experiment_episode(
+        loop.episode_id,
+        source="test",
+        operation_id="loop-root",
+    )
+
+    episode = loop.store.episode(loop.episode_id)
+    assert episode is not None
+    assert episode.status == "failed"
+    assert episode.ending == "failed"
+    # No wrap-up ran, so there is no report error competing with the real reason.
+    assert episode.wrapup_state == "not_started"
+    assert episode.wrapup_error is None
+    assert loop.store.episode_wrapup(loop.episode_id) is None
+    assert loop.store.episode_report(loop.episode_id) is None
+    diagnostic = episode.ending_diagnostic or ""
+    assert "before it started its agent session" in diagnostic
+    assert "repository 'vista' does not match its project execution host" in diagnostic
+    # The old text blamed a pre-migration lineage and sent the human to a control
+    # the ending fence had already retired.
+    assert "pre-migration" not in diagnostic
+    assert "Stop loop" not in diagnostic
+
+    # The Experiment is restartable: a terminal episode is not a live one.
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{EXPERIMENT_ID.replace('/', '%2F')}/run",
+        json={"chat_id": str(uuid.uuid4())},
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["episode_id"] != loop.episode_id

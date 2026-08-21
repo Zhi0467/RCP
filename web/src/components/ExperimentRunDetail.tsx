@@ -23,7 +23,6 @@ const healthLabels: Record<ExperimentLoopHealth, string> = {
   degraded: "Watcher degraded",
   stopping: "Stopping gracefully",
   wrapping_up: "Wrapping up visualization and report",
-  report_failed: "Report error",
   failed: "Failed",
   human_stopped: "Human-stopped",
   paused_at_limit: "Paused at invocation limit",
@@ -38,7 +37,6 @@ const healthTones: Record<ExperimentLoopHealth, string> = {
   degraded: "degraded",
   stopping: "stopping",
   wrapping_up: "running",
-  report_failed: "degraded",
   failed: "degraded",
   human_stopped: "stopped",
   paused_at_limit: "paused",
@@ -60,12 +58,9 @@ export function experimentHealthTone(health: ExperimentLoopHealth): string {
 export function experimentLoopIsLive(run: ExperimentRun): boolean {
   const operational = run.control?.operational;
   const episode = run.control?.episode;
-  if (
-    episode &&
-    ["ready", "failed", "skipped", "legacy_unavailable"].includes(episode.wrapup_state)
-  ) {
-    return false;
-  }
+  // The ending fence is the single authority for "this episode is over"; the
+  // report is a deliverable produced afterwards and never revives or extends it.
+  if (episode?.ending) return false;
   const episodeStatus = episode?.status;
   return Boolean(
     (episodeStatus && ["queued", "running", "stopping", "wrapping_up"].includes(episodeStatus)) ||
@@ -145,15 +140,14 @@ export function ExperimentRunDetail({
   const lastActivity = formatMoment(
     currentTask?.last_activity_at ?? operational?.current_last_activity_at,
   );
-  const reportIsTerminal = episode?.wrapup_state === "ready" || episode?.wrapup_state === "failed";
-  const recoveryAction = reportIsTerminal ? null : experimentRecoveryAction(currentTask);
+  const episodeEnded = Boolean(episode?.ending);
+  const recoveryAction = episodeEnded ? null : experimentRecoveryAction(currentTask);
   const recoveryProvider =
     providerLabel ||
     capitalize(String(currentTask?.request.provider || session?.provider || "agent"));
   const canSwitchProvider = Boolean(recoveryAction && currentTask?.can_retry);
   const canStop =
-    !reportIsTerminal &&
-    episode?.status !== "wrapping_up" &&
+    !episodeEnded &&
     (live || Boolean(currentTask && actionableTaskStatuses.has(currentTask.status)));
   const showStop = Boolean(control?.episode_id && !stopRequested && (stopBusy || canStop));
   const stopBlocksRecovery = stopRequested && !stopUnsettled;
@@ -256,8 +250,16 @@ export function ExperimentRunDetail({
         <strong>{recommendation.label}</strong>
       </div>
 
-      {episode?.wrapup_state === "failed" && episode.status !== "stopped" && (
+      {episode?.ending_diagnostic && episode.status !== "stopped" && (
         <div className="campaign-run-error" role="alert">
+          {episode.ending_diagnostic}
+        </div>
+      )}
+
+      {/* The report is a deliverable of an ended episode, so its failure is reported
+          after the reason the episode ended and never in place of it. */}
+      {episode?.wrapup_state === "failed" && episode.status !== "stopped" && (
+        <div className="campaign-run-note">
           Report generation error: {episode.wrapup_error || "The report could not be generated."}
         </div>
       )}

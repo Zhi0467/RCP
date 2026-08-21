@@ -62,9 +62,15 @@ is internal wrap-up work, never another visible or metered invocation.
   receipt. RCP does not rebuild the episode's graph, research, or transcript
   context for this resumed turn.
 - If all permitted attempts fail, the episode still becomes terminal. Its parent
-  shows a report-generation error where the report control would have appeared.
-  There is no report Retry or Resume control, and the error never prevents a new
-  episode or other research work.
+  shows a report-generation error where the report control would have appeared,
+  beside the episode's own outcome rather than in place of it: the report never
+  becomes the episode's health or its **Recommended next step**, and never
+  retires a control. There is no report Retry or Resume control, and the error
+  never prevents a new episode or other research work.
+- An ending whose turn never bound a provider session has no session to resume,
+  so it never enters wrap-up at all. It terminalizes with its own reason, shows
+  no report control and no report error, and leaves the Experiment or
+  Auto-research free to start again.
 - Pressing **Stop** is the sole ending that skips report generation. Stop keeps
   its existing graceful semantics, settles the episode, and exposes neither a
   report link nor a report-generation error.
@@ -131,6 +137,8 @@ verdict.
 - `operational_invocation_ceiling_never_counts_report_generation`
 - `completion_exhaustion_failure_and_human_authority_pause_enter_wrapup`
 - `pressing_stop_is_the_only_ending_that_skips_report_generation`
+- `an_ending_with_no_session_terminalizes_without_a_report_or_a_report_error`
+- `a_report_error_never_becomes_the_episode_health_or_next_step`
 - `wrapup_fences_new_work_before_report_generation`
 - `report_generation_resumes_the_exact_episode_session_and_stage`
 - `report_continuation_receives_only_minimal_immutable_wrapup_context`

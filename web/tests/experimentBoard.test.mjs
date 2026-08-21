@@ -153,9 +153,10 @@ test("the board shows the shared report wrap-up as in-progress", () => {
   assert.match(html, /Wrapping up visualization and report/);
 });
 
-test("a final report error is visible on the board but remains finished", () => {
+test("a final report error never becomes the board's episode health", () => {
   const reportFailed = episode({
-    status: "needs_action",
+    status: "completed",
+    ending: "completed",
     wrapup_state: "failed",
     wrapup_error: "The visual report could not be generated.",
   });
@@ -167,9 +168,10 @@ test("a final report error is visible on the board but remains finished", () => 
 
   assert.deepEqual(
     board.finished.map((item) => item.health),
-    ["report_failed"],
+    ["completed"],
   );
-  assert.match(html, /Report error/);
+  assert.match(html, /Completed/);
+  assert.doesNotMatch(html, /Report error/);
 });
 
 test("board reuses loop health and groups current state in operational order", () => {
@@ -429,6 +431,9 @@ test("branch-created Runs detail uses index truth and never offers a main Start 
     episode_id: "child-episode",
     control_node_id: "experiment/branch-created",
     status: "running",
+    // A running episode has no ending fence yet; only fencing one enters wrap-up.
+    ending: null,
+    wrapup_state: "not_started",
     graph_target: { kind: "branch", branch_id: branchId },
     tasks: [],
   });

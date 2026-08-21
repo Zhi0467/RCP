@@ -108,17 +108,6 @@ export function episodeProjection(
     );
   }
 
-  if (episode.wrapup_state === "failed") {
-    return projectEpisode(
-      episode.status === "completed"
-        ? "completed"
-        : episode.status === "failed"
-          ? "failed"
-          : "needs_action",
-      recommendation("review", "Report generation ended with an error", task),
-    );
-  }
-
   if (episode.status === "stopped") {
     return projectEpisode(
       "stopped",

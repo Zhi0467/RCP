@@ -22,6 +22,7 @@ from rcp.runs.auto_research_recovery import (
 from rcp.runs.episodes.report import start_episode_report
 from rcp.runs.episodes.wrapup import begin_episode_report_wrapup
 from rcp.runs.experiment_loop import (
+    experiment_loop_launch_failure_diagnostic,
     experiment_loop_operational_ending_wrapup_spec,
     experiment_loop_wrapup_spec,
 )
@@ -304,13 +305,19 @@ class EpisodeReconciler:
                     ending = "exhausted"
                     diagnostic = "The authorized operational invocation ceiling was exhausted."
                 elif continuation.status == "failed":
-                    recovery_problem = self.store.experiment_episode_recovery_context_problem(
-                        continuation.operation_id
-                    )
-                    if recovery_problem is None:
-                        return
-                    ending = "failed"
-                    diagnostic = recovery_problem
+                    if not continuation.native_session_id:
+                        # No session was ever bound, so there is no lineage to
+                        # classify and nothing to resume.
+                        ending = "failed"
+                        diagnostic = experiment_loop_launch_failure_diagnostic(continuation)
+                    else:
+                        recovery_problem = self.store.experiment_episode_recovery_context_problem(
+                            continuation.operation_id
+                        )
+                        if recovery_problem is None:
+                            return
+                        ending = "failed"
+                        diagnostic = recovery_problem
                 else:
                     return
             if ending not in {"exhausted", "failed"} or not diagnostic:

@@ -467,6 +467,75 @@ class EpisodeStoreMixin:
         assert episode is not None and task is not None
         return episode, stored, task
 
+    def end_episode_without_report(
+        self,
+        episode_id: str,
+        *,
+        ending: EpisodeEnding,
+        diagnostic: str | None = None,
+    ) -> EpisodeRecord:
+        """Terminalize one ending that has no episode session to report from.
+
+        An episode whose turn died before it bound a provider session has nothing
+        for report generation to resume, so it never enters wrap-up at all. It is
+        settled here in one step instead: fencing the ending and then discovering
+        the report is impossible would park the episode on the live `wrapping_up`
+        status and leave a report error on work that never ran.
+        """
+
+        if ending == "stopped":
+            raise ValueError("Stop settles through its own skip path.")
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(episode_id)
+            episode = self._episode_record(row)
+            if (
+                connection.execute(
+                    "SELECT 1 FROM episode_wrapups WHERE episode_id = ?", (episode_id,)
+                ).fetchone()
+                is not None
+            ):
+                raise EpisodeReportConflict("the episode already has a report wrap-up")
+            if episode.ending is not None and (
+                episode.ending != ending or episode.ending_diagnostic != diagnostic
+            ):
+                raise EpisodeReportConflict("the episode ending fence is immutable")
+            if episode.stop_requested_at is not None or episode.status == "stopping":
+                raise EpisodeNotRunning("Stop already fenced this episode")
+            final_status = self._status_for_ending(ending)
+            if episode.status == final_status:
+                return episode
+            # `wrapping_up` is admitted because the Experiment path fences the
+            # ending before it learns whether a report can be generated at all.
+            if episode.status not in {"queued", "running", "wrapping_up"}:
+                raise EpisodeNotRunning("the episode can no longer accept an ending fence")
+            connection.execute(
+                """
+                UPDATE episodes
+                SET status = ?, ending = ?, ending_diagnostic = ?,
+                    wrapup_state = 'not_started', wrapup_error = NULL, updated_at = ?,
+                    ended_at = COALESCE(ended_at, ?)
+                WHERE episode_id = ?
+                """,
+                (final_status, ending, diagnostic, now, now, episode_id),
+            )
+            self._terminalize_auto_research_child_experiment_with_notice(
+                connection,
+                child_episode_id=episode_id,
+                status=final_status,
+                ending=ending,
+                diagnostic=diagnostic,
+                created_at=now,
+            )
+        stored = self.episode(episode_id)
+        assert stored is not None
+        return stored
+
     def fail_episode_wrapup_unlaunchable(
         self,
         episode_id: str,

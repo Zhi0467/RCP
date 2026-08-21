@@ -11,12 +11,13 @@ from rcp.runs.experiment_loop import (
     commit_experiment_episode_binding,
     commit_experiment_episode_handoff,
     experiment_loop_ending_signal,
+    experiment_loop_launch_failure_diagnostic,
     experiment_loop_semantic_ending,
     experiment_loop_wrapup_spec,
     prepare_experiment_watcher_records,
 )
 from rcp.service import GraphUpdateResult, RunRequest
-from rcp.storage import WatcherContinuation
+from rcp.storage import AgentTaskRecord, WatcherContinuation
 from rcp.watchers import ExperimentWatchSpec, WatcherBinding, WatcherCheckResult
 
 _CONTROL_NODE_ID = "exp/evaluation"
@@ -550,3 +551,47 @@ def test_prepared_handoff_uses_rooted_watchers_and_commits_receipt_after_storage
             ),
         ),
     ]
+
+
+def _failed_launch_task(**fields: object) -> AgentTaskRecord:
+    values: dict[str, object] = {
+        "operation_id": "operation",
+        "project_id": "project",
+        "episode_id": _EPISODE_ID,
+        "kind": "node_chat",
+        "status": "failed",
+        "request": {},
+        "created_at": "2026-08-21T11:22:37+00:00",
+        "updated_at": "2026-08-21T11:22:48+00:00",
+        "status_message": "repository 'vista' does not match its project execution host",
+    }
+    values.update(fields)
+    return AgentTaskRecord.model_validate(values)
+
+
+def test_launch_failure_names_an_available_action_and_the_real_cause() -> None:
+    diagnostic = experiment_loop_launch_failure_diagnostic(
+        _failed_launch_task(error="repository 'vista' does not match its project execution host")
+    )
+
+    assert "before it started its agent session" in diagnostic
+    assert "repository 'vista' does not match its project execution host" in diagnostic
+    # The ending fence retires Stop loop, so the diagnostic must never send the
+    # human to it, and it must not blame a pre-migration lineage.
+    assert "Stop loop" not in diagnostic
+    assert "pre-migration" not in diagnostic
+    assert "Press Run" in diagnostic
+
+
+def test_launch_failure_falls_back_to_the_status_message() -> None:
+    diagnostic = experiment_loop_launch_failure_diagnostic(_failed_launch_task())
+
+    assert "repository 'vista' does not match its project execution host" in diagnostic
+
+
+def test_launch_failure_without_any_cause_still_explains_itself() -> None:
+    diagnostic = experiment_loop_launch_failure_diagnostic(
+        _failed_launch_task(status_message="", error=None)
+    )
+
+    assert diagnostic.endswith("Press Run to start a fresh episode.")

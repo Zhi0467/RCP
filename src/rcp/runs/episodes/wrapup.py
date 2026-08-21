@@ -37,7 +37,8 @@ class EpisodeWrapupSpec(BaseModel):
 @dataclass(frozen=True)
 class EpisodeWrapupAdmission:
     episode: EpisodeRecord
-    wrapup: EpisodeWrapupRecord
+    #: ``None`` when the ending had no session to report from, so no wrap-up began.
+    wrapup: EpisodeWrapupRecord | None
     task: AgentTaskRecord | None
     request: EpisodeReportRunRequest | None
 
@@ -62,6 +63,20 @@ def begin_episode_report_wrapup(
     episode = store.episode(spec.episode_id)
     if episode is None:
         raise KeyError(spec.episode_id)
+    if store.episode_wrapup(spec.episode_id) is None and _never_bound_a_session(
+        store.agent_task(spec.continuation_operation_id)
+    ):
+        # There is no episode session to resume, so this ending has no report to
+        # generate rather than a report that failed. Settle it outright: fencing
+        # into wrap-up first and discovering that here would park the episode on
+        # the live `wrapping_up` status and post a report error for work that
+        # never ran.
+        ended = store.end_episode_without_report(
+            spec.episode_id,
+            ending=spec.ending,
+            diagnostic=spec.diagnostic,
+        )
+        return EpisodeWrapupAdmission(ended, None, None, None)
     episode = store.fence_episode_ending(
         spec.episode_id,
         spec.ending,
@@ -227,6 +242,14 @@ def _fail_unlaunchable(
         ending_diagnostic=spec.diagnostic,
     )
     return EpisodeWrapupAdmission(ended, stored, None, None)
+
+
+def _never_bound_a_session(continuation: AgentTaskRecord | None) -> bool:
+    """Report the one unlaunchable cause that is an absence rather than a defect."""
+
+    return continuation is not None and not (
+        continuation.native_session_id and continuation.stage_root
+    )
 
 
 def _binding_diagnostic(

@@ -9692,6 +9692,12 @@ button.relation-map-node:hover {
   font-size: 11px;
   padding: 10px 24px;
 }
+.campaign-run-note {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  padding: 10px 24px;
+}
 .campaign-dialog > footer {
   align-items: center;
   border-top: 1px solid var(--line);
@@ -10260,6 +10266,12 @@ button.relation-map-node:hover {
 }
 .campaign-run-error {
   margin: 14px -16px -18px -19px;
+}
+.campaign-run-note {
+  margin: 14px -16px -18px -19px;
+}
+.campaign-run-error + .campaign-run-note {
+  margin-top: 0;
 }
 
 @media (max-width: 820px) {

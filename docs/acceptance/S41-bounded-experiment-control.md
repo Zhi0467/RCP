@@ -13,16 +13,15 @@ covered_by:
   - web/tests/runDialog.test.mjs
 invariants: [3, 4, 4b, 10, 10b, 10e, 10g]
 last_checked: >-
-  2026-08-19 — swept after the backend route/task-owner refactor and durable
-  admission/launch boundary, which touched Experiment API, invocation, watcher,
-  recovery, and dispatch paths underneath this scenario. The listed pytest
-  coverage passed inside the final backend suite, including the focused watcher
-  acceptance set. The web suites and served browser/provider drive were not
-  rerun at this checkpoint. The 2026-08-17 drive had already confirmed the
-  readiness labels, seven gate reasons, separate pinned history versus **Next
-  episode limit**, and Ask availability. Real provider invocations, induced
-  failures, and watcher wakes remain outstanding, so this work made the scenario
-  neither newly runnable nor wrong and it stays pending.
+  2026-08-21 — swept after the report-never-blocks fix. A human-reported episode
+  showed **Report error** as its health with no Stop loop, Resume, or Retry, for
+  a turn that had failed before binding a session and so had never generated a
+  report at all. The listed pytest coverage and the full web suite pass, and the
+  served Runs detail was driven against a copy of the human's real data
+  directory: the same episode now reads **Failed** / **Episode ended** with its
+  ending reason first, the report note demoted, and **Start new episode**
+  enabled. Real provider invocations, induced failures, and watcher wakes remain
+  outstanding, so the scenario stays pending.
 ---
 
 # Run an experiment through a bounded control loop
@@ -179,7 +178,12 @@ Confirmed by the human on 2026-08-05.
 - Drive a terminal operational failure. Confirm the same exact-session wrap-up
   produces a partial report. Make report output invalid for all three automatic
   report turns and confirm the episode still settles with one visible
-  report-generation error, no Retry control, and no blocked unrelated work.
+  report-generation error, no Retry control, and no blocked unrelated work. That
+  error sits beside the episode's own outcome: Runs still shows the ending the
+  episode reached and a next step the human can actually take, never **Report
+  error**. Separately, fail a turn before it binds a provider session and confirm
+  the episode ends with its own reason, no report control, no report error, and
+  an available **Start new episode**.
 - Have a later graph-writing task materially introduce new work to that completed
   Experiment. The same Patch reopens it to an appropriate nonterminal status and
   refreshes `current_summary` and `next_action`; its episode action still reads

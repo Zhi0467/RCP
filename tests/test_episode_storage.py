@@ -715,6 +715,74 @@ def test_unlaunchable_wrapup_is_terminal_without_a_hidden_allocation(tmp_path) -
     store.create_episode(_episode(store, "replacement"))
 
 
+def test_ending_without_a_report_terminalizes_and_leaves_no_wrapup(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.create_episode(_episode(store, "episode"))
+    store.allocate_episode_invocation(
+        "episode",
+        _operational_task(store, "episode-operation", episode_id="episode"),
+    )
+
+    episode = store.end_episode_without_report(
+        "episode",
+        ending="failed",
+        diagnostic="The turn failed before it started its agent session.",
+    )
+
+    assert episode.status == "failed"
+    assert episode.ending == "failed"
+    assert episode.ended_at is not None
+    # No wrap-up began, so there is no report state and no report error to show.
+    assert episode.wrapup_state == "not_started"
+    assert episode.wrapup_error is None
+    assert episode.report_attempts_used == 0
+    assert store.episode_wrapup("episode") is None
+    assert store.episode_report_attempts("episode") == []
+    assert all(
+        task.kind != "episode_report" for task in store.agent_tasks("project", include_hidden=True)
+    )
+    # A terminal status is not a live episode, so the Experiment can start again.
+    store.create_episode(_episode(store, "replacement"))
+
+
+def test_ending_without_a_report_is_idempotent_and_immutable(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.create_episode(_episode(store, "episode"))
+    store.allocate_episode_invocation(
+        "episode",
+        _operational_task(store, "episode-operation", episode_id="episode"),
+    )
+    first = store.end_episode_without_report("episode", ending="failed", diagnostic="No session.")
+
+    assert (
+        store.end_episode_without_report("episode", ending="failed", diagnostic="No session.")
+        == first
+    )
+    with pytest.raises(EpisodeReportConflict):
+        store.end_episode_without_report("episode", ending="failed", diagnostic="Something else.")
+    with pytest.raises(ValueError, match="Stop settles through its own skip path"):
+        store.end_episode_without_report("episode", ending="stopped")
+
+
+def test_ending_without_a_report_settles_an_episode_already_fenced_into_wrapup(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.create_episode(_episode(store, "episode"))
+    store.allocate_episode_invocation(
+        "episode",
+        _operational_task(store, "episode-operation", episode_id="episode"),
+    )
+    fenced = store.fence_episode_ending("episode", "failed", diagnostic="No session.")
+    assert fenced.status == "wrapping_up"
+
+    episode = store.end_episode_without_report("episode", ending="failed", diagnostic="No session.")
+
+    # `wrapping_up` is a live status; leaving an episode parked there is exactly the
+    # deadlock this path exists to prevent.
+    assert episode.status == "failed"
+    assert episode.wrapup_state == "not_started"
+    store.create_episode(_episode(store, "replacement"))
+
+
 def test_allocated_unlaunchable_wrapup_fails_without_fabricating_an_attempt(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     wrapup, allocation = _start_wrapping(store, "episode", ending="exhausted")

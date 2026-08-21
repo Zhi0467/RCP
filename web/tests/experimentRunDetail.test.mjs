@@ -335,7 +335,7 @@ test("a ready Experiment report opens from the singular episode URL", () => {
   assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
 });
 
-test("a final Experiment report error is visible and does not block a fresh episode", () => {
+test("a final Experiment report error is a note beside the episode's own outcome", () => {
   const reportFailed = episode({
     status: "needs_action",
     wrapup_state: "failed",
@@ -351,12 +351,36 @@ test("a final Experiment report error is visible and does not block a fresh epis
     ),
   );
 
-  assertDetailProjection(html, "Report error", "Report generation ended with an error");
+  // The episode exhausted its invocations; the missing report never restates that
+  // as the episode's own health or as the human's next step.
+  assertDetailProjection(html, "Paused at invocation limit", "Start a new episode");
   assert.match(html, /Report generation error: The visual report could not be generated\./);
   assert.doesNotMatch(
     html,
     /Retry codex|Resume codex|Stop loop|experiment-run-button" disabled=""/,
   );
+});
+
+test("the reason an Experiment episode ended outranks its report error", () => {
+  const failedBeforeSession = episode({
+    status: "failed",
+    ending: "failed",
+    ending_diagnostic: "This Experiment turn failed before it started its agent session.",
+    wrapup_state: "not_started",
+  });
+  const html = render(
+    buildExperimentRun(
+      node(),
+      control({ episode: failedBeforeSession }),
+      [recoveryTask({ can_retry: true, can_resume: true })],
+      [],
+    ),
+  );
+
+  assertDetailProjection(html, "Failed", "Episode ended");
+  assert.match(html, /This Experiment turn failed before it started its agent session\./);
+  assert.doesNotMatch(html, /Report generation error|Stop loop/);
+  assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
 });
 
 test("a stopped Experiment shows neither a report nor a report error", () => {

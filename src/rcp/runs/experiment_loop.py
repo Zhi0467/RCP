@@ -576,6 +576,27 @@ def experiment_loop_wrapup_spec(
     )
 
 
+_LAUNCH_FAILURE_DIAGNOSTIC = (
+    "This Experiment turn failed before it started its agent session, so the episode has "
+    "no session to continue. Press Run to start a fresh episode."
+)
+
+
+def experiment_loop_launch_failure_diagnostic(continuation: AgentTaskRecord) -> str:
+    """Explain a turn that died before binding a session, naming its real cause.
+
+    The lineage recovery check cannot classify this: it looks for the retained
+    episode context candidate, which a turn that never reached prompt assembly
+    has not written yet, and so reports a pre-migration lineage defect for an
+    episode created seconds ago.
+    """
+
+    cause = (continuation.error or continuation.status_message or "").strip()
+    if not cause:
+        return _LAUNCH_FAILURE_DIAGNOSTIC
+    return f"{_LAUNCH_FAILURE_DIAGNOSTIC} It failed with: {cause}"
+
+
 def experiment_loop_operational_ending_wrapup_spec(
     *,
     continuation: AgentTaskRecord,

@@ -31,7 +31,6 @@ export type ExperimentLoopHealth =
   | "degraded"
   | "stopping"
   | "wrapping_up"
-  | "report_failed"
   | "failed"
   | "human_stopped"
   | "paused_at_limit"
@@ -169,7 +168,6 @@ const healthSections: Record<ExperimentLoopHealth, RunSectionKey> = {
   degraded: "running",
   stopping: "running",
   wrapping_up: "running",
-  report_failed: "completed",
   failed: "completed",
   human_stopped: "actionable",
   paused_at_limit: "actionable",
@@ -240,10 +238,11 @@ export function deriveExperimentLoopHealth(
   if (episode?.wrapup_state === "pending" || episode?.wrapup_state === "running") {
     return "wrapping_up";
   }
-  if (episode?.wrapup_state === "failed") return "report_failed";
+  // A failed report is a missing deliverable, never the episode's verdict, so the
+  // episode's own ending decides the health and the error shows beside it.
   if (episode?.status === "failed") return "failed";
   if (episode?.status === "stopped") return "human_stopped";
-  if (episode?.wrapup_state === "ready") {
+  if (episode?.ending) {
     if (episode.ending === "completed") return "completed";
     if (episode.ending === "exhausted") return "paused_at_limit";
     if (episode.ending === "human_pause") return "needs_action";
@@ -297,19 +296,16 @@ export function experimentRecoveryAction(task: AgentTask | null): "resume" | "re
 /** Human guidance derived only from canonical task, control, and watcher state. */
 export function experimentRecommendation(run: ExperimentRun): ExperimentRecommendation {
   const task = run.currentTask;
-  const wrapupTerminal =
-    run.control?.episode?.wrapup_state === "failed" ||
-    run.control?.episode?.wrapup_state === "ready";
-  const recoveryAction = wrapupTerminal ? null : experimentRecoveryAction(task);
+  // The ending fence is what retires Resume and Retry, matching the server, which
+  // clears both once an episode has an ending. The report's fate never gates them.
+  const episodeEnded = Boolean(run.control?.episode?.ending);
+  const recoveryAction = episodeEnded ? null : experimentRecoveryAction(task);
   const hasRunRequirements = hasExperimentRunRequirements(run.control);
   if (run.health === "stopping") {
     return { step: "wait", label: "Wait for the current turn to finish" };
   }
   if (run.health === "wrapping_up") {
     return { step: "wait", label: "Wrapping up visualization and report" };
-  }
-  if (run.health === "report_failed") {
-    return { step: "none", label: "Report generation ended with an error" };
   }
   if (run.control?.episode?.wrapup_state === "ready") {
     return { step: "open_report", label: "Open report" };
@@ -348,8 +344,11 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
     task &&
     actionableStatuses.has(task.status) &&
     run.control?.episode_id &&
+    !episodeEnded &&
     !run.control.operational?.stop_requested
   ) {
+    // Stop loop is retired by the ending fence, and no recommendation may name a
+    // control the episode no longer offers.
     return { step: "stop_and_restart", label: "Stop loop, then start a new episode" };
   }
   if (run.health === "paused_at_limit") {

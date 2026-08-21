@@ -561,7 +561,11 @@ def test_start_episode_keeps_a_visible_failed_reservation_when_branch_creation_f
     episode = episodes[0]
     assert episode.status == "failed"
     assert episode.ending == "failed"
-    assert episode.wrapup_state == "failed"
+    # The root failed before provider launch, so it never bound a session to report
+    # from and the episode carries no report error for work that never ran.
+    assert episode.wrapup_state == "not_started"
+    assert episode.wrapup_error is None
+    assert tasks.store.episode_wrapup(episode.episode_id) is None
     root = tasks.store.agent_task(episode.root_operation_id)
     assert root is not None
     assert root.status == "failed"

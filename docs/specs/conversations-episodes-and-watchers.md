@@ -229,7 +229,10 @@ binding. Stop, watcher claim, and competing maintenance have one atomic winner.
 
 Completion, operational exhaustion, unrecoverable failure, and a human-authority
 pause fence new operational work and enter one hidden report wrap-up. Explicit
-Stop is the only ending that skips it.
+Stop is the only ending that declines it. An ending whose turn never bound a
+provider session has no session to resume and so terminalizes directly, with no
+wrap-up record and no report error; that is an absence of a report, not a failed
+one, and it never leaves the episode on a live wrap-up status.
 
 Report generation resumes the exact episode session and stage with only the
 durable ending, the official report-skill/output pointer, and one compact
@@ -241,14 +244,18 @@ A valid `episode-report.html` is captured as bounded immutable HTML and served
 in the opaque artifact sandbox. The report has no Patch, watcher, command,
 Proposal, or graph channel and never determines the episode verdict. Final
 report failure is a durable visible nonblocking error with no manual report
-Retry; the episode still terminalizes.
+Retry; the episode still terminalizes. It is shown beside the ending it belongs
+to, never as the episode's health, its recommended next step, or a reason to
+withhold a control.
 
 ## Runs projection
 
 Runs derives one episode health and one **Recommended next step** from structured
-episode, task, Stop, budget, watcher, and report state. Raw task status and
-semantic Experiment status do not compete as peer episode states. Controls appear
-only when currently valid, and no recommendation names an unavailable action.
+episode, task, Stop, budget, watcher, and report state. Raw task status, semantic
+Experiment status, and report state do not compete as peer episode states: the
+ending fence alone decides that an episode is over and which controls it retires.
+Controls appear only when currently valid, and no recommendation and no
+diagnostic names an unavailable action.
 
 The experiment detail retains exact target, episode history, pinned budgets,
 current next-episode limit, current guidance validity, watcher provenance and
