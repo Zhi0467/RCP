@@ -66,6 +66,13 @@ and be writable by the execution account, and are deduplicated without replacing
 them with a common parent. Local and remote resolution use the paths on the
 actual execution machine.
 
+That host comes from the project catalog and manifest. It is never read from the
+repository pointer handed to the agent: a pointer's host states how that agent
+reaches the repository, so it is empty for a repository on the execution machine
+and says nothing about where the machine is. What the scope requires of a
+pointer is its machine and its path, and the path is compared after both are
+canonicalized on the execution machine.
+
 The scope rejects another project's repository, a parent containing several
 projects, the application data directory, SQLite, canonical `.research`, the
 execution account's home directory, and broad temporary directories. Provider

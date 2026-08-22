@@ -244,6 +244,12 @@ export function deriveExperimentLoopHealth(
   if (episode?.status === "stopped") return "human_stopped";
   if (episode?.ending) {
     if (episode.ending === "completed") return "completed";
+    // A terminal node status is the human's own verdict on the Experiment, and it
+    // outranks how one bounded episode inside it happened to end. Without this, an
+    // Experiment the human already closed reappears as Needs action forever,
+    // because its last episode paused for an authority decision that has since
+    // been made.
+    if (terminalExperimentStatuses.has(String(node.status ?? ""))) return "completed";
     if (episode.ending === "exhausted") return "paused_at_limit";
     if (episode.ending === "human_pause") return "needs_action";
   }

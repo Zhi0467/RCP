@@ -6,12 +6,13 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 from threading import Barrier
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from rcp.agents import AgentLauncher
-from rcp.agents.context import RepositoryPointer
+from rcp.agents.context import ChatContext, RepositoryPointer
 from rcp.agents.write_scope import (
     RegisteredRepositoryRoot,
     registered_repository_roots,
@@ -19,6 +20,7 @@ from rcp.agents.write_scope import (
 )
 from rcp.config import Manifest
 from rcp.projects import ProjectCatalog
+from rcp.runs.shared import _stage_context_paths
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
 from rcp.transport import RemoteRunStage, StateUnavailable
 
@@ -367,7 +369,29 @@ def test_scope_rejects_project_mismatch(
         _resolve_local(manifest, tmp_path, **kwargs)
 
 
-def test_scope_rejects_repository_pointer_host_mismatch(manifest: Manifest, tmp_path: Path) -> None:
+def test_scope_rejects_repository_pointer_machine_mismatch(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    pointer = RepositoryPointer(
+        alias="repo-a",
+        machine="somewhere-else",
+        host="",
+        path=manifest.repository_map["repo-a"].path,
+    )
+
+    with pytest.raises(ValueError, match="does not match its project execution machine"):
+        _resolve_local(manifest, tmp_path, pointers=[pointer])
+
+
+def test_scope_accepts_the_transport_host_the_staged_context_actually_carries(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    """A pointer's host describes agent transport, not machine topology.
+
+    `_stage_context_paths` blanks it for a repository on the execution machine,
+    so comparing it against the machine's SSH host refused every remote run.
+    """
+
     pointer = RepositoryPointer(
         alias="repo-a",
         machine="laptop",
@@ -375,8 +399,12 @@ def test_scope_rejects_repository_pointer_host_mismatch(manifest: Manifest, tmp_
         path=manifest.repository_map["repo-a"].path,
     )
 
-    with pytest.raises(ValueError, match="does not match its project execution host"):
-        _resolve_local(manifest, tmp_path, pointers=[pointer])
+    scope = _resolve_local(manifest, tmp_path, pointers=[pointer])
+
+    # The host never reaches the resulting sandbox: the roots come from the
+    # manifest and are canonicalized on the execution machine itself.
+    assert scope.execution_host == ""
+    assert scope.repository_roots == [str(Path(manifest.repository_map["repo-a"].path).resolve())]
 
 
 class _RemoteScopeStage:
@@ -445,6 +473,66 @@ def _resolve_remote(
             else repository_inventory
         ),
     )
+
+
+def test_remote_scope_accepts_the_pointer_the_real_staging_step_produces(
+    manifest: Manifest,
+) -> None:
+    """Drive the real `_stage_context_paths` instead of hand-building the pointer.
+
+    Hand-writing the pointer the way the check wanted is how a refusal that fired
+    on every remote Work turn shipped green: staging blanks the host of a
+    repository on the execution machine, so the check could only ever pass
+    locally, where the machine host is blank too.
+    """
+
+    remote = _remote_manifest(manifest)
+    stage = _RemoteScopeStage(
+        host="worker.example",
+        overrides={
+            "/declared/repo-a": "/srv/repo-a",
+            "/declared/repo-a/.research": "/srv/repo-a/.research",
+        },
+    )
+    context = ChatContext.model_construct(
+        repositories=[
+            RepositoryPointer(
+                alias="repo-a",
+                machine="laptop",
+                host=remote.machine_map["laptop"].host,
+                path=remote.repository_map["repo-a"].path,
+            )
+        ],
+        run_truth_scope=["repo-a"],
+        graph_path="/x/graph.json",
+        research_md_path="/x/research.md",
+        introduction_path=None,
+        glossary_path="/x/glossary.json",
+        coverage_path="/x/coverage.json",
+    )
+    service = SimpleNamespace(manifest=remote)
+
+    context = context.model_copy(
+        update=_stage_context_paths(context, service, stage, "laptop")  # type: ignore[arg-type]
+    )
+    assert context.repositories[0].host == ""
+
+    scope = resolve_project_write_scope(
+        manifest=remote,
+        project_id="project",
+        execution_machine="laptop",
+        capability="work_auto",
+        stage_root=str(stage.root),
+        workspace_root=str(stage.workspace),
+        admitted_aliases=["repo-a"],
+        repository_pointers=context.repositories,
+        remote_stage=stage,  # type: ignore[arg-type]
+        app_data_dir=None,
+        repository_inventory=registered_repository_roots(remote, project_id="project"),
+    )
+
+    assert scope.execution_host == "worker.example"
+    assert scope.repository_roots == ["/srv/repo-a"]
 
 
 def test_remote_scope_uses_execution_host_canonical_roots(manifest: Manifest) -> None:

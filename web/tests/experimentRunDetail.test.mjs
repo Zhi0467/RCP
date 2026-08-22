@@ -335,6 +335,35 @@ test("a ready Experiment report opens from the singular episode URL", () => {
   assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
 });
 
+test("an Experiment the human closed stays completed whatever its last episode did", () => {
+  // Regression: deriving health from the ending alone put every Experiment whose
+  // last episode paused for a human decision back into Needs action, including
+  // ones the human had already marked done.
+  const paused = episode({
+    status: "needs_action",
+    ending: "human_pause",
+    wrapup_state: "legacy_unavailable",
+  });
+  const html = render(
+    buildExperimentRun({ ...node(), status: "completed" }, control({ episode: paused }), [], []),
+  );
+
+  assertDetailProjection(html, "Completed", "Episode report unavailable");
+});
+
+test("an open Experiment whose episode paused for a human still needs action", () => {
+  const paused = episode({
+    status: "needs_action",
+    ending: "human_pause",
+    wrapup_state: "legacy_unavailable",
+  });
+  const html = render(
+    buildExperimentRun({ ...node(), status: "running" }, control({ episode: paused }), [], []),
+  );
+
+  assertDetailProjection(html, "Needs action", "Episode report unavailable");
+});
+
 test("a final Experiment report error is a note beside the episode's own outcome", () => {
   const reportFailed = episode({
     status: "needs_action",

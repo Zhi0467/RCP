@@ -175,9 +175,17 @@ def resolve_project_write_scope(
         pointer = pointers.get(repository.alias)
         if pointer is None:
             raise ValueError(f"write scope is missing repository pointer {repository.alias!r}")
-        if pointer.machine != repository.machine or pointer.host != machine.host:
+        # Only the machine is compared. A pointer's host says how the *agent*
+        # reaches the repository -- `_stage_context_paths` blanks it for a
+        # repository that lives on the execution machine, because the agent
+        # opens it as a local path there -- while `machine.host` says where the
+        # machine is. Comparing them refused every remote run and passed every
+        # local one by comparing a value to itself. The pointer's path is what
+        # this scope must agree with, and `registered_root != pointer_root`
+        # below checks it against the execution host's own filesystem.
+        if pointer.machine != repository.machine:
             raise ValueError(
-                f"repository {repository.alias!r} does not match its project execution host"
+                f"repository {repository.alias!r} does not match its project execution machine"
             )
         declared_paths.extend([repository.path, pointer.path])
 
