@@ -91,6 +91,13 @@ comprehensibility, authority, causal coherence, and task-specific admission.
 Tightening live authoring does not invalidate a structurally valid historical
 record.
 
+That holds for authority validation too. In-memory adaptation may retire a
+value and mark what it invalidated, so replay legitimately sees fields on an
+operation that the original write never carried and a live write still may not
+set. Every authority rule that lists the fields a Patch may change accepts those
+adapted fields on replay; refusing them halts canonical history over RCP's own
+migration.
+
 ## Typed graph operations
 
 `Patch.ops` is an ordered list of the strict discriminated `GraphOperation`

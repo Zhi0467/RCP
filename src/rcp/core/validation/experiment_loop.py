@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
@@ -28,6 +28,7 @@ from rcp.core.operations import (
     ProposalStatusChangeOperation,
     UpdateNodesOperation,
 )
+from rcp.core.validation.constants import LEGACY_COMPATIBILITY_UPDATE_FIELDS
 from rcp.core.validation.report import ValidationReport
 
 _ATTEMPT_CLOSE_FIELDS = frozenset(
@@ -43,6 +44,7 @@ def validate_experiment_loop_authority(
     *,
     control_node_id: str | None,
     decision_bundle: Iterable[ExperimentDecisionPin],
+    mode: Literal["admission", "replay"] = "admission",
 ) -> None:
     revision = patch.revision or None
     experiment = state.nodes.get(control_node_id) if control_node_id else None
@@ -71,7 +73,16 @@ def validate_experiment_loop_authority(
     created_types = _created_node_types(patch.ops)
     for op in patch.ops:
         if isinstance(op, UpdateNodesOperation):
-            _validate_updates(state, op, experiment, pinned, has_proposals, report, revision)
+            _validate_updates(
+                state,
+                op,
+                experiment,
+                pinned,
+                has_proposals,
+                report,
+                revision,
+                allowed_experiment_fields=_allowed_experiment_fields(patch, mode),
+            )
         elif isinstance(op, CreateNodesOperation):
             _validate_created_nodes(op, experiment.id, report, revision)
         elif isinstance(op, CreateEdgesOperation):
@@ -94,6 +105,24 @@ def validate_experiment_loop_authority(
             )
 
 
+def _allowed_experiment_fields(
+    patch: Patch,
+    mode: Literal["admission", "replay"],
+) -> frozenset[str]:
+    """The fields an Experiment-loop Patch may change on its own control node.
+
+    Loading a pre-generation-2 Patch retires `blocked` in memory and marks the
+    guidance it invalidates, so replay sees system fields the original write never
+    contained. Refusing them there halts canonical history over RCP's own
+    migration; a live write still may not set them.
+    """
+
+    allowed = frozenset({"attempts", "status", "current_summary", "next_action"})
+    if mode == "replay" and patch.schema_generation == 1:
+        return allowed | LEGACY_COMPATIBILITY_UPDATE_FIELDS
+    return allowed
+
+
 def _validate_updates(
     state: GraphState,
     op: UpdateNodesOperation,
@@ -102,6 +131,8 @@ def _validate_updates(
     has_proposals: bool,
     report: ValidationReport,
     revision: int | None,
+    *,
+    allowed_experiment_fields: frozenset[str],
 ) -> None:
     pinned_ids = {item.decision_id for item in pinned}
     for update in op.nodes:
@@ -139,7 +170,7 @@ def _validate_updates(
                 ],
             )
             continue
-        forbidden = sorted(set(changes) - {"attempts", "status", "current_summary", "next_action"})
+        forbidden = sorted(set(changes) - allowed_experiment_fields)
         if forbidden:
             report.reject(
                 "experiment-loop-experiment-field",

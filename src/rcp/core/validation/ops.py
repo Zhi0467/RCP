@@ -59,7 +59,11 @@ from rcp.core.operations import (
     WithdrawProposalsOperation,
     strict_project_node,
 )
-from rcp.core.validation.constants import IMMUTABLE_NODE_UPDATE_FIELDS, NODE_ADAPTER
+from rcp.core.validation.constants import (
+    IMMUTABLE_NODE_UPDATE_FIELDS,
+    LEGACY_COMPATIBILITY_UPDATE_FIELDS,
+    NODE_ADAPTER,
+)
 from rcp.core.validation.context import OpContext
 from rcp.core.validation.nodes import (
     older,
@@ -74,9 +78,6 @@ from rcp.core.validation.proposals import decision_transition_error, validate_pr
 
 EVIDENCE_HYPOTHESIS_RELATIONS = frozenset(
     {"supports", "weakens", "refutes", "inconclusive", "contradicts"}
-)
-LEGACY_COMPATIBILITY_UPDATE_FIELDS = frozenset(
-    {"legacy_strength", "current_summary_stale", "next_action_stale"}
 )
 
 

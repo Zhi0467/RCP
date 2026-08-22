@@ -195,6 +195,7 @@ def _validate_patch(
             report,
             control_node_id=control_node_id,
             decision_bundle=decision_bundle,
+            mode=mode,
         )
     elif control_node_id or decision_bundle:
         report.reject(

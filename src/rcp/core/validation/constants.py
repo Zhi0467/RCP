@@ -30,3 +30,11 @@ IMMUTABLE_NODE_UPDATE_FIELDS = frozenset(
         "next_action_stale",
     }
 )
+
+# Loading a pre-generation-2 Patch migrates retired vocabulary in memory, which
+# adds these system fields to operations that never carried them on disk. Replay
+# must accept them where a live write never could -- see
+# `adapt_persisted_patch_document`.
+LEGACY_COMPATIBILITY_UPDATE_FIELDS = frozenset(
+    {"legacy_strength", "current_summary_stale", "next_action_stale"}
+)

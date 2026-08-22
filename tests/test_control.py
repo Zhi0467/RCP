@@ -17,6 +17,7 @@ from rcp.core.models import (
     Patch,
     Proposal,
 )
+from rcp.core.operations import adapt_persisted_patch_document
 from rcp.core.validation import validate_patch
 
 EXPERIMENT_ID = "exp/control-loop"
@@ -473,6 +474,48 @@ def test_loop_patch_may_refresh_summary_and_next_action_on_its_experiment() -> N
     assert updated.attempts == [closed]
     assert updated.current_summary == "The configured run finished successfully."
     assert updated.next_action is None
+
+
+def test_replaying_a_legacy_loop_patch_accepts_the_fields_its_own_migration_added() -> None:
+    """Loading a pre-generation-2 Patch retires `blocked` and marks guidance stale.
+
+    Those two system fields are added in memory by `adapt_persisted_patch_document`,
+    never by the original write. Refusing them halted canonical history at the
+    first legacy Experiment-loop Patch and left the whole graph read-only.
+    """
+
+    document = _patch(
+        [
+            {
+                "op": "update_nodes",
+                "nodes": [
+                    {
+                        "id": EXPERIMENT_ID,
+                        "changes": {
+                            "status": "blocked",
+                            "current_summary": "The pinned server crashed.",
+                            "next_action": "Reproduce under Slurm.",
+                        },
+                    }
+                ],
+            }
+        ]
+    ).model_dump(mode="json")
+    document.pop("schema_generation", None)
+
+    adapted = Patch.model_validate(adapt_persisted_patch_document(document))
+    changes = adapted.ops[0].nodes[0].changes
+    assert adapted.schema_generation == 1
+    assert changes["status"] == "unspecified"
+    assert changes["current_summary_stale"] is True
+    assert changes["next_action_stale"] is True
+
+    state = _state()
+    assert not _codes(validate_patch(state, adapted, ["repo"], mode="replay"))
+    # A live write still may not set them.
+    assert "experiment-loop-experiment-field" in _codes(
+        validate_patch(state, adapted, ["repo"], mode="admission")
+    )
 
 
 def test_loop_summary_authority_does_not_allow_other_fields_or_foreign_nodes() -> None:

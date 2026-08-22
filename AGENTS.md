@@ -456,7 +456,12 @@ philosophy inside [`docs/design.md`](docs/design.md) and
   through `load_stored_request` in
   [task_policy.py](src/rcp/runs/task_policy.py), which drops only undeclared keys
   and logs each one. Removing a request field is a data-compatibility change, not
-  a rename.
+  a rename. Canonical Patch history is the same rule with a worse failure: a
+  retired field left on a stored operation, or a field the in-memory adapter adds
+  when it retires a value, halts replay and makes the whole graph read-only. Both
+  belong in `adapt_persisted_patch_document`
+  ([operations.py](src/rcp/core/operations.py)) and in the replay branch of every
+  rule that lists the fields a Patch may change.
 - **Code that also runs on a remote host is never hand-transcribed into a string
   literal.** Two copies of the conversation parser drifted and the untestable one
   rotted. Ship the module's own source over ssh

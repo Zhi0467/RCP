@@ -523,6 +523,43 @@ def test_attaching_evidence_to_an_existing_hypothesis_stays_direct(manifest) -> 
     assert not report.rejected
 
 
+def test_replay_reads_a_historical_ambiguity_carrying_its_derived_revision() -> None:
+    """`raised_rev` was persisted by older releases and is forbidden on the payload now.
+
+    Materialization always overwrites it with the applying revision, so the stored
+    value was inert -- but the strict payload made a Patch RCP itself wrote
+    unreadable, and replay halted on it at the project's second revision.
+    """
+
+    raw = {
+        "revision": 2,
+        "kind": "refresh",
+        "author": "agent",
+        "summary": "Record the open questions.",
+        "run_truth_scope": ["repo-a"],
+        "repositories_read": ["repo-a"],
+        "ops": [
+            {
+                "op": "create_ambiguities",
+                "ambiguities": [
+                    {
+                        "id": "amb/scope",
+                        "question": "Which corpus counts?",
+                        "why_it_matters": "It changes the denominator.",
+                        "raised_rev": 0,
+                    }
+                ],
+            }
+        ],
+    }
+
+    patch = Patch.model_validate(adapt_persisted_patch_document(raw))
+
+    assert patch.schema_generation == 1
+    assert patch.ops[0].ambiguities[0].id == "amb/scope"
+    assert not hasattr(patch.ops[0].ambiguities[0], "raised_rev")
+
+
 def test_replay_accepts_historical_proposals_without_declared_intent(manifest) -> None:
     state = _state_with_decision(manifest)
     current = _agent_patch(

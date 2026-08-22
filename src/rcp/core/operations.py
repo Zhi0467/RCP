@@ -545,6 +545,8 @@ def adapt_persisted_patch_document(document: dict[str, Any]) -> dict[str, Any]:
         if legacy_generation and adapted.get("kind") == "approval":
             _adapt_legacy_approval_operation(operation)
         _adapt_legacy_node_operation(operation, legacy_generation=legacy_generation)
+        if legacy_generation:
+            _adapt_legacy_ambiguity_operation(operation)
         if not isinstance(operation, dict) or operation.get("op") != "create_proposals":
             continue
         proposals = operation.get("proposals")
@@ -641,6 +643,24 @@ def _adapt_legacy_node_operation(operation: Any, *, legacy_generation: bool) -> 
                     _adapt_legacy_evidence_record(changes, assume_default_strength=False)
                 if legacy_generation and isinstance(changes, dict):
                     _adapt_legacy_experiment_record(changes)
+
+
+def _adapt_legacy_ambiguity_operation(operation: dict[str, Any]) -> None:
+    """Drop the derived revision older releases wrote into a persisted ambiguity.
+
+    `raised_rev` is materialized from the revision applying the operation, so the
+    stored value was always inert. The current operation payload forbids it, which
+    made a Patch RCP itself wrote unreadable and halted replay at it.
+    """
+
+    if not isinstance(operation, dict) or operation.get("op") != "create_ambiguities":
+        return
+    ambiguities = operation.get("ambiguities")
+    if not isinstance(ambiguities, list):
+        return
+    for ambiguity in ambiguities:
+        if isinstance(ambiguity, dict):
+            ambiguity.pop("raised_rev", None)
 
 
 def _adapt_legacy_evidence_record(record: dict[str, Any], *, assume_default_strength: bool) -> None:

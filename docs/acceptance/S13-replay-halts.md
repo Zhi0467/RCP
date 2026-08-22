@@ -11,6 +11,12 @@ pins_current_behavior:
   - tests/test_history.py::test_malformed_agent_patch_is_auditable_without_poisoning_replay
   - tests/test_history.py::test_invalid_agent_patch_is_auditable_but_not_materialized
 invariants: [1]
+last_passed: >-
+  2026-08-22 — re-run after replay stopped halting on RCP's own in-memory
+  migration. A tampered or structurally invalid accepted revision still halts and
+  still blocks canonical writes; what no longer halts is a legacy Patch whose
+  adapter retires a value or drops a field the current payload forbids. All four
+  of the human's real project histories replay to their head.
 spec: ../specs/graph-history-and-transitions.md#append-only-history-and-replay
 ---
 
