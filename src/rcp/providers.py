@@ -723,11 +723,16 @@ def _codex_permission_profile(scope: ProjectWriteScope) -> str:
     roots = ",".join(
         f"{json.dumps(path, ensure_ascii=False)}=true" for path in scope.writable_roots
     )
+    # `.research` is "read", never "deny". Codex reads `deny` as no access at all,
+    # so denying it also revoked the canonical `graph.json` and `research.md` that
+    # `_stage_context_paths` hands this very agent and that its contract orders it
+    # to read first. Invariant 4 protects canonical state from *writes*; "read"
+    # refuses the write and keeps the run context readable.
     return (
         "permissions={rcp_project={workspace_roots={"
         + roots
         + '},filesystem={":root"="read",":workspace_roots"={"."="write",'
-        '".research"="deny"}},network={enabled=true}}}'
+        '".research"="read"}},network={enabled=true}}}'
     )
 
 

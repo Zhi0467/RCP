@@ -899,11 +899,47 @@ def test_codex_work_uses_exact_project_permission_profile() -> None:
     assert (
         'permissions={rcp_project={workspace_roots={"/data/chat-stage"=true,'
         '"/project/repo-a"=true},filesystem={":root"="read",":workspace_roots"='
-        '{"."="write",".research"="deny"}},network={enabled=true}}}'
+        '{"."="write",".research"="read"}},network={enabled=true}}}'
     ) in command
     assert command[command.index("--cd") + 1] == stage
     assert "--add-dir" not in command
     assert command[-1] == "-"
+
+
+def test_codex_profile_keeps_staged_canonical_state_readable() -> None:
+    """The canonical `.research` RCP stages as an agent input must stay readable.
+
+    `_stage_context_paths` hands every graph agent `<state repo>/.research/graph.json`
+    and `research.md`, and the task contract orders it to read both first. Codex reads
+    a `deny` policy as no access at all, so denying `.research` revoked those reads and
+    the agent could only report a Blocker. Invariant 4 protects canonical state from
+    writes, which `read` already does.
+    """
+    state_repository = "/project/repo-a"
+    scope = _project_write_scope(
+        capability="work_auto",
+        stage="/data/chat-stage",
+        repository_paths=[state_repository],
+    )
+    command = AgentLauncher._command(
+        "codex",
+        "run the experiment",
+        cwd=Path("/data/chat-stage"),
+        model=None,
+        reasoning=None,
+        session_id=None,
+        read_dirs=[],
+        write_dirs=[Path(state_repository)],
+        write_scope=scope,
+        capability="work_auto",
+        provider_version="0.138.0",
+    )
+    permission_profile = next(item for item in command if item.startswith("permissions={"))
+
+    # The staged pointer and the policy governing it, checked against each other.
+    assert f"{state_repository}/.research" in scope.protected_write_paths
+    assert '".research"="read"' in permission_profile
+    assert "deny" not in permission_profile
 
 
 def test_codex_orchestrate_uses_only_its_resolved_project_roots() -> None:
@@ -936,7 +972,7 @@ def test_codex_orchestrate_uses_only_its_resolved_project_roots() -> None:
     assert '"/project/repo-b"=true' in permission_profile
     assert "/project/repo-a" not in permission_profile
     assert '":root"="read"' in permission_profile
-    assert '".research"="deny"' in permission_profile
+    assert '".research"="read"' in permission_profile
     assert "network={enabled=true}" in permission_profile
     assert command[-1] == "-"
 
@@ -1002,7 +1038,7 @@ def test_codex_work_resume_keeps_the_exact_project_permission_profile() -> None:
     permission_profile = next(item for item in command if item.startswith("permissions={"))
     assert '"/data/chat-stage"=true' in permission_profile
     assert '"/project/repo-a"=true' in permission_profile
-    assert '".research"="deny"' in permission_profile
+    assert '".research"="read"' in permission_profile
     assert "--cd" not in command
     assert command[-2:] == [session_id, "-"]
 

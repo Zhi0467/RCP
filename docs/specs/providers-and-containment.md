@@ -87,7 +87,10 @@ Work and orchestrate use Codex's native noninteractive project permission
 profile: the exact workspace plus admitted repository roots, never the dangerous
 bypass flag. Fresh launches set the exact working directory; native resume uses
 the provider's supported configuration path while preserving the same scope.
-Public web search remains enabled.
+Public web search remains enabled. Canonical `.research` nested in a writable
+root is refused as a write and kept readable, because RCP stages its `graph.json`
+and `research.md` as required run context; Codex treats a denied path as
+unreadable rather than unwritable.
 
 ### Claude
 
