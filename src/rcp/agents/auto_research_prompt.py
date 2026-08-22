@@ -136,8 +136,12 @@ def _auto_research_commands(command_client: str) -> str:
   The node must already exist in the current graph. A wake spends one invocation from the episode
   budget and resumes this same session, so register only a condition you intend to act on.
 - Normal episode completion is explicit. Settled children are a prerequisite for finish, not a
-  reason to finish. Do not invoke finish merely because current children settled, because a Blocker
-  remains, or because temporary resource or capacity contention prevents immediate work.
+  reason to finish. Do not invoke finish merely because current children settled or because a
+  Blocker remains.
+- Capacity contention is never a reason to finish. A full cluster, a busy queue, or an occupied
+  device only means the work has not started yet, and a scheduler accepts work before capacity
+  frees. You hold no external observer yourself, so seat a worker or kick off the Experiment to
+  submit the queued work rather than waiting for an idle resource.
 - Before finishing, use the remaining episode budget to pursue every useful obstacle that can be
   resolved with existing agent authority and tools, without new human judgment, credentials,
   approval, privileged action, or coordination with another person. Act directly, delegate

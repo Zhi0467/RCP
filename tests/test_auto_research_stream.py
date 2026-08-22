@@ -263,8 +263,14 @@ def test_agent_resolvable_blockers_and_temporary_capacity_do_not_finish_the_epis
         assert (
             "Settled children are a prerequisite for finish, not a\n  reason to finish" in contract
         )
-        assert "because a Blocker\n  remains" in contract
-        assert "temporary resource or capacity contention prevents immediate work" in contract
+        assert "because a\n  Blocker remains" in contract
+        # Capacity contention states its own remedy instead of riding along with two
+        # conditions that have none. An orchestrator finished an episode with most of
+        # its budget unspent because the cluster was full, having already identified
+        # the scheduler as the way around it.
+        assert "Capacity contention is never a reason to finish" in contract
+        assert "seat a worker or kick off the Experiment to\n  submit the queued work" in contract
+        assert "temporary resource or capacity contention" not in contract
         assert (
             "without new human judgment, credentials,\n  approval, privileged action, or "
             "coordination with another person" in contract

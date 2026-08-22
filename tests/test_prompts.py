@@ -1090,6 +1090,42 @@ def test_experiment_loop_corrections_retain_the_local_causal_check() -> None:
     assert "must pass the retained `Local causal check for this Patch`" in " ".join(watcher.split())
 
 
+def test_loop_contract_treats_capacity_contention_as_a_queue_to_submit_into() -> None:
+    """A busy scheduler is a queue to submit into, not a fault and not a finding.
+
+    Contention used to sit inside the list of mechanical faults to diagnose, which
+    is the wrong shape: a full cluster is a normal condition with a standard remedy,
+    not a failure. The orchestrator's matching rule is asserted alongside its own
+    prose in `test_auto_research_stream.py`.
+    """
+    loop = " ".join(
+        experiment_loop_task_contract(
+            project_name="Example",
+            ontology_path="/state/graph.json#ontology",
+            ontology_extensions=False,
+            graph_path="/state/graph.json",
+            research_path="/state/research.md",
+            focused_experiment_id="exp/example",
+            repositories=[{"alias": "repo-a", "host": "gpu", "path": "/repo-a"}],
+            introduction_path=None,
+            human_request_path="/stage/inputs/human-request.txt",
+            loop_control_path="/stage/inputs/experiment-control.json",
+            watcher_state_path="/stage/inputs/experiment-watchers.json",
+            patch_path="/stage/patch.json",
+            artifact_path="/stage/artifacts",
+            output_schema_path="/stage/inputs/patch-schema.json",
+            watch_path="/stage/watch.json",
+            validator_command="python /stage/validator.py /stage/patch.json",
+        ).split()
+    )
+
+    # The loop owns external observers, so it submits and then observes the queued job.
+    assert "Capacity contention is not a fault and not a finding" in loop
+    assert "Submit and let the job wait in the queue rather than waiting for an idle" in loop
+    assert "Never report contention as a limit you could not act on" in loop
+    assert "command failure, resource contention, or similar infrastructure symptom" not in loop
+
+
 def test_retry_contract_preserves_objective_but_uses_current_authority_and_outputs() -> None:
     retry = PromptFactory.continuation_task_contract(
         original_contract_path="/prior/inputs/task-initial.md",
