@@ -908,7 +908,7 @@ function SectionHeading({ eyebrow, title }: { eyebrow: string; title: string }) 
   );
 }
 
-function RepositoryEditor({
+export function RepositoryEditor({
   repository,
   canonical,
   only,
@@ -926,13 +926,19 @@ function RepositoryEditor({
   const [pickerBusy, setPickerBusy] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
   const picker = repositoryPickerPresentation(repository.location, isDesktopRuntime());
+  const pathInputId = `repository-path-${repository.id}`;
+
+  const changeRepository = (patch: Partial<SetupRepository>) => {
+    if (patch.location !== undefined || patch.path !== undefined) setPickerError(null);
+    onChange(patch);
+  };
 
   const chooseFolder = async () => {
     setPickerBusy(true);
     setPickerError(null);
     try {
       const path = await chooseDesktopRepositoryFolder();
-      if (path !== null) onChange({ path });
+      if (path !== null) changeRepository({ path });
     } catch (error) {
       setPickerError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -970,13 +976,13 @@ function RepositoryEditor({
         <div className="location-toggle" aria-label="Repository location">
           <button
             className={repository.location === "local" ? "active" : ""}
-            onClick={() => onChange({ location: "local" })}
+            onClick={() => changeRepository({ location: "local" })}
           >
             Local
           </button>
           <button
             className={repository.location === "ssh" ? "active" : ""}
-            onClick={() => onChange({ location: "ssh" })}
+            onClick={() => changeRepository({ location: "ssh" })}
           >
             SSH
           </button>
@@ -991,12 +997,22 @@ function RepositoryEditor({
             />
           </label>
         )}
-        <label className={repository.location === "ssh" ? "" : "wide"}>
-          <span>Absolute repository path</span>
+        <div className={`repository-path-field ${repository.location === "ssh" ? "" : "wide"}`}>
+          <label htmlFor={pathInputId}>
+            <span>Absolute repository path</span>
+          </label>
           <div className="repository-path-input">
             <input
+              id={pathInputId}
               value={repository.path}
-              onChange={(event) => onChange({ path: event.target.value })}
+              onChange={(event) => changeRepository({ path: event.target.value })}
+              aria-describedby={
+                pickerError
+                  ? `${pathInputId}-error`
+                  : picker.hint
+                    ? `${pathInputId}-hint`
+                    : undefined
+              }
               placeholder={
                 repository.location === "ssh"
                   ? "/home/user/research/project"
@@ -1014,9 +1030,17 @@ function RepositoryEditor({
               </button>
             )}
           </div>
-          {picker.hint && <small className="repository-path-hint">{picker.hint}</small>}
-          {pickerError && <small className="repository-path-error">{pickerError}</small>}
-        </label>
+          {picker.hint && (
+            <small id={`${pathInputId}-hint`} className="repository-path-hint">
+              {picker.hint}
+            </small>
+          )}
+          {pickerError && (
+            <small id={`${pathInputId}-error`} className="repository-path-error" role="alert">
+              {pickerError}
+            </small>
+          )}
+        </div>
       </div>
       <footer>
         <label className="check-control">

@@ -1836,11 +1836,15 @@ button:disabled {
   grid-template-columns: 0.65fr 1fr;
   padding: 14px;
 }
-.repository-fields label {
+.repository-fields label,
+.repository-path-field {
   min-width: 0;
 }
-.repository-fields label.wide {
+.repository-path-field.wide {
   grid-column: 2;
+}
+.repository-path-field > label {
+  display: block;
 }
 .repository-fields label > span {
   color: var(--muted);
@@ -6117,7 +6121,7 @@ button.relation-map-node:hover {
   .repository-fields {
     grid-template-columns: 1fr;
   }
-  .repository-fields label.wide {
+  .repository-path-field.wide {
     grid-column: auto;
   }
   .repository-editor > footer {

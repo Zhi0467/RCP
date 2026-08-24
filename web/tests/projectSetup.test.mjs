@@ -1,7 +1,21 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { after, test } from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createServer } from "vite";
 
 import { repositoryPickerPresentation, stateRepositoryAfterRemoval } from "../src/projectSetup.ts";
+
+const server = await createServer({
+  root: new URL("..", import.meta.url).pathname,
+  configFile: false,
+  logLevel: "silent",
+  server: { middlewareMode: true, hmr: false },
+  optimizeDeps: { noDiscovery: true },
+});
+const { RepositoryEditor } = await server.ssrLoadModule("/src/views/ProjectSetup.tsx");
+
+after(() => server.close());
 
 const repositories = [
   { id: 1, alias: "research" },
@@ -35,4 +49,39 @@ test("only desktop local repositories offer the native folder picker", () => {
     showPicker: false,
     hint: null,
   });
+});
+
+test("the repository path label targets only its input while the picker stays a sibling", () => {
+  const originalWindow = globalThis.window;
+  globalThis.window = { __TAURI_INTERNALS__: {} };
+  try {
+    const html = renderToStaticMarkup(
+      React.createElement(RepositoryEditor, {
+        repository: {
+          id: 7,
+          alias: "research",
+          location: "local",
+          path: "/Users/example/research",
+          host: "",
+          default_read: true,
+        },
+        canonical: true,
+        only: true,
+        onCanonical() {},
+        onChange() {},
+      }),
+    );
+    const labelStart = html.indexOf('<label for="repository-path-7">');
+    const labelEnd = html.indexOf("</label>", labelStart);
+    const inputStart = html.indexOf('id="repository-path-7"', labelEnd);
+    const pickerStart = html.indexOf("Choose folder…", inputStart);
+
+    assert.ok(labelStart >= 0);
+    assert.ok(labelEnd > labelStart);
+    assert.ok(inputStart > labelEnd);
+    assert.ok(pickerStart > inputStart);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
 });
