@@ -106,12 +106,17 @@ pub async fn desktop_show_ready(
 }
 
 #[tauri::command]
-pub fn choose_repository_folder(app: AppHandle) -> Result<FolderSelectionResult, String> {
-    let selected = app
-        .dialog()
+pub async fn choose_repository_folder(app: AppHandle) -> Result<FolderSelectionResult, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
         .file()
         .set_title("Choose repository folder")
-        .blocking_pick_folder()
+        .pick_folder(move |folder| {
+            let _ = sender.send(folder);
+        });
+    let selected = receiver
+        .await
+        .map_err(|_| "repository folder dialog closed unexpectedly".to_string())?
         .map(|folder| {
             folder
                 .into_path()

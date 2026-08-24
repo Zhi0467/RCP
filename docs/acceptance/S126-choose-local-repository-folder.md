@@ -21,7 +21,8 @@ still require text entry.
 
 1. Open **New project** in the desktop app with a local repository selected.
 2. Choose **Choose folder…**, select an existing folder in Finder, and confirm.
-3. Confirm that the repository path becomes the selected absolute path.
+3. Confirm that the native dialog remains responsive and that the repository
+   path becomes the selected absolute path.
 4. Open the picker again and cancel. Confirm that the existing path remains.
 5. Switch the repository to SSH. Confirm that the Finder action disappears and
    the remote absolute path remains a text field.
@@ -32,6 +33,7 @@ still require text entry.
 
 - `desktop_local_repository_uses_native_folder_picker`
 - `selected_folder_fills_the_absolute_path`
+- `native_folder_dialog_does_not_block_the_desktop_event_loop`
 - `cancel_preserves_the_existing_path`
 - `ssh_repository_never_offers_a_local_folder_picker`
 - `browser_local_repository_explains_manual_path_entry`
