@@ -5,6 +5,7 @@ import { isMutationRequest } from "../src/api.ts";
 import {
   backendReconnectLabel,
   desktopDownloadPath,
+  desktopFolderSelectionPath,
   desktopFolderAccessAcknowledgementValue,
   establishBackendIdentity,
   identityMismatch,
@@ -167,6 +168,18 @@ test("closing the desktop save dialog is a normal artifact download cancel", () 
   assert.equal(desktopDownloadPath({ saved: false, path: null }), null);
   assert.equal(desktopDownloadPath({ saved: true, path: "/tmp/report.png" }), "/tmp/report.png");
   assert.throws(() => desktopDownloadPath({ saved: false, error: "write failed" }), /write failed/);
+});
+
+test("closing the folder picker preserves the path while a selection returns its absolute path", () => {
+  assert.equal(desktopFolderSelectionPath({ selected: false, path: null }), null);
+  assert.equal(
+    desktopFolderSelectionPath({ selected: true, path: "/Users/example/research project" }),
+    "/Users/example/research project",
+  );
+  assert.throws(
+    () => desktopFolderSelectionPath({ selected: true, path: null }),
+    /did not return a repository folder/,
+  );
 });
 
 test("desktop backend recovery uses a truthful native action label", () => {

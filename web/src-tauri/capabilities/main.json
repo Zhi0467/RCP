@@ -12,6 +12,7 @@
     "allow-desktop-status",
     "allow-desktop-reconnect-backend",
     "allow-desktop-show-ready",
+    "allow-choose-repository-folder",
     "allow-desktop-start-dictation",
     "allow-desktop-stop-dictation",
     "allow-open-artifact-preview",

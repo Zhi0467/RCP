@@ -1,4 +1,8 @@
-use std::{io::Write, path::Path, time::Duration};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -29,6 +33,12 @@ pub struct OpenResult {
 #[derive(Serialize)]
 pub struct DownloadResult {
     saved: bool,
+    path: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+pub struct FolderSelectionResult {
+    selected: bool,
     path: Option<String>,
 }
 
@@ -93,6 +103,46 @@ pub async fn desktop_show_ready(
     state.update_health(&health);
     windows::show_main(&app)?;
     Ok(ShowResult { shown: true })
+}
+
+#[tauri::command]
+pub async fn choose_repository_folder(app: AppHandle) -> Result<FolderSelectionResult, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose repository folder")
+        .pick_folder(move |folder| {
+            let _ = sender.send(folder);
+        });
+    let selected = receiver
+        .await
+        .map_err(|_| "repository folder dialog closed unexpectedly".to_string())?
+        .map(|folder| {
+            folder
+                .into_path()
+                .map_err(|error| format!("selected repository is not a local folder: {error}"))
+        })
+        .transpose()?;
+    folder_selection_result(selected)
+}
+
+fn folder_selection_result(path: Option<PathBuf>) -> Result<FolderSelectionResult, String> {
+    let Some(path) = path else {
+        return Ok(FolderSelectionResult {
+            selected: false,
+            path: None,
+        });
+    };
+    if !path.is_absolute() {
+        return Err("selected repository folder is not an absolute path".into());
+    }
+    let path = path
+        .to_str()
+        .ok_or_else(|| "selected repository folder path is not valid UTF-8".to_string())?;
+    Ok(FolderSelectionResult {
+        selected: true,
+        path: Some(path.to_string()),
+    })
 }
 
 #[tauri::command]
@@ -370,6 +420,26 @@ fn safe_filename(suggested: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn folder_selection_result_preserves_cancel_and_path() {
+        assert_eq!(
+            folder_selection_result(None).unwrap(),
+            FolderSelectionResult {
+                selected: false,
+                path: None,
+            }
+        );
+        assert_eq!(
+            folder_selection_result(Some(PathBuf::from("/Users/example/research project")))
+                .unwrap(),
+            FolderSelectionResult {
+                selected: true,
+                path: Some("/Users/example/research project".into()),
+            }
+        );
+        assert!(folder_selection_result(Some(PathBuf::from("relative/repository"))).is_err());
+    }
 
     #[test]
     fn repository_preview_url_encodes_identifiers_path_and_optional_line() {
