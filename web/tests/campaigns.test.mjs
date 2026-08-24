@@ -91,7 +91,11 @@ const episode = {
   report: null,
   can_stop: true,
   can_reauthorize: false,
+  can_message: true,
   live: true,
+  health: "active",
+  recommendation: "continue",
+  task_control: "pause",
 };
 
 test("the Auto-research dialog meters only operational invocations", () => {
@@ -155,6 +159,9 @@ test("wrap-up has one exact parent state and no report task or recovery control"
     status: "wrapping_up",
     wrapup_state: "running",
     tasks: [failedTask],
+    health: "wrapping_up",
+    recommendation: "wait",
+    task_control: null,
   };
   const projection = episodeProjection(wrapping, wrapping.tasks);
   const html = renderEpisodes([wrapping]);
@@ -179,7 +186,11 @@ test("a ready episode exposes one singular report URL", () => {
       created_at: "2026-08-12T08:04:00Z",
     },
     can_stop: false,
+    can_message: false,
     tasks: [{ ...rootTask, status: "succeeded", can_pause: false }],
+    health: "completed",
+    recommendation: "open_report",
+    task_control: null,
   };
   const html = renderEpisodes([ready]);
 
@@ -212,7 +223,11 @@ test("a final report error is visible, terminal, and has no task recovery contro
     wrapup_error: "The visual report could not be written.",
     tasks: [failedTask],
     can_stop: false,
+    can_message: false,
     can_reauthorize: true,
+    health: "needs_action",
+    recommendation: "reauthorize",
+    task_control: null,
   };
   const projection = episodeProjection(reportFailed, reportFailed.tasks);
   const html = renderEpisodes([reportFailed]);
@@ -233,6 +248,10 @@ test("a report error does not downgrade a completed episode", () => {
     wrapup_error: "The visual report could not be written.",
     tasks: [{ ...rootTask, status: "succeeded", can_pause: false }],
     can_stop: false,
+    can_message: false,
+    health: "completed",
+    recommendation: "none",
+    task_control: null,
   };
   const projection = episodeProjection(reportFailed, reportFailed.tasks);
   const html = renderEpisodes([reportFailed]);
@@ -249,11 +268,15 @@ test("Stop is the only ending that shows neither a report nor a report error", (
     status: "stopped",
     live: false,
     ending: "stopped",
-    ending_diagnostic: "must stay hidden after Stop",
+    ending_diagnostic: null,
     wrapup_state: "skipped",
-    wrapup_error: "must stay hidden after Stop",
+    wrapup_error: null,
     report: null,
     can_stop: false,
+    can_message: false,
+    health: "stopped",
+    recommendation: "none",
+    task_control: null,
     tasks: [{ ...rootTask, status: "succeeded", can_pause: false }],
   };
   const html = renderEpisodes([stopped]);

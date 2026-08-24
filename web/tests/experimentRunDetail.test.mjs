@@ -294,6 +294,11 @@ function episode(fields = {}) {
     report: null,
     can_stop: false,
     can_reauthorize: false,
+    can_message: false,
+    live: true,
+    health: "wrapping_up",
+    recommendation: "wait",
+    task_control: null,
     ...fields,
   };
 }
@@ -407,6 +412,9 @@ test("the reason an Experiment episode ended outranks its report error", () => {
     ending: "failed",
     ending_diagnostic: "This Experiment turn failed before it started its agent session.",
     wrapup_state: "not_started",
+    live: false,
+    health: "failed",
+    recommendation: "review",
   });
   const html = render(
     buildExperimentRun(
@@ -424,12 +432,17 @@ test("the reason an Experiment episode ended outranks its report error", () => {
 });
 
 test("a stopped Experiment shows neither a report nor a report error", () => {
+  // A stopped episode arrives with its diagnostic and report error already
+  // withheld by the projection, so there is nothing here for the view to hide.
   const stopped = episode({
     status: "stopped",
     ending: "stopped",
-    ending_diagnostic: "hidden stop diagnostic",
+    ending_diagnostic: null,
     wrapup_state: "skipped",
-    wrapup_error: "hidden stop error",
+    wrapup_error: null,
+    live: false,
+    health: "stopped",
+    recommendation: "none",
   });
   const html = render(buildExperimentRun(node(), control({ episode: stopped }), [], []));
 

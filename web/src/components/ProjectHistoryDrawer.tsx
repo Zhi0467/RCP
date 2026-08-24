@@ -236,8 +236,7 @@ function episodeModeLabel(mode: NonNullable<RevisionSummary["episode"]>["mode"])
 }
 
 function episodeStateLabel(episode: NonNullable<RevisionSummary["episode"]>): string {
-  if (episode.ending === "human_pause") return "Human-authority pause";
-  return capitalize(episode.ending ?? episode.status);
+  return episode.state_label;
 }
 
 function revisionAttribution(summary: RevisionSummary): string {

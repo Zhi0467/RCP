@@ -1,4 +1,13 @@
-import type { AgentTask, Episode, EpisodeEnding } from "./types";
+import type {
+  AgentTask,
+  Episode,
+  EpisodeEnding,
+  EpisodeHealth,
+  EpisodeRecommendationKind,
+  EpisodeTaskControlKind,
+} from "./types";
+
+export type { EpisodeHealth, EpisodeRecommendationKind };
 
 const EPISODE_HEALTH_LABELS: Record<EpisodeHealth, string> = {
   starting: "Starting",
@@ -20,20 +29,6 @@ export interface EpisodeTaskRow {
   depth: number;
 }
 
-export type EpisodeHealth =
-  | "starting"
-  | "active"
-  | "recovering"
-  | "needs_action"
-  | "stopping"
-  | "wrapping_up"
-  | "completed"
-  | "stopped"
-  | "failed";
-
-export type EpisodeRecommendationKind =
-  "continue" | "wait" | "resume" | "retry" | "reauthorize" | "open_report" | "review" | "none";
-
 export interface EpisodeRecommendation {
   kind: EpisodeRecommendationKind;
   label: string;
@@ -41,11 +36,9 @@ export interface EpisodeRecommendation {
 }
 
 export interface EpisodeTaskControl {
-  kind: "pause" | "resume" | "retry";
+  kind: EpisodeTaskControlKind;
   task: AgentTask;
 }
-
-type EpisodeRecoveryControl = EpisodeTaskControl & { kind: "resume" | "retry" };
 
 export interface EpisodeProjection {
   health: EpisodeHealth;
@@ -79,156 +72,47 @@ export function currentEpisodeControlTask(
   return tasks.find((task) => task.operation_id === episode.current_control_task_id) ?? null;
 }
 
+const EPISODE_RECOMMENDATION_LABELS: Record<EpisodeRecommendationKind, string> = {
+  continue: "Let auto-research continue",
+  wait: "Wait for the current step",
+  resume: "Resume the current turn",
+  retry: "Retry the current turn",
+  reauthorize: "Start a new authorized episode",
+  open_report: "Open report",
+  review: "Review the episode state",
+  none: "No further action is needed",
+};
+
+/** The wording for the wait and review the projection distinguishes by state. */
+const EPISODE_RECOMMENDATION_LABELS_BY_HEALTH: Partial<
+  Record<EpisodeHealth, Partial<Record<EpisodeRecommendationKind, string>>>
+> = {
+  wrapping_up: { wait: "Wrapping up visualization and report" },
+  recovering: { wait: "Wait for automatic turn recovery" },
+  stopping: { wait: "Wait for the current turn to finish" },
+  starting: { wait: "Wait for auto-research to start" },
+  active: { wait: "Wait for the current turn to pause" },
+  stopped: { none: "No further action is available" },
+  failed: { review: "Review the episode failure" },
+  needs_action: { review: "Review the blocked turn" },
+};
+
 export function episodeProjection(
   episode: Episode,
   tasks: AgentTask[] = episode.tasks,
 ): EpisodeProjection {
+  // Lifecycle state, next step, and available control are decided by the server.
+  // This function resolves them to copy and to the task object a control acts on.
   const task = currentEpisodeControlTask(episode, tasks);
-
-  if (episode.wrapup_state === "pending" || episode.wrapup_state === "running") {
-    return projectEpisode(
-      "wrapping_up",
-      recommendation("wait", "Wrapping up visualization and report", task),
-    );
-  }
-
-  if (episode.report && episode.wrapup_state === "ready") {
-    return projectEpisode(
-      episode.status === "completed"
-        ? "completed"
-        : episode.status === "failed"
-          ? "failed"
-          : "needs_action",
-      recommendation("open_report", "Open report", task),
-    );
-  }
-
-  if (episode.status === "stopped") {
-    return projectEpisode(
-      "stopped",
-      recommendation("none", "No further action is available", task),
-    );
-  }
-
-  if (episode.status === "completed" || episode.status === "failed") {
-    return projectEpisode(
-      episode.status,
-      recommendation(
-        episode.status === "failed" ? "review" : "none",
-        episode.status === "failed" ? "Review the episode failure" : "No further action is needed",
-        task,
-      ),
-    );
-  }
-
-  if (episode.recovery?.status === "pending") {
-    return projectEpisode(
-      "recovering",
-      recommendation("wait", "Wait for automatic turn recovery", task),
-    );
-  }
-
-  if (episode.status === "needs_action" && episode.can_reauthorize) {
-    return projectEpisode(
-      "needs_action",
-      recommendation("reauthorize", "Start a new authorized episode", task),
-    );
-  }
-
-  const recoveryControl = episodeRecoveryControl(task);
-  if (recoveryControl) {
-    return projectEpisode(
-      "needs_action",
-      recommendation(
-        recoveryControl.kind,
-        recoveryControl.kind === "resume" ? "Resume the current turn" : "Retry the current turn",
-        recoveryControl.task,
-      ),
-      recoveryControl,
-    );
-  }
-
-  if (episode.status === "stopping") {
-    return projectEpisode(
-      "stopping",
-      recommendation("wait", "Wait for the current turn to finish", task),
-    );
-  }
-
-  if (
-    task &&
-    (task.status === "paused" || task.status === "interrupted" || task.status === "failed")
-  ) {
-    return projectEpisode(
-      "needs_action",
-      recommendation("review", "Review the blocked turn", task),
-    );
-  }
-
-  if (episode.status === "queued" || task?.status === "queued") {
-    return projectEpisode(
-      "starting",
-      recommendation("wait", "Wait for auto-research to start", task),
-    );
-  }
-
-  if (episode.status === "needs_action") {
-    return projectEpisode(
-      "needs_action",
-      recommendation("review", "Review the episode state", task),
-    );
-  }
-
-  if (task?.status === "pausing") {
-    return projectEpisode(
-      "active",
-      recommendation("wait", "Wait for the current turn to pause", task),
-    );
-  }
-
-  return projectEpisode(
-    "active",
-    recommendation("continue", "Let auto-research continue", task),
-    pauseControl(task),
-  );
-}
-
-function projectEpisode(
-  health: EpisodeHealth,
-  next: EpisodeRecommendation,
-  taskControl: EpisodeTaskControl | null = null,
-): EpisodeProjection {
+  const label =
+    EPISODE_RECOMMENDATION_LABELS_BY_HEALTH[episode.health]?.[episode.recommendation] ??
+    EPISODE_RECOMMENDATION_LABELS[episode.recommendation];
   return {
-    health,
-    healthLabel: EPISODE_HEALTH_LABELS[health],
-    recommendation: next,
-    taskControl,
+    health: episode.health,
+    healthLabel: EPISODE_HEALTH_LABELS[episode.health],
+    recommendation: { kind: episode.recommendation, label, task },
+    taskControl: episode.task_control && task ? { kind: episode.task_control, task } : null,
   };
-}
-
-function recommendation(
-  kind: EpisodeRecommendationKind,
-  label: string,
-  task: AgentTask | null,
-): EpisodeRecommendation {
-  return { kind, label, task };
-}
-
-function episodeRecoveryControl(task: AgentTask | null): EpisodeRecoveryControl | null {
-  if (!task) return null;
-  if (task.status === "paused") {
-    if (task.can_resume) return { kind: "resume", task };
-    if (task.can_retry) return { kind: "retry", task };
-  }
-  if (task.status === "interrupted" || task.status === "failed") {
-    if (task.can_retry) return { kind: "retry", task };
-    if (task.can_resume) return { kind: "resume", task };
-  }
-  return null;
-}
-
-function pauseControl(task: AgentTask | null): EpisodeTaskControl | null {
-  return task?.status === "running" && task.can_pause ? { kind: "pause", task } : null;
 }
 
 export function episodeEndingLabel(ending: EpisodeEnding): string {

@@ -13,6 +13,7 @@ from rcp.api.dependencies import (
 from rcp.core.transitions import transition_trigger_manifest
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore
+from rcp.storage.models import EpisodeRecord
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 
@@ -71,6 +72,13 @@ def graph_transition_manifest(
     return transition_trigger_manifest().model_dump(mode="json")
 
 
+def _episode_state_label(episode: EpisodeRecord) -> str:
+    if episode.ending == "human_pause":
+        return "Human-authority pause"
+    state = episode.ending or episode.status
+    return state.replace("_", " ").capitalize()
+
+
 def _history_episode_decoration(
     store: AppStore,
     project_id: str,
@@ -82,7 +90,10 @@ def _history_episode_decoration(
     report = None if episode.ending == "stopped" else store.episode_report(episode_id)
     return {
         "mode": episode.mode,
-        "status": episode.status,
+        # The row shows what state this episode reached. That is a rendered name,
+        # so the projection supplies it rather than exporting the enum for a
+        # surface to capitalize into one.
+        "state_label": _episode_state_label(episode),
         "ending": episode.ending,
         "wrapup_state": episode.wrapup_state,
         "report": (

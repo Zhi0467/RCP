@@ -998,7 +998,7 @@ export interface RevisionSummary {
 
 export interface HistoryEpisodeDecoration {
   mode: EpisodeMode;
-  status: EpisodeStatus;
+  state_label: string;
   ending: EpisodeEnding | null;
   wrapup_state: EpisodeWrapupState;
   report: EpisodeReportSummary | null;
@@ -1072,17 +1072,29 @@ export interface AgentTask {
   contracts?: AgentTaskContract[];
 }
 
-export type EpisodeMode = "auto_research" | "experiment_loop";
-
-export type EpisodeStatus =
-  | "queued"
-  | "running"
+export type EpisodeHealth =
+  | "starting"
+  | "active"
+  | "recovering"
+  | "needs_action"
   | "stopping"
   | "wrapping_up"
-  | "needs_action"
   | "completed"
   | "stopped"
   | "failed";
+export type EpisodeRecommendationKind =
+  "continue" | "wait" | "resume" | "retry" | "reauthorize" | "open_report" | "review" | "none";
+export type EpisodeTaskControlKind = "pause" | "resume" | "retry";
+export type EpisodeMode = "auto_research" | "experiment_loop";
+
+/**
+ * Opaque on purpose. Episode lifecycle is decided by the server and reaches the
+ * client already decided, as `health`, `recommendation`, `live`, and `can_*`. A
+ * comparison against a status literal does not compile, so no surface can reach
+ * its own conclusion about a lifecycle the backend owns.
+ */
+declare const OPAQUE_EPISODE_STATUS: unique symbol;
+export type EpisodeStatus = { readonly [OPAQUE_EPISODE_STATUS]: "EpisodeStatus" };
 
 export type EpisodeEnding = "completed" | "exhausted" | "stopped" | "failed" | "human_pause";
 
@@ -1142,7 +1154,11 @@ export interface Episode {
   report: EpisodeReportSummary | null;
   can_stop: boolean;
   can_reauthorize: boolean;
+  can_message: boolean;
   live: boolean;
+  health: EpisodeHealth;
+  recommendation: EpisodeRecommendationKind;
+  task_control: EpisodeTaskControlKind | null;
 }
 
 export interface EpisodeMessage {

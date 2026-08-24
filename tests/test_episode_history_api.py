@@ -182,20 +182,22 @@ def test_history_episode_decoration_maps_lifecycle_and_singular_report(
 
     assert response.status_code == 200
     decorated = {item["episode_id"]: item["episode"] for item in response.json()}
+    # The row renders a state name, so the decoration carries the name rather than
+    # the status enum for a client to capitalize into one.
     assert {
         episode_id: (
             item["mode"],
-            item["status"],
+            item["state_label"],
             item["ending"],
             item["wrapup_state"],
         )
         for episode_id, item in decorated.items()
     } == {
-        "completed": ("auto_research", "completed", "completed", "ready"),
-        "exhausted": ("auto_research", "needs_action", "exhausted", "ready"),
-        "stopped": ("auto_research", "stopped", "stopped", "skipped"),
-        "failed": ("auto_research", "failed", "failed", "failed"),
-        "wrapping": ("auto_research", "wrapping_up", "completed", "pending"),
+        "completed": ("auto_research", "Completed", "completed", "ready"),
+        "exhausted": ("auto_research", "Exhausted", "exhausted", "ready"),
+        "stopped": ("auto_research", "Stopped", "stopped", "skipped"),
+        "failed": ("auto_research", "Failed", "failed", "failed"),
+        "wrapping": ("auto_research", "Completed", "completed", "pending"),
     }
     assert decorated["exhausted"]["report"] == {
         "report_id": "exhausted-report",

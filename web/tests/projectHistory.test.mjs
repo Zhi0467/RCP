@@ -284,7 +284,7 @@ test("Project history groups episode envelopes while preserving revision attribu
       episode_id: "episode-live",
       episode: {
         mode: "auto_research",
-        status: "needs_action",
+        state_label: "Exhausted",
         ending: "exhausted",
         wrapup_state: "ready",
         report,
@@ -329,7 +329,7 @@ test("Project history groups episode envelopes while preserving revision attribu
       episode_id: "episode-live",
       episode: {
         mode: "auto_research",
-        status: "needs_action",
+        state_label: "Exhausted",
         ending: "exhausted",
         wrapup_state: "ready",
         report,

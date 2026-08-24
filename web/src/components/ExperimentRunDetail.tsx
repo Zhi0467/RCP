@@ -210,7 +210,7 @@ export function ExperimentRunDetail({
               {stopBusy || stopUnsettled ? "Stopping" : "Stop loop"}
             </button>
           )}
-          {episode?.report && episode.wrapup_state === "ready" && episode.status !== "stopped" && (
+          {episode?.report && episode.wrapup_state === "ready" && (
             <EpisodeReportLink
               className="button primary compact"
               href={episodeReportHref(episode.episode_id)}
@@ -246,7 +246,7 @@ export function ExperimentRunDetail({
         <strong>{recommendation.label}</strong>
       </div>
 
-      {episode?.ending_diagnostic && episode.status !== "stopped" && (
+      {episode?.ending_diagnostic && (
         <div className="campaign-run-error" role="alert">
           {episode.ending_diagnostic}
         </div>
@@ -254,7 +254,7 @@ export function ExperimentRunDetail({
 
       {/* The report is a deliverable of an ended episode, so its failure is reported
           after the reason the episode ended and never in place of it. */}
-      {episode?.wrapup_state === "failed" && episode.status !== "stopped" && (
+      {episode?.wrapup_state === "failed" && (
         <div className="campaign-run-note">
           Report generation error: {episode.wrapup_error || "The report could not be generated."}
         </div>

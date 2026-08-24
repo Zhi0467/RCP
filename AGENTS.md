@@ -199,13 +199,15 @@ These identifiers are cited from source and tests. Never renumber them.
 
 - Python uses `uv`, `pyproject.toml`, Pydantic, and `from __future__ import annotations`.
 - Ruff settings live in `pyproject.toml`; do not assume them.
-- `web/src/types.ts` is the one place a backend response shape is restated for
-  the client, and it changes with that shape. No other web module restates a
-  status vocabulary or answers a question the server already decides: publish
-  the fact as a field, as `EpisodeResponse.live` and
-  `ExperimentControlState.graph_reasons` do, and read it.
-  `tests/test_ui_backend_vocabularies.py` holds a closed allowlist of the
-  copies that remain.
+- The web layer consumes backend state; it never derives it. A derivation whose
+  inputs are all backend state belongs to the projection, which exports the
+  decision — `EpisodeResponse.health`, `recommendation`, `live`, `can_*`,
+  `ExperimentControlState.graph_reasons`. Only derivations with a UI-specific
+  input, such as the trust-view lens, stay client-side. `web/src/types.ts` is the
+  one place a response shape is restated, and a lifecycle it fully exports is
+  sealed there with an opaque type, as `EpisodeStatus` is, so branching on it
+  cannot compile. `tests/test_ui_backend_vocabularies.py` stages the vocabularies
+  not sealed yet.
 - `.research/`, `.recovery/`, and `web/dist/` remain outside formatting hooks.
 - `pre-commit --all-files` sees tracked files only; account for every new path.
 - Never trust a piped test command's exit status unless `pipefail` is set.

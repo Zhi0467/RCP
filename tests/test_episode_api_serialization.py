@@ -427,3 +427,85 @@ def test_project_ownership_and_mode_filtered_lists_fail_closed(tmp_path) -> None
             stopped,
             branch_summary=_branch_summary,
         )
+
+
+def test_the_projection_decides_lifecycle_state_so_no_surface_has_to() -> None:
+    """Health, next step, and control come from one place, on backend inputs only.
+
+    Four different situations reach `needs_action`, which is why the
+    recommendation travels beside the health rather than being re-derived from
+    `status` wherever it is needed.
+    """
+
+    from rcp.api.episodes import _episode_projection
+
+    def episode(**fields: object) -> EpisodeRecord:
+        base = {
+            "episode_id": str(uuid.uuid4()),
+            "project_id": "project",
+            "mode": "auto_research",
+            "status": "running",
+            "invocation_ceiling": 4,
+            "invocations_used": 1,
+            "created_at": "2026-08-24T00:00:00Z",
+            "updated_at": "2026-08-24T00:00:00Z",
+        }
+        return EpisodeRecord.model_validate({**base, **fields})
+
+    def project(record: EpisodeRecord, **kwargs: object) -> tuple[str, str, str | None]:
+        return _episode_projection(
+            record,
+            [],
+            control_task_id=None,
+            recovery=None,
+            has_report=False,
+            can_reauthorize=False,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    assert project(episode(wrapup_state="running")) == ("wrapping_up", "wait", None)
+    assert project(episode(status="stopped", ending="stopped", wrapup_state="skipped")) == (
+        "stopped",
+        "none",
+        None,
+    )
+    assert project(episode(status="failed", ending="failed")) == ("failed", "review", None)
+    assert project(episode(status="queued")) == ("starting", "wait", None)
+    assert project(episode()) == ("active", "continue", None)
+
+    reauthorizable = _episode_projection(
+        episode(status="needs_action", ending="exhausted", wrapup_state="ready"),
+        [],
+        control_task_id=None,
+        recovery=None,
+        has_report=False,
+        can_reauthorize=True,
+    )
+    assert reauthorizable == ("needs_action", "reauthorize", None)
+
+
+def test_a_stopped_episode_arrives_with_nothing_left_to_suppress(tmp_path) -> None:
+    """Withholding beats guarding: what a stopped episode must not show is absent."""
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    auto, _ = _auto_episode(store, "stopped-diagnostic")
+    store.request_episode_stop(auto.episode_id)
+    store.mark_episode_stop_skipped(auto.episode_id)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET ending_diagnostic = ? WHERE episode_id = ?",
+            ("must not reach the client", auto.episode_id),
+        )
+
+    stored = store.episode(auto.episode_id)
+    assert stored is not None and stored.ending == "stopped"
+    assert stored.ending_diagnostic == "must not reach the client"
+
+    response = serialize_episode(store, "project", stored, branch_summary=_branch_summary)
+
+    assert response.ending_diagnostic is None
+    assert response.wrapup_error is None
+    assert response.report is None
+    assert response.can_message is False
+    assert (response.health, response.recommendation) == ("stopped", "none")

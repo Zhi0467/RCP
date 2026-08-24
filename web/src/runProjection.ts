@@ -240,8 +240,8 @@ export function deriveExperimentLoopHealth(
   }
   // A failed report is a missing deliverable, never the episode's verdict, so the
   // episode's own ending decides the health and the error shows beside it.
-  if (episode?.status === "failed") return "failed";
-  if (episode?.status === "stopped") return "human_stopped";
+  if (episode?.health === "failed") return "failed";
+  if (episode?.health === "stopped") return "human_stopped";
   if (episode?.ending) {
     if (episode.ending === "completed") return "completed";
     // A terminal node status is the human's own verdict on the Experiment, and it

@@ -1,15 +1,14 @@
-"""The web layer must not restate a status vocabulary the backend decides with.
+"""Staging guard for backend vocabularies the web layer can still name.
 
-Copying a backend status set into a component is how one Experiment came to be
-startable in the node panel and unstartable in Runs: both were answering the
-same question, one from a published field and one from a hand-written list. The
-copies were identical, so no equality check would have found them. What makes a
-copy wrong is that it exists at all, because it re-implements a rule whose owner
-is the server.
+The end state is not detection. A vocabulary is finished when its exported type
+is opaque, as `EpisodeStatus` is in `web/src/types.ts`: the client receives the
+lifecycle already decided, and a comparison against a status literal does not
+compile. That makes the derivation impossible to write rather than possible to
+find afterwards.
 
-The remedy for a flagged file is to publish the fact the UI is reconstructing,
-the way `EpisodeResponse.live` and `ExperimentControlState.graph_reasons` are
-published, and read the field.
+This guard covers the vocabularies that have not reached that state yet, so they
+cannot spread while they wait. A vocabulary graduates out of this file when it is
+sealed by branding, which is why `_LIVE_EPISODE_STATUSES` is no longer here.
 """
 
 from __future__ import annotations
@@ -17,13 +16,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES
 
 WEB_SOURCE = Path(__file__).resolve().parents[1] / "web" / "src"
 
 GUARDED_VOCABULARIES = {
-    "_LIVE_EPISODE_STATUSES": frozenset(_LIVE_EPISODE_STATUSES),
     "ACTIVE_AGENT_TASK_STATUSES": frozenset(ACTIVE_AGENT_TASK_STATUSES),
 }
 
@@ -31,9 +28,10 @@ GUARDED_VOCABULARIES = {
 # status unions necessarily name every member.
 EXEMPT_FILES = {"types.ts"}
 
-# Known duplications of the active-task vocabulary, kept visible rather than
-# silently tolerated. Each wants a published per-task field. This list is closed:
-# it may shrink, never grow.
+# The copies that exist today, kept visible rather than silently tolerated. They
+# retire together when task lifecycle is exported decided and `AgentTaskStatus` is
+# sealed the way `EpisodeStatus` now is. This list is closed: it may shrink, never
+# grow.
 KNOWN_DUPLICATIONS = {
     ("runProjection.ts", "ACTIVE_AGENT_TASK_STATUSES"),
     ("components/ExperimentRunDetail.tsx", "ACTIVE_AGENT_TASK_STATUSES"),

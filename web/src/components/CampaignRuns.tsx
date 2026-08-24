@@ -464,7 +464,7 @@ function EpisodeRow({
                 <p className="campaign-empty">No messages yet.</p>
               )}
             </div>
-            {episode.status === "running" && (
+            {episode.can_message && (
               <form
                 className="campaign-message-composer"
                 onSubmit={(event) => {
@@ -490,14 +490,15 @@ function EpisodeRow({
               </form>
             )}
           </section>
+          {/* A stopped episode reaches here with no report, no report error, and no
+              ending diagnostic, because the projection withholds all three. There is
+              nothing left for this view to suppress. */}
           {(localError ||
-            (episode.status !== "stopped" && episode.wrapup_state === "failed"
-              ? episode.wrapup_error
-              : null) ||
-            (episode.status !== "stopped" ? episode.ending_diagnostic : null)) && (
+            (episode.wrapup_state === "failed" ? episode.wrapup_error : null) ||
+            episode.ending_diagnostic) && (
             <div className="campaign-run-error" role="alert">
               {localError ||
-                (episode.status !== "stopped" && episode.wrapup_state === "failed"
+                (episode.wrapup_state === "failed"
                   ? `Report generation error: ${episode.wrapup_error || "The report could not be generated."}`
                   : episode.ending_diagnostic)}
             </div>
