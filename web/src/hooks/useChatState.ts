@@ -350,7 +350,7 @@ export function useChatState({
       (task) =>
         task.request.trigger === "watcher" &&
         !chatTaskStatuses.current.has(task.operation_id) &&
-        (task.status === "succeeded" || task.status === "failed" || task.status === "interrupted"),
+        task.finished,
     );
     if (unseen.length > 0) {
       setUnreadChatTaskIds(

@@ -18,6 +18,7 @@ from rcp.storage.models import (  # noqa: F401
     _PROJECT_ID_TABLES,
     ACTIVE_AGENT_TASK_STATUSES,
     AGENT_TASK_TRANSITIONS,
+    AWAITING_HUMAN_AGENT_TASK_STATUSES,
     SPACE_NAME_MAX_LENGTH,
     AgentCommandInvocationRecord,
     AgentTaskContractRecord,
@@ -78,6 +79,24 @@ from rcp.storage.models import (  # noqa: F401
     watcher_next_check_at,
 )
 from rcp.storage.request_compat import migrate_stored_task_request
+
+
+def _agent_task_status_label(status: str, applied_revision: object) -> str:
+    """Name the state a human reads, so no surface maps the status itself."""
+
+    if status == "succeeded":
+        return (
+            f"Completed at revision {applied_revision}"
+            if isinstance(applied_revision, int)
+            else "Completed"
+        )
+    return {
+        "queued": "Queued",
+        "running": "Running in the background",
+        "pausing": "Pausing",
+        "paused": "Paused at checkpoint",
+        "interrupted": "Interrupted",
+    }.get(status, "Failed")
 
 
 class RowMappingMixin:
@@ -207,6 +226,15 @@ class RowMappingMixin:
             and not active
             and not recovery_abandoned
         )
+        data["active"] = active
+        data["awaiting_human"] = status in AWAITING_HUMAN_AGENT_TASK_STATUSES
+        data["queued"] = status == "queued"
+        data["pausing"] = status == "pausing"
+        data["paused"] = status == "paused"
+        data["finished"] = status == "succeeded" or status in {"failed", "interrupted"}
+        data["failed"] = status == "failed"
+        data["settled"] = status == "succeeded"
+        data["status_label"] = _agent_task_status_label(status, data.get("applied_revision"))
         if data.get("kind") == "branch_merge":
             # A merge retry is a new human dispatch against the then-current
             # main head, never recovery of an old native session or stage.

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { withTaskAnswers } from "./taskAnswers.mjs";
 import test from "node:test";
 
 import {
@@ -23,7 +24,7 @@ function task(
   parentOperationId = null,
   { kind = "refresh", request = {} } = {},
 ) {
-  return {
+  return withTaskAnswers({
     operation_id: operationId,
     project_id: "project",
     kind,
@@ -36,7 +37,7 @@ function task(
     parent_operation_id: parentOperationId,
     phase: "agent",
     last_activity_at: createdAt,
-  };
+  });
 }
 
 function loopTask(operationId, nodeId, episodeId, status, createdAt, parentOperationId = null) {
@@ -683,8 +684,9 @@ test("Experiment projection follows operational precedence and stop task placeme
     entries.get("terminal").map((value, index) => (index ? value.experiment.health : value)),
     ["completed", "completed"],
   );
-  assert.equal(experimentRunSection("stopping", "interrupted"), "actionable");
-  assert.equal(experimentRunSection("stopping", "running"), "running");
+  // The section takes the published answer about the turn, not its status.
+  assert.equal(experimentRunSection("stopping", true), "actionable");
+  assert.equal(experimentRunSection("stopping", false), "running");
 });
 
 test("an unsettled Experiment stop exposes exact paused recovery before graceful waiting", () => {

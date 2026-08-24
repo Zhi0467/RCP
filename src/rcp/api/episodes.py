@@ -120,6 +120,15 @@ class EpisodeTaskResponse(BaseModel):
     can_pause: bool
     can_resume: bool
     can_retry: bool
+    active: bool
+    queued: bool
+    pausing: bool
+    awaiting_human: bool
+    paused: bool
+    failed: bool
+    settled: bool
+    finished: bool
+    status_label: str
 
 
 class EpisodeReportSummary(BaseModel):

@@ -133,8 +133,7 @@ export function PaperWorkspace({
   const buffersSwapped = useRef(false);
   const paperRequestGeneration = useRef(0);
   const handledCoachTask = useRef<string | null>(
-    tasks.find((task) => task.kind === "paper_coach" && task.status === "succeeded")
-      ?.operation_id ?? null,
+    tasks.find((task) => task.kind === "paper_coach" && task.settled)?.operation_id ?? null,
   );
 
   useEffect(() => {
@@ -247,7 +246,7 @@ export function PaperWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id]);
   useEffect(() => {
-    if (!latestCoachTask?.native_session_id || latestCoachTask.status !== "succeeded") return;
+    if (!latestCoachTask?.native_session_id || !latestCoachTask.settled) return;
     if (handledCoachTask.current === latestCoachTask.operation_id) return;
     handledCoachTask.current = latestCoachTask.operation_id;
     void loadSessions(latestCoachTask.native_session_id)

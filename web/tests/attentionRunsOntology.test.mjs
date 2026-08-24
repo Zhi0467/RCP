@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { withTaskAnswers } from "./taskAnswers.mjs";
 import { readFileSync } from "node:fs";
 import { after, test } from "node:test";
 import React from "react";
@@ -94,7 +95,7 @@ function decision(id, status) {
 }
 
 function task(operationId, kind, status, statusMessage, updatedAt = "2026-08-03T00:00:00Z") {
-  return {
+  return withTaskAnswers({
     operation_id: operationId,
     project_id: "project",
     kind,
@@ -112,7 +113,7 @@ function task(operationId, kind, status, statusMessage, updatedAt = "2026-08-03T
     can_pause: false,
     can_resume: false,
     can_retry: false,
-  };
+  });
 }
 
 test("Inbox counts pending proposals, queued Decisions, and only asserted open blockers", () => {

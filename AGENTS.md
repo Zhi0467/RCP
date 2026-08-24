@@ -205,9 +205,8 @@ These identifiers are cited from source and tests. Never renumber them.
   `ExperimentControlState.graph_reasons`. Only derivations with a UI-specific
   input, such as the trust-view lens, stay client-side. `web/src/types.ts` is the
   one place a response shape is restated, and a lifecycle it fully exports is
-  sealed there with an opaque type, as `EpisodeStatus` is, so branching on it
-  cannot compile. `tests/test_ui_backend_vocabularies.py` stages the vocabularies
-  not sealed yet.
+  sealed there with an opaque type, as `EpisodeStatus` and `AgentTaskStatus` are,
+  so branching on one cannot compile.
 - `.research/`, `.recovery/`, and `web/dist/` remain outside formatting hooks.
 - `pre-commit --all-files` sees tracked files only; account for every new path.
 - Never trust a piped test command's exit status unless `pipefail` is set.

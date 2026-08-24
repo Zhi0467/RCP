@@ -1,6 +1,5 @@
 import type {
   AgentTask,
-  AgentTaskStatus,
   ExternalWatcherRecord,
   ExperimentControlState,
   GraphCondition,
@@ -148,8 +147,6 @@ export interface RunProjectionInput {
   dismissedTaskIds?: ReadonlySet<string>;
 }
 
-const actionableStatuses = new Set(["failed", "paused", "interrupted"]);
-const runningStatuses = new Set(["queued", "running", "pausing"]);
 const terminalExperimentStatuses = new Set(["completed", "abandoned", "superseded"]);
 function hasExperimentRunRequirements(control: ExperimentControlState | null): boolean {
   if (!control) return false;
@@ -184,12 +181,10 @@ export function buildRunTaskProjection(
   );
   return {
     actionable: groups.filter(
-      (group) =>
-        actionableStatuses.has(group.latest.status) &&
-        !dismissedTaskIds.has(group.latest.operation_id),
+      (group) => group.latest.awaiting_human && !dismissedTaskIds.has(group.latest.operation_id),
     ),
-    running: groups.filter((group) => runningStatuses.has(group.latest.status)),
-    completed: groups.filter((group) => group.latest.status === "succeeded"),
+    running: groups.filter((group) => group.latest.active),
+    completed: groups.filter((group) => group.latest.settled),
   };
 }
 
@@ -201,9 +196,9 @@ export function isExperimentLoopTask(task: AgentTask): boolean {
 
 export function experimentRunSection(
   health: ExperimentLoopHealth,
-  taskStatus: AgentTaskStatus | null = null,
+  turnAwaitsHuman = false,
 ): RunSectionKey {
-  if (health === "stopping" && taskStatus && actionableStatuses.has(taskStatus)) {
+  if (health === "stopping" && turnAwaitsHuman) {
     return "actionable";
   }
   return healthSections[health];
@@ -217,7 +212,7 @@ export function experimentRunSection(
 export function deriveExperimentLoopHealth(
   node: GraphNode,
   control: ExperimentControlState | null,
-  taskStatus: AgentTaskStatus | null,
+  turn: LoopTurnState,
   currentWatchers: WatcherRecord[],
   hasValidRecovery = false,
 ): ExperimentLoopHealth {
@@ -227,12 +222,7 @@ export function deriveExperimentLoopHealth(
   if (stopRequested && !operational?.stop_settled) {
     return hasValidRecovery ? "needs_action" : "stopping";
   }
-  if (
-    stopRequested &&
-    operational?.stop_settled &&
-    taskStatus &&
-    actionableStatuses.has(taskStatus)
-  ) {
+  if (stopRequested && operational?.stop_settled && turn.awaitingHuman) {
     return "human_stopped";
   }
   if (episode?.wrapup_state === "pending" || episode?.wrapup_state === "running") {
@@ -253,9 +243,9 @@ export function deriveExperimentLoopHealth(
     if (episode.ending === "exhausted") return "paused_at_limit";
     if (episode.ending === "human_pause") return "needs_action";
   }
-  if (taskStatus === "queued") return "starting";
-  if (taskStatus === "running" || taskStatus === "pausing") return "agent_active";
-  if (taskStatus && actionableStatuses.has(taskStatus)) return "needs_action";
+  if (turn.queued) return "starting";
+  if (turn.active) return "agent_active";
+  if (turn.awaitingHuman) return "needs_action";
   if (operational?.task_active) return "needs_action";
 
   const used = control?.invocations_used ?? 0;
@@ -292,8 +282,10 @@ export function deriveExperimentLoopHealth(
 }
 
 export function experimentRecoveryAction(task: AgentTask | null): "resume" | "retry" | null {
-  if (!task || !actionableStatuses.has(task.status)) return null;
-  if (task.can_resume && (task.status === "paused" || task.status === "interrupted")) {
+  if (!task || !task.awaiting_human) return null;
+  // `can_resume` is only granted to a paused or interrupted turn, so it already
+  // carries the state this used to re-test.
+  if (task.can_resume) {
     return "resume";
   }
   return task.can_retry ? "retry" : null;
@@ -322,7 +314,7 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
   if (run.health === "failed") {
     return { step: "none", label: "Episode ended" };
   }
-  if (task && runningStatuses.has(task.status)) {
+  if (task && task.active) {
     return { step: "wait", label: "Wait for the agent" };
   }
   if (recoveryAction === "resume") {
@@ -353,7 +345,7 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
     // Either the turn needs a human decision, or it settled and left the episode
     // open with nothing to wake it. Admission refuses a second live parent either
     // way, so Stop loop is the control that frees the Experiment.
-    ((task && actionableStatuses.has(task.status)) || run.control.operational?.episode_live)
+    ((task && task.awaiting_human) || run.control.operational?.episode_live)
   ) {
     // Stop loop is retired by the ending fence, and no recommendation may name a
     // control the episode no longer offers.
@@ -401,13 +393,10 @@ export function buildExperimentRun(
       watcher.continuation.control_episode_id === control?.episode_id,
   );
   const { taskGroup, currentTask } = currentExperimentTaskGroup(node.id, control, tasks);
-  const taskStatus =
-    currentTask?.status ?? asAgentTaskStatus(control?.operational?.current_status ?? null);
+  const turn = loopTurnState(control, currentTask);
   const hasValidRecovery =
     experimentRecoveryAction(currentTask) !== null ||
-    (!currentTask &&
-      Boolean(control?.operational?.task_active) &&
-      Boolean(taskStatus && actionableStatuses.has(taskStatus)));
+    (!currentTask && Boolean(control?.operational?.task_active) && turn.awaitingHuman);
   return {
     node,
     control,
@@ -416,13 +405,7 @@ export function buildExperimentRun(
     watchers,
     watcherItems: experimentWatcherDisplayItems(watchers),
     currentWatchers,
-    health: deriveExperimentLoopHealth(
-      node,
-      control,
-      taskStatus,
-      currentWatchers,
-      hasValidRecovery,
-    ),
+    health: deriveExperimentLoopHealth(node, control, turn, currentWatchers, hasValidRecovery),
   };
 }
 
@@ -487,11 +470,7 @@ export function buildRunProjection(input: RunProjectionInput): RunProjection {
         watchers,
       );
       sections[
-        experimentRunSection(
-          run.health,
-          run.currentTask?.status ??
-            asAgentTaskStatus(run.control?.operational?.current_status ?? null),
-        )
+        experimentRunSection(run.health, loopTurnState(run.control, run.currentTask).awaitingHuman)
       ].push(experimentEntry(run));
     });
   input.nodes
@@ -565,11 +544,31 @@ function taskEpisodeId(task: AgentTask): string | null {
   return typeof value === "string" && value ? value : null;
 }
 
-function asAgentTaskStatus(value: string | null): AgentTaskStatus | null {
-  return value &&
-    (actionableStatuses.has(value) || runningStatuses.has(value) || value === "succeeded")
-    ? (value as AgentTaskStatus)
-    : null;
+export interface LoopTurnState {
+  queued: boolean;
+  active: boolean;
+  awaitingHuman: boolean;
+}
+
+/** The loop's current turn, from the task when the client holds it and from the
+ *  control projection's own answers when it does not. */
+export function loopTurnState(
+  control: ExperimentControlState | null,
+  currentTask: AgentTask | null,
+): LoopTurnState {
+  if (currentTask) {
+    return {
+      queued: currentTask.queued,
+      active: currentTask.active,
+      awaitingHuman: currentTask.awaiting_human,
+    };
+  }
+  const operational = control?.operational;
+  return {
+    queued: Boolean(operational?.current_queued),
+    active: Boolean(operational?.current_active),
+    awaitingHuman: Boolean(operational?.current_awaiting_human),
+  };
 }
 
 function taskEntry(group: AgentTaskGroup): RunEntry {
@@ -638,15 +637,12 @@ function compareTaskAscending(left: AgentTask, right: AgentTask): number {
 }
 
 function isTaskNotificationSuperseded(task: AgentTask, tasks: AgentTask[]): boolean {
-  if (
-    (task.kind !== "seed" && task.kind !== "refresh") ||
-    (task.status !== "failed" && task.status !== "interrupted")
-  )
+  if ((task.kind !== "seed" && task.kind !== "refresh") || !task.awaiting_human || task.paused)
     return false;
   return tasks.some(
     (candidate) =>
       (candidate.kind === "seed" || candidate.kind === "refresh") &&
-      candidate.status === "succeeded" &&
+      candidate.settled &&
       compareTaskAscending(candidate, task) > 0,
   );
 }

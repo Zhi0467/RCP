@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { withTurnAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -56,7 +57,7 @@ function control(fields = {}, operationalFields = {}) {
     active: false,
     governing_decisions: [],
     decision_drift: [],
-    operational: {
+    operational: withTurnAnswers({
       task_active: false,
       detached_work_active: false,
       watcher_degraded: false,
@@ -83,7 +84,7 @@ function control(fields = {}, operationalFields = {}) {
         diagnostic: null,
       },
       ...operationalFields,
-    },
+    }),
     ...fields,
   };
 }

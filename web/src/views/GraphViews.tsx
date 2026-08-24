@@ -38,6 +38,7 @@ import {
   relationFocus,
   type DagOntologyProjection,
 } from "../graphProjection";
+import { agentTaskTone } from "../agentTasks";
 import { zoomDagAtPoint, type DagViewport, type DagZoomResult } from "../hooks/dagZoom";
 import {
   DAG_NODE_HEIGHT,
@@ -1194,16 +1195,14 @@ function AgentRunRow({
             {agentTaskName(group.root)}
             {group.attempts.length > 1 ? ` · ${group.attempts.length} attempts` : ""}
           </span>
-          <strong>{latest.error || latest.status_message || latest.status}</strong>
+          <strong>{latest.error || latest.status_message || latest.status_label}</strong>
         </span>
         <span className="agent-run-meta">
-          <span className={`status-pill ${latest.status}`}>{latest.status}</span>
+          <span className={`status-pill ${agentTaskTone(latest)}`}>{latest.status_label}</span>
           <time dateTime={latest.updated_at}>{new Date(latest.updated_at).toLocaleString()}</time>
         </span>
       </button>
-      {(latest.status === "failed" ||
-        latest.status === "interrupted" ||
-        latest.status === "paused") && (
+      {latest.awaiting_human && (
         <button
           type="button"
           className="icon-button compact agent-run-dismiss"

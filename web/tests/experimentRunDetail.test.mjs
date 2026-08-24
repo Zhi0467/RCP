@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { withTaskAnswers } from "./taskAnswers.mjs";
+import { withTurnAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -54,7 +56,7 @@ function node(fields = {}) {
 }
 
 function operational(fields = {}) {
-  return {
+  return withTurnAnswers({
     task_active: false,
     detached_work_active: false,
     watcher_completion_pending: false,
@@ -80,7 +82,7 @@ function operational(fields = {}) {
       diagnostic: null,
     },
     ...fields,
-  };
+  });
 }
 
 function control(fields = {}, operationalFields = {}) {
@@ -230,7 +232,7 @@ function assertDetailProjection(html, healthLabel, recommendationLabel) {
 }
 
 function recoveryTask(fields = {}) {
-  return {
+  return withTaskAnswers({
     operation_id: "wake-failed",
     project_id: "project",
     kind: "node_chat",
@@ -258,7 +260,7 @@ function recoveryTask(fields = {}) {
     can_resume: false,
     can_retry: true,
     ...fields,
-  };
+  });
 }
 
 function episode(fields = {}) {

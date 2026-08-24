@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { withTaskAnswers } from "./taskAnswers.mjs";
 import test from "node:test";
 
 import {
@@ -19,7 +20,7 @@ import {
 } from "../src/agentTasks.ts";
 
 function task(overrides) {
-  return {
+  return withTaskAnswers({
     operation_id: overrides.operation_id,
     project_id: "project",
     kind: "node_chat",
@@ -38,7 +39,7 @@ function task(overrides) {
     can_resume: false,
     can_retry: false,
     ...overrides,
-  };
+  });
 }
 
 test("branch merge tasks keep a human-readable activity label", () => {
@@ -560,7 +561,11 @@ test("a completed retry clears its failed parent, while a failed retry stays act
   });
   assert.equal(projectActivityTask([completedRetry, failedSeed], "failed-seed"), null);
 
-  const failedRetry = { ...completedRetry, operation_id: "failed-retry", status: "failed" };
+  const failedRetry = withTaskAnswers({
+    ...completedRetry,
+    operation_id: "failed-retry",
+    status: "failed",
+  });
   assert.equal(
     projectActivityTask([failedRetry, failedSeed], "failed-seed")?.operation_id,
     "failed-retry",

@@ -1225,7 +1225,7 @@ export function NodeChat({
           const task = relatedTasks.find((candidate) => candidate.operation_id === line.taskId);
           const activeLineTask = task && isActiveTask(task) ? task : null;
           const pausedLineTask =
-            task?.status === "paused" && task.can_resume && !continuedTaskIds.has(task.operation_id)
+            task?.paused && task.can_resume && !continuedTaskIds.has(task.operation_id)
               ? task
               : null;
           const pendingLine = pendingTurn?.clientId === line.taskId;

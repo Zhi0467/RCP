@@ -5,8 +5,13 @@ export type AppView =
 export type AgentSurface = "seed" | "refresh" | "node_chat" | "project_chat" | "paper_coach";
 export type AgentExecutionProfile = AgentSurface | "orchestrator";
 export type AgentTaskKind = AgentSurface | "auto_research" | "branch_merge";
-export type AgentTaskStatus =
-  "queued" | "running" | "pausing" | "paused" | "succeeded" | "failed" | "interrupted";
+/**
+ * Opaque on purpose, like `EpisodeStatus`. A task's lifecycle reaches the client
+ * already answered, as `active`, `awaiting_human`, `settled`, `status_label`, and
+ * the `can_*` controls.
+ */
+declare const OPAQUE_TASK_STATUS: unique symbol;
+export type AgentTaskStatus = { readonly [OPAQUE_TASK_STATUS]: "AgentTaskStatus" };
 export type ConversationMode = "discuss" | "work";
 export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher";
 export type GraphPatchKind = "work" | "experiment_loop";
@@ -176,6 +181,9 @@ export interface ExperimentOperationalState {
   chat_id: string | null;
   current_operation_id: string | null;
   current_status: string | null;
+  current_queued: boolean;
+  current_active: boolean;
+  current_awaiting_human: boolean;
   current_phase: string | null;
   current_status_message: string | null;
   current_last_activity_at: string | null;
@@ -1067,6 +1075,15 @@ export interface AgentTask {
   can_pause: boolean;
   can_resume: boolean;
   can_retry: boolean;
+  active: boolean;
+  queued: boolean;
+  pausing: boolean;
+  awaiting_human: boolean;
+  paused: boolean;
+  failed: boolean;
+  settled: boolean;
+  finished: boolean;
+  status_label: string;
   events?: AgentTaskEvent[];
   debug_receipts?: AgentTaskReceipt[];
   contracts?: AgentTaskContract[];

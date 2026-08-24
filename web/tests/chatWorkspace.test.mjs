@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { withTaskAnswers } from "./taskAnswers.mjs";
 import test from "node:test";
 
 import {
@@ -19,7 +20,7 @@ import {
 } from "../src/chatWorkspace.ts";
 
 function task(overrides) {
-  return {
+  return withTaskAnswers({
     operation_id: overrides.operation_id,
     project_id: "project",
     kind: "node_chat",
@@ -38,7 +39,7 @@ function task(overrides) {
     can_resume: false,
     can_retry: false,
     ...overrides,
-  };
+  });
 }
 
 test("conversations group by chat id rather than latest node", () => {

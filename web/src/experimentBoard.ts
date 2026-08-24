@@ -1,11 +1,11 @@
 import {
   buildExperimentRun,
   experimentRunSection,
+  loopTurnState,
   type ExperimentLoopHealth,
 } from "./runProjection";
 import type {
   AgentTask,
-  AgentTaskStatus,
   AppView,
   ExperimentControlState,
   ExperimentLoopIndexEntry,
@@ -66,7 +66,7 @@ export function buildExperimentBoard(
     const run = buildExperimentRun(entry.node, entry.control, [], []);
     const runSection = experimentRunSection(
       run.health,
-      entry.control.operational.current_status as AgentTaskStatus | null,
+      loopTurnState(entry.control, run.currentTask).awaitingHuman,
     );
     const item: ExperimentBoardItem = {
       entry,

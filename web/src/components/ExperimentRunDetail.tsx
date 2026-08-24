@@ -44,9 +44,6 @@ const healthTones: Record<ExperimentLoopHealth, string> = {
   completed: "completed",
 };
 
-const liveTaskStatuses = new Set(["queued", "running", "pausing"]);
-const actionableTaskStatuses = new Set(["failed", "paused", "interrupted"]);
-
 export function experimentHealthLabel(health: ExperimentLoopHealth): string {
   return healthLabels[health];
 }
@@ -65,7 +62,7 @@ export function experimentLoopIsLive(run: ExperimentRun): boolean {
     // Whether the parent is still live is the projection's answer. This used to
     // restate the storage constant that decides it, in this file, by hand.
     operational?.episode_live ||
-    (run.currentTask && liveTaskStatuses.has(run.currentTask.status)) ||
+    run.currentTask?.active ||
     operational?.task_active ||
     operational?.detached_work_active ||
     operational?.watcher_completion_pending ||
@@ -124,7 +121,7 @@ export function ExperimentRunDetail({
   const live = experimentLoopIsLive(run);
   const stopUnsettled = experimentStopUnsettled(run);
   const stopRequested = Boolean(operational?.stop_requested);
-  const taskInFlight = Boolean(currentTask && liveTaskStatuses.has(currentTask.status));
+  const taskInFlight = Boolean(currentTask?.active);
   const currentOperationId =
     currentTask?.operation_id ??
     operational?.current_operation_id ??
@@ -144,9 +141,7 @@ export function ExperimentRunDetail({
     providerLabel ||
     capitalize(String(currentTask?.request.provider || session?.provider || "agent"));
   const canSwitchProvider = Boolean(recoveryAction && currentTask?.can_retry);
-  const canStop =
-    !episodeEnded &&
-    (live || Boolean(currentTask && actionableTaskStatuses.has(currentTask.status)));
+  const canStop = !episodeEnded && (live || Boolean(currentTask?.awaiting_human));
   const showStop = Boolean(control?.episode_id && !stopRequested && (stopBusy || canStop));
   const stopBlocksRecovery = stopRequested && !stopUnsettled;
   const baseRecommendation = experimentRecommendation(run);

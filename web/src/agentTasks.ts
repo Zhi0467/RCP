@@ -22,7 +22,7 @@ export interface TaskTranscriptLine {
 }
 
 export function isActiveTask(task: AgentTask): boolean {
-  return task.status === "queued" || task.status === "running" || task.status === "pausing";
+  return task.active;
 }
 
 export function taskNotificationStorageKey(projectId: string | null): string {
@@ -48,36 +48,26 @@ export function serializeDismissedTaskIds(taskIds: ReadonlySet<string>): string 
 }
 
 export function isTaskNotificationSuperseded(task: AgentTask, tasks: AgentTask[]): boolean {
-  if (
-    (task.kind !== "seed" && task.kind !== "refresh") ||
-    (task.status !== "failed" && task.status !== "interrupted")
-  )
+  if ((task.kind !== "seed" && task.kind !== "refresh") || !task.awaiting_human || task.can_pause)
     return false;
   return tasks.some(
     (candidate) =>
       (candidate.kind === "seed" || candidate.kind === "refresh") &&
-      candidate.status === "succeeded" &&
+      candidate.settled &&
       compareTaskTime(candidate, task) > 0,
   );
 }
 
+/** Style follows the answers the projection published, never a status of its own. */
+export function agentTaskTone(task: AgentTask): "running" | "failed" | "paused" | "succeeded" {
+  if (task.failed) return "failed";
+  if (task.awaiting_human) return "paused";
+  if (task.active) return "running";
+  return "succeeded";
+}
+
 export function taskStatusLabel(task: AgentTask): string {
-  switch (task.status) {
-    case "queued":
-      return "Queued";
-    case "running":
-      return "Running in the background";
-    case "pausing":
-      return "Pausing";
-    case "paused":
-      return "Paused at checkpoint";
-    case "succeeded":
-      return task.applied_revision ? `Completed at revision ${task.applied_revision}` : "Completed";
-    case "interrupted":
-      return "Interrupted";
-    default:
-      return "Failed";
-  }
+  return task.status_label;
 }
 
 export function projectActivityTask(
@@ -89,9 +79,7 @@ export function projectActivityTask(
   const continuedTaskIds = new Set(
     tasks.flatMap((task) => (task.parent_operation_id ? [task.parent_operation_id] : [])),
   );
-  const paused = tasks.find(
-    (task) => task.status === "paused" && !continuedTaskIds.has(task.operation_id),
-  );
+  const paused = tasks.find((task) => task.paused && !continuedTaskIds.has(task.operation_id));
   if (paused) return isTaskNotificationSuperseded(paused, tasks) ? null : paused;
   if (!observedTaskId) return null;
   const observed = tasks.find((task) => task.operation_id === observedTaskId);
@@ -103,7 +91,7 @@ export function projectActivityTask(
     .sort(compareTaskTime);
   const latestDescendant = descendants.at(-1);
   if (latestDescendant) {
-    if (latestDescendant.status === "succeeded") return null;
+    if (latestDescendant.settled) return null;
     return latestDescendant;
   }
   return observed;
@@ -163,10 +151,8 @@ export function resumablePausedChatTask(tasks: AgentTask[]): AgentTask | null {
   return (
     [...tasks]
       .reverse()
-      .find(
-        (task) =>
-          task.status === "paused" && task.can_resume && !continuedTaskIds.has(task.operation_id),
-      ) ?? null
+      .find((task) => task.paused && task.can_resume && !continuedTaskIds.has(task.operation_id)) ??
+    null
   );
 }
 
@@ -268,7 +254,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         ...(graphUpdate ? { graphUpdate } : {}),
       });
     }
-    const graphOnlyRejection = task.status === "succeeded" && graphUpdate?.status === "rejected";
+    const graphOnlyRejection = task.settled && graphUpdate?.status === "rejected";
     if (task.error && !graphOnlyRejection) {
       lines.push({
         role: "error",
@@ -277,13 +263,9 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         timestamp: task.created_at,
         trigger,
       });
-    } else if (
-      task.status === "failed" ||
-      task.status === "interrupted" ||
-      task.status === "paused"
-    ) {
+    } else if (task.awaiting_human) {
       lines.push({
-        role: task.status === "failed" ? "error" : "meta",
+        role: task.failed ? "error" : "meta",
         text: task.status_message,
         taskId: task.operation_id,
         timestamp: task.created_at,

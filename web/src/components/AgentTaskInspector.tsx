@@ -123,9 +123,9 @@ export function AgentTaskInspector({
               <>
                 <section className="run-detail-hero">
                   <div className={`run-detail-icon ${task.status}`}>
-                    {task.status === "succeeded" ? (
+                    {task.settled ? (
                       <CheckCircle2 size={20} />
-                    ) : task.status === "paused" ? (
+                    ) : task.paused ? (
                       <CirclePause size={20} />
                     ) : isActiveTask(task) ? (
                       <LoaderCircle className="spin" size={20} />
@@ -347,12 +347,7 @@ export function AgentTaskInspector({
 
         {task &&
           task.kind !== "auto_research" &&
-          (task.can_pause ||
-            task.can_resume ||
-            task.can_retry ||
-            task.status === "failed" ||
-            task.status === "interrupted" ||
-            task.status === "paused") && (
+          (task.can_pause || task.can_resume || task.can_retry || task.awaiting_human) && (
             <footer className="drawer-actions run-inspector-actions">
               <div>
                 {task.can_pause && (
@@ -379,9 +374,7 @@ export function AgentTaskInspector({
                     <Play size={14} /> Resume
                   </button>
                 )}
-                {(task.status === "failed" ||
-                  task.status === "interrupted" ||
-                  task.status === "paused") && (
+                {task.awaiting_human && (
                   <button className="button ghost" type="button" onClick={onDismiss}>
                     <X size={14} /> Dismiss notification
                   </button>

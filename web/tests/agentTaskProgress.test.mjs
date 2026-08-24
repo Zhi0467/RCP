@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { withTaskAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -17,7 +18,7 @@ after(() => server.close());
 
 function task(status) {
   const now = "2026-08-03T12:00:00Z";
-  return {
+  return withTaskAnswers({
     operation_id: `task-${status}`,
     project_id: "project",
     kind: "seed",
@@ -36,7 +37,7 @@ function task(status) {
     can_resume: status === "paused",
     can_retry: status === "failed" || status === "interrupted",
     events: [],
-  };
+  });
 }
 
 function renderInspector(status) {

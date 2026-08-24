@@ -383,8 +383,6 @@ export async function loadExperimentWatcherPoll(
   return { watchers, tasks, project };
 }
 
-const RESULT_VIEW_TERMINAL_STATUSES = new Set(["succeeded", "failed", "interrupted"]);
-
 type ProjectReconciliation = "opening" | "reconciling" | "authoritative" | "failed";
 
 type BrowserTransitionProjection = ProjectTransitionProjection<
@@ -888,9 +886,9 @@ export default function App() {
           (task) =>
             task.request.chat_id === selectedExperimentChatId &&
             Boolean(task.request.result_view) &&
-            RESULT_VIEW_TERMINAL_STATUSES.has(task.status),
+            task.finished,
         )
-        .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
+        .map((task) => `${task.operation_id}:${task.status_label}:${task.updated_at}`)
         .sort()
         .join("|")
     : "";
@@ -3251,10 +3249,7 @@ export default function App() {
                 aria-label={runKind === "seed" ? "Seed project" : "Refresh project"}
                 onClick={openRunDialog}
               >
-                <RefreshCw
-                  className={activeTask && activeTask.status !== "pausing" ? "spin" : ""}
-                  size={15}
-                />
+                <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={15} />
               </button>
             </div>
           </div>

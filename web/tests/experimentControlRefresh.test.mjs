@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { withTaskAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import { createServer } from "vite";
 
@@ -56,13 +57,13 @@ test("terminal Experiment work refetches control state even without a graph revi
 
 test("poll reconciliation observes every task that terminalized, not only the selected active task", () => {
   const previous = [
-    { operation_id: "newer", kind: "auto_research", status: "running" },
-    { operation_id: "merge", kind: "branch_merge", status: "running" },
-    { operation_id: "chat", kind: "project_chat", status: "succeeded" },
+    withTaskAnswers({ operation_id: "newer", kind: "auto_research", status: "running" }),
+    withTaskAnswers({ operation_id: "merge", kind: "branch_merge", status: "running" }),
+    withTaskAnswers({ operation_id: "chat", kind: "project_chat", status: "succeeded" }),
   ];
   const current = [
-    { ...previous[0], status: "running" },
-    { ...previous[1], status: "succeeded" },
+    withTaskAnswers({ ...previous[0], status: "running" }),
+    withTaskAnswers({ ...previous[1], status: "succeeded" }),
     previous[2],
   ];
 
@@ -77,8 +78,8 @@ test("poll reconciliation observes every task that terminalized, not only the se
 });
 
 test("a fast merge completion remains observable while another task keeps polling active", () => {
-  const main = { operation_id: "main", kind: "auto_research", status: "running" };
-  const merge = { operation_id: "merge", kind: "branch_merge", status: "queued" };
+  const main = withTaskAnswers({ operation_id: "main", kind: "auto_research", status: "running" });
+  const merge = withTaskAnswers({ operation_id: "merge", kind: "branch_merge", status: "queued" });
   const responseEpisode = {
     graph_branch: { active_merge_task_id: merge.operation_id },
     tasks: [merge],
@@ -94,7 +95,7 @@ test("a fast merge completion remains observable while another task keeps pollin
   // Its task request may then observe the terminal merge and must force another reload.
   const terminal = reconcileKnownActiveTasks(knownActive, [
     main,
-    { ...merge, status: "succeeded" },
+    withTaskAnswers({ ...merge, status: "succeeded" }),
   ]);
 
   assert.deepEqual(

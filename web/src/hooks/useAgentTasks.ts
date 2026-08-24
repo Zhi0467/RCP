@@ -70,7 +70,7 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
   const activityTask = projectActivityTask(tasks, activityTaskId);
 
   useEffect(() => {
-    if (activityTask && (isActiveTask(activityTask) || activityTask.status === "paused")) {
+    if (activityTask && (isActiveTask(activityTask) || activityTask.paused)) {
       setActivityTaskId(activityTask.operation_id);
     }
   }, [activityTask]);

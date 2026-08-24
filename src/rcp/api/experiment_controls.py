@@ -9,6 +9,10 @@ from rcp.control import (
 from rcp.core.models import ExperimentDecisionPin, GraphState
 from rcp.core.transition_models import GraphTargetRef
 from rcp.storage import AppStore, ExperimentLoopRuntime
+from rcp.storage.models import (
+    ACTIVE_AGENT_TASK_STATUSES,
+    AWAITING_HUMAN_AGENT_TASK_STATUSES,
+)
 
 
 def _experiment_control(
@@ -116,6 +120,9 @@ def _experiment_operational_state(runtime: ExperimentLoopRuntime) -> ExperimentO
         chat_id=runtime.chat_id,
         current_operation_id=runtime.current_operation_id,
         current_status=runtime.current_status,
+        current_queued=runtime.current_status == "queued",
+        current_active=runtime.current_status in ACTIVE_AGENT_TASK_STATUSES,
+        current_awaiting_human=runtime.current_status in AWAITING_HUMAN_AGENT_TASK_STATUSES,
         current_phase=runtime.current_phase,
         current_status_message=runtime.current_status_message,
         current_last_activity_at=runtime.current_last_activity_at,

@@ -68,6 +68,11 @@ class ExperimentOperationalState(BaseModel):
     chat_id: str | None = None
     current_operation_id: str | None = None
     current_status: str | None = None
+    # The same lifecycle answers a task carries, for the turn this loop is on, so
+    # no surface reads `current_status` and decides for itself.
+    current_queued: bool = False
+    current_active: bool = False
+    current_awaiting_human: bool = False
     current_phase: str | None = None
     current_status_message: str | None = None
     current_last_activity_at: str | None = None

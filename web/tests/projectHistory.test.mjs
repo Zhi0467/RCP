@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { withTaskAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -490,7 +491,7 @@ test("archive confirmation carries the exact retained-history token from preflig
 });
 
 function task(operationId, kind, status, attempt) {
-  return {
+  return withTaskAnswers({
     operation_id: operationId,
     project_id: "project",
     kind,
@@ -508,7 +509,7 @@ function task(operationId, kind, status, attempt) {
     can_pause: false,
     can_resume: false,
     can_retry: false,
-  };
+  });
 }
 
 function findElement(node, predicate) {

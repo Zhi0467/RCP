@@ -223,12 +223,7 @@ export function chatIndicator(
 }
 
 export function chatTaskNeedsAttention(task: AgentTask): boolean {
-  return (
-    task.status === "queued" ||
-    task.status === "running" ||
-    task.status === "pausing" ||
-    task.status === "paused"
-  );
+  return task.active || task.paused;
 }
 
 export function chatEntryConversationId(

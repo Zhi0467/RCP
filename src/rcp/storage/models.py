@@ -214,6 +214,10 @@ AgentTaskReceiptTier = Literal["summary", "diagnostic", "trace"]
 # belongs here because the pause has been requested but not yet observed, so a
 # caller that treats it as settled reads a state the task is about to leave.
 ACTIVE_AGENT_TASK_STATUSES: frozenset[AgentTaskStatus] = frozenset({"queued", "running", "pausing"})
+# A turn in one of these states is waiting on a person, not on the machine.
+AWAITING_HUMAN_AGENT_TASK_STATUSES: frozenset[AgentTaskStatus] = frozenset(
+    {"paused", "failed", "interrupted"}
+)
 
 # One table owns the status transitions used by the durable task lifecycle.
 # Recovery actions are deliberately not represented here: Resume and Retry
@@ -324,7 +328,41 @@ class AgentTaskRecord(BaseModel):
     can_pause: bool = False
     can_resume: bool = False
     can_retry: bool = False
+    # The lifecycle questions a surface asks about a task, answered here so no
+    # reader has to ask them of `status` itself.
+    active: bool = False
+    queued: bool = False
+    pausing: bool = False
+    awaiting_human: bool = False
+    paused: bool = False
+    failed: bool = False
+    settled: bool = False
+    finished: bool = False
+    status_label: str = ""
     visible: bool = True
+
+
+# Fields a stored task carries because the row projection computed them, not
+# because a caller supplied them. Equality between a requested task and its
+# committed twin ignores these.
+AGENT_TASK_PROJECTION_FIELDS: frozenset[str] = frozenset(
+    {
+        "elapsed_seconds",
+        "progress",
+        "can_pause",
+        "can_resume",
+        "can_retry",
+        "active",
+        "queued",
+        "pausing",
+        "awaiting_human",
+        "paused",
+        "failed",
+        "settled",
+        "finished",
+        "status_label",
+    }
+)
 
 
 class ResultViewRecord(BaseModel):

@@ -7,6 +7,7 @@ import uuid
 
 from rcp.core.models import AuthorizedHuman
 from rcp.storage.models import (
+    AGENT_TASK_PROJECTION_FIELDS,
     AgentTaskRecord,
     EpisodeBudgetMeter,
     EpisodeEnding,
@@ -1407,10 +1408,9 @@ class EpisodeStoreMixin:
         ):
             return False
         stored_task = self._agent_task_record(task_row)
-        projection_fields = {"elapsed_seconds", "progress", "can_pause", "can_resume", "can_retry"}
-        return stored_task.model_dump(exclude=projection_fields) == requested_task.model_dump(
-            exclude=projection_fields
-        )
+        return stored_task.model_dump(
+            exclude=AGENT_TASK_PROJECTION_FIELDS
+        ) == requested_task.model_dump(exclude=AGENT_TASK_PROJECTION_FIELDS)
 
     @staticmethod
     def _validate_new_wrapup(
