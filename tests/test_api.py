@@ -86,6 +86,7 @@ from .helpers import (
     seed_patch,
     shape_invalid_patch,
 )
+from .helpers import wait_for_task_response as _wait_for_run
 
 
 def _named_test_authorizer(store: AppStore) -> AuthorizedHuman:
@@ -4902,22 +4903,6 @@ async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_pa
 
 def _event_frame(event: AgentEvent) -> str:
     return f"data: {event.model_dump_json()}\n\n"
-
-
-def _wait_for_run(
-    client: TestClient,
-    project_id: str,
-    operation_id: str,
-) -> dict[str, object]:
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        response = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
-        assert response.status_code == 200
-        record = response.json()
-        if record["status"] not in {"queued", "running"}:
-            return record
-        time.sleep(0.01)
-    raise AssertionError("background run did not finish")
 
 
 def _wait_for_status(
