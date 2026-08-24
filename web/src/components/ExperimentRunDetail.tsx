@@ -120,9 +120,6 @@ export function ExperimentRunDetail({
   const operational = control?.operational ?? null;
   const session = operational?.session ?? null;
   const episode = control?.episode ?? null;
-  const episodeParentLive = Boolean(
-    episode && ["queued", "running", "stopping", "wrapping_up"].includes(episode.status),
-  );
   const live = experimentLoopIsLive(run);
   const stopUnsettled = experimentStopUnsettled(run);
   const stopRequested = Boolean(operational?.stop_requested);
@@ -223,18 +220,16 @@ export function ExperimentRunDetail({
               <ExternalLink size={12} aria-hidden="true" /> Open report
             </EpisodeReportLink>
           )}
+          {/* Readiness is the server's published gate, and a bare episode row status
+              is not a further condition on it. A `running` parent whose turn settled
+              without arming anything, and a `wrapping_up` parent the ending fence has
+              already retired, both leave the loop inactive and startable, which is
+              what this card's own recommendation says. */}
           {allowStart && (
             <button
               type="button"
               className="button primary compact experiment-run-button"
-              disabled={
-                runDisabled ||
-                runBusy ||
-                episodeParentLive ||
-                taskInFlight ||
-                stopUnsettled ||
-                !control?.ready
-              }
+              disabled={runDisabled || runBusy || taskInFlight || stopUnsettled || !control?.ready}
               onClick={onRun}
               aria-describedby={control?.reasons.length ? `${node.id}-run-requirements` : undefined}
             >

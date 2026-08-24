@@ -311,7 +311,10 @@ test("Experiment wrap-up uses the shared parent state without report recovery co
     "Wrapping up visualization and report",
   );
   assert.doesNotMatch(html, /Retry codex|Resume codex|Open report/);
-  assert.match(html, /experiment-run-button" disabled=""/);
+  // The ending fence already retired this episode, so the report being produced
+  // for it is a deliverable and not a reason to refuse the next episode. Start
+  // follows the published readiness gate, which this parent status does not touch.
+  assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
 });
 
 test("a ready Experiment report opens from the singular episode URL", () => {
@@ -621,6 +624,47 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
   )?.[1];
   assert.equal(compactRecommendation, detailRecommendation);
   assert.equal(compactRecommendation, "Resume this episode, or switch provider");
+});
+
+test("a running episode with nothing left to wake it can still start the next one", () => {
+  // Regression: the loop's turn succeeded without arming a watcher or exiting, so
+  // the episode row stayed `running` while the server reported the loop inactive
+  // and ready. Runs recommended "Start a new episode" and disabled that exact
+  // button, while the Research node panel offered it, because this card added a
+  // parent status the published readiness gate does not carry.
+  const stranded = episode({
+    status: "running",
+    ending: null,
+    wrapup_state: "not_started",
+    budget: {
+      invocation_ceiling: 10,
+      invocations_used: 1,
+      invocations_remaining: 9,
+      observed_input_tokens: 10,
+      observed_generated_tokens: 20,
+    },
+  });
+  const html = render(
+    buildExperimentRun(
+      node(),
+      control(
+        {
+          episode: stranded,
+          invocations_used: 1,
+          invocation_ceiling: 10,
+          invocations_remaining: 9,
+          paused: false,
+        },
+        { current_status: "succeeded", current_invocation: 1 },
+      ),
+      [],
+      [],
+    ),
+  );
+
+  assertDetailProjection(html, "Needs action", "Start a new episode");
+  assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
+  assert.match(html, /Stop loop/);
 });
 
 test("completed watcher at the ceiling leaves Start new episode enabled", () => {
