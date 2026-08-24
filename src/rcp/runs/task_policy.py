@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable, Mapping
 from typing import Literal, TypeVar
 
@@ -13,8 +12,7 @@ from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import CoachRequest, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore
-
-logger = logging.getLogger(__name__)
+from rcp.storage.request_compat import migrate_stored_task_request
 
 AgentTaskRequest = (
     RunRequest
@@ -54,27 +52,23 @@ def load_stored_request(
     *,
     operation_id: str | None = None,
 ) -> _StoredRequest:
-    """Parse one request RCP itself persisted, tolerating fields this build dropped.
+    """Parse one request RCP persisted through the shared compatibility allowlist.
 
-    Request models forbid unknown fields so a *live* caller cannot smuggle one
-    past validation.  A stored request is not a live caller: it is RCP's own
-    record of what it already did, and a field removed from the model since it
-    was written must not make that task permanently unrecoverable.  Only keys
-    the model no longer declares are dropped, and each drop is logged, so this
-    stays an observable compatibility read rather than a silent fallback.
-    Every remaining field is validated exactly as strictly as before.
+    SQLite task rows are normalized before they become ``AgentTaskRecord``
+    instances, so every ordinary stored-task path shares the same migration.
+    This helper covers stored mappings assembled outside that row boundary, such
+    as a retry candidate merged with human overrides. It removes only explicitly
+    retired fields; every unknown, current, or malformed field remains subject
+    to the request model's strict validation.
     """
 
-    unknown = sorted(set(stored) - set(model.model_fields))
-    if not unknown:
-        return model.model_validate(dict(stored))
-    logger.warning(
-        "Dropped %s from a stored %s while reading task %s; this build no longer declares it.",
-        ", ".join(unknown),
-        model.__name__,
-        operation_id or "<unknown>",
+    kind = "auto_research" if model is AutoResearchRunRequest else ""
+    migrated = migrate_stored_task_request(
+        kind,
+        stored,
+        operation_id=operation_id,
     )
-    return model.model_validate({k: v for k, v in stored.items() if k not in set(unknown)})
+    return model.model_validate(migrated)
 
 
 def task_graph_capable(kind: str, request: object) -> bool:
