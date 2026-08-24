@@ -10,7 +10,7 @@ if "def normalize_record" not in parser_source:
     raise RuntimeError("The packaged shared conversation parser is invalid.")
 
 client_source = staged_command_client_source()
-if "def _atomic_json" not in client_source or "watch-graph" not in client_source:
+if "def _atomic_request" not in client_source or "watch-graph" not in client_source:
     raise RuntimeError("The packaged staged agent command client is invalid.")
 
 broker_source = staged_command_broker_source()

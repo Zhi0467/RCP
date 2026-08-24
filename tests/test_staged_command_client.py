@@ -125,6 +125,8 @@ def test_staged_broker_is_stdlib_only_and_packaged_for_the_desktop() -> None:
     )
     assert "STAGED_COMMAND_BROKER" in sidecar
     assert "staged_command_broker_source" in hook
+    assert "def _atomic_request" in staged_command_client_source()
+    assert '"def _atomic_request"' in hook
 
 
 @pytest.mark.asyncio
