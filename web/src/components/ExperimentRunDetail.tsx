@@ -61,9 +61,10 @@ export function experimentLoopIsLive(run: ExperimentRun): boolean {
   // The ending fence is the single authority for "this episode is over"; the
   // report is a deliverable produced afterwards and never revives or extends it.
   if (episode?.ending) return false;
-  const episodeStatus = episode?.status;
   return Boolean(
-    (episodeStatus && ["queued", "running", "stopping", "wrapping_up"].includes(episodeStatus)) ||
+    // Whether the parent is still live is the projection's answer. This used to
+    // restate the storage constant that decides it, in this file, by hand.
+    operational?.episode_live ||
     (run.currentTask && liveTaskStatuses.has(run.currentTask.status)) ||
     operational?.task_active ||
     operational?.detached_work_active ||

@@ -23,6 +23,7 @@ from rcp.storage import (
     EpisodeStatus,
     EpisodeWrapupState,
 )
+from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 
 OperationalEpisodeTaskKind = Literal[
     "seed",
@@ -174,6 +175,10 @@ class EpisodeResponse(BaseModel):
     report: EpisodeReportSummary | None
     can_stop: bool
     can_reauthorize: bool
+    # Whether this parent still occupies its Experiment, which is what admission
+    # refuses a second episode against. Published so no client reconstructs the
+    # storage status list to answer it.
+    live: bool
 
 
 def episode_for_project(
@@ -294,6 +299,7 @@ def serialize_episode(
             and episode.ending == "exhausted"
             and episode.wrapup_state in _TERMINAL_WRAPUP_STATES
         ),
+        live=episode.status in _LIVE_EPISODE_STATUSES,
     )
 
 

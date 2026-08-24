@@ -1142,6 +1142,7 @@ export interface Episode {
   report: EpisodeReportSummary | null;
   can_stop: boolean;
   can_reauthorize: boolean;
+  live: boolean;
 }
 
 export interface EpisodeMessage {

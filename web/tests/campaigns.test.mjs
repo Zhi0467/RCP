@@ -91,6 +91,7 @@ const episode = {
   report: null,
   can_stop: true,
   can_reauthorize: false,
+  live: true,
 };
 
 test("the Auto-research dialog meters only operational invocations", () => {
@@ -168,6 +169,7 @@ test("a ready episode exposes one singular report URL", () => {
   const ready = {
     ...episode,
     status: "completed",
+    live: false,
     ending: "completed",
     ended_at: "2026-08-12T08:04:00Z",
     wrapup_state: "ready",
@@ -204,6 +206,7 @@ test("a final report error is visible, terminal, and has no task recovery contro
   const reportFailed = {
     ...episode,
     status: "needs_action",
+    live: false,
     ending: "exhausted",
     wrapup_state: "failed",
     wrapup_error: "The visual report could not be written.",
@@ -224,6 +227,7 @@ test("a report error does not downgrade a completed episode", () => {
   const reportFailed = {
     ...episode,
     status: "completed",
+    live: false,
     ending: "completed",
     wrapup_state: "failed",
     wrapup_error: "The visual report could not be written.",
@@ -243,6 +247,7 @@ test("Stop is the only ending that shows neither a report nor a report error", (
   const stopped = {
     ...episode,
     status: "stopped",
+    live: false,
     ending: "stopped",
     ending_diagnostic: "must stay hidden after Stop",
     wrapup_state: "skipped",
@@ -261,6 +266,7 @@ test("reauthorization keeps the immutable old episode and inserts the fresh pare
   const oldEpisode = {
     ...episode,
     status: "needs_action",
+    live: false,
     ending: "exhausted",
     wrapup_state: "ready",
     can_stop: false,

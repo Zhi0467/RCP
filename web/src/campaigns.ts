@@ -1,11 +1,4 @@
-import type { AgentTask, Episode, EpisodeEnding, EpisodeStatus } from "./types";
-
-const LIVE_EPISODE_STATUSES = new Set<EpisodeStatus>([
-  "queued",
-  "running",
-  "stopping",
-  "wrapping_up",
-]);
+import type { AgentTask, Episode, EpisodeEnding } from "./types";
 
 const EPISODE_HEALTH_LABELS: Record<EpisodeHealth, string> = {
   starting: "Starting",
@@ -62,7 +55,9 @@ export interface EpisodeProjection {
 }
 
 export function isLiveEpisode(episode: Episode): boolean {
-  return LIVE_EPISODE_STATUSES.has(episode.status);
+  // The projection says whether a parent is still live. Restating the storage
+  // status list here is how two surfaces came to disagree about one Experiment.
+  return episode.live;
 }
 
 export function mergeEpisode(episodes: Episode[], nextEpisode: Episode): Episode[] {

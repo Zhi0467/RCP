@@ -16,10 +16,11 @@ const { episodePollingTarget } = await server.ssrLoadModule("/src/hooks/useEpiso
 after(() => server.close());
 
 test("episode polling follows active work and an ended episode's running branch merge", () => {
-  const live = { episode_id: "live", status: "running", graph_branch: null };
+  const live = { episode_id: "live", status: "running", live: true, graph_branch: null };
   const merging = {
     episode_id: "merging",
     status: "completed",
+    live: false,
     graph_branch: { merge_state: "running" },
   };
   const merged = {
