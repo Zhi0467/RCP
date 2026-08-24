@@ -62,6 +62,7 @@ class ExperimentOperationalState(BaseModel):
     watcher_degraded: bool = False
     watcher_completion_pending: bool = False
     episode_exited: bool = False
+    episode_live: bool = False
     stop_requested: bool = False
     stop_settled: bool = False
     chat_id: str | None = None
@@ -83,6 +84,9 @@ class ExperimentControlState(BaseModel):
 
     ready: bool
     reasons: list[str] = Field(default_factory=list)
+    # The subset of `reasons` a human resolves in the graph, published so no
+    # reader has to tell graph gates from operational ones by matching prose.
+    graph_reasons: list[str] = Field(default_factory=list)
     invocations_used: int = Field(ge=0)
     invocation_ceiling: int = Field(ge=1)
     invocations_remaining: int = Field(ge=0)
@@ -221,16 +225,16 @@ def derive_experiment_control_state(
         raise ValueError(f"Node {experiment_id!r} is not an Experiment.")
 
     graph_control = experiment_graph_control(state, experiment_id)
-    reasons = list(graph_control.reasons)
     governing = governing_decision_bundle(state, experiment_id)
 
+    operational_reasons: list[str] = []
     active = experiment_id in set(active_control_node_ids)
     if active:
-        reasons.append("An experiment loop is already active.")
+        operational_reasons.append("An experiment loop is already active.")
     if operational is not None and operational.stopping:
         # Stop is graceful: the already-authorized turn finishes, and only then
         # may a human cross the authority boundary with a fresh Run.
-        reasons.append("A graceful stop is finishing the current loop turn.")
+        operational_reasons.append("A graceful stop is finishing the current loop turn.")
 
     if episode_id is None:
         if (
@@ -251,10 +255,19 @@ def derive_experiment_control_state(
         ceiling = invocation_ceiling
         pins = list(episode_decision_bundle)
     if detached_work_active and invocations_used >= ceiling:
-        reasons.append("Detached Experiment work is still running.")
+        operational_reasons.append("Detached Experiment work is still running.")
+    if operational is not None and operational.episode_live and not operational_reasons:
+        # Admission refuses a second live parent for one Experiment, so readiness
+        # must carry that. It is wider than every reason above: a turn that settles
+        # below the ceiling without arming an observer leaves the parent live with
+        # nothing to wake it, and only the human's next control closes it. The
+        # narrower reasons say more, so this one speaks only when they do not.
+        operational_reasons.append("A previous episode is still open on this Experiment.")
+    reasons = [*graph_control.reasons, *operational_reasons]
     return ExperimentControlState(
         ready=not reasons,
         reasons=reasons,
+        graph_reasons=list(graph_control.reasons),
         invocations_used=invocations_used,
         invocation_ceiling=ceiling,
         invocations_remaining=max(ceiling - invocations_used, 0),

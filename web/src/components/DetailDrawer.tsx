@@ -167,11 +167,10 @@ export function DetailDrawer({
   );
   const editInvalid = Object.keys(editErrors).length > 0;
   const nodeMutationDisabled = mutationsDisabled || stagedForRemoval;
-  const experimentControlActive = Boolean(
-    experimentControl?.active ||
-    experimentControl?.operational?.task_active ||
-    experimentControl?.operational?.detached_work_active,
-  );
+  // Whether a loop is active is the projection's answer, not a second one
+  // assembled here from the operational flags underneath it. Composing those
+  // flags locally let this panel and Runs disagree about the same Experiment.
+  const experimentControlActive = Boolean(experimentControl?.active);
   const experimentPausedAtLimit = Boolean(experimentControl?.paused && !experimentControlActive);
 
   useEffect(() => {
@@ -542,7 +541,6 @@ export function DetailDrawer({
                         nodeMutationDisabled ||
                         experimentRunDisabled ||
                         experimentRunBusy ||
-                        experimentControlActive ||
                         !experimentControl.ready
                       }
                       onClick={onRunExperiment}

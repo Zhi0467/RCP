@@ -59,6 +59,7 @@ function operational(fields = {}) {
     detached_work_active: false,
     watcher_completion_pending: false,
     episode_exited: false,
+    episode_live: false,
     stop_requested: false,
     stop_settled: false,
     chat_id: "chat-1",
@@ -86,6 +87,7 @@ function control(fields = {}, operationalFields = {}) {
   return {
     ready: true,
     reasons: [],
+    graph_reasons: [],
     invocations_used: 3,
     invocation_ceiling: 3,
     invocations_remaining: 0,
@@ -299,7 +301,14 @@ function episode(fields = {}) {
 test("Experiment wrap-up uses the shared parent state without report recovery controls", () => {
   const run = buildExperimentRun(
     node(),
-    control({ episode: episode() }),
+    control(
+      {
+        episode: episode(),
+        ready: false,
+        reasons: ["A previous episode is still open on this Experiment."],
+      },
+      { episode_live: true },
+    ),
     [recoveryTask({ can_retry: true, can_resume: true })],
     [],
   );
@@ -311,10 +320,9 @@ test("Experiment wrap-up uses the shared parent state without report recovery co
     "Wrapping up visualization and report",
   );
   assert.doesNotMatch(html, /Retry codex|Resume codex|Open report/);
-  // The ending fence already retired this episode, so the report being produced
-  // for it is a deliverable and not a reason to refuse the next episode. Start
-  // follows the published readiness gate, which this parent status does not touch.
-  assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
+  // Start is refused because the published gate says so, not because this card
+  // recognised the parent status itself.
+  assert.match(html, /experiment-run-button" disabled=""/);
 });
 
 test("a ready Experiment report opens from the singular episode URL", () => {
@@ -626,12 +634,12 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
   assert.equal(compactRecommendation, "Resume this episode, or switch provider");
 });
 
-test("a running episode with nothing left to wake it can still start the next one", () => {
+test("a running episode with nothing left to wake it points at Stop loop", () => {
   // Regression: the loop's turn succeeded without arming a watcher or exiting, so
-  // the episode row stayed `running` while the server reported the loop inactive
-  // and ready. Runs recommended "Start a new episode" and disabled that exact
-  // button, while the Research node panel offered it, because this card added a
-  // parent status the published readiness gate does not carry.
+  // the episode row stayed open. Admission refuses a second live parent, but the
+  // control projection did not say so, so Runs recommended "Start a new episode"
+  // and disabled that button while the Research node panel offered it. The reason
+  // now arrives from the server, and Stop loop is the control that frees it.
   const stranded = episode({
     status: "running",
     ending: null,
@@ -650,21 +658,25 @@ test("a running episode with nothing left to wake it can still start the next on
       control(
         {
           episode: stranded,
+          ready: false,
+          reasons: ["A previous episode is still open on this Experiment."],
           invocations_used: 1,
           invocation_ceiling: 10,
           invocations_remaining: 9,
           paused: false,
         },
-        { current_status: "succeeded", current_invocation: 1 },
+        { current_status: "succeeded", current_invocation: 1, episode_live: true },
       ),
       [],
       [],
     ),
   );
 
-  assertDetailProjection(html, "Needs action", "Start a new episode");
-  assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
+  assertDetailProjection(html, "Needs action", "Stop loop, then start a new episode");
+  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
   assert.match(html, /Stop loop/);
+  // The reason is the server's sentence, not one this card composed.
+  assert.match(html, /A previous episode is still open on this Experiment\./);
 });
 
 test("completed watcher at the ceiling leaves Start new episode enabled", () => {
@@ -692,7 +704,7 @@ test("a gated human-stopped loop recommends its available requirement action", (
   const html = render({
     node: node(),
     control: control(
-      { ready: false, reasons: [reason] },
+      { ready: false, reasons: [reason], graph_reasons: [reason] },
       { stop_requested: true, stop_settled: true },
     ),
     taskGroup: null,

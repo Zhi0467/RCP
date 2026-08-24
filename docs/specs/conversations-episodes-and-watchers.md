@@ -94,7 +94,14 @@ An Experiment can start a new bounded episode only when:
 2. none of those Decisions has a pending Proposal;
 3. no `blocked_by` Blocker is open; and
 4. no current episode still has a queued/running automatic invocation or a
-   deliverable live watcher.
+   deliverable live watcher; and
+5. no episode parent is still live at all. A turn can succeed below the ceiling
+   while arming no observer and taking no exit, which leaves the parent live with
+   nothing to wake it. The loop then reads as inactive, admission still refuses a
+   second live parent, and **Stop loop** is the control that releases it.
+
+Readiness reports its graph gates and its operational reasons as separate lists,
+so no surface has to tell them apart by reading the sentences.
 
 Readiness derives from the exact graph target's final graph and never from
 `Experiment.status`. Before any episode the action says **Start episode**;

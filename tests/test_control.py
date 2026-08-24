@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from rcp.control import derive_experiment_control_state, governing_decision_bundle
+from rcp.control import (
+    ExperimentOperationalState,
+    derive_experiment_control_state,
+    governing_decision_bundle,
+)
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import (
     Blocker,
@@ -176,6 +180,48 @@ def test_readiness_is_derived_from_decisions_proposals_blockers_and_ceiling() ->
     ]
     assert gated.invocations_used == 0
     assert gated.invocation_ceiling == 1
+
+
+def test_an_open_episode_gates_readiness_and_publishes_the_graph_reasons_apart() -> None:
+    """Readiness carries what admission enforces, and names its own two kinds.
+
+    `create_experiment_episode_with_invocation` refuses a second live parent for
+    one Experiment. A turn that settles below the ceiling without arming an
+    observer leaves that parent live with nothing to wake it, so the loop reads
+    as inactive while a new episode is still impossible. Readers must not have to
+    tell that operational reason from a graph gate by matching its prose.
+    """
+
+    state = _state()
+    open_episode = ExperimentOperationalState(episode_live=True)
+
+    gated = derive_experiment_control_state(state, EXPERIMENT_ID, operational=open_episode)
+    assert not gated.ready
+    assert not gated.active
+    assert gated.reasons == ["A previous episode is still open on this Experiment."]
+    assert gated.graph_reasons == []
+
+    blocker = state.nodes["blk/capacity"]
+    state.nodes[blocker.id] = blocker.model_copy(update={"status": "open"})
+    both = derive_experiment_control_state(state, EXPERIMENT_ID, operational=open_episode)
+    assert both.graph_reasons == ["Blocker blk/capacity is open."]
+    assert both.reasons == [
+        "Blocker blk/capacity is open.",
+        "A previous episode is still open on this Experiment.",
+    ]
+
+    # A narrower operational reason says more, so the open parent stays quiet
+    # rather than restating it.
+    active = derive_experiment_control_state(
+        state,
+        EXPERIMENT_ID,
+        [EXPERIMENT_ID],
+        operational=open_episode,
+    )
+    assert active.reasons == [
+        "Blocker blk/capacity is open.",
+        "An experiment loop is already active.",
+    ]
 
 
 def _belief_patch_ops(

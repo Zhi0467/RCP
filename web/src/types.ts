@@ -170,6 +170,7 @@ export interface ExperimentOperationalState {
   watcher_degraded: boolean;
   watcher_completion_pending: boolean;
   episode_exited: boolean;
+  episode_live: boolean;
   stop_requested: boolean;
   stop_settled: boolean;
   chat_id: string | null;
@@ -185,6 +186,7 @@ export interface ExperimentOperationalState {
 export interface ExperimentControlState {
   ready: boolean;
   reasons: string[];
+  graph_reasons: string[];
   invocations_used: number;
   invocation_ceiling: number;
   invocations_remaining: number;

@@ -201,6 +201,42 @@ def test_fresh_schema_and_root_admission_use_generic_parent(tmp_path: Path) -> N
     assert [item.operation_id for item in store.episode_invocations(episode_id)] == ["loop-root"]
 
 
+def test_one_live_parent_per_experiment_survives_a_turn_that_wakes_nothing(
+    tmp_path: Path,
+) -> None:
+    """One Experiment holds one live episode, and Stop loop is what releases it.
+
+    A turn can succeed below the ceiling while arming no observer and taking no
+    exit. The runtime then reads inactive, but the parent row is still live and
+    admission refuses the next episode, so readiness has to carry that fact.
+    """
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    first_id, first_task = _admit_root(store, operation_id="loop-root", ceiling=10)
+    store.complete_agent_task(first_task.operation_id, applied_revision=None, result={})
+
+    stranded = store.episode(first_id)
+    assert stranded is not None and stranded.status == "running" and stranded.ending is None
+    runtime = store.experiment_loop_runtime("project", "exp-one")
+    assert not runtime.active and not runtime.paused and not runtime.task_active
+    assert runtime.episode_live
+
+    with pytest.raises(ValueError, match="already has a live episode"):
+        store.create_experiment_episode_with_invocation(
+            _task(store, "loop-root-2", str(uuid.uuid4()), ceiling=10)
+        )
+
+    assert store.request_experiment_loop_stop("project", "exp-one") is not None
+    released = store.episode(first_id)
+    assert released is not None
+    assert released.status == "stopped" and released.ending == "stopped"
+    assert not store.experiment_loop_runtime("project", "exp-one").episode_live
+
+    store.create_experiment_episode_with_invocation(
+        _task(store, "loop-root-3", str(uuid.uuid4()), ceiling=10)
+    )
+
+
 def test_failed_root_insert_rolls_back_parent_and_child(tmp_path: Path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id = str(uuid.uuid4())

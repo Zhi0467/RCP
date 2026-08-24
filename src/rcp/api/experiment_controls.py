@@ -110,6 +110,7 @@ def _experiment_operational_state(runtime: ExperimentLoopRuntime) -> ExperimentO
         watcher_degraded=runtime.watcher_degraded,
         watcher_completion_pending=runtime.watcher_completion_pending,
         episode_exited=runtime.episode_exited,
+        episode_live=runtime.episode_live,
         stop_requested=runtime.stop_requested,
         stop_settled=runtime.stop_settled,
         chat_id=runtime.chat_id,

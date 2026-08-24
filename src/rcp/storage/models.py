@@ -1023,6 +1023,10 @@ class ExperimentLoopRuntime(BaseModel):
     invocation_ceiling: int | None = Field(default=None, ge=1)
     control_revision: int | None = Field(default=None, ge=0)
     active: bool = False
+    # A parent row still occupying this Experiment, which is what admission
+    # refuses a second episode against. Wider than `active`: a settled turn that
+    # armed nothing leaves the parent live with no work left to wake it.
+    episode_live: bool = False
     paused: bool = False
     task_active: bool = False
     detached_work_active: bool = False

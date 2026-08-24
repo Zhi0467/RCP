@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
+from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.storage.models import (  # noqa: F401
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
     _EXPERIMENT_EPISODE_PINNED_FIELDS,
@@ -2706,6 +2707,7 @@ class ExperimentStoreMixin:
             watcher_degraded=watcher_degraded,
             watcher_completion_pending=watcher_completion_pending,
             episode_exited=episode_exited,
+            episode_live=parent.status in _LIVE_EPISODE_STATUSES,
             active=parent.status in {"running", "stopping"}
             and (
                 unresolved

@@ -74,6 +74,7 @@ function control(fields = {}, operationalFields = {}) {
   return {
     ready: true,
     reasons: [],
+    graph_reasons: [],
     invocations_used: 0,
     invocation_ceiling: 3,
     invocations_remaining: 3,
@@ -88,6 +89,7 @@ function control(fields = {}, operationalFields = {}) {
       watcher_degraded: false,
       watcher_completion_pending: false,
       episode_exited: false,
+      episode_live: false,
       stop_requested: false,
       stop_settled: false,
       chat_id: null,
@@ -580,6 +582,7 @@ test("Experiment projection follows operational precedence and stop task placeme
       {
         ready: false,
         reasons: ["Blocker blocker/upstream is open."],
+        graph_reasons: ["Blocker blocker/upstream is open."],
         episode_id: "ep-gated",
         invocations_used: 1,
         invocations_remaining: 2,
@@ -912,6 +915,7 @@ test("Experiment recommendations follow structured task and control states", () 
       control: control({
         ready: false,
         reasons: ["Blocker blk/required-input is open."],
+        graph_reasons: ["Blocker blk/required-input is open."],
         episode_id: "episode-recommendation",
       }),
       health: "human_stopped",

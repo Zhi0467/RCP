@@ -6552,6 +6552,10 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert control["paused"] is True
     assert control["ready"] is False
     assert control["reasons"] == ["Detached Experiment work is still running."]
+    # The projection ships its own split, so no client has to recognise which of
+    # these sentences a human resolves in the graph.
+    assert control["graph_reasons"] == []
+    assert control["operational"]["episode_live"] is True
 
     store.record_watcher_check(
         "pending-loop-watcher",

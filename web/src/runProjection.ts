@@ -151,14 +151,14 @@ export interface RunProjectionInput {
 const actionableStatuses = new Set(["failed", "paused", "interrupted"]);
 const runningStatuses = new Set(["queued", "running", "pausing"]);
 const terminalExperimentStatuses = new Set(["completed", "abandoned", "superseded"]);
-const nonGatingOperationalReasons = new Set([
-  "An experiment loop is already active.",
-  "A graceful stop is finishing the current loop turn.",
-  "Detached Experiment work is still running.",
-]);
-
 function hasExperimentRunRequirements(control: ExperimentControlState | null): boolean {
-  return Boolean(control?.reasons.some((reason) => !nonGatingOperationalReasons.has(reason)));
+  if (!control) return false;
+  // The server publishes which of its reasons a human resolves in the graph.
+  // This used to re-derive that by matching the other reasons' exact prose, so
+  // rewording a sentence in the projection silently reclassified readiness. A
+  // cached payload from before the split carries no `graph_reasons`; treat all of
+  // its reasons as gating rather than guess which ones were operational.
+  return Boolean((control.graph_reasons ?? control.reasons).length);
 }
 
 const healthSections: Record<ExperimentLoopHealth, RunSectionKey> = {
@@ -347,11 +347,13 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
     return { step: "resolve_requirements", label: "Resolve the run requirements" };
   }
   if (
-    task &&
-    actionableStatuses.has(task.status) &&
     run.control?.episode_id &&
     !episodeEnded &&
-    !run.control.operational?.stop_requested
+    !run.control.operational?.stop_requested &&
+    // Either the turn needs a human decision, or it settled and left the episode
+    // open with nothing to wake it. Admission refuses a second live parent either
+    // way, so Stop loop is the control that frees the Experiment.
+    ((task && actionableStatuses.has(task.status)) || run.control.operational?.episode_live)
   ) {
     // Stop loop is retired by the ending fence, and no recommendation may name a
     // control the episode no longer offers.

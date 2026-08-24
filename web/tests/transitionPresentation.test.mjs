@@ -58,6 +58,7 @@ function control() {
       watcher_degraded: false,
       watcher_completion_pending: false,
       episode_exited: false,
+      episode_live: false,
       stop_requested: false,
       stop_settled: false,
       chat_id: null,
