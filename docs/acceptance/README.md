@@ -110,3 +110,4 @@ This index is checked against frontmatter by `tests/test_documentation.py`.
 | [S121](S121-a-refusal-explains-itself.md) | A refusal explains itself and what it did not undo | pending | pytest + browser |
 | [S122](S122-project-invitations.md) | A member can invite you to a project and you can leave | implemented | pytest + browser |
 | [S125](S125-auto-research-graph-branch-merge.md) | Auto-research changes its graph branch before a human merge | implemented | pytest + browser |
+| [S126](S126-choose-local-repository-folder.md) | Choose a local repository folder in the desktop setup wizard | implemented | web + desktop |

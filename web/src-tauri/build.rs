@@ -4,6 +4,7 @@ const COMMANDS: &[&str] = &[
     "desktop_status",
     "desktop_reconnect_backend",
     "desktop_show_ready",
+    "choose_repository_folder",
     "desktop_start_dictation",
     "desktop_stop_dictation",
     "open_artifact_preview",

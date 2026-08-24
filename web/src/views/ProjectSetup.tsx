@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   FileCode2,
   FolderGit2,
+  FolderOpen,
   LoaderCircle,
   LockKeyhole,
   Plus,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { chooseDesktopRepositoryFolder, isDesktopRuntime } from "../desktopRuntime";
 import {
   modelChange,
   modelOptions,
@@ -23,7 +25,7 @@ import {
   providerOptions,
   reasoningOptions,
 } from "../providers";
-import { stateRepositoryAfterRemoval } from "../projectSetup";
+import { repositoryPickerPresentation, stateRepositoryAfterRemoval } from "../projectSetup";
 import type {
   AgentExecutionProfile,
   ExistingResearchAction,
@@ -921,6 +923,23 @@ function RepositoryEditor({
   onChange: (patch: Partial<SetupRepository>) => void;
   onRemove?: () => void;
 }) {
+  const [pickerBusy, setPickerBusy] = useState(false);
+  const [pickerError, setPickerError] = useState<string | null>(null);
+  const picker = repositoryPickerPresentation(repository.location, isDesktopRuntime());
+
+  const chooseFolder = async () => {
+    setPickerBusy(true);
+    setPickerError(null);
+    try {
+      const path = await chooseDesktopRepositoryFolder();
+      if (path !== null) onChange({ path });
+    } catch (error) {
+      setPickerError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPickerBusy(false);
+    }
+  };
+
   return (
     <article className={canonical ? "repository-editor canonical" : "repository-editor"}>
       <header>
@@ -974,15 +993,29 @@ function RepositoryEditor({
         )}
         <label className={repository.location === "ssh" ? "" : "wide"}>
           <span>Absolute repository path</span>
-          <input
-            value={repository.path}
-            onChange={(event) => onChange({ path: event.target.value })}
-            placeholder={
-              repository.location === "ssh"
-                ? "/home/user/research/project"
-                : "/Users/you/research/project"
-            }
-          />
+          <div className="repository-path-input">
+            <input
+              value={repository.path}
+              onChange={(event) => onChange({ path: event.target.value })}
+              placeholder={
+                repository.location === "ssh"
+                  ? "/home/user/research/project"
+                  : "/Users/you/research/project"
+              }
+            />
+            {picker.showPicker && (
+              <button type="button" onClick={() => void chooseFolder()} disabled={pickerBusy}>
+                {pickerBusy ? (
+                  <LoaderCircle className="spin" size={14} />
+                ) : (
+                  <FolderOpen size={14} />
+                )}
+                Choose folder…
+              </button>
+            )}
+          </div>
+          {picker.hint && <small className="repository-path-hint">{picker.hint}</small>}
+          {pickerError && <small className="repository-path-error">{pickerError}</small>}
         </label>
       </div>
       <footer>

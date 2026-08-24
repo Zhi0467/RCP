@@ -148,6 +148,26 @@ export async function desktopShowReady(): Promise<void> {
   await invokeDesktop("desktop_show_ready");
 }
 
+export async function chooseDesktopRepositoryFolder(): Promise<string | null> {
+  if (!isDesktopRuntime())
+    throw new Error("Finder folder selection is available in the desktop app.");
+  return desktopFolderSelectionPath(
+    await invokeDesktop<{ selected: boolean; path?: string | null; error?: string }>(
+      "choose_repository_folder",
+    ),
+  );
+}
+
+export function desktopFolderSelectionPath(result: {
+  selected: boolean;
+  path?: string | null;
+  error?: string;
+}): string | null {
+  if (!result.selected && result.path == null && !result.error) return null;
+  if (result.selected && result.path) return result.path;
+  throw new Error(result.error || "The desktop host did not return a repository folder.");
+}
+
 export async function setDesktopWebviewZoom(scale: number): Promise<void> {
   if (!isDesktopRuntime()) return;
   const { getCurrentWebview } = await import("@tauri-apps/api/webview");

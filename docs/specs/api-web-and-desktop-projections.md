@@ -202,6 +202,11 @@ the main project WebView. Desktop repository links and result/report artifacts
 therefore cannot strand the main project window. Native downloads resolve
 through shell-controlled destinations.
 
+In project setup, every local repository path has a native folder action in the
+desktop shell. Selecting a folder fills its absolute path; cancelling preserves
+the current value. SSH paths remain manual, and the browser states that native
+folder selection is available only in the desktop app.
+
 The desktop may add shell-only dictation, update, reconnection, and packaging
 behavior only where an active acceptance contract owns it. Browser verification
 does not stand in for native window lifecycle.

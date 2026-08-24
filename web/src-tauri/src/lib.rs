@@ -61,6 +61,7 @@ pub fn run() {
             commands::desktop_status,
             commands::desktop_reconnect_backend,
             commands::desktop_show_ready,
+            commands::choose_repository_folder,
             commands::desktop_start_dictation,
             commands::desktop_stop_dictation,
             commands::open_artifact_preview,

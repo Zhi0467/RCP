@@ -1723,6 +1723,44 @@ button:disabled {
   padding: 0 11px;
   width: 100%;
 }
+.repository-path-input {
+  align-items: stretch;
+  display: flex;
+  gap: 7px;
+}
+.repository-path-input input {
+  min-width: 0;
+}
+.repository-path-input button {
+  align-items: center;
+  background: var(--surface-cool);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--oxblood-dark);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 700;
+  gap: 5px;
+  padding: 0 10px;
+}
+.repository-path-input button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+.repository-path-hint,
+.repository-path-error {
+  display: block;
+  font-size: 9px;
+  line-height: 1.35;
+  margin-top: 5px;
+}
+.repository-path-hint {
+  color: var(--muted);
+}
+.repository-path-error {
+  color: var(--red);
+}
 .setup-field > input {
   font-family: var(--editorial);
   font-size: 19px;
