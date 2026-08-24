@@ -1,10 +1,18 @@
 import { ArrowUpRight } from "lucide-react";
 import { currentExperimentGuidance } from "../experimentGuidance";
-import type { AppView, GraphNode, GraphState, ProjectSnapshot, RevisionSummary } from "../types";
+import type {
+  AppView,
+  GraphNode,
+  GraphState,
+  ProjectSnapshot,
+  Proposal,
+  RevisionSummary,
+} from "../types";
 
 interface Props {
   project: ProjectSnapshot;
   graph: GraphState;
+  pendingProposals: Proposal[];
   decisionsAwaitingChoice: GraphNode[];
   latestRevisionSummary?: RevisionSummary | null;
   onNavigate: (view: AppView) => void;
@@ -13,19 +21,17 @@ interface Props {
 export function ProjectOverview({
   project,
   graph,
+  pendingProposals,
   decisionsAwaitingChoice,
   latestRevisionSummary,
   onNavigate,
 }: Props) {
   const nodes = Object.values(graph.nodes);
   const activeExperiments = nodes.filter(
-    (node) =>
-      node.type === "experiment" &&
-      !["completed", "abandoned", "superseded"].includes(String(node.status)),
+    (node) => node.type === "experiment" && !project.experiment_control[node.id]?.node_closed,
   );
   const latestNode = [...nodes].sort((left, right) => right.updated_rev - left.updated_rev)[0];
   const blockers = nodes.filter((node) => node.type === "blocker" && node.status === "open");
-  const proposals = Object.values(graph.proposals).filter((item) => item.status === "pending");
   const nextExperiment = activeExperiments.find((node) =>
     currentExperimentGuidance(node, "next_action"),
   );
@@ -92,10 +98,10 @@ export function ProjectOverview({
       number: "05",
       prompt: "What needs you?",
       answer:
-        proposals[0]?.title ||
+        pendingProposals[0]?.title ||
         decisionsAwaitingChoice[0]?.title ||
         "Nothing currently requires human judgment.",
-      detail: `${proposals.length} proposals · ${decisionsAwaitingChoice.length} decisions awaiting choice`,
+      detail: `${pendingProposals.length} proposals · ${decisionsAwaitingChoice.length} decisions awaiting choice`,
       view: "attention",
     },
     {

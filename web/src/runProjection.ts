@@ -2,6 +2,8 @@ import type {
   AgentTask,
   ExternalWatcherRecord,
   ExperimentControlState,
+  ExperimentLoopHealth,
+  ExperimentRecommendedStep,
   GraphCondition,
   GraphWatcherRecord,
   GraphNode,
@@ -23,22 +25,9 @@ export interface RunTaskProjection {
 
 export type RunSectionKey = "running" | "actionable" | "completed";
 
-export type ExperimentLoopHealth =
-  | "starting"
-  | "agent_active"
-  | "waiting_on_watchers"
-  | "degraded"
-  | "stopping"
-  | "wrapping_up"
-  | "failed"
-  | "human_stopped"
-  | "paused_at_limit"
-  | "needs_action"
-  | "completed";
-
 export interface ExperimentRun {
   node: GraphNode;
-  control: ExperimentControlState | null;
+  control: ExperimentControlState;
   taskGroup: AgentTaskGroup | null;
   currentTask: AgentTask | null;
   watchers: WatcherRecord[];
@@ -46,18 +35,6 @@ export interface ExperimentRun {
   currentWatchers: WatcherRecord[];
   health: ExperimentLoopHealth;
 }
-
-export type ExperimentRecommendedStep =
-  | "wait"
-  | "resume"
-  | "retry"
-  | "keep_loop"
-  | "start_episode"
-  | "stop_and_restart"
-  | "resolve_requirements"
-  | "open_report"
-  | "review"
-  | "none";
 
 export interface ExperimentRecommendation {
   step: ExperimentRecommendedStep;
@@ -143,34 +120,10 @@ export interface RunProjectionInput {
   nodes: GraphNode[];
   tasks: AgentTask[];
   watchers?: WatcherRecord[];
-  experimentControl?: Record<string, ExperimentControlState>;
+  experimentControl: Record<string, ExperimentControlState>;
+  actionableBlockerIds: ReadonlySet<string>;
   dismissedTaskIds?: ReadonlySet<string>;
 }
-
-const terminalExperimentStatuses = new Set(["completed", "abandoned", "superseded"]);
-function hasExperimentRunRequirements(control: ExperimentControlState | null): boolean {
-  if (!control) return false;
-  // The server publishes which of its reasons a human resolves in the graph.
-  // This used to re-derive that by matching the other reasons' exact prose, so
-  // rewording a sentence in the projection silently reclassified readiness. A
-  // cached payload from before the split carries no `graph_reasons`; treat all of
-  // its reasons as gating rather than guess which ones were operational.
-  return Boolean((control.graph_reasons ?? control.reasons).length);
-}
-
-const healthSections: Record<ExperimentLoopHealth, RunSectionKey> = {
-  starting: "running",
-  agent_active: "running",
-  waiting_on_watchers: "running",
-  degraded: "running",
-  stopping: "running",
-  wrapping_up: "running",
-  failed: "completed",
-  human_stopped: "actionable",
-  paused_at_limit: "actionable",
-  needs_action: "actionable",
-  completed: "completed",
-};
 
 export function buildRunTaskProjection(
   tasks: AgentTask[],
@@ -194,185 +147,41 @@ export function isExperimentLoopTask(task: AgentTask): boolean {
   );
 }
 
-export function experimentRunSection(
-  health: ExperimentLoopHealth,
-  turnAwaitsHuman = false,
-): RunSectionKey {
-  if (health === "stopping" && turnAwaitsHuman) {
-    return "actionable";
-  }
-  return healthSections[health];
-}
-
-/**
- * Loop health reads the current task, the control state, the durable stop request, and the
- * Experiment's own watchers. The Experiment node's semantic `status` only decides the outcome
- * once no operational state applies.
- */
-export function deriveExperimentLoopHealth(
-  node: GraphNode,
-  control: ExperimentControlState | null,
-  turn: LoopTurnState,
-  currentWatchers: WatcherRecord[],
-  hasValidRecovery = false,
-): ExperimentLoopHealth {
-  const operational = control?.operational;
-  const episode = control?.episode;
-  const stopRequested = Boolean(operational?.stop_requested);
-  if (stopRequested && !operational?.stop_settled) {
-    return hasValidRecovery ? "needs_action" : "stopping";
-  }
-  if (stopRequested && operational?.stop_settled && turn.awaitingHuman) {
-    return "human_stopped";
-  }
-  if (episode?.wrapup_state === "pending" || episode?.wrapup_state === "running") {
-    return "wrapping_up";
-  }
-  // A failed report is a missing deliverable, never the episode's verdict, so the
-  // episode's own ending decides the health and the error shows beside it.
-  if (episode?.health === "failed") return "failed";
-  if (episode?.health === "stopped") return "human_stopped";
-  if (episode?.ending) {
-    if (episode.ending === "completed") return "completed";
-    // A terminal node status is the human's own verdict on the Experiment, and it
-    // outranks how one bounded episode inside it happened to end. Without this, an
-    // Experiment the human already closed reappears as Needs action forever,
-    // because its last episode paused for an authority decision that has since
-    // been made.
-    if (terminalExperimentStatuses.has(String(node.status ?? ""))) return "completed";
-    if (episode.ending === "exhausted") return "paused_at_limit";
-    if (episode.ending === "human_pause") return "needs_action";
-  }
-  if (turn.queued) return "starting";
-  if (turn.active) return "agent_active";
-  if (turn.awaitingHuman) return "needs_action";
-  if (operational?.task_active) return "needs_action";
-
-  const used = control?.invocations_used ?? 0;
-  const remaining = control?.invocations_remaining ?? 0;
-  const completionPending = Boolean(
-    operational?.watcher_completion_pending ||
-    currentWatchers.some((watcher) => watcher.status === "completed" && !watcher.notified),
-  );
-  const detachedWorkActive = Boolean(
-    operational?.detached_work_active || currentWatchers.some(watcherIsActive),
-  );
-  const hasGraphGate = hasExperimentRunRequirements(control);
-  const canWake = Boolean(
-    !stopRequested &&
-    remaining > 0 &&
-    !operational?.episode_exited &&
-    !operational?.session.diagnostic &&
-    !hasGraphGate,
-  );
-  if ((completionPending || detachedWorkActive) && remaining <= 0) return "paused_at_limit";
-  if (completionPending && !canWake) return "needs_action";
-  if (detachedWorkActive && !canWake) return "needs_action";
-  if (
-    operational?.watcher_degraded ||
-    currentWatchers.some((watcher) => watcher.status === "degraded")
-  ) {
-    return "degraded";
-  }
-  if (completionPending || detachedWorkActive) return "waiting_on_watchers";
-  if (terminalExperimentStatuses.has(String(node.status ?? ""))) return "completed";
-  if (stopRequested) return "human_stopped";
-  if (remaining <= 0 && used > 0) return "paused_at_limit";
-  return "needs_action";
-}
-
-export function experimentRecoveryAction(task: AgentTask | null): "resume" | "retry" | null {
-  if (!task || !task.awaiting_human) return null;
-  // `can_resume` is only granted to a paused or interrupted turn, so it already
-  // carries the state this used to re-test.
-  if (task.can_resume) {
-    return "resume";
-  }
-  return task.can_retry ? "retry" : null;
-}
-
-/** Human guidance derived only from canonical task, control, and watcher state. */
+/** Map the server's recommendation to presentation copy without re-deciding it. */
 export function experimentRecommendation(run: ExperimentRun): ExperimentRecommendation {
-  const task = run.currentTask;
-  // The ending fence is what retires Resume and Retry, matching the server, which
-  // clears both once an episode has an ending. The report's fate never gates them.
-  const episodeEnded = Boolean(run.control?.episode?.ending);
-  const recoveryAction = episodeEnded ? null : experimentRecoveryAction(task);
-  const hasRunRequirements = hasExperimentRunRequirements(run.control);
-  if (run.health === "stopping") {
-    return { step: "wait", label: "Wait for the current turn to finish" };
-  }
-  if (run.health === "wrapping_up") {
-    return { step: "wait", label: "Wrapping up visualization and report" };
-  }
-  if (run.control?.episode?.wrapup_state === "ready") {
-    return { step: "open_report", label: "Open report" };
-  }
-  if (run.control?.episode?.wrapup_state === "legacy_unavailable") {
-    return { step: "none", label: "Episode report unavailable" };
-  }
-  if (run.health === "failed") {
-    return { step: "none", label: "Episode ended" };
-  }
-  if (task && task.active) {
-    return { step: "wait", label: "Wait for the agent" };
-  }
-  if (recoveryAction === "resume") {
-    return {
-      step: "resume",
-      label: task?.can_retry ? "Resume this episode, or switch provider" : "Resume this episode",
-    };
-  }
-  if (recoveryAction === "retry") {
-    return { step: "retry", label: "Retry this episode, or switch provider" };
-  }
-  if (run.health === "degraded") {
-    return { step: "keep_loop", label: "Keep loop running; check now if needed" };
-  }
-  if (run.health === "waiting_on_watchers") {
-    return { step: "wait", label: "Wait for watcher completion" };
-  }
-  if (run.health === "completed") {
-    return { step: "none", label: "No action needed" };
-  }
-  if (hasRunRequirements) {
-    return { step: "resolve_requirements", label: "Resolve the run requirements" };
-  }
-  if (
-    run.control?.episode_id &&
-    !episodeEnded &&
-    !run.control.operational?.stop_requested &&
-    // Either the turn needs a human decision, or it settled and left the episode
-    // open with nothing to wake it. Admission refuses a second live parent either
-    // way, so Stop loop is the control that frees the Experiment.
-    ((task && task.awaiting_human) || run.control.operational?.episode_live)
-  ) {
-    // Stop loop is retired by the ending fence, and no recommendation may name a
-    // control the episode no longer offers.
-    return { step: "stop_and_restart", label: "Stop loop, then start a new episode" };
-  }
-  if (run.health === "paused_at_limit") {
-    return run.control?.ready
-      ? { step: "start_episode", label: "Start a new episode" }
-      : { step: "review", label: "Review the loop state" };
-  }
-  if (run.health === "human_stopped") {
-    return run.control?.ready
-      ? { step: "start_episode", label: "Start a new episode" }
-      : { step: "review", label: "Review the loop state" };
-  }
-  if (run.control?.ready) {
-    return {
-      step: "start_episode",
-      label: run.control.episode_id ? "Start a new episode" : "Start an episode",
-    };
-  }
-  return { step: "review", label: "Review the loop state" };
+  const step = run.control.recommendation;
+  const labels: Record<ExperimentRecommendedStep, string> = {
+    wait:
+      run.health === "stopping"
+        ? "Wait for the current turn to finish"
+        : run.health === "wrapping_up"
+          ? "Wrapping up visualization and report"
+          : run.health === "waiting_on_watchers"
+            ? "Wait for watcher completion"
+            : "Wait for the agent",
+    resume: run.control.can_switch_provider
+      ? "Resume this episode, or switch provider"
+      : "Resume this episode",
+    retry: "Retry this episode, or switch provider",
+    keep_loop: "Keep loop running; check now if needed",
+    start_episode: run.control.episode_id ? "Start a new episode" : "Start an episode",
+    stop_and_restart: "Stop loop, then start a new episode",
+    resolve_requirements: "Resolve the run requirements",
+    open_report: "Open report",
+    review: "Review the loop state",
+    none:
+      run.control.episode?.wrapup_state === "legacy_unavailable"
+        ? "Episode report unavailable"
+        : run.health === "failed"
+          ? "Episode ended"
+          : "No action needed",
+  };
+  return { step, label: labels[step] };
 }
 
 export function buildExperimentRun(
   node: GraphNode,
-  control: ExperimentControlState | null,
+  control: ExperimentControlState,
   tasks: AgentTask[],
   allWatchers: WatcherRecord[],
 ): ExperimentRun {
@@ -389,14 +198,9 @@ export function buildExperimentRun(
     );
   const currentWatchers = watchers.filter(
     (watcher) =>
-      Boolean(control?.episode_id) &&
-      watcher.continuation.control_episode_id === control?.episode_id,
+      Boolean(control.episode_id) && watcher.continuation.control_episode_id === control.episode_id,
   );
   const { taskGroup, currentTask } = currentExperimentTaskGroup(node.id, control, tasks);
-  const turn = loopTurnState(control, currentTask);
-  const hasValidRecovery =
-    experimentRecoveryAction(currentTask) !== null ||
-    (!currentTask && Boolean(control?.operational?.task_active) && turn.awaitingHuman);
   return {
     node,
     control,
@@ -405,7 +209,7 @@ export function buildExperimentRun(
     watchers,
     watcherItems: experimentWatcherDisplayItems(watchers),
     currentWatchers,
-    health: deriveExperimentLoopHealth(node, control, turn, currentWatchers, hasValidRecovery),
+    health: control.health,
   };
 }
 
@@ -450,7 +254,7 @@ function watcherGroupCountKey(watcher: ExternalWatcherRecord): keyof ExperimentW
 
 export function buildRunProjection(input: RunProjectionInput): RunProjection {
   const watchers = input.watchers ?? [];
-  const experimentControl = input.experimentControl ?? {};
+  const experimentControl = input.experimentControl;
   const ingestion = buildRunTaskProjection(
     input.tasks.filter((task) => task.kind === "seed" || task.kind === "refresh"),
     input.dismissedTaskIds ?? new Set<string>(),
@@ -463,19 +267,22 @@ export function buildRunProjection(input: RunProjectionInput): RunProjection {
   input.nodes
     .filter((node) => node.type === "experiment")
     .forEach((node) => {
-      const run = buildExperimentRun(
-        node,
-        experimentControl[node.id] ?? null,
-        input.tasks,
-        watchers,
-      );
-      sections[
-        experimentRunSection(run.health, loopTurnState(run.control, run.currentTask).awaitingHuman)
-      ].push(experimentEntry(run));
+      const control = experimentControl[node.id];
+      if (!control) {
+        throw new Error(`Experiment ${node.id} is missing its backend control projection.`);
+      }
+      if (!control.health || !control.recommendation || !control.run_section) {
+        throw new Error(`Experiment ${node.id} has an incomplete backend control projection.`);
+      }
+      const run = buildExperimentRun(node, control, input.tasks, watchers);
+      sections[control.run_section].push(experimentEntry(run));
     });
   input.nodes
-    .filter((node) => node.type === "blocker" && node.status === "open")
+    .filter((node) => input.actionableBlockerIds.has(node.id))
     .forEach((node) => {
+      if (node.type !== "blocker") {
+        throw new Error(`Attention member ${node.id} is not a Blocker.`);
+      }
       sections.actionable.push({
         kind: "blocker",
         id: node.id,
@@ -514,17 +321,17 @@ export function groupAgentTasks(tasks: AgentTask[]): AgentTaskGroup[] {
 
 function currentExperimentTaskGroup(
   nodeId: string,
-  control: ExperimentControlState | null,
+  control: ExperimentControlState,
   tasks: AgentTask[],
 ): { taskGroup: AgentTaskGroup | null; currentTask: AgentTask | null } {
   const nodeTasks = tasks.filter(
     (task) => isExperimentLoopTask(task) && task.request.control_node_id === nodeId,
   );
-  const currentOperationId = control?.operational?.current_operation_id ?? null;
+  const currentOperationId = control.operational.current_operation_id;
   const currentTask = currentOperationId
     ? (nodeTasks.find((task) => task.operation_id === currentOperationId) ?? null)
     : null;
-  const episodeTasks = control?.episode_id
+  const episodeTasks = control.episode_id
     ? nodeTasks.filter((task) => taskEpisodeId(task) === control.episode_id)
     : nodeTasks;
   const groups = groupAgentTasks(episodeTasks);
@@ -536,39 +343,12 @@ function currentExperimentTaskGroup(
       : null) ??
     groups[0] ??
     null;
-  return { taskGroup, currentTask: taskGroup?.latest ?? currentTask ?? null };
+  return { taskGroup, currentTask };
 }
 
 function taskEpisodeId(task: AgentTask): string | null {
   const value = task.request.control_episode_id;
   return typeof value === "string" && value ? value : null;
-}
-
-export interface LoopTurnState {
-  queued: boolean;
-  active: boolean;
-  awaitingHuman: boolean;
-}
-
-/** The loop's current turn, from the task when the client holds it and from the
- *  control projection's own answers when it does not. */
-export function loopTurnState(
-  control: ExperimentControlState | null,
-  currentTask: AgentTask | null,
-): LoopTurnState {
-  if (currentTask) {
-    return {
-      queued: currentTask.queued,
-      active: currentTask.active,
-      awaitingHuman: currentTask.awaiting_human,
-    };
-  }
-  const operational = control?.operational;
-  return {
-    queued: Boolean(operational?.current_queued),
-    active: Boolean(operational?.current_active),
-    awaitingHuman: Boolean(operational?.current_awaiting_human),
-  };
 }
 
 function taskEntry(group: AgentTaskGroup): RunEntry {
@@ -578,7 +358,7 @@ function taskEntry(group: AgentTaskGroup): RunEntry {
 function experimentEntry(experiment: ExperimentRun): RunEntry {
   const observedAt = newestTimestamp([
     experiment.taskGroup?.latest.updated_at,
-    experiment.control?.operational?.current_last_activity_at,
+    experiment.control.operational.current_last_activity_at,
     ...experiment.watchers.flatMap((watcher) => [
       watcher.completed_at,
       watcherLastObservedAt(watcher),

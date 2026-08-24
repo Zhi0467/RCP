@@ -398,5 +398,14 @@ def test_branch_merge_task_requires_ended_quiescent_branch_and_exact_authority(
     merge_authority = store.agent_task_authority(episode.project_id, accepted.operation_id)
     assert merge_authority.apply_target == GraphTargetRef()
 
+    replay = _merge_task(store, episode, accepted.operation_id).model_copy(
+        update={
+            "created_at": accepted.created_at,
+            "updated_at": accepted.updated_at,
+        }
+    )
+    replayed = store.create_branch_merge_task(replay)
+    assert replayed.operation_id == accepted.operation_id
+
     with pytest.raises(ValueError, match="another merge is already active"):
         store.create_branch_merge_task(_merge_task(store, episode, "merge-duplicate"))

@@ -36,6 +36,7 @@ from rcp.config import (
     Manifest,
 )
 from rcp.control import derive_experiment_control_state
+from rcp.core.attention import project_graph_attention
 from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
@@ -131,12 +132,6 @@ class _ProjectSnapshotDraft:
 ConversationMode = Literal["discuss", "work"]
 TaskTrigger = Literal["human", "orchestrator", "experiment_run", "watcher"]
 GraphPatchKind = Literal["work", "experiment_loop"]
-
-
-def decision_awaits_choice(node: ProjectNode) -> bool:
-    """Whether one canonical Decision belongs in human attention."""
-
-    return isinstance(node, Decision) and node.status in {"ready", "revisit"}
 
 
 def _is_decision_choice(changes: dict[str, Any]) -> bool:
@@ -933,17 +928,7 @@ class ProjectService:
         if paper is None:
             paper = self.paper.snapshot()
         primary = self._primary_question(state)
-        pending = [item for item in state.proposals.values() if item.status == "pending"]
-        decisions_awaiting_choice = [
-            item for item in state.nodes.values() if decision_awaits_choice(item)
-        ]
-        blockers = [
-            item
-            for item in state.nodes.values()
-            if item.type == "blocker"
-            and item.status == "open"
-            and item.standing == Standing.ASSERTED
-        ]
+        attention = project_graph_attention(state)
         refresh_profile = self.manifest.agent_profile("refresh")
         profiles = {
             surface: self.manifest.agent_profile(surface).model_dump(mode="json")
@@ -967,10 +952,11 @@ class ProjectService:
                 "machines": [machine.model_dump() for machine in self.manifest.machines],
                 "primary_question": primary,
                 "last_refresh_at": state.last_refresh_at,
+                "attention": attention.model_dump(mode="json"),
                 "counts": {
-                    "pending_proposals": len(pending),
-                    "decisions_awaiting_choice": len(decisions_awaiting_choice),
-                    "open_blockers": len(blockers),
+                    "pending_proposals": len(attention.pending_proposal_ids),
+                    "decisions_awaiting_choice": len(attention.decisions_awaiting_choice_ids),
+                    "open_blockers": len(attention.open_blocker_ids),
                     "asserted": sum(
                         node.standing == Standing.ASSERTED for node in state.nodes.values()
                     ),

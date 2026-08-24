@@ -21,6 +21,37 @@ transition/ruleset identity, and any causal or attention inputs from the same
 final state. Preview responses are explicitly noncanonical and name their base
 head and ruleset.
 
+Project snapshots and transition projections publish exact graph-attention
+membership as pending Proposal ids, Decisions awaiting choice, and asserted
+open Blocker ids. Counts are lengths of that same projection. The browser maps
+those ids onto the graph it is presenting; Inbox, Overview, and Runs never
+reapply the membership predicates. A backend preview supplies both the candidate
+graph and candidate membership, while a rule-inert local draft retains the
+current backend membership until Sync. Cached snapshots are invalid when their
+membership or the three corresponding counts disagree with their graph. The
+browser validates the exact projection shape and referenced graph member types;
+missing or malformed membership fails the snapshot instead of becoming an empty
+attention view.
+
+Each Experiment-control entry is also a complete read model. In addition to
+budgets, reasons, episode, and operational history, it publishes health,
+recommended action, Runs section, liveness, Start/Stop/report availability,
+pending Stop, the exact Resume/Retry and provider-switch controls, and whether
+the human has closed the Experiment node itself. The browser may translate those
+closed answers into labels and layout, but a newer task poll or raw episode field
+never overrides them. Runtime, episode parent,
+visible tasks, budget usage, and report are read inside one SQLite snapshot, so
+one response cannot splice lifecycle facts from different instants. Recovery
+controls bind to the exact operation id named by the backend and disappear when
+that task row is unavailable. A backend candidate graph must be synced before
+Start because the run endpoint still authorizes the canonical graph; a
+rule-inert local prose draft does not create that fence.
+
+Concurrent project snapshot requests are fenced per project by start order,
+including equal-revision responses. Once a newer cache, reload, watcher poll,
+settings save, or Sync starts, an older response cannot overwrite its graph or
+operational controls.
+
 Every branch route proves the branch belongs to the requested project and
 episode. A branch id alone never grants lookup. Task, watcher, episode, and
 Experiment detail APIs preserve exact `main` versus `branch:<id>` target
@@ -136,11 +167,11 @@ action**, then **Completed**, first matching state winning. It contains
 Seed/Refresh, bounded Experiments, Auto-research, and asserted open graph
 Blockers—not ordinary chat or Paper coaching.
 
-Experiment and Auto-research parents each expose one health and one separately
-labelled **Recommended next step** derived from structured state. Task status,
-phase, semantic Experiment status, workers, and diagnostics remain supporting
-history rather than competing primary states. A control is absent unless
-currently valid, and no recommendation names an unavailable action.
+Experiment and Auto-research parents each expose one backend-decided health and
+one separately labelled **Recommended next step**. Task status, phase, semantic
+Experiment status, workers, and diagnostics remain supporting history rather
+than competing primary states. A control is absent unless currently valid, and
+no recommendation names an unavailable action.
 
 Starting an Experiment navigates to its Runs detail rather than opening floating
 chat. The detail separates historical episode budgets from **Next episode

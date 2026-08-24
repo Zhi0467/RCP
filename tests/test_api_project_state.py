@@ -101,6 +101,27 @@ def test_project_display_boundary_completes_all_public_snapshots(manifest, tmp_p
     assert "experiment_control" not in raw_after_settings
 
 
+@pytest.mark.parametrize("corruption", ["attention", "attention_count"])
+def test_cached_project_rejects_attention_that_disagrees_with_its_graph(
+    manifest,
+    tmp_path,
+    corruption: str,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    client = TestClient(app)
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+    cache_path = app.state.catalog._cached_snapshot_path(project_id)
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    if corruption == "attention":
+        envelope["snapshot"]["attention"]["open_blocker_ids"] = ["blk/not-in-graph"]
+    else:
+        envelope["snapshot"]["counts"]["open_blockers"] += 1
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    assert app.state.catalog.cached_snapshot_status(project_id) == ("invalid", None)
+
+
 def test_project_revision_probe_is_small_and_does_not_replay_history(
     manifest, tmp_path, monkeypatch
 ) -> None:

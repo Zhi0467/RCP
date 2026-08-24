@@ -140,6 +140,14 @@ existing terminal task quietly do nothing, while a missing id still fails
 loudly. Completion cleanup, pause/failure receipts, and lifecycle notices occur
 only when their guarded transition applies.
 
+Public task rows carry the backend's lifecycle answers alongside the retained
+status: `active`, `queued`, `pausing`, `awaiting_human`, `paused`, `failed`,
+`settled`, `finished`, and `status_label`. Browser task surfaces group, gate,
+and label work from those answers; they do not compare the status vocabulary to
+reconstruct the lifecycle. The Web response type seals that vocabulary so a new
+string branch fails typechecking instead of silently creating another state
+machine.
+
 A persisted task request crosses one compatibility decoder when its SQLite row
 becomes an `AgentTaskRecord`, before startup, watcher, mail, Retry, or recovery
 policy can choose a parser. The decoder removes only fields named in an explicit

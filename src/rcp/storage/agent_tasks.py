@@ -52,6 +52,7 @@ from rcp.storage.models import (  # noqa: F401
     _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC,
     _PROJECT_ID_TABLES,
     ACTIVE_AGENT_TASK_STATUSES,
+    AGENT_TASK_PROJECTION_FIELDS,
     AGENT_TASK_TRANSITIONS,
     SPACE_NAME_MAX_LENGTH,
     AgentCommandInvocationRecord,
@@ -224,15 +225,8 @@ class AgentTaskStoreMixin:
                 ).fetchone()
                 if existing is not None:
                     stored = self._agent_task_record(existing)
-                    projection = {
-                        "elapsed_seconds",
-                        "progress",
-                        "can_pause",
-                        "can_resume",
-                        "can_retry",
-                    }
-                    if stored.model_dump(exclude=projection) != record.model_dump(
-                        exclude=projection
+                    if stored.model_dump(exclude=AGENT_TASK_PROJECTION_FIELDS) != record.model_dump(
+                        exclude=AGENT_TASK_PROJECTION_FIELDS
                     ):
                         raise ValueError("the branch merge task conflicts with its durable id")
                     return stored
@@ -1720,8 +1714,8 @@ class AgentTaskStoreMixin:
         safe_category = " ".join(category.split())[:100]
         if not safe_category:
             return
-        if safe_category == "operation_admitted":
-            raise ValueError("operation_admitted is reserved for atomic task admission")
+        if safe_category in {"operation_admitted", "operation_dispatch_reset"}:
+            raise ValueError(f"{safe_category} is reserved for an atomic task transition")
         if tier not in AGENT_TASK_RECEIPT_RETENTION_COUNTS:
             raise ValueError(f"Unknown agent-task receipt tier: {tier}")
         payload_json = self._bounded_receipt_payload(payload)
@@ -1762,7 +1756,8 @@ class AgentTaskStoreMixin:
                     'operation_admitted',
                     'operation_dispatch_attempt',
                     'operation_dispatch_failed_before_start',
-                    'operation_dispatch_started'
+                    'operation_dispatch_started',
+                    'operation_dispatch_reset'
                   )
                 """,
                 (operation_id, tier),
@@ -1777,16 +1772,18 @@ class AgentTaskStoreMixin:
                 'operation_admitted',
                 'operation_dispatch_attempt',
                 'operation_dispatch_failed_before_start',
-                'operation_dispatch_started'
+                'operation_dispatch_started',
+                'operation_dispatch_reset'
               )
               AND receipt_id NOT IN (
                 SELECT receipt_id FROM graph_run_receipts
                 WHERE operation_id = ? AND tier = ?
                   AND category NOT IN (
-                    'operation_admitted',
-                    'operation_dispatch_attempt',
-                    'operation_dispatch_failed_before_start',
-                    'operation_dispatch_started'
+                  'operation_admitted',
+                  'operation_dispatch_attempt',
+                  'operation_dispatch_failed_before_start',
+                  'operation_dispatch_started',
+                  'operation_dispatch_reset'
                   )
                 ORDER BY receipt_id DESC
                 LIMIT ?
@@ -2675,23 +2672,42 @@ class AgentTaskStoreMixin:
                 return False
             latest_attempt = connection.execute(
                 """
-                SELECT payload_json FROM graph_run_receipts
+                SELECT receipt_id, payload_json FROM graph_run_receipts
                 WHERE operation_id = ? AND category = 'operation_dispatch_attempt'
-                ORDER BY rowid DESC LIMIT 1
+                ORDER BY receipt_id DESC LIMIT 1
                 """,
                 (operation_id,),
             ).fetchone()
             latest_outcome = connection.execute(
                 """
-                SELECT category, payload_json FROM graph_run_receipts
+                SELECT receipt_id, category, payload_json FROM graph_run_receipts
                 WHERE operation_id = ? AND category IN (
                     'operation_dispatch_failed_before_start',
                     'operation_dispatch_started'
                 )
-                ORDER BY rowid DESC LIMIT 1
+                ORDER BY receipt_id DESC LIMIT 1
                 """,
                 (operation_id,),
             ).fetchone()
+            latest_reset = connection.execute(
+                """
+                SELECT receipt_id FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'operation_dispatch_reset'
+                ORDER BY receipt_id DESC LIMIT 1
+                """,
+                (operation_id,),
+            ).fetchone()
+        if latest_reset is not None and (
+            (latest_attempt is None or latest_reset["receipt_id"] > latest_attempt["receipt_id"])
+            and (
+                latest_outcome is None or latest_reset["receipt_id"] > latest_outcome["receipt_id"]
+            )
+        ):
+            # A concrete owner may atomically requeue a task whose previous
+            # worker was interrupted. The reset receipt is the new dispatch
+            # fence: all attempts before it belong to the completed prior
+            # process and cannot make this queued restart ambiguous.
+            return True
         if latest_attempt is None:
             # New admission is atomically written before dispatch and its
             # permanent receipt means absence of an attempt is positive proof.

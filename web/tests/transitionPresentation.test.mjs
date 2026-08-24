@@ -3,6 +3,7 @@ import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
+import { withExperimentControlAnswers } from "./taskAnswers.mjs";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -40,9 +41,10 @@ function experiment(fields = {}) {
 }
 
 function control() {
-  return {
+  return withExperimentControlAnswers({
     ready: true,
     reasons: [],
+    graph_reasons: [],
     invocations_used: 0,
     invocation_ceiling: 2,
     invocations_remaining: 2,
@@ -79,7 +81,7 @@ function control() {
         diagnostic: null,
       },
     },
-  };
+  });
 }
 
 test("current-flow board copy omits stale Experiment summary and next action", () => {

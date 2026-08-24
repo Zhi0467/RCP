@@ -22,6 +22,11 @@ function projection(fields = {}) {
   return {
     head: head(1, transitionOne),
     graph: { revision: 1, marker: "graph-one" },
+    attention: {
+      pending_proposal_ids: [],
+      decisions_awaiting_choice_ids: [],
+      open_blocker_ids: [],
+    },
     experiment_control: { marker: "control-one" },
     ruleset_tag: "rcp.lifecycle.v1",
     transition_id: transitionOne,
@@ -49,6 +54,32 @@ test("a coherent canonical response atomically replaces graph, control, and head
     [replaced.graph.marker, replaced.experiment_control.marker, replaced.head.revision],
     ["graph-two", "control-two", 2],
   );
+});
+
+test("transition replacement refuses missing or malformed attention", () => {
+  const current = projection();
+  const malformed = [
+    projection({ attention: undefined }),
+    projection({
+      attention: {
+        pending_proposal_ids: [],
+        decisions_awaiting_choice_ids: [],
+      },
+    }),
+    projection({
+      attention: {
+        pending_proposal_ids: ["duplicate", "duplicate"],
+        decisions_awaiting_choice_ids: [],
+        open_blocker_ids: [],
+      },
+    }),
+  ];
+
+  for (const snapshot of malformed) {
+    const action = { kind: "canonical", snapshot };
+    assert.equal(transitionSnapshotRefusal(current, action), "attention_projection_invalid");
+    assert.strictEqual(reduceProjectTransitionProjection(current, action), current);
+  }
 });
 
 test("mismatched or regressing canonical responses retain the exact prior projection", () => {

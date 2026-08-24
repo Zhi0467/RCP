@@ -25,9 +25,10 @@ from rcp.agents import AgentLauncher
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentStore
 from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING, Manifest, load_manifest
+from rcp.core.attention import project_graph_attention
 from rcp.core.materialize import MaterializationResult
 from rcp.core.models import Experiment, GraphState
-from rcp.core.transition_models import GraphTargetRef
+from rcp.core.transition_models import GraphAttentionProjection, GraphTargetRef
 from rcp.core.transitions import ProjectTransitionProjection
 from rcp.history import HistoryManager, ProjectIdentityConflict, ReplayHalted
 from rcp.limits import (
@@ -44,6 +45,7 @@ from rcp.storage import (
     AgentTaskKind,
     AppStore,
     EpisodeRecord,
+    ExperimentEpisodeProjectionSnapshot,
     ExperimentLoopRuntime,
     ProjectRecord,
     ProjectStageRecord,
@@ -79,6 +81,7 @@ _DISPLAY_SNAPSHOT_FIELDS = {
     "machines",
     "primary_question",
     "last_refresh_at",
+    "attention",
     "counts",
     "coverage",
     "graph",
@@ -111,9 +114,12 @@ class ProjectDeletionResult(BaseModel):
     removed_paper_snapshot: bool
 
 
-EpisodeSerializer = Callable[[str, EpisodeRecord], dict[str, object]]
+EpisodeSerializer = Callable[
+    [str, EpisodeRecord, ExperimentEpisodeProjectionSnapshot | None],
+    dict[str, object],
+]
 ExperimentControlProjector = Callable[
-    [GraphState, str, ExperimentLoopRuntime],
+    [GraphState, str, ExperimentLoopRuntime, dict[str, object] | None],
     dict[str, object],
 ]
 
@@ -1154,6 +1160,26 @@ class ProjectCatalog:
             snapshot["home_space_id"] = record.home_space_id
             allow_pre_identity = record.home_space_id is None
         _ensure_snapshot_freshness(snapshot)
+        if "attention" not in snapshot:
+            graph_payload = snapshot.get("graph")
+            if not isinstance(graph_payload, dict):
+                return "invalid", None
+            try:
+                graph = GraphState.model_validate(graph_payload)
+                attention = project_graph_attention(graph)
+                snapshot["attention"] = attention.model_dump(mode="json")
+                counts = snapshot.get("counts")
+                if not isinstance(counts, dict):
+                    return "invalid", None
+                counts.update(
+                    {
+                        "pending_proposals": len(attention.pending_proposal_ids),
+                        "decisions_awaiting_choice": len(attention.decisions_awaiting_choice_ids),
+                        "open_blockers": len(attention.open_blocker_ids),
+                    }
+                )
+            except (TypeError, ValueError):
+                return "invalid", None
         if not _valid_display_snapshot(
             project_id,
             snapshot,
@@ -1464,28 +1490,30 @@ class ProjectDisplayCache:
             experiment_ids = [
                 node.id for node in state.nodes.values() if isinstance(node, Experiment)
             ]
-            runtimes = self._store.experiment_loop_runtimes(
+            read_models = self._store.experiment_control_projection_snapshots(
                 project_id,
                 experiment_ids,
                 graph_target=GraphTargetRef(),
             )
             controls: dict[str, object] = {}
             for experiment_id in experiment_ids:
-                runtime = runtimes[experiment_id]
+                read_model = read_models[experiment_id]
+                runtime = read_model.runtime
+                episode_snapshot = read_model.episode
+                serialized_episode = (
+                    self._serialize_episode(
+                        project_id,
+                        episode_snapshot.episode,
+                        episode_snapshot,
+                    )
+                    if episode_snapshot is not None
+                    else None
+                )
                 control = self._project_experiment_control(
                     state,
                     experiment_id,
                     runtime,
-                )
-                episode = (
-                    self._store.episode(runtime.episode_id)
-                    if runtime.episode_id is not None
-                    else None
-                )
-                control["episode"] = (
-                    self._serialize_episode(project_id, episode)
-                    if episode is not None and episode.mode == "experiment_loop"
-                    else None
+                    serialized_episode,
                 )
                 controls[experiment_id] = control
             control_snapshot["experiment_control"] = controls
@@ -1561,53 +1589,57 @@ class ProjectDisplayCache:
 
         state = GraphState.model_validate(snapshot["graph"])
         experiment_ids = [node.id for node in state.nodes.values() if node.type == "experiment"]
-        runtimes = self._store.experiment_loop_runtimes(
+        initial_read_models = self._store.experiment_control_projection_snapshots(
             project_id,
             experiment_ids,
             graph_target=GraphTargetRef(),
         )
         settle_ids = [
             experiment_id
-            for experiment_id, runtime in runtimes.items()
-            if runtime.stop_requested and not runtime.stop_settled and not runtime.task_active
+            for experiment_id, read_model in initial_read_models.items()
+            if read_model.runtime.stop_requested
+            and not read_model.runtime.stop_settled
+            and not read_model.runtime.task_active
         ]
         for experiment_id in settle_ids:
-            runtime = runtimes[experiment_id]
-            episode = (
-                self._store.episode(runtime.episode_id) if runtime.episode_id is not None else None
-            )
-            if episode is not None:
+            episode_snapshot = initial_read_models[experiment_id].episode
+            if episode_snapshot is not None:
+                episode = episode_snapshot.episode
                 self._store.settle_experiment_loop_stop(
                     project_id,
                     experiment_id,
                     episode_id=episode.episode_id,
                     graph_target=episode.graph_target,
                 )
-        if settle_ids:
-            runtimes.update(
-                self._store.experiment_loop_runtimes(
-                    project_id,
-                    settle_ids,
-                    graph_target=GraphTargetRef(),
-                )
+        read_models = (
+            self._store.experiment_control_projection_snapshots(
+                project_id,
+                experiment_ids,
+                graph_target=GraphTargetRef(),
             )
+            if settle_ids
+            else initial_read_models
+        )
         controls: dict[str, object] = {}
         for experiment_id in experiment_ids:
-            runtime = runtimes[experiment_id]
-            episode = (
-                self._store.episode(runtime.episode_id) if runtime.episode_id is not None else None
-            )
+            read_model = read_models[experiment_id]
+            runtime = read_model.runtime
+            episode_snapshot = read_model.episode
             serialized_episode = (
-                self._serialize_episode(project_id, episode)
-                if episode is not None and episode.mode == "experiment_loop"
+                self._serialize_episode(
+                    project_id,
+                    episode_snapshot.episode,
+                    episode_snapshot,
+                )
+                if episode_snapshot is not None
                 else None
             )
             control = self._project_experiment_control(
                 state,
                 experiment_id,
                 runtime,
+                serialized_episode,
             )
-            control["episode"] = serialized_episode
             controls[experiment_id] = control
         snapshot["experiment_control"] = controls
 
@@ -1865,6 +1897,7 @@ def _valid_display_snapshot(
         isinstance(snapshot.get(key), dict)
         for key in (
             "canonical_state",
+            "attention",
             "counts",
             "coverage",
             "graph",
@@ -1878,6 +1911,28 @@ def _valid_display_snapshot(
         )
     ):
         return False
+    graph_payload = snapshot["graph"]
+    assert isinstance(graph_payload, dict)
+    try:
+        graph_state = GraphState.model_validate(graph_payload)
+        attention = GraphAttentionProjection.model_validate(snapshot["attention"])
+        expected_attention = project_graph_attention(graph_state)
+    except (TypeError, ValueError):
+        return False
+    if attention != expected_attention:
+        return False
+    counts = snapshot["counts"]
+    assert isinstance(counts, dict)
+    expected_counts = {
+        "pending_proposals": len(attention.pending_proposal_ids),
+        "decisions_awaiting_choice": len(attention.decisions_awaiting_choice_ids),
+        "open_blockers": len(attention.open_blocker_ids),
+    }
+    if any(
+        type(counts.get(key)) is not int or counts[key] != value
+        for key, value in expected_counts.items()
+    ):
+        return False
     if not all(
         isinstance(snapshot.get(key), list)
         for key in (
@@ -1889,9 +1944,7 @@ def _valid_display_snapshot(
         )
     ):
         return False
-    graph = snapshot["graph"]
-    assert isinstance(graph, dict)
-    graph_revision = graph.get("revision")
+    graph_revision = graph_payload.get("revision")
     return type(graph_revision) is int and graph_revision == revision
 
 

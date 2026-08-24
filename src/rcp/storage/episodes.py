@@ -922,10 +922,24 @@ class EpisodeStoreMixin:
                 UPDATE graph_runs
                 SET status = 'queued', status_message = 'Wrapping up visualization and report',
                     error = NULL, updated_at = ?, started_at = NULL, finished_at = NULL,
-                    last_activity_at = NULL, phase = 'queued'
+                    last_activity_at = NULL, phase = 'queued', write_scope_fingerprint = NULL
                 WHERE operation_id = ? AND status = ?
                 """,
                 (now, operation_id, prior_status),
+            )
+            self._insert_agent_task_receipt(
+                connection,
+                operation_id,
+                "operation_dispatch_reset",
+                self._bounded_receipt_payload(
+                    {
+                        "status": "queued",
+                        "reason": "episode_report_restart",
+                        "previous_status": prior_status,
+                    }
+                ),
+                tier="summary",
+                created_at=now,
             )
             connection.execute(
                 """

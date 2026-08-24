@@ -247,6 +247,13 @@ immutable mode receipt. It never rebuilds or resends the graph or transcript.
 The hidden allocation permits at most three provider turns total, clears the
 exact output before each attempt, and spends no operational unit.
 
+If shutdown interrupts or pauses an in-flight hidden allocation, startup
+requeues that same operation rather than creating another allocation. The
+transaction clears its prior write-scope fingerprint and records a reserved
+dispatch-reset fence newer than the old worker's attempt receipts. Only that
+durable fence makes the requeued operation launchable; public receipt writers
+cannot forge it, and the previous attempt remains inspectable history.
+
 A valid `episode-report.html` is captured as bounded immutable HTML and served
 in the opaque artifact sandbox. The report has no Patch, watcher, command,
 Proposal, or graph channel and never determines the episode verdict. Final
@@ -257,12 +264,18 @@ withhold a control.
 
 ## Runs projection
 
-Runs derives one episode health and one **Recommended next step** from structured
+The backend Experiment-control projection derives one health, one Runs section,
+one **Recommended next step**, and the exact available controls from structured
 episode, task, Stop, budget, watcher, and report state. Raw task status, semantic
-Experiment status, and report state do not compete as peer episode states: the
-ending fence alone decides that an episode is over and which controls it retires.
-Controls appear only when currently valid, and no recommendation and no
-diagnostic names an unavailable action.
+Experiment status, and report state remain supporting data and do not compete as
+peer episode states: the ending fence alone decides that an episode is over and
+which controls it retires. The browser renders the published answers and never
+reconstructs them from a fresher task list. Controls appear only when currently
+valid, and no recommendation and no diagnostic names an unavailable action.
+The runtime, parent episode, visible task rows, usage meter, and report used for
+one Experiment-control answer come from one SQLite read snapshot. Resume, Retry,
+and provider switch target only the exact current operation named in that
+answer; a missing task row yields no client control.
 
 The experiment detail retains exact target, episode history, pinned budgets,
 current next-episode limit, current guidance validity, watcher provenance and

@@ -99,6 +99,7 @@ test("Overview uses the latest revision prose and preserves every other question
     React.createElement(ProjectOverview, {
       project,
       graph,
+      pendingProposals: [],
       decisionsAwaitingChoice: [graph.nodes["dec/ready"]],
       latestRevisionSummary: latestSummary,
       onNavigate() {},
@@ -127,6 +128,7 @@ test("Overview keeps its previous latest-node fallback when no summary is suppli
     React.createElement(ProjectOverview, {
       project,
       graph,
+      pendingProposals: [],
       decisionsAwaitingChoice: [],
       onNavigate() {},
     }),
@@ -452,6 +454,7 @@ test("an identity revision does not make an unseeded project look refreshed", ()
         last_refresh_at: null,
       },
       graph: identityOnlyGraph,
+      pendingProposals: [],
       decisionsAwaitingChoice: [],
       latestRevisionSummary: null,
       onNavigate() {},

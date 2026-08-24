@@ -114,6 +114,143 @@ def test_sync_preview_returns_the_complete_noncanonical_candidate_without_writin
     assert (manifest.research_dir / "graph.json").read_bytes() == graph_bytes
 
 
+def test_sync_preview_and_commit_publish_the_same_graph_attention_membership(
+    manifest, tmp_path: Path
+) -> None:
+    app, client, project_id = _seeded_api(manifest, tmp_path)
+    service = app.state.service
+    append_fixture_patch(
+        service,
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Added graph-attention fixtures.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "dec/attention",
+                            "type": "decision",
+                            "title": "Choose a policy",
+                            "question": "Which policy should be used?",
+                            "options": ["first", "second"],
+                            "status": "ready",
+                        },
+                        {
+                            "id": "blk/attention",
+                            "type": "blocker",
+                            "title": "Needs judgment",
+                            "description": "A human must judge this blocker.",
+                            "status": "open",
+                            "standing": "asserted",
+                        },
+                    ],
+                },
+                {
+                    "op": "create_proposals",
+                    "proposals": [
+                        {
+                            "id": "prop/attention",
+                            "title": "Review the hypothesis",
+                            "card": {"decision_needed": "Choose whether to apply it."},
+                            "ops": [
+                                {
+                                    "op": "update_nodes",
+                                    "intent": "content_change",
+                                    "nodes": [
+                                        {
+                                            "id": "hyp/replanning-restores-plasticity",
+                                            "changes": {
+                                                "statement": "The hypothesis needs review."
+                                            },
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ],
+        ),
+    )
+    before = service.history.state()
+    question = before.nodes["rq/learning-after-shift"]
+    body = {
+        "base_revision": before.revision,
+        "nodes": [
+            {
+                "node_id": question.id,
+                "base_updated_rev": question.updated_rev,
+                "changes": {"title": "Learning after attention review"},
+            }
+        ],
+    }
+
+    preview = client.post(f"/api/projects/{project_id}/sync/preview", json=body)
+    committed = client.post(f"/api/projects/{project_id}/sync", json=body)
+
+    assert preview.status_code == 200, preview.text
+    assert committed.status_code == 200, committed.text
+    expected = {
+        "pending_proposal_ids": ["prop/attention"],
+        "decisions_awaiting_choice_ids": ["dec/attention"],
+        "open_blocker_ids": ["blk/attention"],
+    }
+    assert preview.json()["projection"]["attention"] == expected
+    assert committed.json()["attention"] == expected
+
+
+def test_experiment_control_publishes_whether_the_human_closed_the_node(
+    manifest, tmp_path: Path
+) -> None:
+    app, client, project_id = _seeded_api(manifest, tmp_path)
+    service = app.state.service
+    append_fixture_patch(
+        service,
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Added an open and a closed Experiment.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "exp/open",
+                            "type": "experiment",
+                            "title": "Open experiment",
+                            "objective": "Stay open.",
+                            "status": "running",
+                        },
+                        {
+                            "id": "exp/closed",
+                            "type": "experiment",
+                            "title": "Closed experiment",
+                            "objective": "Be finished with.",
+                            "status": "abandoned",
+                        },
+                    ],
+                }
+            ],
+        ),
+    )
+
+    snapshot = client.get(f"/api/projects/{project_id}")
+
+    assert snapshot.status_code == 200, snapshot.text
+    controls = snapshot.json()["experiment_control"]
+    # Overview reads this instead of restating the closed-status vocabulary.
+    assert {node_id: control["node_closed"] for node_id, control in controls.items()} == {
+        "exp/open": False,
+        "exp/closed": True,
+    }
+
+
 def test_sync_response_is_one_coherent_graph_control_and_head_projection(
     manifest, tmp_path: Path
 ) -> None:

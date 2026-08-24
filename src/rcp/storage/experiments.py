@@ -32,9 +32,12 @@ from rcp.storage.models import (  # noqa: F401
     AgentUsageSnapshot,
     AutoResearchChildExperimentRecord,
     ChatSessionContextRecord,
+    EpisodeBudgetMeter,
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
     EpisodeRecord,
+    ExperimentControlProjectionSnapshot,
+    ExperimentEpisodeProjectionSnapshot,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
     ExperimentWatcherResourceRecord,
@@ -2407,11 +2410,81 @@ class ExperimentStoreMixin:
         requested = tuple(dict.fromkeys(control_node_ids))
         if not requested:
             return {}
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            return self._experiment_loop_runtimes_in_connection(
+                connection,
+                project_id,
+                requested,
+                graph_target=graph_target,
+            )
+
+    def experiment_control_projection_snapshots(
+        self,
+        project_id: str,
+        control_node_ids: Iterable[str] | None = None,
+        *,
+        graph_target: GraphTargetRef | None = None,
+    ) -> dict[str, ExperimentControlProjectionSnapshot]:
+        """Read complete Experiment control inputs from one SQLite snapshot."""
+
+        requested = None if control_node_ids is None else tuple(dict.fromkeys(control_node_ids))
+        if requested == ():
+            return {}
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            if requested is None:
+                runtimes = self._project_experiment_loop_runtimes(
+                    project_id,
+                    None,
+                    _connection=connection,
+                )
+            else:
+                runtimes = self._experiment_loop_runtimes_in_connection(
+                    connection,
+                    project_id,
+                    requested,
+                    graph_target=graph_target,
+                )
+            snapshots: dict[str, ExperimentControlProjectionSnapshot] = {}
+            for control_node_id, runtime in runtimes.items():
+                episode_snapshot = (
+                    self._experiment_episode_projection_snapshot_in_connection(
+                        connection,
+                        project_id,
+                        control_node_id,
+                        runtime.episode_id,
+                    )
+                    if runtime.episode_id is not None
+                    else None
+                )
+                snapshots[control_node_id] = ExperimentControlProjectionSnapshot(
+                    runtime=runtime,
+                    episode=episode_snapshot,
+                )
+            return snapshots
+
+    def _experiment_loop_runtimes_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        project_id: str,
+        requested: tuple[str, ...],
+        *,
+        graph_target: GraphTargetRef | None,
+    ) -> dict[str, ExperimentLoopRuntime]:
         requested_set = set(requested)
         if graph_target is None:
-            projected = self._project_experiment_loop_runtimes(project_id, requested_set)
+            projected = self._project_experiment_loop_runtimes(
+                project_id,
+                requested_set,
+                _connection=connection,
+            )
         else:
-            newest_targets = self._newest_experiment_targets(project_id, requested_set)
+            newest_targets = self._newest_experiment_targets(
+                project_id,
+                requested_set,
+                _connection=connection,
+            )
             visible = {
                 control_node_id
                 for control_node_id, target in newest_targets.items()
@@ -2422,6 +2495,7 @@ class ExperimentStoreMixin:
                     project_id,
                     visible,
                     graph_target=graph_target,
+                    _connection=connection,
                 )
                 if visible
                 else {}
@@ -2431,21 +2505,97 @@ class ExperimentStoreMixin:
             for control_node_id in requested
         }
 
+    def _experiment_episode_projection_snapshot_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        project_id: str,
+        control_node_id: str,
+        episode_id: str,
+    ) -> ExperimentEpisodeProjectionSnapshot:
+        episode_row = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+        if episode_row is None:
+            raise ValueError("Experiment runtime identifies a missing durable episode.")
+        episode = self._episode_record(episode_row)
+        if (
+            episode.project_id != project_id
+            or episode.mode != "experiment_loop"
+            or episode.control_node_id != control_node_id
+        ):
+            raise ValueError("Experiment runtime does not identify its exact durable episode.")
+        task_rows = connection.execute(
+            """
+            SELECT graph_runs.*,
+                   EXISTS (
+                       SELECT 1 FROM graph_run_receipts AS receipt
+                       WHERE receipt.operation_id = graph_runs.operation_id
+                         AND receipt.category IN (
+                             'experiment_recovery_abandoned',
+                             'auto_research_recovery_abandoned'
+                         )
+                   ) AS recovery_abandoned
+            FROM graph_runs
+            WHERE episode_id = ? AND visible = 1 AND kind != 'episode_report'
+            ORDER BY created_at, operation_id
+            """,
+            (episode_id,),
+        ).fetchall()
+        report_row = connection.execute(
+            "SELECT * FROM episode_reports WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
+        usage = connection.execute(
+            """
+            SELECT
+                COALESCE(SUM(agent_usage.processed_input_tokens), 0) AS input_tokens,
+                COALESCE(SUM(agent_usage.generated_tokens), 0) AS generated_tokens
+            FROM agent_usage
+            JOIN graph_runs ON graph_runs.operation_id = agent_usage.operation_id
+            WHERE graph_runs.episode_id = ?
+              AND graph_runs.kind != 'episode_report'
+              AND agent_usage.counted = 1
+            """,
+            (episode_id,),
+        ).fetchone()
+        assert usage is not None
+        return ExperimentEpisodeProjectionSnapshot(
+            episode=episode,
+            tasks=[self._agent_task_record(row) for row in task_rows],
+            budget=EpisodeBudgetMeter(
+                invocation_ceiling=episode.invocation_ceiling,
+                invocations_used=episode.invocations_used,
+                invocations_remaining=episode.invocations_remaining,
+                observed_input_tokens=int(usage["input_tokens"]),
+                observed_generated_tokens=int(usage["generated_tokens"]),
+            ),
+            report=(self._episode_report_record(report_row) if report_row is not None else None),
+        )
+
     def _newest_experiment_targets(
         self,
         project_id: str,
         requested: set[str] | None,
+        *,
+        _connection: sqlite3.Connection | None = None,
     ) -> dict[str, GraphTargetRef]:
-        with self.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT control_node_id, graph_target_json
-                FROM episodes
-                WHERE project_id = ? AND mode = 'experiment_loop'
-                ORDER BY created_at DESC, episode_id DESC
-                """,
-                (project_id,),
-            ).fetchall()
+        if _connection is None:
+            with self.connection() as connection:
+                return self._newest_experiment_targets(
+                    project_id,
+                    requested,
+                    _connection=connection,
+                )
+        rows = _connection.execute(
+            """
+            SELECT control_node_id, graph_target_json
+            FROM episodes
+            WHERE project_id = ? AND mode = 'experiment_loop'
+            ORDER BY created_at DESC, episode_id DESC
+            """,
+            (project_id,),
+        ).fetchall()
         newest: dict[str, GraphTargetRef] = {}
         for row in rows:
             control_node_id = row["control_node_id"]
@@ -2473,12 +2623,21 @@ class ExperimentStoreMixin:
         requested: set[str] | None,
         *,
         graph_target: GraphTargetRef | None = None,
+        _connection: sqlite3.Connection | None = None,
     ) -> dict[str, ExperimentLoopRuntime]:
         """Load the generic parents plus mode ledgers and group them in memory."""
 
-        with self.connection() as connection:
-            task_rows = connection.execute(
-                """
+        if _connection is None:
+            with self.connection() as connection:
+                connection.execute("BEGIN")
+                return self._project_experiment_loop_runtimes(
+                    project_id,
+                    requested,
+                    graph_target=graph_target,
+                    _connection=connection,
+                )
+        task_rows = _connection.execute(
+            """
                 SELECT operation_id, parent_operation_id, status, attempt, request_json,
                        created_at, phase, status_message, last_activity_at,
                        rowid AS storage_rowid
@@ -2486,10 +2645,10 @@ class ExperimentStoreMixin:
                 WHERE project_id = ?
                   AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
                 """,
-                (project_id,),
-            ).fetchall()
-            receipt_rows = connection.execute(
-                """
+            (project_id,),
+        ).fetchall()
+        receipt_rows = _connection.execute(
+            """
                 SELECT receipt.operation_id, receipt.category
                 FROM graph_run_receipts AS receipt
                 JOIN graph_runs AS task ON task.operation_id = receipt.operation_id
@@ -2499,20 +2658,20 @@ class ExperimentStoreMixin:
                       'experiment_loop_exit', 'experiment_recovery_abandoned'
                   )
                 """,
-                (project_id,),
-            ).fetchall()
-            watcher_rows = connection.execute(
-                """
+            (project_id,),
+        ).fetchall()
+        watcher_rows = _connection.execute(
+            """
                 SELECT * FROM watchers
                 WHERE project_id = ?
                   AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
                   AND notified = 0
                   AND status IN ('active', 'degraded', 'completed')
                 """,
-                (project_id,),
-            ).fetchall()
-            episode_rows = connection.execute(
-                """
+            (project_id,),
+        ).fetchall()
+        episode_rows = _connection.execute(
+            """
                 SELECT state.*, episode.project_id, episode.control_node_id,
                        episode.graph_target_json,
                        episode.stop_requested_at, episode.stop_settled_at
@@ -2520,16 +2679,16 @@ class ExperimentStoreMixin:
                 JOIN episodes AS episode ON episode.episode_id = state.episode_id
                 WHERE episode.project_id = ? AND episode.mode = 'experiment_loop'
                 """,
-                (project_id,),
-            ).fetchall()
-            parent_rows = connection.execute(
-                """
+            (project_id,),
+        ).fetchall()
+        parent_rows = _connection.execute(
+            """
                 SELECT * FROM episodes
                 WHERE project_id = ? AND mode = 'experiment_loop'
                 ORDER BY created_at DESC, episode_id DESC
                 """,
-                (project_id,),
-            ).fetchall()
+            (project_id,),
+        ).fetchall()
 
         tasks_by_control: dict[
             str,

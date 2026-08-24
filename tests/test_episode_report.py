@@ -10,11 +10,21 @@ from pydantic import ValidationError
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.write_scope import registered_repository_roots
+from rcp.api.episodes import serialize_episode
+from rcp.api.experiment_controls import _experiment_control_response
 from rcp.background import AgentTaskExecution
+from rcp.core.models import Experiment, GraphState
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest, stream_episode_report_run
 from rcp.skill_registry import official_registry
-from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord, EpisodeWrapupRecord, ProjectRecord
+from rcp.storage import (
+    AgentTaskRecord,
+    AppStore,
+    EpisodeRecord,
+    EpisodeWrapupRecord,
+    ExperimentLoopRuntime,
+    ProjectRecord,
+)
 from rcp.storage.episodes import compact_episode_receipt
 
 from .helpers import fabricated_authorizer
@@ -360,6 +370,73 @@ async def test_report_runner_stages_only_minimal_resume_inputs(manifest, tmp_pat
     assert report is not None
     assert report.html.startswith("<html>")
     assert [attempt.status for attempt in store.episode_report_attempts("episode")] == ["succeeded"]
+
+
+@pytest.mark.asyncio
+async def test_experiment_control_response_owns_wrapup_and_ready_report_state(
+    manifest,
+    tmp_path,
+) -> None:
+    service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+    state = GraphState(
+        nodes={
+            "experiment-node": Experiment(
+                id="experiment-node",
+                type="experiment",
+                title="Report projection",
+                objective="Render one bounded report.",
+                invocation_ceiling=1,
+                status="running",
+            )
+        }
+    )
+
+    def projected() -> dict[str, object]:
+        episode = store.episode("episode")
+        assert episode is not None
+        response = _experiment_control_response(
+            state,
+            "experiment-node",
+            ExperimentLoopRuntime(
+                episode_id="episode",
+                invocations_used=1,
+                invocation_ceiling=1,
+            ),
+            serialize_episode(store, "project", episode),
+        )
+        return response.model_dump(mode="json")
+
+    wrapping = projected()
+    assert {
+        field: wrapping[field]
+        for field in ("health", "recommendation", "run_section", "can_open_report")
+    } == {
+        "health": "wrapping_up",
+        "recommendation": "wait",
+        "run_section": "running",
+        "can_open_report": False,
+    }
+
+    events = await _events(
+        stream_episode_report_run(
+            service,
+            _ReportLauncher(["valid"]),
+            request,
+            execution,
+        )
+    )
+
+    assert [event.event for event in events] == ["message", "done"]
+    ready = projected()
+    assert {
+        field: ready[field]
+        for field in ("health", "recommendation", "run_section", "can_open_report")
+    } == {
+        "health": "completed",
+        "recommendation": "open_report",
+        "run_section": "completed",
+        "can_open_report": True,
+    }
 
 
 @pytest.mark.asyncio

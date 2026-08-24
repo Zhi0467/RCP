@@ -4,6 +4,7 @@ import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
+import { withExperimentControlAnswers, withTurnAnswers } from "./taskAnswers.mjs";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -369,9 +370,10 @@ test("run conversation renders stable sandboxed cards and exactly one composer",
     React.createElement(ExperimentRunDetail, {
       run: {
         node: experiment,
-        control: {
+        control: withExperimentControlAnswers({
           ready: true,
           reasons: [],
+          graph_reasons: [],
           invocations_used: 1,
           invocation_ceiling: 2,
           invocations_remaining: 1,
@@ -380,8 +382,37 @@ test("run conversation renders stable sandboxed cards and exactly one composer",
           active: false,
           governing_decisions: [],
           decision_drift: [],
-          operational: null,
-        },
+          operational: withTurnAnswers({
+            task_active: false,
+            detached_work_active: false,
+            watcher_degraded: false,
+            watcher_completion_pending: false,
+            episode_exited: true,
+            episode_live: false,
+            stop_requested: false,
+            stop_settled: false,
+            chat_id: null,
+            current_operation_id: null,
+            current_status: null,
+            current_phase: null,
+            current_status_message: null,
+            current_last_activity_at: null,
+            current_invocation: null,
+            session: {
+              provider: null,
+              model: null,
+              reasoning: null,
+              run_on: null,
+              execution_host: null,
+              run_truth_scope: null,
+              native_session_bound: false,
+              diagnostic: null,
+            },
+          }),
+          health: "completed",
+          recommendation: "none",
+          run_section: "completed",
+        }),
         taskGroup: null,
         currentTask: null,
         watchers: [],

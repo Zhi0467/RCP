@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { withTaskAnswers } from "./taskAnswers.mjs";
-import { withTurnAnswers } from "./taskAnswers.mjs";
+import { withExperimentControlAnswers, withTaskAnswers, withTurnAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -59,6 +58,7 @@ function operational(fields = {}) {
   return withTurnAnswers({
     task_active: false,
     detached_work_active: false,
+    watcher_degraded: false,
     watcher_completion_pending: false,
     episode_exited: false,
     episode_live: false,
@@ -86,7 +86,7 @@ function operational(fields = {}) {
 }
 
 function control(fields = {}, operationalFields = {}) {
-  return {
+  return withExperimentControlAnswers({
     ready: true,
     reasons: [],
     graph_reasons: [],
@@ -112,7 +112,7 @@ function control(fields = {}, operationalFields = {}) {
     ],
     operational: operational(operationalFields),
     ...fields,
-  };
+  });
 }
 
 function watcher(fields = {}) {
@@ -313,6 +313,11 @@ test("Experiment wrap-up uses the shared parent state without report recovery co
         episode: episode(),
         ready: false,
         reasons: ["A previous episode is still open on this Experiment."],
+        health: "wrapping_up",
+        recommendation: "wait",
+        run_section: "running",
+        live: false,
+        can_start: false,
       },
       { episode_live: true },
     ),
@@ -345,7 +350,19 @@ test("a ready Experiment report opens from the singular episode URL", () => {
     },
     can_reauthorize: true,
   });
-  const html = render(buildExperimentRun(node(), control({ episode: readyEpisode }), [], []));
+  const html = render(
+    buildExperimentRun(
+      node(),
+      control({
+        episode: readyEpisode,
+        health: "needs_action",
+        recommendation: "open_report",
+        can_open_report: true,
+      }),
+      [],
+      [],
+    ),
+  );
 
   assert.match(html, /href="\/reports\/episode-1"/);
   assert.match(html, /Open report/);
@@ -363,7 +380,17 @@ test("an Experiment the human closed stays completed whatever its last episode d
     wrapup_state: "legacy_unavailable",
   });
   const html = render(
-    buildExperimentRun({ ...node(), status: "completed" }, control({ episode: paused }), [], []),
+    buildExperimentRun(
+      { ...node(), status: "completed" },
+      control({
+        episode: paused,
+        health: "completed",
+        recommendation: "none",
+        run_section: "completed",
+      }),
+      [],
+      [],
+    ),
   );
 
   assertDetailProjection(html, "Completed", "Episode report unavailable");
@@ -376,7 +403,12 @@ test("an open Experiment whose episode paused for a human still needs action", (
     wrapup_state: "legacy_unavailable",
   });
   const html = render(
-    buildExperimentRun({ ...node(), status: "running" }, control({ episode: paused }), [], []),
+    buildExperimentRun(
+      { ...node(), status: "running" },
+      control({ episode: paused, recommendation: "none" }),
+      [],
+      [],
+    ),
   );
 
   assertDetailProjection(html, "Needs action", "Episode report unavailable");
@@ -392,7 +424,11 @@ test("a final Experiment report error is a note beside the episode's own outcome
   const html = render(
     buildExperimentRun(
       node(),
-      control({ episode: reportFailed }),
+      control({
+        episode: reportFailed,
+        health: "paused_at_limit",
+        recommendation: "start_episode",
+      }),
       [recoveryTask({ can_retry: true, can_resume: true })],
       [],
     ),
@@ -421,7 +457,12 @@ test("the reason an Experiment episode ended outranks its report error", () => {
   const html = render(
     buildExperimentRun(
       node(),
-      control({ episode: failedBeforeSession }),
+      control({
+        episode: failedBeforeSession,
+        health: "failed",
+        recommendation: "none",
+        run_section: "completed",
+      }),
       [recoveryTask({ can_retry: true, can_resume: true })],
       [],
     ),
@@ -446,7 +487,18 @@ test("a stopped Experiment shows neither a report nor a report error", () => {
     health: "stopped",
     recommendation: "none",
   });
-  const html = render(buildExperimentRun(node(), control({ episode: stopped }), [], []));
+  const html = render(
+    buildExperimentRun(
+      node(),
+      control({
+        episode: stopped,
+        health: "human_stopped",
+        recommendation: "start_episode",
+      }),
+      [],
+      [],
+    ),
+  );
 
   assert.doesNotMatch(html, /Open report|Report generation error|hidden stop/);
 });
@@ -508,7 +560,13 @@ test("provider-limited Experiment recovery stays on the loop detail", () => {
   const html = render({
     node: node(),
     control: control(
-      {},
+      {
+        can_start: false,
+        can_stop: true,
+        task_control: "retry",
+        can_switch_provider: true,
+        recommendation: "retry",
+      },
       {
         current_operation_id: task.operation_id,
         session: { ...operational().session, diagnostic },
@@ -531,7 +589,31 @@ test("provider-limited Experiment recovery stays on the loop detail", () => {
   assert.match(html, /You&#x27;ve hit your session limit/);
 });
 
-test("running retry detail names the retry while control still names the failed attempt", () => {
+test("recovery controls stay hidden when their exact backend task is absent", () => {
+  const html = render({
+    node: node(),
+    control: control(
+      {
+        can_start: false,
+        can_stop: true,
+        task_control: "retry",
+        can_switch_provider: true,
+        recommendation: "retry",
+      },
+      { current_operation_id: "missing-task", current_status: "failed" },
+    ),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "needs_action",
+  });
+
+  assert.doesNotMatch(html, /Retry Codex|Switch provider…/);
+  assert.match(html, /Stop loop/);
+});
+
+test("detail follows the exact backend operation even when a newer retry row exists", () => {
   const failed = recoveryTask({ operation_id: "failed-attempt" });
   const retry = recoveryTask({
     operation_id: "running-retry",
@@ -546,7 +628,16 @@ test("running retry detail names the retry while control still names the failed 
   const run = buildExperimentRun(
     node(),
     control(
-      { ready: false, reasons: ["An experiment loop is already active."] },
+      {
+        ready: false,
+        reasons: ["An experiment loop is already active."],
+        health: "agent_active",
+        recommendation: "wait",
+        run_section: "running",
+        live: true,
+        can_start: false,
+        can_stop: true,
+      },
       {
         task_active: true,
         current_operation_id: failed.operation_id,
@@ -561,9 +652,36 @@ test("running retry detail names the retry while control still names the failed 
   assertDetailProjection(html, "Agent active", "Wait for the agent");
   assert.match(
     html,
-    /Current task<\/dt><dd class="mono experiment-run-breakable">running-retry<\/dd>/,
+    /Current task<\/dt><dd class="mono experiment-run-breakable">failed-attempt<\/dd>/,
   );
   assert.doesNotMatch(html, /Retry Codex|Switch provider…/);
+});
+
+test("staged graph changes disable Start until Sync", () => {
+  const html = render(
+    {
+      node: node({ status: "planned" }),
+      control: control(
+        {
+          episode_id: null,
+          invocations_used: 0,
+          invocations_remaining: 3,
+          recommendation: "start_episode",
+          can_start: true,
+        },
+        { current_invocation: null },
+      ),
+      taskGroup: null,
+      currentTask: null,
+      watchers: [],
+      currentWatchers: [],
+      health: "needs_action",
+    },
+    { startDisabled: true },
+  );
+
+  assertDetailProjection(html, "Needs action", "Sync staged changes before starting");
+  assert.match(html, /experiment-run-button" disabled=""/);
 });
 
 test("a paused Experiment offers native-session resume and disables recovery while busy", () => {
@@ -571,7 +689,16 @@ test("a paused Experiment offers native-session resume and disables recovery whi
   const html = render(
     {
       node: node(),
-      control: control({}, { current_operation_id: task.operation_id }),
+      control: control(
+        {
+          can_start: false,
+          can_stop: true,
+          task_control: "resume",
+          can_switch_provider: true,
+          recommendation: "resume",
+        },
+        { current_operation_id: task.operation_id },
+      ),
       taskGroup: { rootId: task.operation_id, root: task, latest: task, attempts: [task] },
       currentTask: task,
       watchers: [],
@@ -592,6 +719,11 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
     {
       ready: false,
       reasons: ["A graceful stop is finishing the current loop turn."],
+      can_start: false,
+      stop_pending: true,
+      task_control: "resume",
+      can_switch_provider: true,
+      recommendation: "resume",
     },
     {
       task_active: true,
@@ -679,6 +811,11 @@ test("a running episode with nothing left to wake it points at Stop loop", () =>
           invocation_ceiling: 10,
           invocations_remaining: 9,
           paused: false,
+          health: "needs_action",
+          recommendation: "stop_and_restart",
+          live: true,
+          can_start: false,
+          can_stop: true,
         },
         { current_status: "succeeded", current_invocation: 1, episode_live: true },
       ),
@@ -698,7 +835,15 @@ test("completed watcher at the ceiling leaves Start new episode enabled", () => 
   const completed = watcher();
   const html = render({
     node: node(),
-    control: control({}, { watcher_completion_pending: true }),
+    control: control(
+      {
+        health: "paused_at_limit",
+        recommendation: "start_episode",
+        live: true,
+        can_stop: true,
+      },
+      { watcher_completion_pending: true },
+    ),
     taskGroup: null,
     currentTask: null,
     watchers: [completed],
@@ -719,7 +864,14 @@ test("a gated human-stopped loop recommends its available requirement action", (
   const html = render({
     node: node(),
     control: control(
-      { ready: false, reasons: [reason], graph_reasons: [reason] },
+      {
+        ready: false,
+        reasons: [reason],
+        graph_reasons: [reason],
+        health: "human_stopped",
+        recommendation: "resolve_requirements",
+        can_start: false,
+      },
       { stop_requested: true, stop_settled: true },
     ),
     taskGroup: null,
@@ -766,7 +918,21 @@ test("degraded external watcher exposes backoff and Check now without recommendi
   });
   const html = render({
     node: node({ status: "debugging" }),
-    control: control({ invocations_used: 1, invocations_remaining: 2, paused: false }),
+    control: control(
+      {
+        ready: false,
+        invocations_used: 1,
+        invocations_remaining: 2,
+        paused: false,
+        health: "degraded",
+        recommendation: "keep_loop",
+        run_section: "running",
+        live: true,
+        can_start: false,
+        can_stop: true,
+      },
+      { detached_work_active: true, watcher_degraded: true },
+    ),
     taskGroup: null,
     currentTask: null,
     watchers: [degraded],
@@ -787,7 +953,20 @@ test("watcher Check now renders busy and disables concurrent mutations", () => {
   const html = render(
     {
       node: node(),
-      control: control({ invocations_used: 1, invocations_remaining: 2 }),
+      control: control(
+        {
+          ready: false,
+          invocations_used: 1,
+          invocations_remaining: 2,
+          health: "degraded",
+          recommendation: "keep_loop",
+          run_section: "running",
+          live: true,
+          can_start: false,
+          can_stop: true,
+        },
+        { detached_work_active: true, watcher_degraded: true },
+      ),
       taskGroup: null,
       currentTask: null,
       watchers: [degraded],
@@ -807,7 +986,14 @@ test("missing episode continuity recommends stop then start without parsing diag
   const html = render({
     node: node(),
     control: control(
-      { invocations_used: 1, invocations_remaining: 2 },
+      {
+        ready: false,
+        invocations_used: 1,
+        invocations_remaining: 2,
+        recommendation: "stop_and_restart",
+        can_start: false,
+        can_stop: true,
+      },
       {
         current_operation_id: task.operation_id,
         session: {

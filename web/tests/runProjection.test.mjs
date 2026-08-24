@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { withTaskAnswers } from "./taskAnswers.mjs";
+import { withExperimentControlAnswers, withTaskAnswers } from "./taskAnswers.mjs";
 import test from "node:test";
 
 import {
   buildExperimentRun,
   buildRunProjection,
   buildRunTaskProjection,
-  experimentRunSection,
   experimentRecommendation,
   experimentWatcherDisplayItems,
   graphConditionLabel,
@@ -72,7 +71,7 @@ function experiment(id, status = "planned", fields = {}) {
 }
 
 function control(fields = {}, operationalFields = {}) {
-  return {
+  return withExperimentControlAnswers({
     ready: true,
     reasons: [],
     graph_reasons: [],
@@ -113,7 +112,7 @@ function control(fields = {}, operationalFields = {}) {
       ...operationalFields,
     },
     ...fields,
-  };
+  });
 }
 
 function watcher(id, nodeId, episodeId, status, fields = {}) {
@@ -256,7 +255,17 @@ test("Runs includes Experiment-loop tasks once and excludes generic chat and coa
     ],
     experimentControl: {
       [node.id]: control(
-        { episode_id: "episode-current", invocations_used: 1, invocations_remaining: 2 },
+        {
+          episode_id: "episode-current",
+          invocations_used: 1,
+          invocations_remaining: 2,
+          health: "agent_active",
+          recommendation: "wait",
+          run_section: "running",
+          live: true,
+          can_start: false,
+          can_stop: true,
+        },
         {
           task_active: true,
           current_operation_id: loop.operation_id,
@@ -264,6 +273,7 @@ test("Runs includes Experiment-loop tasks once and excludes generic chat and coa
         },
       ),
     },
+    actionableBlockerIds: new Set(),
   });
 
   assert.deepEqual(
@@ -276,7 +286,7 @@ test("Runs includes Experiment-loop tasks once and excludes generic chat and coa
   assert.equal(projection.actionable.length, 0);
 });
 
-test("a running Experiment retry supersedes a stale failed control attempt", () => {
+test("backend operation identity selects the exact task even when a newer row exists", () => {
   const node = experiment("experiment/retry-active");
   const episodeId = "episode-retry-active";
   const failed = {
@@ -301,6 +311,10 @@ test("a running Experiment retry supersedes a stale failed control attempt", () 
       episode_id: episodeId,
       invocations_used: 3,
       invocations_remaining: 7,
+      health: "needs_action",
+      recommendation: "review",
+      run_section: "actionable",
+      can_start: false,
     },
     {
       task_active: true,
@@ -311,11 +325,11 @@ test("a running Experiment retry supersedes a stale failed control attempt", () 
   );
 
   const run = buildExperimentRun(node, staleControl, [failed, retry], []);
-  assert.equal(run.currentTask.operation_id, retry.operation_id);
-  assert.equal(run.health, "agent_active");
+  assert.equal(run.currentTask.operation_id, failed.operation_id);
+  assert.equal(run.health, "needs_action");
   assert.deepEqual(experimentRecommendation(run), {
-    step: "wait",
-    label: "Wait for the agent",
+    step: "review",
+    label: "Review the loop state",
   });
 
   const entry = byId(
@@ -323,10 +337,11 @@ test("a running Experiment retry supersedes a stale failed control attempt", () 
       nodes: [node],
       tasks: [failed, retry],
       experimentControl: { [node.id]: staleControl },
+      actionableBlockerIds: new Set(),
     }),
   ).get(node.id);
-  assert.equal(entry[0], "running");
-  assert.equal(entry[1].experiment.currentTask.operation_id, retry.operation_id);
+  assert.equal(entry[0], "actionable");
+  assert.equal(entry[1].experiment.currentTask.operation_id, failed.operation_id);
 });
 
 test("Experiment watcher projection keeps each immutable group and ungrouped history distinct", () => {
@@ -500,7 +515,7 @@ test("Chats project node-owned loop watchers separately from conversation self-w
   );
 });
 
-test("Experiment projection follows operational precedence and stop task placement", () => {
+test("Experiment projection places the backend-published health and section", () => {
   const nodes = [
     experiment("terminal-live", "completed"),
     experiment("stopping-live"),
@@ -515,7 +530,15 @@ test("Experiment projection follows operational precedence and stop task placeme
   ];
   const controls = {
     "terminal-live": control(
-      { episode_id: "ep-terminal-live", invocations_used: 1, invocations_remaining: 2 },
+      {
+        episode_id: "ep-terminal-live",
+        invocations_used: 1,
+        invocations_remaining: 2,
+        health: "agent_active",
+        recommendation: "wait",
+        run_section: "running",
+        live: true,
+      },
       { task_active: true, current_operation_id: "terminal-live-task", current_status: "running" },
     ),
     "stopping-live": control(
@@ -525,6 +548,11 @@ test("Experiment projection follows operational precedence and stop task placeme
         episode_id: "ep-stopping-live",
         invocations_used: 1,
         invocations_remaining: 2,
+        health: "stopping",
+        recommendation: "wait",
+        run_section: "running",
+        live: true,
+        stop_pending: true,
       },
       {
         task_active: true,
@@ -540,6 +568,11 @@ test("Experiment projection follows operational precedence and stop task placeme
         episode_id: "ep-stopping-failed",
         invocations_used: 1,
         invocations_remaining: 2,
+        health: "stopping",
+        recommendation: "wait",
+        run_section: "actionable",
+        live: true,
+        stop_pending: true,
       },
       {
         task_active: true,
@@ -556,6 +589,10 @@ test("Experiment projection follows operational precedence and stop task placeme
         invocations_used: 1,
         invocations_remaining: 2,
         active: true,
+        health: "waiting_on_watchers",
+        recommendation: "wait",
+        run_section: "running",
+        live: true,
       },
       { detached_work_active: true },
     ),
@@ -567,6 +604,10 @@ test("Experiment projection follows operational precedence and stop task placeme
         invocations_used: 1,
         invocations_remaining: 2,
         active: true,
+        health: "degraded",
+        recommendation: "keep_loop",
+        run_section: "running",
+        live: true,
       },
       { detached_work_active: true },
     ),
@@ -576,6 +617,9 @@ test("Experiment projection follows operational precedence and stop task placeme
         invocations_used: 3,
         invocations_remaining: 0,
         paused: true,
+        health: "paused_at_limit",
+        recommendation: "start_episode",
+        run_section: "actionable",
       },
       { watcher_completion_pending: true },
     ),
@@ -587,6 +631,10 @@ test("Experiment projection follows operational precedence and stop task placeme
         episode_id: "ep-gated",
         invocations_used: 1,
         invocations_remaining: 2,
+        health: "needs_action",
+        recommendation: "resolve_requirements",
+        run_section: "actionable",
+        can_start: false,
       },
       { detached_work_active: true },
     ),
@@ -595,6 +643,9 @@ test("Experiment projection follows operational precedence and stop task placeme
         episode_id: "ep-session",
         invocations_used: 1,
         invocations_remaining: 2,
+        health: "needs_action",
+        recommendation: "review",
+        run_section: "actionable",
       },
       {
         watcher_completion_pending: true,
@@ -609,10 +660,17 @@ test("Experiment projection follows operational precedence and stop task placeme
         episode_id: "ep-stopped",
         invocations_used: 1,
         invocations_remaining: 2,
+        health: "human_stopped",
+        recommendation: "start_episode",
+        run_section: "actionable",
       },
       { stop_requested: true, stop_settled: true },
     ),
-    terminal: control(),
+    terminal: control({
+      health: "completed",
+      recommendation: "none",
+      run_section: "completed",
+    }),
   };
   const tasks = [
     loopTask(
@@ -644,7 +702,15 @@ test("Experiment projection follows operational precedence and stop task placeme
     watcher("gated", "graph-gated", "ep-gated", "active"),
     watcher("session", "session-unavailable", "ep-session", "completed"),
   ];
-  const entries = byId(buildRunProjection({ nodes, tasks, watchers, experimentControl: controls }));
+  const entries = byId(
+    buildRunProjection({
+      nodes,
+      tasks,
+      watchers,
+      experimentControl: controls,
+      actionableBlockerIds: new Set(),
+    }),
+  );
 
   assert.deepEqual(
     entries.get("terminal-live").map((value, index) => (index ? value.experiment.health : value)),
@@ -684,9 +750,6 @@ test("Experiment projection follows operational precedence and stop task placeme
     entries.get("terminal").map((value, index) => (index ? value.experiment.health : value)),
     ["completed", "completed"],
   );
-  // The section takes the published answer about the turn, not its status.
-  assert.equal(experimentRunSection("stopping", true), "actionable");
-  assert.equal(experimentRunSection("stopping", false), "running");
 });
 
 test("an unsettled Experiment stop exposes exact paused recovery before graceful waiting", () => {
@@ -709,6 +772,15 @@ test("an unsettled Experiment stop exposes exact paused recovery before graceful
       episode_id: "episode-stopping-paused",
       invocations_used: 1,
       invocations_remaining: 2,
+      health: "needs_action",
+      recommendation: "resume",
+      run_section: "actionable",
+      live: true,
+      can_start: false,
+      can_stop: false,
+      stop_pending: true,
+      task_control: "resume",
+      can_switch_provider: true,
     },
     {
       task_active: true,
@@ -731,6 +803,7 @@ test("an unsettled Experiment stop exposes exact paused recovery before graceful
       nodes: [node],
       tasks: [paused],
       experimentControl: { [node.id]: experimentControl },
+      actionableBlockerIds: new Set(),
     }),
   ).get(node.id);
   assert.equal(entry[0], "actionable");
@@ -829,6 +902,11 @@ test("compatible adopted degraded watchers drive current health through control 
         episode_id: "episode-current",
         invocations_used: 1,
         invocations_remaining: 2,
+        health: "degraded",
+        recommendation: "keep_loop",
+        run_section: "running",
+        live: true,
+        can_start: false,
       },
       {
         current_operation_id: current.operation_id,
@@ -849,69 +927,42 @@ test("compatible adopted degraded watchers drive current health through control 
   });
 });
 
-test("Experiment recommendations follow structured task and control states", () => {
+test("Experiment recommendation copy follows the backend recommendation enum", () => {
   const base = {
     node: experiment("experiment/recommendation"),
-    control: control({ episode_id: "episode-recommendation" }),
+    control: control({
+      episode_id: "episode-recommendation",
+      health: "agent_active",
+      recommendation: "wait",
+      run_section: "running",
+    }),
     taskGroup: null,
     currentTask: null,
     watchers: [],
     watcherItems: [],
     currentWatchers: [],
-    health: "needs_action",
+    health: "agent_active",
   };
-  const running = loopTask(
-    "running-recommendation",
-    base.node.id,
-    "episode-recommendation",
-    "running",
-    "2026-08-06T01:00:00Z",
-  );
-  const resume = {
-    ...loopTask(
-      "resume-recommendation",
-      base.node.id,
-      "episode-recommendation",
-      "paused",
-      "2026-08-06T01:00:00Z",
-    ),
-    can_resume: true,
-    can_retry: true,
-  };
-  const noContinuity = {
-    ...loopTask(
-      "no-continuity-recommendation",
-      base.node.id,
-      "episode-recommendation",
-      "failed",
-      "2026-08-06T01:00:00Z",
-    ),
-    can_resume: false,
-    can_retry: false,
-  };
-
-  assert.equal(experimentRecommendation({ ...base, currentTask: running }).step, "wait");
-  assert.equal(experimentRecommendation({ ...base, currentTask: resume }).step, "resume");
+  assert.equal(experimentRecommendation(base).step, "wait");
   assert.equal(
     experimentRecommendation({
       ...base,
-      control: control(
-        { episode_id: "episode-recommendation" },
-        { session: { ...control().operational.session, diagnostic: "unavailable" } },
-      ),
-      currentTask: noContinuity,
+      control: control({
+        episode_id: "episode-recommendation",
+        recommendation: "stop_and_restart",
+      }),
     }).step,
     "stop_and_restart",
   );
   assert.equal(
-    experimentRecommendation({ ...base, health: "human_stopped" }).step,
+    experimentRecommendation({
+      ...base,
+      control: control({ recommendation: "start_episode" }),
+      health: "human_stopped",
+    }).step,
     "start_episode",
   );
   assert.equal(
-    experimentRecommendation({ ...base, health: "paused_at_limit" }).step,
-    "start_episode",
-  );
-  assert.deepEqual(
     experimentRecommendation({
       ...base,
       control: control({
@@ -919,21 +970,11 @@ test("Experiment recommendations follow structured task and control states", () 
         reasons: ["Blocker blk/required-input is open."],
         graph_reasons: ["Blocker blk/required-input is open."],
         episode_id: "episode-recommendation",
+        recommendation: "resolve_requirements",
       }),
       health: "human_stopped",
-    }),
-    {
-      step: "resolve_requirements",
-      label: "Resolve the run requirements",
-    },
-  );
-  assert.equal(
-    experimentRecommendation({
-      ...base,
-      control: control({ episode_id: null }),
-      currentTask: noContinuity,
     }).step,
-    "start_episode",
+    "resolve_requirements",
   );
 });
 
@@ -944,6 +985,8 @@ test("entries remain newest first within each section", () => {
       task("older", "running", "2026-08-06T01:00:00Z"),
       task("newer", "running", "2026-08-06T02:00:00Z"),
     ],
+    experimentControl: {},
+    actionableBlockerIds: new Set(),
   });
   assert.deepEqual(
     projection.running.map((entry) => entry.id),

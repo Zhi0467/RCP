@@ -27,6 +27,7 @@ from rcp.api.tasks import _validate_stored_task_request, _validated_task_request
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
 from rcp.config import MachineConfig
+from rcp.core.attention import decision_awaits_choice
 from rcp.core.models import AuthorizedHuman, Blocker, Decision, GraphState, Patch
 from rcp.core.validation.constants import NODE_ADAPTER
 from rcp.history import HistoryManager, ReplayHalted
@@ -61,7 +62,6 @@ from rcp.service import (
     ProposalDecisionRequest,
     ReviewRequest,
     RunRequest,
-    decision_awaits_choice,
     resolve_dispatch_authority,
 )
 from rcp.skill_registry import SkillDefaults, official_registry
@@ -1149,6 +1149,11 @@ def test_project_snapshot_counts_only_ripe_decisions_and_open_asserted_blockers(
 
     assert snapshot["counts"]["decisions_awaiting_choice"] == 2
     assert snapshot["counts"]["open_blockers"] == 1
+    assert snapshot["attention"] == {
+        "pending_proposal_ids": [],
+        "decisions_awaiting_choice_ids": ["dec/ready", "dec/revisit"],
+        "open_blocker_ids": ["blk/asserted-open"],
+    }
     assert {
         node_id: (node["status"], node["standing"])
         for node_id, node in snapshot["graph"]["nodes"].items()
@@ -6418,6 +6423,32 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
         assert control["invocation_ceiling"] == 2
         assert control["invocations_remaining"] == 1
         assert control["reasons"] == ["An experiment loop is already active."]
+        assert {
+            field: control[field]
+            for field in (
+                "health",
+                "recommendation",
+                "run_section",
+                "live",
+                "can_start",
+                "can_stop",
+                "stop_pending",
+                "task_control",
+                "can_switch_provider",
+                "can_open_report",
+            )
+        } == {
+            "health": "agent_active",
+            "recommendation": "wait",
+            "run_section": "running",
+            "live": True,
+            "can_start": False,
+            "can_stop": True,
+            "stop_pending": False,
+            "task_control": None,
+            "can_switch_provider": False,
+            "can_open_report": False,
+        }
 
         duplicate = client.post(
             f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
@@ -6583,6 +6614,32 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert completed_control["paused"] is False
     assert completed_control["ready"] is True
     assert completed_control["reasons"] == []
+    assert {
+        field: completed_control[field]
+        for field in (
+            "health",
+            "recommendation",
+            "run_section",
+            "live",
+            "can_start",
+            "can_stop",
+            "stop_pending",
+            "task_control",
+            "can_switch_provider",
+            "can_open_report",
+        )
+    } == {
+        "health": "paused_at_limit",
+        "recommendation": "start_episode",
+        "run_section": "actionable",
+        "live": False,
+        "can_start": True,
+        "can_stop": False,
+        "stop_pending": False,
+        "task_control": None,
+        "can_switch_provider": False,
+        "can_open_report": False,
+    }
 
     new_loop_chat_id = str(uuid.uuid4())
 

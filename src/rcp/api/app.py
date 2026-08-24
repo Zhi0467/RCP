@@ -45,7 +45,7 @@ from rcp.api.episodes import (
     _episode_for_http,
     serialize_episode,
 )
-from rcp.api.experiment_controls import _experiment_control_from_runtime
+from rcp.api.experiment_controls import _experiment_control_response
 from rcp.api.experiments import router as experiments_router
 from rcp.api.health import router as health_router
 from rcp.api.history import router as history_router
@@ -269,14 +269,20 @@ def create_app(
     project_display_cache = ProjectDisplayCache(
         store,
         catalog,
-        serialize_episode=lambda project_id, episode: serialize_episode(
+        serialize_episode=lambda project_id, episode, projection_snapshot: serialize_episode(
             store,
             project_id,
             episode,
             branch_summary=graph_branch_summary,
+            projection_snapshot=projection_snapshot,
         ).model_dump(mode="json"),
-        project_experiment_control=lambda state, experiment_id, runtime: (
-            _experiment_control_from_runtime(state, experiment_id, runtime).model_dump(mode="json")
+        project_experiment_control=lambda state, experiment_id, runtime, episode: (
+            _experiment_control_response(
+                state,
+                experiment_id,
+                runtime,
+                episode,
+            ).model_dump(mode="json")
         ),
         logger=logger,
     )

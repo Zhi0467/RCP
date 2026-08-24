@@ -48,7 +48,9 @@ export function serializeDismissedTaskIds(taskIds: ReadonlySet<string>): string 
 }
 
 export function isTaskNotificationSuperseded(task: AgentTask, tasks: AgentTask[]): boolean {
-  if ((task.kind !== "seed" && task.kind !== "refresh") || !task.awaiting_human || task.can_pause)
+  // A paused turn is the one awaiting-human state the human can still resume, and
+  // its notification is the way back to it, so a later success never retires it.
+  if ((task.kind !== "seed" && task.kind !== "refresh") || !task.awaiting_human || task.paused)
     return false;
   return tasks.some(
     (candidate) =>

@@ -68,6 +68,7 @@ import type {
   ExperimentLoopIndexEntry,
   GraphNode,
   GraphState,
+  Proposal,
   TrustView,
   WatcherRecord,
 } from "../types";
@@ -776,6 +777,7 @@ interface ExecutionProps extends Omit<Props, "trustView"> {
   selectedExperimentConversation?: ReactNode;
   providerLabels?: Record<string, string>;
   mutationsDisabled?: boolean;
+  experimentStartsDisabled?: boolean;
   onInspectTask: (operationId: string) => void;
   onDismissTask: (operationId: string) => void;
   onSelectExperiment: (nodeId: string | null) => void;
@@ -807,6 +809,7 @@ export function ExecutionView({
   selectedExperimentConversation,
   providerLabels = {},
   mutationsDisabled = false,
+  experimentStartsDisabled = false,
   onInspectTask,
   onDismissTask,
   onSelectExperiment,
@@ -828,13 +831,11 @@ export function ExecutionView({
     exactExperimentEntry,
   );
   const projection = buildRunProjection({
-    nodes: exactProjection.nodes.flatMap((node) => {
-      if (node.type !== "blocker") return [node];
-      return attentionBlockerIds.has(node.id) ? [{ ...node, status: "open" }] : [];
-    }),
+    nodes: exactProjection.nodes,
     tasks: exactProjection.tasks,
     watchers: exactProjection.watchers,
     experimentControl: exactProjection.experimentControl,
+    actionableBlockerIds: attentionBlockerIds,
     dismissedTaskIds,
   });
   const sections = [
@@ -876,6 +877,7 @@ export function ExecutionView({
                       experimentConversation={selectedExperimentConversation}
                       exactBranchEntry={exactProjection.exactBranchEntry}
                       providerLabels={providerLabels}
+                      experimentStartsDisabled={experimentStartsDisabled}
                       mutationsDisabled={
                         mutationsDisabled ||
                         runBusy ||
@@ -916,6 +918,7 @@ function RunEntryRow({
   experimentConversation,
   exactBranchEntry,
   providerLabels,
+  experimentStartsDisabled,
   mutationsDisabled,
   onInspectTask,
   onDismissTask,
@@ -938,6 +941,7 @@ function RunEntryRow({
   experimentConversation?: ReactNode;
   exactBranchEntry: ExperimentLoopIndexEntry | null;
   providerLabels: Record<string, string>;
+  experimentStartsDisabled: boolean;
   mutationsDisabled: boolean;
   onInspectTask: (operationId: string) => void;
   onDismissTask: (operationId: string) => void;
@@ -996,7 +1000,7 @@ function RunEntryRow({
         <span className="experiment-ledger-copy">
           <span className="eyebrow">Experiment</span>
           <strong>{experiment.node.title}</strong>
-          <span>{experimentRowSummary(experiment)}</span>
+          <span>{experimentRowSummary(experiment, experimentStartsDisabled)}</span>
         </span>
         <span className="experiment-ledger-meta">
           <span className={`status-pill ${tone}`}>{experimentHealthLabel(experiment.health)}</span>
@@ -1019,6 +1023,7 @@ function RunEntryRow({
             run={experiment}
             runBusy={runBusy}
             runDisabled={mutationsDisabled}
+            startDisabled={experimentStartsDisabled}
             stopBusy={stopBusy}
             recoveryBusy={Boolean(
               experiment.currentTask && taskActionId === experiment.currentTask.operation_id,
@@ -1055,18 +1060,29 @@ function experimentProviderLabel(
   return provider ? providerLabels[provider] || provider : undefined;
 }
 
-function experimentRowSummary(experiment: Extract<RunEntry, { kind: "experiment" }>["experiment"]) {
+function experimentRowSummary(
+  experiment: Extract<RunEntry, { kind: "experiment" }>["experiment"],
+  startDisabled: boolean,
+) {
+  if (startDisabled && experiment.control.recommendation === "start_episode") {
+    return "Sync staged changes before starting";
+  }
   return experimentRecommendation(experiment).label;
 }
 
-export function AttentionOverview({ graph, onSelectNode }: Omit<Props, "trustView">) {
-  const proposals = Object.values(graph.proposals).filter((item) => item.status === "pending");
-  const decisions = Object.values(graph.nodes).filter(
-    (node) => node.type === "decision" && (node.status === "ready" || node.status === "revisit"),
-  );
-  const blockers = Object.values(graph.nodes).filter(
-    (node) => node.type === "blocker" && node.status === "open" && node.standing === "asserted",
-  );
+interface AttentionOverviewProps {
+  proposals: Proposal[];
+  decisions: GraphNode[];
+  blockers: GraphNode[];
+  onSelectNode: (node: GraphNode) => void;
+}
+
+export function AttentionOverview({
+  proposals,
+  decisions,
+  blockers,
+  onSelectNode,
+}: AttentionOverviewProps) {
   return (
     <section className="view-panel">
       <ViewHeading

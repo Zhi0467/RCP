@@ -17,6 +17,7 @@ const {
   canonicalRevisionNeedsReload,
   inactiveProjectTabState,
   humanSyncSuccessNotice,
+  latestSnapshotRequestCanApply,
   loadCanonicalRevision,
   persistProjectHumanDraft,
   proposalChoicesClearedNotice,
@@ -57,6 +58,12 @@ test("a cached response cannot move the rendered project backwards", () => {
   assert.equal(cachedSnapshotCanReplace("alpha", 8, snapshot("alpha", 7)), false);
   assert.equal(cachedSnapshotCanReplace("alpha", 8, snapshot("alpha", 8)), true);
   assert.equal(cachedSnapshotCanReplace("alpha", 8, snapshot("beta", 2)), true);
+});
+
+test("only the latest started snapshot request may update one project", () => {
+  assert.equal(latestSnapshotRequestCanApply(12, 12), true);
+  assert.equal(latestSnapshotRequestCanApply(12, 11), false);
+  assert.equal(latestSnapshotRequestCanApply(undefined, 1), false);
 });
 
 test("returning to a cached tab restores its complete render state without an empty loading frame", () => {
@@ -267,6 +274,11 @@ test("inactive advancement rebases only snapshot and draft while retaining the t
   const snapshot = {
     id: "alpha",
     snapshot_freshness: "fresh",
+    attention: {
+      pending_proposal_ids: [],
+      decisions_awaiting_choice_ids: [],
+      open_blocker_ids: [],
+    },
     graph: { ...graph, revision: 5, nodes: { [node.id]: movedNode } },
   };
 
@@ -373,6 +385,11 @@ test("authoritative inactive snapshots prune resolved choices and clear missing 
   const snapshot = {
     id: "alpha",
     snapshot_freshness: "fresh",
+    attention: {
+      pending_proposal_ids: [pending.id],
+      decisions_awaiting_choice_ids: [],
+      open_blocker_ids: [],
+    },
     graph: {
       ...oldGraph,
       revision: 5,

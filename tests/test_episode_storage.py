@@ -629,6 +629,26 @@ def test_restart_requeues_the_same_shutdown_paused_hidden_allocation(tmp_path) -
     _, allocation = _start_wrapping(store, "episode")
     first = store.allocate_episode_report_attempt("episode")
     store.mark_episode_report_attempt_running(first.attempt_id)
+    store.mark_agent_task_running(allocation.operation_id)
+    store.bind_agent_task_write_scope(
+        allocation.operation_id,
+        project_id="project",
+        stage_host="",
+        stage_root="/tmp/episode-stage",
+        fingerprint="a" * 64,
+    )
+    store.record_agent_task_receipt(
+        allocation.operation_id,
+        "operation_dispatch_attempt",
+        {"dispatch_attempt_id": "previous-report-dispatch"},
+        tier="diagnostic",
+    )
+    store.record_agent_task_receipt(
+        allocation.operation_id,
+        "operation_dispatch_started",
+        {"dispatch_attempt_id": "previous-report-dispatch"},
+        tier="diagnostic",
+    )
     store.pause_agent_task(allocation.operation_id, detail="Paused for shutdown")
 
     requeued = store.requeue_interrupted_episode_report_allocation("episode")
@@ -636,6 +656,12 @@ def test_restart_requeues_the_same_shutdown_paused_hidden_allocation(tmp_path) -
     assert requeued.operation_id == allocation.operation_id
     assert requeued.status == "queued"
     assert requeued.visible is False
+    assert requeued.write_scope_fingerprint is None
+    assert store.agent_task_dispatch_was_proven_not_started(allocation.operation_id)
+    assert any(
+        item.category == "operation_dispatch_reset"
+        for item in store.agent_task_receipts(allocation.operation_id)
+    )
     assert store.episode_report_attempt(first.attempt_id).status == "failed"
     assert store.episode("episode").report_attempts_used == 1
     second = store.allocate_episode_report_attempt("episode")

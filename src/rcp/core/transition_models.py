@@ -39,6 +39,14 @@ class GraphHeadRef(_StrictTransitionModel):
     transition_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
+class GraphAttentionProjection(_StrictTransitionModel):
+    """Exact graph memberships consumed by attention and Runs surfaces."""
+
+    pending_proposal_ids: list[str] = Field(default_factory=list)
+    decisions_awaiting_choice_ids: list[str] = Field(default_factory=list)
+    open_blocker_ids: list[str] = Field(default_factory=list)
+
+
 class TransitionCauseRef(_StrictTransitionModel):
     kind: Literal["action", "event"]
     action_index: int | None = Field(default=None, ge=0)

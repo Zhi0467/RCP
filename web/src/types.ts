@@ -180,7 +180,7 @@ export interface ExperimentOperationalState {
   stop_settled: boolean;
   chat_id: string | null;
   current_operation_id: string | null;
-  current_status: string | null;
+  current_status: AgentTaskStatus | null;
   current_queued: boolean;
   current_active: boolean;
   current_awaiting_human: boolean;
@@ -190,6 +190,32 @@ export interface ExperimentOperationalState {
   current_invocation: number | null;
   session: ExperimentSessionBinding;
 }
+
+export type ExperimentLoopHealth =
+  | "starting"
+  | "agent_active"
+  | "waiting_on_watchers"
+  | "degraded"
+  | "stopping"
+  | "wrapping_up"
+  | "failed"
+  | "human_stopped"
+  | "paused_at_limit"
+  | "needs_action"
+  | "completed";
+export type ExperimentRecommendedStep =
+  | "wait"
+  | "resume"
+  | "retry"
+  | "keep_loop"
+  | "start_episode"
+  | "stop_and_restart"
+  | "resolve_requirements"
+  | "open_report"
+  | "review"
+  | "none";
+export type ExperimentRunSection = "running" | "actionable" | "completed";
+export type ExperimentTaskControlKind = "resume" | "retry";
 
 export interface ExperimentControlState {
   ready: boolean;
@@ -205,6 +231,17 @@ export interface ExperimentControlState {
   governing_decisions: ExperimentDecisionPin[];
   decision_drift: DecisionDrift[];
   operational: ExperimentOperationalState;
+  health: ExperimentLoopHealth;
+  recommendation: ExperimentRecommendedStep;
+  run_section: ExperimentRunSection;
+  live: boolean;
+  can_start: boolean;
+  can_stop: boolean;
+  stop_pending: boolean;
+  task_control: ExperimentTaskControlKind | null;
+  can_switch_provider: boolean;
+  can_open_report: boolean;
+  node_closed: boolean;
 }
 
 export interface ExperimentLoopIndexEntry {
@@ -495,8 +532,72 @@ export function decodeGraphState(graph: GraphState): GraphState {
   };
 }
 
+export function decodeGraphAttentionProjection(
+  value: unknown,
+  graph: GraphState,
+): GraphAttentionProjection {
+  const keys = ["pending_proposal_ids", "decisions_awaiting_choice_ids", "open_blocker_ids"];
+  if (!isPlainRecord(value) || !hasExactKeys(value, keys)) {
+    throw new Error("Project attention projection is missing or malformed.");
+  }
+  const readIds = (field: (typeof keys)[number]): string[] => {
+    const raw = value[field];
+    if (!Array.isArray(raw) || raw.some((item) => !isNonEmptyString(item))) {
+      throw new Error(`Project attention projection has invalid ${field}.`);
+    }
+    const ids = raw as string[];
+    if (new Set(ids).size !== ids.length) {
+      throw new Error(`Project attention projection has duplicate ${field}.`);
+    }
+    return [...ids];
+  };
+  const attention: GraphAttentionProjection = {
+    pending_proposal_ids: readIds("pending_proposal_ids"),
+    decisions_awaiting_choice_ids: readIds("decisions_awaiting_choice_ids"),
+    open_blocker_ids: readIds("open_blocker_ids"),
+  };
+  for (const proposalId of attention.pending_proposal_ids) {
+    if (!graph.proposals[proposalId]) {
+      throw new Error(`Project attention references missing Proposal ${proposalId}.`);
+    }
+  }
+  for (const decisionId of attention.decisions_awaiting_choice_ids) {
+    if (graph.nodes[decisionId]?.type !== "decision") {
+      throw new Error(`Project attention member ${decisionId} is not a Decision.`);
+    }
+  }
+  for (const blockerId of attention.open_blocker_ids) {
+    if (graph.nodes[blockerId]?.type !== "blocker") {
+      throw new Error(`Project attention member ${blockerId} is not a Blocker.`);
+    }
+  }
+  return attention;
+}
+
 export function decodeProjectSnapshot(snapshot: ProjectSnapshot): ProjectSnapshot {
-  return { ...snapshot, graph: decodeGraphState(snapshot.graph) };
+  const graph = decodeGraphState(snapshot.graph);
+  return {
+    ...snapshot,
+    graph,
+    attention: decodeGraphAttentionProjection(
+      (snapshot as ProjectSnapshot & { attention?: unknown }).attention,
+      graph,
+    ),
+  };
+}
+
+export function decodeProjectTransitionResponse(
+  response: ProjectTransitionResponse,
+): ProjectTransitionResponse {
+  const graph = decodeGraphState(response.graph);
+  return {
+    ...response,
+    graph,
+    attention: decodeGraphAttentionProjection(
+      (response as ProjectTransitionResponse & { attention?: unknown }).attention,
+      graph,
+    ),
+  };
 }
 
 export function proposalSemantics(proposal: Proposal): ProposalSemantics {
@@ -785,12 +886,19 @@ export interface ExperimentGuidanceValidity {
 export interface ProjectTransitionResponse {
   head: GraphHeadRef;
   graph: GraphState;
+  attention: GraphAttentionProjection;
   experiment_control: Record<string, ExperimentControlState>;
   guidance_validity: Record<string, ExperimentGuidanceValidity>;
   ruleset_tag: string;
   transition_id: string | null;
   canonical: boolean;
   base_head?: GraphHeadRef | null;
+}
+
+export interface GraphAttentionProjection {
+  pending_proposal_ids: string[];
+  decisions_awaiting_choice_ids: string[];
+  open_blocker_ids: string[];
 }
 
 export interface TransitionTrigger {
@@ -1360,6 +1468,7 @@ export interface ProjectSnapshot {
   primary_question?: GraphNode | null;
   last_refresh_at?: string | null;
   experiment_control: Record<string, ExperimentControlState>;
+  attention: GraphAttentionProjection;
   counts: {
     pending_proposals: number;
     decisions_awaiting_choice: number;

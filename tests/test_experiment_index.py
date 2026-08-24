@@ -356,14 +356,14 @@ def test_experiment_index_uses_main_cache_and_unbounded_project_runtime(
     monkeypatch.setattr(app.state.service.history, "state", refuse_current_state_read)
 
     store = app.state.background_tasks.store
-    original = store.project_experiment_loop_runtimes
+    original = store.experiment_control_projection_snapshots
     calls: list[str] = []
 
-    def capture(requested_project_id):
+    def capture(requested_project_id, *args, **kwargs):
         calls.append(requested_project_id)
-        return original(requested_project_id)
+        return original(requested_project_id, *args, **kwargs)
 
-    monkeypatch.setattr(store, "project_experiment_loop_runtimes", capture)
+    monkeypatch.setattr(store, "experiment_control_projection_snapshots", capture)
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
@@ -782,12 +782,12 @@ def test_experiment_index_runtime_projection_failure_fails_the_request(
     project_id, current_episode = _seed_indexed_project(app)
     assert TestClient(app).get(f"/api/projects/{project_id}").status_code == 200
 
-    def fail_runtime_projection(_project_id):
+    def fail_runtime_projection(_project_id, *_args, **_kwargs):
         raise RuntimeError("runtime projection broke")
 
     monkeypatch.setattr(
         app.state.background_tasks.store,
-        "project_experiment_loop_runtimes",
+        "experiment_control_projection_snapshots",
         fail_runtime_projection,
     )
     response = TestClient(app, raise_server_exceptions=False).get(

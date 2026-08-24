@@ -1092,6 +1092,26 @@ class ExperimentLoopRuntime(BaseModel):
     current_invocation: int | None = Field(default=None, ge=1)
 
 
+class ExperimentEpisodeProjectionSnapshot(BaseModel):
+    """One transactionally coherent Experiment episode read model input."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    episode: EpisodeRecord
+    tasks: list[AgentTaskRecord] = Field(default_factory=list)
+    budget: EpisodeBudgetMeter
+    report: EpisodeReportRecord | None = None
+
+
+class ExperimentControlProjectionSnapshot(BaseModel):
+    """Runtime and episode inputs observed in one SQLite read transaction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    runtime: ExperimentLoopRuntime
+    episode: ExperimentEpisodeProjectionSnapshot | None = None
+
+
 AgentUsageCountReason = Literal["counted", "duplicate", "invalid"]
 
 
@@ -1612,6 +1632,8 @@ __all__ = [
     "AutoResearchStateRecord",
     "ChatSessionContextRecord",
     "ExperimentEpisodeRecord",
+    "ExperimentEpisodeProjectionSnapshot",
+    "ExperimentControlProjectionSnapshot",
     "ExperimentLoopRuntime",
     "EpisodeBudgetMeter",
     "EpisodeEnding",

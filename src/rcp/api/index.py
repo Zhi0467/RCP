@@ -18,7 +18,7 @@ from rcp.api.dependencies import (
 )
 from rcp.api.episode_branches import graph_branch_summary
 from rcp.api.episodes import serialize_episode
-from rcp.api.experiment_controls import _experiment_control_from_runtime
+from rcp.api.experiment_controls import _experiment_control_response
 from rcp.api.identity import IdentityAccess
 from rcp.core.models import Experiment, GraphState
 from rcp.projects import ProjectCatalog
@@ -33,7 +33,11 @@ from rcp.sources import (
     discover_project_cache_roots,
     legacy_shared_cache_roots,
 )
-from rcp.storage import AppStore, EpisodeRecord, ExperimentLoopRuntime
+from rcp.storage import (
+    AppStore,
+    ExperimentEpisodeProjectionSnapshot,
+    ExperimentLoopRuntime,
+)
 from rcp.transport import StateUnavailable
 
 router = APIRouter()
@@ -80,18 +84,20 @@ def experiment_episodes(
     for record in store.projects():
         if record.project_id not in visible:
             continue
-        runtimes = store.project_experiment_loop_runtimes(record.project_id)
-        if not runtimes:
+        read_models = store.experiment_control_projection_snapshots(record.project_id)
+        if not read_models:
             continue
         settle_ids = [
             experiment_id
-            for experiment_id, runtime in runtimes.items()
-            if runtime.stop_requested and not runtime.stop_settled and not runtime.task_active
+            for experiment_id, read_model in read_models.items()
+            if read_model.runtime.stop_requested
+            and not read_model.runtime.stop_settled
+            and not read_model.runtime.task_active
         ]
         for experiment_id in settle_ids:
-            runtime = runtimes[experiment_id]
-            episode = store.episode(runtime.episode_id) if runtime.episode_id is not None else None
-            if episode is not None:
+            episode_snapshot = read_models[experiment_id].episode
+            if episode_snapshot is not None:
+                episode = episode_snapshot.episode
                 store.settle_experiment_loop_stop(
                     record.project_id,
                     experiment_id,
@@ -99,23 +105,29 @@ def experiment_episodes(
                     graph_target=episode.graph_target,
                 )
         if settle_ids:
-            runtimes.update(store.experiment_loop_runtimes(record.project_id, settle_ids))
+            read_models = store.experiment_control_projection_snapshots(record.project_id)
 
-        current: list[tuple[EpisodeRecord, ExperimentLoopRuntime]] = []
-        for control_node_id, runtime in runtimes.items():
-            if runtime.episode_id is None:
+        current: list[
+            tuple[
+                ExperimentEpisodeProjectionSnapshot,
+                ExperimentLoopRuntime,
+            ]
+        ] = []
+        for control_node_id, read_model in read_models.items():
+            episode_snapshot = read_model.episode
+            if episode_snapshot is None:
                 continue
-            episode = store.episode(runtime.episode_id)
+            runtime = read_model.runtime
+            episode = episode_snapshot.episode
             if (
-                episode is None
-                or episode.project_id != record.project_id
+                episode.project_id != record.project_id
                 or episode.mode != mode
                 or episode.control_node_id != control_node_id
             ):
                 raise ValueError("Experiment runtime does not identify its exact durable episode.")
-            current.append((episode, runtime))
+            current.append((episode_snapshot, runtime))
         current.sort(
-            key=lambda item: (item[0].created_at, item[0].episode_id),
+            key=lambda item: (item[0].episode.created_at, item[0].episode.episode_id),
             reverse=True,
         )
 
@@ -129,13 +141,18 @@ def experiment_episodes(
         if record.reachable is False:
             reachable = False
 
-        grouped: dict[str, list[tuple[EpisodeRecord, ExperimentLoopRuntime]]] = {}
-        for episode, runtime in current:
-            grouped.setdefault(episode.graph_target.key, []).append((episode, runtime))
+        grouped: dict[
+            str,
+            list[tuple[ExperimentEpisodeProjectionSnapshot, ExperimentLoopRuntime]],
+        ] = {}
+        for episode_snapshot, runtime in current:
+            grouped.setdefault(episode_snapshot.episode.graph_target.key, []).append(
+                (episode_snapshot, runtime)
+            )
 
         main_service: ProjectService | None = None
         for group in grouped.values():
-            target = group[0][0].graph_target
+            target = group[0][0].episode.graph_target
             graph_head = None
             if target.kind == "main":
                 # ProjectDisplayCache is deliberately a main-only display snapshot.
@@ -166,7 +183,8 @@ def experiment_episodes(
                         "Experiment graph projection returned a different target head."
                     )
 
-            for episode, runtime in group:
+            for episode_snapshot, runtime in group:
+                episode = episode_snapshot.episode
                 node_id = episode.control_node_id
                 assert node_id is not None
                 node = state.nodes.get(node_id)
@@ -183,13 +201,14 @@ def experiment_episodes(
                     record.project_id,
                     episode,
                     branch_summary=branch_summary,
+                    projection_snapshot=episode_snapshot,
                 ).model_dump(mode="json")
-                control = _experiment_control_from_runtime(
+                control = _experiment_control_response(
                     state,
                     node.id,
                     runtime,
+                    serialized_episode,
                 ).model_dump(mode="json")
-                control["episode"] = serialized_episode
                 entries.append(
                     {
                         "project_id": record.project_id,

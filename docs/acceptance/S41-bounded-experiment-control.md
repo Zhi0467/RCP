@@ -13,15 +13,13 @@ covered_by:
   - web/tests/runDialog.test.mjs
 invariants: [3, 4, 4b, 10, 10b, 10e, 10g]
 last_checked: >-
-  2026-08-21 — swept after the report-never-blocks fix. A human-reported episode
-  showed **Report error** as its health with no Stop loop, Resume, or Retry, for
-  a turn that had failed before binding a session and so had never generated a
-  report at all. The listed pytest coverage and the full web suite pass, and the
-  served Runs detail was driven against a copy of the human's real data
-  directory: the same episode now reads **Failed** / **Episode ended** with its
-  ending reason first, the report note demoted, and **Start new episode**
-  enabled. Real provider invocations, induced failures, and watcher wakes remain
-  outstanding, so the scenario stays pending.
+  2026-08-24 — the backend now publishes the complete Experiment lifecycle and
+  action projection consumed by Runs, including health, recommendation, section,
+  and Start, Stop, report, Resume, Retry, and provider-switch availability. The
+  full backend and web suites pass, and an isolated served-browser drive showed
+  the backend-projected **Needs action** state, exact graph gate, disabled Start,
+  and clean console/server logs. Real provider invocations, induced failures,
+  and watcher wakes remain outstanding, so the scenario stays pending.
 ---
 
 # Run an experiment through a bounded control loop

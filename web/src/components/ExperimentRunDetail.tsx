@@ -1,19 +1,16 @@
 import { ExternalLink, FlaskConical } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import {
-  type ExperimentLoopHealth,
   type ExperimentRun,
   type ExperimentWatcherGroup,
   type ExperimentWatcherItem,
   experimentRecommendation,
-  experimentRecoveryAction,
   graphConditionLabel,
   isExternalWatcherRecord,
-  watcherIsActive,
   watcherLastObservedAt,
 } from "../runProjection";
 import { currentExperimentGuidance, experimentGuidanceDetail } from "../experimentGuidance";
-import type { WatcherRecord } from "../types";
+import type { ExperimentLoopHealth, WatcherRecord } from "../types";
 import { EpisodeReportLink } from "./EpisodeReportLink";
 
 const healthLabels: Record<ExperimentLoopHealth, string> = {
@@ -52,32 +49,6 @@ export function experimentHealthTone(health: ExperimentLoopHealth): string {
   return healthTones[health];
 }
 
-export function experimentLoopIsLive(run: ExperimentRun): boolean {
-  const operational = run.control?.operational;
-  const episode = run.control?.episode;
-  // The ending fence is the single authority for "this episode is over"; the
-  // report is a deliverable produced afterwards and never revives or extends it.
-  if (episode?.ending) return false;
-  return Boolean(
-    // Whether the parent is still live is the projection's answer. This used to
-    // restate the storage constant that decides it, in this file, by hand.
-    operational?.episode_live ||
-    run.currentTask?.active ||
-    operational?.task_active ||
-    operational?.detached_work_active ||
-    operational?.watcher_completion_pending ||
-    run.currentWatchers.some(
-      (watcher) =>
-        watcherIsActive(watcher) || (watcher.status === "completed" && !watcher.notified),
-    ),
-  );
-}
-
-export function experimentStopUnsettled(run: ExperimentRun): boolean {
-  const operational = run.control?.operational;
-  return Boolean(operational?.stop_requested && !operational.stop_settled);
-}
-
 interface Props {
   run: ExperimentRun;
   runBusy: boolean;
@@ -88,6 +59,7 @@ interface Props {
   providerLabel?: string;
   conversation?: ReactNode;
   allowStart?: boolean;
+  startDisabled?: boolean;
   onRun: () => void;
   onStopLoop: () => void;
   onRecover: (action: "resume" | "retry") => void;
@@ -106,6 +78,7 @@ export function ExperimentRunDetail({
   providerLabel,
   conversation,
   allowStart = true,
+  startDisabled = false,
   onRun,
   onStopLoop,
   onRecover,
@@ -115,13 +88,10 @@ export function ExperimentRunDetail({
 }: Props) {
   const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const { node, control, taskGroup, currentTask, health } = run;
-  const operational = control?.operational ?? null;
-  const session = operational?.session ?? null;
-  const episode = control?.episode ?? null;
-  const live = experimentLoopIsLive(run);
-  const stopUnsettled = experimentStopUnsettled(run);
-  const stopRequested = Boolean(operational?.stop_requested);
-  const taskInFlight = Boolean(currentTask?.active);
+  const operational = control.operational;
+  const session = operational.session;
+  const episode = control.episode;
+  const stopUnsettled = control.stop_pending;
   const currentOperationId =
     currentTask?.operation_id ??
     operational?.current_operation_id ??
@@ -135,20 +105,19 @@ export function ExperimentRunDetail({
   const lastActivity = formatMoment(
     currentTask?.last_activity_at ?? operational?.current_last_activity_at,
   );
-  const episodeEnded = Boolean(episode?.ending);
-  const recoveryAction = episodeEnded ? null : experimentRecoveryAction(currentTask);
+  const recoveryAction = currentTask ? control.task_control : null;
   const recoveryProvider =
     providerLabel ||
     capitalize(String(currentTask?.request.provider || session?.provider || "agent"));
-  const canSwitchProvider = Boolean(recoveryAction && currentTask?.can_retry);
-  const canStop = !episodeEnded && (live || Boolean(currentTask?.awaiting_human));
-  const showStop = Boolean(control?.episode_id && !stopRequested && (stopBusy || canStop));
-  const stopBlocksRecovery = stopRequested && !stopUnsettled;
+  const canSwitchProvider = Boolean(currentTask && control.can_switch_provider);
+  const showStop = Boolean(control.episode_id && (stopBusy || control.can_stop));
   const baseRecommendation = experimentRecommendation(run);
   const recommendation =
     !allowStart && baseRecommendation.step === "start_episode"
       ? { step: "review" as const, label: "Review the owning Auto-research episode" }
-      : baseRecommendation;
+      : startDisabled && baseRecommendation.step === "start_episode"
+        ? { step: "review" as const, label: "Sync staged changes before starting" }
+        : baseRecommendation;
   const summaryGuidance = experimentGuidanceDetail(node, "current_summary");
   const nextActionGuidance = experimentGuidanceDetail(node, "next_action");
   const currentSummary = currentExperimentGuidance(node, "current_summary");
@@ -172,7 +141,7 @@ export function ExperimentRunDetail({
             <button
               type="button"
               className="button primary compact experiment-recovery-button"
-              disabled={runDisabled || recoveryBusy || stopBusy || stopBlocksRecovery}
+              disabled={runDisabled || recoveryBusy || stopBusy}
               aria-busy={recoveryBusy}
               onClick={() => onRecover(recoveryAction)}
             >
@@ -189,7 +158,7 @@ export function ExperimentRunDetail({
             <button
               type="button"
               className="button compact"
-              disabled={runDisabled || recoveryBusy || stopBusy || stopBlocksRecovery}
+              disabled={runDisabled || recoveryBusy || stopBusy}
               onClick={onSwitchProvider}
             >
               Switch provider…
@@ -199,13 +168,13 @@ export function ExperimentRunDetail({
             <button
               type="button"
               className="button compact experiment-stop-loop"
-              disabled={runDisabled || stopBusy || recoveryBusy || stopUnsettled || stopRequested}
+              disabled={runDisabled || stopBusy || recoveryBusy || stopUnsettled}
               onClick={onStopLoop}
             >
               {stopBusy || stopUnsettled ? "Stopping" : "Stop loop"}
             </button>
           )}
-          {episode?.report && episode.wrapup_state === "ready" && (
+          {control.can_open_report && episode?.report && (
             <EpisodeReportLink
               className="button primary compact"
               href={episodeReportHref(episode.episode_id)}
@@ -225,12 +194,14 @@ export function ExperimentRunDetail({
             <button
               type="button"
               className="button primary compact experiment-run-button"
-              disabled={runDisabled || runBusy || taskInFlight || stopUnsettled || !control?.ready}
+              disabled={
+                runDisabled || startDisabled || runBusy || stopUnsettled || !control.can_start
+              }
               onClick={onRun}
-              aria-describedby={control?.reasons.length ? `${node.id}-run-requirements` : undefined}
+              aria-describedby={control.reasons.length ? `${node.id}-run-requirements` : undefined}
             >
               <FlaskConical size={13} aria-hidden="true" />{" "}
-              {runBusy ? "Starting" : control?.episode_id ? "Start new episode" : "Start episode"}
+              {runBusy ? "Starting" : control.episode_id ? "Start new episode" : "Start episode"}
             </button>
           )}
         </div>

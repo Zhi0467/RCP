@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { withTurnAnswers } from "./taskAnswers.mjs";
+import { withExperimentControlAnswers, withTurnAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -45,7 +45,7 @@ function node(id, status = "planned", updatedRev = 1) {
 }
 
 function control(fields = {}, operationalFields = {}) {
-  return {
+  return withExperimentControlAnswers({
     ready: true,
     reasons: [],
     invocations_used: 1,
@@ -86,7 +86,7 @@ function control(fields = {}, operationalFields = {}) {
       ...operationalFields,
     }),
     ...fields,
-  };
+  });
 }
 
 function entry(id, nodeStatus, controlState, projectName = "Project") {
@@ -142,7 +142,16 @@ function episode(fields = {}) {
 
 test("the board shows the shared report wrap-up as in-progress", () => {
   const wrapping = episode();
-  const entryValue = entry("wrapping", "active", control({ episode: wrapping }));
+  const entryValue = entry(
+    "wrapping",
+    "active",
+    control({
+      episode: wrapping,
+      health: "wrapping_up",
+      recommendation: "wait",
+      run_section: "running",
+    }),
+  );
   const board = buildExperimentBoard([entryValue]);
   const html = renderToStaticMarkup(
     React.createElement(ExperimentBoard, { entries: [entryValue], onOpen() {} }),
@@ -162,7 +171,16 @@ test("a final report error never becomes the board's episode health", () => {
     wrapup_state: "failed",
     wrapup_error: "The visual report could not be generated.",
   });
-  const entryValue = entry("wrapping", "active", control({ episode: reportFailed }));
+  const entryValue = entry(
+    "wrapping",
+    "active",
+    control({
+      episode: reportFailed,
+      health: "completed",
+      recommendation: "none",
+      run_section: "completed",
+    }),
+  );
   const board = buildExperimentBoard([entryValue]);
   const html = renderToStaticMarkup(
     React.createElement(ExperimentBoard, { entries: [entryValue], onOpen() {} }),
@@ -181,11 +199,36 @@ test("board reuses loop health and groups current state in operational order", (
     entry(
       "stopped",
       "active",
-      control({}, { current_status: "failed", stop_requested: true, stop_settled: true }),
+      control(
+        {
+          health: "human_stopped",
+          recommendation: "start_episode",
+          run_section: "actionable",
+        },
+        { current_status: "failed", stop_requested: true, stop_settled: true },
+      ),
     ),
-    entry("running", "active", control({}, { current_status: "running" })),
-    entry("degraded", "active", control({}, { watcher_degraded: true })),
-    entry("finished", "completed", control()),
+    entry(
+      "running",
+      "active",
+      control(
+        { health: "agent_active", recommendation: "wait", run_section: "running", live: true },
+        { current_status: "running" },
+      ),
+    ),
+    entry(
+      "degraded",
+      "active",
+      control(
+        { health: "degraded", recommendation: "keep_loop", run_section: "running", live: true },
+        { watcher_degraded: true },
+      ),
+    ),
+    entry(
+      "finished",
+      "completed",
+      control({ health: "completed", recommendation: "none", run_section: "completed" }),
+    ),
   ]);
 
   assert.deepEqual(
@@ -240,17 +283,39 @@ test("each section sorts by newest activity with a deterministic fallback", () =
     entry(
       "older",
       "active",
-      control({}, { current_status: "running", current_last_activity_at: "2026-08-08T10:00:00Z" }),
+      control(
+        { health: "agent_active", recommendation: "wait", run_section: "running", live: true },
+        { current_status: "running", current_last_activity_at: "2026-08-08T10:00:00Z" },
+      ),
       "Zulu",
     ),
     entry(
       "newer",
       "active",
-      control({}, { current_status: "running", current_last_activity_at: "2026-08-09T10:00:00Z" }),
+      control(
+        { health: "agent_active", recommendation: "wait", run_section: "running", live: true },
+        { current_status: "running", current_last_activity_at: "2026-08-09T10:00:00Z" },
+      ),
       "Zulu",
     ),
-    entry("fallback-b", "active", control({}, { current_status: "running" }), "Beta"),
-    entry("fallback-a", "active", control({}, { current_status: "running" }), "Alpha"),
+    entry(
+      "fallback-b",
+      "active",
+      control(
+        { health: "agent_active", recommendation: "wait", run_section: "running", live: true },
+        { current_status: "running" },
+      ),
+      "Beta",
+    ),
+    entry(
+      "fallback-a",
+      "active",
+      control(
+        { health: "agent_active", recommendation: "wait", run_section: "running", live: true },
+        { current_status: "running" },
+      ),
+      "Alpha",
+    ),
   ]);
 
   assert.deepEqual(
@@ -444,7 +509,17 @@ test("branch-created Runs detail uses index truth and never offers a main Start 
       "experiment/branch-created",
       "active",
       control(
-        { episode_id: childEpisode.episode_id, episode: childEpisode, active: true },
+        {
+          episode_id: childEpisode.episode_id,
+          episode: childEpisode,
+          active: true,
+          health: "agent_active",
+          recommendation: "wait",
+          run_section: "running",
+          live: true,
+          can_start: false,
+          can_stop: true,
+        },
         { task_active: true, current_status: "running" },
       ),
     ),
@@ -721,7 +796,11 @@ test("the rendered board keeps finished work folded and unavailable work explici
         current_summary: "An older summary.",
       },
     },
-    entry("done", "superseded", control()),
+    entry(
+      "done",
+      "superseded",
+      control({ health: "completed", recommendation: "none", run_section: "completed" }),
+    ),
   ];
   const html = renderToStaticMarkup(
     React.createElement(ExperimentBoard, { entries, onOpen: () => undefined }),

@@ -545,6 +545,25 @@ test("a later graph success clears an older failed graph notification", () => {
   assert.equal(projectActivityTask([completedRefresh, failedSeed], "failed-seed"), null);
 });
 
+test("a later graph success does not clear a paused graph task", () => {
+  const pausedSeed = task({
+    operation_id: "paused-seed",
+    kind: "seed",
+    status: "paused",
+    created_at: "2026-07-28T00:00:00Z",
+  });
+  const completedRefresh = task({
+    operation_id: "completed-refresh",
+    kind: "refresh",
+    status: "succeeded",
+    created_at: "2026-07-28T01:00:00Z",
+  });
+  assert.equal(
+    projectActivityTask([completedRefresh, pausedSeed], null)?.operation_id,
+    "paused-seed",
+  );
+});
+
 test("a completed retry clears its failed parent, while a failed retry stays actionable", () => {
   const failedSeed = task({
     operation_id: "failed-seed",

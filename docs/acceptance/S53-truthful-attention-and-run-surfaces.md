@@ -5,17 +5,22 @@ tier: hermetic
 driver: browser
 covered_by:
   - tests/test_api.py
+  - tests/test_service_contracts.py
   - tests/test_transition_api.py
   - tests/test_transition_control_projection.py
   - web/tests/attentionRunsOntology.test.mjs
   - web/tests/decisionChoice.test.mjs
+  - web/tests/experimentRunDetail.test.mjs
+  - web/tests/runProjection.test.mjs
+  - web/tests/transitionAppIntegration.test.mjs
   - web/tests/transitionPresentation.test.mjs
 invariants: [3, 10]
 reported_by: human, 2026-08-03
-last_passed: 2026-08-18 — served browser transition drive resolved and reset a
-  Blocker through backend preview and Sync, confirmed same-head graph/control,
-  stale guidance, and clean browser console/server log; earlier attention and
-  task-surface behavior remains covered by browser and regression checks
+last_passed: 2026-08-24 — served an isolated demo project, staged a Decision
+  transition through backend preview, and observed the exact candidate Inbox
+  membership and Experiment gate with a clean browser console and server log;
+  the complete attention and task-surface behavior remains covered by the
+  listed browser and regression checks
 ---
 
 # Attention and run surfaces tell one truthful story
@@ -56,9 +61,10 @@ ETA.
    tiles.
 3. Open the `ready` Decision row. Confirm its node card opens and choose an
    option in the existing inspector ballot. Close and reopen the card, then
-   reload the page. The staged choice remains visible and the Decision remains
-   in attention until Sync.
-4. Sync the choice. The Decision leaves every attention count and remains
+   reload the page. The staged choice remains visible. The backend preview shows
+   the candidate Decision as decided and removes it from candidate attention,
+   while canonical state remains unchanged until Sync.
+4. Sync the choice. The Decision remains outside every attention count and is
    readable as decided in its node card.
 5. Change the `revisit` Decision to `open` with the ordinary node editor and
    Sync. It leaves attention without recording a new choice.
@@ -82,17 +88,20 @@ ETA.
 - Only `ready` and `revisit` Decisions appear. A Decision row shows its title
   plus a Ready/Revisit chip and opens the existing node card; it has no inline
   ballot, options preview, or explanatory caption.
-- A staged Decision choice remains in attention and survives card close, reopen,
-  and page reload. Sync commits it through the existing direct-choice authority
-  path and removes the decided node from attention.
+- A staged Decision choice survives card close, reopen, and page reload. Its
+  backend preview supplies one coherent candidate graph and attention
+  projection, so the candidate decided node leaves candidate attention before
+  Sync without changing canonical state. Sync commits it through the existing
+  direct-choice authority path.
 - A human `ready` or `revisit` to `open` edit is the explicit "not yet" path and
   removes the Decision from attention after Sync.
 - Legacy Ambiguities appear nowhere and contribute to no attention count.
 - Agreeing with or contesting an asserted open Blocker and syncing removes it
   from human attention and Runs **Needs action** without changing its `open`
   status or its effect on research readiness.
-- A staged Blocker judgment does not remove it early; until Sync makes the
-  judgment canonical, it remains in the same attention surfaces.
+- A staged Blocker judgment follows the same candidate rule: backend preview
+  removes the judged candidate from candidate attention, while canonical state
+  and canonical attention remain unchanged until Sync.
 - The Blocker editor offers Open, Resolved, and Superseded. Human and agent
   lifecycle edits reset accepted or contested standing to asserted. Resolved and
   superseded Blockers remain outside attention; reopening one returns it.
@@ -111,6 +120,8 @@ ETA.
 
 Two counters disagree about what needs attention; a plain open Decision enters
 the Inbox; a ripe Decision cannot reach the existing ballot; a staged choice
-vanishes or leaves attention early; a historical Ambiguity renders or counts; a
-judged Blocker keeps asking for human attention; accepting or contesting one
-silently resolves it; or completed work still looks live.
+vanishes, changes canonical state before Sync, or disagrees with its candidate
+attention projection; a historical Ambiguity renders or counts; a judged
+Blocker keeps asking for human attention after the judgment is canonical;
+accepting or contesting one silently resolves it; or completed work still looks
+live.

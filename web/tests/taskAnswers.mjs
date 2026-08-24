@@ -46,3 +46,21 @@ export function withTurnAnswers(operational) {
     current_awaiting_human: ["paused", "failed", "interrupted"].includes(status),
   };
 }
+
+/** Fill the Experiment Runs answers a backend control fixture must publish. */
+export function withExperimentControlAnswers(control) {
+  return {
+    health: "needs_action",
+    recommendation: "start_episode",
+    run_section: "actionable",
+    live: false,
+    can_start: true,
+    can_stop: false,
+    stop_pending: false,
+    task_control: null,
+    can_switch_provider: false,
+    can_open_report: false,
+    node_closed: false,
+    ...control,
+  };
+}

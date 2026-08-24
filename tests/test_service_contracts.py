@@ -3,13 +3,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from rcp.core.models import Decision
+from rcp.core.attention import decision_awaits_choice, project_graph_attention
+from rcp.core.models import Blocker, Decision, GatedCard, GraphState, Proposal
 from rcp.service import (
     ChatMessage,
     GraphSyncRequest,
     GraphUpdateResult,
     RunRequest,
-    decision_awaits_choice,
 )
 
 
@@ -35,6 +35,98 @@ def test_decision_attention_predicate_is_ready_or_revisit(status: str, expected:
     )
 
     assert decision_awaits_choice(decision) is expected
+
+
+def test_graph_attention_projection_publishes_exact_membership_ids() -> None:
+    state = GraphState(
+        nodes={
+            "dec/revisit": Decision(
+                id="dec/revisit",
+                type="decision",
+                title="Revisit",
+                question="Which option?",
+                status="revisit",
+            ),
+            "dec/open": Decision(
+                id="dec/open",
+                type="decision",
+                title="Open",
+                question="Which option?",
+                status="open",
+            ),
+            "blk/asserted": Blocker(
+                id="blk/asserted",
+                type="blocker",
+                title="Asserted",
+                description="Needs a human judgment.",
+                status="open",
+                standing="asserted",
+            ),
+            "blk/accepted": Blocker(
+                id="blk/accepted",
+                type="blocker",
+                title="Accepted",
+                description="Already judged.",
+                status="open",
+                standing="accepted",
+            ),
+        },
+        proposals={
+            "prop/pending": Proposal(
+                id="prop/pending",
+                title="Pending proposal",
+                card=GatedCard(decision_needed="Choose."),
+                ops=[],
+                status="pending",
+            ),
+            "prop/approved": Proposal(
+                id="prop/approved",
+                title="Approved proposal",
+                card=GatedCard(decision_needed="Already chosen."),
+                ops=[],
+                status="approved",
+            ),
+        },
+    )
+
+    assert project_graph_attention(state).model_dump(mode="json") == {
+        "pending_proposal_ids": ["prop/pending"],
+        "decisions_awaiting_choice_ids": ["dec/revisit"],
+        "open_blocker_ids": ["blk/asserted"],
+    }
+
+
+@pytest.mark.parametrize("collection", ["nodes", "proposals"])
+def test_graph_attention_projection_rejects_mapping_identity_mismatches(collection: str) -> None:
+    state = GraphState(
+        nodes={
+            "dec/canonical": Decision(
+                id="dec/canonical",
+                type="decision",
+                title="Choose",
+                question="Which option?",
+                status="ready",
+            )
+        },
+        proposals={
+            "prop/canonical": Proposal(
+                id="prop/canonical",
+                title="Choose",
+                card=GatedCard(decision_needed="Choose."),
+                ops=[],
+                status="pending",
+            )
+        },
+    )
+    member = (
+        state.nodes.pop("dec/canonical")
+        if collection == "nodes"
+        else state.proposals.pop("prop/canonical")
+    )
+    getattr(state, collection)["wrong/key"] = member
+
+    with pytest.raises(ValueError, match="mapping key"):
+        project_graph_attention(state)
 
 
 def test_graph_sync_contract_has_no_ambiguity_resolution_path() -> None:

@@ -15,6 +15,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.api.task_requests import _resolved_graph_request
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Patch
+from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_loop import commit_experiment_episode_binding
 from rcp.runs.shared import _sse
@@ -343,6 +344,29 @@ def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
     assert operational["task_active"] is True
     assert control["ready"] is False
     assert "A graceful stop is finishing the current loop turn." in control["reasons"]
+    projected = loop.control()
+    assert {
+        field: projected[field]
+        for field in (
+            "health",
+            "recommendation",
+            "run_section",
+            "live",
+            "can_start",
+            "can_stop",
+            "stop_pending",
+            "task_control",
+        )
+    } == {
+        "health": "stopping",
+        "recommendation": "wait",
+        "run_section": "running",
+        "live": True,
+        "can_start": False,
+        "can_stop": False,
+        "stop_pending": True,
+        "task_control": None,
+    }
     # The authorized turn is untouched, and its observers stay live until it ends.
     task = loop.store.agent_task("loop-root")
     assert task is not None and task.status == "running"
@@ -405,6 +429,48 @@ def test_stop_is_idempotent(manifest, tmp_path) -> None:
     assert episode_after_second.stop_settled_at == episode_after_first.stop_settled_at
     assert loop.store.watcher("finished-unclaimed") == watcher_after_first
     assert loop.loop_task_ids() == tasks_after_first
+
+
+def test_experiment_control_projection_reads_runtime_and_episode_from_one_snapshot(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    loop.start_episode()
+    original = loop.store._experiment_episode_projection_snapshot_in_connection
+    stop_written = False
+
+    def write_stop_between_runtime_and_episode_reads(
+        connection,
+        project_id,
+        control_node_id,
+        episode_id,
+    ):
+        nonlocal stop_written
+        if not stop_written:
+            stop_written = True
+            loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+        return original(connection, project_id, control_node_id, episode_id)
+
+    monkeypatch.setattr(
+        loop.store,
+        "_experiment_episode_projection_snapshot_in_connection",
+        write_stop_between_runtime_and_episode_reads,
+    )
+
+    read_model = loop.store.experiment_control_projection_snapshots(
+        loop.project_id,
+        [EXPERIMENT_ID],
+        graph_target=GraphTargetRef(),
+    )[EXPERIMENT_ID]
+
+    assert stop_written is True
+    assert read_model.runtime.stop_requested is False
+    assert read_model.episode is not None
+    assert read_model.episode.episode.stop_requested_at is None
+    current = loop.store.episode(loop.episode_id)
+    assert current is not None and current.stop_requested_at is not None
 
 
 @pytest.mark.parametrize(
@@ -1507,6 +1573,31 @@ def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path)
         candidate,
         hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
     )
+    control = loop.control()
+    assert {
+        field: control[field]
+        for field in (
+            "health",
+            "recommendation",
+            "run_section",
+            "live",
+            "can_start",
+            "can_stop",
+            "stop_pending",
+            "task_control",
+            "can_switch_provider",
+        )
+    } == {
+        "health": "needs_action",
+        "recommendation": "retry",
+        "run_section": "actionable",
+        "live": True,
+        "can_start": False,
+        "can_stop": True,
+        "stop_pending": False,
+        "task_control": "retry",
+        "can_switch_provider": True,
+    }
     observed = Event()
     captured: dict[str, object] = {}
 

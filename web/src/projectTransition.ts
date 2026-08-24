@@ -1,3 +1,5 @@
+import type { GraphAttentionProjection } from "./types";
+
 export type TransitionGraphTarget =
   { kind: "main"; branch_id?: null } | { kind: "branch"; branch_id: string };
 
@@ -18,6 +20,7 @@ export interface RevisionedTransitionGraph {
 export interface ProjectTransitionProjection<Graph extends RevisionedTransitionGraph, Control> {
   head: TransitionGraphHead;
   graph: Graph;
+  attention: GraphAttentionProjection;
   experiment_control: Control;
   ruleset_tag: string | null;
   transition_id: string | null;
@@ -65,6 +68,7 @@ export type ProjectTransitionReplaceAction<Graph extends RevisionedTransitionGra
     };
 
 export type TransitionSnapshotRefusal =
+  | "attention_projection_invalid"
   | "graph_head_revision_mismatch"
   | "head_transition_mismatch"
   | "target_mismatch"
@@ -224,6 +228,7 @@ export function transitionSnapshotRefusal<Graph extends RevisionedTransitionGrap
   action: ProjectTransitionReplaceAction<Graph, Control>,
 ): TransitionSnapshotRefusal | null {
   const incoming = action.snapshot;
+  if (!validAttentionProjection(incoming.attention)) return "attention_projection_invalid";
   if (incoming.graph.revision !== incoming.head.revision) return "graph_head_revision_mismatch";
   if (incoming.head.transition_id !== incoming.transition_id) return "head_transition_mismatch";
   if (!sameTarget(current.head.target, incoming.head.target)) return "target_mismatch";
@@ -252,6 +257,26 @@ export function transitionSnapshotRefusal<Graph extends RevisionedTransitionGrap
     return "preview_ruleset_mismatch";
   }
   return null;
+}
+
+function validAttentionProjection(value: unknown): value is GraphAttentionProjection {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const payload = value as Record<string, unknown>;
+  const fields = ["pending_proposal_ids", "decisions_awaiting_choice_ids", "open_blocker_ids"];
+  if (
+    Object.keys(payload).some((key) => !fields.includes(key)) ||
+    fields.some((field) => !Object.hasOwn(payload, field))
+  ) {
+    return false;
+  }
+  return fields.every((field) => {
+    const ids = payload[field];
+    return (
+      Array.isArray(ids) &&
+      ids.every((id) => typeof id === "string" && id.length > 0) &&
+      new Set(ids).size === ids.length
+    );
+  });
 }
 
 function triggerCouldMatch(trigger: TransitionTrigger, edit: StagedTransitionEdit): boolean {

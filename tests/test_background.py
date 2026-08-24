@@ -2112,9 +2112,37 @@ def _report_allocation(store: AppStore, tmp_path: Path) -> AgentTaskRecord:
     return admission.task
 
 
-def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(tmp_path: Path) -> None:
+@pytest.mark.parametrize("prior_status", ["interrupted", "paused"])
+def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
+    tmp_path: Path,
+    prior_status: str,
+) -> None:
     store = _store(tmp_path)
     hidden = _report_allocation(store, tmp_path)
+    store.mark_agent_task_running(hidden.operation_id)
+    store.bind_agent_task_write_scope(
+        hidden.operation_id,
+        project_id="project",
+        stage_host="",
+        stage_root=str(tmp_path / "report-stage"),
+        fingerprint="a" * 64,
+    )
+    store.record_agent_task_receipt(
+        hidden.operation_id,
+        "operation_dispatch_attempt",
+        {"dispatch_attempt_id": "previous-report-dispatch"},
+        tier="diagnostic",
+    )
+    store.record_agent_task_receipt(
+        hidden.operation_id,
+        "operation_dispatch_started",
+        {"dispatch_attempt_id": "previous-report-dispatch"},
+        tier="diagnostic",
+    )
+    if prior_status == "interrupted":
+        store.interrupt_active_agent_tasks()
+    else:
+        store.pause_agent_task(hidden.operation_id, detail="Paused for shutdown")
     store.record_agent_task_receipt(
         hidden.operation_id,
         "operation_created",

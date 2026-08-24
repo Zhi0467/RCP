@@ -1,13 +1,9 @@
-import {
-  buildExperimentRun,
-  experimentRunSection,
-  loopTurnState,
-  type ExperimentLoopHealth,
-} from "./runProjection";
+import { buildExperimentRun } from "./runProjection";
 import type {
   AgentTask,
   AppView,
   ExperimentControlState,
+  ExperimentLoopHealth,
   ExperimentLoopIndexEntry,
   GraphNode,
   GraphTargetRef,
@@ -64,10 +60,7 @@ export function buildExperimentBoard(
   };
   for (const entry of entries) {
     const run = buildExperimentRun(entry.node, entry.control, [], []);
-    const runSection = experimentRunSection(
-      run.health,
-      loopTurnState(entry.control, run.currentTask).awaitingHuman,
-    );
+    const runSection = entry.control.run_section;
     const item: ExperimentBoardItem = {
       entry,
       health: run.health,

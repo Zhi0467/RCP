@@ -151,6 +151,7 @@ import type {
   AppView,
   Episode,
   ExperimentControlState,
+  GraphAttentionProjection,
   GraphHeadRef,
   GraphNode,
   GraphState,
@@ -165,7 +166,11 @@ import type {
   TrustView,
   WatcherRecord,
 } from "./types";
-import { decodeGraphState, decodeProjectSnapshot, DISPLAY_NAME_MAX_LENGTH } from "./types";
+import {
+  decodeProjectSnapshot,
+  decodeProjectTransitionResponse,
+  DISPLAY_NAME_MAX_LENGTH,
+} from "./types";
 import { ProjectLanding } from "./views/ProjectLanding";
 import { ProjectOverview } from "./views/ProjectOverview";
 import { ProjectSetup } from "./views/ProjectSetup";
@@ -346,25 +351,31 @@ export function failedTaskActionNeedsAuthoritativeProjectReload(
 }
 
 export function humanAttentionBlockers(
-  canonicalNodes: GraphNode[],
-  presentedNodes?: GraphState["nodes"],
+  blockerIds: readonly string[],
+  presentedNodes: GraphState["nodes"],
 ): GraphNode[] {
-  return canonicalNodes
-    .filter(
-      (node) => node.type === "blocker" && node.status === "open" && node.standing === "asserted",
-    )
-    .map((node) => presentedNodes?.[node.id] ?? node);
+  return blockerIds.map((nodeId) => {
+    const node = presentedNodes[nodeId];
+    if (node?.type !== "blocker") {
+      throw new Error(`Attention member ${nodeId} is not a presented Blocker.`);
+    }
+    return node;
+  });
 }
 
 export function decisionsAwaitingChoice(
-  canonicalNodes: GraphNode[],
-  presentedNodes?: GraphState["nodes"],
+  decisionIds: readonly string[],
+  membershipNodes: GraphState["nodes"],
+  presentedNodes: GraphState["nodes"],
 ): GraphNode[] {
-  return canonicalNodes
-    .filter(
-      (node) => node.type === "decision" && (node.status === "ready" || node.status === "revisit"),
-    )
-    .map((node) => ({ ...(presentedNodes?.[node.id] ?? node), status: node.status }));
+  return decisionIds.map((nodeId) => {
+    const membershipNode = membershipNodes[nodeId];
+    const presented = presentedNodes[nodeId] ?? membershipNode;
+    if (membershipNode?.type !== "decision" || presented?.type !== "decision") {
+      throw new Error(`Attention member ${nodeId} is not a presented Decision.`);
+    }
+    return { ...presented, status: membershipNode.status };
+  });
 }
 
 export async function loadExperimentWatcherPoll(
@@ -389,6 +400,42 @@ type BrowserTransitionProjection = ProjectTransitionProjection<
   GraphState,
   Record<string, ExperimentControlState>
 >;
+
+const EMPTY_GRAPH_ATTENTION: GraphAttentionProjection = {
+  pending_proposal_ids: [],
+  decisions_awaiting_choice_ids: [],
+  open_blocker_ids: [],
+};
+
+export function projectAttentionForPresentation(
+  project: ProjectSnapshot | null,
+  projection: BrowserTransitionProjection | null,
+): GraphAttentionProjection {
+  if (projection) {
+    if (!projection.attention) {
+      throw new Error("Transition projection omitted graph attention.");
+    }
+    return projection.attention;
+  }
+  if (project) {
+    if (!project.attention) {
+      throw new Error("Project snapshot omitted graph attention.");
+    }
+    return project.attention;
+  }
+  return EMPTY_GRAPH_ATTENTION;
+}
+
+export function latestSnapshotRequestCanApply(
+  latestStartedRequestId: number | undefined,
+  responseRequestId: number,
+): boolean {
+  return latestStartedRequestId === responseRequestId;
+}
+
+export function experimentStartNeedsSync(projection: BrowserTransitionProjection | null): boolean {
+  return projection?.base_head != null;
+}
 
 type TransitionManifestState =
   | {
@@ -779,6 +826,8 @@ export default function App() {
     projectId: string;
     request: Promise<void>;
   } | null>(null);
+  const projectSnapshotRequestSequence = useRef(0);
+  const latestProjectSnapshotRequest = useRef(new Map<string, number>());
   const renderedRevisionRef = useRef(graph.revision);
   const initialShowHandshake = useRef(false);
   const readinessRequestedProjectIds = useRef(new Set<string>());
@@ -788,6 +837,19 @@ export default function App() {
   const transitionSyncRequestSequence = useRef(0);
   const transitionRulesetTagRef = useRef<string | null>(null);
   const transitionManifestExpectedRulesetTagRef = useRef<string | null>(null);
+  const beginProjectSnapshotRequest = useCallback((requestedProjectId: string): number => {
+    const requestId = ++projectSnapshotRequestSequence.current;
+    latestProjectSnapshotRequest.current.set(requestedProjectId, requestId);
+    return requestId;
+  }, []);
+  const projectSnapshotRequestIsCurrent = useCallback(
+    (requestedProjectId: string, requestId: number): boolean =>
+      latestSnapshotRequestCanApply(
+        latestProjectSnapshotRequest.current.get(requestedProjectId),
+        requestId,
+      ),
+    [],
+  );
   renderedRevisionRef.current = graph.revision;
   transitionRulesetTagRef.current = transitionRulesetTag;
   transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
@@ -1059,14 +1121,21 @@ export default function App() {
   );
 
   const applyProjectSnapshot = useCallback(
-    (nextProject: ProjectSnapshot, preserveReadiness: boolean) => {
+    (
+      nextProject: ProjectSnapshot,
+      preserveReadiness: boolean,
+      request?: { projectId: string; requestId: number },
+    ): boolean => {
+      if (request && !projectSnapshotRequestIsCurrent(request.projectId, request.requestId)) {
+        return false;
+      }
       const decodedProject = decodeProjectSnapshot(nextProject);
       const nextGraph = decodedProject.graph;
       const authoritative = decodedProject.snapshot_freshness === "fresh";
       if (
         !cachedSnapshotCanReplace(getActiveProjectId(), renderedRevisionRef.current, decodedProject)
       )
-        return;
+        return false;
       const previousRevision = renderedRevisionRef.current;
       renderedRevisionRef.current = nextGraph.revision;
       const observedHead = transitionCoordinatorRef.current.canonical_heads[decodedProject.id];
@@ -1116,39 +1185,49 @@ export default function App() {
         return retained;
       });
       reconcileFloatingChat(nextGraph.nodes, !authoritative);
+      return true;
     },
-    [applyCanonicalProject, getActiveProjectId, updateProject],
+    [applyCanonicalProject, getActiveProjectId, projectSnapshotRequestIsCurrent, updateProject],
   );
 
   const reload = useCallback(
     async (includeTasks = true) => {
       if (!projectId) return;
       const requestedProjectId = projectId;
+      const requestId = beginProjectSnapshotRequest(requestedProjectId);
+      const responseIsCurrent = () =>
+        isActiveProject(requestedProjectId) &&
+        projectSnapshotRequestIsCurrent(requestedProjectId, requestId);
       const base = `/api/projects/${encodeURIComponent(requestedProjectId)}`;
       const projectRequest = api<ProjectSnapshot>(base).then((nextProject) => {
-        if (!isActiveProject(requestedProjectId)) return;
-        applyProjectSnapshot(nextProject, authoritativeProjectId.current === requestedProjectId);
+        if (!responseIsCurrent()) return;
+        const applied = applyProjectSnapshot(
+          nextProject,
+          authoritativeProjectId.current === requestedProjectId,
+          { projectId: requestedProjectId, requestId },
+        );
+        if (!applied) return;
         authoritativeProjectId.current = requestedProjectId;
         setProjectReconciliation("authoritative");
       });
       const tasksRequest = includeTasks
         ? api<AgentTask[]>(`${base}/tasks`).then((nextTasks) => {
-            if (isActiveProject(requestedProjectId)) replaceTasks(nextTasks);
+            if (responseIsCurrent()) replaceTasks(nextTasks);
           })
         : Promise.resolve();
       const usageRequest = api<AgentUsageSnapshot>(`${base}/usage`)
         .then((nextUsage) => {
-          if (isActiveProject(requestedProjectId)) setUsage(nextUsage);
+          if (responseIsCurrent()) setUsage(nextUsage);
         })
         .catch((error) => {
           if (!(error instanceof ApiError && error.status === 404)) throw error;
-          if (isActiveProject(requestedProjectId)) setUsage(null);
+          if (responseIsCurrent()) setUsage(null);
         });
       const watchersRequest = api<WatcherRecord[]>(`${base}/watchers`).then((nextWatchers) => {
-        if (isActiveProject(requestedProjectId)) setWatchers(nextWatchers);
+        if (responseIsCurrent()) setWatchers(nextWatchers);
       });
       const chatsRequest = refreshChatSummaries(requestedProjectId, base).catch((error) => {
-        if (isActiveProject(requestedProjectId)) {
+        if (responseIsCurrent()) {
           setNotice({
             kind: "error",
             text: `Chats could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
@@ -1163,7 +1242,14 @@ export default function App() {
         chatsRequest,
       ]);
     },
-    [applyProjectSnapshot, isActiveProject, projectId, refreshChatSummaries],
+    [
+      applyProjectSnapshot,
+      beginProjectSnapshotRequest,
+      isActiveProject,
+      projectId,
+      projectSnapshotRequestIsCurrent,
+      refreshChatSummaries,
+    ],
   );
   reloadRef.current = reload;
 
@@ -1583,10 +1669,22 @@ export default function App() {
     let cancelled = false;
     const openProject = async () => {
       const cachedPath = `/api/projects/${encodeURIComponent(projectId)}/cached`;
+      const cachedRequestId = beginProjectSnapshotRequest(projectId);
       try {
         const cachedProject = await api<ProjectSnapshot>(cachedPath);
-        if (cancelled || !isActiveProject(projectId)) return;
-        applyProjectSnapshot(cachedProject, false);
+        if (
+          cancelled ||
+          !isActiveProject(projectId) ||
+          !projectSnapshotRequestIsCurrent(projectId, cachedRequestId)
+        )
+          return;
+        if (
+          !applyProjectSnapshot(cachedProject, false, {
+            projectId,
+            requestId: cachedRequestId,
+          })
+        )
+          return;
         setProjectReconciliation("authoritative");
         setLoading(false);
       } catch (error) {
@@ -1616,12 +1714,14 @@ export default function App() {
   }, [
     applyProjectSnapshot,
     actorIdentityChecked,
+    beginProjectSnapshotRequest,
     cachedProjectStateForOpen,
     identityIssue,
     identityReady,
     isActiveProject,
     loadProjectIndex,
     projectId,
+    projectSnapshotRequestIsCurrent,
     reload,
     replaceProject,
     resetProjectHeader,
@@ -1677,16 +1777,10 @@ export default function App() {
   const experimentControlForNode = (node: GraphNode): ExperimentControlState | null => {
     if (!project || node.type !== "experiment") return null;
     const control = presentedExperimentControl[node.id];
-    if (!control) return null;
-    const operationActive = tasks.some(
-      (task) =>
-        isActiveTask(task) &&
-        task.request.patch_kind === "experiment_loop" &&
-        task.request.control_node_id === node.id,
-    );
-    return operationActive && (!control.active || control.paused)
-      ? { ...control, active: true, paused: false }
-      : control;
+    if (!control) {
+      throw new Error(`Experiment ${node.id} is missing its backend control projection.`);
+    }
+    return control;
   };
   const retryConfig = useMemo(
     () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
@@ -1696,6 +1790,11 @@ export default function App() {
     () => attentionGraphForProjection(graph, presentedTransitionProjection),
     [graph, presentedTransitionProjection],
   );
+  const presentedAttention = projectAttentionForPresentation(
+    project,
+    presentedTransitionProjection,
+  );
+  const experimentStartRequiresSync = experimentStartNeedsSync(presentedTransitionProjection);
   const attentionGraph = presentedGraph;
   const glossaryIndex = useMemo(
     () => buildGlossaryIndex(presentedGraph.glossary),
@@ -1780,6 +1879,7 @@ export default function App() {
         localDraftTransitionProjection(
           applyHumanDraft(graph, humanDraft),
           project?.experiment_control ?? {},
+          projectAttentionForPresentation(project, null),
           transitionHead,
           transitionRulesetTag,
         ),
@@ -1798,6 +1898,7 @@ export default function App() {
     mutationsDisabled,
     ontologyDraftIsStale,
     project?.experiment_control,
+    project?.attention,
     transitionHead,
     transitionRulesetTag,
   ]);
@@ -1824,10 +1925,7 @@ export default function App() {
     })
       .then((response) => {
         if (cancelled || !isActiveProject(requestedProjectId)) return;
-        const projection: ProjectTransitionResponse = {
-          ...response.projection,
-          graph: decodeGraphState(response.projection.graph),
-        };
+        const projection = decodeProjectTransitionResponse(response.projection);
         const previewBaseHead = projection.base_head;
         if (!previewBaseHead) {
           setDraftPreviewConflict("Staged transition preview omitted its canonical base head.");
@@ -1846,6 +1944,7 @@ export default function App() {
         > = {
           head: transitionHead,
           graph,
+          attention: project.attention,
           experiment_control: project.experiment_control,
           ruleset_tag: transitionRulesetTag,
           transition_id: transitionHead.transition_id,
@@ -2075,15 +2174,25 @@ export default function App() {
       timer = window.setTimeout(() => void poll(), 5000);
     };
     const poll = async () => {
+      const requestId = beginProjectSnapshotRequest(requestedProjectId);
       try {
         const {
           watchers: nextWatchers,
           tasks: nextTasks,
           project: nextProject,
         } = await loadExperimentWatcherPoll(api, base);
-        if (!stopped && isActiveProject(requestedProjectId)) {
+        if (
+          !stopped &&
+          isActiveProject(requestedProjectId) &&
+          projectSnapshotRequestIsCurrent(requestedProjectId, requestId)
+        ) {
           const hasUnseenWatcherResults = recordWatcherResults(nextTasks);
-          applyProjectSnapshot(nextProject, authoritativeProjectId.current === requestedProjectId);
+          const applied = applyProjectSnapshot(
+            nextProject,
+            authoritativeProjectId.current === requestedProjectId,
+            { projectId: requestedProjectId, requestId },
+          );
+          if (!applied) return;
           authoritativeProjectId.current = requestedProjectId;
           setProjectReconciliation("authoritative");
           setWatchers(nextWatchers);
@@ -2103,19 +2212,39 @@ export default function App() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [applyProjectSnapshot, projectId, refreshChatSummaries, watchersAwaitingDelivery]);
+  }, [
+    applyProjectSnapshot,
+    beginProjectSnapshotRequest,
+    isActiveProject,
+    projectId,
+    projectSnapshotRequestIsCurrent,
+    refreshChatSummaries,
+    watchersAwaitingDelivery,
+  ]);
 
   const pendingProposals = useMemo(
-    () => Object.values(attentionGraph.proposals).filter((item) => item.status === "pending"),
-    [attentionGraph.proposals],
+    () =>
+      presentedAttention.pending_proposal_ids.map((proposalId) => {
+        const proposal = attentionGraph.proposals[proposalId];
+        if (!proposal) {
+          throw new Error(`Attention references missing presented Proposal ${proposalId}.`);
+        }
+        return proposal;
+      }),
+    [attentionGraph.proposals, presentedAttention.pending_proposal_ids],
   );
   const attentionDecisions = useMemo(
-    () => decisionsAwaitingChoice(Object.values(attentionGraph.nodes), presentedGraph.nodes),
-    [attentionGraph.nodes, presentedGraph.nodes],
+    () =>
+      decisionsAwaitingChoice(
+        presentedAttention.decisions_awaiting_choice_ids,
+        attentionGraph.nodes,
+        presentedGraph.nodes,
+      ),
+    [attentionGraph.nodes, presentedAttention.decisions_awaiting_choice_ids, presentedGraph.nodes],
   );
   const openBlockers = useMemo(
-    () => humanAttentionBlockers(Object.values(attentionGraph.nodes), presentedGraph.nodes),
-    [attentionGraph.nodes, presentedGraph.nodes],
+    () => humanAttentionBlockers(presentedAttention.open_blocker_ids, presentedGraph.nodes),
+    [presentedAttention.open_blocker_ids, presentedGraph.nodes],
   );
   const attentionBlockerIds = useMemo(
     () => new Set(openBlockers.map((node) => node.id)),
@@ -2212,6 +2341,7 @@ export default function App() {
       transitionCoordinatorRef.current,
       { kind: "sync_started", fence },
     );
+    beginProjectSnapshotRequest(requestedProjectId);
     setSyncingProjectIds((current) => new Set(current).add(requestedProjectId));
     setNotice(null);
     let committedResponseReceived = false;
@@ -2252,10 +2382,7 @@ export default function App() {
         }
         return;
       }
-      const projection: ProjectTransitionResponse = {
-        ...response,
-        graph: decodeGraphState(response.graph),
-      };
+      const projection = decodeProjectTransitionResponse(response);
       if (projection.head.revision !== expectedHead.revision + 1) {
         throw new Error("Committed transition response did not advance exactly one revision.");
       }
@@ -2265,6 +2392,7 @@ export default function App() {
       > = {
         head: expectedHead,
         graph: expectedGraph,
+        attention: expectedProject.attention,
         experiment_control: expectedProject.experiment_control,
         ruleset_tag: transitionRulesetTag,
         transition_id: expectedHead.transition_id,
@@ -2313,7 +2441,12 @@ export default function App() {
       applySyncedGraph(nextGraph);
       updateProject((current) =>
         current?.id === requestedProjectId
-          ? projectWithTransitionProjection(current, nextGraph, committed.experiment_control)
+          ? projectWithTransitionProjection(
+              current,
+              nextGraph,
+              committed.experiment_control,
+              committed.attention,
+            )
           : current,
       );
       reconcileFloatingChat(nextGraph.nodes, false);
@@ -2402,20 +2535,7 @@ export default function App() {
     if (!apiBase || experimentStopId) return;
     const finishExperimentStop = beginExperimentStop(nodeId);
     try {
-      const control = await api<ExperimentControlState>(
-        experimentStopPath(apiBase, nodeId, episodeId),
-        { method: "POST" },
-      );
-      if (!episodeId) {
-        updateProject((current) =>
-          current
-            ? {
-                ...current,
-                experiment_control: { ...current.experiment_control, [nodeId]: control },
-              }
-            : current,
-        );
-      }
+      await api<unknown>(experimentStopPath(apiBase, nodeId, episodeId), { method: "POST" });
       await Promise.all([reload(), episodeId ? refreshExperimentLoops() : Promise.resolve()]);
     } catch (error) {
       setNotice({ kind: "error", text: (error as Error).message });
@@ -2453,11 +2573,13 @@ export default function App() {
 
   const runExperiment = async (node: GraphNode) => {
     if (!project || node.type !== "experiment" || mutationsDisabled) return;
+    if (experimentStartRequiresSync) {
+      setNotice({ kind: "error", text: "Sync staged graph changes before starting an episode." });
+      return;
+    }
     const control = project.experiment_control?.[node.id];
-    if (!control?.ready || control.active) {
-      const reason = control?.active
-        ? "A control loop is already active for this experiment."
-        : (control?.reasons.join(" ") ?? "This experiment is not ready to run.");
+    if (!control?.can_start) {
+      const reason = control?.reasons.join(" ") ?? "This experiment is not ready to run.";
       setNotice({ kind: "error", text: reason });
       return;
     }
@@ -3480,8 +3602,10 @@ export default function App() {
                 project,
                 presentedGraph,
                 presentedExperimentControl,
+                presentedAttention,
               )}
               graph={presentedGraph}
+              pendingProposals={pendingProposals}
               decisionsAwaitingChoice={attentionDecisions}
               latestRevisionSummary={
                 latestRevisionSummary?.to_revision === graph.revision ? latestRevisionSummary : null
@@ -3492,7 +3616,12 @@ export default function App() {
           {view === "attention" && (
             <div className="attention-page">
               <div className="attention-main">
-                <AttentionOverview graph={attentionGraph} onSelectNode={openNode} />
+                <AttentionOverview
+                  proposals={pendingProposals}
+                  decisions={attentionDecisions}
+                  blockers={openBlockers}
+                  onSelectNode={openNode}
+                />
                 <ProposalJudgmentSection
                   proposals={pendingProposals}
                   graph={attentionGraph}
@@ -3574,6 +3703,7 @@ export default function App() {
                   ]),
                 )}
                 mutationsDisabled={mutationsDisabled}
+                experimentStartsDisabled={experimentStartRequiresSync}
                 onInspectTask={selectTaskInspector}
                 onDismissTask={dismissTaskNotification}
                 onSelectNode={openNode}
@@ -3626,6 +3756,7 @@ export default function App() {
                 );
               }}
               onSaved={(saved, preserveReadiness = true) => {
+                beginProjectSnapshotRequest(saved.id);
                 const decoded = decodeProjectSnapshot(saved);
                 updateProject((current) =>
                   preserveReadiness ? preserveProjectReadiness(decoded, current) : decoded,
@@ -3702,7 +3833,7 @@ export default function App() {
             behind={draftNodeIsBehind(humanDraft?.nodes[node.id], graph.nodes[node.id])}
             canonicalStanding={graph.nodes[node.id]?.standing ?? node.standing}
             experimentControl={experimentControl}
-            experimentRunDisabled={false}
+            experimentRunDisabled={experimentStartRequiresSync}
             experimentRunBusy={taskStarting}
             decisionChoiceStaged={Boolean(
               humanDraft?.nodes[node.id]?.changes.selected_option !== undefined ||
@@ -3904,7 +4035,11 @@ export function primaryQuestionForGraph(graph: GraphState): GraphNode | null {
   );
 }
 
-export function projectWithGraph(project: ProjectSnapshot, graph: GraphState): ProjectSnapshot {
+export function projectWithGraph(
+  project: ProjectSnapshot,
+  graph: GraphState,
+  attention: GraphAttentionProjection = projectAttentionForPresentation(project, null),
+): ProjectSnapshot {
   const standingCounts = Object.values(graph.nodes).reduce(
     (counts, node) => {
       counts[node.standing] += 1;
@@ -3917,17 +4052,12 @@ export function projectWithGraph(project: ProjectSnapshot, graph: GraphState): P
     graph,
     revision: graph.revision,
     primary_question: primaryQuestionForGraph(graph),
+    attention,
     counts: {
       ...standingCounts,
-      pending_proposals: Object.values(graph.proposals).filter((item) => item.status === "pending")
-        .length,
-      decisions_awaiting_choice: Object.values(graph.nodes).filter(
-        (node) =>
-          node.type === "decision" && (node.status === "ready" || node.status === "revisit"),
-      ).length,
-      open_blockers: Object.values(graph.nodes).filter(
-        (node) => node.type === "blocker" && node.status === "open" && node.standing === "asserted",
-      ).length,
+      pending_proposals: attention.pending_proposal_ids.length,
+      decisions_awaiting_choice: attention.decisions_awaiting_choice_ids.length,
+      open_blockers: attention.open_blocker_ids.length,
     },
   };
 }
@@ -3936,9 +4066,10 @@ function projectWithTransitionProjection(
   project: ProjectSnapshot,
   graph: GraphState,
   experimentControl: Record<string, ExperimentControlState>,
+  attention: GraphAttentionProjection,
 ): ProjectSnapshot {
   return {
-    ...projectWithGraph(project, graph),
+    ...projectWithGraph(project, graph, attention),
     experiment_control: experimentControl,
   };
 }
@@ -3946,12 +4077,14 @@ function projectWithTransitionProjection(
 function localDraftTransitionProjection(
   graph: GraphState,
   experimentControl: Record<string, ExperimentControlState>,
+  attention: GraphAttentionProjection,
   head: GraphHeadRef,
   rulesetTag: string | null,
 ): BrowserTransitionProjection {
   return {
     head,
     graph,
+    attention,
     experiment_control: experimentControl,
     ruleset_tag: rulesetTag,
     transition_id: head.transition_id,

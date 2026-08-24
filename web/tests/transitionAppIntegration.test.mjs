@@ -12,6 +12,7 @@ const server = await createServer({
 const {
   attentionGraphForProjection,
   canonicalGraphHead,
+  experimentStartNeedsSync,
   humanAttentionBlockers,
   humanDraftTransitionRouting,
   primaryQuestionForGraph,
@@ -19,6 +20,15 @@ const {
 } = await server.ssrLoadModule("/src/App.tsx");
 
 after(() => server.close());
+
+test("only a backend candidate requires Sync before an Experiment start", () => {
+  const localDraft = { base_head: null };
+  const backendCandidate = { base_head: canonicalGraphHead(4) };
+
+  assert.equal(experimentStartNeedsSync(null), false);
+  assert.equal(experimentStartNeedsSync(localDraft), false);
+  assert.equal(experimentStartNeedsSync(backendCandidate), true);
+});
 
 const manifest = {
   ruleset_tag: "rcp.lifecycle.v1",
@@ -166,6 +176,11 @@ test("attention membership follows a backend preview candidate, not canonical bl
   const projection = {
     head: canonicalGraphHead(5, "2".repeat(64)),
     graph: previewGraph,
+    attention: {
+      pending_proposal_ids: [],
+      decisions_awaiting_choice_ids: [],
+      open_blocker_ids: [],
+    },
     experiment_control: {},
     ruleset_tag: "rcp.lifecycle.v1",
     transition_id: "2".repeat(64),
@@ -175,7 +190,10 @@ test("attention membership follows a backend preview candidate, not canonical bl
 
   const attentionGraph = attentionGraphForProjection(canonical, projection);
   assert.strictEqual(attentionGraph, previewGraph);
-  assert.deepEqual(humanAttentionBlockers(Object.values(attentionGraph.nodes)), []);
+  assert.deepEqual(
+    humanAttentionBlockers(projection.attention.open_blocker_ids, attentionGraph.nodes),
+    [],
+  );
 });
 
 test("attention content follows the same local projection snapshot as the rest of staging", () => {
@@ -200,6 +218,11 @@ test("attention content follows the same local projection snapshot as the rest o
   const projection = {
     head: canonicalGraphHead(4),
     graph: projected,
+    attention: {
+      pending_proposal_ids: [],
+      decisions_awaiting_choice_ids: [],
+      open_blocker_ids: ["blocker"],
+    },
     experiment_control: {},
     ruleset_tag: "rcp.lifecycle.v1",
     transition_id: null,
@@ -236,6 +259,11 @@ test("candidate snapshots rederive the primary question by backend standing and 
 
   const project = {
     primary_question: { id: "rq/removed", type: "research_question", standing: "accepted" },
+    attention: {
+      pending_proposal_ids: [],
+      decisions_awaiting_choice_ids: [],
+      open_blocker_ids: [],
+    },
     counts: {
       pending_proposals: 0,
       decisions_awaiting_choice: 0,

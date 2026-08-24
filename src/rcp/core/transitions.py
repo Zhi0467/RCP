@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.control import ExperimentControlState, experiment_control_dependencies
+from rcp.core.attention import project_graph_attention
 from rcp.core.materialize import (
     apply_transition_generated_operation,
     apply_valid_operation,
@@ -24,6 +25,7 @@ from rcp.core.operations import (
 )
 from rcp.core.transition_models import (
     ExperimentGuidanceValidity,
+    GraphAttentionProjection,
     GraphHeadRef,
     GraphTargetRef,
     GuidanceFieldValidity,
@@ -65,6 +67,7 @@ class ProjectTransitionProjection(BaseModel):
 
     head: GraphHeadRef
     graph: GraphState
+    attention: GraphAttentionProjection
     experiment_control: dict[str, ExperimentControlState]
     guidance_validity: dict[str, ExperimentGuidanceValidity]
     ruleset_tag: str
@@ -601,6 +604,7 @@ def _project_projection(
     return ProjectTransitionProjection(
         head=head,
         graph=state,
+        attention=project_graph_attention(state),
         experiment_control=controls,
         guidance_validity=guidance,
         ruleset_tag=ruleset_tag,

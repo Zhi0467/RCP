@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { withTaskAnswers } from "./taskAnswers.mjs";
-import { readFileSync } from "node:fs";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -24,6 +23,7 @@ const {
 } = await server.ssrLoadModule("/src/App.tsx");
 const { AttentionRail } = await server.ssrLoadModule("/src/components/AttentionRail.tsx");
 const { ProjectSettings } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
+const { decodeGraphAttentionProjection } = await server.ssrLoadModule("/src/types.ts");
 
 after(() => server.close());
 
@@ -94,6 +94,44 @@ function decision(id, status) {
   };
 }
 
+test("attention decoding validates shape and referenced graph member types", () => {
+  const state = graph({
+    nodes: {
+      decision: decision("decision", "decided"),
+      blocker: blocker("blocker", "scientific", "resolved", "accepted"),
+    },
+    proposals: { proposal: { id: "proposal" } },
+  });
+  const attention = {
+    pending_proposal_ids: ["proposal"],
+    decisions_awaiting_choice_ids: ["decision"],
+    open_blocker_ids: ["blocker"],
+  };
+
+  assert.deepEqual(decodeGraphAttentionProjection(attention, state), attention);
+  assert.throws(
+    () => decodeGraphAttentionProjection({ ...attention, extra: [] }, state),
+    /missing or malformed/,
+  );
+  assert.throws(
+    () =>
+      decodeGraphAttentionProjection(
+        { ...attention, open_blocker_ids: ["blocker", "blocker"] },
+        state,
+      ),
+    /duplicate open_blocker_ids/,
+  );
+  assert.throws(
+    () =>
+      decodeGraphAttentionProjection({ ...attention, pending_proposal_ids: ["missing"] }, state),
+    /missing Proposal missing/,
+  );
+  assert.throws(
+    () => decodeGraphAttentionProjection({ ...attention, open_blocker_ids: ["decision"] }, state),
+    /is not a Blocker/,
+  );
+});
+
 function task(operationId, kind, status, statusMessage, updatedAt = "2026-08-03T00:00:00Z") {
   return withTaskAnswers({
     operation_id: operationId,
@@ -117,45 +155,38 @@ function task(operationId, kind, status, statusMessage, updatedAt = "2026-08-03T
 }
 
 test("Inbox counts pending proposals, queued Decisions, and only asserted open blockers", () => {
-  const nodes = {
-    asserted: blocker("ASSERTED OPEN", "scientific"),
-    accepted: blocker("ACCEPTED OPEN", "infrastructure", "open", "accepted"),
-    contested: blocker("CONTESTED OPEN", "design", "open", "contested"),
-    resolved: blocker("ASSERTED RESOLVED", "design", "resolved"),
-    decisionOpen: decision("OPEN DECISION", "open"),
-    decisionReady: decision("READY DECISION", "ready"),
-    decisionRevisit: decision("REVISIT DECISION", "revisit"),
-  };
+  const asserted = blocker("ASSERTED OPEN", "scientific");
+  const accepted = blocker("ACCEPTED OPEN", "infrastructure", "open", "accepted");
+  const contested = blocker("CONTESTED OPEN", "design", "open", "contested");
+  const resolved = blocker("ASSERTED RESOLVED", "design", "resolved");
+  const decisionOpen = decision("OPEN DECISION", "open");
+  const decisionReady = decision("READY DECISION", "ready");
+  const decisionRevisit = decision("REVISIT DECISION", "revisit");
+  const nodes = Object.fromEntries(
+    [asserted, accepted, contested, resolved, decisionOpen, decisionReady, decisionRevisit].map(
+      (node) => [node.id, node],
+    ),
+  );
   assert.deepEqual(
-    humanAttentionBlockers(Object.values(nodes)).map((node) => node.id),
+    humanAttentionBlockers(["ASSERTED OPEN"], nodes).map((node) => node.id),
     ["ASSERTED OPEN"],
   );
 
+  const pending = {
+    id: "pending",
+    title: "Pending",
+    card: {},
+    ops: [],
+    related_node_ids: [],
+    base_rev: 1,
+    status: "pending",
+  };
+
   const html = renderToStaticMarkup(
     React.createElement(AttentionOverview, {
-      graph: graph({
-        nodes,
-        proposals: {
-          pending: {
-            id: "pending",
-            title: "Pending",
-            card: {},
-            ops: [],
-            related_node_ids: [],
-            base_rev: 1,
-            status: "pending",
-          },
-        },
-        ambiguities: {
-          open: {
-            id: "open",
-            question: "Open ambiguity",
-            why_it_matters: "It matters",
-            related_node_ids: [],
-            status: "open",
-          },
-        },
-      }),
+      proposals: [pending],
+      decisions: [decisionReady, decisionRevisit],
+      blockers: [asserted],
       onSelectNode() {},
     }),
   );
@@ -166,10 +197,13 @@ test("Inbox counts pending proposals, queued Decisions, and only asserted open b
   assert.doesNotMatch(html, /Open ambiguities|Open blockers|Scientific blockers|Resolve “/);
 });
 
-test("Decision attention membership uses canonical status while rendering staged nodes", () => {
+test("Decision rows render supplied backend membership with staged presentation fields", () => {
   const statuses = ["open", "ready", "decided", "revisit", "superseded"];
   const canonicalNodes = Object.fromEntries(
-    statuses.map((status) => [status, decision(status.toUpperCase(), status)]),
+    statuses.map((status) => {
+      const node = decision(status.toUpperCase(), status);
+      return [node.id, node];
+    }),
   );
   const presentedNodes = Object.fromEntries(
     Object.entries(canonicalNodes).map(([status, node]) => [
@@ -184,7 +218,7 @@ test("Decision attention membership uses canonical status while rendering staged
   );
 
   assert.deepEqual(
-    decisionsAwaitingChoice(Object.values(canonicalNodes), presentedNodes).map((node) => [
+    decisionsAwaitingChoice(["READY", "REVISIT"], canonicalNodes, presentedNodes).map((node) => [
       node.id,
       node.title,
       node.status,
@@ -195,7 +229,7 @@ test("Decision attention membership uses canonical status while rendering staged
       ["REVISIT", "STAGED REVISIT", "revisit", true],
     ],
   );
-  assert.deepEqual(decisionsAwaitingChoice(Object.values(presentedNodes), presentedNodes), []);
+  assert.deepEqual(decisionsAwaitingChoice([], presentedNodes, presentedNodes), []);
 });
 
 test("Decision attention rows show only title and state and open the existing node card", () => {
@@ -250,7 +284,7 @@ test("a successful Seed or Refresh suppresses the unseeded coverage warning", ()
   );
 });
 
-test("staged blocker judgments remain until canonical standing changes", () => {
+test("Blocker rows render exactly the supplied backend preview membership", () => {
   const canonicalNodes = {
     agree: blocker("STAGED AGREE", "scientific"),
     contest: blocker("STAGED CONTEST", "design"),
@@ -261,7 +295,7 @@ test("staged blocker judgments remain until canonical standing changes", () => {
   };
 
   assert.deepEqual(
-    humanAttentionBlockers(Object.values(canonicalNodes), presentedNodes).map((node) => [
+    humanAttentionBlockers(["STAGED AGREE", "STAGED CONTEST"], presentedNodes).map((node) => [
       node.id,
       node.standing,
     ]),
@@ -270,7 +304,7 @@ test("staged blocker judgments remain until canonical standing changes", () => {
       ["STAGED CONTEST", "contested"],
     ],
   );
-  assert.deepEqual(humanAttentionBlockers(Object.values(presentedNodes), presentedNodes), []);
+  assert.deepEqual(humanAttentionBlockers([], presentedNodes), []);
 });
 
 test("Runs needs action includes only asserted open blockers and excludes generic chat", () => {
@@ -331,7 +365,7 @@ test("Runs needs action includes only asserted open blockers and excludes generi
   );
 });
 
-test("Runs renders a legacy cached Experiment control without an operational block", () => {
+test("Runs fails loudly when a cached Experiment control lacks backend lifecycle answers", () => {
   const experiment = {
     id: "exp/legacy-cache",
     type: "experiment",
@@ -352,44 +386,44 @@ test("Runs renders a legacy cached Experiment control without an operational blo
     source_refs: [],
     extension_fields: {},
   };
-  const html = renderToStaticMarkup(
-    React.createElement(ExecutionView, {
-      graph: graph({ nodes: { [experiment.id]: experiment } }),
-      attentionBlockerIds: new Set(),
-      tasks: [],
-      watchers: [],
-      experimentControl: {
-        [experiment.id]: {
-          ready: true,
-          reasons: [],
-          invocations_used: 0,
-          invocation_ceiling: 2,
-          invocations_remaining: 2,
-          episode_id: null,
-          paused: false,
-          active: false,
-          governing_decisions: [],
-          decision_drift: [],
-        },
-      },
-      dismissedTaskIds: new Set(),
-      selectedExperimentId: null,
-      focusExperimentId: null,
-      runBusy: false,
-      stopBusyId: null,
-      onInspectTask() {},
-      onDismissTask() {},
-      onSelectNode() {},
-      onSelectExperiment() {},
-      onDetailFocused() {},
-      onRunExperiment() {},
-      onStopExperiment() {},
-    }),
+  assert.throws(
+    () =>
+      renderToStaticMarkup(
+        React.createElement(ExecutionView, {
+          graph: graph({ nodes: { [experiment.id]: experiment } }),
+          attentionBlockerIds: new Set(),
+          tasks: [],
+          watchers: [],
+          experimentControl: {
+            [experiment.id]: {
+              ready: true,
+              reasons: [],
+              invocations_used: 0,
+              invocation_ceiling: 2,
+              invocations_remaining: 2,
+              episode_id: null,
+              paused: false,
+              active: false,
+              governing_decisions: [],
+              decision_drift: [],
+            },
+          },
+          dismissedTaskIds: new Set(),
+          selectedExperimentId: null,
+          focusExperimentId: null,
+          runBusy: false,
+          stopBusyId: null,
+          onInspectTask() {},
+          onDismissTask() {},
+          onSelectNode() {},
+          onSelectExperiment() {},
+          onDetailFocused() {},
+          onRunExperiment() {},
+          onStopExperiment() {},
+        }),
+      ),
+    /incomplete backend control projection/,
   );
-
-  assert.match(html, /Legacy cached experiment/);
-  assert.match(html, /Start an episode/);
-  assert.doesNotMatch(html, /Cached summary/);
 });
 
 test("Project Settings supports legacy profiles without an ontology authoring surface", () => {
@@ -487,21 +521,3 @@ function findElement(node, predicate) {
   }
   return null;
 }
-
-test("the web Inbox predicate agrees with the backend over the shared fixture", () => {
-  // The backend counts Decisions awaiting choice for the project card while the
-  // client filters the graph itself for the Inbox, so the rule exists twice.
-  // tests/test_api.py reads this same file; drift on either side fails here.
-  const fixture = JSON.parse(
-    readFileSync(
-      new URL("../../tests/fixtures/decisions_awaiting_choice.json", import.meta.url),
-      "utf8",
-    ),
-  );
-  const nodes = Object.fromEntries(fixture.nodes.map((node) => [node.id, node]));
-
-  assert.deepEqual(
-    decisionsAwaitingChoice(Object.values(nodes), nodes).map((node) => node.id),
-    fixture.expected_awaiting_choice,
-  );
-});

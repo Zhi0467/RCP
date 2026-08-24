@@ -22,6 +22,7 @@ from rcp.storage import (
     EpisodeRecord,
     EpisodeStatus,
     EpisodeWrapupState,
+    ExperimentEpisodeProjectionSnapshot,
 )
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 
@@ -254,11 +255,16 @@ def serialize_episode(
     episode: EpisodeRecord,
     *,
     branch_summary: BranchSummaryResolver | None = None,
+    projection_snapshot: ExperimentEpisodeProjectionSnapshot | None = None,
 ) -> EpisodeResponse:
     """Serialize one project-owned parent from its current durable ledgers."""
 
     if episode.project_id != project_id:
         raise KeyError(episode.episode_id)
+    if projection_snapshot is not None and (
+        episode.mode != "experiment_loop" or projection_snapshot.episode != episode
+    ):
+        raise ValueError("Experiment episode projection does not match its durable parent.")
     owns_graph_branch = (
         episode.mode == "auto_research"
         and episode.graph_target.kind == "branch"
@@ -267,7 +273,11 @@ def serialize_episode(
     if owns_graph_branch and branch_summary is None:
         raise ValueError("a branch-target episode requires its strict graph branch summary")
 
-    task_records = _operational_tasks(store, episode)
+    task_records = (
+        projection_snapshot.tasks
+        if projection_snapshot is not None
+        else _operational_tasks(store, episode)
+    )
     recovery_controls_allowed = episode.ending is None and episode.stop_requested_at is None
     tasks = [
         _serialize_task(task, recovery_controls_allowed=recovery_controls_allowed)
@@ -288,7 +298,13 @@ def serialize_episode(
         ) = _auto_research_projection(store, episode, task_records)
 
     stored_report = (
-        None if episode.ending == "stopped" else store.episode_report(episode.episode_id)
+        None
+        if episode.ending == "stopped"
+        else (
+            projection_snapshot.report
+            if projection_snapshot is not None
+            else store.episode_report(episode.episode_id)
+        )
     )
     report = (
         EpisodeReportSummary(
@@ -331,7 +347,11 @@ def serialize_episode(
         recovery=recovery,
         status=episode.status,
         starting_instruction=starting_instruction,
-        budget=store.episode_budget_meter(episode.episode_id),
+        budget=(
+            projection_snapshot.budget
+            if projection_snapshot is not None
+            else store.episode_budget_meter(episode.episode_id)
+        ),
         authorized_by=episode.authorized_by,
         stop_requested_at=episode.stop_requested_at,
         ending=episode.ending,

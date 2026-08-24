@@ -1,5 +1,5 @@
 {
-  "comment": "One fixture, two predicates. The backend `decision_awaits_choice` and the web `decisionsAwaitingChoice` must agree on this exact list, so a drift on either side fails a test instead of silently disagreeing between the project card and the Inbox.",
+  "comment": "The backend owns this membership. `decision_awaits_choice` must select exactly this list, and the browser consumes the ids the projection publishes rather than reapplying the predicate.",
   "nodes": [
     {
       "id": "dec/open-one",
