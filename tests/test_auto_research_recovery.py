@@ -335,7 +335,10 @@ def test_session_limit_uses_clean_orchestrator_retry_even_after_checkpoint(tmp_p
     assert recovery.retry_mode == "clean"
 
 
-def test_repeated_provider_failures_share_one_bounded_allocation_recovery(tmp_path: Path) -> None:
+def test_repeated_provider_failures_share_one_bounded_allocation_recovery(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     store = _store(tmp_path)
     stage = tmp_path / "orchestrator-stage"
     stage.mkdir()
@@ -353,6 +356,37 @@ def test_repeated_provider_failures_share_one_bounded_allocation_recovery(tmp_pa
     recovery = _wait_for_recovery(store, "task:root")
     assert recovery.attempts == 0
     assert _recovery_delay_seconds(recovery) == 120
+
+    complete_recovery = store.complete_auto_research_recovery
+
+    def complete_after_child_settles(
+        recovery_id: str,
+        *,
+        admitted_operation_id: str | None = None,
+        expected_operation_id: str | None = None,
+    ):
+        if admitted_operation_id is not None:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                child = store.agent_task(admitted_operation_id)
+                current = store.auto_research_recovery(recovery_id)
+                if (
+                    child is not None
+                    and child.status == "failed"
+                    and current is not None
+                    and current.operation_id == admitted_operation_id
+                ):
+                    break
+                time.sleep(0.01)
+            else:
+                raise AssertionError("recovery child did not settle before admission checkpoint")
+        return complete_recovery(
+            recovery_id,
+            admitted_operation_id=admitted_operation_id,
+            expected_operation_id=expected_operation_id,
+        )
+
+    monkeypatch.setattr(store, "complete_auto_research_recovery", complete_after_child_settles)
 
     for expected_attempt, expected_consumed, expected_delay in (
         (2, 1, 240),
