@@ -960,8 +960,14 @@ export interface ModelChoice {
   default_reasoning: string;
 }
 
+export interface ProviderRuntimeChoice {
+  id: string;
+  label: string;
+}
+
 export interface AgentProfile {
   provider: ProviderId;
+  runtime: string;
   model: string;
   reasoning: string;
   run_on: string;
@@ -973,6 +979,10 @@ export interface AgentRunConfig {
   model: string;
   reasoning: string;
   run_on: string;
+}
+
+export interface AgentProfileSettings extends AgentRunConfig {
+  runtime: string;
 }
 
 export interface AgentTaskReceipt {
@@ -1169,6 +1179,7 @@ export interface AgentTask {
   attempt: number;
   parent_operation_id?: string | null;
   episode_id?: string | null;
+  runtime_id: string;
   native_session_id?: string | null;
   stage_host?: string | null;
   stage_root?: string | null;
@@ -1432,6 +1443,7 @@ export interface ProviderReadiness {
   version?: string | null;
   reason?: string | null;
   models: ModelChoice[];
+  runtimes: ProviderRuntimeChoice[];
 }
 
 export interface PaperSnapshot {
@@ -1596,7 +1608,7 @@ export interface ProjectSetupRequest {
 export interface ProjectSettingsRequest {
   default_run_truth_scope: string[];
   default_auto_research_invocation_ceiling: number;
-  agent_profiles: Record<AgentExecutionProfile, AgentRunConfig>;
+  agent_profiles: Record<AgentExecutionProfile, AgentProfileSettings>;
   skill_defaults: SkillDefaults;
   machine_provider_paths?: Record<string, Record<ProviderId, string>>;
 }
@@ -1647,6 +1659,7 @@ export interface SetupPreview {
 
 export interface WritingSession {
   provider: ProviderId;
+  runtime_id: string;
   native_session_id: string;
   execution_machine: string;
   project_id: string;

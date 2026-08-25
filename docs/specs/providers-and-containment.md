@@ -34,6 +34,37 @@ Capabilities are fixed in code:
 The manifest and selected skills may choose execution details or add guidance;
 they cannot widen or narrow these capabilities.
 
+## Provider runtime selection
+
+Each project agent profile selects a provider-owned runtime. An omitted value is
+backward compatible: Codex uses `exec` and Claude uses `stream-json`. Provider
+readiness exports the allowed names, Project Settings renders those answers, and
+the backend validates the saved provider/runtime pair. A task request cannot
+override the profile's runtime. The selected profile runtime applies to every
+capability launched through that profile, so one `node_chat` choice covers both
+Discuss and Work while their distinct capability contracts remain fixed in code.
+
+Codex additionally offers `app-server`. RCP starts one fresh stdio app-server
+process for each provider turn and uses the same shared local/SSH launcher,
+process control, invocation gate, exact permission profile, event normalization,
+usage accounting, and cleanup as `exec`. Provider threads remain persisted by
+Codex, so a local app-server-created conversation can appear in Codex Desktop.
+That visibility is provider-owned inspection; RCP does not order, take over, or
+coordinate Desktop tasks.
+
+The preferred runtime is chosen anew from the current project profile for every
+RCP task invocation, including a continuation of an existing native session. A
+native session is not permanently bound to the runtime that created it. RCP
+records the runtime actually used on the task and, for Paper, on the writing
+session.
+
+Codex app-server may fall back silently to Codex exec on the same local or SSH
+machine only while failure is known to precede delivery of the new prompt. RCP
+checkpoints the actual runtime before the write that can deliver that prompt.
+Once `turn/start` may have been accepted, failure is retained as an interrupted
+or failed attempt and RCP never retries the prompt through exec. This rule is the
+same for fresh and resumed conversations.
+
 ## Cooperative project write containment
 
 Work-like provider launches are guarded against accidental writes into another
@@ -103,9 +134,11 @@ WebSearch and WebFetch remain available under the provider contract.
 ### Version failure
 
 Provider profiles own the minimum supported CLI contract. If the installed
-supported version cannot enforce exact unattended roots, RCP fails the launch
-with a provider-compatibility diagnostic. It never silently restores broad
-bypass access or treats prompt wording as containment.
+supported version cannot enforce exact unattended roots, the launch fails with
+a provider-compatibility diagnostic. A selected Codex app-server version or
+startup that fails before prompt delivery may use the explicit exec fallback;
+exec must still enforce the same capability and exact roots. RCP never restores
+broad bypass access or treats prompt wording as containment.
 
 ## Continuation binding
 
@@ -123,7 +156,9 @@ does not widen an existing native session.
 
 The same resolver covers ordinary Work, Auto-research root, child Work, child
 Experiment, watcher wake, and correction paths. There is no permissive fallback
-for a continuation.
+for a continuation's project, host, stage, graph target, or write scope. The
+pre-prompt provider-runtime fallback above changes none of those bindings and
+resumes the same native session id.
 
 ## One graph output channel
 
@@ -154,7 +189,8 @@ movement between response and Apply is not by itself a rejection.
 
 Agent work belongs to the backend, not a browser view. Before execution, RCP
 persists the task, task attempt, authorizer, capability, target, exact stage,
-provider identity, and write-scope binding. Provider events retain labelled
+provider identity, and write-scope binding. Immediately before prompt delivery
+it persists the actual provider runtime. Provider events retain labelled
 answers, native session ids, usage, diagnostics, Patch results, and launch
 receipts.
 

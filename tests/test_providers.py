@@ -278,6 +278,23 @@ def test_an_unknown_provider_is_rejected_by_the_schema_layer() -> None:
         MachineConfig(alias="local", provider_paths={"gemini": "/opt/gemini"})
 
 
+def test_agent_profile_runtime_is_provider_owned_and_backward_compatible() -> None:
+    from rcp.config import AgentSurfaceConfig
+
+    assert AgentSurfaceConfig(provider="codex", run_on="local").runtime == "exec"
+    assert (
+        AgentSurfaceConfig(
+            provider="codex",
+            runtime="codex.app-server-stdio.v1",
+            run_on="local",
+        ).runtime
+        == "app-server"
+    )
+    assert AgentSurfaceConfig(provider="claude", run_on="local").runtime == "stream-json"
+    with pytest.raises(ValueError, match="does not support runtime"):
+        AgentSurfaceConfig(provider="claude", runtime="app-server", run_on="local")
+
+
 def test_machine_provider_paths_are_backward_compatible_and_absolute(manifest) -> None:
     from rcp.config import MachineConfig
 

@@ -1,6 +1,6 @@
 import type {
   AgentExecutionProfile,
-  AgentRunConfig,
+  AgentProfileSettings,
   Machine,
   ProviderId,
   SkillDefaults,
@@ -11,17 +11,22 @@ export type MachineProviderPaths = Record<string, Record<ProviderId, string>>;
 export interface SettingsDraft {
   version: 2;
   scope: string[];
-  profiles: Partial<Record<AgentExecutionProfile, AgentRunConfig>>;
+  profiles: Partial<Record<AgentExecutionProfile, AgentProfileSettings>>;
   autoResearchInvocationCeiling?: number;
   providerPaths?: MachineProviderPaths;
   skillDefaults?: SkillDefaults;
 }
 
 export function mergeAgentProfiles(
-  saved: Record<AgentExecutionProfile, AgentRunConfig>,
+  saved: Record<AgentExecutionProfile, AgentProfileSettings>,
   staged: SettingsDraft["profiles"],
-): Record<AgentExecutionProfile, AgentRunConfig> {
-  return { ...saved, ...staged };
+): Record<AgentExecutionProfile, AgentProfileSettings> {
+  return Object.fromEntries(
+    Object.entries(saved).map(([surface, profile]) => [
+      surface,
+      { ...profile, ...staged[surface as AgentExecutionProfile] },
+    ]),
+  ) as Record<AgentExecutionProfile, AgentProfileSettings>;
 }
 
 export function settingsDraftStorageKey(projectId: string): string {

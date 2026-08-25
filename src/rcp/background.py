@@ -18,7 +18,7 @@ from rcp.core.authority import require_dispatch
 from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import CHAT_ARTIFACT_MAX_COUNT, GRAPH_UPDATE_HISTORY_MAX_COUNT
-from rcp.providers import classify_terminal_error
+from rcp.providers import classify_terminal_error, require_runtime_id
 from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     AutoResearchWakeAdmission,
@@ -96,6 +96,7 @@ class AgentTaskExecution:
     operation_id: str
     store: AppStore
     control: AgentProcessControl
+    runtime_id: str = ""
     stage_host: str | None = None
     stage_root: str | None = None
     write_scope_fingerprint: str | None = None
@@ -940,6 +941,10 @@ class BackgroundAgentTasks:
             raise ValueError("The admitted task lost its human authorizer snapshot.")
         if record.native_session_id != request.session_id:
             raise ValueError("The admitted task request and native session do not agree.")
+        if request.provider:
+            require_runtime_id(request.provider, record.runtime_id)
+        elif record.runtime_id:
+            raise ValueError("The admitted task has a runtime without a provider.")
         if record.stage_host is not None and record.stage_root is None:
             raise ValueError("The admitted task has an incoherent execution stage binding.")
         if record.stage_root is not None and not record.stage_root.strip():
@@ -1069,6 +1074,7 @@ class BackgroundAgentTasks:
             or current.request != request.model_dump(mode="json")
             or current.attempt != record.attempt
             or current.parent_operation_id != record.parent_operation_id
+            or current.runtime_id != record.runtime_id
             or (parent is None) != (current.parent_operation_id is None)
             or (parent is not None and current.parent_operation_id != parent.operation_id)
             or current.native_session_id != record.native_session_id
@@ -1187,6 +1193,7 @@ class BackgroundAgentTasks:
                 operation_id=operation_id,
                 store=self.store,
                 control=control,
+                runtime_id=record.runtime_id,
                 stage_host=record.stage_host,
                 stage_root=record.stage_root,
                 write_scope_fingerprint=record.write_scope_fingerprint,
@@ -1202,6 +1209,7 @@ class BackgroundAgentTasks:
             operation_id=operation_id,
             store=self.store,
             control=control,
+            runtime_id=record.runtime_id,
             stage_host=record.stage_host,
             stage_root=record.stage_root,
             write_scope_fingerprint=record.write_scope_fingerprint,
@@ -1419,6 +1427,20 @@ class BackgroundAgentTasks:
                     raise TaskFailed(event.text or "The agent task failed.", messages, artifacts)
                 if event.event == "paused":
                     raise TaskPaused(event.text, messages, artifacts)
+                if event.event == "runtime":
+                    if not request.provider:
+                        raise TaskFailed(
+                            "The provider runtime has no admitted provider.",
+                            messages,
+                            artifacts,
+                        )
+                    self.store.checkpoint_agent_task_runtime(
+                        execution.operation_id,
+                        provider=request.provider,
+                        runtime_id=event.text,
+                    )
+                    execution.runtime_id = event.text
+                    continue
                 if event.event == "session" and event.session_id:
                     self.store.checkpoint_agent_task(
                         execution.operation_id,
@@ -1429,6 +1451,7 @@ class BackgroundAgentTasks:
                         "native_agent_checkpoint",
                         {
                             "provider": request.provider,
+                            "runtime_id": execution.runtime_id,
                             "run_on": request.run_on,
                             "native_session_id": event.session_id,
                             "continuation_cause": execution.continuation,

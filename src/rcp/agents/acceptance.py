@@ -172,6 +172,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
         invocation_gate: ProviderInvocationGate | None = None,
         capability: AgentCapability,
         binary: str | None = None,
+        runtime_id: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         if invocation_gate is not None:
             async with invocation_gate.serve_current_session():
@@ -191,6 +192,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     invocation_gate=None,
                     capability=capability,
                     binary=binary,
+                    runtime_id=runtime_id,
                 ):
                     yield event
             return
@@ -259,6 +261,11 @@ class AcceptanceAgentLauncher(AgentLauncher):
                 resolved_cwd,
                 active_name=ACCEPTANCE_CAMPAIGN_REAUTHORIZED_ACTIVE_FILE,
                 label="reauthorized exhaustion",
+            )
+        if runtime_id is not None:
+            yield AgentEvent(
+                event="runtime",
+                text=profile_for(provider).runtime_candidates(runtime_id)[0].id,
             )
         yield AgentEvent(event="session", session_id=stable_session)
         if scenario == "unsupported":

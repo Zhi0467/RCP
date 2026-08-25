@@ -573,7 +573,9 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     assert before["default_auto_research_invocation_ceiling"] == 10
     assert "default_campaign_invocation_ceiling" not in before
     profiles = {
-        surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
+        surface: {
+            key: profile[key] for key in ("provider", "runtime", "model", "reasoning", "run_on")
+        }
         for surface, profile in before["agent_profiles"].items()
     }
     assert set(profiles) == {
@@ -585,7 +587,9 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
         "orchestrator",
     }
     profiles["seed"]["provider"] = "claude"
+    profiles["seed"]["runtime"] = "stream-json"
     profiles["seed"]["model"] = "claude-seed"
+    profiles["node_chat"]["runtime"] = "app-server"
     profiles["orchestrator"]["model"] = "campaign-orchestrator"
 
     incomplete = client.put(
@@ -635,6 +639,7 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     assert response.json()["default_auto_research_invocation_ceiling"] == 14
     assert "default_campaign_invocation_ceiling" not in response.json()
     assert response.json()["agent_profiles"]["seed"]["model"] == "claude-seed"
+    assert response.json()["agent_profiles"]["node_chat"]["runtime"] == "app-server"
     assert response.json()["agent_profiles"]["orchestrator"]["model"] == "campaign-orchestrator"
     assert "write_path" not in response.json()["agent_profiles"]["refresh"]
     assert (
@@ -646,6 +651,7 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     assert "[paper.coach]" not in content
     updated = load_manifest(manifest.path)
     assert updated.agent_profile("seed").provider == "claude"
+    assert updated.agent_profile("node_chat").runtime == "app-server"
     assert updated.agent_profile("orchestrator").model == "campaign-orchestrator"
     assert updated.agent_profile("orchestrator").permissions == permissions_for("orchestrate")
     assert updated.agent.default_auto_research_invocation_ceiling == 14

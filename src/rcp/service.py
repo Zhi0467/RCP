@@ -84,7 +84,12 @@ from rcp.limits import (
 )
 from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
-from rcp.providers import PROVIDER_IDS, ProviderId, ProviderSkillReference
+from rcp.providers import (
+    PROVIDER_IDS,
+    ProviderId,
+    ProviderSkillReference,
+    configured_runtime,
+)
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.skill_registry import (
     SkillDefaults,
@@ -574,6 +579,7 @@ def resolve_dispatch_authority(
 
 class AgentProfileSettings(BaseModel):
     provider: ProviderId
+    runtime: str = ""
     model: str = ""
     reasoning: str = "medium"
     run_on: str = Field(min_length=1)
@@ -1126,6 +1132,7 @@ class ProjectService:
         profiles = {
             surface: AgentSurfaceConfig(
                 provider=request.agent_profiles[surface].provider,
+                runtime=request.agent_profiles[surface].runtime,
                 model=request.agent_profiles[surface].model,
                 reasoning=request.agent_profiles[surface].reasoning,
                 run_on=request.agent_profiles[surface].run_on,
@@ -1860,6 +1867,8 @@ class ProjectService:
             updates["provider"] = provider
             if provider != base.provider and model is None:
                 updates["model"] = ""
+            if provider != base.provider:
+                updates["runtime"] = configured_runtime(provider, None)
         if model is not None:
             updates["model"] = model
         if reasoning is not None:

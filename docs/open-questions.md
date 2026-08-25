@@ -284,13 +284,16 @@ binaries on 2026-08-07, not from memory:
   background agents with `claude agents --json` for scripting, and
   `--forward-subagent-text`, which surfaces subagent text with
   `parent_tool_use_id`.
-- **Codex** — `codex app-server` is a daemon whose `--listen` accepts `stdio://`,
-  `unix://PATH`, or `ws://IP:PORT`, and which emits its own protocol schema via
-  `generate-json-schema` / `generate-ts`. Alongside it: `remote-control` with
-  pairing, `mcp-server`, and `exec-server`. Both are marked `[experimental]`.
+- **Codex** — the installed build exposes a JSON-RPC app-server over stdio with
+  persisted `thread/start` / `thread/resume` and `turn/start` lifecycles. RCP now
+  uses one fresh app-server process per provider turn. That proves a richer wire
+  protocol and Desktop-visible persisted threads; it does not keep a process
+  alive between turns or make an in-flight human interruption channel.
 
-So "the CLI cannot do it" is false. Re-probe before relying on the specifics;
-these are experimental surfaces.
+So "the CLI has no bidirectional turn protocol" is false. Re-probe before
+relying on specifics because app-server remains experimental. The open question
+is still whether RCP should expose input to a running turn, not whether RCP can
+select app-server as its per-turn transport.
 
 ### What blocks a decision
 

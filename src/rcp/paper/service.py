@@ -6,10 +6,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from rcp.config import Manifest
-from rcp.providers import ProviderId
+from rcp.providers import ProviderId, legacy_runtime_id, require_runtime_id
 from rcp.storage import AppStore
 from rcp.transport import LocalStateWorkspace, StateUnavailable, StateWorkspace
 
@@ -41,6 +41,7 @@ class PaperSnapshot(BaseModel):
 
 class WritingSession(BaseModel):
     provider: ProviderId
+    runtime_id: str = ""
     native_session_id: str
     execution_machine: str
     project_id: str
@@ -52,6 +53,13 @@ class WritingSession(BaseModel):
     introduction_hash_examined: str
     graph_revision_examined: int
     research_md_hash_examined: str
+
+    @model_validator(mode="after")
+    def validate_runtime(self) -> WritingSession:
+        if not self.runtime_id:
+            self.runtime_id = legacy_runtime_id(self.provider)
+        require_runtime_id(self.provider, self.runtime_id)
+        return self
 
 
 class PaperService:
@@ -143,17 +151,18 @@ class PaperService:
             connection.execute(
                 """
                 INSERT INTO writing_sessions (
-                    native_session_id, provider, execution_machine, project_id,
+                    native_session_id, provider, runtime_id, execution_machine, project_id,
                     title, model, reasoning, created_at, last_resumed_at,
                     introduction_hash_examined, graph_revision_examined,
                     research_md_hash_examined
                 ) VALUES (
-                    :native_session_id, :provider, :execution_machine, :project_id,
+                    :native_session_id, :provider, :runtime_id, :execution_machine, :project_id,
                     :title, :model, :reasoning, :created_at, :last_resumed_at,
                     :introduction_hash_examined, :graph_revision_examined,
                     :research_md_hash_examined
                 )
                 ON CONFLICT(native_session_id) DO UPDATE SET
+                    runtime_id = excluded.runtime_id,
                     title = excluded.title,
                     last_resumed_at = excluded.last_resumed_at,
                     introduction_hash_examined = excluded.introduction_hash_examined,

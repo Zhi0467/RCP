@@ -242,6 +242,11 @@ The desktop may add shell-only dictation, update, reconnection, and packaging
 behavior only where an active acceptance contract owns it. Browser verification
 does not stand in for native window lifecycle.
 
+A local Codex thread created through RCP's app-server runtime is stored by Codex
+and may therefore appear in the Codex Desktop task list. RCP uses that as an
+inspection surface only. Sidebar ordering, loading, takeover, and concurrency
+remain Codex Desktop behavior rather than RCP product state.
+
 ## Frontend trust boundary
 
 The browser may stage human drafts and render backend projections; it is not the

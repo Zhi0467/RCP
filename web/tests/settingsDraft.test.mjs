@@ -39,6 +39,30 @@ test("an older staged path set keeps provider records added since it was written
   );
 });
 
+test("an older staged profile does not erase a runtime added to the manifest", () => {
+  const saved = {
+    node_chat: {
+      provider: "codex",
+      runtime: "app-server",
+      model: "",
+      reasoning: "medium",
+      run_on: "local",
+    },
+  };
+  const staged = {
+    node_chat: {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      reasoning: "high",
+      run_on: "local",
+    },
+  };
+
+  assert.deepEqual(mergeAgentProfiles(saved, staged), {
+    node_chat: { ...staged.node_chat, runtime: "app-server" },
+  });
+});
+
 test("settings drafts round trip staged provider paths", () => {
   const draft = {
     version: 2,

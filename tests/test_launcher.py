@@ -679,6 +679,8 @@ async def test_stream_cancellation_during_stdin_drain_reaps_and_detaches(
         control=control,
         capability="scratch_patch",
     )
+    runtime_event = await anext(stream)
+    assert runtime_event.event == "runtime"
     next_event = asyncio.create_task(anext(stream))
     process = None
     try:

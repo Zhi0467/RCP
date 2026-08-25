@@ -7,7 +7,12 @@ from typing import Any, Literal
 import tomlkit
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
-from rcp.providers import DEFAULT_PROVIDER, AgentCapability, ProviderId
+from rcp.providers import (
+    DEFAULT_PROVIDER,
+    AgentCapability,
+    ProviderId,
+    configured_runtime,
+)
 from rcp.skill_registry import SkillDefaults
 
 DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING = 10
@@ -76,10 +81,16 @@ class AgentPermissions(BaseModel):
 
 class AgentSurfaceConfig(BaseModel):
     provider: ProviderId = DEFAULT_PROVIDER
+    runtime: str = ""
     model: str = ""
     reasoning: str = "medium"
     run_on: str
     permissions: AgentPermissions | None = None
+
+    @model_validator(mode="after")
+    def validate_provider_runtime(self) -> AgentSurfaceConfig:
+        self.runtime = configured_runtime(self.provider, self.runtime)
+        return self
 
 
 class AgentConfig(BaseModel):
@@ -455,6 +466,7 @@ def write_agent_settings(
             raise ValueError(f"agent.{surface} has no configuration to write")
         table = tomlkit.table()
         table.add("provider", profile.provider)
+        table.add("runtime", profile.runtime)
         table.add("model", profile.model)
         table.add("reasoning", profile.reasoning)
         table.add("run_on", profile.run_on)

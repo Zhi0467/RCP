@@ -573,6 +573,7 @@ async def _stream_agent_events(
             invocation_gate=invocation_gate,
             capability=capability,
             binary=binary,
+            runtime_id=(execution.runtime_id or None) if execution is not None else None,
         )
     ) as stream:
         async for event in stream:
@@ -590,6 +591,11 @@ async def _stream_agent_events(
                     workspace=workspace,
                     remote_stage=remote_stage,
                 )
+                continue
+            if event.event == "runtime":
+                # Background consumes and durably checkpoints this internal
+                # boundary before asking the launcher to write the prompt.
+                yield _sse(event)
                 continue
             if event.event == "paused":
                 outcome.paused = True

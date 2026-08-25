@@ -14,7 +14,12 @@ import {
   providerOptions,
   reasoningOptions,
 } from "../providers";
-import type { AgentProfile, AgentRunConfig, ProjectSnapshot } from "../types";
+import type {
+  AgentProfile,
+  AgentRunConfig,
+  ProjectSnapshot,
+  ProviderRuntimeChoice,
+} from "../types";
 
 interface Props {
   project: ProjectSnapshot;
@@ -27,6 +32,11 @@ interface Props {
   defaultCollapsed?: boolean;
   /** Re-probe the provider CLIs. Rendered as a control only where passed. */
   onRefreshReadiness?: () => Promise<void>;
+  runtime?: {
+    value: string;
+    choices: ProviderRuntimeChoice[];
+    onChange: (value: string) => void;
+  };
   children?: ReactNode;
 }
 
@@ -49,6 +59,7 @@ export function AgentConfigControls({
   collapsible = false,
   defaultCollapsed = false,
   onRefreshReadiness,
+  runtime,
   children,
 }: Props) {
   const [expanded, setExpanded] = useState(!defaultCollapsed);
@@ -67,6 +78,10 @@ export function AgentConfigControls({
   const providers = providerOptions(Object.values(onMachine), value.provider);
   const modelChoices = modelOptions(models, value.model);
   const reasoningChoices = reasoningOptions(models, value.model, value.reasoning);
+  const runtimeChoices =
+    runtime && !runtime.choices.some((choice) => choice.id === runtime.value)
+      ? [...runtime.choices, { id: runtime.value, label: runtime.value }]
+      : (runtime?.choices ?? []);
 
   const contents = (
     <>
@@ -93,6 +108,22 @@ export function AgentConfigControls({
             ))}
           </select>
         </label>
+        {runtime && (
+          <label>
+            <span>Runtime</span>
+            <select
+              value={runtime.value}
+              disabled={locked}
+              onChange={(event) => runtime.onChange(event.target.value)}
+            >
+              {runtimeChoices.map(({ id, label }) => (
+                <option value={id} key={id}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           <span>Model</span>
           <select

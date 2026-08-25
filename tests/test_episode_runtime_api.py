@@ -31,7 +31,12 @@ def _distinct_orchestrator_profile(manifest) -> None:
         name: manifest.agent_profile(name).model_copy(deep=True) for name in _EXECUTION_PROFILES
     }
     profiles["project_chat"] = profiles["project_chat"].model_copy(
-        update={"provider": "claude", "model": "chat-only", "reasoning": "low"}
+        update={
+            "provider": "claude",
+            "runtime": "stream-json",
+            "model": "chat-only",
+            "reasoning": "low",
+        }
     )
     profiles["orchestrator"] = profiles["orchestrator"].model_copy(
         update={"provider": "codex", "model": "orchestrator-only", "reasoning": "high"}
@@ -275,7 +280,12 @@ def test_worker_request_uses_the_current_human_node_work_profile(manifest, tmp_p
         name: manifest.agent_profile(name).model_copy(deep=True) for name in _EXECUTION_PROFILES
     }
     profiles["node_chat"] = profiles["node_chat"].model_copy(
-        update={"provider": "claude", "model": "current-worker", "reasoning": "low"}
+        update={
+            "provider": "claude",
+            "runtime": "stream-json",
+            "model": "current-worker",
+            "reasoning": "low",
+        }
     )
     profiles["orchestrator"] = profiles["orchestrator"].model_copy(
         update={"provider": "codex", "model": "pinned-orchestrator", "reasoning": "high"}

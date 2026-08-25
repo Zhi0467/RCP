@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rcp.providers import legacy_runtime_id, require_runtime_id
 from rcp.storage.auto_research import migrate_legacy_auto_research
 from rcp.storage.episodes import migrate_legacy_episodes
 from rcp.storage.models import (  # noqa: F401
@@ -431,6 +432,7 @@ class AppStoreBase:
                 CREATE TABLE IF NOT EXISTS writing_sessions (
                     native_session_id TEXT PRIMARY KEY,
                     provider TEXT NOT NULL,
+                    runtime_id TEXT NOT NULL DEFAULT '',
                     execution_machine TEXT NOT NULL,
                     project_id TEXT NOT NULL,
                     title TEXT,
@@ -546,6 +548,7 @@ class AppStoreBase:
                     result_json TEXT,
                     attempt INTEGER NOT NULL DEFAULT 1,
                     parent_operation_id TEXT,
+                    runtime_id TEXT NOT NULL DEFAULT '',
                     native_session_id TEXT,
                     stage_host TEXT,
                     stage_root TEXT,
@@ -1046,8 +1049,46 @@ class AppStoreBase:
                 "html",
                 "TEXT NOT NULL DEFAULT ''",
             )
+            self._ensure_column(
+                connection,
+                "writing_sessions",
+                "runtime_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            for row in connection.execute(
+                "SELECT native_session_id, provider FROM writing_sessions WHERE runtime_id = ''"
+            ).fetchall():
+                try:
+                    runtime_id = legacy_runtime_id(row["provider"])
+                except ValueError:
+                    # Old raw rows may name a provider RCP no longer supports;
+                    # preserve them for project deletion and forensic export.
+                    continue
+                connection.execute(
+                    "UPDATE writing_sessions SET runtime_id = ? WHERE native_session_id = ?",
+                    (runtime_id, row["native_session_id"]),
+                )
             self._ensure_column(connection, "graph_runs", "attempt", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(connection, "graph_runs", "parent_operation_id", "TEXT")
+            self._ensure_column(
+                connection,
+                "graph_runs",
+                "runtime_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            for row in connection.execute(
+                "SELECT operation_id, request_json FROM graph_runs WHERE runtime_id = ''"
+            ).fetchall():
+                request = json.loads(row["request_json"])
+                provider = request.get("provider") if isinstance(request, dict) else None
+                if not isinstance(provider, str) or not provider:
+                    continue
+                runtime_id = legacy_runtime_id(provider)
+                require_runtime_id(provider, runtime_id)
+                connection.execute(
+                    "UPDATE graph_runs SET runtime_id = ? WHERE operation_id = ?",
+                    (runtime_id, row["operation_id"]),
+                )
             self._ensure_column(connection, "graph_runs", "native_session_id", "TEXT")
             self._ensure_column(connection, "graph_runs", "stage_host", "TEXT")
             self._ensure_column(connection, "graph_runs", "stage_root", "TEXT")

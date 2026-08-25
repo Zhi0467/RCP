@@ -74,6 +74,7 @@ from rcp.limits import (
 )
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.provider_skills import ProviderSkillInventoryManager
+from rcp.providers import configured_runtime_id
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandDispatcher,
@@ -318,6 +319,35 @@ def create_app(
         task = store.agent_task(execution.operation_id)
         if task is None or task.project_id != project_id:
             raise ValueError("The agent stream lost its durable project task.")
+        if kind in {"seed", "refresh", "node_chat", "project_chat", "paper_coach"}:
+            surface = kind
+        elif kind == "branch_merge":
+            surface = "orchestrator"
+        elif kind == "auto_research":
+            if not isinstance(request, AutoResearchRunRequest):
+                raise TypeError("An Auto-research task requires its pinned actor request.")
+            surface = "orchestrator" if request.role == "orchestrator" else "node_chat"
+        elif kind == "episode_report":
+            parent = store.agent_task(task.parent_operation_id or "")
+            if parent is None:
+                raise ValueError("The episode report lost its concluding provider task.")
+            if parent.kind == "auto_research":
+                parent_request = AutoResearchRunRequest.model_validate(parent.request)
+                surface = "orchestrator" if parent_request.role == "orchestrator" else "node_chat"
+            elif parent.kind in {"node_chat", "project_chat"}:
+                surface = parent.kind
+            else:
+                raise ValueError("The episode report has no current provider profile.")
+        else:
+            raise ValueError(f"Unknown provider task kind: {kind}")
+        profile = service.resolve_agent_profile(
+            surface,
+            provider=request.provider,
+            model=request.model,
+            reasoning=request.reasoning,
+            run_on=request.run_on,
+        )
+        execution.runtime_id = configured_runtime_id(profile.provider, profile.runtime)
         if task.graph_target.kind == "branch" and kind != "branch_merge":
             service = service.for_graph_target(
                 task.graph_target,

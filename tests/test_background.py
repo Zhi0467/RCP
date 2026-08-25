@@ -269,6 +269,31 @@ def test_launch_admitted_valid_task_uses_persisted_cause_and_receipt_order(
     ]
 
 
+def test_runtime_is_checkpointed_before_the_provider_session(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+
+    async def stream(_project_id, _kind, _request, _execution):
+        yield _sse(AgentEvent(event="runtime", text="codex.app-server-stdio.v1"))
+        yield _sse(AgentEvent(event="session", session_id="app-server-thread"))
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    task = _admitted_launch_task(store, operation_id="runtime-checkpoint")
+    launched = tasks.launch_admitted(task.operation_id)
+    finished = wait_for_task(store, launched.operation_id, expect="succeeded")
+
+    assert finished.runtime_id == "codex.app-server-stdio.v1"
+    receipt = next(
+        item
+        for item in store.agent_task_receipts(task.operation_id)
+        if item.category == "provider_runtime_selected"
+    )
+    assert receipt.payload == {
+        "provider": "codex",
+        "runtime_id": "codex.app-server-stdio.v1",
+    }
+
+
 def test_launch_admitted_is_idempotent_for_live_and_terminal_duplicates(
     tmp_path: Path,
 ) -> None:
