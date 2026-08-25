@@ -7,12 +7,16 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentLauncher
+from rcp.agents.codex_app_server import CodexAppServerRuntime
+from rcp.agents.write_scope import ProjectWriteScope
+from rcp.providers import ProviderTurnRequest
 
 
 def _fake_app_server(
     tmp_path: Path,
     *,
     request_approval: bool = False,
+    permission_profile: str | None = None,
 ) -> tuple[Path, Path]:
     executable = tmp_path / "fake-codex"
     capture = tmp_path / "app-server-capture.json"
@@ -50,15 +54,14 @@ for line in sys.stdin:
         }})
     elif method in {{\"thread/start\", \"thread/resume\"}}:
         thread_id = message[\"params\"].get(\"threadId\", \"app-thread-1\")
-        send({{
-            "jsonrpc": \"2.0\",
-            "id": request_id,
-            "result": {{
-                "thread": {{"id": thread_id}},
-                "approvalPolicy": \"never\",
-                "sandbox": {{"type": \"readOnly\"}},
-            }},
-        }})
+        result = {{
+            "thread": {{"id": thread_id}},
+            "approvalPolicy": \"never\",
+            "sandbox": {{"type": \"readOnly\"}},
+        }}
+        if {permission_profile!r} is not None:
+            result[\"activePermissionProfile\"] = {{"id": {permission_profile!r}}}
+        send({{"jsonrpc": \"2.0\", "id": request_id, "result": result}})
     elif method == \"turn/start\":
         send({{
             "jsonrpc": \"2.0\",
@@ -211,6 +214,119 @@ async def test_app_server_runtime_normalizes_one_fresh_local_turn(tmp_path: Path
     assert thread_start["params"]["config"]["mcp_servers"]["github"] == {"enabled": False}
     assert thread_start["params"]["config"]["hooks"]["Stop"] == []
     assert thread_start["params"]["config"]["project_doc_max_bytes"] == 0
+
+
+def _work_scope(stage: Path) -> ProjectWriteScope:
+    return ProjectWriteScope.create(
+        project_id="project-1",
+        execution_machine="local",
+        execution_host="",
+        capability="work_auto",
+        stage_root=str(stage),
+        workspace_root=str(stage),
+        repositories=[],
+        protected_write_paths=[],
+    )
+
+
+@pytest.mark.asyncio
+async def test_app_server_work_turn_carries_the_exact_project_permission_profile(
+    tmp_path: Path,
+) -> None:
+    """A Work-like app-server turn is contained by the profile, not by a sandbox."""
+
+    executable, capture = _fake_app_server(tmp_path, permission_profile="rcp_project")
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, host="", binary=None: _ready(executable)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    events = [
+        event
+        async for event in launcher.stream(
+            "codex",
+            "Reply exactly APP_SERVER_OK",
+            cwd=stage,
+            write_dirs=[],
+            write_scope=_work_scope(stage),
+            capability="work_auto",
+            runtime_id="codex.app-server-stdio.v1",
+        )
+    ]
+
+    assert [event.text for event in events if event.event == "answer"] == ["APP_SERVER_OK"]
+    assert events[-1].event == "done", [(event.event, event.text) for event in events]
+    transcript = json.loads(capture.read_text(encoding="utf-8"))
+    assert 'default_permissions="rcp_project"' in transcript["argv"]
+    assert any(
+        item.startswith("permissions={rcp_project=") and str(stage) in item
+        for item in transcript["argv"]
+    ), transcript["argv"]
+    thread_start = next(
+        item for item in transcript["messages"] if item.get("method") == "thread/start"
+    )
+    assert thread_start["params"]["permissions"] == "rcp_project"
+    # The profile is the whole containment; a sandbox would silently narrow it.
+    assert "sandbox" not in thread_start["params"]
+    turn_start = next(item for item in transcript["messages"] if item.get("method") == "turn/start")
+    assert "sandboxPolicy" not in turn_start["params"]
+
+
+@pytest.mark.asyncio
+async def test_app_server_work_turn_stops_when_the_permission_profile_is_not_active(
+    tmp_path: Path,
+) -> None:
+    """Codex answering without RCP's exact profile must not reach the prompt."""
+
+    executable, capture = _fake_app_server(tmp_path, permission_profile="workspace")
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, host="", binary=None: _ready(executable)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    events = [
+        event
+        async for event in launcher.stream(
+            "codex",
+            "Reply exactly APP_SERVER_OK",
+            cwd=stage,
+            write_dirs=[],
+            write_scope=_work_scope(stage),
+            capability="work_auto",
+            runtime_id="codex.app-server-stdio.v1",
+        )
+    ]
+
+    assert all(event.event != "answer" for event in events)
+    fallbacks = [json.loads(event.text) for event in events if event.event == "runtime_fallback"]
+    assert [item["runtime_id"] for item in fallbacks] == ["codex.app-server-stdio.v1"]
+    assert "exact project permission profile" in fallbacks[0]["detail"]
+    transcript = json.loads(capture.read_text(encoding="utf-8"))
+    assert all(item.get("method") != "turn/start" for item in transcript["messages"])
+
+
+def test_app_server_read_only_capability_rejects_a_project_write_scope(tmp_path: Path) -> None:
+    """A read-only turn carrying write authority is a contradiction, not a narrowing."""
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    with pytest.raises(ValueError, match="cannot carry a project write scope"):
+        CodexAppServerRuntime().turn(
+            ProviderTurnRequest(
+                prompt="Read only",
+                binary="codex",
+                cwd=stage,
+                model=None,
+                reasoning=None,
+                session_id=None,
+                read_dirs=[],
+                write_dirs=[],
+                write_scope=_work_scope(stage),
+                capability="paper_readonly",
+                provider_version="0.149.0",
+            )
+        )
 
 
 @pytest.mark.asyncio

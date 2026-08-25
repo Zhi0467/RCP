@@ -63,6 +63,25 @@ test("an older staged profile does not erase a runtime added to the manifest", (
   });
 });
 
+test("an older staged provider switch does not keep the other provider's runtime", () => {
+  const saved = {
+    node_chat: {
+      provider: "codex",
+      runtime: "exec",
+      model: "",
+      reasoning: "medium",
+      run_on: "local",
+    },
+  };
+  const staged = {
+    node_chat: { provider: "claude", model: "", reasoning: "medium", run_on: "local" },
+  };
+
+  assert.deepEqual(mergeAgentProfiles(saved, staged), {
+    node_chat: { ...staged.node_chat, runtime: "" },
+  });
+});
+
 test("settings drafts round trip staged provider paths", () => {
   const draft = {
     version: 2,

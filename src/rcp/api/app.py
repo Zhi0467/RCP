@@ -56,7 +56,7 @@ from rcp.api.paper import router as paper_router
 from rcp.api.project_state import router as project_state_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.sync import router as sync_router
-from rcp.api.task_requests import _resolved_graph_request
+from rcp.api.task_requests import _resolved_graph_request, resolved_agent_surface
 from rcp.api.tasks import router as tasks_router
 from rcp.api.team import router as team_router
 from rcp.api.watchers import router as watchers_router
@@ -319,29 +319,13 @@ def create_app(
         task = store.agent_task(execution.operation_id)
         if task is None or task.project_id != project_id:
             raise ValueError("The agent stream lost its durable project task.")
-        if kind in {"seed", "refresh", "node_chat", "project_chat", "paper_coach"}:
-            surface = kind
-        elif kind == "branch_merge":
-            surface = "orchestrator"
-        elif kind == "auto_research":
-            if not isinstance(request, AutoResearchRunRequest):
-                raise TypeError("An Auto-research task requires its pinned actor request.")
-            surface = "orchestrator" if request.role == "orchestrator" else "node_chat"
-        elif kind == "episode_report":
-            parent = store.agent_task(task.parent_operation_id or "")
-            if parent is None:
-                raise ValueError("The episode report lost its concluding provider task.")
-            if parent.kind == "auto_research":
-                parent_request = AutoResearchRunRequest.model_validate(parent.request)
-                surface = "orchestrator" if parent_request.role == "orchestrator" else "node_chat"
-            elif parent.kind in {"node_chat", "project_chat"}:
-                surface = parent.kind
-            else:
-                raise ValueError("The episode report has no current provider profile.")
-        else:
-            raise ValueError(f"Unknown provider task kind: {kind}")
         profile = service.resolve_agent_profile(
-            surface,
+            resolved_agent_surface(
+                store,
+                kind,
+                request,
+                parent_operation_id=task.parent_operation_id,
+            ),
             provider=request.provider,
             model=request.model,
             reasoning=request.reasoning,

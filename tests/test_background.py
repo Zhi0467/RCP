@@ -294,6 +294,41 @@ def test_runtime_is_checkpointed_before_the_provider_session(tmp_path: Path) -> 
     }
 
 
+def test_a_passed_over_runtime_is_recorded_as_a_diagnostic(tmp_path: Path) -> None:
+    """The fallback is silent to the human, so the reason must survive somewhere."""
+
+    store = _store(tmp_path)
+
+    async def stream(_project_id, _kind, _request, _execution):
+        yield _sse(
+            AgentEvent(
+                event="runtime_fallback",
+                text=json.dumps(
+                    {"runtime_id": "codex.app-server-stdio.v1", "detail": "codex 0.140.0 is old"}
+                ),
+            )
+        )
+        yield _sse(AgentEvent(event="runtime", text="codex.exec-json.v1"))
+        yield _sse(AgentEvent(event="session", session_id="exec-thread"))
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    task = _admitted_launch_task(store, operation_id="runtime-fallback")
+    launched = tasks.launch_admitted(task.operation_id)
+    finished = wait_for_task(store, launched.operation_id, expect="succeeded")
+
+    assert finished.runtime_id == "codex.exec-json.v1"
+    receipt = next(
+        item
+        for item in store.agent_task_receipts(task.operation_id)
+        if item.category == "provider_runtime_fallback"
+    )
+    assert receipt.payload == {
+        "runtime_id": "codex.app-server-stdio.v1",
+        "detail": "codex 0.140.0 is old",
+    }
+
+
 def test_launch_admitted_is_idempotent_for_live_and_terminal_duplicates(
     tmp_path: Path,
 ) -> None:

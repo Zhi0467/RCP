@@ -107,6 +107,10 @@ class AgentEvent(BaseModel):
         # Internal durable evidence emitted immediately before the selected
         # runtime can deliver this invocation's provider prompt.
         "runtime",
+        # Internal diagnostic emitted when a runtime failed before it could have
+        # delivered the prompt and another candidate is about to be tried. API
+        # pumps record it instead of forwarding it as UI text.
+        "runtime_fallback",
         # Internal orchestration evidence emitted immediately after the provider
         # process exits. API pumps consume it instead of forwarding it as UI text.
         "provider_exit",
@@ -467,7 +471,7 @@ class AgentLauncher:
 
         runtimes = profile_for(provider).runtime_candidates(runtime_id)
         last_failure: _PrePromptRuntimeFailure | None = None
-        for runtime in runtimes:
+        for index, runtime in enumerate(runtimes):
             try:
                 async for event in self._stream_runtime(
                     provider,
@@ -491,6 +495,18 @@ class AgentLauncher:
                 return
             except _PrePromptRuntimeFailure as exc:
                 last_failure = exc
+                if index + 1 < len(runtimes):
+                    # The next candidate will succeed silently, so this is the
+                    # only place the reason the human's chosen runtime was not
+                    # used can still be recorded.
+                    yield AgentEvent(
+                        event="runtime_fallback",
+                        text=json.dumps(
+                            {"runtime_id": runtime.id, "detail": str(exc)},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                    )
         assert last_failure is not None
         yield AgentEvent(event="error", text=str(last_failure))
 
@@ -848,20 +864,6 @@ class AgentLauncher:
         )
 
     @staticmethod
-    def _normalize_event(provider: str, line: str) -> AgentEvent:
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            return AgentEvent(event="raw", text=line)
-        decoded = profile_for(provider).decode_event(value, line)
-        return AgentEvent(
-            event=decoded.event,
-            text=decoded.text,
-            session_id=decoded.session_id,
-            usage=decoded.usage,
-        )
-
-    @staticmethod
     def _probe(host: str, command: list[str]) -> subprocess.CompletedProcess[str]:
         arguments = command
         if host:
@@ -928,25 +930,6 @@ def _meaningful_stderr(stderr: str) -> str:
         if not any(noise in line for noise in _BASH_TTY_NOISE)
     ]
     return "\n".join(kept).strip()
-
-
-def _is_explicit_terminal_event(line: str, event: AgentEvent) -> bool:
-    """Whether this JSONL record explicitly says the provider turn ended.
-
-    Final assistant messages are not terminal for every provider: Codex may
-    emit more tool or trace records after one. Provider error records are
-    terminal, while current JSONL protocols use ``turn.completed`` or
-    ``result`` for successful termination.
-    """
-    if event.event == "error":
-        return True
-    try:
-        value = json.loads(line)
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(value, dict):
-        return False
-    return value.get("type") in {"turn.completed", "turn.failed", "result"}
 
 
 def _exit_reason(provider: str, return_code: int, host: str) -> str:

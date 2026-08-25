@@ -1427,6 +1427,14 @@ class BackgroundAgentTasks:
                     raise TaskFailed(event.text or "The agent task failed.", messages, artifacts)
                 if event.event == "paused":
                     raise TaskPaused(event.text, messages, artifacts)
+                if event.event == "runtime_fallback":
+                    self.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "provider_runtime_fallback",
+                        _runtime_fallback_payload(event.text),
+                        tier="diagnostic",
+                    )
+                    continue
                 if event.event == "runtime":
                     if not request.provider:
                         raise TaskFailed(
@@ -1434,11 +1442,17 @@ class BackgroundAgentTasks:
                             messages,
                             artifacts,
                         )
-                    self.store.checkpoint_agent_task_runtime(
-                        execution.operation_id,
-                        provider=request.provider,
-                        runtime_id=event.text,
-                    )
+                    try:
+                        self.store.checkpoint_agent_task_runtime(
+                            execution.operation_id,
+                            provider=request.provider,
+                            runtime_id=event.text,
+                        )
+                    except ValueError as exc:
+                        # A requeue of this same operation can legitimately reach
+                        # a different runtime than the one already recorded. That
+                        # is a verdict about this task, not an internal fault.
+                        raise TaskFailed(str(exc), messages, artifacts) from exc
                     execution.runtime_id = event.text
                     continue
                 if event.event == "session" and event.session_id:
@@ -1642,6 +1656,16 @@ class BackgroundAgentTasks:
         with self._controls_lock:
             self._controls.pop(operation_id, None)
             self._workers.pop(operation_id, None)
+
+
+def _runtime_fallback_payload(text: str) -> dict[str, object]:
+    """Keep an unparsable diagnostic rather than losing why a runtime was skipped."""
+
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        payload = None
+    return payload if isinstance(payload, dict) else {"detail": text[:400]}
 
 
 def _event_from_sse(frame: str) -> AgentEvent:

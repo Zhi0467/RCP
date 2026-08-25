@@ -292,8 +292,17 @@ class _CodexAppServerTurn(ProviderTurn):
         if method == "thread/tokenUsage/updated":
             usage = params.get("tokenUsage")
             turn_id = params.get("turnId")
-            if isinstance(usage, dict) and isinstance(turn_id, str):
-                self._usage = _usage_event(usage, turn_id)
+            # Usage notifications are thread-scoped, so a resumed thread can
+            # report another turn. Keep only this turn's, and never let a later
+            # payload without a `last` breakdown erase one RCP already has.
+            if (
+                isinstance(usage, dict)
+                and isinstance(turn_id, str)
+                and (self._turn_id is None or turn_id == self._turn_id)
+            ):
+                reported = _usage_event(usage, turn_id)
+                if reported is not None:
+                    self._usage = reported
             return ProviderRuntimeStep()
         if method == "item/completed":
             item = params.get("item")
@@ -375,17 +384,35 @@ class _CodexAppServerTurn(ProviderTurn):
 
 
 def _containment_config(value: object) -> dict[str, object]:
+    """Neutralize every user-config channel that can run code or add instructions.
+
+    `codex app-server` has no `--ignore-user-config`, so unlike `codex exec` this
+    runtime cannot drop the whole file and must name each capability-bearing key.
+    Every key below was accepted by the installed app-server; add to this list
+    rather than assuming an unnamed key is inert.
+
+    One gap has no config lever at all: `codex exec --ignore-rules` refuses user
+    and project execpolicy `.rules` files, and app-server exposes neither a config
+    key nor a feature flag for them, so `.rules` still applies here. Recheck when
+    the app-server config surface grows.
+    """
+
     if not isinstance(value, dict):
         raise ValueError("Codex app-server could not inspect its effective configuration.")
     override: dict[str, object] = {
         "agents": {"enabled": False},
         "apps": {"_default": {"enabled": False}},
+        # Instruction channels. RCP's staged task contract, not ambient AGENTS.md
+        # files or user config prose, supplies this turn's instructions.
+        "compact_prompt": None,
         "developer_instructions": "",
-        "hooks": {event: [] for event in _HOOK_EVENTS},
-        # `codex exec --ignore-rules` has the same purpose on the legacy
-        # runtime: RCP's staged task contract, not ambient AGENTS.md files,
-        # supplies this turn's instructions.
+        "instructions": None,
         "project_doc_max_bytes": 0,
+        # Code-execution channels. `notify` runs an external program when a turn
+        # ends, and the environment policy injects variables into every command.
+        "notify": [],
+        "shell_environment_policy": {},
+        "hooks": _disabled_hooks(value.get("hooks")),
     }
     for key in ("apps", "mcp_servers", "plugins"):
         configured = value.get(key)
@@ -395,12 +422,29 @@ def _containment_config(value: object) -> dict[str, object]:
             raise ValueError(f"Codex app-server reported an unsupported {key} configuration shape.")
         disabled = override.setdefault(key, {})
         assert isinstance(disabled, dict)
-        for name, entry in configured.items():
-            if isinstance(name, str) and isinstance(entry, dict):
-                disabled[name] = {"enabled": False}
+        for name in configured:
+            if not isinstance(name, str):
+                raise ValueError(
+                    f"Codex app-server reported an unsupported {key} configuration shape."
+                )
+            # The entry's own shape is irrelevant: it is being replaced, and
+            # skipping a malformed one would leave it enabled for the turn.
+            disabled[name] = {"enabled": False}
     if value.get("model_instructions_file") is not None:
         override["model_instructions_file"] = None
     return override
+
+
+def _disabled_hooks(configured: object) -> dict[str, object]:
+    """Empty every hook list, including an event name this RCP does not know."""
+
+    hooks: dict[str, object] = {event: [] for event in _HOOK_EVENTS}
+    if isinstance(configured, dict):
+        for event, entries in configured.items():
+            # `hooks.state` is Codex trust bookkeeping, not a hook list.
+            if isinstance(event, str) and isinstance(entries, list):
+                hooks[event] = []
+    return hooks
 
 
 def _sandbox_policy(cwd: Path, *, read_only: bool) -> dict[str, object]:

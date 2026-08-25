@@ -349,8 +349,15 @@ class AgentTaskRecord(BaseModel):
             if self.runtime_id:
                 raise ValueError("an agent runtime requires a provider")
             return self
+        try:
+            legacy = legacy_runtime_id(provider)
+        except ValueError:
+            # An old row may name a provider RCP no longer supports. Nothing can
+            # launch it, so it needs no runtime identity; keep it readable for
+            # project deletion and forensic export instead of failing every read.
+            return self
         if not self.runtime_id:
-            self.runtime_id = legacy_runtime_id(provider)
+            self.runtime_id = legacy
         require_runtime_id(provider, self.runtime_id)
         return self
 

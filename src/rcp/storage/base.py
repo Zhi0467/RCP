@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rcp.providers import legacy_runtime_id, require_runtime_id
+from rcp.providers import PROVIDER_IDS, legacy_runtime_id
 from rcp.storage.auto_research import migrate_legacy_auto_research
 from rcp.storage.episodes import migrate_legacy_episodes
 from rcp.storage.models import (  # noqa: F401
@@ -1076,18 +1076,20 @@ class AppStoreBase:
                 "runtime_id",
                 "TEXT NOT NULL DEFAULT ''",
             )
-            for row in connection.execute(
-                "SELECT operation_id, request_json FROM graph_runs WHERE runtime_id = ''"
-            ).fetchall():
-                request = json.loads(row["request_json"])
-                provider = request.get("provider") if isinstance(request, dict) else None
-                if not isinstance(provider, str) or not provider:
-                    continue
-                runtime_id = legacy_runtime_id(provider)
-                require_runtime_id(provider, runtime_id)
+            # One statement per supported provider rather than a row-at-a-time
+            # loop: request_json holds each task's whole payload, and reading
+            # every historical one into this process just to name its provider
+            # blocks the first open after upgrade. Rows naming a provider RCP no
+            # longer supports match nothing and keep an empty runtime, the same
+            # way the writing_sessions backfill above preserves them.
+            for supported in PROVIDER_IDS:
                 connection.execute(
-                    "UPDATE graph_runs SET runtime_id = ? WHERE operation_id = ?",
-                    (runtime_id, row["operation_id"]),
+                    """
+                    UPDATE graph_runs SET runtime_id = ?
+                    WHERE runtime_id = ''
+                      AND json_extract(request_json, '$.provider') = ?
+                    """,
+                    (legacy_runtime_id(supported), supported),
                 )
             self._ensure_column(connection, "graph_runs", "native_session_id", "TEXT")
             self._ensure_column(connection, "graph_runs", "stage_host", "TEXT")

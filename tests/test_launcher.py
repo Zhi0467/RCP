@@ -16,7 +16,42 @@ from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl, ProviderR
 from rcp.agents.command_mailbox import serve_command_mailbox, stage_command_mailbox
 from rcp.agents.command_protocol import CommandResponse, staged_command_broker_source
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
-from rcp.providers import profile_for
+from rcp.providers import ProviderRuntimeStep, ProviderTurnRequest, profile_for
+
+
+def _decoded_step(provider: str, line: str) -> ProviderRuntimeStep:
+    """Decode one JSONL line through the runtime the launcher actually runs."""
+
+    profile = profile_for(provider)
+    turn = profile.runtime(profile.legacy_runtime_id).turn(
+        ProviderTurnRequest(
+            prompt="",
+            binary=provider,
+            cwd=Path("/project/.research"),
+            model=None,
+            reasoning=None,
+            session_id=None,
+            read_dirs=[],
+            write_dirs=[],
+            write_scope=None,
+            capability="scratch_patch",
+            provider_version=None,
+            legacy_command=[provider],
+        )
+    )
+    return turn.receive_line(line)
+
+
+def _decoded_event(provider: str, line: str) -> AgentEvent:
+    step = _decoded_step(provider, line)
+    assert len(step.events) == 1
+    decoded = step.events[0]
+    return AgentEvent(
+        event=decoded.event,
+        text=decoded.text,
+        session_id=decoded.session_id,
+        usage=decoded.usage,
+    )
 
 
 def _project_write_scope(
@@ -126,7 +161,7 @@ def test_provider_usage_is_normalized_at_provider_boundaries() -> None:
             },
         }
     )
-    codex = AgentLauncher._normalize_event("codex", codex_line)
+    codex = _decoded_event("codex", codex_line)
     assert codex.usage is not None
     assert codex.usage.provider_profile == "codex.turn.v1"
     assert codex.usage.processed_input_tokens == 1_000
@@ -715,7 +750,7 @@ async def test_stream_cancellation_during_stdin_drain_reaps_and_detaches(
 
 
 def test_codex_failure_event_surfaces_provider_error() -> None:
-    event = AgentLauncher._normalize_event(
+    event = _decoded_event(
         "codex",
         json.dumps(
             {
@@ -733,7 +768,7 @@ def test_only_the_final_assistant_message_is_an_answer() -> None:
     """A chat reply must never be confused with a reasoning or tool trace."""
 
     def codex(payload: dict) -> AgentEvent:
-        return AgentLauncher._normalize_event("codex", json.dumps(payload))
+        return _decoded_event("codex", json.dumps(payload))
 
     reply = codex(
         {"type": "item.completed", "item": {"type": "agent_message", "text": "Because X."}}
@@ -748,15 +783,13 @@ def test_only_the_final_assistant_message_is_an_answer() -> None:
     partial = codex({"type": "item.started", "item": {"type": "agent_message", "text": "Bec"}})
     assert partial.event == "message"
 
-    claude = AgentLauncher._normalize_event(
-        "claude", json.dumps({"type": "result", "result": "Because X."})
-    )
+    claude = _decoded_event("claude", json.dumps({"type": "result", "result": "Because X."}))
     assert (claude.event, claude.text) == ("answer", "Because X.")
 
 
 def test_claude_session_limit_result_is_a_terminal_error() -> None:
     text = "You've hit your session limit · resets 8:50pm (UTC)"
-    event = AgentLauncher._normalize_event(
+    event = _decoded_event(
         "claude",
         json.dumps(
             {
@@ -769,6 +802,9 @@ def test_claude_session_limit_result_is_a_terminal_error() -> None:
     )
 
     assert (event.event, event.text) == ("error", text)
+    assert _decoded_step(
+        "claude", json.dumps({"type": "result", "result": "done"})
+    ).explicit_terminal
 
 
 def test_codex_resume_keeps_the_write_permission_its_surface_was_given() -> None:

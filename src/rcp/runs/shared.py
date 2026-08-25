@@ -592,9 +592,10 @@ async def _stream_agent_events(
                     remote_stage=remote_stage,
                 )
                 continue
-            if event.event == "runtime":
-                # Background consumes and durably checkpoints this internal
-                # boundary before asking the launcher to write the prompt.
+            if event.event in {"runtime", "runtime_fallback"}:
+                # Background consumes these. It durably checkpoints the runtime
+                # before the launcher writes the prompt, and records why an
+                # earlier candidate was passed over rather than showing it.
                 yield _sse(event)
                 continue
             if event.event == "paused":

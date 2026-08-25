@@ -63,7 +63,14 @@ machine only while failure is known to precede delivery of the new prompt. RCP
 checkpoints the actual runtime before the write that can deliver that prompt.
 Once `turn/start` may have been accepted, failure is retained as an interrupted
 or failed attempt and RCP never retries the prompt through exec. This rule is the
-same for fresh and resumed conversations.
+same for fresh and resumed conversations. Silent means the human's turn is not
+failed, not that the cause is lost: the passed-over runtime and its failure are
+recorded as a task diagnostic.
+
+Containment differs by runtime because the transports differ. `exec` refuses the
+whole user config file and its execpolicy `.rules` files with `--ignore-user-config`
+and `--ignore-rules`. `app-server` accepts neither flag, so RCP names each
+capability-bearing config key instead, and cannot disable `.rules` at all.
 
 ## Cooperative project write containment
 

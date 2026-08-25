@@ -22,10 +22,18 @@ export function mergeAgentProfiles(
   staged: SettingsDraft["profiles"],
 ): Record<AgentExecutionProfile, AgentProfileSettings> {
   return Object.fromEntries(
-    Object.entries(saved).map(([surface, profile]) => [
-      surface,
-      { ...profile, ...staged[surface as AgentExecutionProfile] },
-    ]),
+    Object.entries(saved).map(([surface, profile]) => {
+      const stagedProfile = staged[surface as AgentExecutionProfile];
+      const merged = { ...profile, ...stagedProfile };
+      // Provider and runtime are one choice. A draft written before runtime
+      // selection existed carries a staged provider and no runtime, and the
+      // manifest's runtime belongs to the provider it is replacing, so keeping
+      // it would build a pair the backend rejects. Empty means provider default.
+      if (merged.provider !== profile.provider) {
+        merged.runtime = stagedProfile?.runtime ?? "";
+      }
+      return [surface, merged];
+    }),
   ) as Record<AgentExecutionProfile, AgentProfileSettings>;
 }
 
