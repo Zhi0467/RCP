@@ -2212,6 +2212,35 @@ def test_stop_preserves_compatible_stopped_watcher_history_across_episodes(
     assert loop.store.watcher("old-watcher").status == "stopped"
 
 
+def test_reconciling_stopped_episode_does_not_retire_new_episode_watcher(
+    manifest, tmp_path
+) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    loop.start_episode(operation_id="old-root")
+    loop.arm_watcher("old-watcher", origin_operation_id="old-root")
+    old_episode_id = loop.episode_id
+    loop.stop()
+
+    loop.episode_id = str(uuid.uuid4())
+    loop.chat_id = str(uuid.uuid4())
+    loop.start_episode(operation_id="current-root")
+    loop.arm_watcher("current-watcher", origin_operation_id="current-root")
+
+    # Reading or otherwise reconciling the already-stopped prior episode must
+    # never sweep a compatible watcher that belongs to the replacement episode.
+    loop.store.settle_experiment_loop_stop(
+        loop.project_id,
+        EXPERIMENT_ID,
+        episode_id=old_episode_id,
+        graph_target=GraphTargetRef(),
+    )
+
+    current = loop.store.watcher("current-watcher")
+    assert current is not None
+    assert current.status == "active"
+    assert current.notified is False
+
+
 def test_stop_fences_current_turn_and_preserves_compatible_prior_watcher(
     manifest, tmp_path
 ) -> None:

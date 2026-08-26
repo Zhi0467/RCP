@@ -54,3 +54,18 @@ def test_task_row_decoder_preserves_unallowlisted_fields_for_strict_rejection() 
     assert record.request["future_field"] is True
     with pytest.raises(ValidationError):
         AutoResearchRunRequest.model_validate(record.request)
+
+
+def test_task_row_decoder_ignores_forward_provider_runtime_column() -> None:
+    row = _task_row(
+        {
+            "episode_id": "episode-1",
+            "role": "orchestrator",
+        }
+    )
+    row["runtime_id"] = "codex.exec-json.v1"
+
+    record = RowMappingMixin()._agent_task_record(row)
+
+    assert record.operation_id == "op-1"
+    assert record.request == {"episode_id": "episode-1", "role": "orchestrator"}

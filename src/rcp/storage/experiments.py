@@ -2220,7 +2220,8 @@ class ExperimentStoreMixin:
         watcher_ids = {
             record.watcher_id
             for record in (self._watcher_record(row) for row in watcher_rows)
-            if root_request is not None
+            if record.episode_id == episode_id
+            and root_request is not None
             and self._experiment_watcher_matches_current(record, root_request, episode)
         }
         claimed_rows = connection.execute(
