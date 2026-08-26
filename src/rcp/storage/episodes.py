@@ -220,10 +220,17 @@ class EpisodeStoreMixin:
         episode = self._episode_record(row)
         if episode.ending == "stopped" and episode.wrapup_state == "skipped":
             return episode
-        if episode.stop_requested_at is not None:
-            return episode
         if episode.status not in {"queued", "running", "stopping"}:
             raise EpisodeNotRunning("the episode can no longer be stopped before wrap-up")
+        if (
+            connection.execute(
+                "SELECT 1 FROM episode_wrapups WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+            is not None
+        ):
+            raise EpisodeNotRunning("the episode has already entered wrap-up")
+        if episode.stop_requested_at is not None:
+            return episode
         connection.execute(
             """
             UPDATE episodes
@@ -1975,6 +1982,12 @@ def _migrate_experiment_episodes(connection: sqlite3.Connection) -> None:
         ).fetchall()
     for identity in ids:
         episode_id = str(identity["episode_id"])
+        existing = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        if existing is not None:
+            _remove_impossible_legacy_experiment_wrapup(connection, existing)
+            continue
         legacy = (
             connection.execute(
                 "SELECT * FROM experiment_episodes WHERE episode_id = ?", (episode_id,)
@@ -2150,6 +2163,70 @@ def _migrate_experiment_episodes(connection: sqlite3.Connection) -> None:
                     finished_at=ended_at or updated_at,
                 ),
             )
+
+
+def _remove_impossible_legacy_experiment_wrapup(
+    connection: sqlite3.Connection,
+    episode: sqlite3.Row,
+) -> None:
+    """Remove only the old migration row that contradicts a modern live parent."""
+
+    if (
+        episode["mode"] != "experiment_loop"
+        or episode["status"] not in _LIVE_EPISODE_STATUSES
+        or episode["ending"] is not None
+        or episode["wrapup_state"] != "not_started"
+        or episode["report_attempts_used"] != 0
+    ):
+        return
+    wrapup = connection.execute(
+        "SELECT * FROM episode_wrapups WHERE episode_id = ?", (episode["episode_id"],)
+    ).fetchone()
+    if wrapup is None or wrapup["state"] != "legacy_unavailable":
+        return
+    if any(
+        wrapup[field] is not None
+        for field in (
+            "allocation_operation_id",
+            "provider",
+            "run_on",
+            "execution_host",
+            "native_session_id",
+            "stage_host",
+            "stage_root",
+            "skill_id",
+            "skill_version",
+            "output_name",
+            "output_path",
+        )
+    ):
+        return
+    if int(wrapup["partial"]) != int(wrapup["ending"] != "completed"):
+        return
+    receipt_json, receipt_sha256 = compact_episode_receipt(
+        {
+            "control_node_id": episode["control_node_id"],
+            "ending": wrapup["ending"],
+            "episode_id": episode["episode_id"],
+            "legacy_source": "experiment_episode",
+        }
+    )
+    if wrapup["receipt_json"] != receipt_json or wrapup["receipt_sha256"] != receipt_sha256:
+        return
+    if (
+        connection.execute(
+            "SELECT 1 FROM episode_report_attempts WHERE episode_id = ? LIMIT 1",
+            (episode["episode_id"],),
+        ).fetchone()
+        is not None
+        or connection.execute(
+            "SELECT 1 FROM episode_reports WHERE episode_id = ? LIMIT 1",
+            (episode["episode_id"],),
+        ).fetchone()
+        is not None
+    ):
+        return
+    connection.execute("DELETE FROM episode_wrapups WHERE episode_id = ?", (episode["episode_id"],))
 
 
 def _campaign_ending(campaign: sqlite3.Row, report: sqlite3.Row | None) -> str | None:

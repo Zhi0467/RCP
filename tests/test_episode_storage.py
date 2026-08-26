@@ -240,6 +240,74 @@ def _start_wrapping(
     return wrapup, task
 
 
+def _insert_legacy_experiment_wrapup(
+    store: AppStore,
+    episode_id: str,
+    concluding_operation_id: str,
+    *,
+    migration_owned: bool = True,
+) -> None:
+    now = store.now()
+    receipt = {
+        "control_node_id": "experiment-node",
+        "ending": "completed",
+        "episode_id": episode_id,
+    }
+    if migration_owned:
+        receipt["legacy_source"] = "experiment_episode"
+    receipt_json, receipt_sha256 = compact_episode_receipt(receipt)
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO episode_wrapups (
+                episode_id, ending, partial, concluding_operation_id,
+                receipt_json, receipt_sha256, state, created_at, updated_at,
+                finished_at
+            ) VALUES (?, 'completed', 0, ?, ?, ?, 'legacy_unavailable', ?, ?, ?)
+            """,
+            (
+                episode_id,
+                concluding_operation_id,
+                receipt_json,
+                receipt_sha256,
+                now,
+                now,
+                now,
+            ),
+        )
+
+
+def _start_modern_experiment_episode(
+    store: AppStore,
+    episode_id: str,
+    operation_id: str,
+    *,
+    complete_task: bool,
+) -> None:
+    task = _operational_task(store, operation_id, episode_id=episode_id).model_copy(
+        update={
+            "request": {
+                "patch_kind": "experiment_loop",
+                "control_episode_id": episode_id,
+                "control_node_id": "experiment-node",
+                "control_revision": 0,
+                "control_invocation": 1,
+                "control_invocation_ceiling": 10,
+                "control_decision_bundle": [],
+                "control_completion_criteria": [],
+                "trigger": "experiment_run",
+            }
+        }
+    )
+    store.create_episode_with_invocation(
+        _episode(store, episode_id, ceiling=10),
+        task,
+    )
+    if complete_task:
+        store.mark_agent_task_running(operation_id)
+        store.complete_agent_task(operation_id, applied_revision=None, result={})
+
+
 def test_fresh_episode_parents_enforce_mode_specific_live_scope(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     store.create_episode(_episode(store, "auto-1", mode="auto_research"))
@@ -459,6 +527,35 @@ def test_stop_cannot_cancel_report_wrapup(tmp_path) -> None:
 
     with pytest.raises(EpisodeNotRunning, match="before wrap-up"):
         store.request_episode_stop("episode")
+
+
+def test_stop_rejects_a_conflicting_wrapup_before_mutating_live_episode(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    store = AppStore(path)
+    episode_id = str(uuid.uuid4())
+    _start_modern_experiment_episode(
+        store,
+        episode_id,
+        "episode-operation",
+        complete_task=False,
+    )
+    _insert_legacy_experiment_wrapup(
+        store,
+        episode_id,
+        "episode-operation",
+        migration_owned=False,
+    )
+
+    reopened = AppStore(path)
+    assert reopened.episode_wrapup(episode_id) is not None
+
+    with pytest.raises(EpisodeNotRunning, match="entered wrap-up"):
+        reopened.request_episode_stop(episode_id)
+
+    episode = reopened.episode(episode_id)
+    assert episode is not None
+    assert episode.status == "running"
+    assert episode.stop_requested_at is None
 
 
 def test_ending_fence_stops_new_work_before_hidden_report_allocation(tmp_path) -> None:
@@ -1165,6 +1262,64 @@ def test_live_legacy_campaign_without_authorizer_is_terminally_unavailable(tmp_p
     assert episode.wrapup_state == "legacy_unavailable"
     assert "authorization snapshot" in episode.ending_diagnostic
     assert migrated.episode_wrapup("unauthorized").state == "legacy_unavailable"
+
+
+def test_experiment_migration_does_not_reclassify_a_modern_live_episode(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    store = AppStore(path)
+    episode_id = str(uuid.uuid4())
+    _start_modern_experiment_episode(
+        store,
+        episode_id,
+        "modern-operation",
+        complete_task=True,
+    )
+    before = store.episode(episode_id)
+    assert before is not None
+    assert before.status == "running"
+    assert store.episode_wrapup(episode_id) is None
+
+    reopened = AppStore(path)
+
+    assert reopened.episode(episode_id) == before
+    assert reopened.episode_wrapup(episode_id) is None
+    assert [invocation.operation_id for invocation in reopened.episode_invocations(episode_id)] == [
+        "modern-operation"
+    ]
+
+
+def test_experiment_migration_removes_its_impossible_modern_wrapup(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    store = AppStore(path)
+    episode_id = str(uuid.uuid4())
+    _start_modern_experiment_episode(
+        store,
+        episode_id,
+        "modern-operation",
+        complete_task=True,
+    )
+    stopping = store.request_episode_stop(episode_id)
+    _insert_legacy_experiment_wrapup(
+        store,
+        episode_id,
+        "modern-operation",
+    )
+    assert stopping.status == "stopping"
+    assert stopping.ending is None
+    assert stopping.wrapup_state == "not_started"
+
+    reopened = AppStore(path)
+
+    repaired = reopened.episode(episode_id)
+    assert repaired == stopping
+    assert reopened.episode_wrapup(episode_id) is None
+    settled = reopened.mark_episode_stop_skipped(
+        episode_id,
+        diagnostic="Stopped by the researcher",
+    )
+    assert settled.status == "stopped"
+    assert settled.ending == "stopped"
+    assert settled.wrapup_state == "skipped"
 
 
 def test_experiment_migration_discovers_state_rows_and_missing_first_turn_rows(tmp_path) -> None:
