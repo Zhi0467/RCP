@@ -301,6 +301,7 @@ function episode(fields = {}) {
     health: "wrapping_up",
     recommendation: "wait",
     task_control: null,
+    run_section: "needs_action",
     ...fields,
   };
 }
@@ -358,6 +359,7 @@ test("a ready Experiment report opens from the singular episode URL", () => {
         health: "needs_action",
         recommendation: "open_report",
         can_open_report: true,
+        report_episode_id: readyEpisode.episode_id,
       }),
       [],
       [],
@@ -384,16 +386,26 @@ test("an Experiment the human closed stays completed whatever its last episode d
       { ...node(), status: "completed" },
       control({
         episode: paused,
+        ready: false,
+        reasons: ["This Experiment is completed. Edit its status before starting a new episode."],
         health: "completed",
         recommendation: "none",
         run_section: "completed",
+        can_start: false,
+        can_open_report: true,
+        report_episode_id: "previous-completed-episode",
+        node_closed: true,
       }),
       [],
       [],
     ),
   );
 
-  assertDetailProjection(html, "Completed", "Episode report unavailable");
+  assertDetailProjection(html, "Completed", "Experiment is completed");
+  assert.match(html, /href="\/reports\/previous-completed-episode"/);
+  assert.match(html, /Open report/);
+  assert.doesNotMatch(html, /Start (?:new )?episode/);
+  assert.doesNotMatch(html, /Run requirements|Edit its status before starting a new episode/);
 });
 
 test("an open Experiment whose episode paused for a human still needs action", () => {
@@ -503,16 +515,23 @@ test("a stopped Experiment shows neither a report nor a report error", () => {
   assert.doesNotMatch(html, /Open report|Report generation error|hidden stop/);
 });
 
-test("first Experiment action starts an episode regardless of semantic status", () => {
+test("a closed Experiment offers no episode start until its status is edited", () => {
   const html = render({
     node: node({ status: "completed", invocation_ceiling: 7 }),
     control: control(
       {
+        ready: false,
+        reasons: ["This Experiment is completed. Edit its status before starting a new episode."],
         invocations_used: 0,
         invocation_ceiling: 7,
         invocations_remaining: 7,
         episode_id: null,
         paused: false,
+        health: "completed",
+        recommendation: "none",
+        run_section: "completed",
+        can_start: false,
+        node_closed: true,
       },
       { current_invocation: null },
     ),
@@ -523,8 +542,9 @@ test("first Experiment action starts an episode regardless of semantic status", 
     health: "completed",
   });
 
-  assert.match(html, /<button[^>]*>.*Start episode<\/button>/s);
-  assert.doesNotMatch(html, /Start new episode/);
+  assertDetailProjection(html, "Completed", "Experiment is completed");
+  assert.doesNotMatch(html, /Start (?:new )?episode/);
+  assert.doesNotMatch(html, /Run requirements|Edit its status before starting a new episode/);
   assert.doesNotMatch(html, /Next episode limit/);
 });
 
@@ -748,11 +768,25 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
   const row = renderToStaticMarkup(
     React.createElement(ExecutionView, {
       graph: { nodes: { [run.node.id]: run.node } },
-      attentionBlockerIds: new Set(),
+      episodes: [
+        episode({
+          status: "running",
+          ending: null,
+          wrapup_state: "not_started",
+          tasks: [task],
+          current_control_task_id: task.operation_id,
+          can_stop: true,
+          live: true,
+          health: "needs_action",
+          recommendation: "resume",
+          task_control: "resume",
+        }),
+      ],
+      episodeMessages: {},
+      episodeAction: null,
       tasks: [task],
       watchers: [],
       experimentControl: { [run.node.id]: experimentControl },
-      dismissedTaskIds: new Set(),
       selectedExperimentId: null,
       focusExperimentId: null,
       runBusy: false,
@@ -760,8 +794,6 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
-      onDismissTask() {},
-      onSelectNode() {},
       onSelectExperiment() {},
       onDetailFocused() {},
       onRunExperiment() {},
@@ -771,14 +803,11 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
       onSwitchExperimentProvider() {},
     }),
   );
-  const compactRecommendation = row.match(
-    /<span class="experiment-ledger-copy">.*?<span>([^<]+)<\/span><\/span>/s,
-  )?.[1];
   const detailRecommendation = detail.match(
     /<div class="experiment-run-recommendation[^"]*">.*?<strong>([^<]+)<\/strong><\/div>/s,
   )?.[1];
-  assert.equal(compactRecommendation, detailRecommendation);
-  assert.equal(compactRecommendation, "Resume this episode, or switch provider");
+  assert.equal(detailRecommendation, "Resume this episode, or switch provider");
+  assert.doesNotMatch(row, /campaign-run-summary|Resume the current turn/);
 });
 
 test("a running episode with nothing left to wake it points at Stop loop", () => {
@@ -1075,11 +1104,23 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
   const row = renderToStaticMarkup(
     React.createElement(ExecutionView, {
       graph: { nodes: { [run.node.id]: run.node } },
-      attentionBlockerIds: new Set(),
+      episodes: [
+        episode({
+          status: "failed",
+          ending: "failed",
+          wrapup_state: "failed",
+          tasks: [task],
+          live: false,
+          health: "failed",
+          recommendation: "review",
+          run_section: "needs_action",
+        }),
+      ],
+      episodeMessages: {},
+      episodeAction: null,
       tasks: [task],
       watchers: [],
       experimentControl: { [run.node.id]: run.control },
-      dismissedTaskIds: new Set(),
       selectedExperimentId: null,
       focusExperimentId: null,
       runBusy: false,
@@ -1087,8 +1128,6 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
       watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
-      onDismissTask() {},
-      onSelectNode() {},
       onSelectExperiment() {},
       onDetailFocused() {},
       onRunExperiment() {},
@@ -1098,14 +1137,11 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
       onSwitchExperimentProvider() {},
     }),
   );
-  const compactRecommendation = row.match(
-    /<span class="experiment-ledger-copy">.*?<span>([^<]+)<\/span><\/span>/s,
-  )?.[1];
   const detailRecommendation = detail.match(
     /<div class="experiment-run-recommendation[^"]*">.*?<strong>([^<]+)<\/strong><\/div>/s,
   )?.[1];
-  assert.equal(compactRecommendation, detailRecommendation);
-  assert.equal(compactRecommendation, "Start a new episode");
+  assert.equal(detailRecommendation, "Start a new episode");
+  assert.doesNotMatch(row, /campaign-run-summary|Review the episode failure/);
   assert.doesNotMatch(row, /OBSOLETE SUCCEEDED TASK STATUS/);
 });
 

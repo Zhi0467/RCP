@@ -27,7 +27,23 @@ merge agent. Repository files and external effects are never branched or rolled
 back by that graph workflow.
 
 The paper introduction is human-authored and non-authoritative. Agent-created
-views and reports help a researcher read work; they do not become graph truth.
+artifacts and reports help a researcher read work; they do not become graph
+truth. A chat artifact may be viewed, selected, questioned, kept, and revised
+through one shell, but those interactions grant no graph authority. The backend
+owns the viewer entrance, including compatibility for retained desktop clients,
+so a source update does not require a matching native rebuild to enter the shell.
+
+The confirmed first team deployment is one lab using one source-built RCP server
+and desktop member clients. A dedicated Linux `rcp` account owns the control
+plane and every server-local team checkout; an explicitly configured remote
+execution account owns a team checkout on its SSH machine. Members remain
+distinct RCP humans and may keep independent personal checkouts. RCP member
+identity, process identity, repository credentials, and provider credentials are
+separate authorities. The source server runs a built checkout of GitHub `main`
+as a non-reloading service, and its commit and update lifecycle are managed by
+the server CLI. "Source-built" does not make live development reload part of
+team operation. The unfinished journeys that make this deployment usable remain
+explicit pending acceptance work.
 
 ## Cross-cutting invariants
 
@@ -93,6 +109,9 @@ views and reports help a researcher read work; they do not become graph truth.
 - A **task** is one durable provider invocation or recovery attempt.
 - A **conversation** is one reusable native-session scratch workspace containing
   explicitly labelled Discuss and Work turns.
+- An **artifact** is a supported file produced by a task and owned by its
+  conversation. It may remain temporary or be kept as a live file at the state
+  repository root; it is never a graph object or a second answer channel.
 - An **episode** is the persisted parent for bounded Experiment control or
   Auto-research, with one operational budget, one native-session binding, and
   one graceful Stop boundary.
@@ -142,9 +161,9 @@ winner by timestamp or silently implement around it.
 - [API, Web, and desktop projections](specs/api-web-and-desktop-projections.md) —
   mutation envelopes, current application surfaces, revision reconciliation,
   tabs, and shell lifecycle.
-- [Paper, artifacts, and result views](specs/paper-artifacts-and-result-views.md)
-  — human paper authorship, read-only coaching, previews, reports, result views,
-  and repository-file reading.
+- [Paper, artifacts, and viewing](specs/paper-artifacts-and-result-views.md) —
+  human paper authorship, read-only coaching, previews, reports, unified
+  artifact interaction, and repository-file reading.
 - [Interface and visual design](specs/interface-and-visual-design.md) — the
   visual grammar, project shell, Research and Runs projections, node detail, DAG
   controls, composer, and the no-commentary-lines rule.

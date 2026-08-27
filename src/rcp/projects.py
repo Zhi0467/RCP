@@ -119,7 +119,7 @@ EpisodeSerializer = Callable[
     dict[str, object],
 ]
 ExperimentControlProjector = Callable[
-    [GraphState, str, ExperimentLoopRuntime, dict[str, object] | None],
+    [GraphState, str, ExperimentLoopRuntime, dict[str, object] | None, str | None],
     dict[str, object],
 ]
 
@@ -1514,6 +1514,7 @@ class ProjectDisplayCache:
                     experiment_id,
                     runtime,
                     serialized_episode,
+                    read_model.latest_report_episode_id,
                 )
                 controls[experiment_id] = control
             control_snapshot["experiment_control"] = controls
@@ -1639,6 +1640,7 @@ class ProjectDisplayCache:
                 experiment_id,
                 runtime,
                 serialized_episode,
+                read_model.latest_report_episode_id,
             )
             controls[experiment_id] = control
         snapshot["experiment_control"] = controls

@@ -237,6 +237,35 @@ scratch transfer, and recovery. A task resumed remotely must prove the saved
 host and stage. SSH or provider transport failure is reported as unavailable,
 not converted into semantic correction.
 
+### Team execution accounts and credentials
+
+The team backend remains the one owner of every provider call, whether the
+provider runs on the RCP server or over SSH. A local team run executes as the
+Linux `rcp` service account and uses that account's provider login. A remote team
+run uses the exact SSH host/account selected by the project profile and the
+provider login installed for that remote execution account. The remote account
+need not be named `rcp`; it must be explicitly configured and reachable from the
+server's service account.
+
+Provider setup is a server CLI readiness workflow, not a project secret or an
+RCP member credential. It names the execution host/account, guides the operator
+through the provider's own login, and verifies the configured provider/runtime
+through the same launch abstraction used by tasks. Provider credentials never
+enter a project manifest, provisioning request, prompt, backup, or member's
+desktop credential store.
+
+The central Git checkout and its repository-scoped deploy key are independent of
+the provider login. A Git key grants repository transport; a provider login
+grants provider execution; an RCP member token grants product authority. None is
+accepted in place of another.
+
+There is no team fallback to a member laptop, personal checkout, local member
+provider login, or different SSH account. Unreachable SSH, missing provider
+authentication, or incompatible provider readiness fails visibly on the chosen
+machine. Runtime-specific behavior remains behind the provider-call abstraction,
+so Codex exec, Codex app-server, and Claude use their own provider contracts
+without changing this local/SSH identity rule.
+
 Remote canonical-state locking and publication are specified in
 [Graph, history, and transitions](graph-history-and-transitions.md#canonical-publication).
 
@@ -313,4 +342,5 @@ The durable observable boundaries are [S14 remote state](../acceptance/S14-remot
 [S63 lock recovery](../acceptance/S63-agent-run-lock-recovery.md),
 [S74 fail-closed containment](../acceptance/S74-boundary-inputs-fail-closed.md),
 [S75 public web access](../acceptance/S75-network-access-on-every-agent-surface.md),
+[S102 team execution](../acceptance/S102-team-runs-execute-as-the-space-account.md),
 and [S119 stale-process exclusion](../acceptance/S119-stale-processes-cannot-command-the-next-turn.md).

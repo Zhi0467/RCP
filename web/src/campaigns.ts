@@ -57,11 +57,19 @@ export function mergeEpisode(episodes: Episode[], nextEpisode: Episode): Episode
   return [
     nextEpisode,
     ...episodes.filter((episode) => episode.episode_id !== nextEpisode.episode_id),
-  ].sort(
-    (left, right) =>
-      comparableTime(right.created_at) - comparableTime(left.created_at) ||
-      right.episode_id.localeCompare(left.episode_id),
-  );
+  ].sort(compareEpisodesNewestFirst);
+}
+
+export function runsEpisodeCards(
+  episodes: Episode[],
+  currentExperimentEpisodeIds: ReadonlySet<string>,
+): Episode[] {
+  return [...episodes]
+    .sort(compareEpisodesNewestFirst)
+    .filter(
+      (episode) =>
+        episode.mode === "auto_research" || currentExperimentEpisodeIds.has(episode.episode_id),
+    );
 }
 
 export function currentEpisodeControlTask(
@@ -104,15 +112,30 @@ export function episodeProjection(
   // Lifecycle state, next step, and available control are decided by the server.
   // This function resolves them to copy and to the task object a control acts on.
   const task = currentEpisodeControlTask(episode, tasks);
-  const label =
+  const defaultLabel =
     EPISODE_RECOMMENDATION_LABELS_BY_HEALTH[episode.health]?.[episode.recommendation] ??
     EPISODE_RECOMMENDATION_LABELS[episode.recommendation];
+  const label =
+    episode.mode === "experiment_loop"
+      ? experimentEpisodeRecommendationLabel(episode, defaultLabel)
+      : defaultLabel;
   return {
     health: episode.health,
     healthLabel: EPISODE_HEALTH_LABELS[episode.health],
     recommendation: { kind: episode.recommendation, label, task },
     taskControl: episode.task_control && task ? { kind: episode.task_control, task } : null,
   };
+}
+
+function experimentEpisodeRecommendationLabel(episode: Episode, fallback: string): string {
+  if (episode.recommendation === "continue") return "Let the experiment loop continue";
+  if (episode.health === "starting" && episode.recommendation === "wait") {
+    return "Wait for the experiment loop to start";
+  }
+  if (episode.health === "active" && episode.recommendation === "wait") {
+    return "Wait for the current experiment turn to pause";
+  }
+  return fallback;
 }
 
 export function episodeEndingLabel(ending: EpisodeEnding): string {
@@ -131,7 +154,7 @@ export function episodeEndingLabel(ending: EpisodeEnding): string {
 }
 
 export function episodeReportPreviewUrl(projectId: string, episodeId: string): string {
-  return `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/report/preview`;
+  return `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/report/viewer`;
 }
 
 export function episodeTaskRows(episode: Episode, tasks: AgentTask[]): EpisodeTaskRow[] {
@@ -235,4 +258,11 @@ function compareTaskTime(left: AgentTask, right: AgentTask): number {
 function comparableTime(value: string): number {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function compareEpisodesNewestFirst(left: Episode, right: Episode): number {
+  return (
+    comparableTime(right.created_at) - comparableTime(left.created_at) ||
+    right.episode_id.localeCompare(left.episode_id)
+  );
 }

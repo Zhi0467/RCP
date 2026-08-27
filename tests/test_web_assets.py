@@ -19,6 +19,15 @@ def test_prepared_web_assets_builds_once_without_watch(monkeypatch) -> None:
     assert calls == ["build", "serve"]
 
 
+def test_source_server_starts_from_a_clean_frontend_build(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(web_assets.subprocess, "run", lambda command, check: calls.append(command))
+
+    web_assets._run_build()
+
+    assert calls == [web_assets._npm_command("run", "build:clean")]
+
+
 def test_prepared_web_assets_stops_watcher_after_server_exits(monkeypatch) -> None:
     watcher = object()
     calls = []

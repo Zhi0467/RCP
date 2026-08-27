@@ -103,6 +103,10 @@ def _auto_research_commands(command_client: str) -> str:
   files in this run workspace, never a nested path or symlink. Write one concise executable worker
   assignment or Experiment goal, then pass its filename. A supplied goal becomes the child
   episode's initial human message; omitting it uses RCP's canonical bounded-Experiment fallback.
+- Prefer `apply` over leaving the Patch for turn settlement. Applying here returns the new revision
+  and refreshed paths while you can still act on them, so one invocation both records the change
+  and continues from it. The end-of-turn fallback still applies an unconsumed Patch, but you cannot
+  read or build on the result until another invocation wakes you, and the episode budget is finite.
 - Apply snapshots the exact Patch for its key and runs the authoritative Work Apply path. An
   `applied` response returns its revision, digest, validation messages, and refreshed graph and
   research paths: reread those paths before continuing. `valid_empty` consumes the exact file

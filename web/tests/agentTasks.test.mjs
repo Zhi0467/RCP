@@ -482,6 +482,10 @@ test("durable watcher messages never occupy the human side of a conversation", (
 
 test("artifact URLs contain only RCP identifiers and the explicit action", () => {
   assert.equal(
+    artifactUrl("project/id", "task id", "artifact#id", "content"),
+    "/api/projects/project%2Fid/tasks/task%20id/artifacts/artifact%23id/content",
+  );
+  assert.equal(
     artifactUrl("project/id", "task id", "artifact#id", "preview"),
     "/api/projects/project%2Fid/tasks/task%20id/artifacts/artifact%23id/preview",
   );

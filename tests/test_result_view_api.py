@@ -340,47 +340,20 @@ def test_remote_result_view_preview_and_keep_never_read_the_stage(
     assert repository_view.read_bytes() == remote_content
 
 
-def test_result_view_admission_pins_revision_and_keep_rejects_its_active_task(
+def test_new_special_result_view_intents_are_rejected(
     manifest,
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     fixture = _fixture(manifest, tmp_path)
-    captured: list[RunRequest] = []
+    started = False
 
-    def fake_start(
-        project_id,
-        kind,
-        request,
-        *,
-        operation_id=None,
-        authorized_by=None,
-        stage_host=None,
-        stage_root=None,
-    ) -> AgentTaskRecord:
-        assert isinstance(request, RunRequest)
-        captured.append(request)
-        if request.result_view is not None and request.result_view.action == "revise":
-            assert stage_host == (fixture.record.stage_host or None)
-            assert stage_root == fixture.record.stage_root
-        else:
-            assert stage_host is None
-            assert stage_root is None
-        now = fixture.store.now()
-        return AgentTaskRecord(
-            operation_id=operation_id or str(uuid.uuid4()),
-            project_id=project_id,
-            kind=kind,
-            status="queued",
-            request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="Queued.",
-            authorized_by=authorized_by,
-        )
+    def fake_start(*_args, **_kwargs):
+        nonlocal started
+        started = True
+        raise AssertionError("a retired result-view intent must not start a task")
 
     monkeypatch.setattr(fixture.client.app.state.background_tasks, "start", fake_start)
-    message = "Use a log scale, but keep my wording exactly."
     admitted = fixture.client.post(
         f"/api/projects/{fixture.project_id}/tasks/node_chat",
         json={
@@ -390,77 +363,15 @@ def test_result_view_admission_pins_revision_and_keep_rejects_its_active_task(
             "run_on": "laptop",
             "chat_id": fixture.record.chat_id,
             "node_id": fixture.record.experiment_id,
-            "message": message,
+            "message": "Use a log scale, but keep my wording exactly.",
             "mode": "work",
             "result_view": {"action": "revise", "view_id": fixture.record.view_id},
         },
     )
 
-    assert admitted.status_code == 202
-    pinned = captured[-1]
-    assert pinned.message == message
-    assert (
-        pinned.provider,
-        pinned.model,
-        pinned.reasoning,
-        pinned.run_on,
-        pinned.session_id,
-    ) == (
-        fixture.record.provider,
-        fixture.record.model,
-        fixture.record.reasoning,
-        fixture.record.run_on,
-        fixture.record.native_session_id,
-    )
-
-    wrong_node = fixture.client.post(
-        f"/api/projects/{fixture.project_id}/tasks/node_chat",
-        json={
-            "chat_id": str(uuid.uuid4()),
-            "node_id": "rq/learning-after-shift",
-            "message": "Draw a result.",
-            "mode": "work",
-            "result_view": {"action": "create"},
-        },
-    )
-    assert wrong_node.status_code == 422
-    assert "Experiment node" in wrong_node.text
-
-    now = fixture.store.now()
-    fixture.store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="active-result-view-revision",
-            project_id=fixture.project_id,
-            kind="node_chat",
-            status="queued",
-            request=pinned.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="Queued.",
-        )
-    )
-    keeping = fixture.client.post(
-        f"/api/projects/{fixture.project_id}/result-views/{fixture.record.view_id}/keep"
-    )
-    assert keeping.status_code == 409
-    assert fixture.store.result_view_for_diagnostics(fixture.record.view_id) == fixture.record
-
-    fixture.store.pause_agent_task("active-result-view-revision")
-    fixture.store.mark_result_view_kept(
-        fixture.record.view_id,
-        expected_content_sha256=fixture.record.content_sha256,
-        kept_filename="curves-test-paper-26-08-12.html",
-        kept_at=fixture.store.now(),
-    )
-
-    def must_not_restart(*_args, **_kwargs):
-        raise AssertionError("a kept result view revision must not restart")
-
-    monkeypatch.setattr(fixture.client.app.state.background_tasks, "resume", must_not_restart)
-    monkeypatch.setattr(fixture.client.app.state.background_tasks, "retry", must_not_restart)
-    task_url = f"/api/projects/{fixture.project_id}/tasks/active-result-view-revision"
-    assert fixture.client.post(f"{task_url}/resume").status_code == 409
-    assert fixture.client.post(f"{task_url}/retry").status_code == 409
+    assert admitted.status_code == 422
+    assert "ordinary task artifacts" in admitted.text
+    assert not started
 
 
 @pytest.mark.parametrize("status", ["paused", "interrupted"])

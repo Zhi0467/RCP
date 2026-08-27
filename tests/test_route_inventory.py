@@ -84,17 +84,24 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/projects/{project_id}/episodes/{episode_id}/reauthorize"),
     (("GET",), "/api/projects/{project_id}/episodes/{episode_id}/messages"),
     (("POST",), "/api/projects/{project_id}/episodes/{episode_id}/messages"),
+    (("HEAD",), "/api/projects/{project_id}/episodes/{episode_id}/report/content"),
+    (("GET",), "/api/projects/{project_id}/episodes/{episode_id}/report/content"),
     (("HEAD",), "/api/projects/{project_id}/episodes/{episode_id}/report/preview"),
     (("GET",), "/api/projects/{project_id}/episodes/{episode_id}/report/preview"),
+    (("GET",), "/api/projects/{project_id}/episodes/{episode_id}/report/viewer"),
     (("GET",), "/api/projects/{project_id}/result-views"),
     (("HEAD",), "/api/projects/{project_id}/result-views/{view_id}/preview"),
     (("GET",), "/api/projects/{project_id}/result-views/{view_id}/preview"),
     (("POST",), "/api/projects/{project_id}/result-views/{view_id}/keep"),
     (("GET",), "/api/projects/{project_id}/tasks/{operation_id}"),
+    (("HEAD",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/content"),
+    (("GET",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/content"),
     (("HEAD",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview"),
     (("GET",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview"),
     (("HEAD",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download"),
     (("GET",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download"),
+    (("GET",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/viewer"),
+    (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/keep"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/pause"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/resume"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/repair-graph-update"),
@@ -110,6 +117,8 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
 # only this map as Phase 5 extracts handlers into their owning API modules.
 _HANDLER_MODULE_MAP: dict[str, str] = {
     "agent_task": "src/rcp/api/tasks.py",
+    "content_agent_artifact": "src/rcp/api/tasks.py",
+    "content_episode_report": "src/rcp/api/episode_routes.py",
     "agent_tasks": "src/rcp/api/tasks.py",
     "agent_usage": "src/rcp/api/project_state.py",
     "answer_project_invitation": "src/rcp/api/index.py",
@@ -139,6 +148,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "history_summaries": "src/rcp/api/history.py",
     "invite_project_member": "src/rcp/api/project_state.py",
     "keep_result_view": "src/rcp/api/result_views.py",
+    "keep_agent_artifact": "src/rcp/api/tasks.py",
     "leave_project": "src/rcp/api/project_state.py",
     "logout_team_session": "src/rcp/api/team.py",
     "merge_episode_branch": "src/rcp/api/episode_routes.py",
@@ -147,9 +157,11 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "preflight_project": "src/rcp/api/index.py",
     "preview_agent_artifact": "src/rcp/api/tasks.py",
     "preview_episode_report": "src/rcp/api/episode_routes.py",
+    "view_episode_report": "src/rcp/api/episode_routes.py",
     "preview_graph_sync": "src/rcp/api/sync.py",
     "preview_repository_file": "src/rcp/api/project_state.py",
     "preview_result_view": "src/rcp/api/result_views.py",
+    "view_agent_artifact": "src/rcp/api/tasks.py",
     "project": "src/rcp/api/project_state.py",
     "project_invitations_for_me": "src/rcp/api/index.py",
     "project_members": "src/rcp/api/project_state.py",
@@ -214,15 +226,15 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 86
-    assert len(_FROZEN_ROUTE_INVENTORY) == 86
+    assert len(entries) == 93
+    assert len(_FROZEN_ROUTE_INVENTORY) == 93
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 82
+    assert sum(isinstance(route, APIRoute) for route in routes) == 89
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4
 
 
@@ -237,5 +249,5 @@ def test_handler_module_map_is_separate_and_current(route_app: FastAPI) -> None:
         assert source is not None
         observed[endpoint.__name__] = str(Path(source).resolve().relative_to(repository_root))
 
-    assert len(observed) == 77
+    assert len(observed) == 82
     assert observed == _HANDLER_MODULE_MAP

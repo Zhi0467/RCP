@@ -2462,8 +2462,41 @@ class ExperimentStoreMixin:
                 snapshots[control_node_id] = ExperimentControlProjectionSnapshot(
                     runtime=runtime,
                     episode=episode_snapshot,
+                    latest_report_episode_id=(
+                        self._latest_experiment_report_episode_id_in_connection(
+                            connection,
+                            project_id,
+                            control_node_id,
+                            episode_snapshot.episode.graph_target,
+                        )
+                        if episode_snapshot is not None
+                        else None
+                    ),
                 )
             return snapshots
+
+    @staticmethod
+    def _latest_experiment_report_episode_id_in_connection(
+        connection: sqlite3.Connection,
+        project_id: str,
+        control_node_id: str,
+        graph_target: GraphTargetRef,
+    ) -> str | None:
+        row = connection.execute(
+            """
+            SELECT episodes.episode_id
+            FROM episodes
+            JOIN episode_reports ON episode_reports.episode_id = episodes.episode_id
+            WHERE episodes.project_id = ?
+              AND episodes.mode = 'experiment_loop'
+              AND episodes.control_node_id = ?
+              AND episodes.graph_target_json = ?
+            ORDER BY episode_reports.created_at DESC, episodes.episode_id DESC
+            LIMIT 1
+            """,
+            (project_id, control_node_id, graph_target.model_dump_json()),
+        ).fetchone()
+        return str(row["episode_id"]) if row is not None else None
 
     def _experiment_loop_runtimes_in_connection(
         self,

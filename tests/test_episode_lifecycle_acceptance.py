@@ -220,7 +220,7 @@ def test_acceptance_episode_completes_and_corrects_one_hidden_report(
         assert episode["wrapup_state"] == "ready"
         assert episode["report"] is not None
         assert all(task["kind"] != "episode_report" for task in episode["tasks"])
-        preview = client.get(f"/api/projects/{project_id}/episodes/{episode_id}/report/preview")
+        preview = client.get(f"/api/projects/{project_id}/episodes/{episode_id}/report/content")
         assert preview.status_code == 200, preview.text
         assert "Acceptance episode conclusion" in preview.text
         assert "Episode progression" in preview.text
@@ -407,7 +407,7 @@ def test_acceptance_episode_exhausts_operational_invocations_then_reports(
         assert budget["invocations_remaining"] == 0
         assert episode["can_reauthorize"] is True
         assert episode["report"] is not None
-        preview = client.get(f"/api/projects/{project_id}/episodes/{episode_id}/report/preview")
+        preview = client.get(f"/api/projects/{project_id}/episodes/{episode_id}/report/content")
         assert preview.status_code == 200, preview.text
         assert "shared invocation pot" in preview.text
 
@@ -558,7 +558,7 @@ def test_acceptance_episode_stop_is_the_only_ending_without_a_report(
         assert episode["wrapup_state"] == "skipped"
         assert episode["wrapup_error"] is None
         assert episode["report"] is None
-        preview = client.get(f"/api/projects/{project_id}/episodes/{episode_id}/report/preview")
+        preview = client.get(f"/api/projects/{project_id}/episodes/{episode_id}/report/content")
         assert preview.status_code == 404
 
     root = store.agent_task(root_operation_id)
@@ -733,7 +733,7 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
         assert budget["invocation_ceiling"] == 10
         assert budget["invocations_used"] == 2
         assert episode["wrapup_state"] == "ready"
-        preview = client.get(f"/api/projects/{project_id}/episodes/{episode_id}/report/preview")
+        preview = client.get(f"/api/projects/{project_id}/episodes/{episode_id}/report/content")
         assert preview.status_code == 200, preview.text
         assert "partial report" in preview.text
 

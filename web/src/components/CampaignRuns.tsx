@@ -20,73 +20,12 @@ import {
   episodeTaskRoleLabel,
   episodeTaskRows,
   formatTokenCount,
-  isLiveEpisode,
 } from "../campaigns";
 import { MarkdownAnswer } from "../chatMarkdown";
 import type { AgentTask, Episode, EpisodeMessage } from "../types";
 import { EpisodeReportLink } from "./EpisodeReportLink";
 
-interface Props {
-  episodes: Episode[];
-  tasks: AgentTask[];
-  messagesByEpisode: Readonly<Record<string, EpisodeMessage[] | undefined>>;
-  busyAction: string | null;
-  taskActionId: string | null;
-  onInspectTask: (operationId: string) => void;
-  onLoadMessages: (episodeId: string) => Promise<void>;
-  onStop: (episodeId: string) => Promise<void>;
-  onMerge: (episodeId: string) => Promise<void>;
-  onReauthorize: (episodeId: string, invocationCeiling: number) => Promise<void>;
-  onSendMessage: (episodeId: string, body: string) => Promise<void>;
-  onOperateTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
-}
-
-export function AutoResearchEpisodes({
-  episodes,
-  tasks,
-  messagesByEpisode,
-  busyAction,
-  taskActionId,
-  onInspectTask,
-  onLoadMessages,
-  onStop,
-  onMerge,
-  onReauthorize,
-  onSendMessage,
-  onOperateTask,
-}: Props) {
-  if (episodes.length === 0) return null;
-  return (
-    <section className="campaign-runs" aria-label="Auto-research episodes">
-      <header>
-        <h2>Auto-research</h2>
-        <span>{episodes.length}</span>
-      </header>
-      <div className="campaign-run-list">
-        {episodes.map((episode, index) => (
-          <EpisodeRow
-            episode={episode}
-            tasks={tasks}
-            messages={messagesByEpisode[episode.episode_id] ?? []}
-            initiallyExpanded={index === 0 || isLiveEpisode(episode)}
-            busyAction={busyAction}
-            taskActionId={taskActionId}
-            onInspectTask={onInspectTask}
-            onLoadMessages={onLoadMessages}
-            onStop={onStop}
-            onMerge={onMerge}
-            onReauthorize={onReauthorize}
-            onSendMessage={onSendMessage}
-            onOperateTask={onOperateTask}
-            key={episode.episode_id}
-          />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function EpisodeRow({
+export function AutoResearchEpisodeCard({
   episode,
   tasks,
   messages,
@@ -144,7 +83,7 @@ function EpisodeRow({
   const messageBusy = busyAction === `message:${episode.episode_id}`;
   const controlTaskBusy = taskControl !== null && taskActionId === taskControl.task.operation_id;
   const anotherActionBusy = busyAction !== null || taskActionId !== null;
-  const episodeTimestamp = formatTimestamp(episode.created_at, true);
+  const episodeTimestamp = formatTimestamp(episode.created_at);
   const showStop =
     episode.can_stop &&
     projection.health !== "stopping" &&
@@ -219,18 +158,17 @@ function EpisodeRow({
           onClick={() => setExpanded((current) => !current)}
         />
         <span className="campaign-run-identity">
-          <span className="eyebrow">
-            <Telescope size={12} /> Project episode
-          </span>
-          <strong>Auto-research</strong>
-          <span className="campaign-run-state">
+          <strong className="campaign-run-title">
+            <Telescope size={14} aria-hidden="true" />
+            <span>Auto-research</span>
+          </strong>
+          <span className="campaign-run-meta">
             <span className={`status-pill ${projection.health}`}>{projection.healthLabel}</span>
-            <span className="campaign-run-summary">{recommendation.label}</span>
+            <time dateTime={episode.created_at}>{episodeTimestamp}</time>
           </span>
         </span>
         <EpisodeBudgetMeter episode={episode} />
         <span className="campaign-run-time">
-          <time dateTime={episode.created_at}>{formatTimestamp(episode.created_at)}</time>
           <ChevronDown size={15} aria-hidden="true" />
         </span>
       </div>
@@ -541,7 +479,7 @@ function compactIdentity(value: string): string {
   return value.length <= 18 ? value : `${value.slice(0, 8)}\u2026${value.slice(-6)}`;
 }
 
-function EpisodeBudgetMeter({ episode }: { episode: Episode }) {
+export function EpisodeBudgetMeter({ episode }: { episode: Episode }) {
   const budget = episode.budget;
   const usedPercent = Math.min(100, (budget.invocations_used / budget.invocation_ceiling) * 100);
   const label = `${budget.invocations_used} of ${budget.invocation_ceiling} operational invocations used; ${budget.observed_input_tokens} observed input tokens and ${budget.observed_generated_tokens} observed generated tokens`;

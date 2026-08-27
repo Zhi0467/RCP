@@ -444,6 +444,69 @@ ResultViewRequest = Annotated[
 ]
 
 
+class ArtifactSelectionRect(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    width: float = Field(gt=0, le=1)
+    height: float = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def stays_inside_viewport(self) -> ArtifactSelectionRect:
+        if self.x + self.width > 1 or self.y + self.height > 1:
+            raise ValueError("artifact selection rectangle must stay inside its viewport")
+        return self
+
+
+class ArtifactViewport(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    width: int = Field(ge=1, le=32768)
+    height: int = Field(ge=1, le=32768)
+
+
+class ArtifactTextSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: Literal["text"]
+    text: str = Field(min_length=1, max_length=4096)
+    surrounding_text: str = Field(default="", max_length=6144)
+    comment: str = Field(default="", max_length=2048)
+
+
+class ArtifactBoxSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: Literal["box"]
+    rect: ArtifactSelectionRect
+    viewport: ArtifactViewport
+    labels: str = Field(default="", max_length=4096)
+    comment: str = Field(default="", max_length=2048)
+
+
+ArtifactSelection = Annotated[
+    ArtifactTextSelection | ArtifactBoxSelection,
+    Field(discriminator="kind"),
+]
+
+
+class ArtifactContextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    source: Literal["task", "episode_report"] = "task"
+    operation_id: str = Field(min_length=1)
+    artifact_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    episode_id: str | None = None
+    selections: list[ArtifactSelection] = Field(min_length=1, max_length=12)
+
+    @model_validator(mode="after")
+    def source_identity_is_coherent(self) -> ArtifactContextRequest:
+        if (self.source == "episode_report") != (self.episode_id is not None):
+            raise ValueError("episode report context requires exactly one episode_id")
+        return self
+
+
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -459,6 +522,10 @@ class RunRequest(BaseModel):
     session_id: str | None = None
     mode: ConversationMode = "discuss"
     result_view: ResultViewRequest | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    artifact_context: ArtifactContextRequest | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )

@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, date, datetime
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -47,6 +47,9 @@ _LOCK_CONTENDED = "contended"
 _LOCK_LEGACY_DIRECTORY = "legacy-directory"
 _LOCK_UNSAFE_ENTRY = "unsafe-entry"
 _KEPT_VIEW_NAME_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,238})\.html")
+_KEPT_ARTIFACT_NAME_PATTERN = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]{0,220})\.(?:html?|png|jpe?g|gif|webp|svg)"
+)
 _ARCHIVE_TIMESTAMP_PATTERN = re.compile(r"[0-9]{8}T[0-9]{12}Z")
 _RETAINED_HISTORY_FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
 _RETAINED_BRANCH_PATCH_PATTERN = re.compile(r"[0-9]{6}\.json")
@@ -108,6 +111,26 @@ def _result_view_base_name(source_name: str, project_name: str, today: date | No
     return name
 
 
+def _artifact_base_name(source_name: str, project_name: str, today: date | None) -> str:
+    source_base = re.split(r"[/\\]", source_name)[-1]
+    suffix = Path(source_base).suffix.casefold()
+    if suffix not in {".html", ".htm", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
+        raise ValueError("unsupported kept artifact type")
+    source_slug = _result_view_slug(Path(source_base).stem, "artifact", max_length=80)
+    project_slug = _result_view_slug(project_name, "project", max_length=64)
+    current_date = today or date.today()
+    name = f"{source_slug}-{project_slug}-{current_date.strftime('%y-%m-%d')}{suffix}"
+    if _KEPT_ARTIFACT_NAME_PATTERN.fullmatch(name) is None:
+        raise ValueError("could not derive a safe repository artifact name")
+    return name
+
+
+def _validated_kept_artifact_name(name: str) -> str:
+    if _KEPT_ARTIFACT_NAME_PATTERN.fullmatch(name) is None:
+        raise ValueError("kept artifact name must be a safe supported base name")
+    return name
+
+
 def _validated_kept_view_name(name: str) -> str:
     if _KEPT_VIEW_NAME_PATTERN.fullmatch(name) is None:
         raise ValueError("kept result-view name must be a safe HTML base name")
@@ -163,10 +186,37 @@ def _open_views_directory(repository_fd: int, *, create: bool) -> int:
         raise ValueError("repository views path is not a regular directory") from exc
 
 
+def _open_artifacts_directory(repository_fd: int, *, create: bool) -> int:
+    if create:
+        try:
+            os.mkdir("artifacts", 0o755, dir_fd=repository_fd)
+            os.fsync(repository_fd)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise StateUnavailable(
+                f"Could not create the repository artifacts directory: {exc}"
+            ) from exc
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        return os.open("artifacts", flags, dir_fd=repository_fd)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise ValueError("repository artifacts path is not a regular directory") from exc
+
+
 def _collision_view_name(base_name: str, index: int) -> str:
     if index == 1:
         return base_name
     return f"{base_name[:-5]}-{index}.html"
+
+
+def _collision_artifact_name(base_name: str, index: int) -> str:
+    if index == 1:
+        return base_name
+    path = Path(base_name)
+    return f"{path.stem}-{index}{path.suffix}"
 
 
 def _is_collision_view_name(name: str, base_name: str) -> bool:
@@ -174,6 +224,19 @@ def _is_collision_view_name(name: str, base_name: str) -> bool:
         return True
     prefix = re.escape(base_name[:-5])
     return re.fullmatch(rf"{prefix}-(?:[2-9]|[1-9][0-9]+)\.html", name) is not None
+
+
+def _is_collision_artifact_name(name: str, base_name: str) -> bool:
+    if name == base_name:
+        return True
+    path = Path(base_name)
+    return (
+        re.fullmatch(
+            rf"{re.escape(path.stem)}-(?:[2-9]|[1-9][0-9]+){re.escape(path.suffix)}",
+            name,
+        )
+        is not None
+    )
 
 
 def _archive_timestamp() -> str:
@@ -605,6 +668,151 @@ class StateWorkspace:
                     raise StateUnavailable("Too many repository result-view name collisions.")
                 finally:
                     os.close(views_fd)
+            finally:
+                os.close(repository_fd)
+
+    def keep_artifact(
+        self,
+        *,
+        source_name: str,
+        project_name: str,
+        data: bytes,
+        today: date | None = None,
+    ) -> str:
+        """Keep one live artifact without claiming or replacing existing files."""
+
+        base_name = _artifact_base_name(source_name, project_name, today)
+        if not isinstance(data, bytes) or not 1 <= len(data) <= CHAT_ARTIFACT_MAX_FILE_BYTES:
+            raise ValueError("artifact bytes are outside the supported size range")
+        with self.transaction():
+            repository_fd = _repository_directory_fd(self.root.parent)
+            try:
+                artifacts_fd = _open_artifacts_directory(repository_fd, create=True)
+                try:
+                    for index in range(1, 10000):
+                        candidate = _collision_artifact_name(base_name, index)
+                        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                        try:
+                            descriptor = os.open(candidate, flags, 0o644, dir_fd=artifacts_fd)
+                        except FileExistsError:
+                            continue
+                        try:
+                            remaining = memoryview(data)
+                            while remaining:
+                                written = os.write(descriptor, remaining)
+                                if written <= 0:
+                                    raise OSError("short artifact write")
+                                remaining = remaining[written:]
+                            os.fsync(descriptor)
+                        except BaseException:
+                            os.close(descriptor)
+                            descriptor = -1
+                            try:
+                                os.unlink(candidate, dir_fd=artifacts_fd)
+                                os.fsync(artifacts_fd)
+                            except OSError:
+                                pass
+                            raise
+                        finally:
+                            if descriptor >= 0:
+                                os.close(descriptor)
+                        os.fsync(artifacts_fd)
+                        return candidate
+                    raise StateUnavailable("Too many repository artifact name collisions.")
+                finally:
+                    os.close(artifacts_fd)
+            finally:
+                os.close(repository_fd)
+
+    def read_kept_artifact(
+        self,
+        name: str,
+        *,
+        max_bytes: int = CHAT_ARTIFACT_MAX_FILE_BYTES,
+    ) -> bytes:
+        """Read the current bytes of one live kept artifact without following links."""
+
+        safe_name = _validated_kept_artifact_name(name)
+        limit = _validated_view_read_limit(max_bytes)
+        with self.snapshot_lock:
+            repository_fd = _repository_directory_fd(self.root.parent)
+            try:
+                artifacts_fd = _open_artifacts_directory(repository_fd, create=False)
+                try:
+                    descriptor = os.open(
+                        safe_name,
+                        os.O_RDONLY | os.O_NOFOLLOW,
+                        dir_fd=artifacts_fd,
+                    )
+                    try:
+                        metadata = os.fstat(descriptor)
+                        if not stat.S_ISREG(metadata.st_mode):
+                            raise ValueError("kept artifact is not a regular file")
+                        if metadata.st_size > limit:
+                            raise ValueError("kept artifact exceeds the read limit")
+                        chunks: list[bytes] = []
+                        remaining = limit + 1
+                        while remaining > 0:
+                            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                            if not chunk:
+                                break
+                            chunks.append(chunk)
+                            remaining -= len(chunk)
+                        data = b"".join(chunks)
+                        if len(data) > limit:
+                            raise ValueError("kept artifact exceeds the read limit")
+                        return data
+                    finally:
+                        os.close(descriptor)
+                finally:
+                    os.close(artifacts_fd)
+            finally:
+                os.close(repository_fd)
+
+    def replace_kept_artifact(self, name: str, data: bytes) -> None:
+        """Atomically update one live kept artifact, accepting intervening external edits."""
+
+        safe_name = _validated_kept_artifact_name(name)
+        if not isinstance(data, bytes) or not 1 <= len(data) <= CHAT_ARTIFACT_MAX_FILE_BYTES:
+            raise ValueError("artifact bytes are outside the supported size range")
+        temporary_name = f".{safe_name}.rcp-{uuid.uuid4().hex}"
+        with self.transaction():
+            repository_fd = _repository_directory_fd(self.root.parent)
+            try:
+                artifacts_fd = _open_artifacts_directory(repository_fd, create=False)
+                try:
+                    metadata = os.stat(safe_name, dir_fd=artifacts_fd, follow_symlinks=False)
+                    if not stat.S_ISREG(metadata.st_mode):
+                        raise ValueError("kept artifact is not a regular file")
+                    descriptor = os.open(
+                        temporary_name,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o644,
+                        dir_fd=artifacts_fd,
+                    )
+                    try:
+                        remaining = memoryview(data)
+                        while remaining:
+                            written = os.write(descriptor, remaining)
+                            if written <= 0:
+                                raise OSError("short artifact replacement write")
+                            remaining = remaining[written:]
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
+                    os.replace(
+                        temporary_name,
+                        safe_name,
+                        src_dir_fd=artifacts_fd,
+                        dst_dir_fd=artifacts_fd,
+                    )
+                    os.fsync(artifacts_fd)
+                except BaseException:
+                    with suppress(FileNotFoundError):
+                        os.unlink(temporary_name, dir_fd=artifacts_fd)
+                    raise
+                finally:
+                    os.close(artifacts_fd)
             finally:
                 os.close(repository_fd)
 
@@ -1408,6 +1616,147 @@ class SSHStateWorkspace(StateWorkspace):
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         self._mark_unreachable(detail or "canonical state is unreachable")
         raise StateUnavailable(self.error or "canonical state is unreachable")
+
+    def keep_artifact(
+        self,
+        *,
+        source_name: str,
+        project_name: str,
+        data: bytes,
+        today: date | None = None,
+    ) -> str:
+        base_name = _artifact_base_name(source_name, project_name, today)
+        if not isinstance(data, bytes) or not 1 <= len(data) <= CHAT_ARTIFACT_MAX_FILE_BYTES:
+            raise ValueError("artifact bytes are outside the supported size range")
+        stage = self.remote_root / ".publish" / f"artifact-{os.getpid()}-{time.time_ns()}"
+        with self.snapshot_lock, self._publication_lock() as lease:
+            prepared = self._ssh(["mkdir", "-p", str(stage)])
+            if prepared.returncode:
+                self._mark_unreachable(prepared.stderr)
+                raise StateUnavailable(self.error or "canonical state is unreachable")
+            with tempfile.TemporaryDirectory(prefix="rcp-kept-artifact-") as temporary:
+                source = Path(temporary) / "content.bin"
+                source.write_bytes(data)
+                destination = f"{self.host}:{shlex.quote(str(stage))}/"
+                try:
+                    result = subprocess.run(
+                        ["rsync", "-a", *rsync_ssh_arguments(), str(source), destination],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                        check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    self._mark_unreachable(str(exc))
+                    raise StateUnavailable(
+                        self.error or "repository artifact staging failed"
+                    ) from exc
+            if result.returncode:
+                self._mark_unreachable(result.stderr)
+                raise StateUnavailable(self.error or "repository artifact staging failed")
+            response = lease._run_owned_command(
+                {
+                    "op": "keep-artifact",
+                    "root": str(self.remote_root),
+                    "stage": str(stage),
+                    "base_name": base_name,
+                }
+            )
+            if not response["ok"]:
+                self._mark_reachable()
+                raise StateUnavailable(str(response.get("error") or "artifact Keep failed"))
+            chosen = response.get("name")
+            if (
+                not isinstance(chosen, str)
+                or _KEPT_ARTIFACT_NAME_PATTERN.fullmatch(chosen) is None
+                or not _is_collision_artifact_name(chosen, base_name)
+            ):
+                self._mark_unreachable("Remote artifact Keep returned an invalid file name.")
+                raise StateUnavailable(self.error or "artifact Keep failed")
+            self._mark_reachable(synced=True)
+            return chosen
+
+    def read_kept_artifact(
+        self,
+        name: str,
+        *,
+        max_bytes: int = CHAT_ARTIFACT_MAX_FILE_BYTES,
+    ) -> bytes:
+        safe_name = _validated_kept_artifact_name(name)
+        limit = _validated_view_read_limit(max_bytes)
+        result = self._ssh_bytes(
+            [
+                "python3",
+                "-c",
+                _remote_script("remote_read_kept_view.py"),
+                str(self.remote_repository),
+                "artifacts",
+                safe_name,
+                str(limit),
+            ],
+            timeout=REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS,
+        )
+        if result.returncode == 0:
+            if len(result.stdout) > limit:
+                self._mark_reachable()
+                raise ValueError("kept artifact exceeds the read limit")
+            self._mark_reachable()
+            return result.stdout
+        if result.returncode == _REMOTE_VIEW_MISSING:
+            self._mark_reachable()
+            raise FileNotFoundError(safe_name)
+        if result.returncode == _REMOTE_VIEW_TOO_LARGE:
+            self._mark_reachable()
+            raise ValueError("kept artifact exceeds the read limit")
+        if result.returncode == _REMOTE_VIEW_UNSAFE:
+            self._mark_reachable()
+            raise ValueError("kept artifact is not a readable regular file")
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        self._mark_unreachable(detail or "canonical state is unreachable")
+        raise StateUnavailable(self.error or "canonical state is unreachable")
+
+    def replace_kept_artifact(self, name: str, data: bytes) -> None:
+        safe_name = _validated_kept_artifact_name(name)
+        if not isinstance(data, bytes) or not 1 <= len(data) <= CHAT_ARTIFACT_MAX_FILE_BYTES:
+            raise ValueError("artifact bytes are outside the supported size range")
+        stage = self.remote_root / ".publish" / f"artifact-{os.getpid()}-{time.time_ns()}"
+        with self.snapshot_lock, self._publication_lock() as lease:
+            prepared = self._ssh(["mkdir", "-p", str(stage)])
+            if prepared.returncode:
+                self._mark_unreachable(prepared.stderr)
+                raise StateUnavailable(self.error or "canonical state is unreachable")
+            with tempfile.TemporaryDirectory(prefix="rcp-artifact-revision-") as temporary:
+                source = Path(temporary) / "content.bin"
+                source.write_bytes(data)
+                destination = f"{self.host}:{shlex.quote(str(stage))}/"
+                try:
+                    result = subprocess.run(
+                        ["rsync", "-a", *rsync_ssh_arguments(), str(source), destination],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                        check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    self._mark_unreachable(str(exc))
+                    raise StateUnavailable(
+                        self.error or "repository artifact staging failed"
+                    ) from exc
+            if result.returncode:
+                self._mark_unreachable(result.stderr)
+                raise StateUnavailable(self.error or "repository artifact staging failed")
+            response = lease._run_owned_command(
+                {
+                    "op": "replace-artifact",
+                    "root": str(self.remote_root),
+                    "stage": str(stage),
+                    "name": safe_name,
+                }
+            )
+            if not response["ok"]:
+                self._mark_reachable()
+                raise StateUnavailable(str(response.get("error") or "artifact update failed"))
+            self._mark_reachable(synced=True)
 
     def _publish(self, relative_paths: list[Path | str], lease: RunLockLease) -> None:
         sources: list[str] = []

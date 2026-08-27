@@ -310,6 +310,7 @@ def test_ready_report_is_singular_and_hidden_report_work_is_not_public(tmp_path)
     assert [task.operation_id for task in response.tasks] == [root.operation_id]
     assert response.budget.invocations_used == 1
     assert response.can_reauthorize
+    assert response.run_section == "needs_action"
     assert "report_attempts_used" not in payload
     assert "stop_settled_at" not in payload
     assert "reports" not in payload
@@ -339,6 +340,7 @@ def test_failed_report_is_terminal_without_a_report_recovery_surface(tmp_path) -
     assert response.tasks[0].can_resume is False
     assert not response.can_stop
     assert not response.can_reauthorize
+    assert response.run_section == "needs_action"
     assert not {"report_retry", "report_resume"} & type(response).model_fields.keys()
 
 
@@ -503,6 +505,7 @@ def test_a_stopped_episode_arrives_with_nothing_left_to_suppress(tmp_path) -> No
     assert stored.ending_diagnostic == "must not reach the client"
 
     response = serialize_episode(store, "project", stored, branch_summary=_branch_summary)
+    assert response.run_section == "completed"
 
     assert response.ending_diagnostic is None
     assert response.wrapup_error is None

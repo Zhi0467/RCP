@@ -69,6 +69,7 @@ class ExperimentControlResponse(ExperimentControlState):
     task_control: ExperimentTaskControlKind | None
     can_switch_provider: bool
     can_open_report: bool
+    report_episode_id: str | None
     node_closed: bool
 
 
@@ -163,6 +164,8 @@ def _experiment_control_response(
     experiment_id: str,
     runtime: ExperimentLoopRuntime,
     episode_payload: dict[str, object] | EpisodeResponse | None,
+    *,
+    latest_report_episode_id: str | None = None,
 ) -> ExperimentControlResponse:
     """Publish the complete Experiment control consumed by Runs.
 
@@ -225,9 +228,12 @@ def _experiment_control_response(
         and not control.operational.stop_requested
         and (live or awaiting_human)
     )
-    can_open_report = bool(
-        episode is not None and episode.report is not None and episode.wrapup_state == "ready"
+    report_episode_id = latest_report_episode_id or (
+        episode.episode_id
+        if episode is not None and episode.report is not None and episode.wrapup_state == "ready"
+        else None
     )
+    can_open_report = report_episode_id is not None
     can_switch_provider = bool(task_control is not None and task is not None and task.can_retry)
     return ExperimentControlResponse.model_validate(
         {
@@ -243,6 +249,7 @@ def _experiment_control_response(
             "task_control": task_control,
             "can_switch_provider": can_switch_provider,
             "can_open_report": can_open_report,
+            "report_episode_id": report_episode_id,
             "node_closed": node.status in CLOSED_EXPERIMENT_STATUSES,
         }
     )
@@ -279,6 +286,12 @@ def _experiment_run_health(
     stop_requested = operational.stop_requested
     if stop_requested and not operational.stop_settled:
         return "needs_action" if has_valid_recovery else "stopping"
+    if (
+        node.status in CLOSED_EXPERIMENT_STATUSES
+        and episode is not None
+        and episode.health == "stopped"
+    ):
+        return "completed"
     if stop_requested and operational.stop_settled and awaiting_human:
         return "human_stopped"
     if episode is not None and episode.wrapup_state in {"pending", "running"}:

@@ -169,8 +169,9 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
     resolve_requirements: "Resolve the run requirements",
     open_report: "Open report",
     review: "Review the loop state",
-    none:
-      run.control.episode?.wrapup_state === "legacy_unavailable"
+    none: run.control.node_closed
+      ? `Experiment is ${run.node.status}`
+      : run.control.episode?.wrapup_state === "legacy_unavailable"
         ? "Episode report unavailable"
         : run.health === "failed"
           ? "Episode ended"

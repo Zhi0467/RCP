@@ -1133,6 +1133,7 @@ def _prepare_graph_patch_candidate(
         draft,
         kind=kind,
         run_truth_scope=run_truth_scope,
+        repository_paths=service.manifest.repository_paths,
         source_operation_id=source_operation_id,
     )
 

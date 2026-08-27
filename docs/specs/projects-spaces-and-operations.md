@@ -68,9 +68,13 @@ canonical home refuses ordinary registration/writes instead of inventing a
 second identity or read-only catalog mode. Low-level replay stays space-neutral
 for recovery and never consults local membership or admission data.
 
-The current product has no project transfer workflow, team-to-team transfer,
-multi-space desktop switcher, or fresh-identity fork. Those future journeys stay
-active as pending acceptance work and are not implied by copying a repository.
+The current product has no project transfer workflow, multi-space desktop
+switcher, or fresh-identity fork. The confirmed one-way personal-to-team target
+creates a separate team checkout and moves the canonical home only after the old
+home is fenced; it does not change ownership of a person's checkout. Team-to-team
+and team-to-personal product transfers remain excluded. The transfer's
+operational-record boundary and sole archive format are settled in the
+[personal-to-team transfer decision](../decisions/2026-08-27-personal-to-team-transfer-archive.md).
 
 Every project has exactly one canonical state repository, local or remote. Its
 main and Auto-research graph-branch namespaces are parts of that same canonical
@@ -110,6 +114,12 @@ The project manifest names repository aliases, paths paired with execution
 machines/hosts, truth-scope membership, provider roots, and execution profiles.
 Project truth scope is human-authored canonical membership. Run scope is a
 nonempty contextual subset; it does not change project truth.
+
+A Patch declares the repositories its run read. Task contracts name repositories
+by path while scope is a list of aliases, so RCP accepts either spelling and
+records each read by its manifest alias, resolving a path at or under a
+registered root to that root. A declared repository outside run scope is still
+rejected.
 
 Every graph-capable run receives the complete graph and canonical research
 rendering for its exact graph target plus only its selected raw repository
@@ -205,22 +215,202 @@ Process or connection death releases ownership. RCP may reclaim only a provably
 empty legacy lock directory; populated, symlink, or special entries remain with
 an exact diagnostic and no instruction to delete them.
 
+## Confirmed first team-server target
+
+The first supported team deployment is deliberately narrow: one lab, one Linux
+server, one team space, and source-built desktop clients. The server runs from a
+checkout of GitHub `main` with a `uv` environment and clean built Web bundle
+under a non-reloading system service. A dedicated Linux `rcp` account owns its
+private home, data directory, runtime files, and server-local team checkouts.
+An explicitly configured remote execution account owns a team-controlled
+checkout on its SSH machine. Ordinary members do not share those identities and
+their personal checkouts remain theirs.
+
+The server binds only loopback. A desktop member reaches it through an SSH
+tunnel, then uses RCP membership and a browser session for product authority.
+The SSH account that transports a desktop connection is not thereby an RCP
+member or a server operator. Direct public HTTPS, a Linux desktop package,
+containers, hosted RCP, high availability, and multi-server failover are outside
+this slice.
+
+Four identities must never be collapsed:
+
+- the RCP member identifies and authorizes Z, Alice, or another human;
+- the Linux `rcp` account owns the service and server-local team files, while an
+  explicit remote execution account owns its remote team files;
+- a repository-scoped Git deploy key authenticates one central repository
+  checkout; and
+- the provider login belongs to the operating-system account that actually runs
+  that provider, locally or through SSH.
+
 ## Server and machine operations
 
-The current product does not define an RCP administrator member role. Dangerous
-machine-wide operations—installation, backup, restore, update, credential
-provisioning, and removing another human—belong to whoever has operating-system
-authority on the server. Product credentials do not grant that privilege.
+RCP defines no administrator member role. Installation, backup, restore, source
+update, machine/provider credential provisioning, and removing another human
+belong to whoever has operating-system authority on the server. A member token
+cannot perform them.
 
-Current source and desktop launch paths serve the same JSON API and Web
-application. Provider credentials belong to the execution operating-system
-account and do not become RCP member credentials or project data.
+The confirmed machine surface is a narrow `rcp server ...` CLI. It includes
+source installation, `doctor`, provider configuration, project provisioning,
+backup configuration and capture, restore, member removal, and source update.
+The same command implementation emits either interactive terminal guidance or
+structured progress for the desktop shell. RCP does not add CLI mirrors of
+ordinary graph, task, chat, or project-member actions.
 
-The fully specified self-hosted service-account, automated backup/restore,
-update, multi-space client, and project-transfer workflows remain unimplemented
-active acceptance work. Current RCP must not simulate them, expose ordinary app
-controls that claim machine authority, or describe an incomplete backup as
-authoritative recovery.
+A completely fresh source clone has one documented bootstrap before that CLI is
+available. A normal machine operator clones it under their own account, installs
+the declared system prerequisites, runs `npm ci`, builds the Web bundle, and
+runs `uv sync` in the repository-required order. The first privileged RCP
+invocation is the bootstrap checkout's absolute `.venv/bin/rcp server install`
+path under `sudo`; the dedicated `rcp` account may not exist before that command.
+
+Installation creates or validates `rcp`, then creates a separate managed Git
+checkout of GitHub `main` plus one clean release directory for its exact commit
+in the recorded service layout. The bootstrap checkout never becomes production
+state and may be removed afterward. Root owns only account, directory, systemd,
+release-pointer, and other operating-system changes. The installer performs
+managed Git fetch, npm, Web build, and `uv sync --frozen` as `rcp`. From that
+point on, `rcp server install` owns service installation and `rcp server update`
+owns every later fetch/build/sync/switch/restart. This bootstrap is not a second
+server-operations implementation.
+
+When the service is running, a server command that needs durable RCP state uses a
+private machine-local control socket owned by `rcp`; it never opens SQLite beside
+the lock-owning process. Installation and restore may open the data directory
+only while they prove the service is stopped and acquire the normal ownership
+lock. No member HTTP route exposes this machine authority.
+
+### Source version and update
+
+The installed version is the exact commit of the service's current source
+release. `rcp server doctor` reports the managed-main, candidate, current, and
+running commits plus the configured upstream. An authorized machine operator
+invokes `sudo rcp server update`. Its coordinator fetches and fast-forwards the
+managed checkout to `origin/main`, creates a separate clean release directory
+for that exact commit, and runs `npm ci`, the Web build, `uv sync --frozen`, and
+migration/readiness preflight there as `rcp`. Candidate preparation never
+changes the current release or its environment.
+
+After preflight, the narrow root portion switches the service's `current`
+release pointer and restarts systemd. It reads back the running commit before
+reporting success. A failed candidate never changes `current`; a failed
+post-switch start reports the exact current/running mismatch and never rolls
+back silently. The service account receives no general sudo or systemd-control
+permission.
+
+The source checkout has its own fetch identity, separate from every project. A
+public RCP origin needs no secret; a private origin uses a dedicated read-only
+source deploy key installed for `rcp`. Update never pushes RCP source, copies an
+operator's personal SSH key, or borrows a project's write deploy key.
+
+A dirty managed checkout, a non-`main` checkout, divergence from `origin/main`,
+an existing inconsistent release directory, a failed build, or a failed
+readiness check stops with an exact diagnostic. The CLI never resets local
+changes, force-pulls, silently rolls back, or switches to a packaged artifact.
+The old process keeps serving its unchanged release throughout candidate
+preparation; any current/running-version mismatch after the explicit switch
+remains visible to `doctor` until the operator repairs it.
+
+The rationale for the bootstrap, managed checkout, and privilege split is in the
+[source-server install/update decision](../decisions/2026-08-27-source-server-install-and-update-privilege.md).
+
+### Central checkouts and repository credentials
+
+Each team project has one server-managed checkout set: exactly one
+team-controlled central checkout for every declared repository on that
+repository's configured execution machine. A server-local checkout is owned by
+`rcp`; an SSH checkout is owned by the explicit remote execution account and is
+provisioned from the server through that account. Member checkouts are
+independent working copies, not alternate RCP homes, and RCP neither discovers
+nor imports them implicitly. A new team project or personal-to-team transfer
+prepares the complete central checkout set before registration.
+
+The default Git credential is a repository-scoped SSH deploy key whose required
+capability is write. [GitHub's deploy-key form defaults to read-only and one key
+cannot be reused for several repositories](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys),
+so setup must create one key per GitHub repository, explicitly instruct the
+operator to enable write access, and verify an actual request-scoped push before
+claiming readiness. Each private key stays in the protected credential directory
+of the account that owns that checkout, local or remote; it is absent from
+SQLite, project manifests, provider prompts, diagnostics, and backups. RCP never
+asks a member to surrender a personal GitHub token to the team service.
+
+### Durable project provisioning
+
+A human starts **Create team project** or **Move to team space** in the desktop
+UI. The authoritative backend creates a durable provisioning request before any
+machine work. Its backend-decided status is one of **waiting for server setup**,
+**setup in progress**, **operator action needed**, **ready for review**,
+**completed**, or **cancelled**. The browser renders those answers and the exact
+next action; it does not infer progress from files or Git output.
+
+The request names the target space, repository sources, intended central paths,
+and the human who authorized preparation. `rcp server project provision
+<request-id>` performs and resumes the server steps: path and permission checks,
+deploy-key creation/readiness, clone or fetch, provider and execution readiness,
+and a request-scoped Git write check. The request id is correlation, not machine
+authority; the command still requires the server's OS privilege boundary.
+
+The desktop offers **Run setup now** only when its native shell can prove a saved
+operator SSH route can invoke that exact CLI. Otherwise it shows a copyable
+command for an operator. The shell uses the system SSH configuration and agent;
+it never imports a private key or asks for a `sudo` password. Direct `rcp@server`
+access is allowed for the current development deployment. A named operator plus
+`sudo -n -u rcp -H` is preferred because it is independently revocable and
+auditable; if interaction is required, the app opens the command in Terminal
+rather than collecting the secret itself. A browser without the desktop shell
+can create and review a request but cannot run its machine steps.
+
+Machine preparation alone never creates, transfers, or re-homes a canonical
+project. When the request reaches **ready for review**, the UI shows the resolved
+central paths, repository and provider readiness, and any work that must settle.
+Only the final explicit human confirmation admits project creation or the
+transfer transition.
+
+### Personal-to-team transfer archive
+
+After source work settles, transfer produces one versioned, checksummed project
+archive. It contains the durable project identity, accepted canonical history
+and exact head, all finished human-visible operational history, and explicitly
+kept artifact bytes. Finished history includes terminal task attempts and their
+events/receipts/usage, chats and durable attachments, Paper drafts/history, and
+stopped episode/watcher/report history.
+
+The export is a typed projection, not a raw copy of the personal data directory
+or SQLite rows. It removes provider-native session ids, reusable stages,
+execution hosts/roots, live continuations, scratch/cache pointers, credentials,
+and machine configuration. Imported records are readable historical evidence;
+they cannot Resume or Retry through the source execution setup. Source
+repositories are absent because target provisioning prepares the central
+checkout set through Git.
+
+The target validates the complete manifest, checksums, identities, canonical
+replay, record references, and excluded-field rules before mutation. It stages
+files, inserts the selected operational records in one SQLite transaction with
+explicit id mapping, publishes canonical and kept files through their existing
+atomic owners, and records idempotent receipts. Activation follows successful
+database and file readback. A crash can leave one non-active repairable request,
+never a partially imported project presented as ready.
+
+### Backup and restore
+
+An unattended backup uses an `age` public recipient stored on the server; the
+matching recovery identity stays off-server. The encrypted archive contains a
+consistent SQLite snapshot, a manifest of captured canonical heads, and the
+append-only canonical history needed to replay those heads. It excludes Git and
+provider credentials, SSH keys, source repositories, materialized outputs,
+scratch, and caches. Backup does not pause dispatch or Apply and never marks an
+unreachable project protected.
+
+Restore is a console workflow with integrity checks, replay verification, an
+explicit target data directory, and an operator confirmation that the old copy
+of the space cannot resume serving. It preserves `space_id`, converts captured
+active work to interrupted, and never claims that RCP itself can prove the old
+authority is offline.
+
+These service-account, CLI, backup/restore, desktop connection, provisioning,
+and transfer workflows remain unimplemented active acceptance work. Current RCP
+must not simulate them or describe partial setup or capture as authoritative.
 
 ## Deletion
 
@@ -244,7 +434,8 @@ The durable current boundaries are [S01 first project](../acceptance/S01-first-p
 [S104 backup](../acceptance/S104-backups-never-pause-work.md),
 [S105 multi-space client](../acceptance/S105-move-between-spaces-in-one-window.md),
 [S116 retained research](../acceptance/S116-choose-existing-or-fresh-research.md),
-and [S122 project invitations](../acceptance/S122-project-invitations.md).
+[S122 project invitations](../acceptance/S122-project-invitations.md), and
+[S128 team project provisioning](../acceptance/S128-provision-a-team-project-through-desktop-and-server-cli.md).
 
 Pending scenarios in that list describe intended future promises, not current
 implemented behavior.

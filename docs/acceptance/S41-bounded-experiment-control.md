@@ -47,9 +47,11 @@ Confirmed by the human on 2026-08-05.
 - Open an Experiment node whose governing decision is decided, whose blockers
   are closed, and which has no prior episode. The node shows a live **Start
   episode** action and labels the current node ceiling **Next episode limit**.
-- Open otherwise-ready Experiments with prior episode history in both completed
-  and nonterminal semantic states. Each action reads **Start new episode**;
-  episode history, not `Experiment.status`, selects the label.
+- Open an otherwise-ready nonterminal Experiment with prior episode history. Its
+  action reads **Start new episode**. Mark that Experiment `completed`,
+  `abandoned`, or `superseded`: Runs moves it to Completed, recommends that the
+  Experiment is closed, and offers no episode-start action. Edit the node back to
+  a nonterminal status and **Start new episode** returns.
 - On the node with a completed prior episode, change **Next episode limit**. Its
   pinned used / ceiling history stays unchanged in Runs, while Runs and the node
   drawer both show the changed prospective limit separately.
@@ -186,6 +188,11 @@ Confirmed by the human on 2026-08-05.
   Experiment. The same Patch reopens it to an appropriate nonterminal status and
   refreshes `current_summary` and `next_action`; its episode action still reads
   **Start new episode** because prior episode history exists.
+- Start an episode accidentally on an Experiment already marked `completed`, then
+  immediately press **Stop loop**. The stopped episode remains in history, while
+  Runs treats the owning Experiment as Completed, says **Experiment is
+  completed**, offers no **Start new episode** until the node is reopened, and
+  still opens the newest available report from its actual earlier episode.
 - While the loop is active, edit the repository manually through ordinary Work.
   RCP shows an advisory active-loop marker but neither locks the repository nor
   blocks the human action.
@@ -196,7 +203,9 @@ Confirmed by the human on 2026-08-05.
 - `same_machine_watcher_contract_uses_local_shell_not_self_ssh`
 - `provider_limit_recovery_stays_inside_current_episode_and_invocation`
 - `first_episode_action_reads_start_episode`
-- `later_episode_actions_read_start_new_episode_regardless_of_experiment_status`
+- `closed_experiment_blocks_fresh_episode_until_its_status_is_reopened`
+- `closed_experiment_outranks_a_stopped_episode_in_runs_without_rewriting_history`
+- `newer_stopped_episode_does_not_hide_the_latest_available_experiment_report`
 - `completed_episode_retains_its_pinned_used_and_ceiling_history`
 - `runs_and_node_drawer_show_the_current_next_episode_limit_separately`
 - `new_episode_starts_at_invocation_one_with_the_current_node_limit`

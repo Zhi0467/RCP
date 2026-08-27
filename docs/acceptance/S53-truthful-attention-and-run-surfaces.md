@@ -44,12 +44,11 @@ existing inspector ballot is the only place a choice is made. A Proposal is not
 a node and remains actionable inline. An asserted open Blocker remains a claim
 to **Agree** with or **Contest**.
 
-Runs is the research execution surface: ingestion runs, experiments, and graph
-Blockers awaiting human judgment belong there; conversation and paper-coach
-tasks remain inspectable in project History and the Agent task inspector without
-becoming research runs. A task status remains explicit through its label and
-icon, but task surfaces do not show an estimated progress bar, percentage, or
-ETA.
+Runs is the episode ledger: Experiment-loop and Auto-research episode parents
+belong there. Invocation rows, ingestion, and graph Blockers remain inspectable
+in their owning History, episode detail, or Inbox surfaces without becoming the
+primary Runs objects. A task status remains explicit through its label and icon,
+but task surfaces do not show an estimated progress bar, percentage, or ETA.
 
 ## UI path
 
@@ -77,7 +76,8 @@ ETA.
    confirm the Blocker remains in canonical detail/history but disappears from
    the active Research flow, no longer gates its Experiment, and any affected
    summary or next action is explicitly stale rather than shown as current.
-8. Open Runs, then project History, then inspect a terminal task.
+8. Open Runs with active and completed episodes of both modes, then project
+   History, then inspect a terminal task.
 
 ## Assert
 
@@ -97,8 +97,8 @@ ETA.
   removes the Decision from attention after Sync.
 - Legacy Ambiguities appear nowhere and contribute to no attention count.
 - Agreeing with or contesting an asserted open Blocker and syncing removes it
-  from human attention and Runs **Needs action** without changing its `open`
-  status or its effect on research readiness.
+  from human attention without changing its `open` status or its effect on
+  research readiness. Blockers never become episode rows in Runs.
 - A staged Blocker judgment follows the same candidate rule: backend preview
   removes the judged candidate from candidate attention, while canonical state
   and canonical attention remain unchanged until Sync.
@@ -109,9 +109,22 @@ ETA.
   Experiment control, guidance validity, and head identify the same revision.
   The resolved Blocker and relations remain canonical, while active views omit
   it, only `open` gates, and stale guidance is never presented as current.
-- Runs includes Seed and Refresh tasks, experiments, and asserted open Blockers,
-  but excludes node chat, project chat, and paper-coach tasks. Excluded tasks
-  remain reachable in project History and the Agent task inspector.
+- Runs has exactly **Needs Action** and **Completed**, in that order, and every
+  row is an Experiment-loop or Auto-research episode parent.
+- Needs Action mixes both episode modes in reverse chronological order and is
+  never folded as a section. Completed groups episodes in foldable lists ordered
+  **Experiment loop** then **Auto-research**.
+- Each card leads with the owning Experiment name or Auto-research identity;
+  start time is secondary metadata with no `Episode` prefix. Completed groups
+  name the mode once, and collapsed cards have no muted recommendation or report
+  commentary. One Experiment node contributes only the current episode named by
+  its backend control. Older episodes stay in project History rather than
+  duplicating that Experiment in Runs. An Experiment card's section and health
+  use that same control projection as its expanded detail, even when the generic
+  episode lifecycle projection differs.
+- Seed, Refresh, Blockers, node chat, project chat, and paper-coach tasks do not
+  become Runs rows. They remain reachable in Inbox, project History, episode
+  detail, and the Agent task inspector as applicable.
 - Active, failed, succeeded, interrupted, and paused tasks show no progress bar,
   percentage, or ETA in the task inspector.
 - No console, network, or server error occurs.

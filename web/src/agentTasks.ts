@@ -302,7 +302,7 @@ export function artifactUrl(
   projectId: string,
   taskId: string,
   artifactId: string,
-  action: "preview" | "download",
+  action: "content" | "preview" | "viewer" | "download",
 ): string {
   return `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}/${action}`;
 }

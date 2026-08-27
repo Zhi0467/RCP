@@ -1,231 +1,176 @@
 # RCP
 
-RCP is a local research control panel for turning agent conversations, repository
-evidence, experiments, and human decisions into one durable research graph and paper
-workspace.
+RCP is a source-built research control panel. The same Python backend and React
+interface run in a browser or in the macOS desktop shell.
 
-RCP runs from source in either a browser or a native macOS shell. They are not separate
-implementations: both use the same React interface, FastAPI backend, project catalog,
-background tasks, and canonical research state.
+## Features
 
-> **Desktop pre-release:** [GitHub Releases](https://github.com/Zhi0467/RCP/releases)
-> provides an Apple Silicon macOS preview. It is unsigned and unnotarized, so macOS may
-> require explicit approval on first launch. Updates are manual; download each new
-> pre-release from GitHub.
+- **Structured research graph:** organize ResearchQuestions, Hypotheses,
+  Evidence, Experiments, Decisions, Blockers, and their relationships in one
+  durable visual workspace.
+- **Work directly from the graph:** discuss a node, run bounded Experiments, or
+  launch Auto-research without translating the project into a separate task
+  tracker.
+- **Provider-flexible execution:** use Codex or Claude through one RCP task
+  interface, with provider profiles running locally or over SSH.
+- **Durable autonomous work:** background tasks, watchers, recovery, budgets,
+  and visual episode reports survive closed tabs and hidden windows.
+- **Artifact feedback loop:** open generated HTML, SVG, and image artifacts;
+  select text or regions, add comments or questions to the originating agent
+  chat, and explicitly keep or revise useful results.
+- **Human authority and writing:** agents gather evidence and propose graph
+  changes while humans retain protected decisions and authorship of the paper.
+- **Bring your own machines:** keep canonical state and repositories locally or
+  on SSH hosts while RCP applies the same task and containment contract.
+- **Team server — in progress:** run RCP from source on a lab Linux server so
+  members can collaborate on the same projects through server-owned checkouts
+  and provider credentials without sharing one human identity.
 
-## System architecture
+## Install from source
 
-The desktop app is a native shell around the web app, not a rewrite in Rust.
+Requirements:
 
-```mermaid
-flowchart LR
-    Browser["Browser path<br/>rcp open or serve"]
-    Desktop["Desktop path<br/>tauri dev or RCP Dev.app"]
+- Git;
+- Node.js and npm;
+- [`uv`](https://docs.astral.sh/uv/); and
+- Codex CLI or Claude Code, installed and authenticated separately if you want
+  to run agent tasks.
 
-    subgraph Shared["One shared RCP application"]
-        UI["React + TypeScript UI"]
-        API["FastAPI backend"]
-        Core["Graph, history, paper, agents, transport"]
-    end
-
-    Browser --> UI
-    Desktop --> UI
-    UI -->|"HTTP and SSE on localhost"| API
-    API --> Core
-
-    Browser -. "starts or reuses the source backend" .-> API
-    Desktop -. "starts or reuses the source backend" .-> API
-
-    Core --> AppData["App data<br/>SQLite, task records, caches"]
-    Core --> State["Canonical project state<br/>append-only .research history"]
-    Core --> Providers["Codex and Claude<br/>local or over SSH"]
-```
-
-Most product work therefore has one implementation:
-
-- Python owns the API, project catalog, graph, history, background runs, providers, and
-  SSH transport.
-- React owns the interface in both the browser and the desktop window.
-- Rust and Tauri own only operating-system behavior: native windows, backend startup,
-  file dialogs, previews, external links, and Quit.
-
-## Development workflow
-
-The browser and desktop paths share the backend, frontend, project catalog, and source
-setup. Choose the launch path based on the behavior being tested:
-
-| Path    | Use it for                                       | Main command                       |
-| ------- | ------------------------------------------------ | ---------------------------------- |
-| Browser | Python, React, graph, API, and background work   | `uv run rcp serve --reload`        |
-| Desktop | Tauri commands, windows, and macOS-only behavior | `npm --prefix web run desktop:dev` |
-
-### Shared setup
-
-On a fresh checkout, install and build in this order:
+Clone and prepare RCP in this order:
 
 ```bash
+git clone https://github.com/Zhi0467/RCP.git
+cd RCP
 npm --prefix web ci
 npm --prefix web run build
 uv sync
 ```
 
-Build the frontend before `uv sync`: `web/dist` is gitignored but is included when the
-Python package is built.
+The order matters: the Python build includes the generated `web/dist` bundle.
 
-Codex CLI or Claude Code must be installed and authenticated separately to use agent
-features.
+## Run the local Web app
 
-### Browser path
-
-Start the normal development loop:
+For source development with automatic backend restart and frontend rebuild:
 
 ```bash
 uv run rcp serve --reload
 ```
 
-Open <http://127.0.0.1:8421>. Python changes restart the backend and frontend changes
-rebuild the served bundle. The frontend watcher is not Vite HMR, so refresh the browser
-after a React or CSS change.
+Open <http://127.0.0.1:8421>. Refresh the page after React or CSS changes; the
+source watcher rebuilds the bundle but does not provide Vite hot-module reload.
 
-For a non-reloading source launch that opens the browser automatically, use `rcp open`:
+For a normal non-reloading launch that also opens your browser:
 
 ```bash
 uv run rcp open
-uv run rcp open examples/demo-project/state-repo
 ```
 
-The demo project is a real fixture. Copy it before running agents or making graph changes
-if you need to preserve the checked-in example.
-
-`rcp open` builds the frontend when it starts a new source backend. If a healthy,
-compatible RCP backend already owns the same data directory, it reuses that backend and
-opens the browser without starting a duplicate.
-
-Without `--reload`, `rcp serve` is an explicit ownership request. It gracefully replaces
-the current owner after recoverable work is paused. The launch command owns that
-lifecycle; do not hunt for PIDs, delete lock files, or manually kill an RCP process.
-
-### Desktop path
-
-For live native-shell development, run:
+You can register and open a project at launch:
 
 ```bash
-npm --prefix web run desktop:dev
+uv run rcp open /absolute/path/to/project
 ```
 
-This runs the React frontend through Vite, compiles the Rust shell in debug mode, and
-starts or reuses the Python backend from the checkout.
-
-To build a Finder-launchable development bundle from the current checkout, run:
+To serve without opening a browser:
 
 ```bash
-npm --prefix web run desktop:build-dev
+uv run rcp serve --host 127.0.0.1 --port 8421
 ```
 
-For same-origin debugging, the bundle location, packaged-app testing, and detailed release
-steps, see [Desktop testing and release](docs/desktop.md).
-
-Clicking the red window button hides RCP; it does not mean Quit. Reopen it from the Dock
-or launch it again. **Quit RCP** gracefully stops only a backend the desktop app started
-and leaves a compatible terminal-started backend running.
-
-### Shared application state
-
-Both paths show the same projects and application surfaces: **Overview**, **Inbox**,
-**Research**, **Runs**, **Paper**, **Settings**, and **Chats**. **Ask** in the project
-header starts a project chat.
-
-RCP's local catalog, task records, and rebuildable caches live at:
+By default, local application data lives at:
 
 ```text
 ~/Library/Application Support/research-control-panel/
 ```
 
-Set `RCP_DATA_DIR` before startup to use a different app-data directory. Canonical
-research state still lives in the state repository configured for each project; app data
-does not create a second authoritative copy.
+Set `RCP_DATA_DIR` before launch to use another data directory. Canonical
+research history remains in each project's configured state repository.
 
-## Verification
+## Run the macOS desktop app
 
-Run the backend and web checks from the repository root:
+Desktop development also requires Rust and the Xcode command-line tools.
+
+Start the source desktop shell:
 
 ```bash
-uv run pytest
-uv run ruff check src tests
-npm --prefix web run build
-npm --prefix web test
+npm --prefix web run desktop:dev
 ```
 
-For changes to the Tauri shell or desktop packaging, follow the relevant native test path
-in [Desktop testing and release](docs/desktop.md). That guide also contains the separate
-release-candidate checklist.
+To build a Finder-launchable development app from the current checkout:
 
-A successful unit suite is only the baseline. For changes to routes, background work,
-desktop lifecycle, or a view's data flow, also run the app and exercise the relevant
-acceptance scenario in [`docs/acceptance/`](docs/acceptance/).
-
-## Backend ownership and startup
-
-The browser and desktop development paths can coexist because they converge on one backend
-and continuously verify its identity.
-
-```mermaid
-flowchart TD
-    Open["Start the browser path, tauri dev, or RCP Dev.app"] --> Discover["Read lock-owner metadata and probe health"]
-    Discover --> Decision{"What is running?"}
-
-    Decision -->|"Compatible RCP backend"| Reuse["Reuse it"]
-    Decision -->|"No owner"| Start["Start one backend"]
-    Decision -->|"Incompatible or uncertain owner"| Ask["Explain why and ask"]
-
-    Ask -->|"Replace gracefully"| Replace["Pause recoverable work and replace"]
-    Ask -->|"Leave it running"| Leave["Exit without touching it"]
-
-    Reuse --> Verify["Match version, instance, and data-directory identity"]
-    Start --> Verify
-    Replace --> Verify
-
-    Verify -->|"Match"| Show["Show the React project index"]
-    Verify -->|"Mismatch"| Block["Block the window and offer reconnect"]
+```bash
+npm --prefix web run desktop:build-dev
 ```
 
-This prevents two RCP processes from writing the same app data, prevents a desktop
-window from silently switching to another backend, and lets the browser and native app
-show the same projects and background tasks.
-
-## Core safety model
-
-- `.research/patches/` is append-only. Materialized graph and research files are rebuilt
-  from that history rather than edited as independent truth.
-- An agent writes a structured `patch.json` in an RCP-created scratch workspace. RCP
-  validates it before it can enter canonical history; patches are never parsed out of a
-  provider's prose output.
-- Agents may assert or propose. Only human UI actions approve gated operations, set
-  standing, or change project truth membership.
-- Agent runs are server-owned background work. Closing a panel or browser tab does not
-  make the invocation request-owned.
-- The paper introduction is human-authored. The writing coach is read-only and has no
-  Apply path.
-- Canonical state may live locally or over SSH. For remote projects, a rebuildable local
-  display snapshot can keep a previously opened project readable while RCP reconciles with
-  the remote canonical state; authority actions wait for reconciliation.
-
-## Repository map
+The bundle is written to:
 
 ```text
-src/rcp/                 Python backend, graph, agents, history, paper, and transport
-web/src/                 Shared React and TypeScript interface
-web/src-tauri/           Rust desktop shell, capabilities, icons, and bundle scripts
-packaging/               PyInstaller configuration and packaged-backend smoke test
-tests/                   Python test suite
-web/tests/               TypeScript behavior tests
-docs/acceptance/         User-visible promises and their verification drivers
-docs/design.md           Cross-cutting product boundaries and invariant index
-docs/specs/              Current modular behavior specifications
-examples/demo-project/   Local project fixture
+web/src-tauri/target/debug/bundle/macos/RCP Dev.app
 ```
 
-[`docs/design.md`](docs/design.md) defines the documentation hierarchy and
-cross-cutting invariants. Current module behavior lives in [`docs/specs/`](docs/specs/),
-while acceptance scenarios state selected observable promises. Historical snapshots under
-`docs/archive/` are evidence, never current authority.
+Open that bundle through Finder for real desktop testing. Closing the red window
+hides RCP; **Quit RCP** ends the desktop-owned backend. More native build and
+verification commands are in [docs/desktop.md](docs/desktop.md).
+
+## Install the team server from source
+
+> **Not implemented yet:** the source-server CLI described below is the accepted
+> team deployment target. Until that slice lands, use the local source commands
+> above; do not expect `rcp server install` or `rcp server update` to exist.
+
+The first supported team deployment is one Linux server running systemd and one
+team space. The service binds to loopback and members connect with source-built
+desktop apps over SSH.
+
+An operator first creates a temporary bootstrap checkout under their ordinary
+Linux account:
+
+```bash
+git clone https://github.com/Zhi0467/RCP.git rcp-bootstrap
+cd rcp-bootstrap
+npm --prefix web ci
+npm --prefix web run build
+uv sync
+```
+
+The first privileged RCP command is then run by that operator with `sudo`:
+
+```bash
+sudo /absolute/path/to/rcp-bootstrap/.venv/bin/rcp server install
+```
+
+The installer will:
+
+1. create or validate the dedicated Linux `rcp` account;
+2. create a separate managed Git checkout and clean release directory for the
+   exact GitHub `main` commit in the configured service layout;
+3. give that checkout its own source-fetch identity when the origin is private;
+4. run Git, npm, the Web build, and `uv sync --frozen` as `rcp`, not as root;
+5. install the stable CLI wrapper and non-reloading systemd service; and
+6. print the exact command for initializing the team space and enrolling its
+   first member.
+
+The bootstrap checkout is not the production checkout and may be removed after
+installation. Root is used only for operating-system work such as creating the
+account, directories, and systemd service. Normal service execution and managed
+source work run as `rcp`.
+
+Later source updates are owned by:
+
+```bash
+sudo rcp server update
+```
+
+That command accepts only a clean fast-forward of the managed `main` checkout,
+builds the target in a separate clean per-commit source directory as `rcp`, and
+leaves the running release untouched until preflight passes. Its narrow root
+portion switches the service's `current` release, restarts systemd, and verifies
+the running commit. A failure never silently rolls back. `rcp server doctor`
+reports the managed-main, candidate, current, and running commits. The `rcp`
+account receives no general sudo or systemd-control permission.
+
+## Project documentation
+
+Current product and implementation contracts live in [docs/design.md](docs/design.md),
+[docs/specs/](docs/specs/), and [docs/acceptance/](docs/acceptance/). Repository
+instructions for coding agents are in [AGENTS.md](AGENTS.md).

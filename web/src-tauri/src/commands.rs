@@ -159,7 +159,7 @@ pub async fn open_artifact_preview(
         &project_id,
         &task_id,
         &artifact_id,
-        "preview",
+        "viewer",
     )?;
     ensure_available(&url, "artifact", ARTIFACT_AVAILABILITY_TIMEOUT).await?;
     backend::reverify_identity(&state, &status).await?;
@@ -341,7 +341,7 @@ fn episode_report_preview_url(
     url.path_segments_mut()
         .map_err(|_| "backend URL cannot contain path segments".to_string())?
         .extend([
-            "api", "projects", project_id, "episodes", episode_id, "report", "preview",
+            "api", "projects", project_id, "episodes", episode_id, "report", "viewer",
         ]);
     Ok(url)
 }
@@ -464,7 +464,7 @@ mod tests {
 
         assert_eq!(
             url.as_str(),
-            "http://127.0.0.1:8421/api/projects/project%20id/episodes/episode%2Fid/report/preview"
+            "http://127.0.0.1:8421/api/projects/project%20id/episodes/episode%2Fid/report/viewer"
         );
         assert!(navigation::is_loopback_rcp_url(&url, base, false));
     }

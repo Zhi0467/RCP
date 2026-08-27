@@ -208,6 +208,7 @@ def experiment_episodes(
                     node.id,
                     runtime,
                     serialized_episode,
+                    latest_report_episode_id=read_model.latest_report_episode_id,
                 ).model_dump(mode="json")
                 entries.append(
                     {

@@ -7,9 +7,10 @@ covered_by:
   - web/tests/agentTasks.test.mjs
   - browser 2026-08-08 — durable transcript reload retained the HTML artifact card
 invariants: [10e]
-last_checked: 2026-08-08 — the completed remote Discuss fixture now keeps its
-  HTML artifact card and Open/Download controls after durable chat reconciliation;
-  the native preview, download, and isolation drive remains pending
+last_checked: 2026-08-27 — a rebuilt RCP Dev restart and exact episode Open
+  report click enter the unified shell, while the restarted backend maps the
+  retained `/preview` URL to that shell. The artifact download, isolation, and
+  remote execution drive remains pending.
 ---
 
 # A preview opens and a download lands, and the isolation is stronger than the browser's
@@ -21,10 +22,11 @@ says so without touching the reply or the verdict
 and what a breach would cost.
 
 Today the Open control asks for a new browser window, nulls its opener, and
-navigates it to the preview URL — and if it does not get a usable window handle
-back, it marks the artifact unavailable. That fallback is correct and it is also
-a trap: in an embedded webview the human would see a tidy "Preview unavailable"
-and reasonably conclude the backend lost the file. The same applies to Download,
+navigates it to the unified artifact viewer — and if it does not get a usable
+window handle back, it marks the artifact unavailable. The viewer then embeds
+the isolated preview route. That fallback is correct and it is also a trap: in
+an embedded webview the human would see a tidy "Preview unavailable" and
+reasonably conclude the backend lost the file. The same applies to Download,
 which relies on the browser honoring a download attribute.
 
 The isolation itself is two layers (the wrapper builder in
@@ -66,8 +68,9 @@ Confirmed with the human on 2026-07-31.
   origin regardless of what any document asks for.
 - **Download** writes the file where the human chooses, and reports failure
   rather than failing silently.
-- **Bytes stay temporary.** Nothing is copied into canonical state, the
-  transcript, or durable app storage by previewing or downloading.
+- **Bytes stay temporary unless the human presses Keep.** Previewing or
+  downloading alone copies nothing into canonical state, the transcript, or
+  durable app storage; Keep follows S114's separate live-artifact contract.
 
 The navigation-policy comment in [artifacts.py](../../src/rcp/artifacts.py)
 records that Chromium does not enforce `navigate-to`, leaving the opaque
@@ -89,6 +92,8 @@ reported as an expired artifact.
 4. Click a reference link in the artifact, in both entrances.
 5. Let an artifact expire, then press Open and Download again.
 6. Repeat the whole drive against a remote execution host.
+7. Run a retained desktop binary whose Open command still targets `/preview`
+   against updated source. Confirm Open enters the unified shell.
 
 ## Assert
 
@@ -103,6 +108,7 @@ reported as an expired artifact.
 - `download_failure_is_reported_not_silent`
 - `an_expired_artifact_still_reads_as_unavailable`
 - `a_shell_limitation_is_never_reported_as_expiry`
+- `a_retained_desktop_preview_url_resolves_to_the_current_viewer_shell`
 - `no_artifact_byte_enters_canonical_state_or_the_transcript`
 - `preview_outcome_changes_no_reply_verdict_or_graph`
 

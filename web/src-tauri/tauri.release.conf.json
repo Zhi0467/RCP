@@ -1,6 +1,6 @@
 {
   "build": {
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build:clean"
   },
   "bundle": {
     "externalBin": ["binaries/rcp-backend"]

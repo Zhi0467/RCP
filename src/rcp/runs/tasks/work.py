@@ -60,6 +60,8 @@ from rcp.runs.chat import (
     _stage_chat_patch_inputs,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
+    finalize_artifact_revision,
+    stage_artifact_context,
 )
 from rcp.runs.experiment_loop import (
     StagedExperimentWatcherResource,
@@ -582,6 +584,16 @@ async def _stage_work_turn(
             if request.attachment_batch_id
             else []
         )
+        artifact_context_pointer = stage_artifact_context(
+            service,
+            request,
+            execution,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            artifact_path=str(artifact_directory),
+        )
+        if artifact_context_pointer is not None:
+            attachment_pointers.append(artifact_context_pointer)
         read_dirs.extend(
             path
             for path in dict.fromkeys(
@@ -1782,6 +1794,15 @@ async def _launch_and_stream_work_turn(
                     detail=str(exc),
                 )
             artifacts = []
+        artifacts = finalize_artifact_revision(
+            turn.service,
+            turn.request,
+            turn.execution,
+            artifact_scope_id=staged.artifact_scope_id,
+            artifact_directory=Path(str(staged.artifact_directory)),
+            remote_stage=turn.remote_stage,
+            artifacts=artifacts,
+        )
         _finalize_result_view_turn(
             turn.request,
             turn.execution,
@@ -2414,6 +2435,7 @@ def _prepare_work_patch_candidate(
         draft,
         kind="work",
         run_truth_scope=run_truth_scope,
+        repository_paths=service.manifest.repository_paths,
         source_operation_id=source_operation_id,
         source_effect_id=source_effect_id,
         source_effect_sha256=(

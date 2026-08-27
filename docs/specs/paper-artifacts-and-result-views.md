@@ -1,8 +1,8 @@
-# Paper, artifacts, and result views
+# Paper, artifacts, and viewing
 
 This specification owns the human paper draft, read-only coaching, temporary
-artifacts, immutable episode reports, agent-authored result views, kept views,
-and repository-file previews.
+artifacts, immutable episode reports, the unified artifact viewer, kept
+artifacts, and repository-file previews.
 
 ## Human paper authorship
 
@@ -45,9 +45,9 @@ verdict, Patch verdict, or graph.
 For an ordinary turn, RCP discovers only bounded direct regular children of the
 exact RCP-created artifact directory. It ignores provider directives,
 provider-owned paths, URLs in prose, nested files, symlinks, and unknown types.
-Bytes remain in temporary local or remote scratch and are proxied on demand;
-descriptors may be durable with the task but do not copy bytes into chat or
-canonical storage.
+Bytes remain in temporary local or remote scratch and are proxied on demand
+until the human keeps them. Descriptors are durable with the task but do not
+copy bytes into chat or canonical graph storage.
 
 HTML previews run in an opaque sandbox. They cannot access or navigate the RCP
 parent, open popups, submit forms, initiate downloads, or use ordinary network
@@ -55,8 +55,10 @@ resource APIs. Inline JavaScript remains useful and may navigate only its
 isolated child frame, which can still cause a navigation request; RCP does not
 claim literal zero network traffic.
 
-Raster images and HTML have current bounded validation. An invalid artifact is
-shown as an artifact error and does not erase the reply.
+Raster images, SVG, and HTML have bounded validation. A small raster image or
+SVG renders directly with the answer. HTML retains the ordinary **Open** link;
+it does not need an inline thumbnail. An invalid artifact is shown as an
+artifact error and does not erase the reply.
 
 ## Episode reports
 
@@ -79,71 +81,96 @@ The report is retrospective only. It has no Patch, watcher, command, Proposal,
 or graph channel and never determines the episode verdict. A final generation
 error remains visible and nonblocking.
 
-## Result views
+## Unified artifact viewer
 
-An ordinary Work turn may create a **result view**: an agent-authored HTML page
-for reading the run's own output inside the Runs task detail. It is not a global
-navigation surface, dashboard, new agent capability, or canonical graph object.
+There is no separate result-view kind. A task that draws a custom HTML result
+produces an ordinary task artifact, through the same artifact directory,
+descriptor, chat card, viewer route, and lifecycle as any other HTML artifact.
+The artifact is available in its originating Node or Project chat; it is not
+limited to Experiment Runs and is never shown across chats.
 
-RCP owns no chart vocabulary or data encoding. The useful property is that the
-native Work session already knows the research and repository context. Views are
-disposable by default.
+Previously stored result-view rows remain readable through their legacy backend
+routes only for compatibility. The current web client exposes no result-view
+type, selector, card, or authoring request, and the task API rejects new legacy
+create or revise intents.
 
-### Stable conversation-owned path
+Every supported task artifact opens through one viewer shell. The shell owns
+**Keep** and transient selection-to-prompt interaction. The artifact remains the
+dominant visual object. The shell adds only a narrow selection rail and the
+controls needed to add the selections to the originating chat. Episode reports
+use the same shell and selection vocabulary while retaining their immutable
+episode-report lifecycle.
 
-A result view is not a per-turn artifact. It lives at one stable
-`views/<view-id>/` path inside the conversation's exact reusable stage. A
-revision is an ordinary Work turn resuming the same native session and stage and
-editing that exact file. RCP never routes it through the current turn artifact
-directory, changes cwd, copies, or symlinks it.
+Small raster images and SVGs render inline in the chat and may also open in the
+viewer. HTML keeps its current link behavior and opens directly into the full
+viewer; it has no chat thumbnail. Repository-file previews are explicitly out
+of this contract.
 
-If the exact native session cannot resume, revision fails visibly. RCP never
-silently starts a fresh session and redraws from scratch.
+The viewer entrance is backend-owned. `/viewer` is the current explicit shell
+URL, while the former `/preview` URL remains a compatibility alias to that same
+shell for a retained desktop binary after a source pull. Raw sandboxed rendering
+lives at `/content` and is embedded by the shell or used for a small inline
+image; it is not a second user-facing viewer. This split applies equally to task
+artifacts and episode reports. A retained client that still embeds a small PNG
+or SVG from `/preview` continues to receive image bytes for an explicit browser
+image request; ordinary navigation to that URL receives the shell.
 
-### Acting on the picture
+### Selection-to-prompt, not annotation
 
-A supported gesture such as boxing a region or underscoring items produces only
-untrusted bounded text for a visible editable composer draft. It never dispatches
-a turn automatically. The page may report what its own gesture selected, but
-RCP exposes no application data or authority inward in return. A page without
-gesture reporting remains revisable through typed prose.
+Selections are temporary prompt inputs, not persistent annotations. The human
+may select text or draw a box over the rendered artifact, add one comment or
+question per selection, review the assembled draft, and add it to the ordinary
+chat composer. Nothing is sent until the human sends that composer turn.
 
-The human reads and sends every revision request. A result view currently emits
-no research action, graph Patch, Evidence record, Proposal, or Decision; whether
-it ever may is an open question.
+RCP carries selected text with limited surrounding text. A box carries bounded
+viewport-relative coordinates and the intersecting visible text or SVG labels;
+an implementation may additionally attach a screenshot crop. The selection
+payload, comments, and final question are bounded and treated as untrusted input.
+The current artifact bytes are staged as a read-only turn input so the resumed
+agent can inspect what the human saw.
 
-### Verified served bytes
+The turn resumes the artifact's originating native session and chat. Failure to
+resume is visible, with a separate explicit fresh-session action; RCP never
+silently changes sessions. The default mode is Discuss. The prompt asks the
+agent to address every comment and question, not to edit the artifact. An
+artifact edit is allowed only when the human explicitly requests one and sends
+the turn as Work.
 
-The staged HTML is the agent's working copy, not the served copy. After a
-successful turn, RCP validates it and atomically stores verified bytes with the
-result-view record, digest, and size. Rendering always uses that stored copy.
+### In-place revision
 
-An interrupted or invalid revision cannot corrupt the last readable view, a
-remote view renders without rereading its stage over SSH, and expiry removes the
-stored bytes together with the record.
+An accepted revision replaces the same artifact's bytes and updates the same
+card and identity. It does not create a second artifact file or descriptor. For
+an unkept artifact, the task-stage file is the working file. For a kept artifact,
+the repository file is the working file. RCP validates a proposed replacement
+before atomic publication, but does not compare it with a previous digest or
+guard against external edits. Humans and tools may edit kept files normally;
+the viewer and each prompt read the current bytes.
 
 ### Shape boundary
 
-RCP draws discrete, configural research objects for which no stronger
-domain-native viewer owns the interaction. Current useful shapes include ordered
-series, item grids, tables, distributions, matrices, projections, and structured
-diffs. Series and item grids are the initial confirmed pair.
+RCP owns no chart vocabulary or data encoding. Agents may draw bounded custom
+HTML for discrete, configural research objects such as series, item grids,
+tables, distributions, matrices, projections, and structured diffs. Established
+domain viewers continue to own node-link computation graphs, spatial fields and
+meshes, performance traces, and other specialist formats.
 
-Node-link computation graphs, spatial fields/meshes, and performance traces stay
-with Netron, ParaView/VisIt, Perfetto, or their domain-native equivalents. RCP
-does not build per-domain connectors or a general monitoring dashboard under the
-result-view name.
+## Keeping an artifact
 
-## Keeping a result view
+**Keep** writes the current artifact into an `artifacts/` directory at the
+canonical state repository root, outside `.research/`, through the normal state
+workspace lock and explicit publication. If `artifacts/` already exists as a
+real directory, RCP reuses it and preserves every existing file. A file or
+symlink at that path makes Keep fail visibly. Initial Keep chooses a safe,
+collision-free filename and never overwrites an existing entry.
 
-**Keep** copies one verified view into a `views/` directory at the canonical
-state repository root, outside `.research/`, through the normal state workspace
-lock and explicit publication. The agent suggests a descriptive base name; RCP
-owns project/date qualification and collision-free filename selection.
+Keep records the artifact's stable repository filename. It does not freeze the
+file: later human, tool, or explicit Work revisions update that same file in
+place. No digest precondition rejects an update merely because another editor
+changed it first.
 
-A kept view appends no Patch, spends no revision, creates no Proposal, changes
-no attention count, and grants no graph authority. It is a useful repository
-artifact beside the research record, not part of graph truth.
+A kept artifact appends no Patch, spends no revision, creates no Proposal,
+changes no attention count, and grants no graph authority. It is a live
+repository artifact beside the research record, not part of graph truth.
 
 ## Repository-file previews
 
@@ -163,7 +190,8 @@ from path text.
 Human input attachments and agent output artifacts have separate contracts.
 Input bytes are claimed for one turn and never offered for later download;
 output artifacts are discovered after a task in its exact directory. Neither is
-canonical graph provenance, and neither may silently become a result view.
+canonical graph provenance. Keep changes an output artifact's storage lifecycle,
+not its authority or type.
 
 ## Glossary presentation
 
@@ -179,5 +207,5 @@ The durable journeys include [S11 paper coach](../acceptance/S11-paper-coach.md)
 [S18 remote preview](../acceptance/S18-remote-artifact-preview.md),
 [S32 desktop artifacts](../acceptance/S32-artifacts-in-the-desktop-window.md),
 [S110 paper draft preservation](../acceptance/S110-paper-draft-survives-a-canonical-change.md),
-[S114 result views](../acceptance/S114-see-your-results-without-leaving.md), and
+[S114 unified artifact viewing](../acceptance/S114-see-your-results-without-leaving.md), and
 [S120 episode reports](../acceptance/S120-episodes-wrap-up-with-a-visual-report.md).

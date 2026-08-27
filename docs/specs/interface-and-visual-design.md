@@ -61,17 +61,26 @@ Research shows question-centered paths with unconnected records separated. Its
 DAG **Research flow** columns follow semantic stage rather than relation-arrow
 direction.
 
-Runs is the operational control surface for Seed/Refresh ingestion and bounded
-Experiments. It carries no page title and is ordered **Running**, **Needs
-action**, **Completed**, first matching state winning. It nests ingestion retries
-and keeps row timestamps as real metadata.
+Runs is the episode ledger for bounded Experiment loops and Auto-research. It
+carries no page title and is ordered **Needs Action**, then **Completed**. Needs
+Action is an unfolded reverse-chronological card list across both episode modes.
+Completed is grouped into foldable **Experiment loop** and **Auto-research**
+lists, in that order. The owning Experiment title or Auto-research identity is
+the card's visual headline; start time is secondary metadata without an
+`Episode` prefix. Completed groups name
+the episode mode once; cards do not repeat it or add muted recommendation and
+report commentary below the status. An Experiment contributes only the current
+episode selected by its backend control; older episodes remain in History rather
+than duplicating the same Experiment in Runs. That same control supplies the
+card's Experiment health and section, so the summary cannot disagree with its
+expanded detail.
 
-Generic node chat, project chat, and paper-coach tasks live in the Agent tasks
-drawer, never in Runs. An Experiment-loop task is the one deliberate exception,
-because its Patch kind and control node make it research execution. Pressing an
-Experiment's **Run** navigates to Runs and opens its run detail rather than a
-floating node-chat window. That detail's only loop-level action is **Stop loop**;
-invocation-level Pause, Resume, and Retry stay in the Agent task inspector.
+Seed/Refresh, generic node chat, project chat, paper-coach tasks, and Blockers
+live in their owning History or Inbox surfaces, never as Runs rows. Pressing an
+Experiment's **Run** navigates to its episode card in Runs and opens its detail
+rather than a floating node-chat window. That detail's only loop-level action is
+**Stop loop**; invocation-level Pause, Resume, and Retry stay in the Agent task
+inspector.
 
 ## Nodes and node detail
 

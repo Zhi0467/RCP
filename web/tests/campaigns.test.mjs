@@ -20,6 +20,7 @@ import {
   episodeTaskRows,
   isLiveEpisode,
   mergeEpisode,
+  runsEpisodeCards,
 } from "../src/campaigns.ts";
 
 const server = await createServer({
@@ -29,7 +30,7 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { AutoResearchEpisodes } = await server.ssrLoadModule("/src/components/CampaignRuns.tsx");
+const { AutoResearchEpisodeCard } = await server.ssrLoadModule("/src/components/CampaignRuns.tsx");
 const { AutoResearchDialog } = await server.ssrLoadModule("/src/components/AutoResearchDialog.tsx");
 
 after(() => server.close());
@@ -118,28 +119,37 @@ test("the Auto-research dialog meters only operational invocations", () => {
 
 function renderEpisodes(values, { busyAction = null } = {}) {
   return renderToStaticMarkup(
-    React.createElement(AutoResearchEpisodes, {
-      episodes: values,
-      tasks: values.flatMap((value) => value.tasks),
-      messagesByEpisode: {},
-      busyAction,
-      taskActionId: null,
-      onInspectTask() {},
-      async onLoadMessages() {},
-      async onStop() {},
-      async onMerge() {},
-      async onReauthorize() {},
-      async onSendMessage() {},
-      async onOperateTask() {},
-    }),
+    React.createElement(
+      "section",
+      {},
+      values.map((value, index) =>
+        React.createElement(AutoResearchEpisodeCard, {
+          episode: value,
+          tasks: values.flatMap((episode) => episode.tasks),
+          messages: [],
+          initiallyExpanded: index === 0 || value.live,
+          busyAction,
+          taskActionId: null,
+          onInspectTask() {},
+          async onLoadMessages() {},
+          async onStop() {},
+          async onMerge() {},
+          async onReauthorize() {},
+          async onSendMessage() {},
+          async onOperateTask() {},
+          key: value.episode_id,
+        }),
+      ),
+    ),
   );
 }
 
 test("the episode parent owns an operational-only invocation meter", () => {
   const html = renderEpisodes([episode]);
 
-  assert.match(html, /Auto-research episodes/);
-  assert.match(html, /Project episode/);
+  assert.match(html, /Auto-research/);
+  assert.match(html, /<time dateTime="2026-08-12T08:00:00Z">/);
+  assert.doesNotMatch(html, /Episode ·|campaign-run-summary|Project episode/);
   assert.match(html, /3 \/ 8 invocations/);
   assert.match(html, /3 of 8 operational invocations used/);
   assert.doesNotMatch(html, /reserved|report unit|episode_report/i);
@@ -197,12 +207,12 @@ test("a ready episode exposes one singular report URL", () => {
   assert.match(html, /> Open report<|>Open report</);
   assert.match(
     html,
-    /href="\/api\/projects\/project%20one\/episodes\/episode%2Falpha\/report\/preview"/,
+    /href="\/api\/projects\/project%20one\/episodes\/episode%2Falpha\/report\/viewer"/,
   );
   assert.doesNotMatch(html, /internal-report-id/);
   assert.equal(
     episodeReportPreviewUrl("project one", "episode/alpha"),
-    "/api/projects/project%20one/episodes/episode%2Falpha/report/preview",
+    "/api/projects/project%20one/episodes/episode%2Falpha/report/viewer",
   );
 });
 
@@ -309,6 +319,36 @@ test("reauthorization keeps the immutable old episode and inserts the fresh pare
   );
   assert.equal(isLiveEpisode(oldEpisode), false);
   assert.equal(isLiveEpisode(freshEpisode), true);
+});
+
+test("Runs keeps only the backend-selected current episode for each Experiment node", () => {
+  const olderExperiment = {
+    ...episode,
+    episode_id: "experiment/older",
+    mode: "experiment_loop",
+    control_node_id: "exp/shared",
+    created_at: "2026-08-10T08:00:00Z",
+  };
+  const newerExperiment = {
+    ...olderExperiment,
+    episode_id: "experiment/newer",
+    created_at: "2026-08-12T09:00:00Z",
+  };
+  const otherExperiment = {
+    ...olderExperiment,
+    episode_id: "experiment/other",
+    control_node_id: "exp/other",
+    created_at: "2026-08-11T08:00:00Z",
+  };
+  const autoResearch = { ...episode, episode_id: "auto/one" };
+
+  assert.deepEqual(
+    runsEpisodeCards(
+      [olderExperiment, autoResearch, otherExperiment, newerExperiment],
+      new Set([olderExperiment.episode_id, otherExperiment.episode_id]),
+    ).map((item) => item.episode_id),
+    ["auto/one", "experiment/other", "experiment/older"],
+  );
 });
 
 const branchId = "8ba94d42-4d42-4ccb-9d2a-f299340dd3b8";

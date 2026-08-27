@@ -2,7 +2,7 @@
   "productName": "RCP Dev",
   "identifier": "app.researchcontrolpanel.rcp.dev",
   "build": {
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build:clean"
   },
   "bundle": {
     "macOS": {

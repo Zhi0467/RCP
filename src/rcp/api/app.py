@@ -277,12 +277,13 @@ def create_app(
             branch_summary=graph_branch_summary,
             projection_snapshot=projection_snapshot,
         ).model_dump(mode="json"),
-        project_experiment_control=lambda state, experiment_id, runtime, episode: (
+        project_experiment_control=lambda state, experiment_id, runtime, episode, report_episode_id: (
             _experiment_control_response(
                 state,
                 experiment_id,
                 runtime,
                 episode,
+                latest_report_episode_id=report_episode_id,
             ).model_dump(mode="json")
         ),
         logger=logger,

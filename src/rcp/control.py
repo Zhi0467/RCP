@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.core.models import (
+    CLOSED_EXPERIMENT_STATUSES,
     Blocker,
     Decision,
     Experiment,
@@ -232,6 +233,12 @@ def derive_experiment_control_state(
     graph_control = experiment_graph_control(state, experiment_id)
     governing = governing_decision_bundle(state, experiment_id)
 
+    fresh_start_reasons: list[str] = []
+    if node.status in CLOSED_EXPERIMENT_STATUSES:
+        fresh_start_reasons.append(
+            f"This Experiment is {node.status}. Edit its status before starting a new episode."
+        )
+
     operational_reasons: list[str] = []
     active = experiment_id in set(active_control_node_ids)
     if active:
@@ -268,7 +275,7 @@ def derive_experiment_control_state(
         # nothing to wake it, and only the human's next control closes it. The
         # narrower reasons say more, so this one speaks only when they do not.
         operational_reasons.append("A previous episode is still open on this Experiment.")
-    reasons = [*graph_control.reasons, *operational_reasons]
+    reasons = [*graph_control.reasons, *fresh_start_reasons, *operational_reasons]
     return ExperimentControlState(
         ready=not reasons,
         reasons=reasons,

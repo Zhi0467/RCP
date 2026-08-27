@@ -109,6 +109,65 @@ their own credential. Pending project invitations appear on the index.
 Projects hidden by membership never appear as locked cards. Losing access
 closes its open tab and returns to the index.
 
+## Confirmed team desktop target
+
+The pending first team client is the source-built desktop app. Its local project
+index groups the personal space and saved team connections without making the
+local backend an authority for any team project. Each connection stores
+nonsecret routing metadata, its expected `space_id`, compatibility information,
+and bounded last-known project cards. The permanent member token stays in the
+operating system credential store and is absent from URLs, page storage, saved
+connection JSON, logs, and Tauri command output.
+
+**Add team space** first establishes the SSH tunnel and verifies the nonsecret
+space identity. A new member enters a bootstrap/invitation code and display name;
+an existing member may enter their permanent token. The controlled secret field
+and IPC request are cleared after the one enrollment/storage operation. A newly
+issued permanent token is captured by the native shell and written directly to
+the credential store. No secret becomes local-backend state or cached connection
+metadata.
+
+The native shell uses the system SSH configuration and agent to hold a loopback
+tunnel to the team server. Before establishing a browser session it checks
+health, the expected `space_id`, and `minimum_shell_version`. It exchanges the
+stored member token and establishes the team server's HTTP-only session in the
+WebView before navigating to that server's own application. A changed
+`space_id` blocks mutations until the human explicitly reconnects; an
+unavailable team connection leaves personal work usable and shows its cached
+cards as unavailable. Returning to the local index reloads the local backend.
+
+Every saved space receives a stable, distinct loopback origin. Different ports
+on the same `127.0.0.1` host are not isolation because cookies ignore ports; such
+tunnels would collide on the shared `__Host-` session-cookie name. The shell may
+use verified loopback aliases or addresses, but navigation admits only origins
+derived from its saved connection registry, and a live WKWebView drive must prove
+that cookies stay separated between two simultaneous team spaces.
+
+The ordinary browser can use the team server UI when transport already exists,
+but it cannot own multi-space routing, credential storage, SSH tunnels, or
+server-command execution. Source mode is the supported client for this slice; a
+packaged Linux client is not required.
+
+Project creation and personal-to-team transfer begin as ordinary human actions
+in the Web UI and create backend-owned durable provisioning requests. The UI
+renders the backend's status, diagnostic, exact next action, resolved paths, and
+final review. It cannot claim success from a desktop subprocess exit code.
+
+A saved member connection and an operator route are distinct capabilities even
+when they use the same SSH host. **Run setup now** appears only in the desktop
+after a native read-only probe proves it can invoke the fixed `rcp server project
+provision <request-id>` command directly as `rcp` or through noninteractive
+`sudo -u rcp -H`. The shell passes a validated request id as an argument and
+never executes arbitrary command text returned by a server. If SSH or `sudo`
+needs interaction, the app shows or opens the same command in Terminal; it never
+collects a private key or privilege password. The browser shows a copyable
+operator command instead.
+
+CLI structured progress is presentation input only. The CLI reports each state
+change to the lock-owning backend through its private local control channel, and
+the Web UI refreshes the durable request. Only the final explicit human review
+may create or re-home the project.
+
 ## Project tabs
 
 The project shell keeps a session-scoped dock beside the index control. Opening
@@ -162,16 +221,39 @@ authority. Entering Chats closes node detail.
 
 ### Runs
 
-Runs is the operational research-control surface, ordered **Running**, **Needs
-action**, then **Completed**, first matching state winning. It contains
-Seed/Refresh, bounded Experiments, Auto-research, and asserted open graph
-Blockers—not ordinary chat or Paper coaching.
+Runs is the episode ledger. Its primary object is the durable Experiment-loop or
+Auto-research episode parent, never an invocation, graph node, or Blocker. It has
+two sections: **Needs Action** first, then **Completed**. Active, recovering,
+wrapping-up, failed, and otherwise actionable episodes stay prominent in Needs
+Action; completed and stopped history goes below. Auto-research placement reads
+the generic episode projection. Experiment-loop placement, health, and next step
+read the existing `ExperimentControlState` for the owning Experiment; generic
+episode lifecycle fields never override that specialized backend answer.
+
+Needs Action is one unfolded reverse-chronological card list containing both
+episode modes. Completed groups episodes by mode in foldable lists, ordered
+**Experiment loop** then **Auto-research**. Seed/Refresh and ordinary task history
+remain in project History; Blocker judgment remains in Inbox.
 
 Experiment and Auto-research parents each expose one backend-decided health and
-one separately labelled **Recommended next step**. Task status, phase, semantic
-Experiment status, workers, and diagnostics remain supporting history rather
-than competing primary states. A control is absent unless currently valid, and
-no recommendation names an unavailable action.
+one separately labelled **Recommended next step**. Task status, phase, workers,
+and diagnostics remain supporting history rather than competing primary states.
+For a terminal Experiment episode, the owning node's human-authored closed status
+is authoritative: the run is Completed and fresh-start control is absent until
+the node is edited back to a nonterminal status. A control is absent unless
+currently valid, and no recommendation names an unavailable action. Report
+availability is separately backend-decided from the newest report-bearing
+episode for that Experiment and exact graph target; a newer no-report episode
+does not hide the durable report or change which episode owns it.
+
+Episode cards lead with the owning Experiment name or Auto-research identity;
+their start time is secondary metadata and is never prefixed with a redundant
+`Episode` label. A completed type group names the mode once rather than repeating
+it on every card. Collapsed cards contain no muted recommendation or report
+commentary. Each Experiment's backend control selects its one current
+`episode_id`, so repeated work produces one card for that Experiment node. Older
+episodes remain reachable through project History instead of appearing as
+sibling Runs cards.
 
 Starting an Experiment navigates to its Runs detail rather than opening floating
 chat. The detail separates historical episode budgets from **Next episode
@@ -222,6 +304,13 @@ The desktop window is a client of backend-owned durable work. Closing or hiding
 the window never cancels a task. Reopening attaches to the healthy owner and
 current app state.
 
+A source-mode frontend rebuild preserves content-hashed assets from the prior
+build so an already-open window can keep lazy-loading its coherent bundle until
+the researcher reopens it. Packaging and server startup use a clean build. If a
+chunk is nevertheless unavailable, the client performs one bounded document
+reload; a repeated failure renders an explicit reload action instead of a blank
+window or reload loop.
+
 App Quit gracefully asks only the backend process this shell owns to pause
 recoverable work and shut down. It never kills a reused backend or unrelated
 process. If graceful timeout is exhausted, the shell reports the forced path
@@ -270,5 +359,7 @@ The durable journeys include [S03 graph views](../acceptance/S03-views-and-graph
 [S53 truthful Runs projections](../acceptance/S53-truthful-attention-and-run-surfaces.md),
 [S81 live canonical state](../acceptance/S81-live-canonical-state.md),
 [S90 dictation](../acceptance/S90-desktop-chat-dictation.md),
-[S109 current tabs](../acceptance/S109-tabs-stay-current-without-freezing.md), and
-[S125 branch merge](../acceptance/S125-auto-research-graph-branch-merge.md).
+[S105 multi-space desktop](../acceptance/S105-move-between-spaces-in-one-window.md),
+[S109 current tabs](../acceptance/S109-tabs-stay-current-without-freezing.md),
+[S125 branch merge](../acceptance/S125-auto-research-graph-branch-merge.md), and
+[S128 team project provisioning](../acceptance/S128-provision-a-team-project-through-desktop-and-server-cli.md).

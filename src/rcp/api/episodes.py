@@ -162,6 +162,7 @@ EpisodeRecommendationKind = Literal[
     "none",
 ]
 EpisodeTaskControlKind = Literal["pause", "resume", "retry"]
+EpisodeRunSection = Literal["needs_action", "completed"]
 
 
 class AutoResearchRecoverySummary(BaseModel):
@@ -217,6 +218,7 @@ class EpisodeResponse(BaseModel):
     health: EpisodeHealth
     recommendation: EpisodeRecommendationKind
     task_control: EpisodeTaskControlKind | None
+    run_section: EpisodeRunSection
     # Whether this parent still occupies its Experiment, which is what admission
     # refuses a second episode against. Published so no client reconstructs the
     # storage status list to answer it.
@@ -374,6 +376,7 @@ def serialize_episode(
         health=health,
         recommendation=next_step,
         task_control=task_control,
+        run_section=_episode_run_section(health),
     )
 
 
@@ -508,6 +511,12 @@ def _episode_projection(
         return "active", "wait", None
     pause = "pause" if task is not None and task.status == "running" and task.can_pause else None
     return "active", "continue", pause
+
+
+def _episode_run_section(health: EpisodeHealth) -> EpisodeRunSection:
+    """Keep active or actionable parents prominent; archive settled history below."""
+
+    return "completed" if health in {"completed", "stopped"} else "needs_action"
 
 
 def _serialize_task(

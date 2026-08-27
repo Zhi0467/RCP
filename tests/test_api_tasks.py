@@ -35,7 +35,7 @@ def _wait_for_run(
     raise AssertionError("background run did not finish")
 
 
-@pytest.mark.parametrize("action", ["preview", "download"])
+@pytest.mark.parametrize("action", ["content", "download"])
 def test_remote_artifact_read_does_not_stall_health(
     manifest, tmp_path, monkeypatch, action
 ) -> None:

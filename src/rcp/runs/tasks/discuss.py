@@ -31,6 +31,7 @@ from rcp.runs.chat import (
     _stage_chat_patch_inputs,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
+    stage_artifact_context,
 )
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
@@ -268,6 +269,16 @@ async def stream_discuss_run(
                 if request.attachment_batch_id
                 else []
             )
+            artifact_context_pointer = stage_artifact_context(
+                service,
+                request,
+                execution,
+                local_stage=local_stage,
+                remote_stage=remote_stage,
+                artifact_path=str(artifact_directory),
+            )
+            if artifact_context_pointer is not None:
+                attachment_pointers.append(artifact_context_pointer)
             read_dirs = _chat_read_dirs(
                 context,
                 remote_stage,

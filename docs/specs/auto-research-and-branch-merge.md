@@ -147,6 +147,11 @@ surface supports:
 - keyed inbox harvest or clear; and
 - keyed guarded finish.
 
+Keyed Apply is the orchestrator's preferred graph channel. Applying inside the
+turn returns the new revision and refreshed canonical paths while that turn can
+still act on them. An unconsumed final `patch.json` still applies at turn
+settlement, but the episode then spends another invocation to observe the result.
+
 There is no agent Retry verb. Resume means the exact saved session and stage;
 an unusable binding tells the orchestrator to create the explicit replacement.
 

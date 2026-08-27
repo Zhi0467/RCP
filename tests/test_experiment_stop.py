@@ -63,6 +63,22 @@ def _experiment_patch(*, invocation_ceiling: int = 2) -> Patch:
     )
 
 
+def _experiment_status_patch(status: str) -> Patch:
+    return Patch(
+        kind="refresh",
+        author="agent",
+        summary=f"Set the graceful-stop Experiment to {status}.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=[
+            {
+                "op": "update_nodes",
+                "nodes": [{"id": EXPERIMENT_ID, "changes": {"status": status}}],
+            }
+        ],
+    )
+
+
 class _Loop:
     """One project holding a bounded Experiment with a persisted loop episode."""
 
@@ -429,6 +445,45 @@ def test_stop_is_idempotent(manifest, tmp_path) -> None:
     assert episode_after_second.stop_settled_at == episode_after_first.stop_settled_at
     assert loop.store.watcher("finished-unclaimed") == watcher_after_first
     assert loop.loop_task_ids() == tasks_after_first
+
+
+def test_closed_experiment_outranks_a_stopped_episode_until_the_node_is_reopened(
+    manifest, tmp_path
+) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    append_fixture_patch(loop.service, _experiment_status_patch("completed"))
+    loop.start_episode(status="paused")
+
+    loop.stop()
+
+    closed = loop.control()
+    assert closed["node_closed"] is True
+    assert closed["health"] == "completed"
+    assert closed["recommendation"] == "none"
+    assert closed["run_section"] == "completed"
+    assert closed["can_start"] is False
+    assert closed["reasons"] == [
+        "This Experiment is completed. Edit its status before starting a new episode."
+    ]
+
+    refused = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
+        json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"]},
+    )
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == closed["reasons"][0]
+
+    append_fixture_patch(loop.service, _experiment_status_patch("running"))
+    assert loop.service.history.state().nodes[EXPERIMENT_ID].status == "running"
+
+    _, snapshot = loop.app.state.services.project_display_cache.open_snapshot(loop.project_id)
+    reopened = snapshot["experiment_control"][EXPERIMENT_ID]
+    assert reopened["node_closed"] is False
+    assert reopened["health"] == "human_stopped"
+    assert reopened["recommendation"] == "start_episode"
+    assert reopened["run_section"] == "actionable"
+    assert reopened["can_start"] is True
+    assert reopened["reasons"] == []
 
 
 def test_experiment_control_projection_reads_runtime_and_episode_from_one_snapshot(

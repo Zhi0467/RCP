@@ -33,7 +33,12 @@ PIN = ExperimentDecisionPin(
 )
 
 
-def _state(*, attempts: list[ExperimentAttempt] | None = None, ceiling: int = 5) -> GraphState:
+def _state(
+    *,
+    attempts: list[ExperimentAttempt] | None = None,
+    ceiling: int = 5,
+    status: str = "proposed",
+) -> GraphState:
     experiment = Experiment(
         id=EXPERIMENT_ID,
         type="experiment",
@@ -41,6 +46,7 @@ def _state(*, attempts: list[ExperimentAttempt] | None = None, ceiling: int = 5)
         objective="Test the loop.",
         invocation_ceiling=ceiling,
         attempts=attempts or [],
+        status=status,
     )
     decision = Decision(
         id=DECISION_ID,
@@ -180,6 +186,25 @@ def test_readiness_is_derived_from_decisions_proposals_blockers_and_ceiling() ->
     ]
     assert gated.invocations_used == 0
     assert gated.invocation_ceiling == 1
+
+
+def test_closed_experiment_blocks_only_a_fresh_episode_until_the_human_reopens_it() -> None:
+    state = _state(status="completed")
+
+    closed = derive_experiment_control_state(state, EXPERIMENT_ID)
+
+    assert not closed.ready
+    assert closed.reasons == [
+        "This Experiment is completed. Edit its status before starting a new episode."
+    ]
+    assert closed.graph_reasons == []
+
+    experiment = state.nodes[EXPERIMENT_ID]
+    state.nodes[EXPERIMENT_ID] = experiment.model_copy(update={"status": "running"})
+
+    reopened = derive_experiment_control_state(state, EXPERIMENT_ID)
+    assert reopened.ready
+    assert reopened.reasons == []
 
 
 def test_an_open_episode_gates_readiness_and_publishes_the_graph_reasons_apart() -> None:

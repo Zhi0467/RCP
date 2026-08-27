@@ -112,23 +112,23 @@ question is decided.
 
 ---
 
-## Q6 — May a result view emit a research action?
+## Q6 — May an artifact selection emit a research action?
 
 **Status:** open, and much narrower than when raised. The parent question —
 whether RCP shows the researcher their own data, and in what shape — was decided
-2026-08-12 and now lives under
-[Result views](specs/paper-artifacts-and-result-views.md#result-views), driven by
+and now lives under
+[Unified artifact viewer](specs/paper-artifacts-and-result-views.md#unified-artifact-viewer), driven by
 [S114](acceptance/S114-see-your-results-without-leaving.md).
 **Related:** [Q7](#q7--which-domains-can-rcp-serve-and-where-must-it-link-instead-of-host)
 decides *for whom* this is worth building.
 
 ### What was decided, so it is not re-derived
 
-RCP hosts result views, but **not as a surface of its own**. They are ordinary
-Work turns drawing pages the human reads inside Runs, disposable by default,
-revised by acting on the picture, and optionally kept as a repository file that
-carries no graph authority. Where it lives, durable versus disposable, and who
-draws are all settled there.
+RCP has no result-view type or surface. Agents produce ordinary task artifacts;
+the common viewer can turn transient selections and human comments into an
+ordinary chat draft. Artifacts are disposable by default, optionally kept as
+live repository files, and carry no graph authority. Where they live, durable
+versus disposable, and who draws are all settled there.
 
 Two candidate designs were ruled out on the way and should not be revived:
 a **pre-declared decision request plus session capture** (it assumes the human
@@ -140,9 +140,11 @@ for the external tail only.
 
 ### What is still open
 
-Whether a view may ever **emit a research action** — select six runs, call them
-evidence, and have that become a graph change with provenance recording that a
-human chose them.
+Whether a human may ever turn an artifact selection into a distinct
+**research-action control** — for example, select six runs and explicitly admit
+them as Evidence with selection provenance. The present viewer does not do
+this: selection only supplies bounded context to a human-sent Discuss or Work
+turn, whose ordinary authority rules remain unchanged.
 
 S114 deliberately contains no such control. A view there is read-only: it
 changes no graph state, appends no Patch, and creates no Proposal. That was the
@@ -165,8 +167,8 @@ Do not build an action bar into a view before S114 has been used on real work.
 
 **Status:** open. Raised 2026-08-06. No decision.
 **Related:** the shape boundary this predicate leans on is now decided under
-[Result views](specs/paper-artifacts-and-result-views.md#result-views);
-[Q6](#q6--may-a-result-view-emit-a-research-action) is what remains open there.
+[Unified artifact viewer](specs/paper-artifacts-and-result-views.md#unified-artifact-viewer);
+[Q6](#q6--may-an-artifact-selection-emit-a-research-action) is what remains open there.
 
 ### The question
 

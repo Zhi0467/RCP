@@ -969,6 +969,53 @@ finally:
             raise StateUnavailable(detail or "could not read remote artifact")
         return result.stdout
 
+    def replace_artifact_bytes(self, scope_id: str, name: str, data: bytes) -> None:
+        """Atomically replace one remote task artifact without a digest precondition."""
+
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        if _safe_label(scope_id) != scope_id:
+            raise ValueError("artifact scope contains unsupported characters")
+        if PurePosixPath(name).name != name or name in {"", ".", ".."}:
+            raise ValueError("artifact name must be a plain base name")
+        script = """
+import os,secrets,stat,sys
+root,scope,name=sys.argv[1:4]
+flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
+fds=[]; temporary='.'+name+'.rcp-'+secrets.token_hex(8)
+try:
+    fd=os.open(root,flags); fds.append(fd)
+    for part in ('workspace','turns',scope,'artifacts'):
+        fd=os.open(part,flags,dir_fd=fd); fds.append(fd)
+    info=os.stat(name,dir_fd=fd,follow_symlinks=False)
+    if not stat.S_ISREG(info.st_mode): raise ValueError('artifact is not a regular file')
+    target=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0),0o600,dir_fd=fd)
+    fds.append(target)
+    while True:
+        chunk=sys.stdin.buffer.read(1024*1024)
+        if not chunk: break
+        remaining=memoryview(chunk)
+        while remaining:
+            written=os.write(target,remaining)
+            if written<=0: raise OSError('short artifact replacement write')
+            remaining=remaining[written:]
+    os.fsync(target); os.close(fds.pop())
+    os.replace(temporary,name,src_dir_fd=fd,dst_dir_fd=fd); os.fsync(fd)
+except (FileNotFoundError,NotADirectoryError,OSError,ValueError) as exc:
+    try: os.unlink(temporary,dir_fd=fd)
+    except Exception: pass
+    print(str(exc),file=sys.stderr); raise SystemExit(44)
+finally:
+    for item in reversed(fds): os.close(item)
+"""
+        result = self._ssh_bytes(
+            ["python3", "-c", script, str(self.root), scope_id, name],
+            input_data=data,
+        )
+        if result.returncode:
+            detail = result.stderr.decode("utf-8", errors="replace").strip()
+            raise StateUnavailable(detail or "could not replace remote artifact")
+
     def touch(self) -> None:
         """Refresh this conversation stage's rolling retention timestamp."""
         if self.root is None:

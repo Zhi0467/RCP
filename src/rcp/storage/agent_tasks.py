@@ -724,6 +724,84 @@ class AgentTaskStoreMixin:
             ).fetchone()
         return self._agent_task_record(row) if row else None
 
+    def mark_agent_artifact_kept(
+        self,
+        operation_id: str,
+        artifact_id: str,
+        *,
+        kept_filename: str,
+        kept_at: str,
+    ) -> AgentArtifactDescriptor:
+        """Bind one task artifact to its live repository file without a digest guard."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT result_json FROM graph_runs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(operation_id)
+            result = json.loads(row["result_json"]) if row["result_json"] else None
+            if not isinstance(result, dict) or not isinstance(result.get("artifacts"), list):
+                raise KeyError(artifact_id)
+            updated: AgentArtifactDescriptor | None = None
+            artifacts: list[dict[str, object]] = []
+            for raw in result["artifacts"]:
+                descriptor = AgentArtifactDescriptor.model_validate(raw)
+                if descriptor.artifact_id == artifact_id:
+                    if descriptor.kept_filename is not None:
+                        updated = descriptor
+                    else:
+                        updated = descriptor.model_copy(
+                            update={"kept_filename": kept_filename, "kept_at": kept_at}
+                        )
+                    descriptor = updated
+                artifacts.append(descriptor.model_dump(mode="json"))
+            if updated is None:
+                raise KeyError(artifact_id)
+            result = {**result, "artifacts": artifacts}
+            connection.execute(
+                "UPDATE graph_runs SET result_json = ?, updated_at = ? WHERE operation_id = ?",
+                (self._bounded_result_json(result), self.now(), operation_id),
+            )
+        return updated
+
+    def update_agent_artifact_descriptor(
+        self,
+        operation_id: str,
+        descriptor: AgentArtifactDescriptor,
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT result_json FROM graph_runs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(operation_id)
+            result = json.loads(row["result_json"]) if row["result_json"] else None
+            if not isinstance(result, dict) or not isinstance(result.get("artifacts"), list):
+                raise KeyError(descriptor.artifact_id)
+            replaced = False
+            artifacts: list[dict[str, object]] = []
+            for raw in result["artifacts"]:
+                current = AgentArtifactDescriptor.model_validate(raw)
+                if current.artifact_id == descriptor.artifact_id:
+                    current = descriptor
+                    replaced = True
+                artifacts.append(current.model_dump(mode="json"))
+            if not replaced:
+                raise KeyError(descriptor.artifact_id)
+            connection.execute(
+                "UPDATE graph_runs SET result_json = ?, updated_at = ? WHERE operation_id = ?",
+                (
+                    self._bounded_result_json({**result, "artifacts": artifacts}),
+                    self.now(),
+                    operation_id,
+                ),
+            )
+
     def agent_task_authorizer(self, operation_id: str) -> AuthorizedHuman | None:
         with self.connection() as connection:
             row = connection.execute(

@@ -4,6 +4,8 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -22,6 +24,7 @@ from rcp.artifacts import (
     descriptor_for,
     list_local_regular_files,
     read_local_regular_file,
+    replace_local_regular_file,
     validate_artifact_bytes,
 )
 from rcp.background import AgentTaskExecution
@@ -478,7 +481,7 @@ def _discover_chat_artifacts(
                 ignore("total_size_limit")
                 continue
             media_type = validate_artifact_bytes(name, data)
-            descriptor = descriptor_for(scope_id, name)
+            descriptor = descriptor_for(scope_id, name, size_bytes=len(data))
             if descriptor.media_type != media_type:
                 raise ValueError("artifact media type mismatch")
         except (FileNotFoundError, OSError, StateUnavailable, ValueError):
@@ -493,6 +496,212 @@ def _discover_chat_artifacts(
         ignored=ignored,
     )
     return attached
+
+
+def stage_artifact_context(
+    service: ProjectService,
+    request: RunRequest,
+    execution: AgentTaskExecution | None,
+    *,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    artifact_path: str,
+) -> dict[str, object] | None:
+    """Stage the artifact's current bytes and bounded human selection context."""
+
+    context = request.artifact_context
+    if context is None:
+        return None
+    if execution is None or (local_stage is None) == (remote_stage is None):
+        raise ValueError("Artifact context requires one durable chat stage.")
+    current = execution.store.agent_task(execution.operation_id)
+    origin = execution.store.agent_task(context.operation_id)
+    if current is None or origin is None or origin.project_id != current.project_id:
+        raise ValueError("The artifact context origin is unavailable.")
+    descriptor: AgentArtifactDescriptor | None = None
+    if context.source == "episode_report":
+        report = execution.store.episode_report(context.episode_id or "")
+        if report is None:
+            raise ValueError("The episode report context is unavailable.")
+        descriptor = AgentArtifactDescriptor(
+            artifact_id=hashlib.sha256(report.report_id.encode("utf-8")).hexdigest()[:24],
+            name="episode-report.html",
+            media_type="text/html",
+            size_bytes=len(report.html.encode("utf-8")),
+        )
+        data = report.html.encode("utf-8")
+    else:
+        raw_artifacts = origin.result.get("artifacts") if origin.result else None
+        if isinstance(raw_artifacts, list):
+            for raw in raw_artifacts:
+                try:
+                    candidate = AgentArtifactDescriptor.model_validate(raw)
+                except (TypeError, ValueError):
+                    continue
+                if candidate.artifact_id == context.artifact_id:
+                    descriptor = candidate
+                    break
+        if descriptor is None:
+            raise ValueError("The artifact context is unavailable.")
+        scope_id = _logical_chat_turn_operation_id(execution.store, origin.operation_id)
+    assert descriptor is not None
+    if context.source == "episode_report":
+        pass
+    elif descriptor.kept_filename is not None:
+        data = service.history.workspace.read_kept_artifact(
+            descriptor.kept_filename,
+            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+        )
+    elif origin.stage_host:
+        source = RemoteRunStage(origin.stage_host).attach_artifact_source(origin.stage_root or "")
+        data = source.read_artifact_bytes(
+            scope_id,
+            descriptor.name,
+            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+        )
+    elif origin.stage_root:
+        data = read_local_regular_file(
+            Path(origin.stage_root) / "turns" / scope_id / "artifacts",
+            descriptor.name,
+            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+        )
+    else:
+        raise ValueError("The artifact's source stage is unavailable.")
+    if validate_artifact_bytes(descriptor.name, data) != descriptor.media_type:
+        raise ValueError("The current artifact no longer matches its declared type.")
+
+    label = f"artifact-context-v1-{execution.operation_id}-{descriptor.artifact_id}"
+    if remote_stage is not None:
+        with tempfile.TemporaryDirectory(prefix="rcp-artifact-context-") as temporary:
+            root = Path(temporary)
+            source_path = root / descriptor.name
+            source_path.write_bytes(data)
+            source_path.chmod(0o400)
+            root.chmod(0o500)
+            staged_root = Path(remote_stage.put_directory(root, label, reuse=True))
+    else:
+        assert local_stage is not None
+        staged_root = local_stage / "inputs" / label
+        if staged_root.exists():
+            existing = read_local_regular_file(
+                staged_root,
+                descriptor.name,
+                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+            )
+            if existing != data:
+                raise ValueError("The saved artifact context changed during this turn.")
+        else:
+            staged_root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            temporary = Path(tempfile.mkdtemp(prefix=f".{label}-", dir=staged_root.parent))
+            try:
+                (temporary / descriptor.name).write_bytes(data)
+                (temporary / descriptor.name).chmod(0o400)
+                temporary.chmod(0o500)
+                os.replace(temporary, staged_root)
+            finally:
+                if temporary.exists():
+                    temporary.chmod(0o700)
+                    shutil.rmtree(temporary)
+
+    pointer = {
+        "path": str(staged_root / descriptor.name),
+        "name": descriptor.name,
+        "media_type": descriptor.media_type,
+        "size": len(data),
+        "source_operation_id": origin.operation_id,
+        "source_artifact_id": descriptor.artifact_id,
+        "selections": [item.model_dump(mode="json") for item in context.selections],
+    }
+    if context.source == "task":
+        pointer["revision_output_path"] = str(Path(artifact_path) / descriptor.name)
+    else:
+        pointer["immutable"] = True
+    return pointer
+
+
+def finalize_artifact_revision(
+    service: ProjectService,
+    request: RunRequest,
+    execution: AgentTaskExecution | None,
+    *,
+    artifact_scope_id: str,
+    artifact_directory: Path,
+    remote_stage: RemoteRunStage | None,
+    artifacts: list[AgentArtifactDescriptor],
+) -> list[AgentArtifactDescriptor]:
+    """Publish an explicit Work replacement onto the source artifact identity."""
+
+    context = request.artifact_context
+    if (
+        context is None
+        or context.source != "task"
+        or request.mode != "work"
+        or execution is None
+    ):
+        return artifacts
+    origin = execution.store.agent_task(context.operation_id)
+    if origin is None:
+        raise ValueError("The artifact revision origin is unavailable.")
+    raw_artifacts = origin.result.get("artifacts") if origin.result else None
+    source: AgentArtifactDescriptor | None = None
+    if isinstance(raw_artifacts, list):
+        for raw in raw_artifacts:
+            candidate = AgentArtifactDescriptor.model_validate(raw)
+            if candidate.artifact_id == context.artifact_id:
+                source = candidate
+                break
+    if source is None:
+        raise ValueError("The artifact revision origin is unavailable.")
+    replacement = next((item for item in artifacts if item.name == source.name), None)
+    if replacement is None:
+        return artifacts
+    data = (
+        remote_stage.read_artifact_bytes(
+            artifact_scope_id,
+            replacement.name,
+            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+        )
+        if remote_stage is not None
+        else read_local_regular_file(
+            artifact_directory,
+            replacement.name,
+            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+        )
+    )
+    if validate_artifact_bytes(source.name, data) != source.media_type:
+        raise ValueError("The artifact revision changed its file type.")
+    source_scope_id = _logical_chat_turn_operation_id(execution.store, origin.operation_id)
+    if source.kept_filename is not None:
+        service.history.workspace.replace_kept_artifact(source.kept_filename, data)
+    elif origin.stage_host:
+        source_stage = RemoteRunStage(origin.stage_host).attach_artifact_source(
+            origin.stage_root or ""
+        )
+        source_stage.replace_artifact_bytes(source_scope_id, source.name, data)
+    elif origin.stage_root:
+        replace_local_regular_file(
+            Path(origin.stage_root) / "turns" / source_scope_id / "artifacts",
+            source.name,
+            data,
+        )
+    else:
+        raise ValueError("The artifact revision source stage is unavailable.")
+    execution.store.update_agent_artifact_descriptor(
+        origin.operation_id,
+        source.model_copy(update={"size_bytes": len(data)}),
+    )
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "artifact_revised",
+        {
+            "source_operation_id": origin.operation_id,
+            "source_artifact_id": source.artifact_id,
+            "kept": source.kept_filename is not None,
+            "size_bytes": len(data),
+        },
+        tier="summary",
+    )
+    return [item for item in artifacts if item.artifact_id != replacement.artifact_id]
 
 
 def _record_artifact_discovery_receipt(

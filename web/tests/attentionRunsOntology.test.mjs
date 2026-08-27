@@ -154,6 +154,104 @@ function task(operationId, kind, status, statusMessage, updatedAt = "2026-08-03T
   });
 }
 
+function runsEpisode(id, mode, runSection, createdAt, controlNodeId = null) {
+  const completed = runSection === "completed";
+  return {
+    episode_id: id,
+    project_id: "project",
+    mode,
+    control_node_id: controlNodeId,
+    graph_target: { kind: "main" },
+    graph_base_head: null,
+    graph_branch: null,
+    root_operation_id: null,
+    current_operation_id: null,
+    current_orchestrator_task_id: null,
+    current_control_task_id: null,
+    recovery: null,
+    status: completed ? "completed" : "running",
+    starting_instruction: null,
+    budget: {
+      invocation_ceiling: 3,
+      invocations_used: completed ? 3 : 1,
+      invocations_remaining: completed ? 0 : 2,
+      observed_input_tokens: 10,
+      observed_generated_tokens: 20,
+    },
+    authorized_by: null,
+    stop_requested_at: null,
+    ending: completed ? "completed" : null,
+    ending_diagnostic: null,
+    wrapup_state: completed ? "ready" : "not_started",
+    wrapup_error: null,
+    created_at: createdAt,
+    updated_at: createdAt,
+    ended_at: completed ? createdAt : null,
+    tasks: [],
+    report: null,
+    can_stop: !completed,
+    can_reauthorize: false,
+    can_message: mode === "auto_research" && !completed,
+    live: !completed,
+    health: completed ? "completed" : "active",
+    recommendation: completed ? "none" : "continue",
+    task_control: null,
+    run_section: runSection,
+  };
+}
+
+function experimentNode(id) {
+  return {
+    id,
+    type: "experiment",
+    title: id,
+    objective: "Exercise the run projection.",
+    design: "",
+    expected_outcomes: [],
+    interpretation_rules: [],
+    completion_criteria: [],
+    invocation_ceiling: 3,
+    attempts: [],
+    current_summary: "Finished",
+    next_action: null,
+    status: "completed",
+    standing: "asserted",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+    extension_fields: {},
+  };
+}
+
+function completedExperimentControl(episode) {
+  return {
+    ready: true,
+    reasons: [],
+    graph_reasons: [],
+    invocations_used: episode.budget.invocations_used,
+    invocation_ceiling: episode.budget.invocation_ceiling,
+    invocations_remaining: episode.budget.invocations_remaining,
+    episode_id: episode.episode_id,
+    episode,
+    paused: false,
+    active: false,
+    governing_decisions: [],
+    decision_drift: [],
+    operational: {},
+    health: "completed",
+    recommendation: "none",
+    run_section: "completed",
+    live: false,
+    can_start: true,
+    can_stop: false,
+    stop_pending: false,
+    task_control: null,
+    can_switch_provider: false,
+    can_open_report: false,
+    node_closed: true,
+  };
+}
+
 test("Inbox counts pending proposals, queued Decisions, and only asserted open blockers", () => {
   const asserted = blocker("ASSERTED OPEN", "scientific");
   const accepted = blocker("ACCEPTED OPEN", "infrastructure", "open", "accepted");
@@ -307,24 +405,59 @@ test("Blocker rows render exactly the supplied backend preview membership", () =
   assert.deepEqual(humanAttentionBlockers([], presentedNodes), []);
 });
 
-test("Runs needs action includes only asserted open blockers and excludes generic chat", () => {
+test("Runs is episode-first while Experiment placement and status stay control-authoritative", () => {
+  const newestExperiment = runsEpisode(
+    "experiment-newest",
+    "experiment_loop",
+    "needs_action",
+    "2026-08-03T04:00:00Z",
+    "EXP NEWEST",
+  );
+  const activeAutoResearch = runsEpisode(
+    "auto-active",
+    "auto_research",
+    "needs_action",
+    "2026-08-03T03:00:00Z",
+  );
+  const completedExperiment = runsEpisode(
+    "experiment-complete",
+    "experiment_loop",
+    "completed",
+    "2026-08-03T02:00:00Z",
+    "EXP COMPLETE",
+  );
+  const completedAutoResearch = runsEpisode(
+    "auto-complete",
+    "auto_research",
+    "completed",
+    "2026-08-03T01:00:00Z",
+  );
+  const olderSameExperiment = runsEpisode(
+    "experiment-older",
+    "experiment_loop",
+    "completed",
+    "2026-08-03T00:30:00Z",
+    "EXP NEWEST",
+  );
   const html = renderToStaticMarkup(
     React.createElement(ExecutionView, {
       graph: graph({
         nodes: {
-          stagedAccepted: blocker("STAGED ACCEPTED", "scientific", "open", "accepted"),
-          stagedContested: blocker("STAGED CONTESTED", "design", "open", "contested"),
-          stagedResolved: {
-            ...blocker("STAGED RESOLVED", "scientific", "resolved"),
-            draft_touched: true,
-          },
-          stagedReopened: blocker("STAGED REOPENED", "scientific"),
-          accepted: blocker("ACCEPTED OPEN", "infrastructure", "open", "accepted"),
-          contested: blocker("CONTESTED OPEN", "design", "open", "contested"),
-          resolved: blocker("ASSERTED RESOLVED", "design", "resolved"),
+          [newestExperiment.control_node_id]: experimentNode(newestExperiment.control_node_id),
+          [completedExperiment.control_node_id]: experimentNode(
+            completedExperiment.control_node_id,
+          ),
         },
       }),
-      attentionBlockerIds: new Set(["STAGED ACCEPTED", "STAGED CONTESTED", "STAGED RESOLVED"]),
+      episodes: [
+        olderSameExperiment,
+        completedAutoResearch,
+        completedExperiment,
+        activeAutoResearch,
+        newestExperiment,
+      ],
+      episodeMessages: {},
+      episodeAction: null,
       tasks: [
         task("refresh", "refresh", "failed", "REFRESH FAILURE", "2026-08-03T01:00:00Z"),
         task("seed", "seed", "succeeded", "SEED COMPLETE"),
@@ -334,34 +467,55 @@ test("Runs needs action includes only asserted open blockers and excludes generi
         task("coach", "paper_coach", "failed", "PAPER COACH FAILURE"),
       ],
       watchers: [],
-      experimentControl: {},
-      dismissedTaskIds: new Set(),
+      experimentControl: {
+        [newestExperiment.control_node_id]: completedExperimentControl(newestExperiment),
+        [completedExperiment.control_node_id]: completedExperimentControl(completedExperiment),
+      },
       selectedExperimentId: null,
       focusExperimentId: null,
       runBusy: false,
       stopBusyId: null,
+      watcherCheckBusyId: null,
+      taskActionId: null,
       onInspectTask() {},
-      onDismissTask() {},
-      onSelectNode() {},
+      async onLoadEpisodeMessages() {},
+      async onStopEpisode() {},
+      async onMergeEpisode() {},
+      async onReauthorizeEpisode() {},
+      async onSendEpisodeMessage() {},
+      async onOperateEpisodeTask() {},
       onSelectExperiment() {},
       onDetailFocused() {},
       onRunExperiment() {},
       onStopExperiment() {},
+      onCheckExperimentWatcher() {},
+      onRecoverExperiment() {},
+      onSwitchExperimentProvider() {},
+      episodeReportHref: () => "#",
     }),
   );
 
-  assert.doesNotMatch(html, /Runs &amp; experiments|As of/);
-  assert.ok(html.indexOf(">Running<") < html.indexOf(">Needs action<"));
-  assert.ok(html.indexOf(">Needs action<") < html.indexOf(">Completed<"));
-  assert.match(html, /REFRESH RUNNING/);
-  assert.match(html, /REFRESH FAILURE/);
-  assert.match(html, /SEED COMPLETE/);
-  assert.match(html, /STAGED ACCEPTED/);
-  assert.match(html, /STAGED CONTESTED/);
-  assert.match(html, /class="blocker-row draft-touched"[^>]*>.*STAGED RESOLVED/s);
+  assert.ok(html.indexOf(">Needs Action<") < html.indexOf(">Completed<"));
+  assert.match(html, /Needs Action<\/h2><span>1<\/span>/);
+  assert.match(html, /Completed<\/h2><span>3<\/span>/);
+  assert.match(html, /campaign-run-title.*?<span>EXP NEWEST<\/span>/);
+  assert.match(html, /<time dateTime="2026-08-03T04:00:00Z">/);
+  assert.doesNotMatch(html, /2026-08-03T00:30:00Z/);
+  assert.match(
+    html,
+    /campaign-run-title.*?<span>EXP NEWEST<\/span><\/strong><span class="campaign-run-meta"><span class="status-pill completed">Completed<\/span><time/,
+  );
+  assert.doesNotMatch(html, /Episode ·|campaign-run-summary|No action needed|Project episode/);
+  assert.equal(html.match(/>Experiment loop<\/strong>/g)?.length, 1);
+  assert.match(html, /<details class="episode-type-group"><summary><strong>Experiment loop/);
+  assert.match(html, /<details class="episode-type-group"><summary><strong>Auto-research/);
+  assert.ok(
+    html.indexOf("<strong>Experiment loop</strong>") <
+      html.lastIndexOf("<strong>Auto-research</strong>"),
+  );
   assert.doesNotMatch(
     html,
-    /STAGED REOPENED|ACCEPTED OPEN|CONTESTED OPEN|ASSERTED RESOLVED|NODE CHAT TRACEBACK|PROJECT CHAT RUNNING|PAPER COACH FAILURE/,
+    /REFRESH RUNNING|REFRESH FAILURE|SEED COMPLETE|NODE CHAT TRACEBACK|PROJECT CHAT RUNNING|PAPER COACH FAILURE/,
   );
 });
 
@@ -391,7 +545,9 @@ test("Runs fails loudly when a cached Experiment control lacks backend lifecycle
       renderToStaticMarkup(
         React.createElement(ExecutionView, {
           graph: graph({ nodes: { [experiment.id]: experiment } }),
-          attentionBlockerIds: new Set(),
+          episodes: [],
+          episodeMessages: {},
+          episodeAction: null,
           tasks: [],
           watchers: [],
           experimentControl: {
@@ -408,14 +564,19 @@ test("Runs fails loudly when a cached Experiment control lacks backend lifecycle
               decision_drift: [],
             },
           },
-          dismissedTaskIds: new Set(),
           selectedExperimentId: null,
           focusExperimentId: null,
           runBusy: false,
           stopBusyId: null,
+          watcherCheckBusyId: null,
+          taskActionId: null,
           onInspectTask() {},
-          onDismissTask() {},
-          onSelectNode() {},
+          async onLoadEpisodeMessages() {},
+          async onStopEpisode() {},
+          async onMergeEpisode() {},
+          async onReauthorizeEpisode() {},
+          async onSendEpisodeMessage() {},
+          async onOperateEpisodeTask() {},
           onSelectExperiment() {},
           onDetailFocused() {},
           onRunExperiment() {},

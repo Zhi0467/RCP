@@ -18,7 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { removeChatAttachment, resultViewPreviewUrl, uploadChatAttachment } from "../api";
+import { removeChatAttachment, uploadChatAttachment } from "../api";
 import {
   artifactUrl,
   chatTasksMissingFromHistory,
@@ -65,6 +65,8 @@ import {
 import { repositoryFilePreviewUrl, resolveRepositoryFileHref } from "../repositoryFileLinks";
 import type {
   AgentArtifactDescriptor,
+  ArtifactContextRequest,
+  ArtifactSelection,
   AgentTask,
   ChatMessage,
   ChatAttachmentDescriptor,
@@ -72,8 +74,6 @@ import type {
   GraphNode,
   GraphUpdateResult,
   ProjectSnapshot,
-  ResultViewDescriptor,
-  ResultViewRequest,
   StartAgentTask,
   WatcherRecord,
 } from "../types";
@@ -101,9 +101,6 @@ interface Props {
   readOnly?: boolean;
   reviewPending?: boolean;
   graphChangesDisabled?: boolean;
-  resultViews?: ResultViewDescriptor[];
-  resultViewsError?: string | null;
-  onKeepResultView?: (viewId: string) => Promise<void>;
   onStartTask: StartAgentTask;
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
@@ -140,132 +137,150 @@ interface DictationSpan {
   end: number;
 }
 
-export interface ResultViewGesture {
-  type: "rcp-result-view-gesture";
+const ARTIFACT_ID_PATTERN = /^[0-9a-f]{24}$/;
+const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
+
+interface ArtifactContextPayload {
+  type: "rcp-artifact-context";
   version: 1;
-  gesture: "box" | "underscore";
-  description: string;
+  project_id: string;
+  chat_id: string;
+  operation_id: string;
+  source?: "task" | "episode_report";
+  episode_id?: string | null;
+  artifact_id: string;
+  artifact_name: string;
+  media_type: string;
+  selections: ArtifactSelection[];
 }
 
-export type ResultViewTarget = { action: "none" } | ResultViewRequest;
-
-const RESULT_VIEW_ID_PATTERN = /^[0-9a-f]{24}$/;
-
-export function resultViewTargetStorageKey(projectId: string, chatId: string): string {
-  return `rcp:result-view-target:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`;
+function artifactContextStorageKey(projectId: string, chatId: string): string {
+  return `rcp:artifact-context:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`;
 }
 
-export function parseResultViewTarget(value: string | null): ResultViewTarget {
-  if (!value) return { action: "none" };
-  try {
-    const candidate: unknown = JSON.parse(value);
-    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-      return { action: "none" };
-    }
-    const record = candidate as Record<string, unknown>;
-    const keys = Object.keys(record).sort();
-    if (record.action === "create" && keys.length === 1 && keys[0] === "action") {
-      return { action: "create" };
+export function parseArtifactContextPayload(value: unknown): ArtifactContextPayload | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "type",
+    "version",
+    "project_id",
+    "chat_id",
+    "operation_id",
+    "source",
+    "episode_id",
+    "artifact_id",
+    "artifact_name",
+    "media_type",
+    "selections",
+  ]);
+  if (
+    Object.keys(candidate).some((key) => !allowedKeys.has(key)) ||
+    candidate.type !== "rcp-artifact-context" ||
+    candidate.version !== 1 ||
+    !isBoundedArtifactText(candidate.project_id, 1, 512) ||
+    !isBoundedArtifactText(candidate.chat_id, 1, 512) ||
+    !isBoundedArtifactText(candidate.operation_id, 1, 512) ||
+    (candidate.source !== undefined &&
+      candidate.source !== "task" &&
+      candidate.source !== "episode_report") ||
+    (candidate.source === "episode_report" && typeof candidate.episode_id !== "string") ||
+    (candidate.source !== "episode_report" &&
+      candidate.episode_id !== undefined &&
+      candidate.episode_id !== null) ||
+    typeof candidate.artifact_id !== "string" ||
+    !ARTIFACT_ID_PATTERN.test(candidate.artifact_id) ||
+    !isBoundedArtifactText(candidate.artifact_name, 1, 255) ||
+    !isBoundedArtifactText(candidate.media_type, 1, 64) ||
+    !Array.isArray(candidate.selections) ||
+    candidate.selections.length < 1 ||
+    candidate.selections.length > 12
+  )
+    return null;
+  const selections: ArtifactSelection[] = [];
+  for (const raw of candidate.selections) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const selection = raw as Record<string, unknown>;
+    if (
+      selection.kind === "text" &&
+      isBoundedArtifactText(selection.text, 1, 4096) &&
+      isBoundedArtifactText(selection.surrounding_text, 0, 6144) &&
+      isBoundedArtifactText(selection.comment, 0, 2048)
+    ) {
+      selections.push({
+        kind: "text",
+        text: selection.text,
+        surrounding_text: selection.surrounding_text,
+        comment: selection.comment,
+      });
+      continue;
     }
     if (
-      record.action === "revise" &&
-      keys.length === 2 &&
-      keys[0] === "action" &&
-      keys[1] === "view_id" &&
-      typeof record.view_id === "string" &&
-      RESULT_VIEW_ID_PATTERN.test(record.view_id)
+      selection.kind === "box" &&
+      isArtifactSelectionRect(selection.rect) &&
+      isArtifactViewport(selection.viewport) &&
+      isBoundedArtifactText(selection.labels, 0, 4096) &&
+      isBoundedArtifactText(selection.comment, 0, 2048)
     ) {
-      return { action: "revise", view_id: record.view_id };
+      selections.push({
+        kind: "box",
+        rect: selection.rect,
+        viewport: selection.viewport,
+        labels: selection.labels,
+        comment: selection.comment,
+      });
+      continue;
     }
-  } catch {
-    // A malformed browser value has no authority over a new turn.
-  }
-  return { action: "none" };
-}
-
-export function serializeResultViewTarget(target: ResultViewTarget): string | null {
-  if (target.action === "create") return JSON.stringify({ action: "create" });
-  if (target.action === "revise" && RESULT_VIEW_ID_PATTERN.test(target.view_id)) {
-    return JSON.stringify({ action: "revise", view_id: target.view_id });
-  }
-  return null;
-}
-
-export function resultViewGestureFromFrame(
-  event: Pick<MessageEvent, "data" | "source">,
-  frameWindow: Window | null,
-): ResultViewGesture | null {
-  if (!frameWindow || event.source !== frameWindow) return null;
-  const value: unknown = event.data;
-  if (!value || typeof value !== "object") return null;
-  const expectedKeys = ["description", "gesture", "type", "version"];
-  const keys = Object.keys(value).sort();
-  if (
-    keys.length !== expectedKeys.length ||
-    keys.some((key, index) => key !== expectedKeys[index])
-  ) {
     return null;
   }
-  const candidate = value as Record<string, unknown>;
+  return { ...(candidate as unknown as ArtifactContextPayload), selections };
+}
+
+function isBoundedArtifactText(value: unknown, minimum: number, maximum: number): value is string {
+  return typeof value === "string" && value.length >= minimum && value.length <= maximum;
+}
+
+function isArtifactSelectionRect(
+  value: unknown,
+): value is { x: number; y: number; width: number; height: number } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const rect = value as Record<string, unknown>;
   if (
-    candidate.type !== "rcp-result-view-gesture" ||
-    candidate.version !== 1 ||
-    (candidate.gesture !== "box" && candidate.gesture !== "underscore") ||
-    typeof candidate.description !== "string" ||
-    !candidate.description.trim() ||
-    new TextEncoder().encode(candidate.description).byteLength > 2048
-  ) {
-    return null;
-  }
-  return {
-    type: "rcp-result-view-gesture",
-    version: 1,
-    gesture: candidate.gesture,
-    description: candidate.description,
-  };
+    Object.keys(rect).some((key) => !["x", "y", "width", "height"].includes(key)) ||
+    ![rect.x, rect.y, rect.width, rect.height].every(
+      (part) => typeof part === "number" && Number.isFinite(part),
+    )
+  )
+    return false;
+  const x = rect.x as number;
+  const y = rect.y as number;
+  const width = rect.width as number;
+  const height = rect.height as number;
+  return x >= 0 && y >= 0 && width > 0 && height > 0 && x + width <= 1 && y + height <= 1;
 }
 
-export function resultViewGestureDraft(
-  current: string,
-  viewName: string,
-  gesture: ResultViewGesture,
-): string {
-  const label = gesture.gesture === "box" ? "Boxed selection" : "Underscored selection";
-  const addition = `${label} in ${viewName}: ${gesture.description}`;
-  return current.trimEnd() ? `${current.trimEnd()}\n\n${addition}` : addition;
+function isArtifactViewport(value: unknown): value is { width: number; height: number } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const viewport = value as Record<string, unknown>;
+  return (
+    Object.keys(viewport).every((key) => key === "width" || key === "height") &&
+    [viewport.width, viewport.height].every(
+      (part) => typeof part === "number" && Number.isInteger(part) && part >= 1 && part <= 32768,
+    )
+  );
 }
 
-export function resultViewRequestForTarget(
-  mode: ConversationMode,
-  target: ResultViewTarget,
-  views: readonly ResultViewDescriptor[] | undefined,
-): ResultViewRequest | undefined {
-  if (mode !== "work" || target.action === "none") return undefined;
-  if (target.action === "create") return { action: "create" };
-  return views?.some((view) => view.view_id === target.view_id && view.can_revise)
-    ? { action: "revise", view_id: target.view_id }
-    : undefined;
-}
-
-export function resultViewTargetValidationError(
-  mode: ConversationMode,
-  target: ResultViewTarget,
-  views: readonly ResultViewDescriptor[] | undefined,
-): string | null {
-  if (target.action === "none") return null;
-  if (mode !== "work") return "Choose Work to create or revise a result view.";
-  if (target.action === "create") return null;
-  if (!RESULT_VIEW_ID_PATTERN.test(target.view_id)) {
-    return "The selected result view is invalid. Choose another view or No view.";
-  }
-  if (views === undefined) return "Result views are still loading.";
-  const view = views.find((candidate) => candidate.view_id === target.view_id);
-  if (!view)
-    return "The selected result view is no longer available. Choose another view or No view.";
-  if (!view.can_revise) {
-    return "The selected result view can no longer be revised. Choose another view or No view.";
-  }
-  return null;
+export function artifactContextDraft(payload: ArtifactContextPayload): string {
+  return payload.selections
+    .map((selection, index) => {
+      const selected =
+        selection.kind === "text"
+          ? `Selected text: ${selection.text}`
+          : `Boxed region: ${selection.labels || `${Math.round(selection.rect.x * 100)}%, ${Math.round(selection.rect.y * 100)}%`}`;
+      const comment = selection.comment.trim() ? `\n${selection.comment.trim()}` : "";
+      return `${selected}${comment}\n:rcp-artifact-selection{index="${index + 1}"}`;
+    })
+    .join("\n\n");
 }
 
 export function NodeChat({
@@ -284,9 +299,6 @@ export function NodeChat({
   readOnly = false,
   reviewPending = false,
   graphChangesDisabled = false,
-  resultViews,
-  resultViewsError = null,
-  onKeepResultView,
   onStartTask,
   onInspectTask,
   onOpenInbox,
@@ -339,18 +351,19 @@ export function NodeChat({
   const [scope, setScope] = useState(runScope);
   const draftKey = chatDraftStorageKey(project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
-  const resultViewTargetKey = resultViewTargetStorageKey(project.id, chatId);
+  const artifactContextKey = artifactContextStorageKey(project.id, chatId);
   const derivedMode = useMemo(
     () => latestPersistedConversationMode(historyMessages, relatedTasks),
     [historyMessages, relatedTasks],
   );
   const [message, setMessage] = useState(() => readStorage(draftKey) ?? "");
+  const [artifactContext, setArtifactContext] = useState<ArtifactContextRequest | null>(null);
+  const lastArtifactContextRef = useRef<string | null>(null);
   const [modeState, setModeState] = useState<{ value: ConversationMode; pinned: boolean }>(() => {
     const storedMode = parseConversationMode(readStorage(modeKey));
     return { value: storedMode ?? derivedMode, pinned: Boolean(storedMode) };
   });
   const modeRef = useRef(modeState.value);
-  const resultViewTargetKeyRef = useRef(resultViewTargetKey);
   const [submitting, setSubmitting] = useState(false);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [attachmentSetId, setAttachmentSetId] = useState<string | null>(null);
@@ -384,19 +397,6 @@ export function NodeChat({
     () => new Map(),
   );
   const [watchersOpen, setWatchersOpen] = useState(false);
-  const [resultViewTarget, setResultViewTarget] = useState<ResultViewTarget>(() =>
-    modeState.value === "work"
-      ? parseResultViewTarget(readStorage(resultViewTargetKey))
-      : { action: "none" },
-  );
-  const [keepingResultViewId, setKeepingResultViewId] = useState<string | null>(null);
-  const [resultViewKeepErrors, setResultViewKeepErrors] = useState<Map<string, string>>(
-    () => new Map(),
-  );
-  const [resultViewFrameErrors, setResultViewFrameErrors] = useState<Map<string, string>>(
-    () => new Map(),
-  );
-  const resultViewFramesRef = useRef(new Map<string, HTMLIFrameElement>());
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const skills = useSkillPicker({
     catalog: skillCatalog,
@@ -417,6 +417,71 @@ export function NodeChat({
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
+
+  useEffect(() => {
+    const accept = (raw: unknown) => {
+      const payload = parseArtifactContextPayload(raw);
+      if (!payload || payload.project_id !== project.id || payload.chat_id !== chatId) return;
+      const source = relatedTasks.find((task) => task.operation_id === payload.operation_id);
+      const sourceKind = payload.source ?? "task";
+      if (
+        !source ||
+        (sourceKind === "task" &&
+          !source.result?.artifacts?.some(
+            (artifact) => artifact.artifact_id === payload.artifact_id,
+          ))
+      )
+        return;
+      const signature = JSON.stringify(payload);
+      if (lastArtifactContextRef.current === signature) return;
+      lastArtifactContextRef.current = signature;
+      setArtifactContext({
+        source: sourceKind,
+        operation_id: payload.operation_id,
+        artifact_id: payload.artifact_id,
+        ...(sourceKind === "episode_report" && payload.episode_id
+          ? { episode_id: payload.episode_id }
+          : {}),
+        selections: payload.selections,
+      });
+      const addition = artifactContextDraft(payload);
+      setMessage((current) => {
+        const next = current.trimEnd() ? `${current.trimEnd()}\n\n${addition}` : addition;
+        writeStorage(draftKey, next);
+        return next;
+      });
+      removeStorage(artifactContextKey);
+      window.requestAnimationFrame(() => textareaRef.current?.focus());
+    };
+    const stored = readStorage(artifactContextKey);
+    if (stored) {
+      try {
+        accept(JSON.parse(stored));
+      } catch {
+        removeStorage(artifactContextKey);
+      }
+    }
+    const storage = (event: StorageEvent) => {
+      if (event.key !== artifactContextKey || !event.newValue) return;
+      try {
+        accept(JSON.parse(event.newValue));
+      } catch {
+        removeStorage(artifactContextKey);
+      }
+    };
+    window.addEventListener("storage", storage);
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel("rcp-artifact-context");
+      channel.addEventListener("message", (event) => accept(event.data));
+    } catch {
+      // Storage events remain the cross-window path where BroadcastChannel is unavailable.
+    }
+    return () => {
+      window.removeEventListener("storage", storage);
+      channel?.close();
+    };
+  }, [artifactContextKey, chatId, draftKey, project.id, relatedTasks]);
   const liveWatchers = useMemo(
     () => visibleChatWatchers(watchers, chatId, node),
     [chatId, node, watchers],
@@ -449,54 +514,6 @@ export function NodeChat({
   const attachmentsPreparing = attachments.some((item) => item.status === "preparing");
   const attachmentsUnready = attachments.some((item) => item.status !== "ready");
   const dictating = dictationState !== "idle" && dictationState !== "error";
-  const resultViewTargetValue =
-    resultViewTarget.action === "revise"
-      ? `revise:${resultViewTarget.view_id}`
-      : resultViewTarget.action;
-  const resultViewTargetError = resultViewTargetValidationError(
-    mode,
-    resultViewTarget,
-    resultViews,
-  );
-  const resultViewTargetDescriptor =
-    resultViewTarget.action === "revise"
-      ? resultViews?.find((view) => view.view_id === resultViewTarget.view_id)
-      : undefined;
-  const resultViewTargetNeedsPlaceholder =
-    resultViewTarget.action === "revise" &&
-    !resultViews?.some((view) => view.view_id === resultViewTarget.view_id && view.can_revise);
-
-  const persistResultViewTarget = useCallback(
-    (next: ResultViewTarget) => {
-      setResultViewTarget(next);
-      const serialized = serializeResultViewTarget(next);
-      if (serialized) writeStorage(resultViewTargetKey, serialized);
-      else removeStorage(resultViewTargetKey);
-    },
-    [resultViewTargetKey],
-  );
-
-  useEffect(() => {
-    if (resultViewTargetKeyRef.current === resultViewTargetKey) return;
-    resultViewTargetKeyRef.current = resultViewTargetKey;
-    setResultViewTarget(
-      modeRef.current === "work"
-        ? parseResultViewTarget(readStorage(resultViewTargetKey))
-        : { action: "none" },
-    );
-    setSubmitError(null);
-  }, [resultViewTargetKey]);
-
-  useEffect(() => {
-    if (mode !== "discuss") return;
-    if (resultViewTarget.action !== "none") {
-      persistResultViewTarget({ action: "none" });
-      setSubmitError(null);
-    } else {
-      removeStorage(resultViewTargetKey);
-    }
-  }, [mode, persistResultViewTarget, resultViewTarget.action, resultViewTargetKey]);
-
   useEffect(() => {
     setModeState((current) =>
       current.pinned || current.value === derivedMode
@@ -588,12 +605,8 @@ export function NodeChat({
       modeRef.current = next;
       writeStorage(modeKey, next);
       setModeState({ value: next, pinned: true });
-      if (next === "discuss") {
-        persistResultViewTarget({ action: "none" });
-        setSubmitError(null);
-      }
     },
-    [modeKey, persistResultViewTarget],
+    [modeKey],
   );
 
   const toggleMode = useCallback(() => {
@@ -621,119 +634,6 @@ export function NodeChat({
     setMessage(next);
     skills.readMessage(next);
     setSubmitError(null);
-  };
-
-  useEffect(() => {
-    if (!resultViews) return;
-    setResultViewKeepErrors(
-      (current) =>
-        new Map(
-          [...current].filter(([viewId]) => resultViews.some((view) => view.view_id === viewId)),
-        ),
-    );
-    const currentFrameKeys = new Set(
-      resultViews.map((view) => `${view.view_id}:${view.updated_at}`),
-    );
-    setResultViewFrameErrors(
-      (current) => new Map([...current].filter(([frameKey]) => currentFrameKeys.has(frameKey))),
-    );
-  }, [resultViews]);
-
-  useEffect(() => {
-    if (!resultViews?.length) return;
-    let cancelled = false;
-    resultViews.forEach((view) => {
-      const frameKey = `${view.view_id}:${view.updated_at}`;
-      void fetch(resultViewPreviewUrl(project.id, view), { method: "HEAD" })
-        .then((response) => {
-          if (cancelled) return;
-          setResultViewFrameErrors((current) =>
-            response.ok
-              ? withoutMapKey(current, frameKey)
-              : withMapValue(
-                  current,
-                  frameKey,
-                  `Preview could not be loaded (${response.status}).`,
-                ),
-          );
-        })
-        .catch((error) => {
-          if (cancelled) return;
-          setResultViewFrameErrors((current) =>
-            withMapValue(
-              current,
-              frameKey,
-              `Preview could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
-            ),
-          );
-        });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [project.id, resultViews]);
-
-  useEffect(() => {
-    if (!resultViews?.length || readOnly) return;
-    const receiveGesture = (event: MessageEvent) => {
-      for (const view of resultViews) {
-        if (!view.can_revise) continue;
-        const gesture = resultViewGestureFromFrame(
-          event,
-          resultViewFramesRef.current.get(view.view_id)?.contentWindow ?? null,
-        );
-        if (!gesture) continue;
-        const next = resultViewGestureDraft(message, view.name, gesture);
-        selectMode("work");
-        persistResultViewTarget({ action: "revise", view_id: view.view_id });
-        setMessage(next);
-        skills.readMessage(next);
-        setSubmitError(null);
-        window.requestAnimationFrame(() => {
-          textareaRef.current?.focus();
-          textareaRef.current?.setSelectionRange(next.length, next.length);
-        });
-        return;
-      }
-    };
-    window.addEventListener("message", receiveGesture);
-    return () => window.removeEventListener("message", receiveGesture);
-  }, [message, persistResultViewTarget, readOnly, resultViews, selectMode]);
-
-  const chooseResultViewTarget = (value: string) => {
-    if (readOnly) return;
-    if (value === "create") {
-      selectMode("work");
-      persistResultViewTarget({ action: "create" });
-      setSubmitError(null);
-      return;
-    }
-    if (value.startsWith("revise:")) {
-      const viewId = value.slice("revise:".length);
-      if (resultViews?.some((view) => view.view_id === viewId && view.can_revise)) {
-        selectMode("work");
-        persistResultViewTarget({ action: "revise", view_id: viewId });
-        setSubmitError(null);
-        return;
-      }
-    }
-    persistResultViewTarget({ action: "none" });
-    setSubmitError(null);
-  };
-
-  const keepResultViewCard = async (viewId: string) => {
-    if (readOnly || !onKeepResultView || keepingResultViewId) return;
-    setKeepingResultViewId(viewId);
-    setResultViewKeepErrors((current) => withoutMapKey(current, viewId));
-    try {
-      await onKeepResultView(viewId);
-    } catch (error) {
-      setResultViewKeepErrors((current) =>
-        withMapValue(current, viewId, error instanceof Error ? error.message : String(error)),
-      );
-    } finally {
-      setKeepingResultViewId(null);
-    }
   };
 
   const stopDictation = (invalidate = false) => {
@@ -909,7 +809,6 @@ export function NodeChat({
   const send = async () => {
     if (readOnly) return;
     const text = message.trim();
-    const resultViewRequest = resultViewRequestForTarget(mode, resultViewTarget, resultViews);
     if (
       !text ||
       attachmentsUnready ||
@@ -920,10 +819,6 @@ export function NodeChat({
       reviewPending
     )
       return;
-    if (resultViewTarget.action !== "none" && (!resultViewRequest || resultViewTargetError)) {
-      setSubmitError(resultViewTargetError ?? "The selected result view cannot be used.");
-      return;
-    }
     if (dictating) stopDictation(true);
     shouldStickToBottomRef.current = true;
     const clientId = `pending-${crypto.randomUUID()}`;
@@ -947,7 +842,7 @@ export function NodeChat({
         chat_id: chatId,
         session_id: sessionId,
         mode,
-        ...(resultViewRequest ? { result_view: resultViewRequest } : {}),
+        ...(artifactContext ? { artifact_context: artifactContext } : {}),
         ...(readyAttachments.length && attachmentSetId
           ? {
               attachment_set_id: attachmentSetId,
@@ -959,9 +854,10 @@ export function NodeChat({
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       skills.reset();
       setAttachments([]);
+      setArtifactContext(null);
+      lastArtifactContextRef.current = null;
       setAttachmentSetId(null);
       attachmentSetIdRef.current = null;
-      if (resultViewRequest) persistResultViewTarget({ action: "none" });
       selectMode(mode);
     } catch (error) {
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
@@ -998,7 +894,7 @@ export function NodeChat({
   const checkArtifact = async (
     taskId: string,
     artifact: AgentArtifactDescriptor,
-    action: "preview" | "download",
+    action: "content" | "download",
   ) => {
     const url = artifactUrl(project.id, taskId, artifact.artifact_id, action);
     if (!(await artifactIsAvailable(url))) {
@@ -1033,14 +929,14 @@ export function NodeChat({
       return;
     }
     target.opener = null;
-    const url = artifactUrl(project.id, taskId, artifact.artifact_id, "preview");
+    const url = artifactUrl(project.id, taskId, artifact.artifact_id, "viewer");
     if (!(await artifactIsAvailable(url))) {
       target.close();
       markArtifactUnavailable(taskId, artifact.artifact_id);
       return;
     }
     try {
-      target.location.replace(url);
+      target.location.replace(artifactUrl(project.id, taskId, artifact.artifact_id, "viewer"));
     } catch {
       target.close();
       markArtifactUnavailable(taskId, artifact.artifact_id);
@@ -1320,8 +1216,35 @@ export function NodeChat({
                     className={`chat-artifact${unavailable ? " unavailable" : ""}`}
                     key={artifact.artifact_id}
                   >
+                    {artifact.media_type !== "text/html" &&
+                      artifact.size_bytes != null &&
+                      artifact.size_bytes <= INLINE_ARTIFACT_MAX_BYTES &&
+                      !unavailable && (
+                        <button
+                          className="chat-artifact-inline"
+                          type="button"
+                          aria-label={`Open ${artifact.name}`}
+                          onClick={() => void openArtifact(line.taskId, artifact)}
+                        >
+                          <img
+                            src={artifactUrl(
+                              project.id,
+                              line.taskId,
+                              artifact.artifact_id,
+                              "content",
+                            )}
+                            alt={artifact.name}
+                            onError={() =>
+                              markArtifactUnavailable(line.taskId, artifact.artifact_id)
+                            }
+                          />
+                        </button>
+                      )}
                     <File size={14} />
-                    <span>{artifact.name}</span>
+                    <span>
+                      {artifact.name}
+                      {artifact.kept_filename && <em>Kept</em>}
+                    </span>
                     {unavailable ? (
                       <strong>Preview unavailable</strong>
                     ) : (
@@ -1382,63 +1305,6 @@ export function NodeChat({
           );
         })}
         {submitError && <div className="node-chat-line error">{submitError}</div>}
-        {((resultViews?.length ?? 0) > 0 || resultViewsError) && (
-          <section className="result-view-cards" aria-label="Result views">
-            {resultViewsError && (
-              <div className="result-view-error" role="alert">
-                {resultViewsError}
-              </div>
-            )}
-            {(resultViews ?? []).map((view) => {
-              const frameKey = `${view.view_id}:${view.updated_at}`;
-              const keepError = resultViewKeepErrors.get(view.view_id);
-              const frameError = resultViewFrameErrors.get(frameKey);
-              return (
-                <article className={`result-view-card ${view.state}`} key={view.view_id}>
-                  <header>
-                    <strong>{view.name}</strong>
-                    <span className={`result-view-state ${view.state}`}>{view.state}</span>
-                    {view.state === "temporary" && (
-                      <button
-                        className="button compact result-view-keep"
-                        type="button"
-                        disabled={readOnly || !onKeepResultView || Boolean(keepingResultViewId)}
-                        aria-busy={keepingResultViewId === view.view_id}
-                        onClick={() => void keepResultViewCard(view.view_id)}
-                      >
-                        {keepingResultViewId === view.view_id ? "Keeping" : "Keep"}
-                      </button>
-                    )}
-                  </header>
-                  <iframe
-                    ref={(frame) => {
-                      if (frame) resultViewFramesRef.current.set(view.view_id, frame);
-                      else resultViewFramesRef.current.delete(view.view_id);
-                    }}
-                    src={resultViewPreviewUrl(project.id, view)}
-                    sandbox="allow-scripts"
-                    title={`${view.name} result view`}
-                    onError={() =>
-                      setResultViewFrameErrors((current) =>
-                        withMapValue(current, frameKey, "Preview could not be loaded."),
-                      )
-                    }
-                  />
-                  {frameError && (
-                    <strong className="result-view-error" role="alert">
-                      {frameError}
-                    </strong>
-                  )}
-                  {keepError && (
-                    <strong className="result-view-error" role="alert">
-                      {keepError}
-                    </strong>
-                  )}
-                </article>
-              );
-            })}
-          </section>
-        )}
       </div>
       {!readOnly && (
         <div
@@ -1464,40 +1330,19 @@ export function NodeChat({
           }}
         >
           <SkillPicker {...skills.props} />
-          {(resultViews !== undefined || resultViewTarget.action !== "none") && (
-            <div className="result-view-target">
-              <label>
-                <span>View</span>
-                <select
-                  aria-label="Result view target"
-                  value={resultViewTargetValue}
-                  onChange={(event) => chooseResultViewTarget(event.currentTarget.value)}
-                >
-                  <option value="none">No view</option>
-                  <option value="create">New view</option>
-                  {resultViewTargetNeedsPlaceholder && resultViewTarget.action === "revise" && (
-                    <option value={`revise:${resultViewTarget.view_id}`} disabled>
-                      {resultViews === undefined
-                        ? "Selected view (loading)"
-                        : resultViewTargetDescriptor
-                          ? `${resultViewTargetDescriptor.name} (not revisable)`
-                          : "Selected view (unavailable)"}
-                    </option>
-                  )}
-                  {(resultViews ?? [])
-                    .filter((view) => view.can_revise)
-                    .map((view) => (
-                      <option value={`revise:${view.view_id}`} key={view.view_id}>
-                        {view.name}
-                      </option>
-                    ))}
-                </select>
-              </label>
-              {resultViewTargetError && (
-                <span className="result-view-error" role="alert">
-                  {resultViewTargetError}
-                </span>
-              )}
+          {artifactContext && (
+            <div className="artifact-context-chip">
+              <span>Artifact selections · {artifactContext.selections.length}</span>
+              <button
+                type="button"
+                aria-label="Remove artifact selections"
+                onClick={() => {
+                  setArtifactContext(null);
+                  lastArtifactContextRef.current = null;
+                }}
+              >
+                <X size={12} />
+              </button>
             </div>
           )}
           {attachments.length > 0 && (

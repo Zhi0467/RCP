@@ -107,7 +107,6 @@ import {
 import { AutoResearchDialog } from "./components/AutoResearchDialog";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
 import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
-import { AutoResearchEpisodes } from "./components/CampaignRuns";
 import { DetailDrawer } from "./components/DetailDrawer";
 import { DraggableWindow } from "./components/DraggableWindow";
 import { ProjectHistoryDrawer } from "./components/ProjectHistoryDrawer";
@@ -189,12 +188,7 @@ export {
   visibleChatTranscriptIds,
   visibleUnreadChatId,
 } from "./hooks/useChatState";
-export {
-  LIVE_EPISODE_POLL_INTERVAL_MS,
-  resultViewLoadIsCurrent,
-  resultViewSelectionIsCurrent,
-  resultViewSelectionKey,
-} from "./hooks/useEpisodeDialogs";
+export { LIVE_EPISODE_POLL_INTERVAL_MS } from "./hooks/useEpisodeDialogs";
 export { startLiveEpisodePolling };
 export { relatedNodeWindowAction } from "./hooks/useGraphSelection";
 export {
@@ -903,7 +897,7 @@ export default function App() {
     resetProjectTasks,
     restoreProjectTasks,
   } = useAgentTasks({ projectId, reportError: reportErrorNotice });
-  const { retryTask, tasks, taskInspectorId, inspectedTask, dismissedTaskIds } = agentTasksSnapshot;
+  const { retryTask, tasks, taskInspectorId, inspectedTask } = agentTasksSnapshot;
   const selectedExperimentChatId =
     view === "execution" && selectedExperimentRunId
       ? selectedExperimentUsesBranch
@@ -948,18 +942,6 @@ export default function App() {
     chatSummaryNextOffset,
     chatTranscripts,
   } = chatStateSnapshot;
-  const selectedExperimentTerminalVersion = selectedExperimentChatId
-    ? tasks
-        .filter(
-          (task) =>
-            task.request.chat_id === selectedExperimentChatId &&
-            Boolean(task.request.result_view) &&
-            task.finished,
-        )
-        .map((task) => `${task.operation_id}:${task.status_label}:${task.updated_at}`)
-        .sort()
-        .join("|")
-    : "";
   const {
     runDialogOpen,
     autoResearchDialogOpen,
@@ -969,8 +951,6 @@ export default function App() {
     episodes,
     episodeMessages,
     liveAutoResearchEpisode,
-    selectedResultViews,
-    selectedResultViewsError,
     openRunDialog,
     closeRunDialog,
     openAutoResearchDialog,
@@ -981,13 +961,9 @@ export default function App() {
     recordEpisodeMessage,
     refreshEpisodes,
     refreshEpisodeMessages,
-    refreshResultViews: refreshSelectedResultViews,
-    keepSelectedResultView: keepResultViewForSelection,
   } = useEpisodeDialogs({
     projectId,
     apiBase,
-    selectedExperimentId: selectedExperimentRunId,
-    selectedExperimentChatId,
     isActiveProject,
   });
   const {
@@ -1860,16 +1836,11 @@ export default function App() {
       ),
     [draftConversations, nodeTitles, project?.name, tasks, visibleChatSummaries],
   );
-  const refreshResultViews = refreshSelectedResultViews;
-  useEffect(() => {
-    void refreshResultViews();
-  }, [refreshResultViews, selectedExperimentTerminalVersion]);
   useEffect(() => {
     if (selectedExperimentChatId && floatingChat?.chatId === selectedExperimentChatId) {
       setFloatingChat(null);
     }
   }, [floatingChat?.chatId, selectedExperimentChatId]);
-  const keepSelectedResultView = keepResultViewForSelection;
   const draftChangeCount = humanDraftChangeCount(humanDraft);
   const committableDraftCount = humanDraftCommittableCount(humanDraft, graph);
   const behindDraftCount = humanDraftBehindCount(humanDraft, graph);
@@ -2279,10 +2250,6 @@ export default function App() {
     () => humanAttentionBlockers(presentedAttention.open_blocker_ids, presentedGraph.nodes),
     [presentedAttention.open_blocker_ids, presentedGraph.nodes],
   );
-  const attentionBlockerIds = useMemo(
-    () => new Set(openBlockers.map((node) => node.id)),
-    [openBlockers],
-  );
   const rejectedPatches = useMemo(
     () =>
       graph.validation_messages.filter(
@@ -2643,7 +2610,7 @@ export default function App() {
       setFloatingChat(null);
       showExperiment(node.id);
       try {
-        await reload();
+        await Promise.all([reload(), refreshEpisodes()]);
       } catch (error) {
         setNotice({
           kind: "error",
@@ -3240,9 +3207,6 @@ export default function App() {
           fixedConversation
           readOnly={selectedExperimentUsesBranch}
           graphChangesDisabled={mutationsDisabled}
-          resultViews={selectedResultViews}
-          resultViewsError={selectedResultViewsError}
-          onKeepResultView={keepSelectedResultView}
           onStartTask={startAgentTask}
           onResumeTask={(task) => void operateTask(task, "resume")}
           onRetryTask={requestRetry}
@@ -3699,29 +3663,16 @@ export default function App() {
           )}
           {view === "execution" && (
             <div className="combined-runs-view">
-              <AutoResearchEpisodes
-                episodes={episodes}
-                tasks={tasks}
-                messagesByEpisode={episodeMessages}
-                busyAction={episodeAction}
-                taskActionId={taskActionId}
-                onInspectTask={selectTaskInspector}
-                onLoadMessages={refreshEpisodeMessages}
-                onStop={requestEpisodeStop}
-                onMerge={requestEpisodeMerge}
-                onReauthorize={requestEpisodeReauthorization}
-                onSendMessage={messageEpisodeOrchestrator}
-                onOperateTask={operateEpisodeOrchestratorTask}
-              />
               <ExecutionView
                 graph={presentedGraph}
-                attentionBlockerIds={attentionBlockerIds}
-                tasks={tasks.filter((task) => task.kind !== "auto_research")}
+                episodes={episodes}
+                episodeMessages={episodeMessages}
+                episodeAction={episodeAction}
+                tasks={tasks}
                 watchers={watchers}
                 experimentControl={presentedExperimentControl}
                 exactExperimentRoute={selectedExperimentRoute}
                 exactExperimentEntry={selectedBranchExperiment}
-                dismissedTaskIds={dismissedTaskIds}
                 selectedExperimentId={selectedExperimentRunId}
                 focusExperimentId={focusExperimentRunId}
                 runBusy={taskStarting}
@@ -3738,8 +3689,12 @@ export default function App() {
                 mutationsDisabled={mutationsDisabled}
                 experimentStartsDisabled={experimentStartRequiresSync}
                 onInspectTask={selectTaskInspector}
-                onDismissTask={dismissTaskNotification}
-                onSelectNode={openNode}
+                onLoadEpisodeMessages={refreshEpisodeMessages}
+                onStopEpisode={requestEpisodeStop}
+                onMergeEpisode={requestEpisodeMerge}
+                onReauthorizeEpisode={requestEpisodeReauthorization}
+                onSendEpisodeMessage={messageEpisodeOrchestrator}
+                onOperateEpisodeTask={operateEpisodeOrchestratorTask}
                 onSelectExperiment={selectExperiment}
                 onDetailFocused={clearExperimentFocus}
                 onRunExperiment={(node) => void runExperiment(node)}

@@ -1,16 +1,17 @@
 ---
 id: S95-durable-team-space
-status: pending — not human-confirmed
-tier: hermetic
-driver: pytest + api
+status: pending
+tier: live
+driver: pytest + api + ssh
 covered_by: none
 invariants: [6, 8]
 ---
 
 # A team space outlives every process that serves it
 
-This scenario is a proposal and is **not yet human-confirmed**. The current
-boundary is in [Spaces and durable identity](../specs/projects-spaces-and-operations.md#spaces-and-durable-identity).
+This scenario is human-confirmed and pending implementation. Its boundaries are
+in [Spaces and durable identity](../specs/projects-spaces-and-operations.md#spaces-and-durable-identity)
+and [Confirmed first team-server target](../specs/projects-spaces-and-operations.md#confirmed-first-team-server-target).
 
 A space is an authority domain, not an installation. Restarting, upgrading, or
 moving the server does not create a new space and does not make members enroll
@@ -24,24 +25,37 @@ operating-system account, so a member with an ordinary shell on the lab machine
 cannot read the control plane, append to canonical history directly, or take the
 singleton lock and become the authority themselves.
 
+The first deployment is one source-built Linux server. A dedicated `rcp` account
+owns the service, data, and server-local central checkouts; an explicit remote
+execution account owns any checkout on its SSH machine. Humans remain distinct
+members and do not share either execution login. The installed RCP version is
+the server checkout's exact GitHub `main` commit, served without source reload.
+
 ## Setup
 
-A team space initialized in a throwaway data directory, with one enrolled
-member, one registered project, and a saved client connection recording the
-expected `space_id`.
+A Linux test host on which a normal operator has a disposable bootstrap checkout,
+plus the separately installed managed source checkout, dedicated `rcp` account,
+non-reloading system service, private data directory, one initialized team
+space, one enrolled member, one central project checkout, and a saved desktop
+connection recording the expected `space_id`.
 
-## Drive — proposal
+## Drive
 
-1. Read the `space_id` after first initialization.
-2. Stop the backend and start it again. Read the `space_id` and the member
+1. Run the first install through the bootstrap checkout's absolute CLI path with
+   operator `sudo`. Inspect which steps run as root and which run as `rcp`, then
+   remove the bootstrap checkout.
+2. Run `rcp server doctor`. Read the service account, data path, source checkout
+   commit, running commit, upstream, and reload mode.
+3. Read the `space_id` after first initialization.
+4. Stop the system service and start it again. Read the `space_id` and member
    record.
-3. Start it on a different port and address. Reconnect the saved connection.
-4. Initialize a *second*, unrelated space in a different data directory and
+5. Change the loopback port, restart, and reconnect the saved connection.
+6. Initialize a *second*, unrelated space in a different data directory and
    serve it at the address the saved connection expects. Attempt a mutation
    through that connection.
-5. Inspect the data directory's ownership and mode, and the mode of a locally
-   homed canonical state repository.
-6. With the backend running, attempt to take the singleton lock from a second
+7. Inspect the data directory, runtime socket, credentials, and central checkout
+   ownership and modes. Inspect an ordinary member's independent checkout.
+8. With the backend running, attempt to take the singleton lock from a second
    process against the same data directory.
 
 ## Assert
@@ -52,9 +66,15 @@ expected `space_id`.
 - `instance_id_changes_across_process_lifetimes`
 - `space_id_is_not_derived_from_the_data_directory_path`
 - `a_personal_space_also_mints_a_durable_space_id`
+- `doctor_reports_the_exact_checkout_and_running_commits`
+- `the_operator_bootstrap_checkout_never_becomes_the_managed_checkout`
+- `root_performs_only_os_installation_and_managed_source_steps_run_as_rcp`
+- `the_team_service_runs_from_source_without_reload`
 - `an_unexpected_space_id_blocks_mutations_until_the_human_reconnects`
 - `an_unexpected_space_id_still_permits_reading_what_the_client_cached`
-- `data_directory_and_local_state_repositories_are_owned_only_by_the_service_account`
+- `data_runtime_credentials_and_server_local_checkouts_are_owned_only_by_rcp`
+- `remote_checkouts_are_owned_only_by_the_declared_remote_execution_account`
+- `a_members_personal_checkout_keeps_its_original_owner`
 - `a_second_backend_cannot_serve_the_same_data_directory`
 
 ## Boundary

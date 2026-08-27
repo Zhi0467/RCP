@@ -72,7 +72,7 @@ def _npm_command(*args: str) -> list[str]:
 def _run_build() -> None:
     print("Building the RCP frontend...")
     try:
-        subprocess.run(_npm_command("run", "build"), check=True)
+        subprocess.run(_npm_command("run", "build:clean"), check=True)
     except FileNotFoundError as exc:
         raise WebBuildError("Cannot build the RCP frontend because npm is not installed.") from exc
     except subprocess.CalledProcessError as exc:
@@ -83,7 +83,7 @@ def _start_build_watcher() -> subprocess.Popen[bytes]:
     print("Building and watching the RCP frontend...")
     try:
         return subprocess.Popen(
-            _npm_command("run", "build", "--", "--watch"),
+            _npm_command("run", "build:clean", "--", "--watch"),
             start_new_session=True,
         )
     except FileNotFoundError as exc:

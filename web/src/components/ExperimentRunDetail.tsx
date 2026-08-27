@@ -174,23 +174,18 @@ export function ExperimentRunDetail({
               {stopBusy || stopUnsettled ? "Stopping" : "Stop loop"}
             </button>
           )}
-          {control.can_open_report && episode?.report && (
+          {control.can_open_report && control.report_episode_id && episode && (
             <EpisodeReportLink
               className="button primary compact"
-              href={episodeReportHref(episode.episode_id)}
+              href={episodeReportHref(control.report_episode_id)}
               projectId={episode.project_id}
-              episodeId={episode.episode_id}
+              episodeId={control.report_episode_id}
               onOpenError={setReportOpenError}
             >
               <ExternalLink size={12} aria-hidden="true" /> Open report
             </EpisodeReportLink>
           )}
-          {/* Readiness is the server's published gate, and a bare episode row status
-              is not a further condition on it. A `running` parent whose turn settled
-              without arming anything, and a `wrapping_up` parent the ending fence has
-              already retired, both leave the loop inactive and startable, which is
-              what this card's own recommendation says. */}
-          {allowStart && (
+          {allowStart && !control.node_closed && (
             <button
               type="button"
               className="button primary compact experiment-run-button"
@@ -256,7 +251,7 @@ export function ExperimentRunDetail({
         )}
       </p>
 
-      {control && control.reasons.length > 0 && (
+      {control && !control.node_closed && control.reasons.length > 0 && (
         <ul
           id={`${node.id}-run-requirements`}
           className="experiment-gate-reasons"

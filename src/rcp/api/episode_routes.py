@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from functools import partial
 from typing import Annotated, Literal, cast
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -28,7 +30,7 @@ from rcp.api.episodes import (
 )
 from rcp.api.experiments import stop_bound_experiment_episode
 from rcp.api.identity import IdentityAccess
-from rcp.artifacts import html_preview_document
+from rcp.artifacts import AgentArtifactDescriptor, artifact_viewer_document, html_preview_document
 from rcp.background import BackgroundAgentTasks
 from rcp.keyed_locks import KeyedLocks
 from rcp.projects import ProjectCatalog
@@ -384,9 +386,9 @@ def send_episode_message(
     return current
 
 
-@router.get("/api/projects/{project_id}/episodes/{episode_id}/report/preview")
-@router.head("/api/projects/{project_id}/episodes/{episode_id}/report/preview")
-def preview_episode_report(
+@router.get("/api/projects/{project_id}/episodes/{episode_id}/report/content")
+@router.head("/api/projects/{project_id}/episodes/{episode_id}/report/content")
+def content_episode_report(
     project_id: str,
     episode_id: str,
     request: Request,
@@ -411,6 +413,92 @@ def preview_episode_report(
         headers={
             "Cache-Control": "no-store",
             "Content-Length": str(len(encoded)),
+            "Content-Security-Policy": csp,
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/api/projects/{project_id}/episodes/{episode_id}/report/preview")
+@router.head("/api/projects/{project_id}/episodes/{episode_id}/report/preview")
+def preview_episode_report(
+    project_id: str,
+    episode_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> Response:
+    """Keep the old desktop route on the unified shell after source updates."""
+
+    return _episode_report_viewer_response(
+        project_id,
+        episode_id,
+        catalog=catalog,
+        store=store,
+        head=request.method == "HEAD",
+    )
+
+
+@router.get("/api/projects/{project_id}/episodes/{episode_id}/report/viewer")
+def view_episode_report(
+    project_id: str,
+    episode_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> Response:
+    return _episode_report_viewer_response(
+        project_id,
+        episode_id,
+        catalog=catalog,
+        store=store,
+    )
+
+
+def _episode_report_viewer_response(
+    project_id: str,
+    episode_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    head: bool = False,
+) -> Response:
+    episode = _episode_for_http(store, catalog, project_id, episode_id)
+    report = None if episode.ending == "stopped" else store.episode_report(episode.episode_id)
+    wrapup = store.episode_wrapup(episode.episode_id)
+    if report is None or wrapup is None or wrapup.concluding_operation_id is None:
+        raise HTTPException(status_code=404, detail="Episode report not found")
+    origin = store.agent_task(wrapup.concluding_operation_id)
+    chat_id = origin.request.get("chat_id") if origin is not None else None
+    if not isinstance(chat_id, str):
+        chat_id = None
+    artifact_id = hashlib.sha256(report.report_id.encode("utf-8")).hexdigest()[:24]
+    descriptor = AgentArtifactDescriptor(
+        artifact_id=artifact_id,
+        name="episode-report.html",
+        media_type="text/html",
+        size_bytes=len(report.html.encode("utf-8")),
+    )
+    content_url = (
+        f"/api/projects/{quote(project_id, safe='')}/episodes/"
+        f"{quote(episode_id, safe='')}/report/content"
+    )
+    document, csp = artifact_viewer_document(
+        preview_url=content_url,
+        keep_url=None,
+        project_id=project_id,
+        chat_id=chat_id,
+        operation_id=wrapup.concluding_operation_id,
+        descriptor=descriptor,
+        source="episode_report",
+        episode_id=episode_id,
+    )
+    return Response(
+        b"" if head else document,
+        media_type="text/html",
+        headers={
+            "Cache-Control": "no-store",
             "Content-Security-Policy": csp,
             "X-Content-Type-Options": "nosniff",
         },
@@ -457,6 +545,7 @@ def _resolved_branch_merge_request(
 
 
 __all__ = [
+    "content_episode_report",
     "episode_messages",
     "episodes",
     "merge_episode_branch",
@@ -466,4 +555,5 @@ __all__ = [
     "send_episode_message",
     "start_episode",
     "stop_episode",
+    "view_episode_report",
 ]

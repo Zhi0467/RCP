@@ -240,6 +240,43 @@ def test_auto_research_workers_cannot_orchestrate_or_wake_themselves() -> None:
         assert "Staged command client:" not in contract
 
 
+def test_the_orchestrator_prefers_apply_while_the_worker_is_never_told_to_apply() -> None:
+    """Settlement costs the episode a wake it can spend on work instead.
+
+    Only the orchestrator holds an Apply credential, so the preference belongs in
+    its command block and must not reach a worker's validate-only contract.
+    """
+
+    common = dict(
+        graph_path="/stage/graph.json",
+        research_path="/stage/research.md",
+        repositories=[],
+        patch_path="/stage/patch.json",
+        output_schema_path="/stage/schema.json",
+        validator_command="/stage/rcp-agent validate",
+    )
+    orchestrator = auto_research_orchestrator_task_contract(
+        project_name="project",
+        command_client="/stage/rcp-agent",
+        **common,
+    )
+    worker = auto_research_worker_task_contract(
+        project_name="project",
+        seat_node_type="Experiment",
+        seat_node_id="exp/worker",
+        seat_difficulty="Run the bounded check.",
+        instruction_path="/stage/instruction.md",
+        reply_command="/stage/rcp-agent reply --key reply-once",
+        **common,
+    )
+
+    preference = "Prefer `apply` over leaving the Patch for turn settlement"
+    assert preference in orchestrator
+    assert "another invocation wakes you" in orchestrator
+    assert preference not in worker
+    assert "apply --key" not in worker
+
+
 def test_agent_resolvable_blockers_and_temporary_capacity_do_not_finish_the_episode() -> None:
     common = dict(
         graph_path="/stage/graph.json",

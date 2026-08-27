@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -377,7 +378,13 @@ AgentOperation = Annotated[
 class AgentPatch(_StrictModel):
     summary: str
     ops: list[AgentOperation]
-    repositories_read: list[str] = Field(default_factory=list)
+    repositories_read: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Repositories this run read, each named by its manifest alias or by the "
+            "path the task contract gave for it."
+        ),
+    )
     change_summary: list[str] = Field(default_factory=list)
 
 
@@ -399,7 +406,13 @@ OrchestratorAgentOperation = Annotated[
 class OrchestratorAgentPatch(_StrictModel):
     summary: str
     ops: list[OrchestratorAgentOperation]
-    repositories_read: list[str] = Field(default_factory=list)
+    repositories_read: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Repositories this run read, each named by its manifest alias or by the "
+            "path the task contract gave for it."
+        ),
+    )
     change_summary: list[str] = Field(default_factory=list)
     agent_action: Literal["decision_choice"] | None = None
 
@@ -480,11 +493,47 @@ def _agent_patch_shape_error(exc: ValidationError) -> ValueError:
     )
 
 
+def _repositories_read_aliases(
+    declared: list[str],
+    repository_paths: dict[str, str] | None,
+) -> list[str]:
+    """Name each repository the agent read by its manifest alias.
+
+    A task contract shows repositories as paths, while run truth scope is a list
+    of manifest aliases, so an honest declaration written either way must mean the
+    same repository. A path at or under a registered root reads back to that root's
+    alias; anything naming no registered repository is preserved so scope
+    validation still reports it.
+    """
+
+    if not repository_paths:
+        return list(declared)
+    roots = sorted(
+        ((PurePosixPath(path), alias) for alias, path in repository_paths.items()),
+        key=lambda item: len(item[0].parts),
+        reverse=True,
+    )
+    resolved = []
+    for value in declared:
+        if value in repository_paths:
+            resolved.append(value)
+            continue
+        candidate = PurePosixPath(value)
+        resolved.append(
+            next(
+                (alias for root, alias in roots if candidate.is_relative_to(root)),
+                value,
+            )
+        )
+    return list(dict.fromkeys(resolved))
+
+
 def prepare_agent_patch(
     draft: AgentPatch | OrchestratorAgentPatch,
     *,
     kind: Literal["seed", "refresh", "work", "experiment_loop"],
     run_truth_scope: list[str],
+    repository_paths: dict[str, str] | None = None,
     source_operation_id: str | None = None,
     source_effect_id: str | None = None,
     source_effect_sha256: str | None = None,
@@ -525,7 +574,9 @@ def prepare_agent_patch(
         summary=draft.summary,
         ops=operations,
         run_truth_scope=list(run_truth_scope),
-        repositories_read=list(draft.repositories_read),
+        repositories_read=_repositories_read_aliases(
+            list(draft.repositories_read), repository_paths
+        ),
         change_summary=list(draft.change_summary),
         processed_cursors={},
         source_operation_id=source_operation_id,

@@ -1,7 +1,7 @@
 ---
 id: S105-move-between-spaces-in-one-window
-status: pending — not human-confirmed
-tier: packaged
+status: pending
+tier: live
 driver: desktop
 covered_by: none
 invariants: [8]
@@ -9,56 +9,73 @@ invariants: [8]
 
 # One window, several spaces, no confusion about which one you are in
 
-This scenario is a proposal and is **not yet human-confirmed**. The current
-boundaries are in [Spaces and durable identity](../specs/projects-spaces-and-operations.md#spaces-and-durable-identity)
-and [Project index and identity](../specs/api-web-and-desktop-projections.md#project-index-and-identity).
+This scenario is human-confirmed and pending implementation. Its boundaries are
+in [Spaces and durable identity](../specs/projects-spaces-and-operations.md#spaces-and-durable-identity)
+and [Confirmed team desktop target](../specs/api-web-and-desktop-projections.md#confirmed-team-desktop-target).
 
 Every RCP backend serves its own interface. So selecting a team space points the
 application window at that team server, and the screen a member is looking at is
 always served by the backend answering it. That is what makes client/server skew
-impossible for the application, and it is why the credential never has to reach
-a page: the desktop shell presents the token once and exchanges it for an
-ordinary session before navigating.
+impossible for the application. A bootstrap/invitation code or existing token is
+entered once through the controlled Add flow, cleared, and stored by the native
+shell; later navigation exchanges the stored token for an ordinary session.
 
 The index is the one screen showing more than one space at a time, so it stays
 local.
 
+This first client is the source-built RCP desktop app. It does not wait for a
+Linux package or a packaged cross-platform release.
+
 ## Setup
 
-A packaged desktop build with a personal space holding at least one project, and
-saved connections to two team spaces — one reachable, one whose server can be
-stopped.
+An RCP Dev desktop build with a personal space holding at least one project, two
+team-space invitations, and SSH access to two team spaces — one reachable, one
+whose server can be stopped.
 
-## Drive — proposal
+## Drive
 
-1. Open the app cold and read the project index.
-2. Open a personal project. Work in it briefly.
-3. Return to the index and open a project in the reachable team space.
-4. Read the header. Inspect the window's origin and its storage for the
-   permanent token.
-5. Return to the index and reopen the personal project.
-6. Stop the second team space's server. Reload the index, then open a personal
+1. Open the app cold, choose **Add team space**, enter the first SSH target,
+   invitation code, and display name, and finish enrollment. Add the second
+   connection with an existing permanent token.
+2. Inspect both secret fields after submission, the credential store, and saved
+   connection records. Restart the app without entering either token again.
+3. Open a personal project. Work in it briefly.
+4. Return to the index and open a project in the reachable team space.
+5. Read the header. Inspect the window's origin, URL, page storage, saved
+   connection record, logs, and native command output for the permanent token.
+6. Return to the index and reopen the personal project.
+7. Stop the second team space's server. Reload the index, then open a personal
    project and start a task.
-7. Attempt to open a project in the stopped space.
-8. Restart that server with a *different* space and reconnect the saved
+8. Attempt to open a project in the stopped space.
+9. Restart that server with a *different* space and reconnect the saved
    connection.
-9. Point the app at a server whose `minimum_shell_version` exceeds the shell's.
+10. Point the app at a server whose `minimum_shell_version` exceeds the shell's.
+11. Keep both team tunnels open, authenticate both spaces, and inspect their
+    loopback origins and session cookies.
+12. Remove the connection metadata while leaving its credential-store entry,
+    then remove the credential while leaving metadata, and reconnect.
 
 ## Assert
 
 - `the_index_lists_personal_and_team_projects_together`
 - `the_index_renders_from_cached_cards_before_connections_reconcile`
+- `add_team_space_enrolls_through_the_verified_tunnel`
+- `the_one_secret_entry_is_cleared_and_never_persisted_as_page_state`
 - `opening_a_team_project_navigates_to_that_servers_own_interface`
 - `the_header_states_which_space_is_active`
-- `the_permanent_token_is_absent_from_page_storage_and_from_the_url`
+- `the_permanent_token_exists_only_in_the_operating_system_credential_store`
+- `the_permanent_token_is_absent_from_page_storage_urls_logs_and_command_output`
 - `the_session_is_established_before_navigation_and_is_http_only`
+- `every_space_uses_a_stable_distinct_loopback_origin_not_just_a_different_port`
+- `two_team_spaces_cannot_overwrite_or_receive_each_others_session_cookie`
 - `personal_work_continues_while_a_team_connection_is_unavailable`
 - `an_unavailable_team_space_is_reported_and_never_silently_rerouted_locally`
 - `the_local_backend_never_executes_or_applies_team_work`
 - `an_unexpected_space_id_blocks_mutations_until_the_human_reconnects`
 - `a_shell_below_the_minimum_version_is_told_to_update`
+- `connection_metadata_and_credential_lifecycle_reconcile_without_exposing_the_token`
 
-## UI path (proposal)
+## UI path
 
 The project index groups projects by space: the personal space first, then each
 saved team connection with its name and reachability. Pending project
@@ -71,11 +88,12 @@ back to the local one.
 An unreachable team connection appears as a named, dimmed group with its last
 known cards, not as an error that blocks the page.
 
+Switching origins shows one compact **Connecting to <space>** state until the
+handshake either succeeds or produces a specific retry/reconnect action. It adds
+no second app shell and no stream of transport commentary.
+
 Deliberately not possible: acting in a team project while its connection is
 down, and any indication that a team project can be worked on locally.
-
-Open for a human answer: whether a reload between spaces needs any transition
-treatment, or whether it should be as bare as it sounds.
 
 ## Boundary
 
@@ -84,10 +102,10 @@ is lost by design; remembered view state is project-scoped and returns when the
 project does.
 
 This scenario is `driver: desktop` because the promise is about the application
-window — its origin, its cookie jar, and its navigation between backends. None
-of it is reachable through browser tooling, and no automated desktop harness
-exists yet, so it is driven manually through the built application, its
-accessibility tree, screenshots, and shell logs.
+window — its origin, credential store, cookie jar, SSH tunnel, and navigation
+between backends. Browser tooling does not prove those native boundaries. Drive
+it through the source-built application, accessibility tree, screenshots, shell
+logs, and inspected credential/connection stores.
 
 The connection handshake is an API projection contract; this scenario asserts
 only what the window does with it.

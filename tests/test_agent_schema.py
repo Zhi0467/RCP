@@ -1006,3 +1006,46 @@ def test_rcp_prepares_canonical_metadata_and_proposal_bookkeeping() -> None:
     assert proposal.resolved_by_operation_id is None
     assert proposal.resolution_reason is None
     assert proposal.rejection_reason is None
+
+
+def test_a_repository_read_is_named_by_alias_whether_declared_as_alias_or_path() -> None:
+    """A task contract hands out paths while run truth scope holds aliases.
+
+    Both spellings name the same repository, so an honest declaration must not
+    depend on which namespace the agent happened to copy.
+    """
+
+    repository_paths = {
+        "vista": "/home/zhiwang/vista-followup",
+        "vista-docs": "/home/zhiwang/vista-followup/docs",
+        "sibling": "/home/zhiwang/vista",
+    }
+    declared = [
+        "vista",
+        "/home/zhiwang/vista-followup",
+        "/home/zhiwang/vista-followup/experiments/probe/",
+        "/home/zhiwang/vista-followup/docs/plan.md",
+        "/home/zhiwang/vista",
+        "/home/zhiwang/unregistered",
+    ]
+    draft = AgentPatch.model_validate(
+        {"summary": "Record what this run read.", "ops": [], "repositories_read": declared}
+    )
+
+    prepared = prepare_agent_patch(
+        draft,
+        kind="work",
+        run_truth_scope=["vista"],
+        repository_paths=repository_paths,
+    )
+
+    # The nested repository wins over its parent, a shared path prefix is not
+    # containment, and an unregistered path survives so scope validation reports it.
+    assert prepared.repositories_read == [
+        "vista",
+        "vista-docs",
+        "sibling",
+        "/home/zhiwang/unregistered",
+    ]
+    unmapped = prepare_agent_patch(draft, kind="work", run_truth_scope=["vista"])
+    assert unmapped.repositories_read == declared

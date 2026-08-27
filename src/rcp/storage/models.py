@@ -1134,6 +1134,7 @@ class ExperimentControlProjectionSnapshot(BaseModel):
 
     runtime: ExperimentLoopRuntime
     episode: ExperimentEpisodeProjectionSnapshot | None = None
+    latest_report_episode_id: str | None = None
 
 
 AgentUsageCountReason = Literal["counted", "duplicate", "invalid"]

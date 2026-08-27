@@ -18,7 +18,7 @@ after(() => server.close());
 const props = {
   projectId: "project one",
   episodeId: "episode/one",
-  href: "/api/projects/project%20one/episodes/episode%2Fone/report/preview",
+  href: "/api/projects/project%20one/episodes/episode%2Fone/report/viewer",
   children: "Open report",
   onOpenError() {},
 };
@@ -28,7 +28,7 @@ test("the report link preserves browser target behavior", () => {
 
   assert.match(
     html,
-    /href="\/api\/projects\/project%20one\/episodes\/episode%2Fone\/report\/preview"/,
+    /href="\/api\/projects\/project%20one\/episodes\/episode%2Fone\/report\/viewer"/,
   );
   assert.match(html, /target="_blank"/);
   assert.match(html, /rel="noopener noreferrer"/);

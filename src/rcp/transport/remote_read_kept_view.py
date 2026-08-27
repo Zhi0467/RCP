@@ -5,8 +5,8 @@ RCP ships this module's *own source* to the execution machine and runs it with
 the exit-status constants below — the caller and the script must agree on them,
 and importing is the only way to guarantee they cannot drift apart.
 
-Protocol. ``argv`` is ``(repository, name, max_bytes)``. The view's bytes go to
-stdout on success; otherwise the exit status is one of the constants below.
+Protocol. ``argv`` is ``(repository, name, max_bytes)`` for legacy views or
+``(repository, directory, name, max_bytes)`` for a generic kept artifact.
 """
 
 from __future__ import annotations
@@ -24,12 +24,17 @@ UNSAFE = 46
 
 def main() -> None:
     repository = Path(sys.argv[1])
-    name = sys.argv[2]
-    max_bytes = int(sys.argv[3])
+    if len(sys.argv) == 4:
+        directory, name, max_bytes = "views", sys.argv[2], int(sys.argv[3])
+        name_pattern = r"[a-z0-9](?:[a-z0-9-]{0,238})[.]html"
+    else:
+        directory, name, max_bytes = sys.argv[2], sys.argv[3], int(sys.argv[4])
+        name_pattern = r"[a-z0-9](?:[a-z0-9-]{0,220})[.](?:html?|png|jpe?g|gif|webp|svg)"
     if (
         not repository.is_absolute()
         or str(repository) == "/"
-        or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,238})[.]html", name)
+        or directory not in {"views", "artifacts"}
+        or not re.fullmatch(name_pattern, name)
         or max_bytes < 1
         or max_bytes > 16 * 1024 * 1024
         or not hasattr(os, "O_DIRECTORY")
@@ -45,7 +50,7 @@ def main() -> None:
         raise SystemExit(UNSAFE) from None
     try:
         try:
-            views_fd = os.open("views", directory_flags, dir_fd=repository_fd)
+            views_fd = os.open(directory, directory_flags, dir_fd=repository_fd)
         except FileNotFoundError:
             raise SystemExit(MISSING) from None
         except OSError:

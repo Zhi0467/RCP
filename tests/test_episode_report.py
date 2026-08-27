@@ -437,6 +437,110 @@ async def test_experiment_control_response_owns_wrapup_and_ready_report_state(
         "run_section": "completed",
         "can_open_report": True,
     }
+    assert ready["report_episode_id"] == "episode"
+
+
+@pytest.mark.asyncio
+async def test_experiment_control_keeps_the_latest_report_when_a_newer_episode_is_stopped(
+    manifest,
+    tmp_path,
+) -> None:
+    service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+    events = await _events(
+        stream_episode_report_run(
+            service,
+            _ReportLauncher(["valid"]),
+            request,
+            execution,
+        )
+    )
+    assert [event.event for event in events] == ["message", "done"]
+
+    stopped_at = store.now()
+    accidental_episode_id = "00000000-0000-4000-8000-000000000002"
+    store.create_episode(
+        EpisodeRecord(
+            episode_id=accidental_episode_id,
+            project_id="project",
+            mode="experiment_loop",
+            control_node_id="experiment-node",
+            status="queued",
+            invocation_ceiling=1,
+            authorized_by=fabricated_authorizer("Episode owner"),
+            created_at=stopped_at,
+            updated_at=stopped_at,
+        )
+    )
+    store.allocate_episode_invocation(
+        accidental_episode_id,
+        AgentTaskRecord(
+            operation_id="accidental-operation",
+            project_id="project",
+            episode_id=accidental_episode_id,
+            kind="node_chat",
+            status="queued",
+            request={
+                "trigger": "experiment_run",
+                "patch_kind": "experiment_loop",
+                "control_node_id": "experiment-node",
+                "control_revision": 0,
+                "control_episode_id": accidental_episode_id,
+                "control_invocation": 1,
+                "control_invocation_ceiling": 1,
+                "control_decision_bundle": [],
+                "control_completion_criteria": [],
+            },
+            created_at=stopped_at,
+            updated_at=stopped_at,
+            status_message="Queued",
+        ),
+    )
+    store.mark_agent_task_running("accidental-operation")
+    store.complete_agent_task("accidental-operation", applied_revision=None, result={})
+    store.request_episode_stop(accidental_episode_id)
+    stopped = store.mark_episode_stop_skipped(accidental_episode_id)
+    assert stopped.ending == "stopped"
+
+    read_model = store.experiment_control_projection_snapshots(
+        "project",
+        ["experiment-node"],
+    )["experiment-node"]
+    assert read_model.episode is not None
+    assert read_model.episode.episode.episode_id == accidental_episode_id
+    assert read_model.episode.report is None
+    assert read_model.latest_report_episode_id == "episode"
+
+    state = GraphState(
+        nodes={
+            "experiment-node": Experiment(
+                id="experiment-node",
+                type="experiment",
+                title="Report projection",
+                objective="Render one bounded report.",
+                invocation_ceiling=1,
+                status="completed",
+            )
+        }
+    )
+    response = _experiment_control_response(
+        state,
+        "experiment-node",
+        read_model.runtime,
+        serialize_episode(
+            store,
+            "project",
+            read_model.episode.episode,
+            projection_snapshot=read_model.episode,
+        ),
+        latest_report_episode_id=read_model.latest_report_episode_id,
+    )
+
+    assert response.episode is not None
+    assert response.episode.episode_id == accidental_episode_id
+    assert response.health == "completed"
+    assert response.recommendation == "none"
+    assert response.can_open_report is True
+    assert response.report_episode_id == "episode"
 
 
 @pytest.mark.asyncio

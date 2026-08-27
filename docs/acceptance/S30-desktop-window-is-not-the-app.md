@@ -6,6 +6,8 @@ driver: desktop
 covered_by:
   - web/src-tauri/src/lib.rs
   - web/src-tauri/src/windows.rs
+  - web/src/rootRecovery.tsx
+  - web/vite.config.ts
   - desktop 2026-08-08 — live close, reopen, browser-start, and second-launch drive
 invariants: [8]
 last_passed: 2026-08-08 — a desktop-started Codex Discuss task stayed active after
@@ -67,6 +69,8 @@ rendered from state gathered before the window was shown.
 4. Reopen from the Dock, then launch the application again from Finder.
 5. Let the task finish while the window is closed, then reopen.
 6. With the window hidden, start a task from the browser entrance, then reopen.
+7. While the source desktop window is open, rebuild the frontend, then open a
+   view whose lazy chunk was not loaded before the build.
 
 ## Assert
 
@@ -80,6 +84,8 @@ rendered from state gathered before the window was shown.
 - `a_task_started_from_the_browser_is_visible_on_reopen`
 - `showing_the_window_costs_no_authoritative_replay`
 - `the_browser_and_the_window_agree_throughout`
+- `an_open_window_can_load_its_previous_lazy_chunks_after_a_source_rebuild`
+- `a_missing_lazy_chunk_reloads_once_then_surfaces_recovery_instead_of_blankness`
 
 ## Failure means
 

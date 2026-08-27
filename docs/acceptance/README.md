@@ -89,20 +89,20 @@ This index is checked against frontmatter by `tests/test_documentation.py`.
 | [S78](S78-one-budget-one-stop.md) | One Auto-research budget and one graceful Stop | implemented | browser |
 | [S81](S81-live-canonical-state.md) | Canonical graph changes appear without UI reload | implemented | api + browser |
 | [S90](S90-desktop-chat-dictation.md) | Speech becomes an editable chat draft | pending | desktop |
-| [S95](S95-durable-team-space.md) | A team space outlives every serving process | pending — not human-confirmed | pytest + api |
+| [S95](S95-durable-team-space.md) | A team space outlives every serving process | pending | pytest + api + ssh |
 | [S96](S96-joining-a-team-space.md) | Join a team space once and stay joined | implemented | pytest + api + browser |
-| [S98](S98-move-a-project-into-a-team-space.md) | Hand a personal project to the lab once | pending — not human-confirmed | pytest + browser |
+| [S98](S98-move-a-project-into-a-team-space.md) | Hand a personal project to the lab once | pending | pytest + browser + desktop + ssh |
 | [S99](S99-attribution-travels-with-history.md) | History says who authorized a change | implemented | pytest + browser |
 | [S100](S100-permission-is-checked-twice.md) | Nothing unauthorized starts or lands | implemented | pytest |
 | [S101](S101-project-membership.md) | Space membership is not project membership | implemented | pytest + browser |
-| [S102](S102-team-runs-execute-as-the-space-account.md) | Team work executes where and as the space can reach | pending — not human-confirmed | pytest + api |
-| [S103](S103-server-operations-are-console-operations.md) | Dangerous operations require machine authority | pending — not human-confirmed | pytest + api |
-| [S104](S104-backups-never-pause-work.md) | Backup interrupts nothing and overclaims nothing | pending — not human-confirmed | pytest |
-| [S105](S105-move-between-spaces-in-one-window.md) | One window can use several spaces without ambiguity | pending — not human-confirmed | desktop |
+| [S102](S102-team-runs-execute-as-the-space-account.md) | Team work runs only through the server's configured account | pending | pytest + api |
+| [S103](S103-server-operations-are-console-operations.md) | Dangerous operations require machine authority | pending | pytest + api + ssh |
+| [S104](S104-backups-never-pause-work.md) | Backup interrupts nothing and overclaims nothing | pending | pytest + ssh |
+| [S105](S105-move-between-spaces-in-one-window.md) | One window can use several spaces without ambiguity | pending | desktop |
 | [S109](S109-tabs-stay-current-without-freezing.md) | Project tabs stay current without waiting on remote state | implemented | pytest + browser |
 | [S110](S110-paper-draft-survives-a-canonical-change.md) | A paper draft survives canonical movement | implemented | pytest + browser |
 | [S113](S113-campaign-attribution.md) | Episode work retains authorization lineage | implemented | pytest + browser |
-| [S114](S114-see-your-results-without-leaving.md) | See results without leaving RCP | implemented | pytest + browser + ssh |
+| [S114](S114-see-your-results-without-leaving.md) | See results without leaving RCP | pending | pytest + browser + desktop + ssh |
 | [S115](S115-beliefs-change-only-through-you.md) | Agents may rewrite anything except existing beliefs | implemented | pytest + browser |
 | [S116](S116-choose-existing-or-fresh-research.md) | Choose retained research or fresh setup before mutation | implemented | pytest + browser + ssh |
 | [S119](S119-stale-processes-cannot-command-the-next-turn.md) | A stale process cannot command the next episode turn | implemented | pytest + ssh |
@@ -112,3 +112,4 @@ This index is checked against frontmatter by `tests/test_documentation.py`.
 | [S125](S125-auto-research-graph-branch-merge.md) | Auto-research changes its graph branch before a human merge | implemented | pytest + browser |
 | [S126](S126-choose-local-repository-folder.md) | Choose a local repository folder in the desktop setup wizard | implemented | web + desktop |
 | [S127](S127-select-codex-provider-runtime.md) | Select Codex exec or app-server per agent profile | implemented | pytest + browser + desktop |
+| [S128](S128-provision-a-team-project-through-desktop-and-server-cli.md) | App-directed team setup is prepared by the server CLI | pending | pytest + browser + desktop + ssh |

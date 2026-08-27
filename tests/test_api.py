@@ -3434,12 +3434,16 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert completed["result"]["messages"] == [answer]
     assert service.history.state().revision == 2
     artifacts = completed["result"]["artifacts"]
-    assert [item["name"] for item in artifacts] == ["plot.png", "preview.html"]
+    assert [item["name"] for item in artifacts] == [
+        "plot.png",
+        "preview.html",
+        "unsupported.svg",
+    ]
     assert all("path" not in item and "host" not in item for item in artifacts)
 
     by_name = {item["name"]: item for item in artifacts}
     base = f"/api/projects/{project_id}/tasks/{completed['operation_id']}/artifacts"
-    html_url = f"{base}/{by_name['preview.html']['artifact_id']}/preview"
+    html_url = f"{base}/{by_name['preview.html']['artifact_id']}/content"
     html_head = client.head(html_url)
     html_preview = client.get(html_url)
     assert html_head.status_code == 200 and html_head.content == b""
@@ -3456,18 +3460,108 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert "window.location.assign" not in html_preview.text
     assert "connect-src &amp;#x27;none&amp;#x27;" in html_preview.text
 
-    image_url = f"{base}/{by_name['plot.png']['artifact_id']}/preview"
+    image_url = f"{base}/{by_name['plot.png']['artifact_id']}/content"
     image = client.get(image_url)
     assert image.status_code == 200 and image.content == png_source
     assert image.headers["content-type"].startswith("image/png")
     assert image.headers["x-content-type-options"] == "nosniff"
+
+    legacy_image_url = f"{base}/{by_name['plot.png']['artifact_id']}/preview"
+    legacy_image = client.get(legacy_image_url, headers={"Accept": "image/png,image/*"})
+    assert legacy_image.status_code == 200 and legacy_image.content == png_source
+    assert legacy_image.headers["content-type"].startswith("image/png")
 
     download_url = f"{base}/{by_name['preview.html']['artifact_id']}/download"
     download = client.get(download_url)
     assert download.status_code == 200 and download.content == html_source
     assert download.headers["content-disposition"].startswith("attachment;")
     assert client.head(download_url).content == b""
-    assert client.get(f"{base}/000000000000000000000000/preview").status_code == 404
+    assert client.get(f"{base}/000000000000000000000000/content").status_code == 404
+
+    viewer_url = f"{base}/{by_name['preview.html']['artifact_id']}/viewer"
+    viewer = client.get(viewer_url)
+    assert viewer.status_code == 200
+    assert "rcp-artifact-context" in viewer.text
+    assert "Added to the originating chat draft." in viewer.text
+
+    legacy_preview_url = f"{base}/{by_name['preview.html']['artifact_id']}/preview"
+    legacy_preview = client.get(legacy_preview_url)
+    assert legacy_preview.status_code == 200
+    assert "rcp-artifact-context" in legacy_preview.text
+    assert html_url in legacy_preview.text
+    assert client.head(legacy_preview_url).content == b""
+
+    kept = client.post(f"{base}/{by_name['preview.html']['artifact_id']}/keep")
+    assert kept.status_code == 200
+    kept_filename = kept.json()["kept_filename"]
+    kept_path = service.history.workspace.root.parent / "artifacts" / kept_filename
+    assert kept_path.read_bytes() == html_source
+
+    externally_edited = b"<!doctype html><p>external edit</p>"
+    kept_path.write_bytes(externally_edited)
+    edited_preview = client.get(html_url)
+    assert edited_preview.status_code == 200
+    assert "external edit" in edited_preview.text
+    assert client.get(download_url).content == externally_edited
+
+    store = app.state.background_tasks.store
+    store.checkpoint_agent_task(completed["operation_id"], native_session_id="artifact-session")
+    origin = store.agent_task(completed["operation_id"])
+    assert origin is not None and origin.native_session_id
+    admitted_requests: list[RunRequest] = []
+
+    def capture_artifact_question(
+        admitted_project_id,
+        kind,
+        request,
+        *,
+        operation_id=None,
+        authorized_by=None,
+        stage_host=None,
+        stage_root=None,
+    ):
+        assert kind == "project_chat"
+        assert stage_host is None and stage_root is None
+        admitted_requests.append(request)
+        now = store.now()
+        return AgentTaskRecord(
+            operation_id=operation_id or str(uuid.uuid4()),
+            project_id=admitted_project_id,
+            kind=kind,
+            status="queued",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Queued.",
+            authorized_by=authorized_by,
+        )
+
+    monkeypatch.setattr(app.state.background_tasks, "start", capture_artifact_question)
+    asked = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": origin.request["chat_id"],
+            "message": "Why does this section jump?",
+            "mode": "discuss",
+            # Artifact-context admission ignores stale settings from the current
+            # chat and resumes the exact profile recorded by the origin turn.
+            "run_on": "stale-machine",
+            "artifact_context": {
+                "source": "task",
+                "operation_id": origin.operation_id,
+                "artifact_id": by_name["preview.html"]["artifact_id"],
+                "selections": [
+                    {"kind": "text", "text": "external edit", "comment": "Why?"}
+                ],
+            },
+        },
+    )
+    assert asked.status_code == 202
+    admitted = admitted_requests[-1]
+    assert admitted.mode == "discuss"
+    assert admitted.session_id == origin.native_session_id
+    assert admitted.artifact_context is not None
+    assert admitted.artifact_context.operation_id == origin.operation_id
 
     monkeypatch.setattr(
         "rcp.api.tasks.html_preview_document",

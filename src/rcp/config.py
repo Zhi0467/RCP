@@ -256,6 +256,12 @@ class Manifest(BaseModel):
         return {item.alias: item for item in self.machines}
 
     @property
+    def repository_paths(self) -> dict[str, str]:
+        """Registered alias to its path, for reading a declared path back to its alias."""
+
+        return {item.alias: item.path for item in self.repositories}
+
+    @property
     def coach(self) -> PaperCoachConfig:
         profile = self.agent_profile("paper_coach")
         return PaperCoachConfig(

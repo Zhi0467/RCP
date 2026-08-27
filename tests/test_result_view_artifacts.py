@@ -44,12 +44,14 @@ def test_result_view_descriptor_has_strict_public_contract() -> None:
         ResultViewDescriptor.model_validate({**_descriptor_values(), "state": "expired"})
 
 
-def test_ordinary_html_preview_has_no_result_view_gesture_bridge() -> None:
+def test_ordinary_html_preview_has_unified_selection_bridge_not_result_view_gestures() -> None:
     document, _csp = html_preview_document(b"<p>ordinary artifact</p>")
 
     assert "rcp-result-view-gesture" not in document
-    assert "event.source!==artifact.contentWindow" not in document
-    assert "new TextEncoder()" not in document
+    assert "event.source!==artifact.contentWindow" in document
+    assert "new TextEncoder()" in document
+    assert "type:'rcp-artifact-selection'" in document
+    assert "kind:'rcp-artifact-box-start'" in document
     assert "value.kind!=='rcp-reference'" in document
 
 

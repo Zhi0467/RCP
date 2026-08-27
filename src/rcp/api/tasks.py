@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import threading
 import uuid
 from pathlib import Path
@@ -28,6 +29,7 @@ from rcp.api.task_requests import _resolved_auto_research_request, _resolved_gra
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
     AgentArtifactDescriptor,
+    artifact_viewer_document,
     descriptor_for,
     html_preview_document,
     read_local_regular_file,
@@ -47,6 +49,7 @@ from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import AgentTaskKind, AppStore
 from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport.state import StateWorkspace
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 
@@ -103,6 +106,13 @@ def start_agent_task(
                 admission_lock = result_view_keep_locks(request.result_view.view_id)
                 admission_lock.acquire()
             request = _admit_result_view_request(
+                store,
+                service,
+                project_id,
+                kind,
+                request,
+            )
+            request = _admit_artifact_context_request(
                 store,
                 service,
                 project_id,
@@ -216,19 +226,22 @@ def agent_task(
     return detail
 
 
-@router.get("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview")
-@router.head("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview")
-async def preview_agent_artifact(
+@router.get("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/content")
+@router.head("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/content")
+async def content_agent_artifact(
     project_id: str,
     operation_id: str,
     artifact_id: str,
     request: Request,
     *,
+    catalog: CatalogDependency,
     store: StoreDependency,
 ) -> Response:
+    service = get_project_service(catalog, project_id)
     descriptor, data = await asyncio.to_thread(
         _load_agent_artifact,
         store,
+        service.history.workspace,
         project_id,
         operation_id,
         artifact_id,
@@ -258,6 +271,42 @@ async def preview_agent_artifact(
     )
 
 
+@router.get("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview")
+@router.head("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/preview")
+async def preview_agent_artifact(
+    project_id: str,
+    operation_id: str,
+    artifact_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> Response:
+    """Keep the old desktop route on the unified shell after source updates."""
+
+    # Retained clients also used this URL as the src for small inline images.
+    # A browser image request is distinguishable from a viewer navigation by
+    # its Accept header, so keep that bounded compatibility without restoring
+    # the old raw-preview entrance for ordinary navigation.
+    if "image/" in request.headers.get("accept", "").casefold():
+        return await content_agent_artifact(
+            project_id,
+            operation_id,
+            artifact_id,
+            request,
+            catalog=catalog,
+            store=store,
+        )
+    return await _artifact_viewer_response(
+        project_id,
+        operation_id,
+        artifact_id,
+        catalog=catalog,
+        store=store,
+        head=request.method == "HEAD",
+    )
+
+
 @router.get("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download")
 @router.head("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download")
 async def download_agent_artifact(
@@ -266,11 +315,14 @@ async def download_agent_artifact(
     artifact_id: str,
     request: Request,
     *,
+    catalog: CatalogDependency,
     store: StoreDependency,
 ) -> Response:
+    service = get_project_service(catalog, project_id)
     descriptor, data = await asyncio.to_thread(
         _load_agent_artifact,
         store,
+        service.history.workspace,
         project_id,
         operation_id,
         artifact_id,
@@ -290,6 +342,116 @@ async def download_agent_artifact(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+@router.get("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/viewer")
+async def view_agent_artifact(
+    project_id: str,
+    operation_id: str,
+    artifact_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> Response:
+    return await _artifact_viewer_response(
+        project_id,
+        operation_id,
+        artifact_id,
+        catalog=catalog,
+        store=store,
+    )
+
+
+async def _artifact_viewer_response(
+    project_id: str,
+    operation_id: str,
+    artifact_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    head: bool = False,
+) -> Response:
+    service = get_project_service(catalog, project_id)
+    descriptor, _ = await asyncio.to_thread(
+        _load_agent_artifact,
+        store,
+        service.history.workspace,
+        project_id,
+        operation_id,
+        artifact_id,
+    )
+    record = store.agent_task(operation_id)
+    chat_id = record.request.get("chat_id") if record is not None else None
+    if not isinstance(chat_id, str):
+        raise HTTPException(status_code=410, detail="Artifact chat unavailable")
+    content_url = (
+        f"/api/projects/{quote(project_id, safe='')}/tasks/{quote(operation_id, safe='')}"
+        f"/artifacts/{quote(artifact_id, safe='')}/content"
+    )
+    keep_url = (
+        f"/api/projects/{quote(project_id, safe='')}/tasks/{quote(operation_id, safe='')}"
+        f"/artifacts/{quote(artifact_id, safe='')}/keep"
+    )
+    document, csp = artifact_viewer_document(
+        preview_url=content_url,
+        keep_url=keep_url,
+        project_id=project_id,
+        chat_id=chat_id,
+        operation_id=operation_id,
+        descriptor=descriptor,
+    )
+    return Response(
+        b"" if head else document,
+        media_type="text/html",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": csp,
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.post("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/keep")
+async def keep_agent_artifact(
+    project_id: str,
+    operation_id: str,
+    artifact_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> dict[str, object]:
+    service = get_project_service(catalog, project_id)
+    descriptor, data = await asyncio.to_thread(
+        _load_agent_artifact,
+        store,
+        service.history.workspace,
+        project_id,
+        operation_id,
+        artifact_id,
+    )
+    if descriptor.kept_filename is not None:
+        return descriptor.model_dump(mode="json")
+    project_name = catalog.card(project_id)["name"]
+    if not isinstance(project_name, str):
+        raise HTTPException(status_code=503, detail="Artifact Keep unavailable")
+    try:
+        kept_filename = await asyncio.to_thread(
+            service.history.workspace.keep_artifact,
+            source_name=descriptor.name,
+            project_name=project_name,
+            data=data,
+        )
+        kept = store.mark_agent_artifact_kept(
+            operation_id,
+            artifact_id,
+            kept_filename=kept_filename,
+            kept_at=store.now(),
+        )
+    except (FileNotFoundError, OSError, StateUnavailable, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="Artifact Keep unavailable") from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Artifact not found") from exc
+    return kept.model_dump(mode="json")
 
 
 @router.post("/api/projects/{project_id}/tasks/{operation_id}/pause", status_code=202)
@@ -494,6 +656,7 @@ def retry_agent_task(
 
 def _load_agent_artifact(
     store: AppStore,
+    workspace: StateWorkspace,
     project_id: str,
     operation_id: str,
     artifact_id: str,
@@ -519,14 +682,23 @@ def _load_agent_artifact(
                 break
     if descriptor is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    if not record.stage_root:
-        raise HTTPException(status_code=410, detail="Preview unavailable")
     try:
         scope_id = _logical_chat_turn_operation_id(store, record.operation_id)
         expected_descriptor = descriptor_for(scope_id, descriptor.name)
-        if expected_descriptor != descriptor:
+        if (
+            expected_descriptor.artifact_id != descriptor.artifact_id
+            or expected_descriptor.name != descriptor.name
+            or expected_descriptor.media_type != descriptor.media_type
+        ):
             raise ValueError("artifact descriptor does not match its task scope")
-        if record.stage_host:
+        if descriptor.kept_filename is not None:
+            data = workspace.read_kept_artifact(
+                descriptor.kept_filename,
+                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+            )
+        elif not record.stage_root:
+            raise FileNotFoundError(descriptor.name)
+        elif record.stage_host:
             stage = RemoteRunStage(record.stage_host).attach_artifact_source(record.stage_root)
             data = stage.read_artifact_bytes(
                 scope_id,
@@ -601,6 +773,87 @@ def _admit_result_view_request(
     return _resolved_graph_request(service, kind, pinned)
 
 
+def _admit_artifact_context_request(
+    store: AppStore,
+    service: ProjectService,
+    project_id: str,
+    kind: AgentTaskKind,
+    request: RunRequest,
+) -> RunRequest:
+    context = request.artifact_context
+    if context is None:
+        return request
+    if request.result_view is not None or kind not in {"node_chat", "project_chat"}:
+        raise ValueError("Artifact context belongs to one ordinary chat turn.")
+    origin = store.agent_task(context.operation_id)
+    if context.source == "episode_report":
+        report = store.episode_report(context.episode_id or "")
+        wrapup = store.episode_wrapup(context.episode_id or "")
+        expected_artifact_id = (
+            hashlib.sha256(report.report_id.encode("utf-8")).hexdigest()[:24]
+            if report is not None
+            else None
+        )
+        if (
+            report is None
+            or wrapup is None
+            or wrapup.concluding_operation_id != context.operation_id
+            or expected_artifact_id != context.artifact_id
+            or origin is None
+            or origin.project_id != project_id
+            or origin.request.get("chat_id") != request.chat_id
+        ):
+            raise ValueError("The episode report does not belong to this chat.")
+        descriptor = None
+    else:
+        descriptor = None
+    if (
+        origin is None
+        or origin.project_id != project_id
+        or origin.kind != kind
+        or origin.request.get("chat_id") != request.chat_id
+        or origin.request.get("node_id") != request.node_id
+    ):
+        raise ValueError("The artifact does not belong to this chat.")
+    artifacts = origin.result.get("artifacts") if origin and origin.result else None
+    if context.source == "task" and isinstance(artifacts, list):
+        for raw in artifacts:
+            try:
+                candidate = AgentArtifactDescriptor.model_validate(raw)
+            except (TypeError, ValueError):
+                continue
+            if candidate.artifact_id == context.artifact_id:
+                descriptor = candidate
+                break
+    if context.source == "task" and descriptor is None:
+        raise ValueError("The artifact is unavailable.")
+    pinned_values = {
+        "provider": origin.request.get("provider"),
+        "model": origin.request.get("model"),
+        "reasoning": origin.request.get("reasoning"),
+        "run_on": origin.request.get("run_on"),
+        "session_id": origin.native_session_id,
+    }
+    required_values = (
+        pinned_values["provider"],
+        pinned_values["reasoning"],
+        pinned_values["run_on"],
+        pinned_values["session_id"],
+    )
+    if (
+        not all(isinstance(value, str) and value for value in required_values)
+        or not isinstance(pinned_values["model"], str)
+    ):
+        raise ValueError(
+            "The artifact's native session is unavailable. Start a fresh session explicitly "
+            "before asking about it."
+        )
+    pinned = RunRequest.model_validate(
+        {**request.model_dump(mode="python"), **pinned_values}
+    )
+    return _resolved_graph_request(service, kind, pinned)
+
+
 def _validated_task_request(
     service: ProjectService,
     kind: AgentTaskKind,
@@ -625,6 +878,11 @@ def _validated_task_request(
             "attachments": [],
         }
     )
+    if request.result_view is not None:
+        raise ValueError(
+            "Result views are ordinary task artifacts now. Ask the chat to create or revise "
+            "the artifact through the unified viewer."
+        )
     if kind in {"seed", "refresh"}:
         service.history.require_writable()
         if request.session_id:
@@ -652,8 +910,13 @@ def _validated_task_request(
         uuid.UUID(request.chat_id)
     except ValueError as exc:
         raise ValueError("chat_id must be a UUID") from exc
-    request = _resolved_graph_request(service, kind, request)
-    return request
+    # Artifact-context admission resolves the exact execution profile and native
+    # session recorded by the originating turn. Do not first resolve transient
+    # settings from the currently open chat; stale settings must not prevent a
+    # valid origin-session continuation.
+    if request.artifact_context is not None:
+        return request
+    return _resolved_graph_request(service, kind, request)
 
 
 def _validate_stored_task_request(
@@ -714,6 +977,7 @@ __all__ = [
     "RetryAgentTaskRequest",
     "agent_task",
     "agent_tasks",
+    "content_agent_artifact",
     "download_agent_artifact",
     "pause_agent_task",
     "preview_agent_artifact",
@@ -722,4 +986,5 @@ __all__ = [
     "retry_agent_task",
     "router",
     "start_agent_task",
+    "view_agent_artifact",
 ]

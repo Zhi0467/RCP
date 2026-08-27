@@ -328,7 +328,11 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     )
     assert report is not None
 
-    url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/preview"
+    url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/content"
+    legacy_preview_url = (
+        f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/preview"
+    )
+    viewer_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/viewer"
     with TestClient(app) as client:
         listed = client.get(f"/api/projects/{project_id}/episodes")
         assert listed.status_code == 200
@@ -345,6 +349,8 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
 
         preview = client.get(url)
         head = client.head(url)
+        legacy_preview = client.get(legacy_preview_url)
+        viewer = client.get(viewer_url)
 
     assert preview.status_code == head.status_code == 200
     assert preview.content
@@ -362,3 +368,13 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert "allow-top-navigation" not in preview.text
     assert "rcp-result-view-gesture" not in preview.text
     assert "connect-src &amp;#x27;none&amp;#x27;" in preview.text
+    assert viewer.status_code == 200
+    assert "rcp-artifact-context" in viewer.text
+    assert '"source": "episode_report"' in viewer.text
+    assert 'id="keep"' not in viewer.text
+    assert legacy_preview.status_code == 200
+    assert "rcp-artifact-context" in legacy_preview.text
+    assert url in legacy_preview.text
+    with TestClient(app) as client:
+        assert client.head(legacy_preview_url).content == b""
+    assert "Select text in the artifact or draw a box." in viewer.text

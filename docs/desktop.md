@@ -9,7 +9,7 @@ for the authoritative platform settings and `web/package.json` for the available
 
 ## Prerequisites
 
-Start with the shared source setup in the [README](../README.md#shared-setup). Desktop work
+Start with the source installation in the [README](../README.md#install-from-source). Desktop work
 also requires the Rust toolchain. Codex CLI or Claude Code must be installed and
 authenticated separately to exercise agent features.
 

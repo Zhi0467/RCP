@@ -12,5 +12,9 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
+    // A running source-mode window may still lazy-load a chunk from the previous
+    // build. Keep content-hashed assets until the server is restarted; packaging
+    // uses `build:clean` so stale chunks never ship.
+    emptyOutDir: false,
   },
 });

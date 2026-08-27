@@ -60,6 +60,7 @@ export function withExperimentControlAnswers(control) {
     task_control: null,
     can_switch_provider: false,
     can_open_report: false,
+    report_episode_id: null,
     node_closed: false,
     ...control,
   };

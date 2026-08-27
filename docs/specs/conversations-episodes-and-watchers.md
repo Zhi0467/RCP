@@ -98,17 +98,22 @@ An Experiment can start a new bounded episode only when:
 5. no episode parent is still live at all. A turn can succeed below the ceiling
    while arming no observer and taking no exit, which leaves the parent live with
    nothing to wake it. The loop then reads as inactive, admission still refuses a
-   second live parent, and **Stop loop** is the control that releases it.
+   second live parent, and **Stop loop** is the control that releases it; and
+6. the Experiment itself is not `completed`, `abandoned`, or `superseded`.
 
 Readiness reports its graph gates and its operational reasons as separate lists,
 so no surface has to tell them apart by reading the sentences.
 
-Readiness derives from the exact graph target's final graph and never from
-`Experiment.status`. Before any episode the action says **Start episode**;
-after history exists it says **Start new episode**. The node's current
-`invocation_ceiling` becomes the new episode's pinned operational ceiling.
-Historical episodes retain their pinned used/ceiling values while the current
-node value remains separately visible as **Next episode limit**.
+Graph prerequisites derive from the exact graph target's final graph. A closed
+Experiment separately refuses a fresh episode: Runs says the Experiment is
+complete and offers no episode-start action until a human or already-authorized
+graph-writing task edits the node back to a nonterminal status. This fresh-start
+gate does not revoke an invocation already authorized inside the current episode.
+Before any episode the action says **Start episode**; after history exists it says
+**Start new episode**. The node's current `invocation_ceiling` becomes the new
+episode's pinned operational ceiling. Historical episodes retain their pinned
+used/ceiling values while the current node value remains separately visible as
+**Next episode limit**.
 
 Starting an episode does not create an ExperimentAttempt. Attempts are semantic
 agent-authored bookkeeping and never control budget, watcher identity, or
@@ -131,7 +136,8 @@ The Experiment-loop Patch may update its own attempt/status and guidance, create
 Evidence and Blockers, assert legal epistemic and output edges, and create the
 permitted Proposal shapes within its pinned upstream/tested boundary. It may not
 set standing, decide a Decision, apply a Hypothesis transition, change its pinned
-Decision bundle, remove nodes, or treat Experiment status as control.
+Decision bundle, remove nodes, or treat Experiment status as automatic
+invocation control. Fresh human episode admission owns the closed-status gate.
 
 Validation and Apply both use the episode's exact project and graph target.
 When a child belongs to an Auto-research episode, every graph context, Patch,
@@ -266,16 +272,24 @@ withhold a control.
 
 The backend Experiment-control projection derives one health, one Runs section,
 one **Recommended next step**, and the exact available controls from structured
-episode, task, Stop, budget, watcher, and report state. Raw task status, semantic
-Experiment status, and report state remain supporting data and do not compete as
-peer episode states: the ending fence alone decides that an episode is over and
-which controls it retires. The browser renders the published answers and never
-reconstructs them from a fresher task list. Controls appear only when currently
-valid, and no recommendation and no diagnostic names an unavailable action.
-The runtime, parent episode, visible task rows, usage meter, and report used for
-one Experiment-control answer come from one SQLite read snapshot. Resume, Retry,
-and provider switch target only the exact current operation named in that
-answer; a missing task row yields no client control.
+episode, task, Stop, budget, watcher, report, and owning-node state. Raw task and
+report state remain supporting data and do not compete as peer episode states:
+the ending fence alone decides that an episode is over and which episode controls
+it retires. Once the episode is terminal, a closed owning Experiment makes the
+Runs object Completed even when that episode ended by human Stop; the stopped
+ending remains inspectable history. The browser renders the published answers
+and never reconstructs them from a fresher task list. Controls appear only when
+currently valid, and no recommendation and no diagnostic names an unavailable
+action. Report availability is independent of current-episode selection: the
+backend publishes the newest available report for the same Experiment and exact
+graph target, so a later stopped episode cannot hide an earlier durable report.
+The stopped episode remains current history; the report link retains its actual
+owning episode id.
+
+The runtime, parent episode, visible task rows, usage meter, and latest available
+report used for one Experiment-control answer come from one SQLite read snapshot.
+Resume, Retry, and provider switch target only the exact current operation named
+in that answer; a missing task row yields no client control.
 
 The experiment detail retains exact target, episode history, pinned budgets,
 current next-episode limit, current guidance validity, watcher provenance and

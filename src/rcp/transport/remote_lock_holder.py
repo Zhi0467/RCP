@@ -156,19 +156,35 @@ def kept_view_candidate(base_name: str, index: int) -> str:
     return f"{base_name[:-5]}-{index}.html"
 
 
+def kept_artifact_candidate(base_name: str, index: int) -> str:
+    if index == 1:
+        return base_name
+    path = Path(base_name)
+    return f"{path.stem}-{index}{path.suffix}"
+
+
 def keep_staged_view(command: dict, lock_path: str) -> dict:
     root = Path(command["root"])
     stage = Path(command["stage"])
     base_name = command["base_name"]
+    artifact = command.get("op") == "keep-artifact"
+    directory_name = "artifacts" if artifact else "views"
+    content_name = "content.bin" if artifact else "content.html"
+    stage_pattern = r"artifact-[0-9]+-[0-9]+" if artifact else r"view-[0-9]+-[0-9]+"
+    name_pattern = (
+        r"[a-z0-9](?:[a-z0-9-]{0,220})[.](?:html?|png|jpe?g|gif|webp|svg)"
+        if artifact
+        else r"[a-z0-9](?:[a-z0-9-]{0,238})[.]html"
+    )
     if (
         Path(lock_path).name != ".refresh.lock"
         or root != Path(lock_path).parent
         or not root.is_absolute()
         or root.name != ".research"
         or stage.parent != root / ".publish"
-        or not re.fullmatch(r"view-[0-9]+-[0-9]+", stage.name)
+        or not re.fullmatch(stage_pattern, stage.name)
         or not isinstance(base_name, str)
-        or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,238})[.]html", base_name)
+        or not re.fullmatch(name_pattern, base_name)
     ):
         raise ValueError("invalid result-view root, stage, or base name")
     if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
@@ -181,9 +197,9 @@ def keep_staged_view(command: dict, lock_path: str) -> dict:
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     stage_fd = os.open(stage, directory_flags)
     try:
-        if os.listdir(stage_fd) != ["content.html"]:
-            raise ValueError("result-view stage does not contain exactly content.html")
-        source_fd = os.open("content.html", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=stage_fd)
+        if os.listdir(stage_fd) != [content_name]:
+            raise ValueError("artifact stage does not contain exactly one content file")
+        source_fd = os.open(content_name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=stage_fd)
         try:
             source_info = os.fstat(source_fd)
             if not stat.S_ISREG(source_info.st_mode):
@@ -194,14 +210,20 @@ def keep_staged_view(command: dict, lock_path: str) -> dict:
             repository_fd = os.open(root.parent, directory_flags)
             try:
                 with contextlib.suppress(FileExistsError):
-                    os.mkdir("views", 0o755, dir_fd=repository_fd)
+                    os.mkdir(directory_name, 0o755, dir_fd=repository_fd)
                 try:
-                    views_fd = os.open("views", directory_flags, dir_fd=repository_fd)
+                    views_fd = os.open(directory_name, directory_flags, dir_fd=repository_fd)
                 except OSError as exc:
-                    raise ValueError("repository views path is not a regular directory") from exc
+                    raise ValueError(
+                        f"repository {directory_name} path is not a regular directory"
+                    ) from exc
                 try:
                     for index in range(1, 10000):
-                        candidate = kept_view_candidate(base_name, index)
+                        candidate = (
+                            kept_artifact_candidate(base_name, index)
+                            if artifact
+                            else kept_view_candidate(base_name, index)
+                        )
                         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                         try:
                             target_fd = os.open(candidate, flags, 0o644, dir_fd=views_fd)
@@ -249,7 +271,88 @@ def keep_staged_view(command: dict, lock_path: str) -> dict:
             os.close(source_fd)
     finally:
         with contextlib.suppress(OSError):
-            os.unlink("content.html", dir_fd=stage_fd)
+            os.unlink(content_name, dir_fd=stage_fd)
+        os.close(stage_fd)
+        with contextlib.suppress(OSError):
+            os.rmdir(stage)
+
+
+def replace_staged_artifact(command: dict, lock_path: str) -> dict:
+    root = Path(command["root"])
+    stage = Path(command["stage"])
+    name = command["name"]
+    if (
+        Path(lock_path).name != ".refresh.lock"
+        or root != Path(lock_path).parent
+        or not root.is_absolute()
+        or root.name != ".research"
+        or stage.parent != root / ".publish"
+        or not re.fullmatch(r"artifact-[0-9]+-[0-9]+", stage.name)
+        or not isinstance(name, str)
+        or not re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9-]{0,220})[.](?:html?|png|jpe?g|gif|webp|svg)", name
+        )
+    ):
+        raise ValueError("invalid artifact replacement root, stage, or name")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    stage_fd = os.open(stage, directory_flags)
+    try:
+        if os.listdir(stage_fd) != ["content.bin"]:
+            raise ValueError("artifact stage does not contain exactly content.bin")
+        source_fd = os.open("content.bin", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=stage_fd)
+        try:
+            source_info = os.fstat(source_fd)
+            if not stat.S_ISREG(source_info.st_mode) or source_info.st_size > 16 * 1024 * 1024:
+                raise ValueError("staged artifact is invalid or too large")
+            repository_fd = os.open(root.parent, directory_flags)
+            try:
+                artifacts_fd = os.open("artifacts", directory_flags, dir_fd=repository_fd)
+                try:
+                    temporary = f".{name}.{stage.name}"
+                    target_info = os.stat(name, dir_fd=artifacts_fd, follow_symlinks=False)
+                    if not stat.S_ISREG(target_info.st_mode):
+                        raise ValueError("kept artifact is not a regular file")
+                    target_fd = os.open(
+                        temporary,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o644,
+                        dir_fd=artifacts_fd,
+                    )
+                    try:
+                        bytes_left = 16 * 1024 * 1024
+                        while True:
+                            chunk = os.read(source_fd, min(1024 * 1024, bytes_left + 1))
+                            if not chunk:
+                                break
+                            if len(chunk) > bytes_left:
+                                raise ValueError("staged artifact exceeds the per-file limit")
+                            bytes_left -= len(chunk)
+                            remaining = memoryview(chunk)
+                            while remaining:
+                                written = os.write(target_fd, remaining)
+                                if written <= 0:
+                                    raise OSError("short artifact replacement write")
+                                remaining = remaining[written:]
+                        os.fsync(target_fd)
+                    finally:
+                        os.close(target_fd)
+                    os.replace(temporary, name, src_dir_fd=artifacts_fd, dst_dir_fd=artifacts_fd)
+                    os.fsync(artifacts_fd)
+                    os.fsync(repository_fd)
+                    return {"ok": True, "name": name}
+                except BaseException:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(temporary, dir_fd=artifacts_fd)
+                    raise
+                finally:
+                    os.close(artifacts_fd)
+            finally:
+                os.close(repository_fd)
+        finally:
+            os.close(source_fd)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink("content.bin", dir_fd=stage_fd)
         os.close(stage_fd)
         with contextlib.suppress(OSError):
             os.rmdir(stage)
@@ -303,8 +406,10 @@ def main() -> None:
                 command = json.loads(line)
                 if command.get("op") == "apply":
                     response = apply_staged(command, lock_path)
-                elif command.get("op") == "keep-view":
+                elif command.get("op") in {"keep-view", "keep-artifact"}:
                     response = keep_staged_view(command, lock_path)
+                elif command.get("op") == "replace-artifact":
+                    response = replace_staged_artifact(command, lock_path)
                 else:
                     raise ValueError("unsupported lock-holder command")
             except Exception as exc:

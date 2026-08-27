@@ -1,5 +1,5 @@
 import {
-  AlertCircle,
+  ChevronDown,
   CircleDot,
   Eye,
   EyeOff,
@@ -20,6 +20,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -38,7 +39,6 @@ import {
   relationFocus,
   type DagOntologyProjection,
 } from "../graphProjection";
-import { agentTaskTone } from "../agentTasks";
 import { zoomDagAtPoint, type DagViewport, type DagZoomResult } from "../hooks/dagZoom";
 import {
   DAG_NODE_HEIGHT,
@@ -48,22 +48,21 @@ import {
   type DagPosition,
 } from "../hooks/useForceDag";
 import { buildResearchPaths } from "../researchProjection";
-import {
-  buildRunProjection,
-  experimentRecommendation,
-  type AgentTaskGroup,
-  type RunEntry,
-} from "../runProjection";
+import { buildExperimentRun, type ExperimentRun } from "../runProjection";
 import {
   ExperimentRunDetail,
   experimentHealthLabel,
   experimentHealthTone,
 } from "../components/ExperimentRunDetail";
 import { NewCustomNode } from "../components/NewCustomNode";
+import { AutoResearchEpisodeCard, EpisodeBudgetMeter } from "../components/CampaignRuns";
+import { runsEpisodeCards } from "../campaigns";
 import { projectExperimentExecution, type ExperimentRouteIdentity } from "../experimentBoard";
 import type {
   AgentTask,
   Edge,
+  Episode,
+  EpisodeMessage,
   ExperimentControlState,
   ExperimentLoopIndexEntry,
   GraphNode,
@@ -760,14 +759,16 @@ export function DagView({
   );
 }
 
-interface ExecutionProps extends Omit<Props, "trustView"> {
-  attentionBlockerIds: ReadonlySet<string>;
+interface ExecutionProps {
+  graph: GraphState;
+  episodes: Episode[];
+  episodeMessages: Readonly<Record<string, EpisodeMessage[] | undefined>>;
+  episodeAction: string | null;
   tasks: AgentTask[];
   watchers: WatcherRecord[];
   experimentControl: Record<string, ExperimentControlState>;
   exactExperimentRoute?: ExperimentRouteIdentity | null;
   exactExperimentEntry?: ExperimentLoopIndexEntry | null;
-  dismissedTaskIds: ReadonlySet<string>;
   selectedExperimentId: string | null;
   focusExperimentId: string | null;
   runBusy: boolean;
@@ -779,7 +780,12 @@ interface ExecutionProps extends Omit<Props, "trustView"> {
   mutationsDisabled?: boolean;
   experimentStartsDisabled?: boolean;
   onInspectTask: (operationId: string) => void;
-  onDismissTask: (operationId: string) => void;
+  onLoadEpisodeMessages: (episodeId: string) => Promise<void>;
+  onStopEpisode: (episodeId: string) => Promise<void>;
+  onMergeEpisode: (episodeId: string) => Promise<void>;
+  onReauthorizeEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
+  onSendEpisodeMessage: (episodeId: string, body: string) => Promise<void>;
+  onOperateEpisodeTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
   onSelectExperiment: (nodeId: string | null) => void;
   onDetailFocused: () => void;
   onRunExperiment: (node: GraphNode) => void;
@@ -792,14 +798,14 @@ interface ExecutionProps extends Omit<Props, "trustView"> {
 
 export function ExecutionView({
   graph,
-  onSelectNode,
-  attentionBlockerIds,
+  episodes,
+  episodeMessages,
+  episodeAction,
   tasks,
   watchers,
   experimentControl,
   exactExperimentRoute = null,
   exactExperimentEntry = null,
-  dismissedTaskIds,
   selectedExperimentId,
   focusExperimentId,
   runBusy,
@@ -811,7 +817,12 @@ export function ExecutionView({
   mutationsDisabled = false,
   experimentStartsDisabled = false,
   onInspectTask,
-  onDismissTask,
+  onLoadEpisodeMessages,
+  onStopEpisode,
+  onMergeEpisode,
+  onReauthorizeEpisode,
+  onSendEpisodeMessage,
+  onOperateEpisodeTask,
   onSelectExperiment,
   onDetailFocused,
   onRunExperiment,
@@ -830,20 +841,43 @@ export function ExecutionView({
     exactExperimentRoute,
     exactExperimentEntry,
   );
-  const projection = buildRunProjection({
-    nodes: exactProjection.nodes,
-    tasks: exactProjection.tasks,
-    watchers: exactProjection.watchers,
-    experimentControl: exactProjection.experimentControl,
-    actionableBlockerIds: attentionBlockerIds,
-    dismissedTaskIds,
+  const experimentNodes = new Map(
+    exactProjection.nodes
+      .filter((node) => node.type === "experiment")
+      .map((node) => [node.id, node]),
+  );
+  const experimentRuns = new Map<string, ExperimentRun>();
+  experimentNodes.forEach((node, nodeId) => {
+    const control = exactProjection.experimentControl[nodeId];
+    if (!control) {
+      throw new Error(`Experiment ${nodeId} is missing its backend control projection.`);
+    }
+    if (!control.health || !control.recommendation || !control.run_section) {
+      throw new Error(`Experiment ${nodeId} has an incomplete backend control projection.`);
+    }
+    if (!control?.episode_id) return;
+    experimentRuns.set(
+      control.episode_id,
+      buildExperimentRun(node, control, exactProjection.tasks, exactProjection.watchers),
+    );
   });
-  const sections = [
-    { key: "running", title: "Running", entries: projection.running },
-    { key: "actionable", title: "Needs action", entries: projection.actionable },
-    { key: "completed", title: "Completed", entries: projection.completed },
-  ] as const;
-  const hasRuns = sections.some((section) => section.entries.length > 0);
+  const orderedEpisodes = runsEpisodeCards(episodes, new Set(experimentRuns.keys()));
+  const needsAction = orderedEpisodes.filter(
+    (episode) => episodeRunSection(episode) === "needs_action",
+  );
+  const completed = orderedEpisodes.filter((episode) => episodeRunSection(episode) === "completed");
+  const completedGroups = [
+    {
+      mode: "experiment_loop" as const,
+      title: "Experiment loop",
+      episodes: completed.filter((episode) => episode.mode === "experiment_loop"),
+    },
+    {
+      mode: "auto_research" as const,
+      title: "Auto-research",
+      episodes: completed.filter((episode) => episode.mode === "auto_research"),
+    },
+  ];
 
   useEffect(() => {
     if (!focusExperimentId || focusExperimentId !== selectedExperimentId) return;
@@ -853,63 +887,117 @@ export function ExecutionView({
 
   return (
     <section className="view-panel runs-view" aria-label="Runs">
-      {!hasRuns ? (
-        <EmptyState icon={<FlaskConical size={20} />} title="No runs or experiments" />
-      ) : (
-        <div className="operating-sections">
-          {sections.map(
-            (section) =>
-              section.entries.length > 0 && (
-                <RunSection title={section.title} count={section.entries.length} key={section.key}>
-                  {section.entries.map((entry) => (
-                    <RunEntryRow
-                      entry={entry}
-                      selectedExperimentId={selectedExperimentId}
-                      detailRef={
-                        entry.kind === "experiment" && entry.id === selectedExperimentId
-                          ? selectedDetailRef
-                          : undefined
-                      }
-                      runBusy={runBusy}
-                      stopBusy={entry.kind === "experiment" && stopBusyId === entry.id}
-                      watcherCheckBusyId={watcherCheckBusyId}
-                      taskActionId={taskActionId}
-                      experimentConversation={selectedExperimentConversation}
-                      exactBranchEntry={exactProjection.exactBranchEntry}
-                      providerLabels={providerLabels}
-                      experimentStartsDisabled={experimentStartsDisabled}
-                      mutationsDisabled={
-                        mutationsDisabled ||
-                        runBusy ||
-                        Boolean(stopBusyId) ||
-                        Boolean(taskActionId) ||
-                        Boolean(watcherCheckBusyId)
-                      }
-                      onInspectTask={onInspectTask}
-                      onDismissTask={onDismissTask}
-                      onSelectNode={onSelectNode}
-                      onSelectExperiment={onSelectExperiment}
-                      onRunExperiment={onRunExperiment}
-                      onStopExperiment={onStopExperiment}
-                      onCheckExperimentWatcher={onCheckExperimentWatcher}
-                      onRecoverExperiment={onRecoverExperiment}
-                      onSwitchExperimentProvider={onSwitchExperimentProvider}
-                      episodeReportHref={episodeReportHref}
-                      key={`${entry.kind}:${entry.id}`}
-                    />
-                  ))}
-                </RunSection>
-              ),
-          )}
-        </div>
-      )}
+      <div className="operating-sections episode-ledger-sections">
+        <section className="operating-section episode-ledger-section needs-action">
+          <header>
+            <h2>Needs Action</h2>
+            <span>{needsAction.length}</span>
+          </header>
+          <div className="campaign-run-list">
+            {needsAction.map((episode, index) => renderEpisodeCard(episode, index === 0))}
+          </div>
+        </section>
+        <section className="operating-section episode-ledger-section completed">
+          <header>
+            <h2>Completed</h2>
+            <span>{completed.length}</span>
+          </header>
+          <div className="episode-type-groups">
+            {completedGroups.map((group) => (
+              <details className="episode-type-group" key={group.mode}>
+                <summary>
+                  <strong>{group.title}</strong>
+                  <span>{group.episodes.length}</span>
+                </summary>
+                <div className="campaign-run-list">
+                  {group.episodes.map((episode) => renderEpisodeCard(episode, false))}
+                </div>
+              </details>
+            ))}
+          </div>
+        </section>
+      </div>
     </section>
   );
+
+  function renderEpisodeCard(episode: Episode, initiallyExpanded: boolean) {
+    if (episode.mode === "auto_research") {
+      return (
+        <AutoResearchEpisodeCard
+          episode={episode}
+          tasks={tasks}
+          messages={episodeMessages[episode.episode_id] ?? []}
+          initiallyExpanded={initiallyExpanded}
+          busyAction={episodeAction}
+          taskActionId={taskActionId}
+          onInspectTask={onInspectTask}
+          onLoadMessages={onLoadEpisodeMessages}
+          onStop={onStopEpisode}
+          onMerge={onMergeEpisode}
+          onReauthorize={onReauthorizeEpisode}
+          onSendMessage={onSendEpisodeMessage}
+          onOperateTask={onOperateEpisodeTask}
+          key={episode.episode_id}
+        />
+      );
+    }
+    const run = experimentRuns.get(episode.episode_id);
+    if (!run) {
+      throw new Error(
+        `Experiment episode ${episode.episode_id} is missing its backend control projection.`,
+      );
+    }
+    return (
+      <ExperimentEpisodeCard
+        episode={episode}
+        run={run}
+        initiallyExpanded={initiallyExpanded || selectedExperimentId === run.node.id}
+        selected={selectedExperimentId === run.node.id}
+        detailRef={selectedExperimentId === run.node.id ? selectedDetailRef : undefined}
+        runBusy={runBusy}
+        stopBusy={stopBusyId === run.node.id}
+        watcherCheckBusyId={watcherCheckBusyId}
+        taskActionId={taskActionId}
+        experimentConversation={selectedExperimentConversation}
+        exactBranchEntry={exactProjection.exactBranchEntry}
+        providerLabels={providerLabels}
+        experimentStartsDisabled={experimentStartsDisabled}
+        mutationsDisabled={
+          mutationsDisabled ||
+          runBusy ||
+          Boolean(stopBusyId) ||
+          Boolean(taskActionId) ||
+          Boolean(watcherCheckBusyId)
+        }
+        onSelectExperiment={onSelectExperiment}
+        onRunExperiment={onRunExperiment}
+        onStopExperiment={onStopExperiment}
+        onCheckExperimentWatcher={onCheckExperimentWatcher}
+        onRecoverExperiment={onRecoverExperiment}
+        onSwitchExperimentProvider={onSwitchExperimentProvider}
+        episodeReportHref={episodeReportHref}
+        key={episode.episode_id}
+      />
+    );
+  }
+
+  function episodeRunSection(episode: Episode): "needs_action" | "completed" {
+    if (episode.mode === "auto_research") return episode.run_section;
+    const run = experimentRuns.get(episode.episode_id);
+    if (!run) {
+      throw new Error(
+        `Experiment episode ${episode.episode_id} is missing its backend control projection.`,
+      );
+    }
+    return run.control.run_section === "completed" ? "completed" : "needs_action";
+  }
 }
 
-function RunEntryRow({
-  entry,
-  selectedExperimentId,
+function ExperimentEpisodeCard({
+  episode,
+  run,
+  initiallyExpanded,
+  selected,
   detailRef,
   runBusy,
   stopBusy,
@@ -920,9 +1008,6 @@ function RunEntryRow({
   providerLabels,
   experimentStartsDisabled,
   mutationsDisabled,
-  onInspectTask,
-  onDismissTask,
-  onSelectNode,
   onSelectExperiment,
   onRunExperiment,
   onStopExperiment,
@@ -931,8 +1016,10 @@ function RunEntryRow({
   onSwitchExperimentProvider,
   episodeReportHref,
 }: {
-  entry: RunEntry;
-  selectedExperimentId: string | null;
+  episode: Episode;
+  run: ExperimentRun;
+  initiallyExpanded: boolean;
+  selected: boolean;
   detailRef?: Ref<HTMLDivElement>;
   runBusy: boolean;
   stopBusy: boolean;
@@ -943,9 +1030,6 @@ function RunEntryRow({
   providerLabels: Record<string, string>;
   experimentStartsDisabled: boolean;
   mutationsDisabled: boolean;
-  onInspectTask: (operationId: string) => void;
-  onDismissTask: (operationId: string) => void;
-  onSelectNode: (node: GraphNode) => void;
   onSelectExperiment: (nodeId: string | null) => void;
   onRunExperiment: (node: GraphNode) => void;
   onStopExperiment: (nodeId: string, episodeId?: string) => void;
@@ -954,94 +1038,72 @@ function RunEntryRow({
   onSwitchExperimentProvider: (task: AgentTask) => void;
   episodeReportHref: (episodeId: string) => string;
 }) {
-  if (entry.kind === "task") {
-    return (
-      <AgentRunRow
-        group={entry.group}
-        onInspectTask={onInspectTask}
-        onDismissTask={onDismissTask}
-      />
-    );
-  }
-  if (entry.kind === "blocker") {
-    return (
-      <button
-        type="button"
-        className={`blocker-row${entry.node.draft_touched ? " draft-touched" : ""}`}
-        onClick={() => onSelectNode(entry.node)}
-      >
-        <AlertCircle size={16} aria-hidden="true" />
-        <strong>{entry.node.title}</strong>
-        <span className="status-pill">{entry.node.status}</span>
-      </button>
-    );
-  }
-
-  const { experiment } = entry;
-  const selected = selectedExperimentId === experiment.node.id;
-  const isExactBranchExperiment = exactBranchEntry?.node.id === experiment.node.id;
-  const exactBranchEpisodeId = isExactBranchExperiment
-    ? (exactBranchEntry.episode?.episode_id ?? exactBranchEntry.control.episode_id)
+  const detailId = useId();
+  const [expanded, setExpanded] = useState(initiallyExpanded);
+  const tone = experimentHealthTone(run.health);
+  const title = run.node.title;
+  const episodeTimestamp = formatEpisodeTimestamp(episode.created_at);
+  const isExactBranchEpisode = exactBranchEntry?.episode?.episode_id === episode.episode_id;
+  const exactEpisodeId = isExactBranchEpisode
+    ? (exactBranchEntry?.episode?.episode_id ?? exactBranchEntry?.control.episode_id)
     : null;
-  const detailId = `experiment-run-detail-${encodeURIComponent(experiment.node.id)}`;
-  const tone = experimentHealthTone(experiment.health);
+
+  useEffect(() => {
+    if (selected) setExpanded(true);
+  }, [selected]);
+
   return (
-    <article
-      className={`experiment-ledger-entry ${tone}${selected ? " selected" : ""}${experiment.node.draft_touched ? " draft-touched" : ""}`}
-    >
-      <button
-        type="button"
-        className="experiment-ledger-row"
-        aria-expanded={selected}
-        aria-controls={detailId}
-        onClick={() => onSelectExperiment(selected ? null : experiment.node.id)}
-      >
-        <span className="experiment-health-rail" aria-hidden="true" />
-        <span className="experiment-ledger-copy">
-          <span className="eyebrow">Experiment</span>
-          <strong>{experiment.node.title}</strong>
-          <span>{experimentRowSummary(experiment, experimentStartsDisabled)}</span>
+    <article className={`campaign-run experiment-episode-card ${tone}`}>
+      <span className="campaign-state-rail" aria-hidden="true" />
+      <div className="campaign-run-heading">
+        <button
+          className="campaign-run-toggle"
+          type="button"
+          aria-label={`${expanded ? "Collapse" : "Expand"} Experiment loop episode ${title}`}
+          aria-expanded={expanded}
+          aria-controls={detailId}
+          onClick={() => {
+            const next = !expanded;
+            setExpanded(next);
+            onSelectExperiment(next ? run.node.id : null);
+          }}
+        />
+        <span className="campaign-run-identity">
+          <strong className="campaign-run-title">
+            <FlaskConical size={14} aria-hidden="true" />
+            <span>{title}</span>
+          </strong>
+          <span className="campaign-run-meta">
+            <span className={`status-pill ${tone}`}>{experimentHealthLabel(run.health)}</span>
+            <time dateTime={episode.created_at}>{episodeTimestamp}</time>
+          </span>
         </span>
-        <span className="experiment-ledger-meta">
-          <span className={`status-pill ${tone}`}>{experimentHealthLabel(experiment.health)}</span>
-          <span className="mono">{experiment.node.id}</span>
-          {entry.observedAt && (
-            <time dateTime={entry.observedAt}>{new Date(entry.observedAt).toLocaleString()}</time>
-          )}
+        <EpisodeBudgetMeter episode={episode} />
+        <span className="campaign-run-time">
+          <ChevronDown size={15} aria-hidden="true" />
         </span>
-      </button>
-      {selected && (
-        <div
-          id={detailId}
-          className="experiment-ledger-detail"
-          role="region"
-          aria-label={`${experiment.node.title} run detail`}
-          tabIndex={-1}
-          ref={detailRef}
-        >
+      </div>
+      {expanded && (
+        <div className="campaign-run-detail" id={detailId} tabIndex={-1} ref={detailRef}>
           <ExperimentRunDetail
-            run={experiment}
+            run={run}
             runBusy={runBusy}
             runDisabled={mutationsDisabled}
             startDisabled={experimentStartsDisabled}
             stopBusy={stopBusy}
-            recoveryBusy={Boolean(
-              experiment.currentTask && taskActionId === experiment.currentTask.operation_id,
-            )}
+            recoveryBusy={Boolean(run.currentTask && taskActionId === run.currentTask.operation_id)}
             watcherCheckBusyId={watcherCheckBusyId}
-            providerLabel={experimentProviderLabel(experiment, providerLabels)}
+            providerLabel={experimentProviderLabel(run, providerLabels)}
             conversation={experimentConversation}
-            allowStart={!isExactBranchExperiment}
-            onRun={() => onRunExperiment(experiment.node)}
-            onStopLoop={() =>
-              onStopExperiment(experiment.node.id, exactBranchEpisodeId ?? undefined)
-            }
+            allowStart={!isExactBranchEpisode}
+            onRun={() => onRunExperiment(run.node)}
+            onStopLoop={() => onStopExperiment(run.node.id, exactEpisodeId ?? episode.episode_id)}
             onCheckWatcher={onCheckExperimentWatcher}
             onRecover={(action) => {
-              if (experiment.currentTask) onRecoverExperiment(experiment.currentTask, action);
+              if (run.currentTask) onRecoverExperiment(run.currentTask, action);
             }}
             onSwitchProvider={() => {
-              if (experiment.currentTask) onSwitchExperimentProvider(experiment.currentTask);
+              if (run.currentTask) onSwitchExperimentProvider(run.currentTask);
             }}
             episodeReportHref={episodeReportHref}
           />
@@ -1051,23 +1113,24 @@ function RunEntryRow({
   );
 }
 
+function formatEpisodeTimestamp(value: string): string {
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(parsed);
+}
+
 function experimentProviderLabel(
-  experiment: Extract<RunEntry, { kind: "experiment" }>["experiment"],
+  experiment: ExperimentRun,
   providerLabels: Record<string, string>,
 ): string | undefined {
   const provider =
     experiment.currentTask?.request.provider || experiment.control?.operational?.session.provider;
   return provider ? providerLabels[provider] || provider : undefined;
-}
-
-function experimentRowSummary(
-  experiment: Extract<RunEntry, { kind: "experiment" }>["experiment"],
-  startDisabled: boolean,
-) {
-  if (startDisabled && experiment.control.recommendation === "start_episode") {
-    return "Sync staged changes before starting";
-  }
-  return experimentRecommendation(experiment).label;
 }
 
 interface AttentionOverviewProps {
@@ -1166,82 +1229,6 @@ function ResearchNodeCard({
       <strong>{node.title}</strong>
     </button>
   );
-}
-
-function RunSection({
-  title,
-  count,
-  children,
-}: {
-  title: string;
-  count: number;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="operating-section">
-      <header>
-        <h2>{title}</h2>
-        <span>{count}</span>
-      </header>
-      <div>{children}</div>
-    </section>
-  );
-}
-
-function AgentRunRow({
-  group,
-  onInspectTask,
-  onDismissTask,
-}: {
-  group: AgentTaskGroup;
-  onInspectTask: (operationId: string) => void;
-  onDismissTask: (operationId: string) => void;
-}) {
-  const latest = group.latest;
-  return (
-    <div className="agent-run-row-shell">
-      <button
-        type="button"
-        className={`agent-run-row ${latest.status}`}
-        onClick={() => onInspectTask(latest.operation_id)}
-      >
-        <span className="agent-run-state" />
-        <span className="agent-run-copy">
-          <span className="eyebrow">
-            {agentTaskName(group.root)}
-            {group.attempts.length > 1 ? ` · ${group.attempts.length} attempts` : ""}
-          </span>
-          <strong>{latest.error || latest.status_message || latest.status_label}</strong>
-        </span>
-        <span className="agent-run-meta">
-          <span className={`status-pill ${agentTaskTone(latest)}`}>{latest.status_label}</span>
-          <time dateTime={latest.updated_at}>{new Date(latest.updated_at).toLocaleString()}</time>
-        </span>
-      </button>
-      {latest.awaiting_human && (
-        <button
-          type="button"
-          className="icon-button compact agent-run-dismiss"
-          aria-label="Dismiss agent task notification"
-          onClick={() => onDismissTask(latest.operation_id)}
-        >
-          <X size={14} />
-        </button>
-      )}
-    </div>
-  );
-}
-
-function agentTaskName(task: AgentTask): string {
-  return {
-    seed: "Project seed",
-    refresh: "Project refresh",
-    node_chat: "Node chat",
-    project_chat: "Project chat",
-    paper_coach: "Writing coach",
-    auto_research: "Auto-research",
-    branch_merge: "Branch merge",
-  }[task.kind];
 }
 
 function dagFocusNode(nodes: GraphNode[], edges: Edge[]): string | undefined {

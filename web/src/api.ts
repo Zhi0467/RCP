@@ -7,7 +7,6 @@ import type {
   IdentityResponse,
   ProjectCacheMetrics,
   ProjectSnapshot,
-  ResultViewDescriptor,
   StartEpisodeRequest,
   TeamInvitation,
   TeamInvitationIssue,
@@ -185,29 +184,6 @@ export function removeChatAttachment(
     `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments/${encodeURIComponent(attachmentId)}?${query}`,
     { method: "DELETE" },
   );
-}
-
-export function loadResultViews(
-  apiBase: string,
-  experimentId: string,
-  chatId: string,
-): Promise<ResultViewDescriptor[]> {
-  const query = new URLSearchParams({ experiment_id: experimentId, chat_id: chatId });
-  return api<ResultViewDescriptor[]>(`${apiBase}/result-views?${query}`);
-}
-
-export function keepResultView(apiBase: string, viewId: string): Promise<ResultViewDescriptor> {
-  return api<ResultViewDescriptor>(`${apiBase}/result-views/${encodeURIComponent(viewId)}/keep`, {
-    method: "POST",
-  });
-}
-
-export function resultViewPreviewUrl(
-  projectId: string,
-  view: Pick<ResultViewDescriptor, "view_id" | "updated_at">,
-): string {
-  const version = new URLSearchParams({ updated_at: view.updated_at });
-  return `/api/projects/${encodeURIComponent(projectId)}/result-views/${encodeURIComponent(view.view_id)}/preview?${version}`;
 }
 
 export function loadEpisodes(apiBase: string, mode?: EpisodeMode): Promise<Episode[]> {

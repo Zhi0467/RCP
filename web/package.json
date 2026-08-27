@@ -12,6 +12,7 @@
     "desktop:build": "sh src-tauri/scripts/build-release.sh",
     "desktop:build-signed": "sh src-tauri/scripts/build-release.sh --updater",
     "build": "tsc -b && vite build",
+    "build:clean": "tsc -b && vite build --emptyOutDir",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "typecheck": "tsc -b --pretty false"
   },

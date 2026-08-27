@@ -241,6 +241,7 @@ export interface ExperimentControlState {
   task_control: ExperimentTaskControlKind | null;
   can_switch_provider: boolean;
   can_open_report: boolean;
+  report_episode_id: string | null;
   node_closed: boolean;
 }
 
@@ -1002,8 +1003,6 @@ export interface AgentTaskContract {
   content: string;
 }
 
-export type ResultViewRequest = { action: "create" } | { action: "revise"; view_id: string };
-
 export interface AgentTaskRequest {
   provider?: ProviderId | null;
   model?: string | null;
@@ -1019,7 +1018,7 @@ export interface AgentTaskRequest {
   attachments?: ChatAttachmentDescriptor[];
   session_id?: string | null;
   mode?: ConversationMode;
-  result_view?: ResultViewRequest | null;
+  artifact_context?: ArtifactContextRequest | null;
   trigger?: TaskTrigger;
   patch_kind?: GraphPatchKind;
   control_node_id?: string | null;
@@ -1139,27 +1138,38 @@ export interface AgentTaskResult {
 }
 
 export type AgentArtifactMediaType =
-  "text/html" | "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  "text/html" | "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/svg+xml";
 
 export interface AgentArtifactDescriptor {
   artifact_id: string;
   name: string;
   media_type: AgentArtifactMediaType;
+  size_bytes?: number | null;
+  kept_filename?: string | null;
+  kept_at?: string | null;
 }
 
-export interface ResultViewDescriptor {
-  view_id: string;
-  chat_id: string;
-  experiment_id: string;
-  name: string;
-  media_type: "text/html";
-  state: "temporary" | "kept";
-  created_at: string;
-  updated_at: string;
-  expires_at: string;
-  kept_filename: string | null;
-  kept_at: string | null;
-  can_revise: boolean;
+export type ArtifactSelection =
+  | {
+      kind: "text";
+      text: string;
+      surrounding_text: string;
+      comment: string;
+    }
+  | {
+      kind: "box";
+      rect: { x: number; y: number; width: number; height: number };
+      viewport: { width: number; height: number };
+      labels: string;
+      comment: string;
+    };
+
+export interface ArtifactContextRequest {
+  source?: "task" | "episode_report";
+  operation_id: string;
+  artifact_id: string;
+  episode_id?: string | null;
+  selections: ArtifactSelection[];
 }
 
 export interface AgentTask {
@@ -1222,6 +1232,7 @@ export type EpisodeHealth =
 export type EpisodeRecommendationKind =
   "continue" | "wait" | "resume" | "retry" | "reauthorize" | "open_report" | "review" | "none";
 export type EpisodeTaskControlKind = "pause" | "resume" | "retry";
+export type EpisodeRunSection = "needs_action" | "completed";
 export type EpisodeMode = "auto_research" | "experiment_loop";
 
 /**
@@ -1296,6 +1307,7 @@ export interface Episode {
   health: EpisodeHealth;
   recommendation: EpisodeRecommendationKind;
   task_control: EpisodeTaskControlKind | null;
+  run_section: EpisodeRunSection;
 }
 
 export interface EpisodeMessage {
