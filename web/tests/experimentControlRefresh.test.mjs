@@ -12,6 +12,7 @@ const server = await createServer({
 });
 const {
   activeBranchMergeTask,
+  experimentControlsNeedWrapupPolling,
   failedTaskActionNeedsAuthoritativeProjectReload,
   loadExperimentWatcherPoll,
   terminalTaskNeedsAuthoritativeProjectReload,
@@ -52,6 +53,22 @@ test("terminal Experiment work refetches control state even without a graph revi
   assert.equal(
     terminalTaskNeedsAuthoritativeProjectReload({ ...ordinaryChat, applied_revision: 7 }),
     true,
+  );
+});
+
+test("hidden Experiment report wrap-up keeps authoritative polling alive", () => {
+  assert.equal(
+    experimentControlsNeedWrapupPolling({
+      "experiment/demo": { health: "wrapping_up" },
+    }),
+    true,
+  );
+  assert.equal(
+    experimentControlsNeedWrapupPolling({
+      "experiment/demo": { health: "completed" },
+      "experiment/other": { health: "needs_action" },
+    }),
+    false,
   );
 });
 

@@ -91,7 +91,7 @@ import {
   type ChatStateSnapshot,
 } from "./hooks/useChatState";
 import { useDesktopShell } from "./hooks/useDesktopShell";
-import { useEpisodeDialogs } from "./hooks/useEpisodeDialogs";
+import { startLiveEpisodePolling, useEpisodeDialogs } from "./hooks/useEpisodeDialogs";
 import { useGraphSelection, type GraphSelectionTabSnapshot } from "./hooks/useGraphSelection";
 import {
   cloneProjectHistorySnapshot,
@@ -194,8 +194,8 @@ export {
   resultViewLoadIsCurrent,
   resultViewSelectionIsCurrent,
   resultViewSelectionKey,
-  startLiveEpisodePolling,
 } from "./hooks/useEpisodeDialogs";
+export { startLiveEpisodePolling };
 export { relatedNodeWindowAction } from "./hooks/useGraphSelection";
 export {
   ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
@@ -315,6 +315,12 @@ export function terminalTaskNeedsAuthoritativeProjectReload(task: AgentTask): bo
     Boolean(task.applied_revision) ||
     task.request.patch_kind === "experiment_loop"
   );
+}
+
+export function experimentControlsNeedWrapupPolling(
+  controls: Readonly<Record<string, Pick<ExperimentControlState, "health">>>,
+): boolean {
+  return Object.values(controls).some((control) => control.health === "wrapping_up");
 }
 
 export function terminalTasksSince(previous: AgentTask[], current: AgentTask[]): AgentTask[] {
@@ -1774,6 +1780,33 @@ export default function App() {
   const presentedTransitionProjection = mutationsDisabled ? null : draftTransitionProjection;
   const presentedExperimentControl =
     presentedTransitionProjection?.experiment_control ?? project?.experiment_control ?? {};
+  const experimentWrapupPollingActive = experimentControlsNeedWrapupPolling(
+    project?.experiment_control ?? {},
+  );
+  useEffect(() => {
+    if (!projectId || !experimentWrapupPollingActive) return;
+    const requestedProjectId = projectId;
+    return startLiveEpisodePolling(
+      {
+        setTimeout: (callback, delay) => window.setTimeout(callback, delay),
+        clearTimeout: (timeoutId) => window.clearTimeout(timeoutId),
+      },
+      () => reloadAuthoritativeProject(requestedProjectId),
+      (error) => {
+        if (!isActiveProject(requestedProjectId)) return;
+        reportErrorNotice(
+          `Experiment report status could not refresh: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      },
+      () => undefined,
+    );
+  }, [
+    experimentWrapupPollingActive,
+    isActiveProject,
+    projectId,
+    reloadAuthoritativeProject,
+    reportErrorNotice,
+  ]);
   const experimentControlForNode = (node: GraphNode): ExperimentControlState | null => {
     if (!project || node.type !== "experiment") return null;
     const control = presentedExperimentControl[node.id];
