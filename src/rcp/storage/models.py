@@ -35,7 +35,7 @@ from rcp.limits import (
     WATCHER_HEALTHY_INTERVAL_SECONDS,
     WATCHER_SCHEDULE_JITTER_RATIO,
 )
-from rcp.providers import ProviderSkill
+from rcp.providers import ProviderSkill, legacy_runtime_id, require_runtime_id, runtime_label
 from rcp.skill_registry import SkillReference
 
 if TYPE_CHECKING:
@@ -312,6 +312,10 @@ class AgentTaskRecord(BaseModel):
     attempt: int = 1
     parent_operation_id: str | None = None
     episode_id: str | None = None
+    runtime_id: str = ""
+    #: How that runtime is named to a human. Derived here so a surface reporting
+    #: what actually ran never maps a durable id back to the registry itself.
+    runtime_label: str = ""
     native_session_id: str | None = None
     stage_host: str | None = None
     stage_root: str | None = None
@@ -340,6 +344,26 @@ class AgentTaskRecord(BaseModel):
     finished: bool = False
     status_label: str = ""
     visible: bool = True
+
+    @model_validator(mode="after")
+    def validate_provider_runtime(self) -> AgentTaskRecord:
+        provider = self.request.get("provider")
+        if not isinstance(provider, str) or not provider:
+            if self.runtime_id:
+                raise ValueError("an agent runtime requires a provider")
+            return self
+        try:
+            legacy = legacy_runtime_id(provider)
+        except ValueError:
+            # An old row may name a provider RCP no longer supports. Nothing can
+            # launch it, so it needs no runtime identity; keep it readable for
+            # project deletion and forensic export instead of failing every read.
+            return self
+        if not self.runtime_id:
+            self.runtime_id = legacy
+        require_runtime_id(provider, self.runtime_id)
+        self.runtime_label = runtime_label(provider, self.runtime_id)
+        return self
 
 
 # Fields a stored task carries because the row projection computed them, not

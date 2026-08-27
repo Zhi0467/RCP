@@ -48,6 +48,13 @@ class ModelChoice(BaseModel):
     default_reasoning: str = ""
 
 
+class ProviderRuntimeChoice(BaseModel):
+    """One manifest-selectable way to talk to a provider CLI."""
+
+    id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+
+
 class ProviderSkill(BaseModel):
     """One user-invocable skill reported by a provider CLI."""
 
@@ -110,6 +117,107 @@ class ProviderStreamEvent:
     usage: ProviderUsage | None = None
 
 
+@dataclass(frozen=True)
+class ProviderTurnRequest:
+    """One provider-owned runtime invocation after RCP has pinned its policy."""
+
+    prompt: str
+    binary: str
+    cwd: Path
+    model: str | None
+    reasoning: str | None
+    session_id: str | None
+    read_dirs: list[Path]
+    write_dirs: list[Path]
+    write_scope: ProjectWriteScope | None
+    capability: AgentCapability
+    provider_version: str | None
+    legacy_command: list[str] | None = None
+
+
+@dataclass(frozen=True)
+class ProviderRuntimeStep:
+    """One provider protocol input line normalized for the shared launcher."""
+
+    outgoing: tuple[bytes, ...] = ()
+    events: tuple[ProviderStreamEvent, ...] = ()
+    complete: bool = False
+    explicit_terminal: bool = False
+    delivers_prompt: bool = False
+
+
+class ProviderTurn:
+    """Stateful wire conversation for one fresh provider subprocess."""
+
+    command: list[str]
+    close_input_after_initial: bool = True
+    requires_protocol_completion: bool = False
+    initial_input_delivers_prompt: bool = True
+
+    def initial_input(self) -> bytes:
+        raise NotImplementedError
+
+    def receive_line(self, line: str) -> ProviderRuntimeStep:
+        raise NotImplementedError
+
+
+class ProviderRuntime:
+    """Provider-owned command and wire protocol hidden behind one RCP boundary."""
+
+    id: str
+
+    def turn(self, request: ProviderTurnRequest) -> ProviderTurn:
+        raise NotImplementedError
+
+
+class _JsonlProviderTurn(ProviderTurn):
+    def __init__(
+        self,
+        profile: ProviderProfile,
+        request: ProviderTurnRequest,
+    ) -> None:
+        self._profile = profile
+        self._prompt = request.prompt
+        self.command = request.legacy_command or profile.command(
+            request.prompt,
+            binary=request.binary,
+            cwd=request.cwd,
+            model=request.model,
+            reasoning=request.reasoning,
+            session_id=request.session_id,
+            read_dirs=request.read_dirs,
+            write_dirs=request.write_dirs,
+            write_scope=request.write_scope,
+            capability=request.capability,
+            provider_version=request.provider_version,
+        )
+
+    def initial_input(self) -> bytes:
+        return self._prompt.encode("utf-8")
+
+    def receive_line(self, line: str) -> ProviderRuntimeStep:
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            event = ProviderStreamEvent(event="raw", text=line)
+            return ProviderRuntimeStep(events=(event,))
+        event = self._profile.decode_event(value, line)
+        terminal = event.event == "error" or (
+            isinstance(value, dict)
+            and value.get("type") in {"turn.completed", "turn.failed", "result"}
+        )
+        return ProviderRuntimeStep(events=(event,), explicit_terminal=terminal)
+
+
+class _JsonlProviderRuntime(ProviderRuntime):
+    def __init__(self, runtime_id: str, profile: ProviderProfile) -> None:
+        self.id = runtime_id
+        self._profile = profile
+
+    def turn(self, request: ProviderTurnRequest) -> ProviderTurn:
+        return _JsonlProviderTurn(self._profile, request)
+
+
 class ProviderProfile:
     """Everything RCP knows about one agent CLI."""
 
@@ -124,6 +232,10 @@ class ProviderProfile:
     local_session_roots_field: str
     remote_session_roots_field: str
     usage_profile: str = "unknown.v1"
+    legacy_runtime_id: str
+    default_runtime: str
+    runtime_aliases: dict[str, str]
+    runtime_choices: tuple[ProviderRuntimeChoice, ...]
 
     def session_roots(self, sources: object, *, remote: bool) -> list[str]:
         """Return this provider's configured native-session roots.
@@ -178,6 +290,46 @@ class ProviderProfile:
                 return probed
         return list(self.declared)
 
+    def runtime(self, runtime_id: str) -> ProviderRuntime:
+        if runtime_id == self.legacy_runtime_id:
+            return _JsonlProviderRuntime(runtime_id, self)
+        raise ValueError(f"Provider {self.id!r} does not support runtime {runtime_id!r}.")
+
+    def configured_runtime(self, configured: str | None) -> str:
+        """Normalize a manifest value to its provider-owned public name."""
+
+        value = (configured or "").strip()
+        if not value:
+            return self.default_runtime
+        runtime_id = self.runtime_aliases.get(value, value)
+        self.runtime(runtime_id)
+        for choice in self.runtime_choices:
+            if self.runtime_aliases[choice.id] == runtime_id:
+                return choice.id
+        raise ValueError(f"Provider {self.id!r} runtime {value!r} is not manifest-selectable.")
+
+    def configured_runtime_id(self, configured: str | None) -> str:
+        public_name = self.configured_runtime(configured)
+        return self.runtime_aliases[public_name]
+
+    def runtime_label(self, runtime_id: str) -> str:
+        """Name a durable runtime id for a surface reporting what actually ran."""
+
+        for choice in self.runtime_choices:
+            if self.runtime_aliases[choice.id] == runtime_id:
+                return choice.label
+        # A record can name a runtime this build no longer offers. The stored id
+        # is then the only honest answer.
+        return runtime_id
+
+    def runtime_candidates(self, configured: str | None) -> tuple[ProviderRuntime, ...]:
+        """Preferred runtime followed by its safe pre-prompt fallback, if any."""
+
+        preferred = self.runtime(self.configured_runtime_id(configured))
+        if preferred.id == self.legacy_runtime_id:
+            return (preferred,)
+        return (preferred, self.runtime(self.legacy_runtime_id))
+
     def command(
         self,
         prompt: str,
@@ -212,6 +364,30 @@ class CodexProfile(ProviderProfile):
     usage_profile = "codex.turn.v1"
     local_session_roots_field = "codex_roots"
     remote_session_roots_field = "remote_codex_roots"
+    legacy_runtime_id = "codex.exec-json.v1"
+    default_runtime = "exec"
+    runtime_aliases = {
+        "exec": legacy_runtime_id,
+        "exec-json": legacy_runtime_id,
+        "app-server": "codex.app-server-stdio.v1",
+        legacy_runtime_id: legacy_runtime_id,
+        "codex.app-server-stdio.v1": "codex.app-server-stdio.v1",
+    }
+    runtime_choices = (
+        ProviderRuntimeChoice(id="exec", label="Codex exec"),
+        ProviderRuntimeChoice(id="app-server", label="Codex app server"),
+    )
+
+    def runtime(self, runtime_id: str) -> ProviderRuntime:
+        if runtime_id == self.legacy_runtime_id:
+            return super().runtime(runtime_id)
+        if runtime_id == "codex.app-server-stdio.v1":
+            # The protocol adapter imports these shared runtime contracts, so
+            # load it only after this module and the provider registry exist.
+            from rcp.agents.codex_app_server import CodexAppServerRuntime
+
+            return CodexAppServerRuntime()
+        return super().runtime(runtime_id)
 
     def auth_command(self, binary: str) -> list[str]:
         return [binary, "login", "status"]
@@ -448,6 +624,13 @@ class ClaudeProfile(ProviderProfile):
     usage_profile = "claude.query.v1"
     local_session_roots_field = "claude_roots"
     remote_session_roots_field = "remote_claude_roots"
+    legacy_runtime_id = "claude.stream-json.v1"
+    default_runtime = "stream-json"
+    runtime_aliases = {
+        "stream-json": legacy_runtime_id,
+        legacy_runtime_id: legacy_runtime_id,
+    }
+    runtime_choices = (ProviderRuntimeChoice(id="stream-json", label="Claude stream JSON"),)
     declared_against = "2.1.233"
     declared = _CLAUDE_MODELS
 
@@ -805,6 +988,35 @@ def profile_for(provider: str) -> ProviderProfile:
         return PROVIDERS[provider]
     except KeyError:
         raise ValueError(f"Unknown agent provider: {provider!r}") from None
+
+
+def legacy_runtime_id(provider: str) -> str:
+    """Runtime assigned to records created before runtime identity was durable."""
+
+    return profile_for(provider).legacy_runtime_id
+
+
+def configured_runtime(provider: str, value: str | None) -> str:
+    """Normalize one project-profile runtime without exposing provider internals."""
+
+    return profile_for(provider).configured_runtime(value)
+
+
+def configured_runtime_id(provider: str, value: str | None) -> str:
+    """Resolve one normalized project-profile runtime to its durable identifier."""
+
+    return profile_for(provider).configured_runtime_id(value)
+
+
+def runtime_label(provider: str, runtime_id: str) -> str:
+    """Display name for one durable runtime id, so no surface maps ids itself."""
+
+    return profile_for(provider).runtime_label(runtime_id)
+
+
+def require_runtime_id(provider: str, runtime_id: str) -> str:
+    profile_for(provider).runtime(runtime_id)
+    return runtime_id
 
 
 def project_write_enforcement_mode(provider: str) -> str:

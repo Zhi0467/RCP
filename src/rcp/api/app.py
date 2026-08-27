@@ -56,7 +56,7 @@ from rcp.api.paper import router as paper_router
 from rcp.api.project_state import router as project_state_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.sync import router as sync_router
-from rcp.api.task_requests import _resolved_graph_request
+from rcp.api.task_requests import _resolved_graph_request, resolved_agent_surface
 from rcp.api.tasks import router as tasks_router
 from rcp.api.team import router as team_router
 from rcp.api.watchers import router as watchers_router
@@ -74,6 +74,7 @@ from rcp.limits import (
 )
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.provider_skills import ProviderSkillInventoryManager
+from rcp.providers import configured_runtime_id
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandDispatcher,
@@ -318,6 +319,19 @@ def create_app(
         task = store.agent_task(execution.operation_id)
         if task is None or task.project_id != project_id:
             raise ValueError("The agent stream lost its durable project task.")
+        profile = service.resolve_agent_profile(
+            resolved_agent_surface(
+                store,
+                kind,
+                request,
+                parent_operation_id=task.parent_operation_id,
+            ),
+            provider=request.provider,
+            model=request.model,
+            reasoning=request.reasoning,
+            run_on=request.run_on,
+        )
+        execution.runtime_id = configured_runtime_id(profile.provider, profile.runtime)
         if task.graph_target.kind == "branch" and kind != "branch_merge":
             service = service.for_graph_target(
                 task.graph_target,

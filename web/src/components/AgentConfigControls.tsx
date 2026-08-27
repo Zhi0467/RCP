@@ -13,6 +13,7 @@ import {
   providerChange,
   providerOptions,
   reasoningOptions,
+  runtimeOptions,
 } from "../providers";
 import type { AgentProfile, AgentRunConfig, ProjectSnapshot } from "../types";
 
@@ -27,6 +28,16 @@ interface Props {
   defaultCollapsed?: boolean;
   /** Re-probe the provider CLIs. Rendered as a control only where passed. */
   onRefreshReadiness?: () => Promise<void>;
+  /**
+   * The profile runtime this configuration runs on. A run request cannot
+   * override it, so a surface that only builds a request passes `locked` and
+   * shows what the profile will use.
+   */
+  runtime?: {
+    value: string;
+    locked?: boolean;
+    onChange?: (value: string) => void;
+  };
   children?: ReactNode;
 }
 
@@ -49,6 +60,7 @@ export function AgentConfigControls({
   collapsible = false,
   defaultCollapsed = false,
   onRefreshReadiness,
+  runtime,
   children,
 }: Props) {
   const [expanded, setExpanded] = useState(!defaultCollapsed);
@@ -67,6 +79,7 @@ export function AgentConfigControls({
   const providers = providerOptions(Object.values(onMachine), value.provider);
   const modelChoices = modelOptions(models, value.model);
   const reasoningChoices = reasoningOptions(models, value.model, value.reasoning);
+  const runtimeChoices = runtimeOptions(readiness, runtime?.value ?? "");
 
   const contents = (
     <>
@@ -76,15 +89,14 @@ export function AgentConfigControls({
           <select
             value={value.provider}
             disabled={locked}
-            onChange={(event) =>
-              update(
-                providerChange(
-                  onMachine[event.target.value]?.models ?? [],
-                  event.target.value,
-                  value.reasoning,
-                ),
-              )
-            }
+            onChange={(event) => {
+              const next = onMachine[event.target.value];
+              update(providerChange(next?.models ?? [], event.target.value, value.reasoning));
+              // The runtime belongs to the provider, so it moves with it. Only
+              // this machine's readiness can name the new provider's default,
+              // and the list above cannot offer a provider without it.
+              if (next) runtime?.onChange?.(next.default_runtime);
+            }}
           >
             {providers.map(({ id, label }) => (
               <option value={id} key={id}>
@@ -93,6 +105,26 @@ export function AgentConfigControls({
             ))}
           </select>
         </label>
+        {runtime && (
+          <label className={runtime.locked ? "agent-machine-fixed" : undefined}>
+            <span>
+              Runtime {runtime.locked ? <LockKeyhole size={10} aria-hidden="true" /> : null}
+            </span>
+            <select
+              value={runtime.value}
+              // One choice is not a choice, and a request cannot override the
+              // profile's runtime. Both read as the locked control they are.
+              disabled={locked || runtime.locked || runtimeChoices.length < 2}
+              onChange={(event) => runtime.onChange?.(event.target.value)}
+            >
+              {runtimeChoices.map(({ id, label }) => (
+                <option value={id} key={id}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           <span>Model</span>
           <select

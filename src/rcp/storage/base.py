@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rcp.providers import PROVIDER_IDS, legacy_runtime_id
 from rcp.storage.auto_research import migrate_legacy_auto_research
 from rcp.storage.episodes import migrate_legacy_episodes
 from rcp.storage.models import (  # noqa: F401
@@ -431,6 +432,7 @@ class AppStoreBase:
                 CREATE TABLE IF NOT EXISTS writing_sessions (
                     native_session_id TEXT PRIMARY KEY,
                     provider TEXT NOT NULL,
+                    runtime_id TEXT NOT NULL DEFAULT '',
                     execution_machine TEXT NOT NULL,
                     project_id TEXT NOT NULL,
                     title TEXT,
@@ -546,6 +548,7 @@ class AppStoreBase:
                     result_json TEXT,
                     attempt INTEGER NOT NULL DEFAULT 1,
                     parent_operation_id TEXT,
+                    runtime_id TEXT NOT NULL DEFAULT '',
                     native_session_id TEXT,
                     stage_host TEXT,
                     stage_root TEXT,
@@ -1046,8 +1049,48 @@ class AppStoreBase:
                 "html",
                 "TEXT NOT NULL DEFAULT ''",
             )
+            self._ensure_column(
+                connection,
+                "writing_sessions",
+                "runtime_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            for row in connection.execute(
+                "SELECT native_session_id, provider FROM writing_sessions WHERE runtime_id = ''"
+            ).fetchall():
+                try:
+                    runtime_id = legacy_runtime_id(row["provider"])
+                except ValueError:
+                    # Old raw rows may name a provider RCP no longer supports;
+                    # preserve them for project deletion and forensic export.
+                    continue
+                connection.execute(
+                    "UPDATE writing_sessions SET runtime_id = ? WHERE native_session_id = ?",
+                    (runtime_id, row["native_session_id"]),
+                )
             self._ensure_column(connection, "graph_runs", "attempt", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(connection, "graph_runs", "parent_operation_id", "TEXT")
+            self._ensure_column(
+                connection,
+                "graph_runs",
+                "runtime_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            # One statement per supported provider rather than a row-at-a-time
+            # loop: request_json holds each task's whole payload, and reading
+            # every historical one into this process just to name its provider
+            # blocks the first open after upgrade. Rows naming a provider RCP no
+            # longer supports match nothing and keep an empty runtime, the same
+            # way the writing_sessions backfill above preserves them.
+            for supported in PROVIDER_IDS:
+                connection.execute(
+                    """
+                    UPDATE graph_runs SET runtime_id = ?
+                    WHERE runtime_id = ''
+                      AND json_extract(request_json, '$.provider') = ?
+                    """,
+                    (legacy_runtime_id(supported), supported),
+                )
             self._ensure_column(connection, "graph_runs", "native_session_id", "TEXT")
             self._ensure_column(connection, "graph_runs", "stage_host", "TEXT")
             self._ensure_column(connection, "graph_runs", "stage_root", "TEXT")

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.write_scope import ProjectWriteScope
@@ -24,6 +24,8 @@ from rcp.providers import (
     AgentCapability,
     ModelChoice,
     ProviderId,
+    ProviderRuntimeChoice,
+    ProviderTurnRequest,
     ProviderUsage,
     profile_for,
 )
@@ -79,6 +81,19 @@ class ProviderReadiness(BaseModel):
     #: declared where it cannot. Empty when the provider is unreachable, which
     #: leaves the UI showing the saved manifest values.
     models: list[ModelChoice] = []
+    runtimes: list[ProviderRuntimeChoice] = []
+    #: The runtime an omitted manifest value resolves to. Selection surfaces read
+    #: this rather than assuming a position inside `runtimes`.
+    default_runtime: str = ""
+
+    @model_validator(mode="after")
+    def fill_provider_runtimes(self) -> ProviderReadiness:
+        profile = profile_for(self.provider)
+        if not self.runtimes:
+            self.runtimes = list(profile.runtime_choices)
+        if not self.default_runtime:
+            self.default_runtime = profile.default_runtime
+        return self
 
 
 class AgentEvent(BaseModel):
@@ -95,6 +110,13 @@ class AgentEvent(BaseModel):
         "error",
         "paused",
         "done",
+        # Internal durable evidence emitted immediately before the selected
+        # runtime can deliver this invocation's provider prompt.
+        "runtime",
+        # Internal diagnostic emitted when a runtime failed before it could have
+        # delivered the prompt and another candidate is about to be tried. API
+        # pumps record it instead of forwarding it as UI text.
+        "runtime_fallback",
         # Internal orchestration evidence emitted immediately after the provider
         # process exits. API pumps consume it instead of forwarding it as UI text.
         "provider_exit",
@@ -199,6 +221,10 @@ class _ReadinessProbe:
     completed: threading.Event = field(default_factory=threading.Event)
     result: ProviderReadiness | None = None
     error: BaseException | None = None
+
+
+class _PrePromptRuntimeFailure(RuntimeError):
+    """A provider runtime ended before it could have accepted RCP's prompt."""
 
 
 class AgentLauncher:
@@ -445,6 +471,70 @@ class AgentLauncher:
         invocation_gate: ProviderInvocationGate | None = None,
         capability: AgentCapability,
         binary: str | None = None,
+        runtime_id: str | None = None,
+    ) -> AsyncIterator[AgentEvent]:
+        """Run the preferred provider runtime, falling back only before prompt delivery."""
+
+        runtimes = profile_for(provider).runtime_candidates(runtime_id)
+        last_failure: _PrePromptRuntimeFailure | None = None
+        for index, runtime in enumerate(runtimes):
+            try:
+                async for event in self._stream_runtime(
+                    provider,
+                    prompt,
+                    cwd=cwd,
+                    model=model,
+                    reasoning=reasoning,
+                    session_id=session_id,
+                    read_dirs=read_dirs,
+                    write_dirs=write_dirs,
+                    write_scope=write_scope,
+                    host=host,
+                    control=control,
+                    remote_pid_file=remote_pid_file,
+                    invocation_gate=invocation_gate,
+                    capability=capability,
+                    binary=binary,
+                    runtime_id=runtime.id,
+                ):
+                    yield event
+                return
+            except _PrePromptRuntimeFailure as exc:
+                last_failure = exc
+                if index + 1 < len(runtimes):
+                    # The next candidate will succeed silently, so this is the
+                    # only place the reason the human's chosen runtime was not
+                    # used can still be recorded.
+                    yield AgentEvent(
+                        event="runtime_fallback",
+                        text=json.dumps(
+                            {"runtime_id": runtime.id, "detail": str(exc)},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                    )
+        assert last_failure is not None
+        yield AgentEvent(event="error", text=str(last_failure))
+
+    async def _stream_runtime(
+        self,
+        provider: str,
+        prompt: str,
+        *,
+        cwd: Path,
+        model: str | None = None,
+        reasoning: str | None = None,
+        session_id: str | None = None,
+        read_dirs: list[Path] | None = None,
+        write_dirs: list[Path] | None = None,
+        write_scope: ProjectWriteScope | None = None,
+        host: str = "",
+        control: AgentProcessControl | None = None,
+        remote_pid_file: str | None = None,
+        invocation_gate: ProviderInvocationGate | None = None,
+        capability: AgentCapability,
+        binary: str | None = None,
+        runtime_id: str,
     ) -> AsyncIterator[AgentEvent]:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
@@ -487,20 +577,47 @@ class AgentLauncher:
                 )
                 return
 
-        command = self._command(
-            provider,
-            prompt,
-            binary=getattr(readiness, "binary_path", None) or binary or provider,
-            cwd=cwd,
-            model=model,
-            reasoning=reasoning,
-            session_id=session_id,
-            read_dirs=read_dirs or [],
-            write_dirs=write_dirs or [],
-            write_scope=write_scope,
-            capability=capability,
-            provider_version=getattr(readiness, "version", None),
+        profile = profile_for(provider)
+        runtime = profile.runtime(runtime_id)
+        resolved_binary = getattr(readiness, "binary_path", None) or binary or provider
+        legacy_command = (
+            self._command(
+                provider,
+                prompt,
+                binary=resolved_binary,
+                cwd=cwd,
+                model=model,
+                reasoning=reasoning,
+                session_id=session_id,
+                read_dirs=read_dirs or [],
+                write_dirs=write_dirs or [],
+                write_scope=write_scope,
+                capability=capability,
+                provider_version=getattr(readiness, "version", None),
+            )
+            if runtime.id == profile.legacy_runtime_id
+            else None
         )
+        try:
+            turn = runtime.turn(
+                ProviderTurnRequest(
+                    prompt=prompt,
+                    binary=resolved_binary,
+                    cwd=cwd,
+                    model=model,
+                    reasoning=reasoning,
+                    session_id=session_id,
+                    read_dirs=read_dirs or [],
+                    write_dirs=write_dirs or [],
+                    write_scope=write_scope,
+                    capability=capability,
+                    provider_version=getattr(readiness, "version", None),
+                    legacy_command=legacy_command,
+                )
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise _PrePromptRuntimeFailure(str(exc)) from exc
+        command = turn.command
         if invocation_gate is not None:
             command = invocation_gate.wrap_command(command)
         local_cwd: str | None = str(cwd)
@@ -525,9 +642,10 @@ class AgentLauncher:
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
-        except OSError:
-            self.invalidate_readiness(provider, host=host, binary=binary)
-            raise
+        except OSError as exc:
+            if runtime.id == profile.legacy_runtime_id:
+                self.invalidate_readiness(provider, host=host, binary=binary)
+            raise _PrePromptRuntimeFailure(str(exc)) from exc
         if control is not None:
             control.attach(process)
         stdin_task: asyncio.Task[None] | None = None
@@ -537,10 +655,23 @@ class AgentLauncher:
         try:
             assert process.stdin is not None
             assert process.stdout is not None
-            prompt_bytes = prompt.encode("utf-8")
+            prompt_bytes = turn.initial_input()
             if invocation_gate is not None:
                 prompt_bytes = invocation_gate.bootstrap(prompt_bytes)
-            stdin_task = asyncio.create_task(_feed_stdin(process.stdin, prompt_bytes))
+            prompt_delivered = False
+            pre_prompt_error = ""
+            if turn.initial_input_delivers_prompt:
+                yield AgentEvent(event="runtime", text=runtime.id)
+                # From this point a write may be partial even if drain raises;
+                # retrying through another runtime could duplicate the turn.
+                prompt_delivered = True
+            stdin_task = asyncio.create_task(
+                _feed_stdin(
+                    process.stdin,
+                    prompt_bytes,
+                    close=turn.close_input_after_initial,
+                )
+            )
             stderr_task = (
                 asyncio.create_task(
                     _read_bounded_text(
@@ -562,6 +693,7 @@ class AgentLauncher:
             stderr_pending = stderr_task is not None
             stderr = ""
             provider_failed = False
+            protocol_complete = False
             event_counts: dict[str, int] = {}
             explicit_terminal_event = False
             while stdout_task is not None:
@@ -598,7 +730,8 @@ class AgentLauncher:
                         ),
                     )
                     event_counts[event.event] = event_counts.get(event.event, 0) + 1
-                    yield event
+                    if prompt_delivered:
+                        yield event
                     continue
                 assert raw_line is not None
                 line = raw_line.decode("utf-8", errors="replace").rstrip()
@@ -606,14 +739,39 @@ class AgentLauncher:
                     continue
                 if invocation_gate is not None and line == invocation_gate.ready_line:
                     continue
-                event = self._normalize_event(provider, line)
-                event_counts[event.event] = event_counts.get(event.event, 0) + 1
-                explicit_terminal_event = explicit_terminal_event or _is_explicit_terminal_event(
-                    line, event
-                )
-                if event.event == "error":
-                    provider_failed = True
-                yield event
+                if stdin_pending:
+                    await stdin_task
+                    stdin_pending = False
+                step = turn.receive_line(line)
+                if step.delivers_prompt:
+                    if prompt_delivered:
+                        raise RuntimeError(
+                            f"{provider} attempted to deliver one prompt more than once."
+                        )
+                    yield AgentEvent(event="runtime", text=runtime.id)
+                    # Mark this before the actual write: a partial JSON-RPC
+                    # request is already beyond the safe fallback boundary.
+                    prompt_delivered = True
+                for outgoing in step.outgoing:
+                    await _write_stdin(process.stdin, outgoing)
+                for decoded in step.events:
+                    event = AgentEvent(
+                        event=decoded.event,
+                        text=decoded.text,
+                        session_id=decoded.session_id,
+                        usage=decoded.usage,
+                    )
+                    event_counts[event.event] = event_counts.get(event.event, 0) + 1
+                    if event.event == "error":
+                        provider_failed = True
+                        if not prompt_delivered and not pre_prompt_error:
+                            pre_prompt_error = event.text
+                    if prompt_delivered:
+                        yield event
+                explicit_terminal_event = explicit_terminal_event or step.explicit_terminal
+                protocol_complete = protocol_complete or step.complete
+                if step.complete and not process.stdin.is_closing():
+                    process.stdin.close()
             if stdin_pending:
                 await stdin_task
             return_code = await process.wait()
@@ -621,6 +779,19 @@ class AgentLauncher:
                 assert stderr_task is not None
                 stderr = await stderr_task
             stderr = _meaningful_stderr(stderr)
+            if not prompt_delivered and not (
+                control is not None and control.pause_requested.is_set()
+            ):
+                detail = (
+                    pre_prompt_error
+                    or stderr
+                    or (
+                        _exit_reason(provider, return_code, host)
+                        if return_code
+                        else f"{provider} closed its provider runtime before accepting the turn."
+                    )
+                )
+                raise _PrePromptRuntimeFailure(detail)
             yield AgentEvent(
                 event="provider_exit",
                 text=json.dumps(
@@ -639,6 +810,12 @@ class AgentLauncher:
                 self.invalidate_readiness(provider, host=host, binary=binary)
                 detail = stderr or _exit_reason(provider, return_code, host)
                 yield AgentEvent(event="error", text=detail)
+            elif turn.requires_protocol_completion and not protocol_complete:
+                self.invalidate_readiness(provider, host=host, binary=binary)
+                yield AgentEvent(
+                    event="error",
+                    text=f"{provider} closed its provider protocol before the turn completed.",
+                )
             elif provider_failed:
                 self.invalidate_readiness(provider, host=host, binary=binary)
             else:
@@ -690,20 +867,6 @@ class AgentLauncher:
             write_scope=write_scope,
             capability=capability,
             provider_version=provider_version,
-        )
-
-    @staticmethod
-    def _normalize_event(provider: str, line: str) -> AgentEvent:
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            return AgentEvent(event="raw", text=line)
-        decoded = profile_for(provider).decode_event(value, line)
-        return AgentEvent(
-            event=decoded.event,
-            text=decoded.text,
-            session_id=decoded.session_id,
-            usage=decoded.usage,
         )
 
     @staticmethod
@@ -775,25 +938,6 @@ def _meaningful_stderr(stderr: str) -> str:
     return "\n".join(kept).strip()
 
 
-def _is_explicit_terminal_event(line: str, event: AgentEvent) -> bool:
-    """Whether this JSONL record explicitly says the provider turn ended.
-
-    Final assistant messages are not terminal for every provider: Codex may
-    emit more tool or trace records after one. Provider error records are
-    terminal, while current JSONL protocols use ``turn.completed`` or
-    ``result`` for successful termination.
-    """
-    if event.event == "error":
-        return True
-    try:
-        value = json.loads(line)
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(value, dict):
-        return False
-    return value.get("type") in {"turn.completed", "turn.failed", "result"}
-
-
 def _exit_reason(provider: str, return_code: int, host: str) -> str:
     """What to say when the provider died without explaining itself."""
     where = f" on {host}" if host else ""
@@ -811,13 +955,17 @@ def _exit_reason(provider: str, return_code: int, host: str) -> str:
     return f"{provider} exited {return_code}{where}."
 
 
-async def _feed_stdin(stream, data: bytes) -> None:
+async def _write_stdin(stream, data: bytes) -> None:
     try:
         stream.write(data)
         await stream.drain()
     except (BrokenPipeError, ConnectionResetError):
         pass
-    finally:
+
+
+async def _feed_stdin(stream, data: bytes, *, close: bool = True) -> None:
+    await _write_stdin(stream, data)
+    if close:
         stream.close()
         with suppress(BrokenPipeError, ConnectionResetError):
             await stream.wait_closed()

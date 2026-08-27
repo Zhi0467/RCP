@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from rcp.agents import (
     AgentLauncher,
@@ -84,7 +84,12 @@ from rcp.limits import (
 )
 from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
-from rcp.providers import PROVIDER_IDS, ProviderId, ProviderSkillReference
+from rcp.providers import (
+    PROVIDER_IDS,
+    ProviderId,
+    ProviderSkillReference,
+    configured_runtime,
+)
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.skill_registry import (
     SkillDefaults,
@@ -574,6 +579,7 @@ def resolve_dispatch_authority(
 
 class AgentProfileSettings(BaseModel):
     provider: ProviderId
+    runtime: str = ""
     model: str = ""
     reasoning: str = "medium"
     run_on: str = Field(min_length=1)
@@ -1122,14 +1128,33 @@ class ProjectService:
         with self._index_lock:
             self._indexes.clear()
 
+    @staticmethod
+    def _settings_profile(
+        surface: AgentExecutionProfile,
+        requested: AgentProfileSettings,
+    ) -> AgentSurfaceConfig:
+        """One saved profile, reporting a rejection the human can act on.
+
+        A Pydantic envelope names the model and dumps the whole input. The
+        settings form shows this text verbatim, so it says which profile failed
+        and nothing else.
+        """
+
+        try:
+            return AgentSurfaceConfig(
+                provider=requested.provider,
+                runtime=requested.runtime,
+                model=requested.model,
+                reasoning=requested.reasoning,
+                run_on=requested.run_on,
+            )
+        except ValidationError as exc:
+            detail = exc.errors()[0]["msg"].removeprefix("Value error, ")
+            raise ValueError(f"{surface.replace('_', ' ')}: {detail}") from exc
+
     def update_settings(self, request: ProjectSettingsRequest) -> None:
         profiles = {
-            surface: AgentSurfaceConfig(
-                provider=request.agent_profiles[surface].provider,
-                model=request.agent_profiles[surface].model,
-                reasoning=request.agent_profiles[surface].reasoning,
-                run_on=request.agent_profiles[surface].run_on,
-            )
+            surface: self._settings_profile(surface, request.agent_profiles[surface])
             for surface in _SETTINGS_SURFACES
         }
         provider_path_updates = self._validate_provider_path_updates(request.machine_provider_paths)
@@ -1860,6 +1885,8 @@ class ProjectService:
             updates["provider"] = provider
             if provider != base.provider and model is None:
                 updates["model"] = ""
+            if provider != base.provider:
+                updates["runtime"] = configured_runtime(provider, None)
         if model is not None:
             updates["model"] = model
         if reasoning is not None:

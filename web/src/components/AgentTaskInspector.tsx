@@ -156,6 +156,16 @@ export function AgentTaskInspector({
                         {task.request.model ? ` · ${task.request.model}` : ""}
                       </dd>
                     </div>
+                    {task.runtime_label && (
+                      <div>
+                        <dt>Runtime</dt>
+                        {/* What the task actually ran on. A runtime that failed
+                            before the prompt was delivered is passed over
+                            without failing the turn, so this is the only place
+                            the substitution becomes visible. */}
+                        <dd>{task.runtime_label}</dd>
+                      </div>
+                    )}
                     <div>
                       <dt>Execution</dt>
                       <dd>{task.request.run_on || "Project default"}</dd>

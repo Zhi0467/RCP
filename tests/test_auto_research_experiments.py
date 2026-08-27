@@ -316,7 +316,12 @@ def test_kickoff_preserves_optional_goal_and_uses_current_node_work_profile(
         name: manifest.agent_profile(name).model_copy(deep=True) for name in EXECUTION_PROFILES
     }
     profiles["node_chat"] = profiles["node_chat"].model_copy(
-        update={"provider": "claude", "model": "current-node-work", "reasoning": "low"}
+        update={
+            "provider": "claude",
+            "runtime": "stream-json",
+            "model": "current-node-work",
+            "reasoning": "low",
+        }
     )
     profiles["orchestrator"] = profiles["orchestrator"].model_copy(
         update={"provider": "codex", "model": "orchestrator-only", "reasoning": "high"}

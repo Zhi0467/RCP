@@ -11,6 +11,7 @@ from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
 from rcp.agents.prompts import invoked_package_pointers
 from rcp.background import AgentTaskExecution
 from rcp.paper import PaperService, WritingSession
+from rcp.providers import configured_runtime_id
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _pinned_to_profile,
@@ -292,6 +293,11 @@ async def stream_coach(
     )
     reasoning = existing.reasoning if existing else request.reasoning
     native_session_id = request.session_id
+    actual_runtime_id = (
+        execution.runtime_id
+        if execution is not None
+        else configured_runtime_id(profile.provider, profile.runtime)
+    )
     completed = False
     provider_outcome = _ProviderOutcome(session_id=native_session_id)
     _record_agent_launch_receipt(
@@ -321,6 +327,7 @@ async def stream_coach(
             capability="paper_readonly",
             control=execution.control if execution is not None else None,
             binary=provider_binary,
+            runtime_id=(execution.runtime_id or None) if execution is not None else None,
         )
     ) as stream:
         async for event in stream:
@@ -339,6 +346,8 @@ async def stream_coach(
                     remote_stage=None,
                 )
                 continue
+            if event.event == "runtime":
+                actual_runtime_id = event.text
             if event.event == "session" and event.session_id:
                 native_session_id = event.session_id
             if event.event == "done":
@@ -350,6 +359,7 @@ async def stream_coach(
         paper.record_session(
             WritingSession(
                 provider=request.provider,
+                runtime_id=actual_runtime_id,
                 native_session_id=native_session_id,
                 execution_machine=profile.run_on,
                 project_id=paper.project_id,

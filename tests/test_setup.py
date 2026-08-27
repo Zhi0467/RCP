@@ -707,6 +707,7 @@ def test_wizard_manifest_records_each_agent_role_and_fixed_permissions(tmp_path)
                 },
                 "project_chat": {
                     "provider": "codex",
+                    "runtime": "app-server",
                     "model": "codex-project",
                     "reasoning": "xhigh",
                     "location": "local",
@@ -731,6 +732,10 @@ def test_wizard_manifest_records_each_agent_role_and_fixed_permissions(tmp_path)
     assert "[execution]" not in rendered
     assert "write_path" not in rendered
     assert manifest.agent_profile("seed").provider == "claude"
+    # Setup writes the runtime it chose, and resolves an omitted one the same
+    # way the manifest does rather than leaving the field out.
+    assert manifest.agent_profile("seed").runtime == "stream-json"
+    assert manifest.agent_profile("project_chat").runtime == "app-server"
     assert manifest.agent_profile("project_chat").reasoning == "xhigh"
     assert manifest.agent_profile("paper_coach").model == "claude-coach"
     assert manifest.agent_profile("paper_coach").permissions.write_graph_patch is False

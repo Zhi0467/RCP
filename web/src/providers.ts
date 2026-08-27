@@ -30,8 +30,27 @@ export function providerOptions(providers: ProviderReadiness[], saved: string): 
   );
 }
 
+export function readinessFor(
+  providers: ProviderReadiness[],
+  provider: string,
+): ProviderReadiness | undefined {
+  return providers.find((item) => item.provider === provider);
+}
+
 export function modelsFor(providers: ProviderReadiness[], provider: string): ModelChoice[] {
-  return providers.find((item) => item.provider === provider)?.models ?? [];
+  return readinessFor(providers, provider)?.models ?? [];
+}
+
+/**
+ * Runtimes the provider offers. Unlike a model, a runtime has no "provider
+ * default" entry: the backend resolves an omitted value to a concrete name
+ * before any surface sees it, so every option here is a real runtime.
+ */
+export function runtimeOptions(readiness: ProviderReadiness | undefined, saved: string): Option[] {
+  return withSaved(
+    (readiness?.runtimes ?? []).map(({ id, label }) => ({ id, label })),
+    saved,
+  );
 }
 
 /** The empty string is what the manifest has always meant by "provider default". */

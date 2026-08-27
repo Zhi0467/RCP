@@ -20,10 +20,11 @@ import { chooseDesktopRepositoryFolder, isDesktopRuntime } from "../desktopRunti
 import {
   modelChange,
   modelOptions,
-  modelsFor,
   providerChange,
   providerOptions,
+  readinessFor,
   reasoningOptions,
+  runtimeOptions,
 } from "../providers";
 import { repositoryPickerPresentation, stateRepositoryAfterRemoval } from "../projectSetup";
 import type {
@@ -69,6 +70,7 @@ const agentExecutionProfiles: Array<{ id: AgentExecutionProfile; label: string }
 // its default first. Hardcoding one here is what this whole change removes.
 const defaultAgentProfile = (model = ""): SetupAgentProfile => ({
   provider: "",
+  runtime: "",
   model,
   reasoning: "medium",
   location: "local",
@@ -121,7 +123,11 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
                 surface,
                 known.some((item) => item.provider === profile.provider)
                   ? profile
-                  : { ...profile, provider: fallback },
+                  : {
+                      ...profile,
+                      provider: fallback,
+                      runtime: readinessFor(known, fallback)?.default_runtime ?? "",
+                    },
               ]),
             ) as SetupAgents,
         );
@@ -463,7 +469,9 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
               <div className="agent-role-stack">
                 {agentExecutionProfiles.map(({ id, label }) => {
                   const profile = agents[id];
-                  const models = modelsFor(providers, profile.provider);
+                  const readiness = readinessFor(providers, profile.provider);
+                  const models = readiness?.models ?? [];
+                  const runtimes = runtimeOptions(readiness, profile.runtime);
                   const execution = id === "paper_coach" ? profile : canonicalExecution;
                   const machineValue =
                     execution.location === "local" ? "local" : `ssh:${execution.host}`;
@@ -484,18 +492,35 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
                           Provider
                           <select
                             value={profile.provider}
-                            onChange={(event) =>
-                              updateAgent(
-                                id,
-                                providerChange(
-                                  modelsFor(providers, event.target.value),
+                            onChange={(event) => {
+                              const next = readinessFor(providers, event.target.value);
+                              updateAgent(id, {
+                                ...providerChange(
+                                  next?.models ?? [],
                                   event.target.value,
                                   profile.reasoning,
                                 ),
-                              )
-                            }
+                                // The runtime belongs to the provider and moves
+                                // with it, the same rule Project Settings applies.
+                                ...(next ? { runtime: next.default_runtime } : {}),
+                              });
+                            }}
                           >
                             {providerOptions(providers, profile.provider).map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Runtime
+                          <select
+                            value={profile.runtime}
+                            disabled={runtimes.length < 2}
+                            onChange={(event) => updateAgent(id, { runtime: event.target.value })}
+                          >
+                            {runtimes.map((option) => (
                               <option key={option.id} value={option.id}>
                                 {option.label}
                               </option>

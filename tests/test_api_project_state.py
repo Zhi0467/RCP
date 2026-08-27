@@ -500,6 +500,47 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
     assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
 
 
+def test_cached_snapshot_names_the_runtime_on_profiles_saved_before_selection(
+    manifest, tmp_path
+) -> None:
+    """A cached profile predating runtime selection is still readable.
+
+    `agent_profiles` is part of the cached payload, so the first read after the
+    upgrade would otherwise hand the settings form a profile with no runtime.
+    """
+
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    authoritative = client.get(f"/api/projects/{project_id}")
+    assert authoritative.status_code == 200
+    cache_path = next((data_dir / "project-snapshots").iterdir())
+
+    legacy_snapshot = authoritative.json()
+    for profile in legacy_snapshot["agent_profiles"].values():
+        del profile["runtime"]
+    cache_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "project_id": project_id,
+                "canonical_patch_head": 1,
+                "snapshot": legacy_snapshot,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    migrated = client.get(f"/api/projects/{project_id}/cached")
+    assert migrated.status_code == 200
+    profiles = migrated.json()["agent_profiles"]
+    assert profiles
+    for surface, profile in profiles.items():
+        expected = "exec" if profile["provider"] == "codex" else "stream-json"
+        assert profile["runtime"] == expected, surface
+
+
 def test_project_readiness_does_not_open_or_materialize_project(
     manifest, tmp_path, monkeypatch
 ) -> None:
@@ -573,7 +614,9 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     assert before["default_auto_research_invocation_ceiling"] == 10
     assert "default_campaign_invocation_ceiling" not in before
     profiles = {
-        surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
+        surface: {
+            key: profile[key] for key in ("provider", "runtime", "model", "reasoning", "run_on")
+        }
         for surface, profile in before["agent_profiles"].items()
     }
     assert set(profiles) == {
@@ -585,7 +628,9 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
         "orchestrator",
     }
     profiles["seed"]["provider"] = "claude"
+    profiles["seed"]["runtime"] = "stream-json"
     profiles["seed"]["model"] = "claude-seed"
+    profiles["node_chat"]["runtime"] = "app-server"
     profiles["orchestrator"]["model"] = "campaign-orchestrator"
 
     incomplete = client.put(
@@ -600,6 +645,22 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
         },
     )
     assert incomplete.status_code == 422
+
+    mismatched_runtime = client.put(
+        f"/api/projects/{project_id}/settings",
+        json={
+            "default_run_truth_scope": ["repo-b"],
+            "agent_profiles": {
+                **profiles,
+                "refresh": {**profiles["refresh"], "provider": "claude", "runtime": "app-server"},
+            },
+        },
+    )
+    assert mismatched_runtime.status_code == 422
+    # The settings form shows this text, so it names the profile to fix and
+    # carries none of the Pydantic envelope around the reason.
+    detail = mismatched_runtime.json()["detail"]
+    assert detail == "refresh: Provider 'claude' does not support runtime 'app-server'."
 
     invalid_budget = client.put(
         f"/api/projects/{project_id}/settings",
@@ -635,6 +696,7 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     assert response.json()["default_auto_research_invocation_ceiling"] == 14
     assert "default_campaign_invocation_ceiling" not in response.json()
     assert response.json()["agent_profiles"]["seed"]["model"] == "claude-seed"
+    assert response.json()["agent_profiles"]["node_chat"]["runtime"] == "app-server"
     assert response.json()["agent_profiles"]["orchestrator"]["model"] == "campaign-orchestrator"
     assert "write_path" not in response.json()["agent_profiles"]["refresh"]
     assert (
@@ -646,6 +708,7 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     assert "[paper.coach]" not in content
     updated = load_manifest(manifest.path)
     assert updated.agent_profile("seed").provider == "claude"
+    assert updated.agent_profile("node_chat").runtime == "app-server"
     assert updated.agent_profile("orchestrator").model == "campaign-orchestrator"
     assert updated.agent_profile("orchestrator").permissions == permissions_for("orchestrate")
     assert updated.agent.default_auto_research_invocation_ceiling == 14

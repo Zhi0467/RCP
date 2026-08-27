@@ -30,12 +30,13 @@ import {
   mergeMachineProviderPaths,
   serializeSettingsDraft,
   settingsDraftStorageKey,
+  settingsFingerprint,
   type MachineProviderPaths,
 } from "../settingsDraft";
 import { TEXT_SCALE_MAX, TEXT_SCALE_MIN } from "../textScale";
 import type {
-  AgentRunConfig,
   AgentExecutionProfile,
+  AgentProfileSettings,
   AgentUsageSnapshot,
   CacheMetric,
   ProjectCacheMetrics,
@@ -88,19 +89,22 @@ const executionProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
   { id: "orchestrator", label: "Orchestrator" },
 ];
 
-function profilesFrom(project: ProjectSnapshot): Record<AgentExecutionProfile, AgentRunConfig> {
+function profilesFrom(
+  project: ProjectSnapshot,
+): Record<AgentExecutionProfile, AgentProfileSettings> {
   const canonicalMachine =
     project.repositories.find((repository) => repository.alias === project.state_repository)
       ?.machine ?? project.run_on;
   return Object.fromEntries(
     executionProfiles.map(({ id }) => {
-      const profile =
+      const storedProfile =
         id === "orchestrator"
-          ? profileRunConfig(project.agent_profiles.orchestrator ?? project.agent_profiles.refresh)
-          : profileRunConfig(project.agent_profiles[id]);
-      return [id, id === "paper_coach" ? profile : { ...profile, run_on: canonicalMachine }];
+          ? (project.agent_profiles.orchestrator ?? project.agent_profiles.refresh)
+          : project.agent_profiles[id];
+      const settings = { ...profileRunConfig(storedProfile), runtime: storedProfile.runtime };
+      return [id, id === "paper_coach" ? settings : { ...settings, run_on: canonicalMachine }];
     }),
-  ) as Record<AgentExecutionProfile, AgentRunConfig>;
+  ) as Record<AgentExecutionProfile, AgentProfileSettings>;
 }
 
 type SkillCatalogEntry = ProjectSnapshot["skill_catalog"][number];
@@ -163,7 +167,7 @@ export function ProjectSettings({
   const [autoResearchInvocationCeiling, setAutoResearchInvocationCeiling] = useState(
     () => stagedOrSaved(project).autoResearchInvocationCeiling,
   );
-  const [profiles, setProfiles] = useState<Record<AgentExecutionProfile, AgentRunConfig>>(
+  const [profiles, setProfiles] = useState<Record<AgentExecutionProfile, AgentProfileSettings>>(
     () => stagedOrSaved(project).profiles,
   );
   const [providerPaths, setProviderPaths] = useState<MachineProviderPaths>(
@@ -205,7 +209,7 @@ export function ProjectSettings({
 
   const baseline = useMemo(
     () =>
-      JSON.stringify({
+      settingsFingerprint({
         scope: project.default_run_truth_scope,
         autoResearchInvocationCeiling: project.default_auto_research_invocation_ceiling,
         profiles: profilesFrom(project),
@@ -214,7 +218,7 @@ export function ProjectSettings({
       }),
     [project],
   );
-  const current = JSON.stringify({
+  const current = settingsFingerprint({
     scope,
     autoResearchInvocationCeiling,
     profiles,
@@ -636,8 +640,21 @@ export function ProjectSettings({
                 locked={writesDisabled}
                 runOnLocked={id !== "paper_coach"}
                 onRefreshReadiness={onRefreshReadiness}
+                runtime={{
+                  value: profiles[id].runtime,
+                  onChange: (runtime) => {
+                    setProfiles((currentProfiles) => ({
+                      ...currentProfiles,
+                      [id]: { ...currentProfiles[id], runtime },
+                    }));
+                    setStatus(null);
+                  },
+                }}
                 onChange={(value) => {
-                  setProfiles((currentProfiles) => ({ ...currentProfiles, [id]: value }));
+                  setProfiles((currentProfiles) => ({
+                    ...currentProfiles,
+                    [id]: { ...currentProfiles[id], ...value },
+                  }));
                   setStatus(null);
                 }}
               />

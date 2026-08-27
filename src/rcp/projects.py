@@ -37,7 +37,7 @@ from rcp.limits import (
 )
 from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
-from rcp.providers import PROVIDER_IDS, ProviderId
+from rcp.providers import PROVIDER_IDS, ProviderId, configured_runtime
 from rcp.runs.task_policy import task_graph_capable
 from rcp.service import ProjectService, ProjectSettingsRequest, _ProjectSnapshotDraft
 from rcp.sources import project_cache_roots
@@ -1949,6 +1949,8 @@ def _valid_display_snapshot(
 
 
 def _migrate_legacy_display_snapshot_settings(snapshot: dict[str, object]) -> bool:
+    if not _migrate_legacy_display_snapshot_runtimes(snapshot):
+        return False
     legacy_key = "default_campaign_invocation_ceiling"
     current_key = "default_auto_research_invocation_ceiling"
     if legacy_key not in snapshot:
@@ -1958,6 +1960,36 @@ def _migrate_legacy_display_snapshot_settings(snapshot: dict[str, object]) -> bo
         return False
     snapshot.setdefault(current_key, snapshot[legacy_key])
     del snapshot[legacy_key]
+    return True
+
+
+def _migrate_legacy_display_snapshot_runtimes(snapshot: dict[str, object]) -> bool:
+    """Name the runtime on profiles cached before runtime selection existed.
+
+    `agent_profiles` is part of the cached payload, so the first read after this
+    upgrade would otherwise hand the settings form a profile with no runtime at
+    all. The manifest resolves an omitted value to the provider default; this
+    resolves it the same way rather than leaving the field absent.
+    """
+
+    profiles = snapshot.get("agent_profiles")
+    if not isinstance(profiles, dict):
+        return True
+    for profile in profiles.values():
+        if not isinstance(profile, dict):
+            return False
+        provider = profile.get("provider")
+        if not isinstance(provider, str):
+            return False
+        runtime = profile.get("runtime")
+        if runtime is not None and not isinstance(runtime, str):
+            return False
+        try:
+            profile["runtime"] = configured_runtime(provider, runtime)
+        except ValueError:
+            # A retired provider or runtime cannot be named. Re-deriving the
+            # snapshot from the manifest is cheaper than guessing.
+            return False
     return True
 
 

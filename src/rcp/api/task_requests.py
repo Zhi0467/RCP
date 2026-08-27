@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import cast
 
-from rcp.config import AgentSurface
+from rcp.config import AgentExecutionProfile, AgentSurface
 from rcp.providers import profile_for
 from rcp.runs.auto_research import AutoResearchRunRequest
+from rcp.runs.task_policy import AgentTaskRequest
 from rcp.service import ProjectService, RunRequest
-from rcp.storage import AgentTaskKind
+from rcp.storage import AgentTaskKind, AppStore
 
 
 def _resolved_graph_request(
@@ -62,4 +63,55 @@ def _resolved_auto_research_request(
     return skill_resolved
 
 
-__all__ = ["_resolved_auto_research_request", "_resolved_graph_request"]
+def resolved_agent_surface(
+    store: AppStore,
+    kind: AgentTaskKind,
+    request: AgentTaskRequest,
+    *,
+    parent_operation_id: str | None = None,
+) -> AgentExecutionProfile:
+    """Which project agent profile one task invocation executes under.
+
+    This lives beside `_resolved_graph_request` because it is the same policy:
+    which profile a request belongs to. Chat surfaces answer from `chat_scope`,
+    the way every run task owner does, so no caller can pin one field of a
+    profile while the owner runs a different one.
+    """
+
+    if kind in {"seed", "refresh", "paper_coach"}:
+        return cast(AgentExecutionProfile, kind)
+    if kind in {"node_chat", "project_chat"}:
+        if not isinstance(request, RunRequest):
+            raise TypeError("A chat task requires its pinned run request.")
+        return "project_chat" if request.chat_scope == "project" else "node_chat"
+    if kind == "branch_merge":
+        return "orchestrator"
+    if kind == "auto_research":
+        if not isinstance(request, AutoResearchRunRequest):
+            raise TypeError("An Auto-research task requires its pinned actor request.")
+        return "orchestrator" if request.role == "orchestrator" else "node_chat"
+    if kind == "episode_report":
+        parent = store.agent_task(parent_operation_id or "")
+        if parent is None:
+            raise ValueError("The episode report lost its concluding provider task.")
+        if parent.kind == "auto_research":
+            return resolved_agent_surface(
+                store,
+                "auto_research",
+                AutoResearchRunRequest.model_validate(parent.request),
+            )
+        if parent.kind in {"node_chat", "project_chat"}:
+            return resolved_agent_surface(
+                store,
+                parent.kind,
+                RunRequest.model_validate(parent.request),
+            )
+        raise ValueError("The episode report has no current provider profile.")
+    raise ValueError(f"Unknown provider task kind: {kind}")
+
+
+__all__ = [
+    "_resolved_auto_research_request",
+    "_resolved_graph_request",
+    "resolved_agent_surface",
+]

@@ -373,7 +373,10 @@ def _serve(
 def _copy(source, destination, close_destination=False):
     try:
         while True:
-            chunk = source.read(65536)
+            # `read` waits for a full buffer, which strands the short lines of an
+            # interactive provider protocol until 64 KiB accumulates or the pipe
+            # closes. `read1` hands over whatever one raw read produced.
+            chunk = source.read1(65536)
             if not chunk:
                 break
             destination.write(chunk)

@@ -45,7 +45,7 @@ from rcp.limits import (
     WRITING_SESSION_RETENTION_DAYS,
     WRITING_SESSIONS_PER_PROJECT,
 )
-from rcp.providers import ProviderUsage
+from rcp.providers import ProviderUsage, require_runtime_id
 from rcp.storage.models import (  # noqa: F401
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
     _EXPERIMENT_EPISODE_PINNED_FIELDS,
@@ -286,12 +286,12 @@ class AgentTaskStoreMixin:
                 operation_id, project_id, episode_id, kind, status, request_json,
                 created_at, updated_at, started_at, finished_at,
                 status_message, error, applied_revision, result_json, attempt,
-                parent_operation_id, native_session_id, stage_host,
+                parent_operation_id, runtime_id, native_session_id, stage_host,
                 stage_root, graph_target_json, write_scope_fingerprint,
                 estimate_seconds, estimate_samples, phase,
                 last_activity_at, dispatch_authority_json, authorized_space_id,
                 authorized_user_id, authorized_display_name, visible
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.operation_id,
@@ -310,6 +310,7 @@ class AgentTaskStoreMixin:
                 self._bounded_result_json(record.result),
                 record.attempt,
                 record.parent_operation_id,
+                record.runtime_id,
                 record.native_session_id,
                 record.stage_host,
                 record.stage_root,
@@ -2327,6 +2328,60 @@ class AgentTaskStoreMixin:
             if existing is None:
                 raise KeyError(operation_id)
             raise ValueError("Agent task native session conflicts with its saved RCP checkpoint.")
+
+    def checkpoint_agent_task_runtime(
+        self,
+        operation_id: str,
+        *,
+        provider: str,
+        runtime_id: str,
+    ) -> None:
+        """Record the runtime selected immediately before provider prompt delivery."""
+
+        require_runtime_id(provider, runtime_id)
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT request_json FROM graph_runs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(operation_id)
+            request = json.loads(row["request_json"])
+            if not isinstance(request, dict) or request.get("provider") != provider:
+                raise ValueError("Agent task runtime does not match its admitted provider.")
+            receipts = connection.execute(
+                """
+                SELECT payload_json FROM graph_run_receipts
+                WHERE operation_id = ? AND category = 'provider_runtime_selected'
+                ORDER BY receipt_id ASC
+                """,
+                (operation_id,),
+            ).fetchall()
+            if receipts:
+                if len(receipts) != 1:
+                    raise ValueError("Agent task has multiple provider runtime receipts.")
+                payload = json.loads(receipts[0]["payload_json"])
+                if isinstance(payload, dict) and payload.get("runtime_id") == runtime_id:
+                    return
+                raise ValueError("Agent task changed runtime after provider prompt delivery.")
+            connection.execute(
+                """
+                UPDATE graph_runs
+                SET runtime_id = ?, updated_at = ?, last_activity_at = ?
+                WHERE operation_id = ?
+                """,
+                (runtime_id, now, now, operation_id),
+            )
+            self._insert_agent_task_receipt(
+                connection,
+                operation_id,
+                "provider_runtime_selected",
+                self._bounded_receipt_payload({"provider": provider, "runtime_id": runtime_id}),
+                tier="summary",
+                created_at=now,
+            )
 
     def bind_agent_task_write_scope(
         self,

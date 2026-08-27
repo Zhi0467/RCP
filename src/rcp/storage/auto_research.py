@@ -1230,8 +1230,29 @@ class AutoResearchStoreMixin:
             ).fetchone()
             if row is None:
                 raise KeyError(recovery_id)
-            if updated != 1 and row["status"] != "admitted":
-                raise ValueError("Auto-research recovery is no longer pending")
+            if updated != 1:
+                already_admitted = (
+                    row["status"] == "admitted"
+                    and (
+                        expected_operation_id is None
+                        or row["operation_id"] == expected_operation_id
+                    )
+                    and (
+                        admitted_operation_id is None
+                        or row["admitted_operation_id"] == admitted_operation_id
+                    )
+                )
+                # The launched child may fail immediately and schedule its next
+                # attempt before the admitting thread reaches this checkpoint.
+                # Its exact operation id and consumed attempt prove this same
+                # admission already happened; do not count or reject it twice.
+                already_settled = (
+                    admitted_operation_id is not None
+                    and row["operation_id"] == admitted_operation_id
+                    and int(row["attempts"]) > 0
+                )
+                if not already_admitted and not already_settled:
+                    raise ValueError("Auto-research recovery is no longer pending")
         return self._auto_research_recovery_record(row)
 
     def defer_auto_research_recovery(
