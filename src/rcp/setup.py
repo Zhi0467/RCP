@@ -24,7 +24,7 @@ from rcp.config import (
 from rcp.core.materialize import MaterializationResult
 from rcp.history import HistoryManager, ProjectIdentityConflict
 from rcp.projects import ProjectCatalog
-from rcp.providers import DEFAULT_PROVIDER, PROVIDER_IDS, ProviderId
+from rcp.providers import DEFAULT_PROVIDER, PROVIDER_IDS, ProviderId, configured_runtime
 from rcp.transport import StateWorkspace
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import state_workspace_for_probe
@@ -79,10 +79,16 @@ class SetupExecution(_StrictSetupModel):
 
 class SetupAgentProfile(_StrictSetupModel):
     provider: ProviderId = DEFAULT_PROVIDER
+    runtime: str = ""
     model: str = ""
     reasoning: str = "medium"
     location: Literal["local", "ssh"] = "local"
     host: str = ""
+
+    @model_validator(mode="after")
+    def validate_provider_runtime(self) -> SetupAgentProfile:
+        self.runtime = configured_runtime(self.provider, self.runtime)
+        return self
 
     @model_validator(mode="after")
     def validate_host(self) -> SetupAgentProfile:
@@ -758,6 +764,7 @@ def render_manifest(
         setup_profile = request.agents.profile(surface)
         profile = tomlkit.table()
         profile.add("provider", setup_profile.provider)
+        profile.add("runtime", setup_profile.runtime)
         profile.add("model", setup_profile.model)
         profile.add("reasoning", setup_profile.reasoning)
         profile.add("run_on", host_aliases[setup_profile.host])

@@ -38,8 +38,11 @@ they cannot widen or narrow these capabilities.
 
 Each project agent profile selects a provider-owned runtime. An omitted value is
 backward compatible: Codex uses `exec` and Claude uses `stream-json`. Provider
-readiness exports the allowed names, Project Settings renders those answers, and
-the backend validates the saved provider/runtime pair. A task request cannot
+readiness exports the allowed names and the one an omitted value resolves to;
+project setup and Project Settings render those answers, and the backend
+validates the saved provider/runtime pair. No surface derives that default from
+the order of the exported names. A profile always carries a resolved runtime, so
+no selection surface stages or shows an empty one. A task request cannot
 override the profile's runtime. The selected profile runtime applies to every
 capability launched through that profile, so one `node_chat` choice covers both
 Discuss and Work while their distinct capability contracts remain fixed in code.
@@ -65,7 +68,8 @@ Once `turn/start` may have been accepted, failure is retained as an interrupted
 or failed attempt and RCP never retries the prompt through exec. This rule is the
 same for fresh and resumed conversations. Silent means the human's turn is not
 failed, not that the cause is lost: the passed-over runtime and its failure are
-recorded as a task diagnostic.
+recorded as a task diagnostic, and the runtime that did run is named on the task
+and on the Paper writing session, which is where a substitution becomes visible.
 
 Containment differs by runtime because the transports differ. `exec` refuses the
 whole user config file and its execpolicy `.rules` files with `--ignore-user-config`

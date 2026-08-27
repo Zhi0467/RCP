@@ -249,6 +249,11 @@ remain Codex Desktop behavior rather than RCP product state.
 
 ## Frontend trust boundary
 
+Provider naming is a backend answer. Readiness exports each provider's runtime
+choices and its default, and a task and a Paper writing session each export the
+label for the runtime they ran on, so no surface maps a durable runtime id or
+picks a default itself.
+
 The browser may stage human drafts and render backend projections; it is not the
 owner of authority, tasks, graph rules, provider credentials, watcher delivery,
 or canonical state. Client-generated ids, cached target selection, URL fragments,

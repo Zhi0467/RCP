@@ -35,7 +35,7 @@ from rcp.limits import (
     WATCHER_HEALTHY_INTERVAL_SECONDS,
     WATCHER_SCHEDULE_JITTER_RATIO,
 )
-from rcp.providers import ProviderSkill, legacy_runtime_id, require_runtime_id
+from rcp.providers import ProviderSkill, legacy_runtime_id, require_runtime_id, runtime_label
 from rcp.skill_registry import SkillReference
 
 if TYPE_CHECKING:
@@ -313,6 +313,9 @@ class AgentTaskRecord(BaseModel):
     parent_operation_id: str | None = None
     episode_id: str | None = None
     runtime_id: str = ""
+    #: How that runtime is named to a human. Derived here so a surface reporting
+    #: what actually ran never maps a durable id back to the registry itself.
+    runtime_label: str = ""
     native_session_id: str | None = None
     stage_host: str | None = None
     stage_root: str | None = None
@@ -359,6 +362,7 @@ class AgentTaskRecord(BaseModel):
         if not self.runtime_id:
             self.runtime_id = legacy
         require_runtime_id(provider, self.runtime_id)
+        self.runtime_label = runtime_label(provider, self.runtime_id)
         return self
 
 

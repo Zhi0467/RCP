@@ -82,11 +82,17 @@ class ProviderReadiness(BaseModel):
     #: leaves the UI showing the saved manifest values.
     models: list[ModelChoice] = []
     runtimes: list[ProviderRuntimeChoice] = []
+    #: The runtime an omitted manifest value resolves to. Selection surfaces read
+    #: this rather than assuming a position inside `runtimes`.
+    default_runtime: str = ""
 
     @model_validator(mode="after")
     def fill_provider_runtimes(self) -> ProviderReadiness:
+        profile = profile_for(self.provider)
         if not self.runtimes:
-            self.runtimes = list(profile_for(self.provider).runtime_choices)
+            self.runtimes = list(profile.runtime_choices)
+        if not self.default_runtime:
+            self.default_runtime = profile.default_runtime
         return self
 
 

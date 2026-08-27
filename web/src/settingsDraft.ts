@@ -21,20 +21,29 @@ export function mergeAgentProfiles(
   saved: Record<AgentExecutionProfile, AgentProfileSettings>,
   staged: SettingsDraft["profiles"],
 ): Record<AgentExecutionProfile, AgentProfileSettings> {
+  return { ...saved, ...staged };
+}
+
+/**
+ * A comparable form of one settings form state.
+ *
+ * Whether the form is dirty is decided by comparing text, and the two sides
+ * reach it by different routes: reading a project sorts its field names, while
+ * a save response returns them in declaration order. Sorting every key here
+ * keeps the comparison about values, which is all the researcher changed.
+ */
+export function settingsFingerprint(state: unknown): string {
+  return JSON.stringify(withSortedKeys(state));
+}
+
+function withSortedKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withSortedKeys);
+  if (!isRecord(value)) return value;
   return Object.fromEntries(
-    Object.entries(saved).map(([surface, profile]) => {
-      const stagedProfile = staged[surface as AgentExecutionProfile];
-      const merged = { ...profile, ...stagedProfile };
-      // Provider and runtime are one choice. A draft written before runtime
-      // selection existed carries a staged provider and no runtime, and the
-      // manifest's runtime belongs to the provider it is replacing, so keeping
-      // it would build a pair the backend rejects. Empty means provider default.
-      if (merged.provider !== profile.provider) {
-        merged.runtime = stagedProfile?.runtime ?? "";
-      }
-      return [surface, merged];
-    }),
-  ) as Record<AgentExecutionProfile, AgentProfileSettings>;
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, withSortedKeys(value[key])]),
+  );
 }
 
 export function settingsDraftStorageKey(projectId: string): string {
@@ -53,6 +62,7 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
     if (!Array.isArray(parsed.scope) || parsed.scope.some((item) => typeof item !== "string"))
       return null;
     if (!isRecord(parsed.profiles)) return null;
+    dropProfilesWithoutRuntime(parsed.profiles);
     if (parsed.providerPaths !== undefined && !isMachineProviderPaths(parsed.providerPaths))
       return null;
     if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;
@@ -80,6 +90,21 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * A draft written before runtime selection carries a provider and no runtime.
+ * Provider and runtime are one choice, and nothing here can name the missing
+ * half, so the incomplete profile is dropped and the manifest's own values are
+ * restored for that surface. Staging an empty runtime instead would show the
+ * researcher a nameless blank where a real runtime belongs.
+ */
+function dropProfilesWithoutRuntime(profiles: Record<string, unknown>): void {
+  for (const [surface, profile] of Object.entries(profiles)) {
+    if (!isRecord(profile) || typeof profile.runtime !== "string" || !profile.runtime) {
+      delete profiles[surface];
+    }
   }
 }
 

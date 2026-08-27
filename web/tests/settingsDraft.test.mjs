@@ -8,6 +8,7 @@ import {
   mergeAgentProfiles,
   mergeMachineProviderPaths,
   serializeSettingsDraft,
+  settingsFingerprint,
 } from "../src/settingsDraft.ts";
 
 test("machine provider paths preserve recorded values and emit only edits", () => {
@@ -39,31 +40,7 @@ test("an older staged path set keeps provider records added since it was written
   );
 });
 
-test("an older staged profile does not erase a runtime added to the manifest", () => {
-  const saved = {
-    node_chat: {
-      provider: "codex",
-      runtime: "app-server",
-      model: "",
-      reasoning: "medium",
-      run_on: "local",
-    },
-  };
-  const staged = {
-    node_chat: {
-      provider: "codex",
-      model: "gpt-5.6-sol",
-      reasoning: "high",
-      run_on: "local",
-    },
-  };
-
-  assert.deepEqual(mergeAgentProfiles(saved, staged), {
-    node_chat: { ...staged.node_chat, runtime: "app-server" },
-  });
-});
-
-test("an older staged provider switch does not keep the other provider's runtime", () => {
+test("a staged profile keeps its own runtime over the manifest", () => {
   const saved = {
     node_chat: {
       provider: "codex",
@@ -74,12 +51,70 @@ test("an older staged provider switch does not keep the other provider's runtime
     },
   };
   const staged = {
-    node_chat: { provider: "claude", model: "", reasoning: "medium", run_on: "local" },
+    node_chat: {
+      provider: "codex",
+      runtime: "app-server",
+      model: "gpt-5.6-sol",
+      reasoning: "high",
+      run_on: "local",
+    },
   };
 
-  assert.deepEqual(mergeAgentProfiles(saved, staged), {
-    node_chat: { ...staged.node_chat, runtime: "" },
-  });
+  assert.deepEqual(mergeAgentProfiles(saved, staged), staged);
+});
+
+test("a staged profile written before runtime selection is dropped", () => {
+  const draft = deserializeSettingsDraft(
+    JSON.stringify({
+      version: 2,
+      scope: ["repo"],
+      profiles: {
+        // A provider switch with no runtime beside it. Provider and runtime are
+        // one choice, and nothing can name the missing half.
+        seed: { provider: "claude", model: "", reasoning: "medium", run_on: "local" },
+        // An empty runtime is the same incomplete pair spelled differently.
+        refresh: {
+          provider: "codex",
+          runtime: "",
+          model: "",
+          reasoning: "medium",
+          run_on: "local",
+        },
+        node_chat: {
+          provider: "codex",
+          runtime: "app-server",
+          model: "",
+          reasoning: "medium",
+          run_on: "local",
+        },
+      },
+    }),
+  );
+
+  assert.ok(draft);
+  assert.deepEqual(Object.keys(draft.profiles), ["node_chat"]);
+});
+
+test("a dropped staged profile leaves the manifest profile intact", () => {
+  const saved = {
+    seed: {
+      provider: "codex",
+      runtime: "exec",
+      model: "",
+      reasoning: "medium",
+      run_on: "local",
+    },
+  };
+  const draft = deserializeSettingsDraft(
+    JSON.stringify({
+      version: 2,
+      scope: ["repo"],
+      profiles: { seed: { provider: "claude", model: "", reasoning: "medium", run_on: "local" } },
+    }),
+  );
+
+  assert.ok(draft);
+  assert.deepEqual(mergeAgentProfiles(saved, draft.profiles), saved);
 });
 
 test("settings drafts round trip staged provider paths", () => {
@@ -150,6 +185,7 @@ test("v2 settings drafts accept one operational invocation and reject legacy or 
 test("a migrated five-profile v1 draft keeps the saved orchestrator profile", () => {
   const runConfig = (model) => ({
     provider: "codex",
+    runtime: "exec",
     model,
     reasoning: "medium",
     run_on: "local",
@@ -181,4 +217,21 @@ test("a migrated five-profile v1 draft keeps the saved orchestrator profile", ()
     ...legacy.profiles,
     orchestrator: saved.orchestrator,
   });
+});
+
+test("settings compare by value, not by the order the backend listed the keys", () => {
+  // Reading a project sorts its field names; a save response returns them in
+  // declaration order. Comparing the raw text left the form permanently dirty.
+  const read = { skill_defaults: { skill_ids: ["a"], workflow_ids: [] } };
+  const saved = { skill_defaults: { workflow_ids: [], skill_ids: ["a"] } };
+
+  assert.notEqual(JSON.stringify(read), JSON.stringify(saved));
+  assert.equal(settingsFingerprint(read), settingsFingerprint(saved));
+});
+
+test("settings compare keeps list order, which the researcher chose", () => {
+  assert.notEqual(
+    settingsFingerprint({ scope: ["a", "b"] }),
+    settingsFingerprint({ scope: ["b", "a"] }),
+  );
 });

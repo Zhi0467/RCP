@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, model_validator
 
 from rcp.config import Manifest
-from rcp.providers import ProviderId, legacy_runtime_id, require_runtime_id
+from rcp.providers import ProviderId, legacy_runtime_id, require_runtime_id, runtime_label
 from rcp.storage import AppStore
 from rcp.transport import LocalStateWorkspace, StateUnavailable, StateWorkspace
 
@@ -42,6 +42,8 @@ class PaperSnapshot(BaseModel):
 class WritingSession(BaseModel):
     provider: ProviderId
     runtime_id: str = ""
+    #: The human-facing name for `runtime_id`, filled from the provider registry.
+    runtime_label: str = ""
     native_session_id: str
     execution_machine: str
     project_id: str
@@ -59,6 +61,7 @@ class WritingSession(BaseModel):
         if not self.runtime_id:
             self.runtime_id = legacy_runtime_id(self.provider)
         require_runtime_id(self.provider, self.runtime_id)
+        self.runtime_label = runtime_label(self.provider, self.runtime_id)
         return self
 
 

@@ -30,6 +30,7 @@ import {
   mergeMachineProviderPaths,
   serializeSettingsDraft,
   settingsDraftStorageKey,
+  settingsFingerprint,
   type MachineProviderPaths,
 } from "../settingsDraft";
 import { TEXT_SCALE_MAX, TEXT_SCALE_MIN } from "../textScale";
@@ -100,10 +101,7 @@ function profilesFrom(
         id === "orchestrator"
           ? (project.agent_profiles.orchestrator ?? project.agent_profiles.refresh)
           : project.agent_profiles[id];
-      const settings = {
-        ...profileRunConfig(storedProfile),
-        runtime: storedProfile.runtime ?? "",
-      };
+      const settings = { ...profileRunConfig(storedProfile), runtime: storedProfile.runtime };
       return [id, id === "paper_coach" ? settings : { ...settings, run_on: canonicalMachine }];
     }),
   ) as Record<AgentExecutionProfile, AgentProfileSettings>;
@@ -211,7 +209,7 @@ export function ProjectSettings({
 
   const baseline = useMemo(
     () =>
-      JSON.stringify({
+      settingsFingerprint({
         scope: project.default_run_truth_scope,
         autoResearchInvocationCeiling: project.default_auto_research_invocation_ceiling,
         profiles: profilesFrom(project),
@@ -220,7 +218,7 @@ export function ProjectSettings({
       }),
     [project],
   );
-  const current = JSON.stringify({
+  const current = settingsFingerprint({
     scope,
     autoResearchInvocationCeiling,
     profiles,
@@ -644,9 +642,6 @@ export function ProjectSettings({
                 onRefreshReadiness={onRefreshReadiness}
                 runtime={{
                   value: profiles[id].runtime,
-                  choices:
-                    project.provider_readiness[profiles[id].run_on]?.[profiles[id].provider]
-                      ?.runtimes ?? [],
                   onChange: (runtime) => {
                     setProfiles((currentProfiles) => ({
                       ...currentProfiles,
@@ -656,19 +651,10 @@ export function ProjectSettings({
                   },
                 }}
                 onChange={(value) => {
-                  setProfiles((currentProfiles) => {
-                    const current = currentProfiles[id];
-                    const runtimes =
-                      project.provider_readiness[value.run_on]?.[value.provider]?.runtimes ?? [];
-                    const runtime =
-                      value.provider === current.provider
-                        ? current.runtime
-                        : (runtimes[0]?.id ?? current.runtime);
-                    return {
-                      ...currentProfiles,
-                      [id]: { ...value, runtime },
-                    };
-                  });
+                  setProfiles((currentProfiles) => ({
+                    ...currentProfiles,
+                    [id]: { ...currentProfiles[id], ...value },
+                  }));
                   setStatus(null);
                 }}
               />

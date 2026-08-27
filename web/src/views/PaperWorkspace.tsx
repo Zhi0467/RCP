@@ -604,7 +604,9 @@ export function PaperWorkspace({
                 >
                   <span>{session.title || "Untitled coach session"}</span>
                   <span className="session-meta">
-                    {session.provider} · rev {session.graph_revision_examined}
+                    {session.provider}
+                    {session.runtime_label ? ` · ${session.runtime_label}` : ""} · rev{" "}
+                    {session.graph_revision_examined}
                   </span>
                   <ChevronRight size={13} />
                 </button>

@@ -47,6 +47,15 @@ export function RunDialog({
     switchingExperimentProvider && initialConfig && !agentSelectionChanged(config, initialConfig),
   );
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
+  // Which runtime this run will use. A request cannot override the profile's
+  // runtime, and the backend swaps in the provider default only when the run
+  // overrides the provider — so a provider override silently moves the runtime
+  // too. The override is a draft this dialog owns, which is why the answer is
+  // assembled here rather than exported.
+  const profileRuntime =
+    config.provider === project.agent_profiles[kind].provider
+      ? project.agent_profiles[kind].runtime
+      : readiness?.default_runtime;
   const providerReady =
     readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
   const crossMachineRepositories = project.repositories.filter(
@@ -117,6 +126,7 @@ export function RunDialog({
           project={project}
           value={config}
           onChange={setConfig}
+          runtime={profileRuntime ? { value: profileRuntime, locked: true } : undefined}
           runOnLocked
           collapsible
         />

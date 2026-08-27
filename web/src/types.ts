@@ -1180,6 +1180,7 @@ export interface AgentTask {
   parent_operation_id?: string | null;
   episode_id?: string | null;
   runtime_id: string;
+  runtime_label: string;
   native_session_id?: string | null;
   stage_host?: string | null;
   stage_root?: string | null;
@@ -1444,6 +1445,8 @@ export interface ProviderReadiness {
   reason?: string | null;
   models: ModelChoice[];
   runtimes: ProviderRuntimeChoice[];
+  /** The runtime an omitted manifest value resolves to. Never derive this. */
+  default_runtime: string;
 }
 
 export interface PaperSnapshot {
@@ -1582,6 +1585,7 @@ export interface SetupExecution {
 
 export interface SetupAgentProfile {
   provider: ProviderId;
+  runtime: string;
   model: string;
   reasoning: string;
   location: "local" | "ssh";
@@ -1660,6 +1664,7 @@ export interface SetupPreview {
 export interface WritingSession {
   provider: ProviderId;
   runtime_id: string;
+  runtime_label: string;
   native_session_id: string;
   execution_machine: string;
   project_id: string;

@@ -312,6 +312,16 @@ class ProviderProfile:
         public_name = self.configured_runtime(configured)
         return self.runtime_aliases[public_name]
 
+    def runtime_label(self, runtime_id: str) -> str:
+        """Name a durable runtime id for a surface reporting what actually ran."""
+
+        for choice in self.runtime_choices:
+            if self.runtime_aliases[choice.id] == runtime_id:
+                return choice.label
+        # A record can name a runtime this build no longer offers. The stored id
+        # is then the only honest answer.
+        return runtime_id
+
     def runtime_candidates(self, configured: str | None) -> tuple[ProviderRuntime, ...]:
         """Preferred runtime followed by its safe pre-prompt fallback, if any."""
 
@@ -996,6 +1006,12 @@ def configured_runtime_id(provider: str, value: str | None) -> str:
     """Resolve one normalized project-profile runtime to its durable identifier."""
 
     return profile_for(provider).configured_runtime_id(value)
+
+
+def runtime_label(provider: str, runtime_id: str) -> str:
+    """Display name for one durable runtime id, so no surface maps ids itself."""
+
+    return profile_for(provider).runtime_label(runtime_id)
 
 
 def require_runtime_id(provider: str, runtime_id: str) -> str:

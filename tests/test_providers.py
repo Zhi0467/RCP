@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
-from rcp.providers import PROVIDER_IDS, ClaudeProfile, CodexProfile, profile_for
+from rcp.providers import PROVIDER_IDS, ClaudeProfile, CodexProfile, profile_for, runtime_label
 
 
 def _result(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -293,6 +293,26 @@ def test_agent_profile_runtime_is_provider_owned_and_backward_compatible() -> No
     assert AgentSurfaceConfig(provider="claude", run_on="local").runtime == "stream-json"
     with pytest.raises(ValueError, match="does not support runtime"):
         AgentSurfaceConfig(provider="claude", runtime="app-server", run_on="local")
+
+
+def test_readiness_names_the_runtimes_and_the_one_an_omitted_value_means() -> None:
+    for provider in PROVIDER_IDS:
+        readiness = ProviderReadiness(provider=provider, installed=True, authenticated=True)
+        profile = profile_for(provider)
+        assert readiness.default_runtime == profile.default_runtime
+        assert [choice.id for choice in readiness.runtimes] == [
+            choice.id for choice in profile.runtime_choices
+        ]
+        # A surface reads the default by name rather than taking a position.
+        assert readiness.default_runtime in {choice.id for choice in readiness.runtimes}
+
+
+def test_a_durable_runtime_id_is_named_for_the_surface_that_reports_it() -> None:
+    assert runtime_label("codex", "codex.exec-json.v1") == "Codex exec"
+    assert runtime_label("codex", "codex.app-server-stdio.v1") == "Codex app server"
+    assert runtime_label("claude", "claude.stream-json.v1") == "Claude stream JSON"
+    # A record naming a runtime this build no longer offers keeps its stored id.
+    assert runtime_label("codex", "codex.retired.v1") == "codex.retired.v1"
 
 
 def test_machine_provider_paths_are_backward_compatible_and_absolute(manifest) -> None:

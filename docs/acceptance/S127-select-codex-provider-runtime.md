@@ -4,6 +4,8 @@ status: implemented
 tier: live
 driver: pytest + browser + desktop
 covered_by:
+  - tests/test_providers.py::test_readiness_names_the_runtimes_and_the_one_an_omitted_value_means
+  - tests/test_api_project_state.py::test_cached_snapshot_names_the_runtime_on_profiles_saved_before_selection
   - tests/test_codex_app_server.py
   - tests/test_background.py::test_runtime_is_checkpointed_before_the_provider_session
   - tests/test_api_project_state.py::test_project_settings_persist_agent_defaults_and_repository_reads
@@ -14,14 +16,17 @@ reported_by: GitHub issue 4, confirmed by the human on 2026-08-25
 last_passed: 2026-08-25 — Project Settings retained app-server through save and
   reload; real local Codex app-server turns returned labelled answers and usage
   under Discuss, Work, and Paper containment; the resulting persisted thread
-  appeared in Codex Desktop
+  appeared in Codex Desktop. 2026-08-27 — steps 1 and 7 re-driven in a served
+  browser against disposable project data after runtime selection reached
+  project setup; steps 2 to 6 unchanged since 2026-08-25
 ---
 
 # Select the Codex provider runtime per project agent profile
 
-Project Settings lets the researcher choose a provider-owned runtime for every
-agent profile. Codex app-server remains behind the same provider-call boundary
-as Codex exec and Claude stream JSON, including on an SSH execution machine.
+Project setup and Project Settings let the researcher choose a provider-owned
+runtime for every agent profile, and the task reports the one it ran on. Codex
+app-server remains behind the same provider-call boundary as Codex exec and
+Claude stream JSON, including on an SSH execution machine.
 
 ## Drive
 
@@ -40,6 +45,9 @@ as Codex exec and Claude stream JSON, including on an SSH execution machine.
    attempt without invoking exec or replaying the prompt.
 6. For a local turn, confirm the provider-created persisted thread appears in
    Codex Desktop.
+7. Choose a runtime in project setup and confirm the created manifest holds it.
+   Confirm no selection surface offers an empty runtime, and that the task
+   inspector names the runtime the turn actually ran on.
 
 ## Assert
 
@@ -50,6 +58,8 @@ as Codex exec and Claude stream JSON, including on an SSH execution machine.
 - `app_server_falls_back_to_exec_only_before_prompt_delivery`
 - `app_server_does_not_fallback_after_prompt_delivery`
 - `runtime_is_checkpointed_before_the_provider_session`
+- `readiness_names_the_runtimes_and_the_one_an_omitted_value_means`
+- `cached_snapshot_names_the_runtime_on_profiles_saved_before_selection`
 
 ## Boundary
 
