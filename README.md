@@ -124,13 +124,17 @@ verification commands are in [docs/desktop.md](docs/desktop.md).
 
 The first supported team deployment is one Ubuntu 22.04 or 24.04 LTS x86-64
 server running systemd and one team space. The server build uses Node.js 24 and
-Python 3.12 managed through `uv`, and requires Git, OpenSSH, and `age`. The final
+Python 3.12 managed through `uv`, and requires Git, OpenSSH, and `age`. The
+installer downloads its own `rcp`-owned Python 3.12 through the required
+system-wide `uv`; the operator does not prepare a runtime inside the service
+account first. The final
 backup target uses the upstream `age` CLI `>=1.0.0,<2.0.0` with a native
-X25519 `age1...` recipient. The final installer documentation will provide
-tested prerequisite commands for both
-Ubuntu releases; the RCP installer validates these tools but does not modify apt
-repositories or install general system software. The service binds to loopback
-and members connect with source-built desktop apps over SSH.
+X25519 `age1...` recipient. Exact prerequisite commands for both Ubuntu
+releases are in [docs/server.md](docs/server.md), with live qualification still
+pending; the RCP installer validates
+these tools but does not modify apt repositories or install general system
+software. The service binds to loopback and members connect with source-built
+desktop apps over SSH.
 
 An operator first creates a temporary bootstrap checkout under their ordinary
 Linux account:
@@ -158,22 +162,21 @@ The installer will:
 4. run Git, npm, the Web build, and `uv sync --frozen` as `rcp`, not as root;
 5. install the stable CLI wrapper and non-reloading systemd unit, leaving a
    fresh service stopped; and
-6. print the exact initialization and activation commands.
+6. print the exact interactive initialization and resume commands; the resumed
+   CLI activates and verifies systemd itself.
 
 The first team space is initialized interactively as the service account before
 systemd starts, so its one-time bootstrap code appears only in that terminal:
 
 ```bash
 sudo -u rcp -H /usr/local/bin/rcp space init --team --name "My lab"
-sudo systemctl enable --now rcp.service
-sudo systemctl status --no-pager rcp.service
-curl --fail --silent http://127.0.0.1:8421/api/health
 sudo /usr/local/bin/rcp server install --team-name "My lab"
 ```
 
-Those are the same ordered actions the installer prints. Its final rerun verifies
-that systemd is enabled and active and that loopback health identifies a team
-space. Every CLI step names the machine/account and success signal; every human
+Those are the same ordered actions the installer prints. The final rerun enables
+and starts systemd itself, then verifies it is active and that loopback health
+identifies a team space. Every CLI step names the machine/account and success
+signal; every human
 pause gives ordered copyable commands or UI actions plus the exact resume
 command. The future project wizard renders this same structured operation
 output; the CLI remains independently complete and no setup instruction exists

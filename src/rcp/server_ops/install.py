@@ -694,15 +694,6 @@ def _emit_team_init_pause(
 ) -> None:
     wrapper = str(DEFAULT_SERVER_LAYOUT.cli_wrapper)
     init = ("sudo", "-u", "rcp", "-H", wrapper, "space", "init", "--team", "--name", team_name)
-    activate = ("sudo", "systemctl", "enable", "--now", DEFAULT_SERVER_LAYOUT.service_unit_name)
-    status = (
-        "sudo",
-        "systemctl",
-        "status",
-        "--no-pager",
-        DEFAULT_SERVER_LAYOUT.service_unit_name,
-    )
-    health = ("curl", "--fail", "--silent", "http://127.0.0.1:8421/api/health")
     resume = ("sudo", wrapper, "server", "install", "--team-name", team_name)
     emitter.emit_step(
         planned.model_copy(
@@ -710,8 +701,8 @@ def _emit_team_init_pause(
                 "state": "operator_action_needed",
                 "message": (
                     "The release is installed and the fresh service is stopped and disabled. "
-                    "Run these commands in this terminal in order; retain the one-time bootstrap "
-                    "code securely, then rerun install for an authoritative readback."
+                    "Initialize in this terminal and retain the one-time bootstrap code securely, "
+                    "then rerun install so RCP activates and verifies the service."
                 ),
                 "actions": (
                     CommandAction(argv=init),
@@ -722,9 +713,6 @@ def _emit_team_init_pause(
                             "logs or command arguments."
                         )
                     ),
-                    CommandAction(argv=activate),
-                    CommandAction(argv=status),
-                    CommandAction(argv=health),
                 ),
                 "fields": (NonsecretField(name="team_name", value=team_name),),
                 "resume_argv": resume,
@@ -1063,7 +1051,7 @@ class LinuxInstallMachine:
         self._run_as_service(
             ("uv", "sync", "--frozen"),
             cwd=release,
-            environment={"UV_PYTHON": "3.12"},
+            environment={"UV_MANAGED_PYTHON": "1", "UV_PYTHON": "3.12"},
             timeout=SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
             capture_output=False,
             error="uv sync --frozen failed in the managed release. Fix the lock or runtime and rerun.",
@@ -1247,13 +1235,44 @@ class LinuxInstallMachine:
                 )
         python = _run_as_account(
             account,
-            ("uv", "python", "find", "3.12"),
+            (
+                "uv",
+                "python",
+                "find",
+                "--managed-python",
+                "--no-python-downloads",
+                "3.12",
+            ),
             timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
         )
         if python.returncode != 0:
+            installed = _run_as_account(
+                account,
+                ("uv", "python", "install", "--managed-python", "--no-progress", "3.12"),
+                timeout=SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
+                capture_output=False,
+            )
+            if installed.returncode != 0:
+                raise InstallRefused(
+                    "uv could not install the managed Python 3.12 runtime for rcp. Restore "
+                    "network access to Astral's Python downloads and rerun the same command."
+                )
+            python = _run_as_account(
+                account,
+                (
+                    "uv",
+                    "python",
+                    "find",
+                    "--managed-python",
+                    "--no-python-downloads",
+                    "3.12",
+                ),
+                timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
+            )
+        if python.returncode != 0:
             raise InstallRefused(
-                "uv cannot find Python 3.12 as rcp. Install the uv-managed 3.12 runtime for rcp "
-                "and rerun the same command."
+                "uv installed Python 3.12 but could not find it again as rcp. Inspect "
+                "/home/rcp ownership and rerun the same command."
             )
         python_path = Path(python.stdout.strip())
         if not python_path.is_absolute():

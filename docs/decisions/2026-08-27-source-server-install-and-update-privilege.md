@@ -13,20 +13,25 @@ through `uv`, plus Git, OpenSSH, and the upstream `age` CLI in the range
 `>=1.0.0,<2.0.0`. The first backup format accepts only native X25519 `age1...`
 recipients; plugin, SSH, passphrase, and post-quantum recipient behavior is not
 part of the two-Ubuntu compatibility promise. The operator guide provides tested
-prerequisite commands for both Ubuntu releases. The RCP
-installer validates exact tools and versions but does not modify apt
-repositories or install general system software: the bootstrap CLI cannot exist
-until its own prerequisites are already present. Other systemd Linux
+prerequisite commands for both Ubuntu releases. The RCP installer validates
+exact system tools and versions but does not modify apt repositories or install
+general system software: the bootstrap CLI cannot exist until its own
+prerequisites are already present. Python is the one application-runtime
+exception. After creating `rcp`, the installer invokes the required system-wide
+`uv` as that account to install and revalidate its isolated managed Python 3.12;
+an operator cannot sensibly pre-provision files in an account that does not
+exist yet. Other systemd Linux
 distributions and CPU architectures are unverified, not silently claimed as
 supported.
 
 A normal machine operator clones the bootstrap checkout under their own account
 and runs `npm --prefix web ci`, `npm --prefix web run build`, and `uv sync`
 without privilege. The first privileged RCP command is the bootstrap checkout's
-absolute `.venv/bin/rcp server install` path under `sudo`. The `rcp` account may
-not exist before that command.
+absolute `.venv/bin/rcp server install --team-name "<team name>"` path under
+`sudo`. The `rcp` account may not exist before that command.
 
-The installer creates or validates the dedicated `rcp` account and a separate
+The installer creates or validates the dedicated `rcp` account, installs or
+validates its application-owned uv-managed Python 3.12, and creates a separate
 clean managed checkout of GitHub `main`. It never adopts the operator's
 bootstrap checkout. Root performs only operating-system work: service-account
 and directory setup, the stable CLI wrapper, systemd unit/timer installation,

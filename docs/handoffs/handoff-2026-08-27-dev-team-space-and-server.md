@@ -9,9 +9,12 @@ the fixed Linux layout/config/unit, and F3a implements the concrete source-serve
 installer. Its one independent audit is
 complete and its findings are fixed. Commit `638c19e` is the immutable first
 installable boundary, and its chained `source-server-install-v7-638c19e` fixture
-is pinned in the upgrade registry. F3a is therefore complete; its live Ubuntu
-qualification remains intentionally separate in F3b. Every other concrete
-server operation and the unified wizard remain later packets. The
+is pinned in the upgrade registry. F3a is therefore complete. F3b now has the
+operator guide, guarded live drive, and fixed 22.04/24.04 manual Actions matrix;
+its one independent audit is complete and every finding is fixed. However,
+the two real disposable-host runs remain pending because no repository-admin
+test credential has been configured or invoked. Every other concrete server
+operation and the unified wizard remain later packets. The
 previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -383,8 +386,12 @@ gate are deliberately future work and do not block this plan.
   preparation only reads the supplying checkout's credential-free GitHub origin,
   and the complete plan is flushed before host effects begin.
 - Preflight accepts only Ubuntu 22.04/24.04 x86-64 with running systemd, Git,
-  system-wide `uv`, Node.js 24/npm, OpenSSH, `age` 1.x, and an `rcp`-executable
-  uv-managed Python 3.12. It installs no apt source or general tool. Account
+  system-wide `uv`, Node.js 24/npm, OpenSSH, and `age` 1.x. It installs no apt
+  source or general tool. After account creation it installs a missing managed
+  Python 3.12 through system-wide `uv` as `rcp`, then resolves and executes that
+  runtime again before any source work. This closes the fresh-host gap where an
+  operator was previously expected to prepare files inside an account that did
+  not exist yet. Account
   convergence creates or strictly validates `rcp` at `/home/rcp` with
   `/bin/bash`, exact non-locking unusable shadow value `*NP*`, its dedicated
   non-root user/group identity, primary group, no supplemental groups, and no
@@ -410,8 +417,9 @@ gate are deliberately future work and do not block this plan.
   are proven; unknown or symlinked state fails loudly.
 - Root installs the stable data-aware wrapper, exact non-reloading unit, and
   atomic current pointer. A fresh empty data directory is proved stopped and
-  disabled, then the CLI pauses with ordered team-init, activation, status,
-  loopback-health, and rerun commands plus their success signals. An initialized
+  disabled, then the CLI pauses with ordered team-init and rerun commands plus
+  their success signals. Activation and health remain the next system-owned
+  step and execute inside the resumed CLI. An initialized
   rerun never opens SQLite: it converges systemd, reads back exact service state,
   and uses a direct proxy-free/non-redirecting loopback HTTP connection with a
   bounded body. It requires `status=ok` and `space_kind=team`, and proves the
@@ -430,8 +438,9 @@ gate are deliberately future work and do not block this plan.
   `3f2c9a6cac26424882a7ec64f35d0c0410ea64d86597a3e7359c2ba5951c8a69`.
   The fixture/upgrade and documentation run passes 16 tests; the separately
   environment-gated exact-candidate-base build is the one expected local skip.
-- Focused installer and shared CLI verification currently passes 157 tests,
-  including public/private/fresh/resumed orchestration, plan-before-effect and
+- Focused installer and shared CLI verification currently passes 158 tests,
+  including public/private/fresh/resumed orchestration, managed-runtime install
+  and recheck, plan-before-effect and
   dual-renderer contracts, credential-environment clearing, Git failure
   classification, fixed command sequences, source/update separation, build
   order, unprivileged-account and sudo-policy checks, live-systemd preflight,
@@ -444,6 +453,61 @@ gate are deliberately future work and do not block this plan.
 - Not done in F3a: no Ubuntu host or desktop was driven. F3b owns the disposable
   Ubuntu 22.04/24.04 installation/readback and operator guide; those facts are
   explicit rather than inferred from the unit suite.
+
+#### 2026-08-28 — F3b guide and live-drive implementation in progress
+
+- `docs/server.md` is now the exhaustive terminal guide. It separates Ubuntu
+  22.04 and 24.04 prerequisites, pins the qualified Node.js and uv downloads,
+  gives the disposable bootstrap build, and follows the CLI's ordered GitHub,
+  initialization, activation, readback, provider-auth, and operator-route
+  boundaries. The CLI stays complete without the future wizard; the wizard may
+  only submit and render the same structured operation.
+- A clean-machine review found one F3a defect before the live drive: install
+  expected Python 3.12 to exist inside the newly created `rcp` account. The
+  installer now uses required system-wide `uv` as `rcp` to install a missing
+  managed 3.12 runtime, then resolves and executes it again. The focused server
+  suite passes 121 tests with two intentional environment-gated skips, including
+  the new install/recheck and bounded-output regressions.
+- `tests/test_server_install_live.py` is destructive only behind two explicit
+  gates. It refuses a nonempty host, accepts the private-repository
+  Administration token only from a caller-owned protected file, creates one
+  temporary read-only GitHub deploy key, verifies GitHub's published Ed25519
+  fingerprint before accepting host trust, and removes the deploy key in
+  cleanup. It builds and then deletes a separate bootstrap checkout before
+  initialization and finishes through the installed CLI.
+- The live drive checks interactive bootstrap-code isolation from journald,
+  systemd/process identity, fixed owners and modes, loopback-only port 8421,
+  health, password refusal, optional direct-key `rcp` SSH, a fresh named
+  operator's exact D6 sudo command, refusal of an unlisted command, installed
+  CLI convergence, source-key revocation, restart, and continued health.
+- `.github/workflows/server-install-live.yml` provides separate fixed
+  `ubuntu-22.04` and `ubuntu-24.04` x86-64 jobs and repeats the documented
+  prerequisite versions. It is manual and `main`-only. The private source means
+  GitHub's ordinary `GITHUB_TOKEN` is insufficient: deploy-key creation requires
+  repository Administration write. The workflow therefore expects the narrowly
+  scoped secret `RCP_LIVE_GITHUB_ADMIN_TOKEN`, materializes it as mode 0600, and
+  never passes it to RCP.
+- The packet's one independent audit found eight concrete gaps: a stale
+  four-command initialization expectation, ambiguous deploy-key cleanup after a
+  partial API failure, an unverified downloaded uv installer, temporary SSH and
+  sudo access left on the host, an incomplete clean-host fence, unbounded build
+  output capture, a decision example missing required `--team-name`, and a
+  mutable checkout action tag in the privileged workflow. The live drive now
+  follows the CLI's one human init command plus exact root resume; records the
+  nonsecret deploy-key label before creation for unconditional cleanup; installs
+  the immutable uv archive only after a pinned SHA-256 check; removes its test
+  account, authorized key, and sudoers rule; rejects a loaded service, live RCP
+  process, port 8421 listener, runtime directory, or prior test state; caps
+  subprocess output; repairs the exact decision command; and pins checkout to
+  the reviewed v7.0.0 commit. No second audit was run, per the one-audit packet
+  rule.
+- Not done yet: no secret was created, no workflow was dispatched, no GitHub
+  deploy key was changed, and no Linux host was mutated from this macOS session.
+  Consequently F3b is not complete and the two-release support claim is not yet
+  live-qualified. Because install deliberately consumes
+  `origin/main`, this workflow is a post-push qualification rather than a
+  pre-merge PR gate; the current human-approved direct-main development boundary
+  makes that explicit instead of pretending otherwise.
 
 ## What remains
 
@@ -1220,9 +1284,10 @@ Own:
 
 Deliver an explicit root/operator installation that:
 
-1. validates x86-64, systemd, Git, `uv`, Node.js 24/npm, the `uv`-managed Python
-   3.12 service runtime, SSH, and `age >=1.0.0,<2.0.0`, without changing apt
-   sources or installing general system tools;
+1. validates x86-64, systemd, Git, `uv`, Node.js 24/npm, SSH, and `age
+   >=1.0.0,<2.0.0`, then installs or validates the `uv`-managed Python 3.12
+   service runtime as `rcp`, without changing apt sources or installing general
+   system tools;
 2. creates or validates the dedicated no-usable-password `rcp` account with
    exact `/home/rcp` home, `/bin/bash` shell, a non-locking shadow value that
    permits public-key SSH, no general sudo/privileged groups, and the accepted
@@ -1241,15 +1306,15 @@ Deliver an explicit root/operator installation that:
    data directory leaves that unit stopped and disabled;
 7. prints the existing interactive
    `sudo -u rcp -H /usr/local/bin/rcp space init --team --name ...` command and
-   the later activation/readback commands, then exits with the fresh service
-   stopped. The installed wrapper resolves the configured `RCP_DATA_DIR`; the
-   operator runs initialization in that terminal so neither another process nor
-   a service log receives the one-time bootstrap code; and
-8. only after successful initialization does the operator run the printed
-   systemd activation command. F3b's install drive reads back process and HTTP
-   health without widening the loopback bind; F5 later makes the printed
-   `server doctor` readback authoritative. A rerun against an already initialized
-   owned team data directory may converge the service to running.
+   exact installer resume command, then exits with the fresh service stopped.
+   The installed wrapper resolves the configured `RCP_DATA_DIR`; the operator
+   runs initialization in that terminal so neither another process nor a
+   service log receives the one-time bootstrap code; and
+8. only after successful initialization does the resumed root CLI enable/start
+   systemd and read back process and HTTP health without widening the loopback
+   bind. F5 later makes the printed `server doctor` readback authoritative. A
+   rerun against an already initialized owned team data directory may converge
+   the service to running.
 
 `--team-name` is a required strict install-request field. It exists so the CLI
 can independently print exact `space init` and resume argv. The future wizard
@@ -1269,7 +1334,8 @@ Own:
 
 - new `docs/server.md`;
 - the concise team-server install/run/update commands in `README.md`; and
-- `tests/test_server_install_live.py`.
+- `tests/test_server_install_live.py`; and
+- `.github/workflows/server-install-live.yml` for the fixed two-release drive.
 
 Document tested prerequisite commands separately for Ubuntu 22.04 and 24.04,
 then the one fresh-clone bootstrap needed before the CLI exists: a normal

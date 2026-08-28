@@ -1,0 +1,128 @@
+name: Team server install qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: team-server-install-qualification
+  cancel-in-progress: false
+
+jobs:
+  install:
+    name: install on ${{ matrix.runner }}
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install documented Ubuntu prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes age ca-certificates curl git iproute2 openssh-client openssh-server sudo xz-utils
+
+      - name: Install documented Node.js and uv versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          RCP_NODE_VERSION="v24.20.0"
+          RCP_NODE_ARCHIVE="node-${RCP_NODE_VERSION}-linux-x64.tar.xz"
+          RCP_NODE_DOWNLOAD_DIR="$(mktemp -d)"
+          cd "$RCP_NODE_DOWNLOAD_DIR"
+          curl --fail --show-error --location --remote-name "https://nodejs.org/dist/${RCP_NODE_VERSION}/${RCP_NODE_ARCHIVE}"
+          curl --fail --show-error --location --remote-name "https://nodejs.org/dist/${RCP_NODE_VERSION}/SHASUMS256.txt"
+          grep " ${RCP_NODE_ARCHIVE}$" SHASUMS256.txt | sha256sum --check --strict
+          sudo tar --extract --xz --file "$RCP_NODE_ARCHIVE" --directory /usr/local --strip-components=1 --no-same-owner
+
+          RCP_UV_VERSION="0.12.7"
+          RCP_UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"
+          RCP_UV_SHA256="788f18abea7c5f55d6216e4f5613fd89d4d59b631efeec117b2b07fe72f1da21"
+          RCP_UV_DOWNLOAD_DIR="$(mktemp -d)"
+          cd "$RCP_UV_DOWNLOAD_DIR"
+          curl --fail --show-error --location --remote-name "https://releases.astral.sh/github/uv/releases/download/${RCP_UV_VERSION}/${RCP_UV_ARCHIVE}"
+          printf '%s  %s\n' "$RCP_UV_SHA256" "$RCP_UV_ARCHIVE" | sha256sum --check --strict
+          tar --extract --gzip --file "$RCP_UV_ARCHIVE"
+          sudo install --owner=root --group=root --mode=0755 "uv-x86_64-unknown-linux-gnu/uv" /usr/local/bin/uv
+
+          export PATH="/usr/local/bin:$PATH"
+          test "$(node --version)" = "$RCP_NODE_VERSION"
+          test "$(uv --version)" = "uv $RCP_UV_VERSION"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+
+      - name: Build the qualification checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix web ci
+          npm --prefix web run build
+          UV_MANAGED_PYTHON=1 UV_PYTHON=3.12 uv sync --frozen
+
+      - name: Materialize the protected repository-admin token
+        shell: bash
+        env:
+          RCP_LIVE_GITHUB_ADMIN_TOKEN: ${{ secrets.RCP_LIVE_GITHUB_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$RCP_LIVE_GITHUB_ADMIN_TOKEN"
+          umask 077
+          printf '%s' "$RCP_LIVE_GITHUB_ADMIN_TOKEN" > "$RUNNER_TEMP/rcp-live-github-admin-token"
+
+      - name: Drive the full source-server installation
+        shell: bash
+        env:
+          RCP_RUN_SERVER_INSTALL_LIVE: "1"
+          RCP_SERVER_INSTALL_LIVE_DISPOSABLE: I_UNDERSTAND_THIS_MUTATES_THE_HOST
+          RCP_LIVE_GITHUB_ADMIN_TOKEN_FILE: ${{ runner.temp }}/rcp-live-github-admin-token
+          RCP_LIVE_DEPLOY_KEY_RECEIPT_FILE: ${{ runner.temp }}/rcp-live-deploy-key-label
+        run: uv run pytest tests/test_server_install_live.py -vv
+
+      - name: Revoke an interrupted test's deploy key
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          RCP_TOKEN_FILE="$RUNNER_TEMP/rcp-live-github-admin-token"
+          RCP_RECEIPT_FILE="$RUNNER_TEMP/rcp-live-deploy-key-label"
+          if test -s "$RCP_TOKEN_FILE" && test -s "$RCP_RECEIPT_FILE"; then
+            RCP_DEPLOY_KEY_LABEL="$(cat "$RCP_RECEIPT_FILE")"
+            [[ "$RCP_DEPLOY_KEY_LABEL" =~ ^rcp-source:[0-9a-f-]{36}$ ]]
+            export GH_TOKEN="$(cat "$RCP_TOKEN_FILE")"
+            mapfile -t RCP_DEPLOY_KEY_IDS < <(
+              gh api --paginate "repos/$GITHUB_REPOSITORY/keys" \
+                --jq ".[] | select(.title == \"$RCP_DEPLOY_KEY_LABEL\") | .id"
+            )
+            for RCP_DEPLOY_KEY_ID in "${RCP_DEPLOY_KEY_IDS[@]}"; do
+              [[ "$RCP_DEPLOY_KEY_ID" =~ ^[0-9]+$ ]]
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/keys/$RCP_DEPLOY_KEY_ID"
+            done
+            unset GH_TOKEN
+          fi
+
+      - name: Remove temporary credential and receipt files
+        if: always()
+        shell: bash
+        run: |
+          rm -f -- "$RUNNER_TEMP/rcp-live-github-admin-token"
+          rm -f -- "$RUNNER_TEMP/rcp-live-deploy-key-label"
+
+      - name: Remove temporary live access routes
+        if: always()
+        shell: bash
+        run: |
+          sudo rm -f -- /etc/sudoers.d/rcp-project-provision-live-test
+          sudo rm -f -- /home/rcp/.ssh/authorized_keys
+          if getent passwd rcp-live-operator >/dev/null; then
+            sudo userdel --remove rcp-live-operator
+          fi

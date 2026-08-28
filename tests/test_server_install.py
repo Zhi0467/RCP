@@ -154,7 +154,7 @@ def _events(output: str) -> list[dict[str, object]]:
     return [json.loads(line) for line in output.splitlines()]
 
 
-def test_public_fresh_install_prints_exact_init_activation_and_resume_contract() -> None:
+def test_public_fresh_install_prints_exact_init_and_resume_contract() -> None:
     machine = FakeInstallMachine(
         access=_source_access(private=False),
         service_state=ServiceInstallState(
@@ -192,19 +192,7 @@ def test_public_fresh_install_prints_exact_init_activation_and_resume_contract()
         "--name",
         "Systems Lab",
     ]
-    assert paused["actions"][2]["argv"] == [
-        "sudo",
-        "systemctl",
-        "enable",
-        "--now",
-        "rcp.service",
-    ]
-    assert paused["actions"][4]["argv"] == [
-        "curl",
-        "--fail",
-        "--silent",
-        "http://127.0.0.1:8421/api/health",
-    ]
+    assert len(paused["actions"]) == 2
     assert paused["resume_argv"] == [
         "sudo",
         "/usr/local/bin/rcp",
@@ -213,6 +201,7 @@ def test_public_fresh_install_prints_exact_init_activation_and_resume_contract()
         "--team-name",
         "Systems Lab",
     ]
+    assert all("systemctl" not in action.get("argv", []) for action in paused["actions"])
 
 
 def test_initialized_install_converges_through_systemd_and_health() -> None:
@@ -748,6 +737,57 @@ def test_existing_service_account_must_be_unprivileged_and_have_no_sudo_policy(
     assert machine._converge_account() == current
 
 
+def test_service_tooling_installs_and_rechecks_managed_python_for_fresh_account(
+    monkeypatch,
+) -> None:
+    account = SimpleNamespace(pw_name="rcp", pw_dir="/home/rcp")
+    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+    find_count = 0
+
+    def fake_run(_account, argv, **kwargs):
+        nonlocal find_count
+        calls.append((argv, kwargs))
+        if argv[:3] == ("uv", "python", "find"):
+            find_count += 1
+            if find_count == 1:
+                return subprocess.CompletedProcess(argv, 2, "", "not installed")
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                "/home/rcp/.local/share/uv/python/cpython-3.12/bin/python3.12\n",
+                "",
+            )
+        if argv[0].endswith("python3.12"):
+            return subprocess.CompletedProcess(argv, 0, "Python 3.12.10\n", "")
+        return subprocess.CompletedProcess(argv, 0, "ok\n", "")
+
+    monkeypatch.setattr(server_install.pwd, "getpwnam", lambda _name: account)
+    monkeypatch.setattr(server_install, "_run_as_account", fake_run)
+
+    server_install.LinuxInstallMachine()._validate_service_tooling()
+
+    assert (
+        "uv",
+        "python",
+        "find",
+        "--managed-python",
+        "--no-python-downloads",
+        "3.12",
+    ) in [argv for argv, _kwargs in calls]
+    install_call = next(
+        (argv, kwargs) for argv, kwargs in calls if argv[:3] == ("uv", "python", "install")
+    )
+    assert install_call[0] == (
+        "uv",
+        "python",
+        "install",
+        "--managed-python",
+        "--no-progress",
+        "3.12",
+    )
+    assert install_call[1]["capture_output"] is False
+
+
 @pytest.mark.parametrize("private", [False, True])
 def test_new_source_access_records_public_or_dedicated_key_mode(
     monkeypatch,
@@ -903,7 +943,10 @@ def test_release_build_runs_exact_managed_commands_as_service_account(
         ("npm", "--prefix", "web", "run", "build"),
         ("uv", "sync", "--frozen"),
     ]
-    assert calls[-1][1]["environment"] == {"UV_PYTHON": "3.12"}
+    assert calls[-1][1]["environment"] == {
+        "UV_MANAGED_PYTHON": "1",
+        "UV_PYTHON": "3.12",
+    }
     assert all(call[1].get("cwd") == release for call in calls[1:])
 
 

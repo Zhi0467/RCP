@@ -280,11 +280,15 @@ is a named operator account with the narrow sudo command. `rcp` has no general
 sudo or supplemental privileged group membership.
 
 Supported servers are Ubuntu 22.04 LTS and Ubuntu 24.04 LTS on x86-64 with
-systemd. Server builds use Node.js 24 and Python 3.12 through `uv`; Git, OpenSSH,
-and the upstream `age` CLI in the range `>=1.0.0,<2.0.0` are prerequisites.
-Installation validates these tools
-but does not install general OS software or modify apt repositories. The
-operator guide supplies tested prerequisite commands for both Ubuntu releases.
+systemd. Server builds use Node.js 24 and an application-owned Python 3.12
+managed through `uv`; Git, OpenSSH, system-wide `uv`, and the upstream `age`
+CLI in the range `>=1.0.0,<2.0.0` are prerequisites. Installation validates
+those system tools but does not install general OS software or modify apt
+repositories. After creating the service account, it uses system-wide `uv` as
+`rcp` to install and revalidate that account's managed Python 3.12 before any
+source checkout or build. The operator does not provision files inside a
+not-yet-existing account. The operator guide supplies tested prerequisite
+commands for both Ubuntu releases.
 Other Linux distributions and architectures remain unverified.
 
 Ordinary service-owned content is grouped below `/home/rcp/rcp-server/`: the
@@ -401,10 +405,11 @@ server-operations implementation.
 
 For a fresh data directory, install leaves the unit stopped and disabled, then
 prints the exact `sudo -u rcp -H /usr/local/bin/rcp space init --team --name ...`
-and systemd activation commands. The wrapper resolves the installed
-`RCP_DATA_DIR`. The operator receives the one-time code in that terminal; root
-enables/starts the service only afterward. Re-running install against an already
-initialized owned team space may converge the service to running.
+and `sudo /usr/local/bin/rcp server install --team-name ...` resume commands.
+The wrapper resolves the installed `RCP_DATA_DIR`. The operator receives the
+one-time code in that terminal; the resumed root CLI then enables/starts and
+reads back the service itself. Re-running install against an already initialized
+owned team space may converge the service to running.
 
 When the service is running, a server command that needs durable RCP state uses a
 private machine-local control socket owned by `rcp`; it never opens SQLite beside
