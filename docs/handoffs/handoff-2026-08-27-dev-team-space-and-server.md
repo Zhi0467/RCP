@@ -16,10 +16,13 @@ the two real disposable-host runs remain pending because no repository-admin
 test credential has been configured or invoked. P1 now provides the durable,
 strictly guarded project-provisioning state machine; its one independent audit
 is complete, every finding is fixed, and its exact schema boundary is retained
-in the chained upgrade registry. P1 is complete. Every concrete provisioning
-operation, member/API projection, finalizer, and the unified wizard remain later
-packets. The
-previously planned G1 pull-request transition was rejected by the human for this
+in the chained upgrade registry. P1 is complete. D1 now provides the strict
+nonsecret desktop team-connection registry and the macOS Keychain write/removal
+boundary; its one independent audit is complete and its in-scope findings are
+fixed. Real Keychain round-trip, distinct origin allocation, SSH, enrollment,
+navigation, and UI remain D2 through D5. Every concrete provisioning operation,
+member/API projection, finalizer, and the unified wizard remain later packets.
+The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
 
@@ -97,19 +100,22 @@ uv run pytest \
 Result: 93 passed. That proves the existing identity/authentication/membership
 slice, not the pending server or desktop journeys.
 
-The missing seams are also concrete:
+The remaining seams are also concrete:
 
-- `src/rcp/__main__.py` has `serve`, `open`, and `space init`; it has no `server`
-  command family;
+- the strict `rcp server` command/event shell, Linux layout, and source installer
+  now exist, but F3b's two real Ubuntu runs are still pending and doctor,
+  control-socket, update, backup, restore, and member-removal owners do not yet
+  exist;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
-- no systemd unit, service-account installer, private server-control socket,
-  server doctor, source-update workflow, backup, or restore exists;
 - the Web UI still says “Team connections are not implemented in this build”;
-- the Tauri shell trusts one current loopback backend and has no saved team
-  connection, credential-store, SSH-tunnel, or operator-command owner;
-- no durable project-provisioning request or personal-to-team transfer record
-  exists; and
+- the Tauri shell now stores strict nonsecret team-connection metadata and can
+  write/remove a permanent member token in macOS Keychain, but it still trusts
+  one current loopback backend and has no distinct-origin allocator, SSH tunnel,
+  live token read/enrollment, multi-backend navigation, or operator-command owner;
+- the durable project-provisioning request exists, but its member API,
+  machine-side workers, finalizer, and personal-to-team transfer record do not;
+  and
 - canonical identity replay currently treats two differing identity payloads as
   corruption, so a home transfer cannot be represented by appending a second
   `ProjectIdentity` record.
@@ -550,19 +556,61 @@ gate are deliberately future work and do not block this plan.
   operation owner; the later unified wizard may only submit and render its
   structured state and commands.
 
+#### 2026-08-28 — D1 desktop connection and Keychain boundary implemented and audited
+
+- The native desktop now owns one versioned `team-connections.json` registry in
+  its app-config directory. It stores only canonical connection UUID, display
+  name, one SSH argv target, remote loopback port, expected team `space_id`,
+  stable canonical loopback origin, minimum shell version, and a bounded minimal
+  project-card cache. The strict loader rejects unknown fields, duplicate
+  identities/spaces/origins/cards, noncanonical UUIDs/origins/versions, unsafe
+  SSH arguments, unsupported versions, and oversized state.
+- Registry publication uses a same-directory mode-0600 temporary file, file and
+  directory sync, and atomic replacement. Reads open one no-follow,
+  nonblocking file handle, verify that exact handle is regular, and cap the read
+  at one byte beyond the one-MiB limit. A symlink, FIFO-like special file,
+  concurrent growth, or corrupt registry fails closed without following or
+  unboundedly reading a replacement path.
+- Routing metadata can be written only by later verified native connection and
+  session owners; no raw Web command may rewrite an existing SSH target or
+  origin. The current Tauri surface lists nonsecret records, accepts one
+  permanent token only after metadata exists, and removes metadata and Keychain
+  credentials through separate idempotent commands. The token is held in a
+  zeroizing native buffer, never returned, and stored under the fixed Keychain
+  service plus an account derived solely from the canonical connection UUID.
+- Every persisted string and the final serialized bytes reject all current RCP
+  credential shapes: permanent member and browser-session tokens plus bootstrap
+  and invitation codes. The packet's one independent audit found the original
+  detector missed dotted enrollment codes and that path-check-then-read left a
+  symlink/FIFO/size race; both are fixed with focused regressions and the
+  single-handle reader above. No second audit was run.
+- Focused and full native verification passes eight new registry/reference
+  tests and all 60 desktop Rust tests. Strict `cargo fmt` and
+  `cargo clippy --all-targets -- -D warnings` pass, and command permissions are
+  generated and granted only to the main desktop window capability.
+- Not done in D1: no real member credential was written to this developer's
+  login Keychain, and no UI or desktop navigation was driven. The handoff
+  assigns the real store/read/replace/delete and missing-item proof to D4a's
+  live enrollment/session test, after D2 and D3 provide the verified origin and
+  tunnel. D2-D5 still own origin allocation, cookie isolation, SSH lifetime,
+  token retrieval/enrollment, session establishment, multi-backend navigation,
+  cached-card refresh, and the visible Add-team-space flow.
+
 ## What remains
 
 Everything after the existing auth/membership foundation remains implementation
 work:
 
-1. source-server installation, service ownership, health, and update;
+1. F3b's real two-Ubuntu install qualification, then server health/doctor and
+   source update;
 2. private machine-local CLI-to-server control;
 3. project-provisioning API projections and concrete machine orchestration;
 4. central Git checkout and write-deploy-key setup;
 5. local/remote provider readiness against authentication already present on
    each execution account;
-6. source-built desktop connections, credential storage, tunnels, navigation,
-   and optional operator bridge;
+6. source-built desktop distinct origins, tunnels, live Keychain
+   enrollment/readback, navigation, cached team groups, and optional operator
+   bridge (the strict metadata and token-write/remove substrate is complete);
 7. app-visible project setup driven by the backend and prepared by the CLI;
 8. encrypted online backup, scheduling, restore, and server status;
 9. console member removal;

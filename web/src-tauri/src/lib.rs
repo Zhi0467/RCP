@@ -3,6 +3,7 @@ mod commands;
 mod dictation;
 mod lifecycle;
 mod navigation;
+mod team_connections;
 mod updates;
 mod windows;
 
@@ -61,6 +62,10 @@ pub fn run() {
             commands::desktop_status,
             commands::desktop_reconnect_backend,
             commands::desktop_show_ready,
+            commands::desktop_list_team_connections,
+            commands::desktop_remove_team_connection_metadata,
+            commands::desktop_store_team_member_token,
+            commands::desktop_remove_team_member_token,
             commands::choose_repository_folder,
             commands::desktop_start_dictation,
             commands::desktop_stop_dictation,
@@ -74,6 +79,14 @@ pub fn run() {
             commands::apply_update,
         ])
         .setup(|app| {
+            let team_connections = team_connections::TeamConnectionState::for_app(app.handle())
+                .map_err(std::io::Error::other)?;
+            if !app.manage(team_connections) {
+                return Err(std::io::Error::other(
+                    "RCP desktop team connection state was already registered",
+                )
+                .into());
+            }
             windows::create_main(app.handle())?;
             start_backend(app.handle().clone());
             Ok(())

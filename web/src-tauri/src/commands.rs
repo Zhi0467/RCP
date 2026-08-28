@@ -14,7 +14,9 @@ use crate::{
     backend::{self, BackendState},
     dictation,
     lifecycle::DesktopStatus,
-    navigation, updates, windows,
+    navigation,
+    team_connections::{RemovalResult, TeamConnectionMetadata, TeamConnectionState},
+    updates, windows,
 };
 
 const ARTIFACT_AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -50,6 +52,38 @@ pub struct QuitResult {
 #[derive(Serialize)]
 pub struct ApplyUpdateResult {
     started: bool,
+}
+
+#[tauri::command]
+pub fn desktop_list_team_connections(
+    state: State<'_, TeamConnectionState>,
+) -> Result<Vec<TeamConnectionMetadata>, String> {
+    state.list()
+}
+
+#[tauri::command]
+pub fn desktop_remove_team_connection_metadata(
+    state: State<'_, TeamConnectionState>,
+    connection_id: String,
+) -> Result<RemovalResult, String> {
+    state.remove_metadata(&connection_id)
+}
+
+#[tauri::command]
+pub fn desktop_store_team_member_token(
+    state: State<'_, TeamConnectionState>,
+    connection_id: String,
+    token: String,
+) -> Result<(), String> {
+    state.store_member_token(&connection_id, token)
+}
+
+#[tauri::command]
+pub fn desktop_remove_team_member_token(
+    state: State<'_, TeamConnectionState>,
+    connection_id: String,
+) -> Result<RemovalResult, String> {
+    state.remove_member_token(&connection_id)
 }
 
 #[tauri::command]
