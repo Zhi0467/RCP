@@ -115,9 +115,12 @@ verification commands are in [docs/desktop.md](docs/desktop.md).
 
 ## Install the team server from source
 
-> **Not implemented yet:** the source-server CLI described below is the accepted
-> team deployment target. Until that slice lands, use the local source commands
-> above; none of the `rcp server ...` commands below exists yet.
+> **Command contract only:** the `rcp server ...` command tree and its shared
+> interactive/machine-readable progress contract now exist. The concrete
+> install, provision, backup, restore, update, and maintenance owners have not
+> landed yet, so these commands currently stop with an explicit unavailable
+> result. Use the local source commands above until the applicable server packet
+> is implemented and verified.
 
 The first supported team deployment is one Ubuntu 22.04 or 24.04 LTS x86-64
 server running systemd and one team space. The server build uses Node.js 24 and

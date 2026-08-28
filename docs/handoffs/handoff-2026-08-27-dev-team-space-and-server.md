@@ -2,10 +2,12 @@
 
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
-complete, and implementation is now in progress directly on `main`. G0 is the
-first packet and restores the current CI baseline. The previously planned G1
-pull-request transition was rejected by the human for this private,
-single-developer pre-team-server implementation; it no longer gates any packet.
+complete, and implementation is now in progress directly on `main`. G0 restored
+the CI baseline and F1 now provides the live server CLI command/event contract;
+all concrete server operations and the unified wizard remain later packets. The
+previously planned G1 pull-request transition was rejected by the human for this
+private, single-developer pre-team-server implementation; it no longer gates any
+packet.
 
 ## Objective
 
@@ -173,9 +175,8 @@ gate are deliberately future work and do not block this plan.
   name an unknown human account; the step contract now separates responsibility
   from typed machine and external-service targets. A final read-only check found
   no remaining issue in this scope.
-- Not done: no desktop drive was run because G0 changes no desktop behavior. The
-  slice is not committed or pushed; those remain separate human-authorized
-  actions.
+- Not done: no desktop drive was run because G0 changes no desktop behavior. G0
+  was committed locally as `7f0d9c2`; nothing was pushed.
 
 #### 2026-08-28 — implementation authority refinements
 
@@ -193,9 +194,57 @@ gate are deliberately future work and do not block this plan.
   canonical repository-reference parser rejects local, credential-bearing,
   ambiguous, ported, or arbitrary-host inputs before persistence or side
   effects; GitHub Enterprise requires a later trusted-origin design.
-- Not yet done: these wizard/CLI refinements are current design and acceptance
-  authority only. No provisioning CLI, deploy-key owner, unified-wizard code, or
-  transfer UI has been implemented or runtime-verified yet.
+- Not yet done: the provisioning command and progress contract now exist, but
+  its deploy-key and provisioning owner still returns an explicit unavailable
+  result. No unified-wizard code or transfer UI has been implemented or
+  runtime-verified yet.
+
+#### 2026-08-28 — F1 server CLI contract implemented in the working tree
+
+- All ten accepted `rcp server` command forms now parse into one strict request
+  model, enforce canonical UUID4 selectors, and apply the settled root-versus-
+  `rcp` entry-account matrix before a concrete handler can run. Restore accepts
+  only an absolute archive path plus protected identity-file path; transfer
+  import accepts archive bytes only through stdin.
+- The concrete-owner seam is deliberately two phase. It prepares a side-effect-
+  free complete plan, RCP validates and flushes that plan, and only then does the
+  executor receive stdin or begin machine work. Every live event is lifecycle-
+  checked, size-bounded, secret-scrubbed, flushed immediately, and rendered as
+  either plain interactive guidance or the same versioned NDJSON record. The
+  wizard can consume that record without parsing prose or owning another setup
+  recipe.
+- Each interactive plan names every step's purpose, human-versus-RCP
+  responsibility, typed target, pending state, and success condition. A human
+  pause carries ordered safe commands or external UI actions, nonsecret values,
+  and the exact recheck/resume argv. Unexpected executor errors become a generic
+  terminal failure; exception and subprocess text are never copied into the
+  event stream.
+- Focused verification passes 78 tests in `tests/test_server_cli.py` and
+  `tests/test_main.py`; adding the repository's eight documentation checks gives
+  86 passing tests. Focused Ruff and formatting checks, `git diff --check`, and
+  the final all-file pre-commit baseline pass.
+- Review surprise: the first implementation buffered a completed execution and
+  printed its nominal progress only afterward. The read-only review caught that
+  this violated both the operator workflow and real desktop progress. The seam
+  was refactored to plan-then-stream, and a regression proves the plan is visible
+  before the first simulated side effect. The same review found unguarded URL
+  query/fragment and age/provider-key channels plus representative-only account
+  tests; those are now rejected or redacted, and all ten commands exercise their
+  full privilege boundary.
+- Final self-review added a 64 KiB live-output reserve. A malformed owner can no
+  longer consume the entire one-MiB event budget and then prevent RCP from
+  emitting its generic terminal failure; the maximal secret-safe failure shape
+  is measured against that reserve in a focused regression.
+- Not done: concrete install, doctor, provider, provisioning, transfer, backup,
+  restore, member-removal, and update owners remain intentionally unavailable
+  until their packets land. F1 changes no Web or native desktop code, so no
+  desktop drive was run. No full backend suite has been run for this packet; the
+  user explicitly accepted focused packet tests plus pre-commit and one
+  independent audit. One attempted documentation-test command named stale path
+  `tests/test_docs_consistency.py` and therefore ran nothing; it was replaced by
+  the real `tests/test_documentation.py` command whose checks pass. No concrete
+  command can be live-verified until its owning packet replaces the explicit
+  unavailable result.
 
 ## What remains
 
@@ -804,6 +853,11 @@ that server-specific preflight.
 ## Server-foundation packets
 
 ### F1 — Server CLI command and event contract
+
+Status: complete in the working tree on 2026-08-28. Its one independent audit
+found buffered rather than live progress, secret-channel gaps, incomplete
+privilege-matrix coverage, and stale status prose; all four were resolved before
+closure. Concrete operations intentionally remain owned by later packets.
 
 Own:
 

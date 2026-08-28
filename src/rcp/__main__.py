@@ -32,6 +32,7 @@ from rcp.limits import (
     SERVER_LOCK_POLL_INTERVAL_SECONDS,
     SERVER_SHUTDOWN_TIMEOUT_SECONDS,
 )
+from rcp.server_ops.cli import add_server_parser, run_server_command
 from rcp.server_runtime import (
     ServerMetadata,
     ServerMetadataError,
@@ -140,6 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Initialize an explicitly named team space",
     )
     init.add_argument("--name", required=True, help="Human-readable team space name")
+    add_server_parser(subcommands)
     return parser
 
 
@@ -156,6 +158,11 @@ def reload_app() -> FastAPI:
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.command == "server":
+        exit_code = run_server_command(args)
+        if exit_code:
+            raise SystemExit(exit_code)
+        return
     data_dir = default_data_dir().expanduser().resolve()
     if args.command == "space":
         _run_space_command(args, data_dir)
