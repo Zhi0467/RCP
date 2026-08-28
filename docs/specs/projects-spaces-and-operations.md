@@ -361,7 +361,10 @@ CLI stops for operator action, it additionally gives ordered safe commands or UI
 actions, the nonsecret value needed, and the exact command to recheck or resume.
 Secret values never appear in those instructions. Machine-readable output
 carries the same ordered step and bounded action fields so the wizard can render
-them without parsing terminal prose; there is no wizard-only machine procedure.
+them without parsing terminal prose. For team machine preparation, the wizard is
+the graphical presentation of that same CLI-owned operation; the CLI remains a
+complete step-by-step workflow without it, and there is no wizard-only machine
+procedure.
 
 Privilege is fixed per command rather than inferred from what happens to work on
 one machine. `install`, `backup configure`, `restore`, and `update` enter through

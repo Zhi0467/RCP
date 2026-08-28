@@ -3,8 +3,9 @@
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is now in progress directly on `main`. G0 restored
-the CI baseline and F1 now provides the live server CLI command/event contract;
-all concrete server operations and the unified wizard remain later packets. The
+the CI baseline, F1 provides the live server CLI command/event contract, and G2
+guards upgrades from every current server-era persistence boundary; all concrete
+server operations and the unified wizard remain later packets. The
 previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -246,6 +247,79 @@ gate are deliberately future work and do not block this plan.
   command can be live-verified until its owning packet replaces the explicit
   unavailable result.
 
+#### 2026-08-28 — G2 old-data upgrade gate complete
+
+- CI now has one stable **old-data upgrade** job. It builds the Web assets and
+  candidate environment, then runs both the immutable historical-boundary
+  fixtures and an exact-base fixture. A dirty local tree uses current `HEAD` as
+  the base and the working tree as candidate; a committed CI checkout uses
+  `HEAD^1` as the base and the checked-out commit as candidate.
+- Six immutable boundaries cover the actual first team-server-capable merge and
+  every later stored-shape or migration-interpretation era: episode vocabulary,
+  orchestrated children/membership, graph targets, provider runtimes, and the
+  modern Experiment repair. Each sanitized bundle contains a small team
+  database, active credential and session hashes, canonical identity history,
+  one project/member relationship, and one task that was running at shutdown.
+  An external registry pins the exact set, source commits, and whole-bundle
+  digests; each bundle also inventories its payload files. The first is created
+  by the first server code and every later bundle is the preceding database
+  opened and settled by that boundary's exact source, preserving accumulated
+  migration state a fresh database would miss. Paths are fixture-relative; raw
+  bootstrap/member/session/provider/Git credentials and runtime SQLite/lock
+  sidecars are absent.
+- The candidate copies each bundle before use, runs current migrations, replays
+  canonical history with attribution required, starts the complete FastAPI
+  lifespan with provider execution disabled, and verifies health, membership,
+  project projection, startup interruption recovery, exact canonical Patch
+  filenames/bytes and revision, credential/session survival, SQLite integrity,
+  and the task projection. The focused static-boundary run passes seven checks
+  with one exact-base skip; the local CI-equivalent exact-base run passes all
+  eight checks.
+- Builder surprises found before review: the first historical build called
+  identity-aware history initialization before the old code had claimed an
+  identity; using the version-neutral initialize-then-claim order fixed it. An
+  absolute `npm --prefix` invocation against the archived checkout produced a
+  misleading lockfile failure even though `npm ci` from the Web working
+  directory succeeded, so the harness uses an explicit working directory. The
+  first bundle inventoried an ephemeral empty WAL sidecar and retained an append
+  lock; a direct SQLite inspection also proved that updating an absolute locator
+  later leaves that path in free database pages. The builder now writes relative
+  locations initially, snapshots identifiers before final checkpoint, removes
+  sidecars/locks, and hashes only the settled bundle. The exact-base harness
+  also needed to create its intermediate parent directory explicitly.
+- The one independent audit found that the first draft covered only the oldest
+  and newest data, allowed Patch changes behind `>=` revision checks, bypassed
+  credential survival, and let `fixture.json` attest to itself. All four are
+  closed by the six-boundary external registry and the exact assertions above;
+  the audit's additional SQLite integrity check is included. The history
+  inventory also fact-checked `0bb0e72` as a file split and `15824c5`/`e84b461`
+  as transaction-behavior changes with no new stored shape, so redundant
+  fixtures were not invented for them. No second audit was run, per the human's
+  one-audit-per-packet rule.
+- Final self-review caught that six separately fresh databases would label the
+  modern Experiment-repair era without exercising it. The final fixtures are a
+  real upgrade chain instead: the first-team code records a bound live legacy
+  Experiment, the episode-vocabulary boundary migrates it and then completes its
+  task, and the later pre-repair starts retain the contradictory
+  `legacy_unavailable` wrap-up beside the still-live parent. Each affected test
+  first proves that raw old row exists, then proves current migration removes it
+  without losing the episode. The last pinned source is the actual pre-repair
+  `af52e03`, not the already-fixed `650d1f0`.
+- Both final focused runs emit only the repository's existing Starlette
+  `TestClient`/httpx deprecation warning. No warning was suppressed or treated as
+  upgrade evidence.
+- The first commit attempt was correctly rejected by the repository's 500 KiB
+  staged-file guard because five immutable SQLite databases exceeded it. The
+  guard was not bypassed. Fixture databases are now stored as deterministic
+  gzip (`mtime=0`) of the exact settled historical bytes, and the candidate
+  expands only its temporary copy before migration. The external bundle digests
+  pin that representation, while the same pre-migration row assertions prove
+  that compression did not turn the fixture into a reconstructed approximation.
+- Not done: this packet has not run the new job on GitHub-hosted Ubuntu, rehearsed
+  an actual server data directory, driven the desktop, tested source update
+  rollback, or tested disaster restore. Those remain owned by F6a-F6d, O4, and
+  the milestone drives; this CI evidence is not a substitute.
+
 ## What remains
 
 Everything after the existing auth/membership foundation remains implementation
@@ -433,9 +507,11 @@ No item in that list is implemented merely because its design is now confirmed.
 - The Web UI renders backend decisions. It never infers readiness from Git files,
   subprocess output, or a zero CLI exit code.
 - The CLI owns the exhaustive machine workflow and prints its numbered plan up
-  front. The wizard may invoke its fixed command and render the same structured
-  steps and progress, while a browser shows the same copyable command and
-  operator actions. Neither surface has a private setup recipe.
+  front. For team machine preparation, the wizard is the graphical presentation
+  of that same CLI-owned operation: it may invoke the fixed command and render
+  the same structured steps and progress, while a browser shows the same
+  copyable command and operator actions. The CLI remains complete without the
+  wizard, and neither surface has a private setup recipe.
 - Machine preparation alone never creates or re-homes a canonical project. Final
   explicit human review performs that authority action. New-project creation
   records one target-space confirmation. Personal-to-team transfer records two
