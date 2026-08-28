@@ -13,8 +13,12 @@ is pinned in the upgrade registry. F3a is therefore complete. F3b now has the
 operator guide, guarded live drive, and fixed 22.04/24.04 manual Actions matrix;
 its one independent audit is complete and every finding is fixed. However,
 the two real disposable-host runs remain pending because no repository-admin
-test credential has been configured or invoked. Every other concrete server
-operation and the unified wizard remain later packets. The
+test credential has been configured or invoked. P1 now provides the durable,
+strictly guarded project-provisioning state machine; its one independent audit
+is complete, every finding is fixed, and its exact schema boundary is retained
+in the chained upgrade registry. P1 is complete. Every concrete provisioning
+operation, member/API projection, finalizer, and the unified wizard remain later
+packets. The
 previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -534,9 +538,12 @@ gate are deliberately future work and do not block this plan.
   no second audit was run, per the one-audit packet rule.
 - Focused parser, request lifecycle, strict reload, installer integration, and
   broader storage verification passes 173 tests. Focused Ruff and format checks
-  are green. The exact P1 commit still needs its chained immutable G2 fixture;
-  until that follow-up commit lands, P1 is implemented but not yet marked
-  complete.
+  are green. Commit `227f9645e850d20cb19a49be7e944ded64309e43` is the exact
+  P1 schema boundary. Its chained `project-provisioning-v8-227f964` fixture
+  contains a live in-progress request plus one step receipt, proves the proposed
+  project remains absent, and is pinned by bundle digest
+  `59c77fd91519935483a93ab6bb6e1c5c4b5dff7f3e21496443ce12a8fb2f029d`.
+  The eight-boundary upgrade/start drive passes, so P1 is complete.
 - Not done in P1: no member HTTP route, backend UI projection, machine-side Git
   or provider work, final project creation, CLI handler, or wizard code exists.
   P2 through P6 and D7 retain those owners. The CLI remains the exhaustive
@@ -550,7 +557,7 @@ work:
 
 1. source-server installation, service ownership, health, and update;
 2. private machine-local CLI-to-server control;
-3. durable project-provisioning state and API projections;
+3. project-provisioning API projections and concrete machine orchestration;
 4. central Git checkout and write-deploy-key setup;
 5. local/remote provider readiness against authentication already present on
    each execution account;

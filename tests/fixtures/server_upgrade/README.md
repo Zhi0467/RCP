@@ -29,8 +29,11 @@ team backend runnable, and retains the later episode-vocabulary,
 orchestrated-child, graph-target, provider-runtime, and modern Experiment-repair
 boundaries. `source-server-install-v7-638c19e` is the first boundary at which the
 root-coordinated source installer, managed checkout/release layout, stable
-wrapper, and systemd service are installable. Raw bootstrap, member, session,
-provider, and Git credentials are absent; only nonsecret hashes/identifiers
-needed to prove credential survival remain. Paths in every database and manifest
-are relative to the fixture root, and the test always operates on a temporary
-copy.
+wrapper, and systemd service are installable.
+`project-provisioning-v8-227f964` adds one in-progress team-project preparation
+and its idempotent step receipt while proving that the proposed project has no
+catalog or canonical authority. Raw bootstrap, member, session, provider, and
+Git credentials are absent; only nonsecret hashes/identifiers needed to prove
+credential survival remain. Project and manifest paths are relative to the
+fixture root; the provisioning row additionally carries the product's fixed
+server central root. The test always operates on a temporary copy.

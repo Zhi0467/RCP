@@ -77,14 +77,19 @@ def build_fixture(output: Path, *, boundary: str, commit: str) -> None:
     seat_member = getattr(store, "seat_project_member", None)
     if callable(seat_member):
         seat_member(project.project_id, member.user_id)
+    authorized_by = AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=member.user_id,
+        display_name=member.display_name,
+    )
     store, experiment_episode_id, experiment_operation_id = _create_experiment_fixture(
         store,
         project_id=project.project_id,
-        authorized_by=AuthorizedHuman(
-            space_id=store.space_id,
-            user_id=member.user_id,
-            display_name=member.display_name,
-        ),
+        authorized_by=authorized_by,
+    )
+    store, provisioning_request_id, provisioning_project_id = _provisioning_fixture(
+        store,
+        authorized_by=authorized_by,
     )
 
     operation_id = str(uuid.uuid4())
@@ -133,6 +138,8 @@ def build_fixture(output: Path, *, boundary: str, commit: str) -> None:
         "active_operation_id": operation_id,
         "experiment_episode_id": experiment_episode_id,
         "experiment_operation_id": experiment_operation_id,
+        "provisioning_request_id": provisioning_request_id,
+        "provisioning_project_id": provisioning_project_id,
         "expected_repair": expected_repair,
         "expected_revision": materialized.revision,
         "files": _file_hashes(output),
@@ -198,6 +205,22 @@ def upgrade_fixture(
             store,
             experiment_episode_id if isinstance(experiment_episode_id, str) else None,
         )
+        user_id = metadata.get("user_id")
+        if not isinstance(user_id, str):
+            raise ValueError("source fixture has no member identity")
+        member = store.space_user(user_id)
+        if member is None:
+            raise RuntimeError("fixture upgrade lost its member")
+        store, provisioning_request_id, provisioning_project_id = _provisioning_fixture(
+            store,
+            authorized_by=AuthorizedHuman(
+                space_id=store.space_id,
+                user_id=member.user_id,
+                display_name=member.display_name,
+            ),
+            existing_request_id=metadata.get("provisioning_request_id"),
+            existing_project_id=metadata.get("provisioning_project_id"),
+        )
     _settle_fixture_files(store.path, output / "project" / ".research")
     _compress_database(store.path)
     metadata.update(
@@ -206,6 +229,8 @@ def upgrade_fixture(
             "created_with_commit": commit,
             "expected_revision": materialized.state.revision,
             "expected_repair": expected_repair,
+            "provisioning_request_id": provisioning_request_id,
+            "provisioning_project_id": provisioning_project_id,
             "files": _file_hashes(output),
         }
     )
@@ -312,6 +337,91 @@ def _create_experiment_fixture(
     if reopened.experiment_episode(episode_id) is None:
         raise RuntimeError("fixture Experiment episode did not survive restart")
     return reopened, episode_id, operation_id
+
+
+def _provisioning_fixture(
+    store: AppStore,
+    *,
+    authorized_by: AuthorizedHuman,
+    existing_request_id: object = None,
+    existing_project_id: object = None,
+) -> tuple[AppStore, str | None, str | None]:
+    create = getattr(store, "create_project_provisioning_request", None)
+    read = getattr(store, "project_provisioning_request", None)
+    receipts = getattr(store, "project_provisioning_step_receipts", None)
+    if not callable(create) or not callable(read) or not callable(receipts):
+        if existing_request_id is not None or existing_project_id is not None:
+            raise RuntimeError("fixture provisioning state is unsupported by this boundary")
+        return store, None, None
+
+    if existing_request_id is None and existing_project_id is None:
+        from rcp.server_ops.github import parse_github_repository_ref
+        from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
+        from rcp.storage import (
+            ProjectProvisioningMachineIntent,
+            ProjectProvisioningProviderIntent,
+            ProjectProvisioningRepositoryIntent,
+        )
+
+        request = create(
+            kind="create_team_project",
+            authorized_by=authorized_by,
+            machines=[
+                ProjectProvisioningMachineIntent(
+                    alias="server",
+                    location="local",
+                    os_account="rcp",
+                    central_root=str(DEFAULT_SERVER_LAYOUT.projects_root),
+                )
+            ],
+            repositories=[
+                ProjectProvisioningRepositoryIntent(
+                    alias="repo",
+                    repository=parse_github_repository_ref("https://github.com/openai/rcp.git"),
+                    machine_alias="server",
+                )
+            ],
+            provider_checks=[
+                ProjectProvisioningProviderIntent(
+                    profile="seed",
+                    provider="codex",
+                    runtime_id="codex:exec",
+                    model="gpt-5",
+                    reasoning="medium",
+                    machine_alias="server",
+                )
+            ],
+        )
+        request = store.transition_project_provisioning_request(
+            request.request_id,
+            receipt_id="fixture-setup-started",
+            phase="setup_start",
+            expected_revision=0,
+            expected_status="waiting_for_server_setup",
+            to_status="setup_in_progress",
+            machines=request.machines,
+            repositories=request.repositories,
+            provider_checks=request.provider_checks,
+        )
+    else:
+        if not isinstance(existing_request_id, str) or not isinstance(existing_project_id, str):
+            raise ValueError("fixture provisioning metadata is incomplete")
+        request = read(existing_request_id)
+        if request is None or request.proposed_project_id != existing_project_id:
+            raise RuntimeError("fixture upgrade lost its provisioning request")
+
+    reopened = AppStore(store.path)
+    reopened_read = reopened.project_provisioning_request
+    reopened_receipts = reopened.project_provisioning_step_receipts
+    persisted = reopened_read(request.request_id)
+    if persisted is None or persisted.status != "setup_in_progress" or persisted.revision != 1:
+        raise RuntimeError("fixture provisioning request did not survive restart")
+    persisted_receipts = reopened_receipts(request.request_id)
+    if [receipt.receipt_id for receipt in persisted_receipts] != ["fixture-setup-started"]:
+        raise RuntimeError("fixture provisioning receipt did not survive restart")
+    if reopened.project(persisted.proposed_project_id) is not None:
+        raise RuntimeError("fixture preparation created project authority")
+    return reopened, persisted.request_id, persisted.proposed_project_id
 
 
 def _expected_experiment_repair(store: AppStore, episode_id: str | None) -> str | None:

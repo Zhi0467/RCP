@@ -75,6 +75,7 @@ def _exercise_candidate_upgrade(fixture: Path) -> None:
         assert {member.user_id for member in store.project_members(project_id)} == {user_id}
         _assert_member_auth_rows(store, metadata)
         assert store.agent_task(operation_id).status == "running"
+        _assert_provisioning_rows(store, metadata)
         if experiment_episode_id is not None:
             assert store.experiment_episode(experiment_episode_id) is not None
             if expected_repair is not None:
@@ -140,6 +141,7 @@ def _exercise_candidate_upgrade(fixture: Path) -> None:
 
         reopened = AppStore(database)
         _assert_member_auth_rows(reopened, metadata)
+        _assert_provisioning_rows(reopened, metadata)
         assert reopened.agent_task(operation_id).status == "interrupted"
         if experiment_episode_id is not None:
             assert reopened.experiment_episode(experiment_episode_id) is not None
@@ -233,6 +235,23 @@ def _assert_raw_member_auth_rows(database: Path, metadata: dict[str, object]) ->
     assert credential["revoked_at"] is None
     assert session is not None
     assert session["user_id"] == user_id
+
+
+def _assert_provisioning_rows(store: AppStore, metadata: dict[str, object]) -> None:
+    request_id = _metadata_optional_string(metadata, "provisioning_request_id")
+    proposed_project_id = _metadata_optional_string(metadata, "provisioning_project_id")
+    if request_id is None and proposed_project_id is None:
+        return
+    assert request_id is not None
+    assert proposed_project_id is not None
+    request = store.project_provisioning_request(request_id)
+    assert request is not None
+    assert request.proposed_project_id == proposed_project_id
+    assert request.status == "setup_in_progress"
+    assert request.revision == 1
+    assert store.project(proposed_project_id) is None
+    receipts = store.project_provisioning_step_receipts(request_id)
+    assert [receipt.receipt_id for receipt in receipts] == ["fixture-setup-started"]
 
 
 def _assert_raw_impossible_experiment_wrapup(database: Path, episode_id: str) -> None:

@@ -43,6 +43,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "638c19e17252e0e441a698e628b49449df088c81",
         "3f2c9a6cac26424882a7ec64f35d0c0410ea64d86597a3e7359c2ba5951c8a69",
     ),
+    "project-provisioning-v8-227f964": (
+        "227f9645e850d20cb19a49be7e944ded64309e43",
+        "59c77fd91519935483a93ab6bb6e1c5c4b5dff7f3e21496443ce12a8fb2f029d",
+    ),
 }
 
 
