@@ -9,8 +9,8 @@ invariants: [6, 7]
 
 # Add a project with plain-language setup steps
 
-This scenario covers the ordinary personal-space Add-project wizard. A team
-space uses the durable provisioning journey in
+This scenario covers **Use an existing checkout personally** inside the one
+unified project wizard. A team space uses the durable provisioning journey in
 [S128](S128-provision-a-team-project-through-desktop-and-server-cli.md) and
 cannot enter this path-based setup flow through its index, a direct URL, or the
 ordinary setup APIs.
@@ -20,10 +20,13 @@ internal names of RCP's state files, prompt assembly, or patch protocol.
 
 ## Drive — proposal
 
-1. Open the project index and choose **New project**.
-2. On the first step, see a heading that says the person is naming a project
-   and adding a repository. It does not say that they are starting with a
-   paper.
+1. Open the project index, choose **New project**, and select **Use an existing
+   checkout personally**. Switch to another available intent and back; confirm
+   the same top-level wizard remains mounted while its backend-owned fields and
+   API path change.
+2. On the first personal-intent step, see a heading that says the person is
+   naming a project and adding a repository. It does not say that they are
+   starting with a paper.
 3. Move through the wizard. The steps are named **Project**, **Repositories**,
    **Agents**, and **Review**.
 4. Confirm that the repository controls use plain labels for the repository's
@@ -47,6 +50,8 @@ internal names of RCP's state files, prompt assembly, or patch protocol.
 - `wizard_setup_behavior_is_unchanged` — repository selection, agent profile
   selection, read-only preflight, confirmation, and create/connect behavior
   still work.
+- `personal_setup_is_an_intent_in_the_unified_wizard` — switching intent changes
+  fields and authority APIs without mounting a second top-level wizard.
 - `wizard_has_no_console_errors`
 
 ## Open choice for confirmation

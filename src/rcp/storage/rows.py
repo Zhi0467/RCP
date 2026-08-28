@@ -164,11 +164,6 @@ class RowMappingMixin:
 
     def _agent_task_record(self, row: sqlite3.Row) -> AgentTaskRecord:
         data = dict(row)
-        # A newer provider-runtime build may have added this column to the
-        # shared development database.  Runtime selection is not part of this
-        # build, but historical tasks must remain readable after returning to
-        # it; the provider-runtime change will own the field when it lands.
-        data.pop("runtime_id", None)
         recovery_abandoned = bool(data.pop("recovery_abandoned", False))
         data.pop("campaign_worker_handoffs_cleared_at", None)
         dispatch_json = data.pop("dispatch_authority_json", None)

@@ -148,23 +148,37 @@ but it cannot own multi-space routing, credential storage, SSH tunnels, or
 server-command execution. Source mode is the supported client for this slice; a
 packaged Linux client is not required.
 
-Project creation begins as an ordinary human action in the team backend's Web UI,
-whether viewed in a browser or the desktop. Personal-to-team transfer begins only
-in the source-built desktop because its native shell coordinates the two
-authenticated backends and archive relay. Both create backend-owned durable
-provisioning requests. The UI renders the backend's status, diagnostic, exact
-next action, resolved paths, and final review. It cannot claim success from a
-desktop subprocess exit code.
+Project creation and transfer use one visible project wizard. Its three named
+intents are **Use an existing checkout personally**, **Create a shared team
+project**, and **Move an existing personal project to a team**. An entry point
+may preselect an intent, and Project Settings deep-links to the move intent, but
+the user does not encounter separate personal, provisioning, and transfer
+wizards. Each backend exports only its own product eligibility, preselection,
+required fields, and any pinned source identity. The desktop-native bridge
+separately exports relay capability and its authenticated saved team targets.
+The wizard offers move only by intersecting explicit permission from the
+personal backend, explicit admission from the selected team backend, and that
+native capability answer. A browser has no native capability answer and cannot
+offer cross-space move. The Web does not infer product authority from
+`space_kind`, paths, saved-connection presence alone, or native-global
+detection.
 
-The backend also exports one `project_creation` control with the primary action
-label and a `uses_provisioning` decision. The personal backend keeps the
-ordinary path-based Add-project wizard. The team backend uses the durable
-provisioning surface for both the project-index action and a direct
-`#/projects/new` navigation; the Web does not infer that choice from
-`space_kind`, paths, desktop presence, or cached connection metadata. A direct
+The modes retain their separate authority owners behind that shared surface.
+Personal setup calls the ordinary path-based preflight/finalizer. Team creation
+creates a backend-owned durable provisioning request from GitHub repository
+sources and derived central paths. Personal-to-team transfer creates linked
+requests in the two authenticated backends and is available only in the
+source-built desktop because its native shell owns the archive relay. A direct
 team request to either ordinary project-setup API is refused before filesystem
 inspection or catalog mutation. The separately validated provisioning finalizer
 is the only team-project entrance into the existing setup/registration owners.
+
+The UI renders the backend's status, diagnostic, exact next action, resolved
+paths, and final review. It cannot claim success from a desktop subprocess exit
+code. A local-only codebase is not uploaded through the wizard: the new-team
+intent tells the human to push it to a GitHub repository with a real commit
+through their ordinary Git workflow, then records that repository source. RCP
+does not collect GitHub user authentication.
 
 A saved member connection and an operator route are distinct capabilities even
 when they use the same SSH host. **Run setup now** appears only in the desktop
@@ -185,6 +199,13 @@ admission first, then source release. Each backend records its own human actor;
 the native relay and remote CLI cannot provide either confirmation. A partial
 first confirmation is durable state that the same request resumes, not evidence
 that the project moved.
+
+Every machine-readable operator-action event carries the same structured
+responsibility, typed machine or external-service target, ordered safe commands
+or GitHub actions, nonsecret values, success check, and resume command that the
+interactive CLI prints. The wizard renders those fields directly and never
+parses CLI prose. No machine step or recovery instruction exists only in the
+wizard.
 
 ## Project tabs
 

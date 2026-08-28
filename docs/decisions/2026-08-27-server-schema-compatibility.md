@@ -7,7 +7,7 @@ G2.
 
 Starting with the first commit capable of running the team server, current
 GitHub `main` must directly open and upgrade state written by every earlier
-server-era schema admitted to `main` under the current PR/CI merge policy. A lab
+server-era schema admitted to `main`. A lab
 may skip any number of intermediate source updates; `rcp server update` does not
 require an operator to find and run old commits in sequence.
 
@@ -20,10 +20,12 @@ new code. Every later schema change must preserve all retained fixtures, add the
 migration it needs, and add a new boundary fixture before the old shape stops
 being current.
 
-CI also builds the exact PR base and creates representative state with that
-code, then upgrades a copy with the candidate. This immediate-previous test
-catches changes since the latest retained boundary; the permanent fixtures
-catch servers that skipped many updates.
+The upgrade harness also builds the exact candidate base and creates
+representative state with that code, then upgrades a copy with the candidate.
+For direct local work, the base is current `main` and the candidate is the
+working tree; for a committed CI candidate, the base is its first parent. This
+immediate-previous test catches changes since the latest retained boundary; the
+permanent fixtures catch servers that skipped many updates.
 
 There is no rolling compatibility window in the first team-server target. If
 support for a historical boundary ever becomes genuinely impossible, removing
@@ -35,15 +37,16 @@ inconvenient.
 
 The source-built server follows `main`, not numbered packages, and a
 one-lab operator may reasonably update after months rather than after every
-merge. Supporting only the immediately previous commit would make that ordinary
+commit. Supporting only the immediately previous commit would make that ordinary
 delay unsafe. Testing every commit would add large redundant history because
 most commits do not change persistent representation; one fixture per boundary
 tests the actual compatibility surface.
 
-During private development the upgrade job must pass before human merge by
-project policy. Before public sharing, real branch protection makes that named
-job GitHub-required; the compatibility promise itself does not wait for that
-later enforcement change.
+During private single-developer implementation the upgrade check runs as part of
+the applicable local verification before a persistence change is recorded or
+pushed, and CI reports the committed result on `main`. Before public sharing,
+real branch protection makes that named job GitHub-required; the compatibility
+promise itself does not wait for that later enforcement change.
 
 The current store has no single historical schema-version ledger and already
 contains direct, one-way migrations for older table layouts. Preserving exact

@@ -329,9 +329,7 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert report is not None
 
     url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/content"
-    legacy_preview_url = (
-        f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/preview"
-    )
+    legacy_preview_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/preview"
     viewer_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/viewer"
     with TestClient(app) as client:
         listed = client.get(f"/api/projects/{project_id}/episodes")

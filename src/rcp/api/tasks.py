@@ -840,17 +840,14 @@ def _admit_artifact_context_request(
         pinned_values["run_on"],
         pinned_values["session_id"],
     )
-    if (
-        not all(isinstance(value, str) and value for value in required_values)
-        or not isinstance(pinned_values["model"], str)
+    if not all(isinstance(value, str) and value for value in required_values) or not isinstance(
+        pinned_values["model"], str
     ):
         raise ValueError(
             "The artifact's native session is unavailable. Start a fresh session explicitly "
             "before asking about it."
         )
-    pinned = RunRequest.model_validate(
-        {**request.model_dump(mode="python"), **pinned_values}
-    )
+    pinned = RunRequest.model_validate({**request.model_dump(mode="python"), **pinned_values})
     return _resolved_graph_request(service, kind, pinned)
 
 

@@ -41,7 +41,10 @@ test("a missing lazy chunk reloads the document once", () => {
   const event = new Event("vite:preloadError", { cancelable: true });
   let reloads = 0;
 
-  assert.equal(recoverFromPreloadError(event, storageWith(), () => (reloads += 1), 10_000), true);
+  assert.equal(
+    recoverFromPreloadError(event, storageWith(), () => (reloads += 1), 10_000),
+    true,
+  );
   assert.equal(event.defaultPrevented, true);
   assert.equal(reloads, 1);
 });

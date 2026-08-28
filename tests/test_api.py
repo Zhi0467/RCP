@@ -3550,9 +3550,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
                 "source": "task",
                 "operation_id": origin.operation_id,
                 "artifact_id": by_name["preview.html"]["artifact_id"],
-                "selections": [
-                    {"kind": "text", "text": "external edit", "comment": "Why?"}
-                ],
+                "selections": [{"kind": "text", "text": "external edit", "comment": "Why?"}],
             },
         },
     )

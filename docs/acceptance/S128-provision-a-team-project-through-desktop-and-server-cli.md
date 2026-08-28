@@ -13,12 +13,13 @@ This scenario is human-confirmed and pending implementation. It owns the seam
 between [Durable project provisioning](../specs/projects-spaces-and-operations.md#durable-project-provisioning)
 and the [Confirmed team desktop target](../specs/api-web-and-desktop-projections.md#confirmed-team-desktop-target).
 
-Project setup is visible and human-directed in RCP, while machine work stays
-under server operating-system authority. The backend owns one durable request;
-the browser renders it, the desktop may invoke its fixed command over SSH, and
-the server CLI performs the checkout and Git-credential steps and checks the
-provider authentication already present on each execution account. None of
-those parts independently decides that a project exists.
+Project setup is one visible wizard with plainly named personal, new-team, and
+personal-to-team intents, while machine work stays under server operating-system
+authority. The backend owns one durable request; the browser renders it, the
+desktop may invoke its fixed command over SSH, and the server CLI performs the
+checkout and Git-credential steps and checks the provider authentication already
+present on each execution account. None of those parts independently decides
+that a project exists.
 
 ## Setup
 
@@ -31,14 +32,24 @@ transport only.
 
 ## Drive
 
-1. In the team project index choose **Create team project**, then navigate
-   directly to `#/projects/new` and confirm both entrances show the durable
-   provisioning surface rather than the ordinary path-based wizard. Call the
-   ordinary setup preflight and create APIs directly with a path that would be
-   observable if inspected; confirm both are refused without touching that path
-   or the catalog. Supply the repository source and intended project settings,
-   accept the home-derived SSH central-root default once, then use an explicit
-   account-owned mounted root in a second request.
+1. Open the shared project wizard from the personal index, team index, and an
+   existing personal project's **Move to team space** action. Confirm the same
+   wizard names **Use an existing checkout personally**, **Create a shared team
+   project**, and **Move an existing personal project to a team**, with
+   unavailable intents omitted or disabled by the personal export answer, team
+   import answer, and native relay capability, and each contextual entry
+   preselected correctly. Confirm a browser against one backend cannot
+   manufacture the cross-space move intent, then
+   choose new-team mode. Call the ordinary setup preflight
+   and create APIs directly with a path that would be observable if inspected;
+   confirm both are refused without touching that path or the catalog. Supply
+   accepted GitHub.com HTTPS and SSH repository forms and intended project
+   settings, accept the home-derived SSH central-root default once, then use an
+   explicit account-owned mounted root in a second request. Try
+   credentials/userinfo, a query or fragment, percent encoding, traversal, a
+   local path, `file://`, `ssh://`, an arbitrary host or port, and extra path
+   components; confirm each is rejected before request persistence, filesystem
+   access, DNS, or another network call.
 2. Read the newly persisted request, its **waiting for server setup** status, its
    proposed canonical project id, resolved target paths, and the exact
    `rcp server project provision <request-id>` command. Confirm the paths use the
@@ -46,11 +57,23 @@ transport only.
 3. From a browser or the member-only SSH connection, attempt to run the machine
    steps. Confirm the UI offers only the copyable operator command.
 4. From the desktop with the operator route, click **Run setup now**. Inspect the
-   exact SSH argv and structured progress; interrupt the SSH connection once and
-   reopen the request.
+   exact SSH argv, the complete numbered plan in both interactive and structured
+   output, and the responsibility, typed target, purpose, state, and expected
+   success for every step. Confirm a machine step names its host and OS account,
+   while an external step names its service, resource, destination URL, and
+   required role without inventing a user identity. Confirm the wizard renders
+   those structured steps without inventing or omitting one. Interrupt the SSH
+   connection once and reopen the request.
 5. Let the CLI create a separate repository-scoped deploy key for each GitHub
-   repository. Follow its prompt, deliberately leave **Allow write access** off
-   once, then enable it and retry. Inspect the server-local key root and the
+   repository without any GitHub user login on the server. Confirm its
+   key-generation step names the exact machine and execution account. Confirm
+   the separate GitHub action in both interactive and machine-readable output
+   names `github.com`, the canonical repository, repository settings
+   destination, required repository-administrator role, deterministic label,
+   public key, **Allow write access** action, expected verification, and same
+   command to resume—without claiming to know the administrator's GitHub login.
+   Add the key as a repository administrator, deliberately leave write access
+   off once, then enable it and retry. Inspect the server-local key root and the
    remote account's verified home-derived key root; search the transport and
    server temporary files for the remote private key.
 6. Let the CLI clone or fetch both central checkouts, perform request-scoped Git
@@ -73,8 +96,10 @@ transport only.
     remains **operator action needed** with its exact label/fingerprint until
     revocation or explicit reuse is confirmed.
 12. Point a third request at an empty repository and read the exact operator
-    action needed to create its first real commit; confirm RCP creates no hidden
-    initialization commit.
+    action needed to push a local-only codebase through the human's ordinary Git
+    workflow, plus the exact provisioning command to resume; confirm RCP creates
+    no GitHub repository, takes no user token, uploads no member checkout, and
+    creates no hidden initialization commit.
 13. Point a `create_team_project` request at a repository containing retained
     canonical identity/Patches, then make retained history appear after an
     initially clean preparation. Confirm both preparation and final review stop
@@ -84,7 +109,11 @@ transport only.
 ## Assert
 
 - `the_ui_creates_one_durable_provisioning_request_before_machine_work`
+- `personal_team_and_move_are_three_intents_in_one_visible_project_wizard`
+- `contextual_entries_preselect_their_intent_without_creating_another_wizard`
+- `desktop_composes_authenticated_intent_controls_but_browser_cannot_invent_move`
 - `the_backend_exports_the_project_creation_control_for_the_current_space`
+- `move_requires_personal_export_team_import_and_native_relay_answers`
 - `the_team_index_and_direct_new_project_link_both_open_provisioning`
 - `ordinary_team_setup_apis_are_refused_before_path_or_catalog_access`
 - `personal_direct_project_setup_remains_available`
@@ -102,12 +131,21 @@ transport only.
 - `a_member_only_connection_gets_a_copyable_command_not_a_false_run_button`
 - `the_cli_uses_the_running_servers_private_control_socket_instead_of_opening_sqlite`
 - `the_deploy_key_prompt_explicitly_requires_github_write_access`
+- `the_deploy_key_is_repository_identity_without_a_github_user_login`
+- `github_sources_are_canonicalized_before_persistence_or_side_effects`
+- `local_arbitrary_host_credential_and_ambiguous_git_sources_are_rejected`
+- `interactive_and_structured_operator_actions_name_account_steps_success_and_resume`
+- `interactive_and_structured_output_share_one_complete_numbered_step_plan`
+- `every_step_names_responsibility_typed_target_purpose_state_and_success_signal`
+- `external_steps_require_a_role_without_inventing_a_user_identity`
+- `the_wizard_renders_structured_actions_without_parsing_cli_prose`
 - `each_github_repository_uses_a_distinct_deploy_key`
 - `server_local_and_remote_keys_stay_on_the_accounts_that_own_their_checkouts`
 - `remote_home_is_resolved_and_verified_without_trusting_shell_home_or_manifest_input`
 - `a_remote_private_key_never_crosses_stdout_progress_or_the_server_filesystem`
 - `read_only_git_access_is_operator_action_needed_not_ready_for_review`
 - `an_empty_repository_requires_an_operator_created_first_commit`
+- `local_only_code_is_pushed_by_the_human_not_uploaded_or_adopted_by_rcp`
 - `direct_team_creation_refuses_retained_rcp_identity_or_patch_history`
 - `retained_history_appearing_after_preparation_is_rechecked_before_creation`
 - `a_personal_canonical_identity_routes_to_transfer_not_adoption_or_overwrite`
@@ -127,15 +165,22 @@ transport only.
 
 ## UI path
 
-The app shows one setup card whose primary state and action come from the
-backend. **Run setup now** is a desktop-only convenience after an operator probe;
-**Copy server command** is always available. Progress steps are compact and
-resume from durable state rather than becoming a terminal transcript.
+The app shows one project wizard, not separate personal, provisioning, and
+transfer wizards. Product eligibility and fields come from the applicable
+backend; only cross-space move additionally intersects the desktop-native relay
+capability and authenticated target list. Shared project, repository, provider,
+progress, and review presentation stays in one flow. **Run setup now** is a
+desktop-only convenience after an operator probe; **Copy server command** is
+always available. Progress steps are compact and resume from durable state
+rather than becoming a terminal transcript.
 
-At **operator action needed**, the card shows the exact failed check and one
-next step—for example, add the displayed public key to the named repository and
-enable GitHub's **Allow write access**. Secrets are never echoed. At **ready for
-review**, the human sees the resolved result and one **Create project** action.
+At **operator action needed**, the card renders the CLI's structured
+responsibility, typed machine or external-service target, ordered action, safe
+command or GitHub destination, nonsecret value, expected success, and resume
+command—for example, a repository administrator adds the displayed public key
+to the named repository and enables GitHub's **Allow write access**. Secrets are
+never echoed. At **ready for review**, the human sees the resolved result and one
+**Create project** action.
 
 ## Boundary
 

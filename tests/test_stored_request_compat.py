@@ -56,16 +56,22 @@ def test_task_row_decoder_preserves_unallowlisted_fields_for_strict_rejection() 
         AutoResearchRunRequest.model_validate(record.request)
 
 
-def test_task_row_decoder_ignores_forward_provider_runtime_column() -> None:
+def test_task_row_decoder_preserves_persisted_provider_runtime() -> None:
     row = _task_row(
         {
             "episode_id": "episode-1",
             "role": "orchestrator",
+            "provider": "codex",
         }
     )
-    row["runtime_id"] = "codex.exec-json.v1"
+    row["runtime_id"] = "codex.app-server-stdio.v1"
 
     record = RowMappingMixin()._agent_task_record(row)
 
     assert record.operation_id == "op-1"
-    assert record.request == {"episode_id": "episode-1", "role": "orchestrator"}
+    assert record.runtime_id == "codex.app-server-stdio.v1"
+    assert record.request == {
+        "episode_id": "episode-1",
+        "role": "orchestrator",
+        "provider": "codex",
+    }

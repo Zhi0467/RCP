@@ -15,10 +15,10 @@
 - [Source server uses staged releases and split operator/service privilege](2026-08-27-source-server-install-and-update-privilege.md)
   records the disposable bootstrap, clean per-commit releases, unprivileged
   source builds, and narrow root coordinator for systemd lifecycle.
-- [Main is the convention-governed server-update channel until public sharing](2026-08-27-main-is-the-server-update-channel.md)
-  records short-lived PR branches, green CI and human merge by convention during
-  private development, the later public branch-protection gate, and why there is
-  no permanent development branch.
+- [Main is the direct development and server-update channel until wider sharing](2026-08-27-main-is-the-server-update-channel.md)
+  records direct-`main` work during the private single-developer implementation,
+  scoped verification, the later public PR/protection gate, and why there is no
+  permanent development branch.
 - [Every server-era schema remains directly upgradeable](2026-08-27-server-schema-compatibility.md)
   records permanent one-step upgrade support and one immutable fixture bundle
   per distinct persistence boundary.

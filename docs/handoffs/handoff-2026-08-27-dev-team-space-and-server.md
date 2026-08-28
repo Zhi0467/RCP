@@ -2,10 +2,10 @@
 
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
-complete, while implementation remains pending. The packet plan is ready to
-dispatch. G0 can begin immediately to restore the current `main` CI baseline;
-G1 follows G0, and no external repository decision blocks the remaining
-packets.
+complete, and implementation is now in progress directly on `main`. G0 is the
+first packet and restores the current CI baseline. The previously planned G1
+pull-request transition was rejected by the human for this private,
+single-developer pre-team-server implementation; it no longer gates any packet.
 
 ## Objective
 
@@ -19,7 +19,8 @@ by one lab operating one Linux server:
 - researchers use source-built RCP desktop apps as distinct RCP members;
 - every team project uses one team-controlled central checkout per declared
   repository on its configured local or SSH machine, with a distinct
-  repository-scoped write deploy key;
+  repository-scoped write deploy key and a canonical GitHub.com repository
+  identity;
 - local and SSH provider calls retain one provider abstraction and execute only
   on their explicitly configured accounts;
 - a human starts project setup or transfer in the app, while the server CLI owns
@@ -97,13 +98,12 @@ The missing seams are also concrete:
   corruption, so a home transfer cannot be represented by appending a second
   `ProjectIdentity` record.
 
-The repository's current `AGENTS.md` still prescribes direct work on `main`, and
-CI currently reports on PRs and post-push `main` but has neither an
-old-data-to-candidate upgrade gate nor GitHub branch protection. Current `main`
-also has a red baseline described in G0. Repair G0 on a short branch and merge it
-through ordinary CI and explicit human review; then G1 completes the private
-development workflow transition before dependent implementation packets are
-dispatched.
+The repository's current `AGENTS.md` prescribes direct work on `main`, which the
+human retained for the full private pre-team-server implementation. CI reports
+post-push `main` but has neither an old-data-to-candidate upgrade gate nor GitHub
+branch protection. Current `main` also has the red baseline described in G0.
+Repair G0 directly, then G2, F1, and D1 may begin according to the dependency
+map.
 
 ### Resolved repository workflow boundary
 
@@ -111,13 +111,11 @@ A read-only GitHub fact-check on 2026-08-28 confirmed that `Zhi0467/RCP` is
 private and its current plan rejects the branch-protection API with HTTP 403,
 stating that private-repository protection requires a plan upgrade or a public
 repository. The human chose not to change the repository's plan or visibility
-during the private one-lab development phase.
-
-G1 therefore establishes short-lived branches, pull requests, green named CI
-checks, and explicit human merge as project policy and agent convention. GitHub
-does not yet technically reject a direct push, unchecked merge, or stale merge;
-the documentation and verification receipt must say so plainly rather than
-claiming enforcement that does not exist.
+and explicitly retained direct work on `main` throughout this private,
+single-developer implementation. Each packet receives focused tests,
+pre-commit, and code review; full desktop/live drives occur at meaningful
+milestones. CI reports pushed failures but does not technically reject a direct
+push, and the evidence must not imply otherwise.
 
 Before RCP is shared publicly or with external users, make the repository public
 and enable real `main` branch protection. Require pull requests and the named
@@ -136,10 +134,12 @@ not green: the complete backend suite has two deterministic failures, and
 those exact repairs instead of letting the first implementation worker inherit
 an unexplained red tree.
 
-After adding G0, the audit checked that all 66 packet headings have exactly one
-dependency-table entry with no duplicate id, missing/unknown predecessor, or
-cycle. All 64 assignment packets have an explicit concrete `Own:` block; V1 and
-V2 are deliberately integrator closure drives rather than worker assignments.
+After adding G0, the audit checked that the original 66 packet headings had
+exactly one dependency-table entry with no duplicate id, missing/unknown
+predecessor, or cycle. The human later rejected G1; the active plan now has 65
+packet headings, 63 assignment packets with concrete `Own:` blocks, and V1/V2 as
+integrator closure drives. The dependency table has 64 rows because one row
+covers both F1 and D1.
 The audit also verified that every later owner of a not-yet-created shared file
 depends on its creator; it added the missing F6a-to-O4a and O4a-to-T2c edges.
 Repeated existing paths remain covered by the shared-file scheduling mutex below. The
@@ -147,8 +147,55 @@ provider-auth boundary, transfer/restore artifact decisions,
 team-deletion boundary, restore journal, and shared-file scheduling mutexes are
 explicit rather than left to worker interpretation. G0 is dispatchable now. The
 repository workflow decision is settled, so no unresolved product or repository
-decision blocks G1 or the feature lanes. Q10 and the later public branch-
-protection gate are deliberately future work and do not block this plan.
+decision blocks the feature lanes. Q10 and the later public branch-protection
+gate are deliberately future work and do not block this plan.
+
+### Implementation log
+
+#### 2026-08-28 — G0 baseline repair complete in the working tree
+
+- Work is on local `main` from `4e6d812`. The seven known formatter changes are
+  mechanical. `_agent_task_record` now retains the persisted runtime, and the
+  active-handoff test indexes valid active work instead of requiring an empty
+  handoff directory.
+- The complete Python suite passes with 2,373 tests and one existing dependency
+  deprecation warning. The Web production build and all 434 Web tests pass.
+  Focused runtime, compatibility, instruction, and documentation tests pass;
+  `git diff --check` and all-file pre-commit are green.
+- Surprise: the extra stale compatibility test was not named in the original G0
+  inventory. It is now explicit in G0 ownership instead of being treated as an
+  unrelated failure.
+- The requested read-only review confirmed the runtime fix and formatter-only
+  files, then found a future-empty-handoff test edge, stale S60 wizard language,
+  ambiguous cross-backend move ownership, and an unsafe unspecified Git-source
+  boundary. All four are resolved in the current test and authority docs. The
+  focused follow-up then caught that external GitHub actions cannot truthfully
+  name an unknown human account; the step contract now separates responsibility
+  from typed machine and external-service targets. A final read-only check found
+  no remaining issue in this scope.
+- Not done: no desktop drive was run because G0 changes no desktop behavior. The
+  slice is not committed or pushed; those remain separate human-authorized
+  actions.
+
+#### 2026-08-28 — implementation authority refinements
+
+- The human retained direct work on `main` for the full private pre-team-server
+  implementation. The convention-only G1 PR transition was removed from the
+  plan and dependency map. A temporary local G0 branch created from the stale
+  instruction has no unique commit; the working edits were moved back to
+  `main`, and the unused ref was left untouched rather than deleted implicitly.
+- The human selected one unified project wizard with personal, new-team, and
+  personal-to-team intents. New-team setup uses canonical GitHub.com repository
+  identities and repository-scoped deploy keys; local-only code is pushed by the
+  human first. The CLI is the sole exhaustive machine workflow, while the wizard
+  renders its structured actions and retains human product approval.
+- Security refinement from the G0 review: this slice is GitHub.com-only. One
+  canonical repository-reference parser rejects local, credential-bearing,
+  ambiguous, ported, or arbitrary-host inputs before persistence or side
+  effects; GitHub Enterprise requires a later trusted-origin design.
+- Not yet done: these wizard/CLI refinements are current design and acceptance
+  authority only. No provisioning CLI, deploy-key owner, unified-wizard code, or
+  transfer UI has been implemented or runtime-verified yet.
 
 ## What remains
 
@@ -227,20 +274,22 @@ No item in that list is implemented merely because its design is now confirmed.
 
 - GitHub `origin/main` is the only server update channel and every commit on it
   must be deployable.
-- All development uses short-lived feature/WIP branches and pull requests. Draft
-  branches may be incomplete; the server never reads them.
-- During private one-lab development, direct pushes to `main` and merges without
-  green build, test, and upgrade-compatibility checks are forbidden by project
-  policy, but GitHub does not technically reject them.
-- Passing CI makes a PR eligible, but merge is an explicit human action. No
-  second reviewer account is required. Agents may prepare a PR but never merge
-  without direct human instruction.
+- The full private, single-developer pre-team-server implementation stays
+  directly on local `main`; this handoff adds no short-lived-branch or PR gate.
+- Each scoped packet receives focused tests, pre-commit, and code review for
+  coverage, edge cases, and stale docs. Full source-built desktop and machine
+  drives run at meaningful integration milestones rather than after every
+  file-sized packet. Surprises, unrun checks, and confidence gaps are recorded
+  in the implementation log instead of being hidden.
+- CI reports pushed `main` but GitHub does not technically reject a bad direct
+  push. Commit and push remain separate human-authorized actions under
+  `AGENTS.md`; test success is not permission to push.
 - From the first team-server-capable commit onward, every earlier server-era
   persistence boundary remains directly upgradeable. CI retains one immutable,
   sanitized fixture bundle per distinct schema or migration-semantics boundary;
   fixtures do not expire merely because they are old.
-- Local Web and desktop development may run any branch. Emergency fixes use the
-  same PR gate.
+- Local Web and desktop development may run any branch, but this implementation
+  remains on `main`. Emergency fixes use the same scoped verification.
 - There is no permanent `dev` branch.
 - Before public or external sharing, make the repository public and enable real
   branch protection that requires the named jobs and rejects direct pushes and
@@ -302,19 +351,42 @@ No item in that list is implemented merely because its design is now confirmed.
 - The CLI has one concrete implementation with interactive output and bounded
   machine-readable progress. The desktop consumes the structured form; it does
   not get a second implementation.
+- The CLI prints a numbered, plain-language plan before machine work. Every step
+  names its purpose, `performed_by` responsibility, typed target, state, and
+  expected success. Machine targets name host and OS account; external-service
+  targets name service, resource, destination URL, and required authority role
+  without inventing a human identity. An operator-action result additionally
+  carries ordered safe commands or external UI actions, nonsecret values, and
+  the exact recheck or resume command. Interactive and machine-readable modes
+  carry the same information; the wizard never owns a machine instruction
+  absent from the CLI or parses CLI prose to reconstruct one.
 - Do not add an application CLI for graph, chat, task, episode, or ordinary
   membership actions.
 
 ### UI, desktop, and CLI coordination
 
-- A human starts **Create team project** in a team backend's Web UI or desktop.
-  **Move to team space** is a source-built desktop flow because it coordinates
-  two authenticated backends and the native archive relay.
+- One visible project wizard owns three plainly named intents: **Use an existing
+  checkout personally**, **Create a shared team project**, and **Move an existing
+  personal project to a team**. Context may preselect an intent; Project Settings
+  opens the same wizard in move mode. Separate backend authority paths remain
+  behind that shared presentation.
+- New-team mode accepts the two documented GitHub.com URL forms and execution
+  placement, not a member checkout to move or upload. A local-only codebase must
+  first be pushed by the human through their ordinary GitHub workflow to a
+  repository with a real commit. RCP creates neither the GitHub repository nor a
+  user login/token.
+- **Move an existing personal project to a team** is available only in the
+  source-built desktop because it coordinates two authenticated backends and the
+  native archive relay.
 - The backend persists the request before machine work and owns these displayed
   states: **waiting for server setup**, **setup in progress**, **operator action
   needed**, **ready for review**, **completed**, and **cancelled**.
 - The Web UI renders backend decisions. It never infers readiness from Git files,
   subprocess output, or a zero CLI exit code.
+- The CLI owns the exhaustive machine workflow and prints its numbered plan up
+  front. The wizard may invoke its fixed command and render the same structured
+  steps and progress, while a browser shows the same copyable command and
+  operator actions. Neither surface has a private setup recipe.
 - Machine preparation alone never creates or re-homes a canonical project. Final
   explicit human review performs that authority action. New-project creation
   records one target-space confirmation. Personal-to-team transfer records two
@@ -514,6 +586,7 @@ Do not add any of the following to finish this handoff:
 - team-to-team transfer, team-to-personal product transfer, or fresh-identity
   fork;
 - GitHub OAuth, personal access-token custody, or a general secret manager;
+- GitHub Enterprise, arbitrary Git hosts, or member-supplied trusted origins;
 - automatic source merges, force-pulls, branch repair, or rollback of server
   source;
 - a browser route that can run machine commands;
@@ -546,8 +619,9 @@ two workers concurrently against the same owned file or directory region.
 A packet is an assignment unit, not necessarily a merge unit. If landing one
 packet alone would expose a command or timer whose concrete owner is still
 absent, keep that surface disabled and unadvertised or combine the adjacent
-packets in one PR while retaining their separate file ownership and checks.
-`main` must remain deployable after every merge.
+packets in one recorded implementation slice while retaining their separate
+file ownership and checks.
+`main` must remain deployable after every recorded implementation slice.
 
 V1 and V2 are integrator closure drives rather than normal worker assignments;
 their breadth is deliberate because they prove the assembled system after every
@@ -568,9 +642,8 @@ its live gate is available.
 | Packet | Required predecessors | Additional live gate |
 |---|---|---|
 | G0 | none | none |
-| G1 | G0 | none |
-| G2 | G1 | none |
-| F1, D1 | G1 | none |
+| G2 | G0 | none |
+| F1, D1 | G0 | none |
 | F2 | F1 | none |
 | F3a | F2, G2 | none |
 | F3b | F3a | disposable Ubuntu 22.04 and 24.04 x86-64 hosts |
@@ -633,9 +706,8 @@ its live gate is available.
 | V1 | F6d, P6b, D7, O4d, O5b, O6, T5b | genuine one-lab environment |
 | V2 | V1 | every required local/remote baseline environment |
 
-G0 can start immediately. G1 starts only after G0 is green and the external
-GitHub choice is settled. After G1, F1 and D1 can proceed in parallel. After F1
-and G2, P1 can proceed
+G0 starts directly on `main`. After it is green, G2, F1, and D1 can proceed,
+subject to the shared-file mutexes below. After F1 and G2, P1 can proceed
 alongside F2 and the desktop chain. T2a and T2b are deliberately ordered by
 their storage and API boundaries; T2c also waits for O4a's concrete restore
 owner. T3b and T3c may start in
@@ -675,15 +747,17 @@ Own:
   `tests/test_unified_artifacts.py`, `web/src/rootRecovery.tsx`, and
   `web/tests/rootRecovery.test.mjs`;
 - `src/rcp/storage/rows.py` and the focused runtime regression in
-  `tests/test_background.py`; and
+  `tests/test_background.py`, plus the superseded forward-column assertion in
+  `tests/test_stored_request_compat.py`; and
 - the active-handoff assertion in `tests/test_agent_instructions.py`.
 
-Start from current `main` commit `c0909b6` on a short repair branch. This is a
-baseline repair, not team-server feature work. Apply the repository's configured
-formatters mechanically to the seven named files without changing their
-behavior. Replace the stale documentation assertion that says there can be no
-active implementation handoff with an assertion that distinguishes the archived
-closed backend-refactor handoff from valid indexed active work.
+Start directly from clean `main` commit `4e6d812`; its code is the `c0909b6`
+baseline plus the planning-doc commit. This is a baseline repair, not team-server
+feature work. Apply the repository's configured formatters mechanically to the
+seven named files without changing their behavior. Replace the stale
+documentation assertion that says there can be no active implementation handoff
+with an assertion that distinguishes the archived closed backend-refactor
+handoff from valid indexed active work.
 
 Repair the real runtime projection regression rather than weakening its test.
 `checkpoint_agent_task_runtime` currently writes the selected runtime and its
@@ -693,36 +767,10 @@ after app-server was selected. Remove that obsolete pre-runtime compatibility
 path and prove the runtime event is still read back before the provider-session
 checkpoint. Do not change runtime selection, fallback, or provider-auth policy.
 
-Before human merge, run the complete current lint/Python/Web CI-equivalent
-baseline, including `uv run pytest` and `uv run pre-commit run --all-files`, and
-read the diff to prove formatter output did not hide semantic edits. G0 must land
-green before G1 changes repository workflow and CI policy.
-
-### G1 — Convention-only PR workflow transition
-
-Own:
-
-- the direct-main rule in `AGENTS.md` and any contributor workflow text;
-- current lint/Python/Web PR triggers and stable job names in
-  `.github/workflows/`; and
-- a short verification receipt in this handoff or its successor.
-
-Begin after G0 is green. Deliver the short-lived branch and PR workflow before
-any dependent packet is assigned. Forbid direct pushes to `main` by project
-policy, require the current lint/Python/Web jobs to be green before human merge,
-and require the tested result to be current. Agents cannot push directly or
-merge absent direct human instruction. Do not create a permanent `dev` branch
-or let the team server read feature branches. G2 adds the
-upgrade-compatibility job to the same policy before F3a makes `main`
-team-server-capable.
-
-This packet is the deliberate transition point: before it lands, preserve the
-current repository instructions; after it lands, no agent works directly on
-`main`. The receipt must explicitly record that GitHub still permits the
-forbidden direct-push and unchecked-merge paths in this private phase; G1 proves
-the documented workflow and CI reporting, not nonexistent repository-setting
-enforcement. Public branch protection is a later sharing gate outside this
-slice.
+Before closing G0 on `main`, run the complete current lint/Python/Web
+CI-equivalent baseline, including `uv run pytest` and
+`uv run pre-commit run --all-files`, and read the diff to prove formatter output
+did not hide semantic edits. G0 must be green before dependent packets begin.
 
 ### G2 — Old-data upgrade CI gate
 
@@ -735,17 +783,19 @@ Own:
   `tests/fixtures/server_upgrade/<boundary>/` for every server-era persistence
   boundary, beginning with the first team-server-capable commit.
 
-Build the PR base, create representative prior data, then build the candidate,
-upgrade a copy, start the complete backend with external/provider effects
-disabled, and verify health, replay, startup recovery, and key projections.
-Exercise every historical boundary fixture as well as the exact PR base. A
+Build the exact candidate base, create representative prior data, then build the
+candidate, upgrade a copy, start the complete backend with external/provider
+effects disabled, and verify health, replay, startup recovery, and key
+projections. For direct local work the base is current `main` and the candidate
+is the working tree; for committed CI the base is the candidate's first parent.
+Exercise every historical boundary fixture as well as that exact base. A
 fixture contains the small SQLite database and any canonical history needed for
 realistic replay/recovery, is produced while its boundary is current, and is
 never regenerated by newer code. New persistence changes add a boundary fixture
 before the old shape leaves `main`. Fixtures have no rolling expiry; dropping a
-boundary requires a separately approved migration path. The job must pass by
-project policy before human merge and test the exact combined commit eligible to
-land. The later public branch-protection gate makes it GitHub-required.
+boundary requires a separately approved migration path. The check must pass
+before a persistence-changing slice is recorded or pushed and test the exact
+candidate. The later public branch-protection gate makes it GitHub-required.
 
 The on-server actual-data rehearsal and update-local restore boundary remain in
 F6a–F6d, while disaster restore remains in O4; CI evidence never substitutes for
@@ -771,10 +821,17 @@ Deliver:
 - exact provider-check selectors:
   `provider check (--request <request-id> | --project <project-id>)`, with one
   and only one selector and no arbitrary host/account/path override;
-- a versioned bounded progress record with command, phase, state, message,
-  timestamp, and optional nonsecret fields;
+- a versioned bounded ordered-step record with command, step number and title,
+  purpose, `performed_by` (`system` or `human`), phase, state, expected success,
+  message, timestamp, optional nonsecret fields, and a discriminated target: a
+  machine target has host and OS account; an external-service target has service,
+  resource, destination URL, and required authority role but no invented user
+  identity; an operator-action record also has ordered safe argv or external UI
+  actions, nonsecret values, and exact recheck or resume argv;
 - interactive and `--machine-readable` renderers over the same command result;
-  and
+- an initial plan event followed by one event when each step starts, succeeds,
+  fails, or pauses, so an interactive user and the wizard see the same complete
+  workflow rather than reverse-engineering it from diagnostics; and
 - strict argument validation, canonical UUID parsing, no shell string execution,
   and no command that exists only for desktop.
 
@@ -801,6 +858,8 @@ request id grants no import authority.
 
 Prove parser behavior, secret redaction, bounded output, and equal durable calls
 from both renderers. Do not implement the concrete operations in this packet.
+Prove the interactive renderer and structured event contain the same operator
+action without making the desktop parse prose or invent a missing command.
 
 ### F2 — Linux service layout and explicit paths
 
@@ -1197,14 +1256,17 @@ restoration.
 
 Own:
 
+- new `src/rcp/server_ops/github.py` and
+  `tests/test_github_repository_ref.py` for the single GitHub.com source parser;
 - `src/rcp/storage/models.py`;
 - schema/migration additions in `src/rcp/storage/base.py`;
 - new `src/rcp/storage/provisioning.py` mixed into `AppStore`; and
 - `tests/test_project_provisioning_storage.py`.
 
 Model one request id, kind (`create_team_project` or incoming transfer), target
-space, human authorizer, proposed canonical project id, repository sources,
-the fixed local central root or one requested absolute SSH central root,
+space, human authorizer, proposed canonical project id, canonical
+`GitHubRepositoryRef` values, the fixed local central root or one requested
+absolute SSH central root,
 intended/resolved paths, Git and provider checks, timestamps, retryable
 diagnostic, final-review digest, and explicit cancellation disposition. A new
 project request mints one random proposed `project_id` when the request is
@@ -1212,6 +1274,28 @@ created; an incoming transfer uses the source project's existing id. This
 reserves a collision-resistant path namespace only. It does not append project
 identity, register a project, or establish a writable home before final human
 review.
+
+Accept only `https://github.com/<owner>/<repository>[.git]` and
+`git@github.com:<owner>/<repository>[.git]`. Normalize them through the shared
+parser before storage. Its accepted owner has 1–39 alphanumeric-or-hyphen
+characters and begins and ends alphanumeric. Its repository has 1–100
+characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, and `-`, other than `.` or `..`.
+Strip one exact optional `.git` suffix and store a lowercase
+`owner/repository` identity. Reject
+credentials/userinfo, query/fragment text, percent-encoding, traversal, local or
+`file://` paths, `ssh://`, arbitrary hosts, ports, and extra path components
+before a row, filesystem access, DNS lookup, or other network call.
+Generate fixed clone and repository-settings URLs from the canonical identity;
+no later owner consumes the member's raw string.
+
+An **operator action needed** transition stores a bounded structured action,
+not arbitrary shell prose: `performed_by`, the same typed machine or
+external-service target, ordered safe command tokens or external UI steps,
+nonsecret values, expected success, and exact resume command. It may include a
+GitHub deploy public key but never a private key, provider token, SSH secret, or
+member credential. A GitHub action targets `github.com`, canonical repository,
+settings URL, and repository-administrator role; it does not claim to know that
+administrator's account.
 
 Persist the six backend display states exactly. State transitions are guarded in
 one transaction and idempotent by step receipt. A CLI reconnect resumes; it does
@@ -1242,11 +1326,18 @@ Seal any complete lifecycle vocabulary in the Web response type so the browser
 cannot branch on strings.
 
 The health/index projection also owns one `project_creation` answer containing
-the primary action label and `uses_provisioning` decision. Personal space
-exports the existing direct Add-project path; team space exports durable
-provisioning. Both the index action and a direct `#/projects/new` navigation
-render from this answer rather than branching on `space_kind`, paths, or desktop
-presence.
+that backend's product eligibility, preselection, primary action label, required
+fields, and any pinned source identity. The three possible visible intents are
+**Use an existing checkout personally**, **Create a shared team project**, and
+**Move an existing personal project to a team**. D7 separately consumes the
+native bridge's relay capability and authenticated saved targets. It offers move
+only when the personal backend permits export, the selected team backend permits
+import, and that native capability can connect them. A browser has no native
+answer and cannot offer move. Both the index action and direct
+`#/projects/new` navigation render explicit answers rather than branching on
+`space_kind` or paths.
+Personal setup, durable provisioning, and linked transfer keep their separate
+APIs and authority despite sharing one wizard.
 
 The existing `/api/project-setup/preflight` and `/api/project-setup/create`
 routes are personal-space entry points. On a team backend, each must reject
@@ -1275,6 +1366,18 @@ disable either check. The stable label and persisted public fingerprint let
 restore name the old GitHub grant that an operator must revoke without backing
 up key material.
 
+Consume only P1's canonical `GitHubRepositoryRef`. Derive the fixed
+`git@github.com:<owner>/<repository>.git` clone URL and
+`https://github.com/<owner>/<repository>/settings/keys` operator URL from that
+identity; never pass a request-supplied URL to Git or use it as an SSH host.
+
+The deploy key is the checkout's GitHub identity; RCP never needs a GitHub user
+login on the server. Before the grant exists, publish one structured operator
+action containing the exact repository settings destination, label, public key,
+write checkbox, expected probe, and `project provision` resume command. A human
+with repository-administration authority installs it through GitHub. Interactive
+CLI output renders the same action; desktop output does not add private steps.
+
 For a server-local checkout, place the key below F2's server-local credential
 root. For an SSH checkout, run key generation and Git only as the exact saved
 remote execution account and place the key below its verified
@@ -1286,9 +1389,11 @@ through stdout, structured progress, a temporary server file, or SQLite.
 Prove write using a request-scoped temporary ref that points to an existing
 commit, read it back, and remove it. A failed cleanup remains **operator action
 needed**. An empty repository remains **operator action needed** with the exact
-instruction for the operator to create and push its first real commit; RCP does
-not invent a hidden initialization commit in this slice. Never place a private
-key in SQLite, the manifest, logs, structured output, prompts, or backups.
+instruction for the human to push their local-only code through their ordinary
+GitHub workflow and the command to recheck; RCP does not create a GitHub
+repository, upload/adopt a member checkout, take a GitHub token, or invent a
+hidden initialization commit in this slice. Never place a private key in SQLite,
+the manifest, logs, structured output, prompts, or backups.
 
 Both local and remote credential roots are explicit backup, restore, update
 checkpoint, and transfer exclusions. A cancelled provisioning request may
@@ -1367,7 +1472,9 @@ stored profiles. The CLI cannot construct an ad hoc provider target. RCP does
 not invoke login, store credentials, refresh them, create an alternate provider
 home, or choose among provider identities. When the check fails, publish
 **operator action needed** with the provider-native command the operator must run
-directly as that local or remote account, then recheck. Persist only nonsecret
+directly as that local or remote account, the expected readiness signal, and the
+exact `provider check` or `project provision` command to resume. Interactive and
+machine-readable modes carry the same structured action. Persist only nonsecret
 readiness results and configuration references.
 
 Codex exec, Codex app-server, and Claude retain their own provider specs behind
@@ -1389,6 +1496,10 @@ Run P3–P5 as resumable named steps and publish every result through P1. A zero
 process exit cannot skip durable status readback. Crash at every preparation
 boundary in a parameterized test. Before confirmation there is no canonical
 project, and this service-account command has no route that can create one.
+The interactive command is sufficient to complete every machine step without
+the wizard: at each pause it prints the concrete account/action/success/resume
+contract. The desktop is a structured renderer and fixed launcher for that same
+workflow, not a second implementation.
 
 ### P6b — Final human project creation
 
@@ -1583,33 +1694,54 @@ bounded structured events for display, then require backend request readback.
 If SSH or `sudo` needs interaction, produce the exact quoted Terminal argv and
 open Terminal only after a human action. Never collect a password or private key.
 
-### D7 — Provisioning request UI
+### D7 — Unified project wizard provisioning mode
 
 Own:
 
-- new `web/src/components/ProjectProvisioning.tsx` or equivalent focused view;
-- `web/src/views/ProjectSetup.tsx` and `web/src/App.tsx` routing;
+- `web/src/views/ProjectSetup.tsx` as the one visible wizard, with optional
+  focused step components that never become another top-level wizard;
+- `web/src/App.tsx` routing and `web/src/views/ProjectSettings.tsx` deep-link
+  contract;
 - P2 integration in `web/src/api.ts` and `web/src/types.ts`; and
 - browser plus desktop tests.
 
-Render the backend's six statuses, exact diagnostic/next action, resolved paths,
-Git write and provider readiness, final-review digest, and human authority. The
-request form shows the fixed server-local root and, for SSH, the backend-proposed
-home-derived root with an explicit absolute-root field for intentional lab
-storage; final review repeats the resolved value. Show
+Extend the current wizard with plainly named personal and new-team intents; T5b
+later activates move mode in this same shell. Render the backend's six statuses,
+exact diagnostic/next action, resolved paths, Git write and provider readiness,
+final-review digest, and human authority. The team request form accepts only
+P1's two documented GitHub.com URL forms and shows the canonical
+`owner/repository` result, the fixed server-local root and, for SSH, the
+backend-proposed home-derived root with an explicit absolute-root field for
+intentional lab storage; it never asks for a member checkout to upload. Final
+review repeats the resolved values. Invalid repository text is rejected before
+the request exists. Show
 **Run setup now** only from the D6 probe; always show **Copy server command**.
 CLI events are transient progress, never the state machine.
 
-Use P2's `project_creation` answer for both the project-index primary action and
-the `#/projects/new` deep link. A personal backend keeps the existing
-`ProjectSetup` wizard. A team backend renders `ProjectProvisioning` and never
-mounts or submits the ordinary path-based wizard. Do not derive this choice from
-`space_kind`, repository paths, desktop runtime, or cached connection metadata;
-the direct API rejection remains the independent backend fence.
+Use each backend's P2 `project_creation` answer for product eligibility,
+preselection, required fields, and pinned source identity from the project-index
+primary action and `#/projects/new` deep link. Use D3/T5a's native bridge answer
+only for relay capability and authenticated saved targets. Offer move only when
+the source backend permits export, the selected target backend permits import,
+and the native bridge can connect them. A browser has no native answer and
+cannot offer move. The one wizard calls the personal path APIs only in personal
+mode and durable provisioning APIs only in new-team mode. Do not derive product
+authority from `space_kind`, repository paths, saved-connection presence alone,
+or native-global detection; the direct API rejection remains the independent
+backend fence.
+
+At **operator action needed**, render P1/F1's structured responsibility, typed
+machine or external-service target, ordered safe command or GitHub action,
+nonsecret value, expected success, and resume command. Never parse the CLI
+message for fields or add a wizard-only instruction. The deploy-key step
+explains that the public key is the checkout's repository identity and that a
+human with the required repository-administrator role—not an RCP GitHub
+login—adds it with **Allow write access**.
 
 Use one primary action and real error text. Do not add muted helper/commentary
 lines beneath primary labels. Final creation requires an explicit human review
-action. This packet does not add a transfer entry or half-built transfer state.
+action. Until T5b lands, the backend does not offer the move intent; D7 does not
+show a half-built transfer state or create a separate future transfer wizard.
 
 ## Operations packets
 
@@ -2827,10 +2959,11 @@ own the transfer screen or decide transfer lifecycle state.
 
 Own:
 
-- new `web/src/components/ProjectTransfer.tsx`;
-- the **Move to team space** entry in `web/src/views/ProjectSettings.tsx`,
-  `web/src/components/ProjectProvisioning.tsx`, `web/src/api.ts`,
-  `web/src/types.ts`, and `web/src/App.tsx` integration; and
+- move-intent steps inside D7's one `web/src/views/ProjectSetup.tsx` wizard,
+  with focused child components allowed only beneath that shell;
+- the **Move to team space** deep link in `web/src/views/ProjectSettings.tsx`,
+  plus `web/src/api.ts`, `web/src/types.ts`, and `web/src/App.tsx` integration;
+  and
 - browser and source-built desktop recovery tests.
 
 Show source and target absolute paths, what stays owned by the person, central
@@ -2838,6 +2971,11 @@ ownership, active work to settle, execution settings to re-establish, and the
 settled archive contents/exclusions. Provider matching is automatic; keep its
 bounded selected/skipped summary in the transfer details and do not add a
 transcript-selection UI. No confirmation before target **ready for review**.
+The project index may offer move as the third wizard intent only when the
+personal backend permits export, the selected team backend permits import, and
+the native bridge reports relay capability for their authenticated connections.
+Project Settings opens that same intent with its source pinned; neither entrance
+mounts a separate transfer wizard.
 One final review action records the target-space admission first and the
 personal-space release second through the two existing authenticated sessions;
 it neither shares credentials nor conflates their actor ids. If interruption
@@ -2946,9 +3084,9 @@ Close this handoff only when all of the following are true:
 ## Suggested skills for pickup
 
 - The design grilling and final cross-document fact-check are complete. Dispatch
-  G0, then G1; all decisions are settled. Implement the remaining packets
-  without reopening product boundaries unless current code contradicts their
-  authority.
+  G0 directly on `main`, then begin G2, F1, and D1 according to the dependency
+  map; all decisions are settled. Implement the remaining packets without
+  reopening product boundaries unless current code contradicts their authority.
 - Use `computer-use:computer-use` for the real source-built desktop drives in
   D2, D4a, D4b, D6, D7, T5a, T5b, and V1; browser tests cannot prove native SSH,
   Keychain, cookie-store, or navigation behavior.

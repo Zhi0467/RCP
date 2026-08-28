@@ -632,12 +632,7 @@ def finalize_artifact_revision(
     """Publish an explicit Work replacement onto the source artifact identity."""
 
     context = request.artifact_context
-    if (
-        context is None
-        or context.source != "task"
-        or request.mode != "work"
-        or execution is None
-    ):
+    if context is None or context.source != "task" or request.mode != "work" or execution is None:
         return artifacts
     origin = execution.store.agent_task(context.operation_id)
     if origin is None:

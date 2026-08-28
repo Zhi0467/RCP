@@ -47,7 +47,9 @@ Patch byte.
 ## Drive
 
 1. Open the project in the personal space, choose **Move to team space**, and
-   select a saved team connection.
+   confirm the shared project wizard opens with **Move an existing personal
+   project to a team** preselected and the source project pinned. Select a saved
+   team connection.
 2. Inspect the durable target provisioning request and its intended central
    paths before any project authority changes. Inspect both linked requests'
    independent source-release and target-activation proof commitments, bound
@@ -109,6 +111,7 @@ Patch byte.
 ## Assert
 
 - `transfer_appends_a_home_change_to_canonical_history`
+- `project_settings_opens_move_in_the_same_unified_project_wizard`
 - `the_home_change_attributes_both_space_scoped_human_actors`
 - `project_id_is_unchanged_by_transfer`
 - `the_team_uses_a_separate_central_checkout_set_on_the_declared_accounts`
@@ -200,8 +203,13 @@ Patch byte.
 ## UI path
 
 **Move to team space** lives in Project Settings in the personal space, next to
-the project's home information. Choosing it first creates the target's durable
-provisioning request. Its preparation screen states, in plain language:
+the project's home information. It deep-links into the same project wizard used
+for personal and new-team setup; it does not mount a separate transfer wizard.
+The intent is offered only when the personal backend permits export, the
+selected team backend permits import, and the desktop-native bridge reports an
+authenticated relay route between them. Choosing it first creates the target's
+durable provisioning request. Its
+preparation screen states, in plain language:
 
 - which team space will own the project;
 - the personal source paths that remain owned by the person;

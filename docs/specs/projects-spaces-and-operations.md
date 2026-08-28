@@ -177,12 +177,38 @@ the same migration helper. Live request models remain `extra="forbid"`.
 
 ## Add project and retained research
 
-The ordinary path-based **Add project** wizard is a personal-space workflow. A
-team space exposes **Create team project** through the durable provisioning
-request instead; direct calls to the ordinary setup preflight/create API are
-rejected before filesystem inspection or catalog mutation. The backend exports
-which creation mode applies, and the Web routes the action and a direct
-`#/projects/new` link from that answer rather than inferring it from paths.
+RCP exposes one visible project wizard with three backend-authorized intents:
+**Use an existing checkout personally**, **Create a shared team project**, and
+**Move an existing personal project to a team**. Entry context may preselect an
+intent, but the heading, review, and progress always name it plainly. Project
+Settings opens the same wizard with the move intent and source project already
+selected; RCP does not grow a second transfer or team-setup wizard.
+
+Personal setup keeps the current path-based local/SSH fields. New team setup
+accepts GitHub.com repository URLs and execution placement, then derives the
+server-managed central checkout paths; it never asks the member to move or
+upload an existing checkout. This slice accepts only
+`https://github.com/<owner>/<repository>[.git]` and
+`git@github.com:<owner>/<repository>[.git]`, normalizes either to one bounded
+`GitHubRepositoryRef`, and derives all clone and settings URLs from that value.
+A local-only codebase must first be pushed through the human's ordinary Git
+workflow to a GitHub repository with a real commit. RCP neither creates that
+GitHub repository nor takes the member's GitHub token. Move mode reads
+repository and history identity from the selected personal project and asks
+only for target placement and configuration that may change.
+
+The one wizard is presentation, not one authority path. Personal setup uses the
+existing direct setup owner, new team setup uses a durable provisioning request,
+and move coordinates the authenticated personal and team backends. Direct calls
+to the ordinary setup preflight/create API on a team backend are rejected before
+filesystem inspection or catalog mutation. Each backend exports only its own
+product eligibility, required fields, and any pinned source identity. The native
+desktop bridge separately exports relay capability and its authenticated saved
+targets. The desktop offers move only when the personal backend permits export,
+the selected team backend permits import, and the native bridge can connect and
+relay between them. A browser has no native capability answer and therefore
+cannot offer cross-space move. Neither surface infers product authority from
+paths or space kind.
 
 In a personal space, Add project treats an existing `.research/manifest.toml` as retained RCP
 research regardless of the name entered in the wizard. Read-only preflight
@@ -322,6 +348,20 @@ backup configuration and capture, restore, member removal, and source update.
 The same command implementation emits either interactive terminal guidance or
 structured progress for the desktop shell. RCP does not add CLI mirrors of
 ordinary graph, task, chat, or project-member actions.
+
+Interactive output is the complete, plain-language operator workflow, not a
+terse diagnostic that assumes the wizard will explain the missing step. Before
+doing work, the CLI prints the numbered plan and distinguishes steps RCP will
+perform from steps a human must perform. At every step it names the step,
+purpose, `performed_by` responsibility, typed target, current state, and success
+signal. A machine target contains host and operating-system account. An external
+service target instead contains service, resource, destination URL, and required
+authority role; it never invents a user identity RCP does not know. Whenever the
+CLI stops for operator action, it additionally gives ordered safe commands or UI
+actions, the nonsecret value needed, and the exact command to recheck or resume.
+Secret values never appear in those instructions. Machine-readable output
+carries the same ordered step and bounded action fields so the wizard can render
+them without parsing terminal prose; there is no wizard-only machine procedure.
 
 Privilege is fixed per command rather than inferred from what happens to work on
 one machine. `install`, `backup configure`, `restore`, and `update` enter through
@@ -467,24 +507,26 @@ public RCP origin needs no secret; a private origin uses a dedicated read-only
 source deploy key installed for `rcp`. Update never pushes RCP source, copies an
 operator's personal SSH key, or borrows a project's write deploy key.
 
-`origin/main` is the single server update channel. During private one-lab
-development, short-lived pull requests, green named build, test, and
-upgrade-compatibility checks, and explicit human merge are project policy; the
-current GitHub plan does not technically enforce them. Development branches are
-never server configuration. Before public or external sharing, the repository
-becomes public and real `main` branch protection makes those jobs required and
-rejects direct pushes and failed or missing checks. The repository workflow
-rationale is recorded in the
+`origin/main` is the single server update channel. During the private,
+single-developer implementation of this first slice, work remains directly on
+`main`; scoped tests, pre-commit, and code review precede recording or pushing a
+change, while full desktop/live drives occur at meaningful milestones. CI
+reports pushed results but the current GitHub plan does not block a bad direct
+push. Development branches are never server configuration. Before public or
+external sharing, the repository becomes public and real `main` branch
+protection requires pull requests and the named jobs and rejects direct pushes
+and failed or missing checks. The repository workflow rationale is recorded in
+the
 [main update-channel decision](../decisions/2026-08-27-main-is-the-server-update-channel.md).
 
 From the first team-server-capable commit onward, current `main` directly
 upgrades state from every earlier server-era persistence boundary; an operator
 never walks through intermediate commits. Required CI retains one immutable,
 sanitized SQLite-plus-canonical-history fixture bundle per distinct schema or
-migration-semantics boundary and also exercises an upgrade from the exact PR
-base. Historical fixtures do not expire automatically. Retiring one requires a
-separate explicit migration path and human decision. The compatibility rationale
-is recorded in the
+migration-semantics boundary and also exercises an upgrade from the exact
+candidate base. Historical fixtures do not expire automatically. Retiring one
+requires a separate explicit migration path and human decision. The compatibility
+rationale is recorded in the
 [server-schema decision](../decisions/2026-08-27-server-schema-compatibility.md).
 
 A dirty managed checkout, a non-`main` checkout, divergence from `origin/main`,
@@ -519,6 +561,20 @@ and the exact `<project-id>/repositories/<alias>` descendants before cloning.
 The project manifest records only the resolved repository paths, not authority
 to pick a different root later.
 
+This first slice is GitHub.com-only. Before persisting a provisioning request or
+performing filesystem or network work, one `GitHubRepositoryRef` parser accepts
+only the two documented HTTPS and SCP-style SSH forms. Its deliberately narrow
+ASCII subset accepts an owner of 1–39 alphanumeric-or-hyphen characters that
+begins and ends alphanumeric, and a repository of 1–100 characters from
+`A-Z`, `a-z`, `0-9`, `.`, `_`, and `-` other than `.` or `..`. It strips one
+exact optional `.git` suffix and stores a lowercase `owner/repository` identity.
+It rejects credentials or userinfo, query/fragment text, percent-encoded or
+traversal segments, local paths,
+`file://`, `ssh://`, arbitrary hosts, ports, and extra path components. Clone
+URLs and GitHub deploy-key settings URLs are generated from the canonical
+identity; request input is never passed through to Git. GitHub Enterprise and
+other Git hosts require a later operator-configured trusted-origin design.
+
 The default Git credential is a repository-scoped SSH deploy key whose required
 capability is write. [GitHub's deploy-key form defaults to read-only and one key
 cannot be reused for several repositories](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys),
@@ -534,6 +590,19 @@ does not assume `/home/<name>`, trust shell `$HOME`, allow a manifest override,
 or copy private key bytes between machines. Every key is absent from SQLite,
 project manifests, provider prompts, diagnostics, and backups. RCP never asks a
 member to surrender a personal GitHub token to the team service.
+
+The deploy key itself is the central checkout's GitHub identity; no GitHub user
+is logged in on the RCP server. RCP generates the key pair on the local or remote
+execution account, retains the private half there, and publishes only the public
+key, fingerprint, deterministic label, and exact repository instructions. A
+human with repository-administration authority adds that public key under the
+repository's GitHub deploy keys with **Allow write access**. Re-running the same
+provisioning command then uses the protected private key for `ls-remote`,
+clone/fetch, and the request-scoped write proof. A private repository cannot be
+read before that grant; a public repository may be read anonymously but is not
+ready until the same write grant passes. Fully automatic grant installation
+would require GitHub OAuth, a GitHub App, or a user token and remains outside
+this slice.
 
 Each project deploy key receives the deterministic nonsecret label
 `rcp:<space-id>:<project-id>:<repository-alias>` and its public fingerprint is
@@ -564,24 +633,36 @@ one-lab server slice.
 
 ### Durable project provisioning
 
-A human starts **Create team project** in a team backend's Web UI or source-built
-desktop. **Move to team space** requires the desktop because it coordinates the
-authenticated personal and team backends and owns the native archive relay. The
-authoritative backend creates a durable provisioning request before any machine
-work. Its backend-decided status is one of **waiting for server setup**, **setup
-in progress**, **operator action needed**, **ready for review**, **completed**,
-or **cancelled**. The browser renders those answers and the exact next action; it
-does not infer progress from files or Git output.
+A human selects **Create a shared team project** in the unified project wizard,
+whether viewed in a browser or source-built desktop. **Move an existing personal
+project to a team** uses that same wizard but requires the desktop because it
+coordinates the authenticated personal and team backends and owns the native
+archive relay. The authoritative backend creates a durable provisioning request
+before any machine work. Its backend-decided status is one of **waiting for
+server setup**, **setup in progress**, **operator action needed**, **ready for
+review**, **completed**, or **cancelled**. The browser renders those answers and
+the exact next action; it does not infer progress from files or Git output.
 
-The request names the target space, repository sources, intended central paths,
-and the human who authorized preparation. For a new project it also mints one
-random proposed `project_id`; an incoming transfer uses its existing project id.
+The request names the target space, canonical `GitHubRepositoryRef` values,
+intended central paths, and the human who authorized preparation. Invalid source
+text is rejected before the request, filesystem access, or network access. For a
+new project it also mints one random proposed `project_id`; an incoming transfer
+uses its existing project id.
 That id reserves the final central path namespace but creates no canonical
 identity or writable home. `rcp server project provision <request-id>` performs
 and resumes the server steps: path and permission checks, deploy-key
 creation/readiness, clone or fetch, provider and execution readiness, and a
 request-scoped Git write check. The request id is correlation, not machine
 authority; the command still requires the server's OS privilege boundary.
+
+The command is resumable and exhaustive. If a deploy key is not yet installed,
+it prints the exact GitHub repository settings destination, label, public key,
+**Allow write access** requirement, and the same command to rerun. If the source
+repository has no commit, it explains that the member must push their local code
+through their normal GitHub workflow and names the repository plus the recheck
+command; it never reaches into the member checkout. Missing SSH or provider
+authentication similarly names the execution account and provider-native or
+OpenSSH action, then resumes the same request after the operator performs it.
 
 A direct `create_team_project` request is not an adoption or destructive fresh
 setup path. If its cloned state repository already contains a canonical project

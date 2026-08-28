@@ -29,10 +29,7 @@ export function installPreloadRecovery(): void {
   });
 }
 
-export class RootErrorBoundary extends Component<
-  { children: ReactNode },
-  { error: Error | null }
-> {
+export class RootErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null };
 
   static getDerivedStateFromError(error: Error) {

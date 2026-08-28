@@ -32,7 +32,9 @@ def test_svg_is_an_ordinary_bounded_artifact() -> None:
     data = b'<svg xmlns="http://www.w3.org/2000/svg"><text>result</text></svg>'
 
     assert validate_artifact_bytes("result.svg", data) == "image/svg+xml"
-    descriptor = descriptor_for("01234567-89ab-cdef-0123-456789abcdef", "result.svg", size_bytes=len(data))
+    descriptor = descriptor_for(
+        "01234567-89ab-cdef-0123-456789abcdef", "result.svg", size_bytes=len(data)
+    )
 
     assert descriptor.media_type == "image/svg+xml"
     assert descriptor.size_bytes == len(data)
@@ -252,6 +254,5 @@ def test_work_revision_replaces_the_same_kept_artifact_without_a_second_card(
         source.model_copy(update={"size_bytes": len(second)}).model_dump(mode="json")
     ]
     assert any(
-        receipt.category == "artifact_revised"
-        for receipt in store.agent_task_receipts(revision_id)
+        receipt.category == "artifact_revised" for receipt in store.agent_task_receipts(revision_id)
     )
