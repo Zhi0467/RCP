@@ -3,9 +3,11 @@
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is now in progress directly on `main`. G0 restored
-the CI baseline, F1 provides the live server CLI command/event contract, and G2
-guards upgrades from every current server-era persistence boundary; all concrete
-server operations and the unified wizard remain later packets. The
+the CI baseline, F1 provides the live server CLI command/event contract, G2
+guards upgrades from every current server-era persistence boundary, and F2
+defines the fixed Linux layout, strict machine config, and non-reloading systemd
+unit; all concrete server operations and the unified wizard remain later
+packets. The
 previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -319,6 +321,51 @@ gate are deliberately future work and do not block this plan.
   an actual server data directory, driven the desktop, tested source update
   rollback, or tested disaster restore. Those remain owned by F6a-F6d, O4, and
   the milestone drives; this CI evidence is not a substitute.
+
+#### 2026-08-28 — F2 Linux layout and installed config complete
+
+- `server_ops.layout` now owns one fixed, validated path set for the `rcp`
+  account, managed source and per-commit releases, data, central repositories,
+  credentials, update checkpoints, restore journals, native provider and SSH
+  state, root configuration/current pointer, private runtime socket, stable CLI
+  wrapper, systemd unit, and journald service identity. Release paths require a
+  full lowercase Git object id; central checkout paths require canonical UUID4
+  project ids and one safe alias component. Remote repository credentials derive
+  only from the explicit absolute home reported by that execution account, not
+  `/home/<name>` or a shell environment value.
+- `/etc/rcp/server.toml` has one closed version-1 TOML model. It records a random
+  immutable installation UUID, the fixed account/unit/path contract, and one
+  GitHub `main` source using either HTTPS with no credential or SSH with the
+  dedicated deploy-key public fingerprint. Unknown fields, path drift,
+  cross-wired transport/authentication, malformed fingerprints, and an explicit
+  empty identity fail closed. There is still no private key, provider login,
+  backup identity, or member credential in this machine file.
+- The config writer resolves the actual root UID and `rcp` primary GID rather
+  than accepting caller-selected ownership. It rejects symlinked ancestry and
+  an existing file with the wrong owner, group, or exact `0640` mode, writes a
+  same-directory temporary with the final ownership/mode, fsyncs it, atomically
+  replaces the target, fsyncs the parent, and validates the published file. An
+  existing config may change only while retaining its installation id.
+- The shipped `rcp.service` asset runs `/usr/local/bin/rcp` as `rcp` from the
+  root-controlled current release, binds only `127.0.0.1:8421`, uses the fixed
+  data and mode-0700 runtime directories, serves the prebuilt Web bundle, and
+  has no reload path. It leaves provider homes readable and does not invent a
+  file log beside journald.
+- Focused layout/config tests and the shared server-CLI suite pass 69 checks;
+  Ruff and formatting checks pass. The one independent audit found arbitrary
+  config ownership, uncoupled source transport/authentication, falsey identity
+  regeneration, control characters in remote homes, and incomplete fixed-path
+  assertions. All five were fixed before closure, and no second audit was run.
+- A supplementary wheel probe did not reach asset inspection because the
+  repository's pre-existing Hatch configuration tries to add
+  `rcp/skills/episode-report/SKILL.md` twice. This slice intentionally does not
+  repair or depend on wheel packaging: the accepted team-server path is a clean
+  source checkout plus `uv sync --frozen`. Source resource loading of the unit
+  is covered. F3b still owns proof from the installed source environment.
+- Not done: no account, directory, config, wrapper, symlink, or systemd state was
+  changed on a real Linux host. F3a owns those effects and F3b owns Ubuntu 22.04
+  and 24.04 installation/readback. No concrete CLI operation or wizard flow is
+  exposed by F2 alone.
 
 ## What remains
 
@@ -992,6 +1039,10 @@ Prove the interactive renderer and structured event contain the same operator
 action without making the desktop parse prose or invent a missing command.
 
 ### F2 — Linux service layout and explicit paths
+
+Status: complete in the working tree on 2026-08-28. The fixed layout, strict
+machine config, systemd asset, and focused regressions are implemented; F3a and
+F3b remain the concrete installer and two-Ubuntu live proof.
 
 Own:
 
