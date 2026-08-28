@@ -27,7 +27,10 @@ proves the row exists before current migration removes it.
 The registry starts with `team-server-v1-78be62b`, the merge that first made the
 team backend runnable, and retains the later episode-vocabulary,
 orchestrated-child, graph-target, provider-runtime, and modern Experiment-repair
-boundaries. Raw bootstrap, member, session, provider, and Git credentials are
-absent; only nonsecret hashes/identifiers needed to prove credential survival
-remain. Paths in every database and manifest are relative to the fixture root,
-and the test always operates on a temporary copy.
+boundaries. `source-server-install-v7-638c19e` is the first boundary at which the
+root-coordinated source installer, managed checkout/release layout, stable
+wrapper, and systemd service are installable. Raw bootstrap, member, session,
+provider, and Git credentials are absent; only nonsecret hashes/identifiers
+needed to prove credential survival remain. Paths in every database and manifest
+are relative to the fixture root, and the test always operates on a temporary
+copy.

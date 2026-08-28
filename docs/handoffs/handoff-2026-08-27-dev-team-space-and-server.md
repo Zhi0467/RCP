@@ -5,12 +5,13 @@ Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is now in progress directly on `main`. G0 restored
 the CI baseline, F1 provides the live server CLI command/event contract, G2
 guards upgrades from every current server-era persistence boundary, F2 defines
-the fixed Linux layout/config/unit, and F3a now implements the concrete
-source-server installer in the working tree. Its one independent audit is
-complete and its findings are fixed. The exact first-installable upgrade fixture
-is deliberately a follow-up commit because its metadata must name the immutable
-installer commit. Every other concrete server operation and the unified wizard
-remain later packets. The
+the fixed Linux layout/config/unit, and F3a implements the concrete source-server
+installer. Its one independent audit is
+complete and its findings are fixed. Commit `638c19e` is the immutable first
+installable boundary, and its chained `source-server-install-v7-638c19e` fixture
+is pinned in the upgrade registry. F3a is therefore complete; its live Ubuntu
+qualification remains intentionally separate in F3b. Every other concrete
+server operation and the unified wizard remain later packets. The
 previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -422,6 +423,13 @@ gate are deliberately future work and do not block this plan.
   credential helpers, and a filesystem-only systemd preflight. All six are now
   fixed with focused regressions; no second audit was run, per the accepted
   packet process.
+- Commit `638c19e17252e0e441a698e628b49449df088c81` is the exact first
+  installable source-server boundary. The next chained historical fixture is
+  `source-server-install-v7-638c19e`; its metadata names that full commit and the
+  external registry pins bundle digest
+  `3f2c9a6cac26424882a7ec64f35d0c0410ea64d86597a3e7359c2ba5951c8a69`.
+  The fixture/upgrade and documentation run passes 16 tests; the separately
+  environment-gated exact-candidate-base build is the one expected local skip.
 - Focused installer and shared CLI verification currently passes 157 tests,
   including public/private/fresh/resumed orchestration, plan-before-effect and
   dual-renderer contracts, credential-environment clearing, Git failure
@@ -433,10 +441,9 @@ gate are deliberately future work and do not block this plan.
   60% statement coverage here; the intentionally separate F3b disposable-host
   drive remains the proof of real NSS, filesystem ownership, systemd, SSH, and
   Ubuntu tool behavior.
-- Not done yet in this packet: the exact first-installable G2 boundary cannot be
-  generated until this code has an immutable commit hash; no Ubuntu host or
-  desktop was driven. Those facts are explicit rather than inferred from the
-  unit suite.
+- Not done in F3a: no Ubuntu host or desktop was driven. F3b owns the disposable
+  Ubuntu 22.04/24.04 installation/readback and operator guide; those facts are
+  explicit rather than inferred from the unit suite.
 
 ## What remains
 
@@ -1196,6 +1203,11 @@ the narrow sudo command. Validate that `rcp` has no general sudo or supplemental
 privileged group membership.
 
 ### F3a — Idempotent installer and service unit
+
+Status: complete. The audited installer is commit `638c19e`; the immutable
+chained fixture `source-server-install-v7-638c19e` names that exact commit and is
+pinned by the G2 registry. F3b owns live Ubuntu qualification, not another
+installer implementation.
 
 Own:
 
