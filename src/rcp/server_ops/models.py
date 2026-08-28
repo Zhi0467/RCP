@@ -164,6 +164,7 @@ class ServerCommandRequest(_StrictModel):
     """Validated operation identity, independent of its output renderer."""
 
     command: ServerCommandName
+    team_name: ShortText | None = None
     request_id: str | None = None
     project_id: str | None = None
     member_id: str | None = None
@@ -187,6 +188,7 @@ class ServerCommandRequest(_StrictModel):
     @model_validator(mode="after")
     def fields_match_command(self) -> ServerCommandRequest:
         supplied = {
+            "team_name": self.team_name,
             "request_id": self.request_id,
             "project_id": self.project_id,
             "member_id": self.member_id,
@@ -194,7 +196,9 @@ class ServerCommandRequest(_StrictModel):
             "recovery_identity_file": self.recovery_identity_file,
         }
         expected: set[str]
-        if self.command == "server provider check":
+        if self.command == "server install":
+            expected = {"team_name"}
+        elif self.command == "server provider check":
             if (self.request_id is None) == (self.project_id is None):
                 raise ValueError("provider check requires exactly one request or project selector")
             expected = {"request_id" if self.request_id is not None else "project_id"}

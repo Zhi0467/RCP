@@ -140,7 +140,11 @@ def _operator_execution() -> ServerCommandExecution:
 @pytest.mark.parametrize(
     ("argv", "command", "fields"),
     [
-        (("server", "install"), "server install", {}),
+        (
+            ("server", "install", "--team-name", "Upgrade Fixture Lab"),
+            "server install",
+            {"team_name": "Upgrade Fixture Lab"},
+        ),
         (("server", "doctor"), "server doctor", {}),
         (
             ("server", "provider", "check", "--request", REQUEST_ID),
@@ -197,6 +201,8 @@ def test_machine_readable_is_a_renderer_choice_before_or_after_the_leaf() -> Non
 @pytest.mark.parametrize(
     "argv",
     [
+        ("server", "install"),
+        ("server", "install", "--team-name", ""),
         ("server", "provider", "check"),
         (
             "server",
@@ -596,7 +602,7 @@ def test_preparer_exception_becomes_a_secret_safe_terminal_event() -> None:
 @pytest.mark.parametrize(
     ("argv", "required_account"),
     [
-        (("server", "install"), "root"),
+        (("server", "install", "--team-name", "Upgrade Fixture Lab"), "root"),
         (("server", "backup", "configure"), "root"),
         (
             ("server", "restore", "/backups/lab.age", "--identity-file", "/safe/age.key"),

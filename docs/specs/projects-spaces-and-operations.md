@@ -358,7 +358,10 @@ signal. A machine target contains host and operating-system account. An external
 service target instead contains service, resource, destination URL, and required
 authority role; it never invents a user identity RCP does not know. Whenever the
 CLI stops for operator action, it additionally gives ordered safe commands or UI
-actions, the nonsecret value needed, and the exact command to recheck or resume.
+actions, the nonsecret value needed, a plain success signal, and the exact
+command to recheck or resume. System-owned steps run those internal commands
+themselves; the operator never has to reconstruct a missing human command from a
+status message.
 Secret values never appear in those instructions. Machine-readable output
 carries the same ordered step and bounded action fields so the wizard can render
 them without parsing terminal prose. For team machine preparation, the wizard is
@@ -380,9 +383,11 @@ A completely fresh source clone has one documented bootstrap before that CLI is
 available. A normal machine operator clones it under their own account, installs
 the declared system prerequisites, runs `npm --prefix web ci`,
 `npm --prefix web run build`, and `uv sync` in the repository-required order.
-The first privileged RCP
-invocation is the bootstrap checkout's absolute `.venv/bin/rcp server install`
-path under `sudo`; the dedicated `rcp` account may not exist before that command.
+The first privileged RCP invocation is the bootstrap checkout's absolute
+`.venv/bin/rcp server install --team-name "<team name>"` path under `sudo`; the
+dedicated `rcp` account may not exist before that command. That required name is
+the value used in the exact interactive initialization argv, not a second
+installer setting.
 
 Installation creates or validates `rcp`, then creates a separate managed Git
 checkout of GitHub `main` plus one clean release directory for its exact commit

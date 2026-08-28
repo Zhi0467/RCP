@@ -115,12 +115,12 @@ verification commands are in [docs/desktop.md](docs/desktop.md).
 
 ## Install the team server from source
 
-> **Command contract only:** the `rcp server ...` command tree and its shared
-> interactive/machine-readable progress contract now exist. The concrete
-> install, provision, backup, restore, update, and maintenance owners have not
-> landed yet, so these commands currently stop with an explicit unavailable
-> result. Use the local source commands above until the applicable server packet
-> is implemented and verified.
+> **Installer implemented; live qualification pending:** `rcp server install`
+> and the shared interactive/machine-readable progress contract are concrete.
+> The remaining provision, backup, restore, update, doctor, and maintenance
+> owners still stop with an explicit unavailable result. The exhaustive Ubuntu
+> prerequisite guide and disposable 22.04/24.04 live proof remain the next
+> installer packet.
 
 The first supported team deployment is one Ubuntu 22.04 or 24.04 LTS x86-64
 server running systemd and one team space. The server build uses Node.js 24 and
@@ -146,7 +146,7 @@ uv sync
 The first privileged RCP command is then run by that operator with `sudo`:
 
 ```bash
-sudo /absolute/path/to/rcp-bootstrap/.venv/bin/rcp server install
+sudo /absolute/path/to/rcp-bootstrap/.venv/bin/rcp server install --team-name "My lab"
 ```
 
 The installer will:
@@ -165,9 +165,19 @@ systemd starts, so its one-time bootstrap code appears only in that terminal:
 
 ```bash
 sudo -u rcp -H /usr/local/bin/rcp space init --team --name "My lab"
-sudo systemctl enable --now rcp
-sudo -u rcp -H /usr/local/bin/rcp server doctor
+sudo systemctl enable --now rcp.service
+sudo systemctl status --no-pager rcp.service
+curl --fail --silent http://127.0.0.1:8421/api/health
+sudo /usr/local/bin/rcp server install --team-name "My lab"
 ```
+
+Those are the same ordered actions the installer prints. Its final rerun verifies
+that systemd is enabled and active and that loopback health identifies a team
+space. Every CLI step names the machine/account and success signal; every human
+pause gives ordered copyable commands or UI actions plus the exact resume
+command. The future project wizard renders this same structured operation
+output; the CLI remains independently complete and no setup instruction exists
+only in the wizard.
 
 The bootstrap checkout is not the production checkout and may be removed after
 installation. Root is used only for operating-system work such as creating the

@@ -4,10 +4,13 @@ Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is now in progress directly on `main`. G0 restored
 the CI baseline, F1 provides the live server CLI command/event contract, G2
-guards upgrades from every current server-era persistence boundary, and F2
-defines the fixed Linux layout, strict machine config, and non-reloading systemd
-unit; all concrete server operations and the unified wizard remain later
-packets. The
+guards upgrades from every current server-era persistence boundary, F2 defines
+the fixed Linux layout/config/unit, and F3a now implements the concrete
+source-server installer in the working tree. Its one independent audit is
+complete and its findings are fixed. The exact first-installable upgrade fixture
+is deliberately a follow-up commit because its metadata must name the immutable
+installer commit. Every other concrete server operation and the unified wizard
+remain later packets. The
 previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -192,7 +195,10 @@ gate are deliberately future work and do not block this plan.
   personal-to-team intents. New-team setup uses canonical GitHub.com repository
   identities and repository-scoped deploy keys; local-only code is pushed by the
   human first. The CLI is the sole exhaustive machine workflow, while the wizard
-  renders its structured actions and retains human product approval.
+  renders its structured actions and retains human product approval. A fresh
+  install requires `--team-name`; the strict request carries it so the CLI can
+  print exact initialization argv and the future wizard can submit and render
+  that same operation rather than owning another recipe.
 - Security refinement from the G0 review: this slice is GitHub.com-only. One
   canonical repository-reference parser rejects local, credential-bearing,
   ambiguous, ported, or arbitrary-host inputs before persistence or side
@@ -367,6 +373,71 @@ gate are deliberately future work and do not block this plan.
   and 24.04 installation/readback. No concrete CLI operation or wizard flow is
   exposed by F2 alone.
 
+#### 2026-08-28 — F3a source-server installer implemented and audited
+
+- `rcp server install --team-name "<team name>"` now replaces the unavailable
+  install seam with one concrete nine-step operation. The strict request owns
+  the team name because a terminal-only run must print exact initialization and
+  resume argv; the future wizard submits and renders the same plan/events. Plan
+  preparation only reads the supplying checkout's credential-free GitHub origin,
+  and the complete plan is flushed before host effects begin.
+- Preflight accepts only Ubuntu 22.04/24.04 x86-64 with running systemd, Git,
+  system-wide `uv`, Node.js 24/npm, OpenSSH, `age` 1.x, and an `rcp`-executable
+  uv-managed Python 3.12. It installs no apt source or general tool. Account
+  convergence creates or strictly validates `rcp` at `/home/rcp` with
+  `/bin/bash`, exact non-locking unusable shadow value `*NP*`, its dedicated
+  non-root user/group identity, primary group, no supplemental groups, and no
+  sudo authority. The preflight proves the running systemd manager is reachable
+  before the account or filesystem can be changed.
+- All managed Git/npm/uv/SSH commands cross one `runuser` boundary with an empty
+  environment, fixed service home/PATH, no inherited SSH agent or operator
+  credential, and no shell evaluation. Source Git additionally disables system
+  and global config, credential helpers, and askpass before deciding whether the
+  repository is public. Public GitHub `main` records HTTPS and no key. A private
+  source creates one Ed25519 key labelled
+  `rcp-source:<installation-id>`, records only its public fingerprint, and pauses
+  with the exact GitHub deploy-key URL, public key, read-only checkbox rule,
+  published host-fingerprint URL, host-trust command, success signal, and exact
+  resume argv. Network failure is not misreported as a missing grant.
+- The bootstrap checkout is never adopted. Install clones the separate managed
+  checkout as `rcp`, refuses local changes and unfinished restore state, fetches
+  only the recorded `main`, and refuses to turn a newer upstream into an install
+  update. It creates one detached per-commit worktree, runs exact `npm --prefix
+  web ci`, Web build, and Python-3.12 `uv sync --frozen`, and never rebuilds an
+  active release in place. Existing source, key, release, data, wrapper, unit,
+  and current-pointer state is converged only when ownership and exact meaning
+  are proven; unknown or symlinked state fails loudly.
+- Root installs the stable data-aware wrapper, exact non-reloading unit, and
+  atomic current pointer. A fresh empty data directory is proved stopped and
+  disabled, then the CLI pauses with ordered team-init, activation, status,
+  loopback-health, and rerun commands plus their success signals. An initialized
+  rerun never opens SQLite: it converges systemd, reads back exact service state,
+  and uses a direct proxy-free/non-redirecting loopback HTTP connection with a
+  bounded body. It requires `status=ok` and `space_kind=team`, and proves the
+  service is stopped and disabled after a wrong-space result before saying so.
+- The packet's one independent read-only audit inspected the installer, service
+  unit, CLI/model/limits changes, tests, README, spec, and handoff. It found six
+  defensible gaps: root-valued service identity, a one-command sudo probe,
+  unchecked systemd fencing, proxy/redirect-capable health readback, ambient Git
+  credential helpers, and a filesystem-only systemd preflight. All six are now
+  fixed with focused regressions; no second audit was run, per the accepted
+  packet process.
+- Focused installer and shared CLI verification currently passes 157 tests,
+  including public/private/fresh/resumed orchestration, plan-before-effect and
+  dual-renderer contracts, credential-environment clearing, Git failure
+  classification, fixed command sequences, source/update separation, build
+  order, unprivileged-account and sudo-policy checks, live-systemd preflight,
+  credential-free Git, direct loopback HTTP, fail-closed service fencing,
+  wrong-space shutdown, and unsafe data refusal.
+  Focused Ruff/format and diff checks pass. The concrete Linux branches have
+  60% statement coverage here; the intentionally separate F3b disposable-host
+  drive remains the proof of real NSS, filesystem ownership, systemd, SSH, and
+  Ubuntu tool behavior.
+- Not done yet in this packet: the exact first-installable G2 boundary cannot be
+  generated until this code has an immutable commit hash; no Ubuntu host or
+  desktop was driven. Those facts are explicit rather than inferred from the
+  unit suite.
+
 ## What remains
 
 Everything after the existing auth/membership foundation remains implementation
@@ -397,13 +468,15 @@ No item in that list is implemented merely because its design is now confirmed.
   systemd. Other distributions and architectures are explicitly unverified.
 - Server builds pin Node.js 24 and Python 3.12 through `uv`, with Git, OpenSSH,
   and a supported `age` CLI as prerequisites. The operator guide gives tested
-  commands for both Ubuntu releases; `rcp server install` validates but does not
-  modify apt repositories or install general OS software.
+  commands for both Ubuntu releases; `rcp server install --team-name "<team
+  name>"` validates but does not modify apt repositories or install general OS
+  software.
 - Server and desktop are built from source. No Linux RCP package, container,
   release binary, or hosted deployment is required.
 - A normal operator creates the disposable bootstrap checkout and runs its
   source setup without privilege. The first privileged RCP command is that
-  checkout's absolute `.venv/bin/rcp server install` path under `sudo`.
+  checkout's absolute `.venv/bin/rcp server install --team-name "<team name>"`
+  path under `sudo`.
 - Install creates a separate clean managed checkout owned by `rcp`; the
   bootstrap checkout never becomes production state and may be removed.
 - Root performs only account, directory, systemd, and other OS changes. Managed
@@ -526,10 +599,12 @@ No item in that list is implemented merely because its design is now confirmed.
   expected success. Machine targets name host and OS account; external-service
   targets name service, resource, destination URL, and required authority role
   without inventing a human identity. An operator-action result additionally
-  carries ordered safe commands or external UI actions, nonsecret values, and
-  the exact recheck or resume command. Interactive and machine-readable modes
-  carry the same information; the wizard never owns a machine instruction
-  absent from the CLI or parses CLI prose to reconstruct one.
+  carries ordered safe commands or external UI actions, nonsecret values, plain
+  success signals, and the exact recheck or resume command. System-owned steps
+  execute their internal commands themselves; a human never has to infer an
+  omitted action from status prose. Interactive and machine-readable modes carry
+  the same information; the wizard never owns a machine instruction absent from
+  the CLI or parses CLI prose to reconstruct one.
 - Do not add an application CLI for graph, chat, task, episode, or ordinary
   membership actions.
 
@@ -1004,7 +1079,8 @@ Deliver:
   machine target has host and OS account; an external-service target has service,
   resource, destination URL, and required authority role but no invented user
   identity; an operator-action record also has ordered safe argv or external UI
-  actions, nonsecret values, and exact recheck or resume argv;
+  actions, nonsecret values, plain success signals, and exact recheck or resume
+  argv;
 - interactive and `--machine-readable` renderers over the same command result;
 - an initial plan event followed by one event when each step starts, succeeds,
   fails, or pauses, so an interactive user and the wizard see the same complete
@@ -1162,6 +1238,11 @@ Deliver an explicit root/operator installation that:
    health without widening the loopback bind; F5 later makes the printed
    `server doctor` readback authoritative. A rerun against an already initialized
    owned team data directory may converge the service to running.
+
+`--team-name` is a required strict install-request field. It exists so the CLI
+can independently print exact `space init` and resume argv. The future wizard
+submits that same request and renders the same structured plan/events; it never
+owns a private setup branch or fills in omitted machine instructions.
 
 Root performs only the OS changes needed for the account, directories, wrapper,
 and systemd. Re-running install must converge or refuse an exact incompatible

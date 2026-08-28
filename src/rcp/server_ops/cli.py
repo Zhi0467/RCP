@@ -99,6 +99,12 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
     server_commands = server.add_subparsers(dest="server_group", required=True)
 
     install = _leaf(server_commands, "install", "Install or converge the source-built service")
+    install.add_argument(
+        "--team-name",
+        required=True,
+        type=_team_name,
+        help="Human-readable name used by the exact team-space initialization command",
+    )
     install.set_defaults(server_operation="server install")
 
     doctor = _leaf(server_commands, "doctor", "Inspect installed service and operation health")
@@ -204,6 +210,19 @@ def _member_id(value: str) -> str:
     return _canonical_identifier(value, "member id")
 
 
+def _team_name(value: str) -> str:
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > 120
+        or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+    ):
+        raise argparse.ArgumentTypeError(
+            "team name must be one nonempty line of at most 120 characters"
+        )
+    return normalized
+
+
 def _absolute_path(value: str, label: str) -> str:
     try:
         return absolute_path(value, label=label)
@@ -223,6 +242,7 @@ def request_from_namespace(args: argparse.Namespace) -> ServerCommandRequest:
     try:
         return ServerCommandRequest(
             command=args.server_operation,
+            team_name=getattr(args, "team_name", None),
             request_id=getattr(args, "request_id", None),
             project_id=getattr(args, "project_id", None),
             member_id=getattr(args, "member_id", None),
@@ -308,7 +328,9 @@ def _dispatch_server_command(
 
     match request.command:
         case "server install":
-            return _unavailable_command(request, identity)
+            from rcp.server_ops.install import prepare_install_command
+
+            return prepare_install_command(request, identity)
         case "server doctor":
             return _unavailable_command(request, identity)
         case "server provider check":
@@ -620,6 +642,7 @@ def _render_step_event(event: ServerStepEvent, plan_size: int, stream: TextIO) -
     print(f"Step {step.number}/{plan_size}: {step.title} — {state}", file=stream)
     print(f"  Target: {_target_label(step.target)}", file=stream)
     print(f"  {step.message}", file=stream)
+    print(f"  Success: {step.expected_success}", file=stream)
     if step.fields:
         print("  Details:", file=stream)
         for field in step.fields:
