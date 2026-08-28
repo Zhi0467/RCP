@@ -19,9 +19,15 @@ is complete, every finding is fixed, and its exact schema boundary is retained
 in the chained upgrade registry. P1 is complete. D1 now provides the strict
 nonsecret desktop team-connection registry and the macOS Keychain write/removal
 boundary; its one independent audit is complete and its in-scope findings are
-fixed. Real Keychain round-trip, distinct origin allocation, SSH, enrollment,
-navigation, and UI remain D2 through D5. Every concrete provisioning operation,
-member/API projection, finalizer, and the unified wizard remain later packets.
+fixed. D2's real WKWebView spike has reached its prescribed stop condition:
+HTTP loopback aliases and the exact localhost control do not return the required
+`Secure` cookie to the server, while extra loopback addresses require privileged
+host mutation. No production routing code was changed; Q11 now records the
+required origin-security decision. Real Keychain round-trip, SSH, enrollment,
+navigation, and UI
+remain D3 through D5 after D2 is resolved. Every concrete provisioning
+operation, member/API projection, finalizer, and the unified wizard remain later
+packets.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -595,6 +601,32 @@ gate are deliberately future work and do not block this plan.
   tunnel. D2-D5 still own origin allocation, cookie isolation, SSH lifetime,
   token retrieval/enrollment, session establishment, multi-backend navigation,
   cached-card refresh, and the visible Add-team-space flow.
+
+#### 2026-08-28 — D2 loopback-origin spike stopped at the security boundary
+
+- A dedicated source-built Tauri example and three-server harness exercise the
+  actual WKWebView cookie store. They admit only the two exact configured
+  origins, set a `Secure; HttpOnly; __Host-rcp_session` cookie, record what each
+  server receives, and fail automatically on a missing or cross-space cookie.
+- Generated `rcp-<connection UUID>.localhost` names resolve exclusively to
+  IPv4/IPv6 loopback and were served on both. The real WKWebView requested the
+  login endpoint, received the cookie response, followed the redirect, and sent
+  no cookie on the next same-origin request. Exact `localhost` produced the same
+  result. This rules out the proposed HTTP alias mechanism before isolation or
+  restart can be claimed; it does not distinguish rejection during storage from
+  suppression during sending.
+- Distinct `127.0.0.2` and later hosts cannot be bound on the stock development
+  Mac without privileged loopback-interface mutation. No network configuration
+  was changed, and that mutation would not make an HTTP origin satisfy the
+  already-failed `Secure`-cookie gate.
+- The unbundled probe is a real Tauri WKWebView but is not exposed as a named
+  macOS application to the accessibility driver. The server request log is the
+  live behavioral evidence; no visual interaction claim is made.
+- No production allocator, navigation rule, capability, connection record, or
+  cookie policy was changed. D2 is not complete. Q11 asks whether to prove a
+  desktop-owned per-space HTTPS endpoint with app-scoped certificate trust or
+  choose a larger native transport design. D3 through D5 remain dependent on
+  that decision; unrelated server and provisioning lanes remain available.
 
 ## What remains
 
@@ -2031,6 +2063,15 @@ Do not proceed by assigning two ports on `127.0.0.1`; cookies ignore ports. If
 neither verified loopback aliases nor loopback addresses work with WKWebView's
 Secure-cookie rules, stop this packet with evidence and request a design decision
 instead of weakening session security.
+
+**Current result:** stopped at that condition on 2026-08-28. The reproducible
+real-WKWebView probe is retained under `web/src-tauri/examples/` and
+`web/src-tauri/scripts/`. Both generated `.localhost` aliases and exact
+`localhost` failed to return the required `Secure` cookie to the server over
+HTTP; the extra-address path could not reach WKWebView because stock macOS could
+not bind those addresses without privileged network mutation. See
+[Q11](../open-questions.md#q11--how-should-the-desktop-provide-isolated-secure-local-origins).
+Do not implement a production origin allocator until that question is decided.
 
 ### D3 — SSH tunnel lifecycle
 

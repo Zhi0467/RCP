@@ -431,3 +431,54 @@ the offline-recovery and multi-client contract and has not been designed.
 Do not block the accepted one-lab restore on this future detection mechanism or
 present `space_id` equality as rollback detection. The current safety boundary
 is the explicit old-authority exclusion and stopped-service restore journal.
+
+---
+
+## Q11 — How should the desktop provide isolated secure local origins?
+
+**Status:** open. Raised 2026-08-28 after the D2 live WKWebView spike reached its
+required stop condition.
+**Governing scenario:** [S105](acceptance/S105-move-between-spaces-in-one-window.md).
+
+### Required boundary
+
+Two team spaces in one desktop window need different cookie hosts, not merely
+different ports on `127.0.0.1`, because cookies ignore ports. Each server must
+retain the same HTTP-only, `Secure`, `__Host-` session-cookie contract. The
+desktop may navigate only to origins derived from its saved connection registry;
+the permanent member credential must remain in the operating-system credential
+store.
+
+### Live evidence
+
+The source-built D2 probe used a real Tauri WKWebView and local servers that set
+`Secure; HttpOnly; __Host-rcp_session` before redirecting to another same-origin
+path:
+
+- `rcp-<connection UUID>.localhost` resolved exclusively to IPv4 and IPv6
+  loopback and the probe served both addresses, but the next request sent no
+  cookie after the redirect;
+- the exact `localhost` control behaved the same way, so the failure is not
+  limited to generated subdomains; and
+- `127.0.0.2` and later loopback addresses could not be bound on the stock macOS
+  host without privileged network-interface changes. Such changes would not by
+  themselves change the failing HTTP transport tested by the other two cases.
+
+The evidence does not distinguish cookie-storage rejection from later
+send-suppression. Either behavior fails RCP's required server-session flow. The
+first gate therefore failed before cross-space isolation, restart
+persistence, or arbitrary-origin rejection could be claimed. No production
+origin allocator, navigation rule, or capability was changed.
+
+### Decision required
+
+The leading candidate is a desktop-owned local HTTPS endpoint for each saved
+space, forwarding through that space's SSH tunnel. Before accepting it, a live
+spike must prove that WKWebView can trust only the app's generated local
+certificate without installing a broad system-wide certificate authority, and
+that arbitrary local origins remain rejected.
+
+A native custom-protocol or request-bridge design is a larger alternative, but
+it would need a fresh security and server-served-UI contract. Weakening the
+cookie to non-`Secure`, sharing one cookie host across ports, or silently
+requiring privileged loopback-interface mutation is not authorized.

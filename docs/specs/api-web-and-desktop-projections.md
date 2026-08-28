@@ -139,9 +139,14 @@ cards as unavailable. Returning to the local index reloads the local backend.
 Every saved space receives a stable, distinct loopback origin. Different ports
 on the same `127.0.0.1` host are not isolation because cookies ignore ports; such
 tunnels would collide on the shared `__Host-` session-cookie name. The shell may
-use verified loopback aliases or addresses, but navigation admits only origins
-derived from its saved connection registry, and a live WKWebView drive must prove
-that cookies stay separated between two simultaneous team spaces.
+use only an origin mechanism proven against the real WKWebView; navigation
+admits only origins derived from its saved connection registry, and a live drive
+must prove that cookies stay separated between two simultaneous team spaces.
+The HTTP loopback-alias and exact-host control failed the `Secure`-cookie gate,
+while the extra-address path could not reach WKWebView on stock macOS. The
+mechanism therefore remains open in
+[Q11](../open-questions.md#q11--how-should-the-desktop-provide-isolated-secure-local-origins)
+without weakening this security boundary.
 
 The ordinary browser can use the team server UI when transport already exists,
 but it cannot own multi-space routing, credential storage, SSH tunnels, or
