@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import (
@@ -19,6 +20,7 @@ from pydantic import (
 )
 
 from rcp.artifacts import validate_artifact_bytes
+from rcp.config import AgentExecutionProfile
 from rcp.core.authority import (
     AgentDispatchAuthority,
 )
@@ -35,7 +37,22 @@ from rcp.limits import (
     WATCHER_HEALTHY_INTERVAL_SECONDS,
     WATCHER_SCHEDULE_JITTER_RATIO,
 )
-from rcp.providers import ProviderSkill, legacy_runtime_id, require_runtime_id, runtime_label
+from rcp.providers import (
+    ProviderId,
+    ProviderSkill,
+    legacy_runtime_id,
+    require_runtime_id,
+    runtime_label,
+)
+from rcp.server_ops.github import GitHubRepositoryRef
+from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
+from rcp.server_ops.models import (
+    ExternalServiceTarget,
+    MachineTarget,
+    MessageText,
+    ServerStep,
+    redact_server_text,
+)
 from rcp.skill_registry import SkillReference
 
 if TYPE_CHECKING:
@@ -169,6 +186,476 @@ class ProjectRecord(BaseModel):
 class ProjectStageRecord(BaseModel):
     host: str
     root: str
+
+
+ProjectProvisioningKind = Literal["create_team_project", "incoming_transfer"]
+ProjectProvisioningStatus = Literal[
+    "waiting_for_server_setup",
+    "setup_in_progress",
+    "operator_action_needed",
+    "ready_for_review",
+    "completed",
+    "cancelled",
+]
+ProjectProvisioningCheckStatus = Literal[
+    "pending",
+    "checking",
+    "operator_action_needed",
+    "ready",
+]
+ProjectProvisioningCancellationDisposition = Literal[
+    "nothing_to_remove",
+    "request_owned_state_removed",
+    "prepared_state_preserved",
+    "operator_cleanup_confirmed",
+]
+
+_PROVISIONING_ALIAS = re.compile(r"[a-z][a-z0-9-]{0,47}")
+_PROVISIONING_HOST = re.compile(r"[A-Za-z0-9_.@:-]{1,255}")
+_PROVISIONING_ACCOUNT = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,127}")
+_PROVISIONING_RUNTIME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/+-]{0,127}")
+_PROVISIONING_PHASE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_PROVISIONING_RECEIPT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+_FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
+_OPENSSH_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{20,64}={0,2}")
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def _provisioning_absolute_path(value: str, *, label: str) -> str:
+    if len(value) > 4096 or any(
+        ord(character) < 32 or ord(character) == 127 for character in value
+    ):
+        raise ValueError(f"{label} must be one bounded safe path")
+    if redact_server_text(value) != value:
+        raise ValueError(f"{label} cannot contain credential-shaped text")
+    path = PurePosixPath(value)
+    if not path.is_absolute() or path == PurePosixPath("/") or ".." in path.parts:
+        raise ValueError(f"{label} must be a specific absolute path")
+    if str(path) != value:
+        raise ValueError(f"{label} must be normalized")
+    return value
+
+
+def _provisioning_resume_matches_request(argv: tuple[str, ...], request_id: str) -> bool:
+    command_tails = (
+        ("server", "project", "provision", request_id),
+        ("server", "provider", "check", "--request", request_id),
+    )
+    executable_prefixes = (
+        ("rcp",),
+        (str(DEFAULT_SERVER_LAYOUT.cli_wrapper),),
+        ("sudo", "-u", "rcp", "-H", str(DEFAULT_SERVER_LAYOUT.cli_wrapper)),
+        ("sudo", "-n", "-u", "rcp", "-H", str(DEFAULT_SERVER_LAYOUT.cli_wrapper)),
+    )
+    return any(
+        argv in {prefix + tail, prefix + tail + ("--machine-readable",)}
+        for prefix in executable_prefixes
+        for tail in command_tails
+    )
+
+
+class _StrictProvisioningModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, revalidate_instances="always")
+
+
+class ProjectProvisioningMachineIntent(_StrictProvisioningModel):
+    alias: str
+    location: Literal["local", "ssh"]
+    host: str = ""
+    os_account: str
+    central_root: str
+
+    @field_validator("alias")
+    @classmethod
+    def validate_alias(cls, value: str) -> str:
+        if _PROVISIONING_ALIAS.fullmatch(value) is None:
+            raise ValueError("provisioning machine alias is invalid")
+        return value
+
+    @field_validator("host")
+    @classmethod
+    def validate_host(cls, value: str) -> str:
+        if value and _PROVISIONING_HOST.fullmatch(value) is None:
+            raise ValueError("provisioning SSH host is invalid")
+        if redact_server_text(value) != value:
+            raise ValueError("provisioning SSH host cannot contain credential-shaped text")
+        return value
+
+    @field_validator("os_account")
+    @classmethod
+    def validate_os_account(cls, value: str) -> str:
+        if _PROVISIONING_ACCOUNT.fullmatch(value) is None:
+            raise ValueError("provisioning operating-system account is invalid")
+        return value
+
+    @field_validator("central_root")
+    @classmethod
+    def validate_central_root(cls, value: str) -> str:
+        return _provisioning_absolute_path(value, label="provisioning central root")
+
+    @model_validator(mode="after")
+    def validate_location(self) -> ProjectProvisioningMachineIntent:
+        if self.location == "local":
+            if self.host:
+                raise ValueError("the server-local provisioning machine cannot name an SSH host")
+            if self.os_account != DEFAULT_SERVER_LAYOUT.service_account:
+                raise ValueError("the server-local provisioning machine must execute as rcp")
+            if self.central_root != str(DEFAULT_SERVER_LAYOUT.projects_root):
+                raise ValueError("the server-local provisioning root is fixed by the installation")
+        elif not self.host:
+            raise ValueError("an SSH provisioning machine requires a configured host")
+        return self
+
+
+class ProjectProvisioningMachineRecord(ProjectProvisioningMachineIntent):
+    resolved_central_root: str | None = None
+
+    @field_validator("resolved_central_root")
+    @classmethod
+    def validate_resolved_central_root(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _provisioning_absolute_path(value, label="resolved provisioning central root")
+
+    @model_validator(mode="after")
+    def resolved_root_matches_intent(self) -> ProjectProvisioningMachineRecord:
+        if (
+            self.resolved_central_root is not None
+            and self.resolved_central_root != self.central_root
+        ):
+            raise ValueError("resolved provisioning root must match the reviewed central root")
+        return self
+
+
+class ProjectProvisioningGitCheckRecord(_StrictProvisioningModel):
+    status: ProjectProvisioningCheckStatus = "pending"
+    commit: str | None = None
+    write_verified: bool = False
+    deploy_key_label: str | None = Field(default=None, max_length=255)
+    public_key_fingerprint: str | None = None
+    checked_at: str | None = None
+    diagnostic: MessageText | None = None
+
+    @field_validator("deploy_key_label")
+    @classmethod
+    def validate_deploy_key_label(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if (
+            not value.strip()
+            or value != value.strip()
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        ):
+            raise ValueError("provisioning deploy-key label must be one nonempty safe line")
+        if redact_server_text(value) != value:
+            raise ValueError("provisioning deploy-key label cannot contain credential-shaped text")
+        return value
+
+    @field_validator("commit")
+    @classmethod
+    def validate_commit(cls, value: str | None) -> str | None:
+        if value is not None and _FULL_GIT_COMMIT.fullmatch(value) is None:
+            raise ValueError("provisioning Git commit must be a lowercase full object id")
+        return value
+
+    @field_validator("public_key_fingerprint")
+    @classmethod
+    def validate_fingerprint(cls, value: str | None) -> str | None:
+        if value is not None and _OPENSSH_FINGERPRINT.fullmatch(value) is None:
+            raise ValueError("provisioning public-key fingerprint is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def ready_means_read_write_proven(self) -> ProjectProvisioningGitCheckRecord:
+        if self.status == "ready" and (
+            self.commit is None
+            or not self.write_verified
+            or self.deploy_key_label is None
+            or self.public_key_fingerprint is None
+            or self.checked_at is None
+        ):
+            raise ValueError(
+                "a ready Git check requires a commit, write proof, deploy-key label, "
+                "fingerprint, and check time"
+            )
+        if self.write_verified and self.commit is None:
+            raise ValueError("a Git write proof must name the commit it proved")
+        return self
+
+
+class ProjectProvisioningRepositoryIntent(_StrictProvisioningModel):
+    alias: str
+    repository: GitHubRepositoryRef
+    machine_alias: str
+
+    @field_validator("alias", "machine_alias")
+    @classmethod
+    def validate_alias(cls, value: str) -> str:
+        if _PROVISIONING_ALIAS.fullmatch(value) is None:
+            raise ValueError("provisioning repository or machine alias is invalid")
+        return value
+
+
+class ProjectProvisioningRepositoryRecord(ProjectProvisioningRepositoryIntent):
+    intended_path: str
+    resolved_path: str | None = None
+    git_check: ProjectProvisioningGitCheckRecord = Field(
+        default_factory=ProjectProvisioningGitCheckRecord
+    )
+
+    @field_validator("intended_path", "resolved_path")
+    @classmethod
+    def validate_path(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        return _provisioning_absolute_path(value, label=info.field_name.replace("_", " "))
+
+
+class ProjectProvisioningProviderIntent(_StrictProvisioningModel):
+    profile: AgentExecutionProfile
+    provider: ProviderId
+    runtime_id: str
+    model: str = Field(max_length=200)
+    reasoning: str = Field(min_length=1, max_length=80)
+    machine_alias: str
+
+    @field_validator("runtime_id")
+    @classmethod
+    def validate_runtime_id(cls, value: str) -> str:
+        if _PROVISIONING_RUNTIME.fullmatch(value) is None:
+            raise ValueError("provisioning provider runtime id is invalid")
+        if redact_server_text(value) != value:
+            raise ValueError("provisioning provider runtime cannot contain credential-shaped text")
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str) -> str:
+        if any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise ValueError("provisioning provider model must be one safe line")
+        if redact_server_text(value) != value:
+            raise ValueError("provisioning provider model cannot contain credential-shaped text")
+        return value
+
+    @field_validator("reasoning", "machine_alias")
+    @classmethod
+    def validate_plain_value(cls, value: str, info: ValidationInfo) -> str:
+        pattern = (
+            _PROVISIONING_ALIAS
+            if info.field_name == "machine_alias"
+            else re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
+        )
+        if pattern.fullmatch(value) is None:
+            raise ValueError(f"provisioning provider {info.field_name} is invalid")
+        return value
+
+
+class ProjectProvisioningProviderCheckRecord(ProjectProvisioningProviderIntent):
+    status: ProjectProvisioningCheckStatus = "pending"
+    checked_at: str | None = None
+    diagnostic: MessageText | None = None
+
+    @model_validator(mode="after")
+    def ready_has_check_time(self) -> ProjectProvisioningProviderCheckRecord:
+        if self.status == "ready" and self.checked_at is None:
+            raise ValueError("a ready provider check requires its check time")
+        return self
+
+
+class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
+    request_id: str
+    kind: ProjectProvisioningKind
+    status: ProjectProvisioningStatus
+    target_space_id: str
+    authorized_by: AuthorizedHuman
+    proposed_project_id: str
+    machines: list[ProjectProvisioningMachineRecord] = Field(min_length=1, max_length=32)
+    repositories: list[ProjectProvisioningRepositoryRecord] = Field(min_length=1, max_length=64)
+    provider_checks: list[ProjectProvisioningProviderCheckRecord] = Field(
+        min_length=1, max_length=32
+    )
+    retryable_diagnostic: MessageText | None = None
+    operator_action: ServerStep | None = None
+    final_review_digest: str | None = None
+    cancellation_disposition: ProjectProvisioningCancellationDisposition | None = None
+    revision: int = Field(ge=0)
+    created_at: str
+    updated_at: str
+    setup_started_at: str | None = None
+    ready_at: str | None = None
+    completed_at: str | None = None
+    cancelled_at: str | None = None
+
+    @field_validator("request_id", "target_space_id", "proposed_project_id")
+    @classmethod
+    def validate_identifier(cls, value: str, info: ValidationInfo) -> str:
+        try:
+            return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("final_review_digest")
+    @classmethod
+    def validate_review_digest(cls, value: str | None) -> str | None:
+        if value is not None and _SHA256_HEX.fullmatch(value) is None:
+            raise ValueError("provisioning final-review digest must be lowercase SHA-256")
+        return value
+
+    @model_validator(mode="after")
+    def validate_request(self) -> ProjectProvisioningRequestRecord:
+        if self.target_space_id != self.authorized_by.space_id:
+            raise ValueError("provisioning authorizer must belong to the target space")
+        machine_map = {machine.alias: machine for machine in self.machines}
+        if len(machine_map) != len(self.machines):
+            raise ValueError("provisioning machine aliases must be unique")
+        repository_aliases = [repository.alias for repository in self.repositories]
+        if len(set(repository_aliases)) != len(repository_aliases):
+            raise ValueError("provisioning repository aliases must be unique")
+        repository_identities = [repository.repository.identity for repository in self.repositories]
+        if len(set(repository_identities)) != len(repository_identities):
+            raise ValueError("one GitHub repository cannot appear twice in a provisioning request")
+        for repository in self.repositories:
+            machine = machine_map.get(repository.machine_alias)
+            if machine is None:
+                raise ValueError("provisioning repository names an unknown machine")
+            intended = (
+                PurePosixPath(machine.central_root)
+                / self.proposed_project_id
+                / "repositories"
+                / repository.alias
+            )
+            if repository.intended_path != str(intended):
+                raise ValueError("provisioning repository intended path is not derived")
+            if machine.resolved_central_root is None:
+                if repository.resolved_path is not None:
+                    raise ValueError("repository path cannot resolve before its central root")
+            else:
+                resolved = (
+                    PurePosixPath(machine.resolved_central_root)
+                    / self.proposed_project_id
+                    / "repositories"
+                    / repository.alias
+                )
+                if repository.resolved_path != str(resolved):
+                    raise ValueError("provisioning repository resolved path is not derived")
+            expected_key_label = (
+                f"rcp:{self.target_space_id}:{self.proposed_project_id}:{repository.alias}"
+            )
+            if (
+                repository.git_check.deploy_key_label is not None
+                and repository.git_check.deploy_key_label != expected_key_label
+            ):
+                raise ValueError("provisioning deploy-key label is not derived from the request")
+        profiles = [check.profile for check in self.provider_checks]
+        if len(set(profiles)) != len(profiles):
+            raise ValueError("provisioning provider profiles must be unique")
+        if any(check.machine_alias not in machine_map for check in self.provider_checks):
+            raise ValueError("provisioning provider check names an unknown machine")
+        if self.status == "operator_action_needed":
+            if self.operator_action is None:
+                raise ValueError("operator-action provisioning requires one structured action")
+            if self.operator_action.state != "operator_action_needed":
+                raise ValueError("durable provisioning action must be an operator-action step")
+            if not _provisioning_resume_matches_request(
+                self.operator_action.resume_argv,
+                self.request_id,
+            ):
+                raise ValueError("provisioning operator action must resume this exact request")
+            target = self.operator_action.target
+            if isinstance(target, ExternalServiceTarget):
+                matching_repository = next(
+                    (
+                        repository
+                        for repository in self.repositories
+                        if target.service == "github.com"
+                        and target.resource == repository.repository.identity
+                        and target.destination_url == repository.repository.settings_url
+                        and target.required_authority_role == "repository administrator"
+                    ),
+                    None,
+                )
+                if matching_repository is None:
+                    raise ValueError(
+                        "provisioning external action must target one declared GitHub repository"
+                    )
+            elif isinstance(target, MachineTarget):
+                if not any(
+                    machine.os_account == target.os_account
+                    and (machine.location == "local" or machine.host == target.host)
+                    for machine in self.machines
+                ):
+                    raise ValueError(
+                        "provisioning machine action must target one declared execution account"
+                    )
+        elif self.operator_action is not None:
+            raise ValueError("only operator-action provisioning may retain an operator action")
+        review_status = self.status in {"ready_for_review", "completed"}
+        if review_status:
+            if self.final_review_digest is None or self.ready_at is None:
+                raise ValueError("reviewable provisioning requires a digest and ready time")
+            if any(machine.resolved_central_root is None for machine in self.machines):
+                raise ValueError("reviewable provisioning requires every central root")
+            if any(repository.git_check.status != "ready" for repository in self.repositories):
+                raise ValueError("reviewable provisioning requires every Git check")
+            if any(check.status != "ready" for check in self.provider_checks):
+                raise ValueError("reviewable provisioning requires every provider check")
+        elif self.final_review_digest is not None or self.ready_at is not None:
+            raise ValueError("only reviewable provisioning may retain a final-review digest")
+        if self.status == "completed" and self.completed_at is None:
+            raise ValueError("completed provisioning requires its completion time")
+        if self.status != "completed" and self.completed_at is not None:
+            raise ValueError("only completed provisioning may retain a completion time")
+        if self.status == "cancelled":
+            if self.cancelled_at is None or self.cancellation_disposition is None:
+                raise ValueError("cancelled provisioning requires time and explicit disposition")
+        elif self.cancelled_at is not None:
+            raise ValueError("only cancelled provisioning may retain a cancellation time")
+        if self.cancellation_disposition is not None and self.status not in {
+            "operator_action_needed",
+            "cancelled",
+        }:
+            raise ValueError("cancellation disposition belongs only to cancellation handling")
+        return self
+
+
+class ProjectProvisioningStepReceiptRecord(_StrictProvisioningModel):
+    request_id: str
+    receipt_id: str
+    phase: str
+    from_status: ProjectProvisioningStatus
+    to_status: ProjectProvisioningStatus
+    transition_sha256: str
+    resulting_revision: int = Field(ge=1)
+    created_at: str
+
+    @field_validator("request_id")
+    @classmethod
+    def validate_request_id(cls, value: str) -> str:
+        try:
+            return _canonical_uuid4(value, label="provisioning request identity")
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("receipt_id")
+    @classmethod
+    def validate_receipt_id(cls, value: str) -> str:
+        if _PROVISIONING_RECEIPT_ID.fullmatch(value) is None:
+            raise ValueError("provisioning receipt id is invalid")
+        return value
+
+    @field_validator("phase")
+    @classmethod
+    def validate_phase(cls, value: str) -> str:
+        if _PROVISIONING_PHASE.fullmatch(value) is None:
+            raise ValueError("provisioning receipt phase is invalid")
+        return value
+
+    @field_validator("transition_sha256")
+    @classmethod
+    def validate_transition_digest(cls, value: str) -> str:
+        if _SHA256_HEX.fullmatch(value) is None:
+            raise ValueError("provisioning transition digest must be lowercase SHA-256")
+        return value
 
 
 class ProviderSkillInventoryRecord(BaseModel):
@@ -1681,6 +2168,19 @@ __all__ = [
     "NodeStatusGraphCondition",
     "ProjectInvitationRecord",
     "ProjectMemberRecord",
+    "ProjectProvisioningCancellationDisposition",
+    "ProjectProvisioningCheckStatus",
+    "ProjectProvisioningGitCheckRecord",
+    "ProjectProvisioningKind",
+    "ProjectProvisioningMachineIntent",
+    "ProjectProvisioningMachineRecord",
+    "ProjectProvisioningProviderCheckRecord",
+    "ProjectProvisioningProviderIntent",
+    "ProjectProvisioningRepositoryIntent",
+    "ProjectProvisioningRepositoryRecord",
+    "ProjectProvisioningRequestRecord",
+    "ProjectProvisioningStatus",
+    "ProjectProvisioningStepReceiptRecord",
     "ProjectRecord",
     "ProjectStageRecord",
     "ProposalResolvedGraphCondition",

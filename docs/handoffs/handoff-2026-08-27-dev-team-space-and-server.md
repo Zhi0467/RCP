@@ -509,6 +509,40 @@ gate are deliberately future work and do not block this plan.
   pre-merge PR gate; the current human-approved direct-main development boundary
   makes that explicit instead of pretending otherwise.
 
+#### 2026-08-28 — P1 durable provisioning boundary implemented and audited
+
+- One strict GitHub.com parser now accepts only the two reviewed HTTPS/SCP forms,
+  stores one lowercase `owner/repository` identity, and generates every clone and
+  settings URL from that identity. Request creation performs no filesystem, DNS,
+  or network work and never persists the member's raw source string.
+- The team `AppStore` now owns durable new-project and incoming-transfer
+  preparation requests, the six exact display states, proposed project-id/path
+  reservation, machine/repository/provider checks, structured human actions,
+  final-review binding, explicit cancellation disposition, and transactional
+  idempotent step receipts. Preparation does not register a project, append
+  canonical identity, or establish a writable home.
+- Human-action persistence is request-bound: a GitHub target must name one
+  request repository and its exact settings page, a machine target must name one
+  declared execution account, and the resume argv must re-enter this exact
+  request through project provisioning or its request-scoped provider check.
+  Deploy-key labels are derived and secret-safe; ready Git checks require the
+  retained public fingerprint and the actual request-scoped write proof.
+- The packet's one independent audit found four gaps: generic actions were not
+  request-bound, deploy-key labels were not secret/line-safe, a stored review
+  digest was shape-checked but not recomputed, and receipt hashing happened
+  before diagnostic normalization. All four are fixed with focused regressions;
+  no second audit was run, per the one-audit packet rule.
+- Focused parser, request lifecycle, strict reload, installer integration, and
+  broader storage verification passes 173 tests. Focused Ruff and format checks
+  are green. The exact P1 commit still needs its chained immutable G2 fixture;
+  until that follow-up commit lands, P1 is implemented but not yet marked
+  complete.
+- Not done in P1: no member HTTP route, backend UI projection, machine-side Git
+  or provider work, final project creation, CLI handler, or wizard code exists.
+  P2 through P6 and D7 retain those owners. The CLI remains the exhaustive
+  operation owner; the later unified wizard may only submit and render its
+  structured state and commands.
+
 ## What remains
 
 Everything after the existing auth/membership foundation remains implementation

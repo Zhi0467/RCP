@@ -45,6 +45,7 @@ from rcp.server_ops.config import (
     load_installed_server_config,
     write_installed_server_config,
 )
+from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_ops.layout import (
     DEFAULT_SERVER_LAYOUT,
     ServerLayout,
@@ -61,10 +62,6 @@ from rcp.server_ops.models import (
     ServerStep,
 )
 
-_GITHUB_ORIGIN = re.compile(
-    r"(?:https://github\.com/|git@github\.com:)(?P<owner>[A-Za-z0-9_.-]+)/"
-    r"(?P<repo>[A-Za-z0-9_.-]+?)(?:\.git)?"
-)
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _OPENSSH_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{20,64}={0,2}")
 _VERSION = re.compile(r"(?:^|\s|v)(?P<major>\d+)\.(?P<minor>\d+)(?:\.\d+)?")
@@ -204,21 +201,17 @@ def prepare_install_command(
 def normalize_github_repository(origin: str) -> GitHubRepository:
     """Return the one credential-free repository identity accepted by install."""
 
-    if origin != origin.strip() or any(
-        ord(character) < 32 or ord(character) == 127 for character in origin
-    ):
-        raise ValueError("the bootstrap origin must be one trimmed GitHub URL")
-    match = _GITHUB_ORIGIN.fullmatch(origin)
-    if match is None:
-        raise ValueError("the bootstrap origin must be an HTTPS or SSH github.com repository")
-    owner = match.group("owner")
-    repository = match.group("repo")
-    slug = f"{owner}/{repository}"
+    try:
+        reference = parse_github_repository_ref(origin)
+    except ValueError as exc:
+        raise ValueError(
+            "the bootstrap origin must be an HTTPS or SSH github.com repository"
+        ) from exc
     return GitHubRepository(
-        slug=slug,
-        https_origin=f"https://github.com/{slug}.git",
-        ssh_origin=f"git@github.com:{slug}.git",
-        deploy_keys_url=f"https://github.com/{slug}/settings/keys",
+        slug=reference.identity,
+        https_origin=reference.https_clone_url,
+        ssh_origin=reference.ssh_clone_url,
+        deploy_keys_url=reference.settings_url,
     )
 
 

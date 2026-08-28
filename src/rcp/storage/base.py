@@ -509,6 +509,59 @@ class AppStoreBase:
                 );
                 CREATE INDEX IF NOT EXISTS projects_recent
                     ON projects(last_opened_at DESC, added_at DESC);
+                CREATE TABLE IF NOT EXISTS project_provisioning_requests (
+                    request_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL
+                        CHECK(kind IN ('create_team_project', 'incoming_transfer')),
+                    status TEXT NOT NULL CHECK(status IN (
+                        'waiting_for_server_setup',
+                        'setup_in_progress',
+                        'operator_action_needed',
+                        'ready_for_review',
+                        'completed',
+                        'cancelled'
+                    )),
+                    target_space_id TEXT NOT NULL,
+                    authorized_by_json TEXT NOT NULL,
+                    proposed_project_id TEXT NOT NULL UNIQUE,
+                    machines_json TEXT NOT NULL,
+                    repositories_json TEXT NOT NULL,
+                    provider_checks_json TEXT NOT NULL,
+                    retryable_diagnostic TEXT,
+                    operator_action_json TEXT,
+                    final_review_digest TEXT,
+                    cancellation_disposition TEXT CHECK(
+                        cancellation_disposition IS NULL OR cancellation_disposition IN (
+                            'nothing_to_remove',
+                            'request_owned_state_removed',
+                            'prepared_state_preserved',
+                            'operator_cleanup_confirmed'
+                        )
+                    ),
+                    revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    setup_started_at TEXT,
+                    ready_at TEXT,
+                    completed_at TEXT,
+                    cancelled_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS project_provisioning_status
+                    ON project_provisioning_requests(status, updated_at DESC, request_id);
+                CREATE TABLE IF NOT EXISTS project_provisioning_step_receipts (
+                    request_id TEXT NOT NULL,
+                    receipt_id TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    from_status TEXT NOT NULL,
+                    to_status TEXT NOT NULL,
+                    transition_sha256 TEXT NOT NULL,
+                    resulting_revision INTEGER NOT NULL CHECK(resulting_revision >= 1),
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(request_id, receipt_id),
+                    FOREIGN KEY(request_id) REFERENCES project_provisioning_requests(request_id)
+                );
+                CREATE INDEX IF NOT EXISTS project_provisioning_receipts_revision
+                    ON project_provisioning_step_receipts(request_id, resulting_revision);
                 CREATE TABLE IF NOT EXISTS project_aliases (
                     alias_id TEXT PRIMARY KEY,
                     canonical_project_id TEXT NOT NULL
