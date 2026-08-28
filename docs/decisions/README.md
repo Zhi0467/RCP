@@ -8,12 +8,20 @@
   records per-profile selection, per-invocation evidence, the exact pre-prompt
   fallback boundary, and why RCP does not own a persistent provider-session
   runtime or Codex Desktop ordering.
-- [Personal-to-team transfer uses one sanitized project archive](2026-08-27-personal-to-team-transfer-archive.md)
-  records the sole transfer format, complete finished-history boundary, removal
-  of source execution bindings, and validated atomic target import.
+- [Personal-to-team transfer uses one bounded project archive](2026-08-27-personal-to-team-transfer-archive.md)
+  records the sole transfer format, complete finished and provider-history
+  boundary, independent source/target human authority, removal of source
+  execution bindings, and validated atomic target import.
 - [Source server uses staged releases and split operator/service privilege](2026-08-27-source-server-install-and-update-privilege.md)
   records the disposable bootstrap, clean per-commit releases, unprivileged
   source builds, and narrow root coordinator for systemd lifecycle.
+- [Main is the convention-governed server-update channel until public sharing](2026-08-27-main-is-the-server-update-channel.md)
+  records short-lived PR branches, green CI and human merge by convention during
+  private development, the later public branch-protection gate, and why there is
+  no permanent development branch.
+- [Every server-era schema remains directly upgradeable](2026-08-27-server-schema-compatibility.md)
+  records permanent one-step upgrade support and one immutable fixture bundle
+  per distinct persistence boundary.
 
 Decision records explain rationale that remains materially useful for an active
 migration, live tradeoff, or easy-to-regress architectural boundary. They link to

@@ -9,6 +9,12 @@ invariants: [6, 7]
 
 # Add a project with plain-language setup steps
 
+This scenario covers the ordinary personal-space Add-project wizard. A team
+space uses the durable provisioning journey in
+[S128](S128-provision-a-team-project-through-desktop-and-server-cli.md) and
+cannot enter this path-based setup flow through its index, a direct URL, or the
+ordinary setup APIs.
+
 The add-project wizard describes the choices a researcher is making, not the
 internal names of RCP's state files, prompt assembly, or patch protocol.
 

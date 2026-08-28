@@ -148,10 +148,23 @@ but it cannot own multi-space routing, credential storage, SSH tunnels, or
 server-command execution. Source mode is the supported client for this slice; a
 packaged Linux client is not required.
 
-Project creation and personal-to-team transfer begin as ordinary human actions
-in the Web UI and create backend-owned durable provisioning requests. The UI
-renders the backend's status, diagnostic, exact next action, resolved paths, and
-final review. It cannot claim success from a desktop subprocess exit code.
+Project creation begins as an ordinary human action in the team backend's Web UI,
+whether viewed in a browser or the desktop. Personal-to-team transfer begins only
+in the source-built desktop because its native shell coordinates the two
+authenticated backends and archive relay. Both create backend-owned durable
+provisioning requests. The UI renders the backend's status, diagnostic, exact
+next action, resolved paths, and final review. It cannot claim success from a
+desktop subprocess exit code.
+
+The backend also exports one `project_creation` control with the primary action
+label and a `uses_provisioning` decision. The personal backend keeps the
+ordinary path-based Add-project wizard. The team backend uses the durable
+provisioning surface for both the project-index action and a direct
+`#/projects/new` navigation; the Web does not infer that choice from
+`space_kind`, paths, desktop presence, or cached connection metadata. A direct
+team request to either ordinary project-setup API is refused before filesystem
+inspection or catalog mutation. The separately validated provisioning finalizer
+is the only team-project entrance into the existing setup/registration owners.
 
 A saved member connection and an operator route are distinct capabilities even
 when they use the same SSH host. **Run setup now** appears only in the desktop
@@ -166,7 +179,12 @@ operator command instead.
 CLI structured progress is presentation input only. The CLI reports each state
 change to the lock-owning backend through its private local control channel, and
 the Web UI refreshes the durable request. Only the final explicit human review
-may create or re-home the project.
+may create or re-home the project. For personal-to-team transfer, one desktop
+review action calls both already-authenticated backends in a fixed order: target
+admission first, then source release. Each backend records its own human actor;
+the native relay and remote CLI cannot provide either confirmation. A partial
+first confirmation is durable state that the same request resumes, not evidence
+that the project moved.
 
 ## Project tabs
 
@@ -344,10 +362,12 @@ label for the runtime they ran on, so no surface maps a durable runtime id or
 picks a default itself.
 
 The browser may stage human drafts and render backend projections; it is not the
-owner of authority, tasks, graph rules, provider credentials, watcher delivery,
-or canonical state. Client-generated ids, cached target selection, URL fragments,
-artifact messages, and provider output cannot select a different project,
-conversation, branch, authorizer, or graph target.
+owner of authority, tasks, graph rules, provider authentication, watcher
+delivery, or canonical state. Provider authentication stays native to the
+execution account and is not owned by another RCP layer. Client-generated ids,
+cached target selection, URL fragments, artifact messages, and provider output
+cannot select a different project, conversation, branch, authorizer, or graph
+target.
 
 ## Verification contracts
 

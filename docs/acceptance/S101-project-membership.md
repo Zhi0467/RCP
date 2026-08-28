@@ -87,8 +87,8 @@ second store whose projects predate membership. A personal space as the control.
 3. As the second member, request that project by its exact id — read it, dispatch
    into it, and hold a patch to Apply against it.
 4. Open the store whose projects predate membership. Read who is a member of each.
-5. As the first member, open the project in a tab, then delete the project from
-   another window and watch the tab.
+5. In the personal-space control, open its project in a tab, then delete the
+   project from another window and watch the tab.
 6. Replay the project from its patch log with membership records unavailable.
 7. In the personal space, create a project and take a patch-capable action
    without ever choosing a display name.
@@ -113,7 +113,7 @@ second store whose projects predate membership. A personal space as the control.
 - `every_project_scoped_route_is_declared_on_the_membership_router`
 - `a_project_scoped_route_declared_outside_the_router_fails_the_route_test`
 - `replay_succeeds_with_no_membership_records_present`
-- `deleting_a_project_takes_its_membership_with_it`
+- `deleting_a_personal_project_takes_its_membership_with_it`
 - `a_team_project_is_never_left_with_no_members`
 - `an_open_tab_whose_project_becomes_unreadable_closes_itself`
 

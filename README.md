@@ -24,7 +24,8 @@ interface run in a browser or in the macOS desktop shell.
   on SSH hosts while RCP applies the same task and containment contract.
 - **Team server — in progress:** run RCP from source on a lab Linux server so
   members can collaborate on the same projects through server-owned checkouts
-  and provider credentials without sharing one human identity.
+  and the provider authentication already present on each execution account,
+  without sharing one human identity.
 
 ## Install from source
 
@@ -116,11 +117,17 @@ verification commands are in [docs/desktop.md](docs/desktop.md).
 
 > **Not implemented yet:** the source-server CLI described below is the accepted
 > team deployment target. Until that slice lands, use the local source commands
-> above; do not expect `rcp server install` or `rcp server update` to exist.
+> above; none of the `rcp server ...` commands below exists yet.
 
-The first supported team deployment is one Linux server running systemd and one
-team space. The service binds to loopback and members connect with source-built
-desktop apps over SSH.
+The first supported team deployment is one Ubuntu 22.04 or 24.04 LTS x86-64
+server running systemd and one team space. The server build uses Node.js 24 and
+Python 3.12 managed through `uv`, and requires Git, OpenSSH, and `age`. The final
+backup target uses the upstream `age` CLI `>=1.0.0,<2.0.0` with a native
+X25519 `age1...` recipient. The final installer documentation will provide
+tested prerequisite commands for both
+Ubuntu releases; the RCP installer validates these tools but does not modify apt
+repositories or install general system software. The service binds to loopback
+and members connect with source-built desktop apps over SSH.
 
 An operator first creates a temporary bootstrap checkout under their ordinary
 Linux account:
@@ -146,14 +153,37 @@ The installer will:
    exact GitHub `main` commit in the configured service layout;
 3. give that checkout its own source-fetch identity when the origin is private;
 4. run Git, npm, the Web build, and `uv sync --frozen` as `rcp`, not as root;
-5. install the stable CLI wrapper and non-reloading systemd service; and
-6. print the exact command for initializing the team space and enrolling its
-   first member.
+5. install the stable CLI wrapper and non-reloading systemd unit, leaving a
+   fresh service stopped; and
+6. print the exact initialization and activation commands.
+
+The first team space is initialized interactively as the service account before
+systemd starts, so its one-time bootstrap code appears only in that terminal:
+
+```bash
+sudo -u rcp -H /usr/local/bin/rcp space init --team --name "My lab"
+sudo systemctl enable --now rcp
+sudo -u rcp -H /usr/local/bin/rcp server doctor
+```
 
 The bootstrap checkout is not the production checkout and may be removed after
 installation. Root is used only for operating-system work such as creating the
 account, directories, and systemd service. Normal service execution and managed
-source work run as `rcp`.
+source work run as `rcp`. The installer gives `rcp` a fixed `/home/rcp` home and
+a real shell, but no usable password; it does not enable password SSH or grant
+broad sudo. Direct `rcp@server` access is optional and key-only, while a named
+operator with the documented narrow sudo command is preferred.
+
+The installed service keeps its source, releases, data, central project
+checkouts, source/repository deploy keys, and update checkpoints under
+`/home/rcp/rcp-server/`. Every provider keeps its native state in its normal
+per-account home path (currently `.codex` and `.claude` for the built-in
+providers); authenticate there with the provider's own command, then use
+`rcp server provider check --request <request-id>` during setup or
+`rcp server provider check --project <project-id>` afterward. RCP only checks
+and uses that native authentication; it never logs in or stores provider
+credentials. Root-owned integration is limited to `/etc/rcp`, `/run/rcp`, the stable
+`/usr/local/bin/rcp` wrapper, systemd, and journald.
 
 Later source updates are owned by:
 
@@ -164,13 +194,10 @@ sudo rcp server update
 That command accepts only a clean fast-forward of the managed `main` checkout,
 builds the target in a separate clean per-commit source directory as `rcp`, and
 leaves the running release untouched until preflight passes. Its narrow root
-portion switches the service's `current` release, restarts systemd, and verifies
-the running commit. A failure never silently rolls back. `rcp server doctor`
-reports the managed-main, candidate, current, and running commits. The `rcp`
-account receives no general sudo or systemd-control permission.
-
-## Project documentation
-
-Current product and implementation contracts live in [docs/design.md](docs/design.md),
-[docs/specs/](docs/specs/), and [docs/acceptance/](docs/acceptance/). Repository
-instructions for coding agents are in [AGENTS.md](AGENTS.md).
+portion briefly pauses new changes, checkpoints RCP state, switches the service's
+`current` release, restarts systemd behind the same external-effect fence used
+for rehearsal, and verifies the running commit before reopening work. A failed
+post-switch verification loudly restores and verifies the previous state and
+release. `rcp server doctor` reports the managed-main,
+candidate, current, and running commits. The `rcp` account receives no general
+sudo or systemd-control permission.

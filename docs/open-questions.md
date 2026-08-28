@@ -397,3 +397,37 @@ The permission gymnastics, which are genuinely unsolved:
 Do not generalize the orchestrator's star mail into peer mail because the
 plumbing happens to allow it. The plumbing is the easy half; the budget and
 consent questions above are the reason to wait.
+
+---
+
+## Q10 — Should a client detect rollback of a familiar space?
+
+**Status:** open. Raised 2026-08-28. Explicitly outside the first team-server
+restore contract.
+**Governing scenarios:** [S95](acceptance/S95-durable-team-space.md) and
+[S104](acceptance/S104-backups-never-pause-work.md).
+
+### Decided boundary
+
+A replacement restored from backup preserves `space_id`, so saved clients still
+recognize it as the same authority domain. The first restore workflow keeps the
+service stopped while an operator confirms that the old copy cannot resume,
+reviews the snapshot-time member roster, detaches captured live work, and
+completes replay/readback. It does not claim that two copies can detect each
+other or that a desktop can recognize an older snapshot of the same space.
+
+### What remains open
+
+Whether a later client/server protocol should detect that a familiar
+`space_id` has moved backward to an older durable state, and what evidence could
+do so without depending on the unavailable old server. A counter stored only in
+SQLite or the backed-up data directory rolls back with the archive, so adding
+one there does not solve the problem. An external witness, client-observed
+monotonic receipt, or installation/restore lineage may help, but each changes
+the offline-recovery and multi-client contract and has not been designed.
+
+### Do not do in the meantime
+
+Do not block the accepted one-lab restore on this future detection mechanism or
+present `space_id` equality as rollback detection. The current safety boundary
+is the explicit old-authority exclusion and stopped-service restore journal.

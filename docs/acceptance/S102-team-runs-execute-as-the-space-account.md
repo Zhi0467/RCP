@@ -12,11 +12,12 @@ invariants: [4, 4b, 5]
 This scenario is human-confirmed and pending implementation. Its boundary is in
 [Team execution accounts and credentials](../specs/providers-and-containment.md#team-execution-accounts-and-credentials).
 
-Provider credentials are resolved from the executing process's `$HOME`, not from
-where the provider binary happens to live. RCP launches providers without
-overriding the environment, and a remote run goes out through a login shell. So
-the **execution account** selects which provider identity a run uses — a
-machine's `host` field, never a configured binary path.
+Each provider resolves its own native authentication from the executing
+account's ordinary environment and home, not from where its binary happens to
+live. RCP does not create or select an alternate provider home, and a remote run
+uses that remote account's login shell. So the **execution account** selects
+which provider identity a run uses — a machine's `host` field, never a configured
+binary path.
 
 A local team run uses the server's `rcp` service account. A remote team run uses
 the exact SSH account selected by the project profile and authenticated from the
@@ -34,10 +35,11 @@ provider readiness.
 
 ## Drive
 
-1. Use `rcp server provider configure` for the local provider, then run a team
-   task on the server and read its execution account and provider readiness.
-2. Configure the reachable SSH account through the same server CLI and run a
-   task there.
+1. Authenticate with the provider's own command directly as the local `rcp`
+   account, run `rcp server provider check --project <project-id>`, then run a
+   team task and read its execution account and provider readiness.
+2. Authenticate directly as the reachable SSH execution account, check it
+   through the same server CLI, and run a task there.
 3. Select the control account while pointing at the same provider binary path.
    Run a task and read the failure or distinct identity.
 4. Point a machine's provider path at a binary inside another account's home
@@ -55,9 +57,13 @@ provider readiness.
 ## Assert
 
 - `provider_identity_follows_the_execution_account_not_the_binary_path`
+- `rcp_checks_and_uses_provider_native_auth_but_never_manages_it`
+- `provider_login_is_performed_outside_rcp_as_the_execution_account`
+- `provider_check_resolves_a_request_or_project_profile_not_an_ad_hoc_account`
 - `a_local_team_run_executes_as_the_rcp_service_account`
 - `a_remote_team_run_executes_as_the_explicit_configured_ssh_account`
 - `an_execution_machine_must_be_reachable_from_the_team_server_as_that_account`
+- `remote_transport_uses_the_rcp_accounts_existing_openssh_auth_not_a_member_key`
 - `an_unauthenticated_provider_is_reported_as_a_readiness_failure_not_a_crash`
 - `a_readiness_failure_names_the_account_and_the_provider`
 - `no_team_task_falls_back_to_a_member_laptop`
@@ -76,8 +82,8 @@ fallback is not. Widening filesystem permissions is not an escape: each task
 still receives its exact Work or Discuss scope.
 
 Concurrency is not at issue and is not re-asserted here. Several members' work
-sharing one provider login is the arrangement RCP already runs under; concurrent
-task durability is specified in
+executing through the same OS account's existing provider-native authentication
+is the arrangement RCP already runs under; concurrent task durability is specified in
 [Durable task lifecycle](../specs/providers-and-containment.md#durable-task-lifecycle).
 
 Remote behavior cannot be verified without a reachable host. This scenario is

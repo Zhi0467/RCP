@@ -8,12 +8,13 @@ last_passed: 2026-07-31
 invariants: [1, 2, 8]
 ---
 
-# Delete an RCP project without deleting the research project
+# Delete a personal RCP project without deleting the research project
 
-Deleting a project removes it from RCP and erases the app-owned records that
-belong only to that registration. It never deletes or edits the repository,
+Deleting a personal project removes it from RCP and erases the app-owned records
+that belong only to that registration. It never deletes or edits the repository,
 canonical `.research/` state, append-only patches, provider conversation logs,
-or any other source material.
+or any other source material. This implemented scenario predates team projects
+and remains the personal-space contract.
 
 ## UI path (proposal)
 
@@ -61,3 +62,12 @@ it from a cached snapshot.
 The project remains stuck in the index, an agent process outlives the records
 that own it, deleted app-only data silently returns, or RCP touches canonical
 research history while performing an app-catalog operation.
+
+## Team boundary
+
+Ordinary deletion is not team-project deprovisioning. The pending team-server
+journey in [S128](S128-provision-a-team-project-through-desktop-and-server-cli.md)
+requires the backend to publish team deletion unavailable and to reject a direct
+API attempt before touching either RCP records or managed machine state. A future
+operator-owned deprovision flow must separately decide checkout disposition and
+Git deploy-key revocation.

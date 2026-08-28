@@ -4,8 +4,10 @@ Active:
 
 - [Dev team space and source server completion](handoff-2026-08-27-dev-team-space-and-server.md)
   — human-confirmed implementation through one genuinely usable lab/server
-  deployment; final dispatch grilling is refining the settled implementation
-  packets before work begins.
+  deployment; design, grilling, and the final cross-document fact-check are
+  complete and the plan is fully dispatch-ready. G0 first restores the current
+  red CI baseline; G1 then adopts the convention-only PR/CI/human-merge workflow
+  before its dependents begin.
 
 This directory contains only human-confirmed work that is ready to implement and
 not yet complete. A handoff is an execution contract, not a chronological diary.

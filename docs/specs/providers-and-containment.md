@@ -241,23 +241,43 @@ not converted into semantic correction.
 
 The team backend remains the one owner of every provider call, whether the
 provider runs on the RCP server or over SSH. A local team run executes as the
-Linux `rcp` service account and uses that account's provider login. A remote team
-run uses the exact SSH host/account selected by the project profile and the
-provider login installed for that remote execution account. The remote account
-need not be named `rcp`; it must be explicitly configured and reachable from the
-server's service account.
+Linux `rcp` service account and uses whatever provider-native authentication is
+already present for that account. A remote team run uses the exact SSH
+host/account selected by the project profile and whatever provider-native
+authentication is already present there. The remote account need not be named
+`rcp`; it must be explicitly configured and reachable from the server's service
+account.
 
-Provider setup is a server CLI readiness workflow, not a project secret or an
-RCP member credential. It names the execution host/account, guides the operator
-through the provider's own login, and verifies the configured provider/runtime
-through the same launch abstraction used by tasks. Provider credentials never
-enter a project manifest, provisioning request, prompt, backup, or member's
-desktop credential store.
+RCP does not perform provider login, store provider credentials, switch accounts,
+refresh tokens, or create alternate provider homes. The operator uses each
+provider's own login command directly as the target execution account. RCP's
+server CLI checks executable, version, provider-reported authentication status,
+and configured runtime through the same launch abstraction used by tasks; the
+later provider call then uses that native authentication in place. A failed check
+names the provider, machine/account, and provider-native action to perform, then
+waits for the operator to do it outside RCP. Provider credentials never enter a
+project manifest, provisioning request, prompt, backup, or member's desktop
+credential store.
+
+The check always resolves an existing configuration boundary:
+`rcp server provider check --request <request-id>` checks the intended profiles
+of one provisioning request, while `--project <project-id>` checks the stored
+profiles of one existing project. Exactly one selector is required. The command
+does not accept an arbitrary host, account, executable, provider home, or runtime
+that could bypass the request/manifest contract.
 
 The central Git checkout and its repository-scoped deploy key are independent of
 the provider login. A Git key grants repository transport; a provider login
 grants provider execution; an RCP member token grants product authority. None is
 accepted in place of another.
+
+Remote execution adds one more transport boundary: the server's `rcp` account
+must already be able to authenticate with ordinary OpenSSH to the exact account
+in the selected machine profile. RCP checks and uses that configured route; it
+does not import a member's SSH key, collect one through Web/desktop state, or try
+a different login. This SSH transport authentication does not select the remote
+provider identity—the remote operating-system account and its native provider
+state do.
 
 There is no team fallback to a member laptop, personal checkout, local member
 provider login, or different SSH account. Unreachable SSH, missing provider
@@ -280,6 +300,30 @@ The agent reads logs in place. RCP performs only bounded existence/readability
 preflight and reports exact failures without blocking launch. RCP does not parse,
 index, normalize, slice, hash, cache, transfer, or project provider conversation
 content and maintains no per-log cursor or coverage truth.
+
+That is the implemented ordinary-run path, not a promise to abandon source
+history during a pending personal-to-team transfer. The confirmed transfer
+target exports every complete provider conversation selected through the
+existing native conversation index into the read-only project app-data root
+`<RCP_DATA_DIR>/project-sources/<project-id>/provider-history/<provider>/`.
+Configured provider profiles supply the native roots, while the index remains
+the one owner of project-path matching and local/SSH source retrieval. Matching
+is automatic and best-effort from recorded working paths; skipped sources are a
+non-blocking diagnostic, not a transfer decision. The target agent reads those
+imported provider-native sources alongside live roots from its configured
+execution account. Local execution reads the project-owned source directly;
+remote execution stages only that validated project-owned inventory as immutable
+task input and leaves the remote account's live native roots in place. Resume
+reuses the same staged fingerprint, and a missing or changed stage fails visibly
+through clean retry rather than omitting history. Missing or corrupt durable
+imported bytes block Seed/Refresh; the non-blocking best-effort rule applies only
+to source-side selection before transfer. RCP-owned project chats
+transfer only as human-visible history and remain excluded from Seed/Refresh
+input under the native-chat-context rule. Imported sources never enter canonical
+`.research`, a rebuildable cache, or the native provider home and never grant
+Resume, Retry, credentials, or execution authority. The index copies the
+selected original native transcript files byte-for-byte; RCP does not flatten
+them into its lossy conversation-record model.
 
 The watermark advances only after a Seed/Refresh Patch commits. Failed,
 paused, interrupted, or rejected work leaves it unchanged. It is an

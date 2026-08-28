@@ -38,11 +38,14 @@ and desktop member clients. A dedicated Linux `rcp` account owns the control
 plane and every server-local team checkout; an explicitly configured remote
 execution account owns a team checkout on its SSH machine. Members remain
 distinct RCP humans and may keep independent personal checkouts. RCP member
-identity, process identity, repository credentials, and provider credentials are
-separate authorities. The source server runs a built checkout of GitHub `main`
-as a non-reloading service, and its commit and update lifecycle are managed by
-the server CLI. "Source-built" does not make live development reload part of
-team operation. The unfinished journeys that make this deployment usable remain
+identity, process identity, SSH transport credentials, repository credentials,
+and provider-native authentication are separate authorities. RCP selects and
+readiness-checks a provider but never performs or stores its login; execution
+uses whatever the configured operating-system account has authenticated
+natively. The source server runs a built checkout of GitHub `main` as a
+non-reloading service, and its commit and update lifecycle are managed by the
+server CLI. "Source-built" does not make live development reload part of team
+operation. The unfinished journeys that make this deployment usable remain
 explicit pending acceptance work.
 
 ## Cross-cutting invariants
