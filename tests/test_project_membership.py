@@ -21,6 +21,7 @@ from rcp.api.dependencies import ApiServices, require_project_membership
 from rcp.core.authority import require_apply, require_dispatch
 from rcp.history import HistoryManager
 from rcp.projects import ProjectCatalog
+from rcp.setup import ProjectSetupRequest
 from rcp.storage import AppStore
 
 from .helpers import seed_patch
@@ -63,10 +64,26 @@ def _team_app(tmp_path: Path, *, members: int = 2):
     return app, TestClient(app), store, people, acting
 
 
-def _create_project(client: TestClient, repository_path: Path, name: str = "membership-paper"):
-    created = client.post("/api/project-setup/create", json=_setup_payload(repository_path, name))
-    assert created.status_code == 200, created.text
-    return created.json()["id"]
+def _create_project(
+    client: TestClient,
+    repository_path: Path,
+    *,
+    seat_member: str | None = None,
+    name: str = "membership-paper",
+) -> str:
+    """Prepare membership fixtures through the internal setup owner.
+
+    A team member cannot enter through the personal project-setup API. These
+    tests exercise downstream membership, so they establish that prerequisite
+    directly without creating a product bypass around provisioning.
+    """
+
+    if seat_member is None:
+        identity = client.get("/api/identity")
+        assert identity.status_code == 200, identity.text
+        seat_member = str(identity.json()["user"]["user_id"])
+    request = ProjectSetupRequest.model_validate(_setup_payload(repository_path, name))
+    return str(client.app.state.setup.create(request, seat_member=seat_member)["id"])
 
 
 def _project_scoped_routes(app: FastAPI) -> list[APIRoute]:
@@ -160,7 +177,7 @@ def test_creating_a_project_seats_its_creator_as_the_first_member(manifest, tmp_
     app, client, store, people, _acting = _team_app(tmp_path)
     creator, other = people
 
-    project_id = _create_project(client, tmp_path / "repo")
+    project_id = _create_project(client, tmp_path / "repo", seat_member=creator.user_id)
 
     members = client.get(f"/api/projects/{project_id}/members")
     assert members.status_code == 200, members.text
@@ -174,7 +191,7 @@ def test_membership_binds_the_durable_user_id_and_never_a_display_name(manifest,
     app, client, store, people, _acting = _team_app(tmp_path)
     creator = people[0]
 
-    project_id = _create_project(client, tmp_path / "repo")
+    project_id = _create_project(client, tmp_path / "repo", seat_member=creator.user_id)
     seated = store.project_members(project_id)
     assert [record.user_id for record in seated] == [creator.user_id]
 
@@ -184,8 +201,8 @@ def test_membership_binds_the_durable_user_id_and_never_a_display_name(manifest,
     assert [record.user_id for record in store.project_members(project_id)] == [creator.user_id]
 
 
-def test_creating_a_project_still_requires_no_display_name(manifest, tmp_path) -> None:
-    """S112's rule stands: a name is required before an attributed write, not before existing."""
+def test_internal_registration_can_seat_an_unnamed_member(manifest, tmp_path) -> None:
+    """The internal finalizer seats an id; P2 separately names its human authorizer."""
 
     data_dir = tmp_path / "team"
     store = AppStore(data_dir / "rcp.sqlite3", space_kind="team")
@@ -197,7 +214,7 @@ def test_creating_a_project_still_requires_no_display_name(manifest, tmp_path) -
     )
     client = TestClient(app)
 
-    project_id = _create_project(client, tmp_path / "repo")
+    project_id = _create_project(client, tmp_path / "repo", seat_member=unnamed.user_id)
     assert store.is_project_member(project_id, unnamed.user_id)
 
 
@@ -280,7 +297,7 @@ def test_a_non_member_project_is_absent_from_the_project_list(manifest, tmp_path
     app, client, _store, people, acting = _team_app(tmp_path)
     creator, outsider = people
 
-    project_id = _create_project(client, tmp_path / "repo")
+    project_id = _create_project(client, tmp_path / "repo", seat_member=creator.user_id)
     assert [card["id"] for card in client.get("/api/projects").json()] == [project_id]
 
     acting[0] = outsider.user_id
@@ -293,7 +310,7 @@ def test_a_non_member_project_is_absent_from_the_cross_project_experiment_board(
 ) -> None:
     app, client, _store, people, acting = _team_app(tmp_path)
     _creator, outsider = people
-    project_id = _create_project(client, tmp_path / "repo")
+    project_id = _create_project(client, tmp_path / "repo", seat_member=people[0].user_id)
     # Commit a display snapshot, so the board has real cached graph state to leak.
     assert client.get(f"/api/projects/{project_id}").status_code == 200
 
@@ -311,7 +328,7 @@ def test_a_non_member_project_is_absent_from_the_cross_project_experiment_board(
 def test_an_exact_non_member_project_id_answers_404_and_never_403(manifest, tmp_path) -> None:
     app, client, _store, people, acting = _team_app(tmp_path)
     _creator, outsider = people
-    project_id = _create_project(client, tmp_path / "repo")
+    project_id = _create_project(client, tmp_path / "repo", seat_member=people[0].user_id)
 
     acting[0] = outsider.user_id
     refused = client.get(f"/api/projects/{project_id}")
@@ -335,7 +352,7 @@ def test_an_exact_non_member_project_id_answers_404_and_never_403(manifest, tmp_
 def test_a_non_member_dispatch_never_launches_a_provider(manifest, tmp_path) -> None:
     app, client, store, people, acting = _team_app(tmp_path)
     _creator, outsider = people
-    project_id = _create_project(client, tmp_path / "repo")
+    project_id = _create_project(client, tmp_path / "repo", seat_member=people[0].user_id)
 
     acting[0] = outsider.user_id
     refused = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
@@ -350,7 +367,7 @@ def test_a_non_member_patch_is_refused_at_apply_under_the_append_lock(manifest, 
 
     app, client, store, people, acting = _team_app(tmp_path)
     creator, outsider = people
-    project_id = _create_project(client, tmp_path / "repo")
+    project_id = _create_project(client, tmp_path / "repo", seat_member=creator.user_id)
 
     catalog: ProjectCatalog = app.state.catalog
     history = catalog.open(project_id).history
@@ -437,7 +454,11 @@ def test_replay_succeeds_with_no_membership_records_present(manifest, tmp_path) 
 
 def test_deleting_a_project_takes_its_membership_with_it(manifest, tmp_path) -> None:
     app, client, store, _people, _acting = _team_app(tmp_path)
-    project_id = _create_project(client, tmp_path / "repo")
+    project_id = _create_project(
+        client,
+        tmp_path / "repo",
+        seat_member=store.space_users()[0].user_id,
+    )
     assert store.project_members(project_id)
 
     deleted = client.delete(f"/api/projects/{project_id}")
@@ -461,7 +482,11 @@ def test_a_team_project_is_never_left_with_no_members(
             "/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"}
         ).json()["token"]
         client.post("/api/team/session/exchange", json={"token": token})
-        project_id = _create_project(client, tmp_path / "repo")
+        project_id = _create_project(
+            client,
+            tmp_path / "repo",
+            seat_member=store.space_users()[0].user_id,
+        )
     else:
         # The server opens the project before anybody has enrolled.
         app = create_app(str(manifest.path), data_dir=data_dir)

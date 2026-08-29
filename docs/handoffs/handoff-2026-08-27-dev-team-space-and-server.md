@@ -2,51 +2,16 @@
 
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
-complete, and implementation is now in progress directly on `main`. G0 restored
-the CI baseline, F1 provides the live server CLI command/event contract, G2
-guards upgrades from every current server-era persistence boundary, F2 defines
-the fixed Linux layout/config/unit, and F3a implements the concrete source-server
-installer. Its one independent audit is
-complete and its findings are fixed. Commit `638c19e` is the immutable first
-installable boundary, and its chained `source-server-install-v7-638c19e` fixture
-is pinned in the upgrade registry. F3a is therefore complete. F3b now has the
-operator guide, guarded live drive, and fixed 22.04/24.04 manual Actions matrix;
-its one independent audit is complete and every finding is fixed. F3b is complete:
-manual run 33234365749 passed the full drive on Ubuntu 22.04 and 24.04 at exact
-commit `92117ccfc1190a1db2e5f4e870fa31fe708d3ba9`, every cleanup step passed,
-and repository readback found no remaining temporary deploy key. P1 now
-provides the durable, strictly guarded project-provisioning state machine; its
-one independent audit is complete, every finding is fixed, and its exact schema
-boundary is retained in the chained upgrade registry. P1 is complete. D1 now
-provides the strict
-nonsecret desktop team-connection registry and the macOS Keychain write/removal
-boundary; its one independent audit is complete and its in-scope findings are
-fixed. D2's real WKWebView spike has reached its prescribed stop condition:
-HTTP loopback aliases and the exact localhost control do not return the required
-`Secure` cookie to the server, while extra loopback addresses require privileged
-host mutation. No production routing code was changed; Q11 now records the
-required origin-security decision. Real Keychain round-trip, SSH, enrollment,
-navigation, and UI
-remain D3 through D5 after D2 is resolved. Every concrete provisioning
-operation, member/API projection, finalizer, and the unified wizard remain later
-packets. O3a now implements strict backup machine configuration and installs the
-matching backup service/timer units in a proven disabled state; encrypted
-capture, integrity readback, retention, and safe timer enablement remain O1,
-O2a, O2b, and O3b. F4 now provides the installed team's private, probe-only
-machine control socket without a second SQLite owner. Its source review and
-security diff scan found no reportable issue, and manual run 33236544453 passed
-the exact installed-service boundary on Ubuntu 22.04 and 24.04 at commit
-`9e2b676b5db62ac78dc39b1a50a22eb53ef61585`. F4 is complete. F5 now
-publishes the exact running source/Web identity and provides the read-only,
-secret-safe installed-server doctor. Its one independent audit is complete;
-accepted findings are fixed, and the built-candidate distinction is explicitly
-left to its F6a receipt owner. Manual run 33238829032 passed the full installed
-doctor/start/restart boundary on Ubuntu 22.04 and 24.04 at exact commit
-`b63eda636ec6c3769638d476549f38cec69269e5`. F5 is complete. F6a source
-update and candidate build is now implemented and verified in the working tree,
-including its exact-target confirmation, immutable receipt, and unchanged
-live-service boundary. F6b candidate rehearsal against copied real state is the
-next server packet.
+complete, and implementation is proceeding directly on `main`. G0, G2, F1,
+F2, F3a, F3b, F4, F5, F6a, P1, P2, D1, D2, and O3a are complete. The live
+Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
+pushed at `fff75c3` with exact-target confirmation, an immutable built-candidate
+receipt, and an unchanged live-service boundary. P2 now provides the
+member-authorized provisioning API, backend-owned project-creation and lifecycle
+answers, sealed Web response vocabularies, and a fail-before-input guard on all
+three ordinary existing-checkout entry routes. It performs no machine work and
+does not create a team project. F6b remains dependency-blocked on O2a/O2b's one
+capture primitive; P3, P4, and P5 own the next provisioning machine boundaries.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -127,10 +92,10 @@ slice, not the pending server or desktop journeys.
 
 The remaining seams are also concrete:
 
-- the strict `rcp server` command/event shell, Linux layout, and source installer
-  now exist and are live-qualified on both supported Ubuntu releases; the
-  private probe-only control socket also exists, but doctor, update, backup,
-  restore, and member-removal owners do not yet exist;
+- the strict `rcp server` shell, Linux layout, source installer, private control
+  socket, installed doctor, source-update candidate builder, and inert backup
+  configuration now exist; copied-state update rehearsal, cutover/rollback,
+  encrypted capture/restore, and member removal do not;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
 - the Web UI still says “Team connections are not implemented in this build”;
@@ -138,19 +103,19 @@ The remaining seams are also concrete:
   write/remove a permanent member token in macOS Keychain, but it still trusts
   one current loopback backend and has no distinct-origin allocator, SSH tunnel,
   live token read/enrollment, multi-backend navigation, or operator-command owner;
-- the durable project-provisioning request exists, but its member API,
-  machine-side workers, finalizer, and personal-to-team transfer record do not;
+- the durable project-provisioning request and member create/read/cancel API
+  exist, but machine-side workers, finalizer, unified wizard, and
+  personal-to-team transfer record do not;
   and
 - canonical identity replay currently treats two differing identity payloads as
   corruption, so a home transfer cannot be represented by appending a second
   `ProjectIdentity` record.
 
 The repository's current `AGENTS.md` prescribes direct work on `main`, which the
-human retained for the full private pre-team-server implementation. CI reports
-post-push `main` but has neither an old-data-to-candidate upgrade gate nor GitHub
-branch protection. Current `main` also has the red baseline described in G0.
-Repair G0 directly, then G2, F1, and D1 may begin according to the dependency
-map.
+human retained for the full private pre-team-server implementation. G0 restored
+the baseline and G2 added the old-data-to-candidate upgrade gate. CI reports
+post-push `main`, but GitHub branch protection remains the explicitly deferred
+public-sharing gate described below.
 
 ### Resolved repository workflow boundary
 
@@ -993,7 +958,7 @@ gate are deliberately future work and do not block this plan.
   is the relevant user-visible runtime proof.
 - Not done in F5: no source fetch, fast-forward, build receipt, rehearsal,
   cutover, rollback, provider summary, or backup summary exists. F6a through
-  F6e own update; P5 and O3b later extend doctor only through their concrete
+  F6d own update; P5 and O3b later extend doctor only through their concrete
   owner state.
 
 #### 2026-08-29 — F6a source update and immutable candidate build complete
@@ -1054,7 +1019,56 @@ gate are deliberately future work and do not block this plan.
 - Not done in F6a: no copied-state rehearsal, migration/replay proof, external-
   effect fence, rollback checkpoint, `current` switch, systemd restart, post-
   switch verification, or rollback exists. F6b through F6d own those boundaries;
-  F6e owns their installed-host update drive.
+  V1 owns their installed-host update drive.
+
+#### 2026-08-29 — P2 provisioning API and backend projection complete
+
+- The team backend now exposes member-authorized create/list/read/cancel routes
+  at `/api/project-provisioning/requests`. Creation accepts only strict new-team
+  machine, canonical GitHub repository, and provider-check intents. It requires
+  a named authenticated team member, records that exact human authorizer, and
+  creates only P1's durable request. It performs no DNS, Git, provider,
+  filesystem, catalog, or canonical-project effect.
+- Every authenticated member of the team may read the shared preparation state.
+  Only the exact authorizing member may cancel a direct new-project request, and
+  only before server setup starts. That inert cancellation records
+  `nothing_to_remove` and is idempotent. Once setup starts, the member route
+  fails loudly until the later machine owner can record the exact checkout/key
+  cleanup or reuse disposition.
+- The response projection owns all status and check labels, exact next action,
+  `can_run_setup`, `can_review`, `can_cancel`, canonical clone/settings URLs,
+  intended and resolved paths, readiness counts, retryable diagnostic,
+  structured operator action, fixed safe CLI argv, and final-review binding.
+  Regressions cover waiting, setup in progress, operator action needed, ready
+  for review, completed, and cancelled behavior. No project or catalog row is
+  created at ready-for-review or completed state; P6b remains the sole finalizer.
+- `/api/health` now publishes the three explicit project-creation intents with
+  backend-owned eligibility, preselection, primary label, required fields,
+  pinned source identity, and unavailable reason. The Web restates the response
+  once, seals the complete provisioning/check/step vocabularies as opaque types,
+  and provides exact API calls without deriving lifecycle policy.
+- All ordinary existing-checkout entry routes are now personal-only:
+  `/api/projects`, `/api/project-setup/preflight`, and
+  `/api/project-setup/create` reject a team request before body/path
+  interpretation or any setup/catalog effect. The guard deliberately remains
+  at the public route boundary rather than weakening `ProjectCatalog.register`,
+  which startup and P6b's future internal finalizer still need.
+- P2's one independent read-only audit found that the old generic
+  `/api/projects` route initially bypassed provisioning and that downstream team
+  membership/invitation fixtures still entered through the newly closed setup
+  route. The bypass is fenced, and those fixtures now establish their downstream
+  prerequisite through the internal setup owner. The audit's requested
+  projection-branch coverage is also present. No second audit was run.
+- Verification passes: 66 focused backend/documentation tests, all 2,626
+  backend tests with two expected skips, Ruff, all 436 Web tests, Web typecheck,
+  and the production Web build. A disposable real team server then enrolled a
+  named member, returned 409 from the old registration route with `/` as the
+  untrusted locator, created and read a durable request with the exact projected
+  controls, restarted, and read the same request again. The disposable server
+  and data were removed after clean shutdown.
+- Not done in P2: no deploy key is generated, checkout cloned, provider probed,
+  operator command executed, project finalized, wizard rendered, or personal
+  project transferred. P3 through P6, D6/D7, and T2 onward retain those owners.
 
 ## What remains
 
@@ -1062,7 +1076,8 @@ The remaining implementation work is:
 
 1. candidate rehearsal, cutover, rollback, and recovery, consuming the completed
    source update/build receipt plus doctor and private CLI-to-server transport;
-2. project-provisioning API projections and concrete machine orchestration;
+2. concrete project-provisioning machine orchestration and final confirmation,
+   consuming the completed durable member API and backend projection;
 3. central Git checkout and write-deploy-key setup;
 4. local/remote provider readiness against authentication already present on
    each execution account;
@@ -1972,10 +1987,11 @@ Doctor is read-only and works interactively and as one structured document.
 
 ### F6a — Update source and candidate build
 
-Status: complete in the working tree on 2026-08-29. Its one independent audit
+Status: complete and pushed at `fff75c3` on 2026-08-29. Its one independent audit
 is closed: the detached-worktree and receipt-race concerns have regressions, the
 Python-symlink report was disproven by a real-worktree regression, and the
-trusted-`origin/main`/same-UID build boundary is explicit. F6b is next.
+trusted-`origin/main`/same-UID build boundary is explicit. F6b waits for O2b and
+will consume the now-complete P2 projection rather than duplicating that owner.
 
 Own:
 
@@ -2219,6 +2235,11 @@ record.
 
 ### P2 — Provisioning API and backend projection
 
+Status: complete in the current packet on 2026-08-29. Its one independent audit
+is closed: the old generic project-registration bypass is fenced before request
+validation, downstream membership fixtures now use the internal setup owner,
+and every published nonterminal and terminal control branch has a regression.
+
 Own:
 
 - new `src/rcp/api/project_provisioning.py`;
@@ -2253,10 +2274,11 @@ answer and cannot offer move. Both the index action and direct
 Personal setup, durable provisioning, and linked transfer keep their separate
 APIs and authority despite sharing one wizard.
 
-The existing `/api/project-setup/preflight` and `/api/project-setup/create`
-routes are personal-space entry points. On a team backend, each must reject
-before calling `ProjectSetupManager`, inspecting a submitted path, writing a
-cache or filesystem entry, or mutating the catalog. Do not guard
+The existing `/api/projects`, `/api/project-setup/preflight`, and
+`/api/project-setup/create` routes are personal-space entry points. On a team
+backend, each must reject before calling `ProjectCatalog.register` or
+`ProjectSetupManager`, inspecting a submitted path, writing a cache or filesystem
+entry, or mutating the catalog. Do not guard
 `ProjectCatalog.register` globally: P6b's separately validated internal
 finalizer and normal startup reopening still need the existing owner. P6b is the
 only new team-project entrance into that owner.

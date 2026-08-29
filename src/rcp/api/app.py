@@ -53,6 +53,7 @@ from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
 from rcp.api.index import membership_router as index_membership_router
 from rcp.api.index import router as index_router
 from rcp.api.paper import router as paper_router
+from rcp.api.project_provisioning import router as project_provisioning_router
 from rcp.api.project_state import router as project_state_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.sync import router as sync_router
@@ -1196,6 +1197,7 @@ def create_app(
     app.include_router(team_router)
     app.include_router(index_router)
     app.include_router(index_membership_router)
+    app.include_router(project_provisioning_router)
     app.include_router(project_state_router)
     app.include_router(episode_router)
     app.include_router(experiments_router)

@@ -200,8 +200,9 @@ only for target placement and configuration that may change.
 The one wizard is presentation, not one authority path. Personal setup uses the
 existing direct setup owner, new team setup uses a durable provisioning request,
 and move coordinates the authenticated personal and team backends. Direct calls
-to the ordinary setup preflight/create API on a team backend are rejected before
-filesystem inspection or catalog mutation. Each backend exports only its own
+to the old registration route or ordinary setup preflight/create routes on a
+team backend are rejected before request-body interpretation, filesystem
+inspection, or catalog mutation. Each backend exports only its own
 product eligibility, required fields, and any pinned source identity. The native
 desktop bridge separately exports relay capability and its authenticated saved
 targets. The desktop offers move only when the personal backend permits export,
@@ -709,6 +710,16 @@ and resumes the server steps: path and permission checks, deploy-key
 creation/readiness, clone or fetch, provider and execution readiness, and a
 request-scoped Git write check. The request id is correlation, not machine
 authority; the command still requires the server's OS privilege boundary.
+
+The current direct team-project member API can create, list, and read these
+durable requests without performing any machine step. Every authenticated team
+member may inspect the preparation state. Only the member whose named identity
+authorized a direct new-project request may cancel it, and member cancellation
+is intentionally limited to **waiting for server setup**, when the recorded
+disposition is **nothing to remove**. Once server preparation starts, the member
+API refuses cancellation until the machine-owned workflow can record the exact
+key/checkout cleanup or reuse disposition. Repeating an already completed
+member cancellation returns the same durable result.
 
 The command is resumable and exhaustive. If a deploy key is not yet installed,
 it prints the exact GitHub repository settings destination, label, public key,

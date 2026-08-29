@@ -6,6 +6,8 @@ import type {
   ExperimentLoopIndexEntry,
   IdentityResponse,
   ProjectCacheMetrics,
+  ProjectProvisioningCreateRequest,
+  ProjectProvisioningResponse,
   ProjectSnapshot,
   StartEpisodeRequest,
   TeamInvitation,
@@ -104,6 +106,36 @@ export function createTeamInvitation(): Promise<TeamInvitationIssue> {
     method: "POST",
     body: JSON.stringify({}),
   });
+}
+
+export function createTeamProjectProvisioning(
+  body: ProjectProvisioningCreateRequest,
+): Promise<ProjectProvisioningResponse> {
+  return api<ProjectProvisioningResponse>("/api/project-provisioning/requests", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function loadProjectProvisioningRequests(): Promise<ProjectProvisioningResponse[]> {
+  return api<ProjectProvisioningResponse[]>("/api/project-provisioning/requests");
+}
+
+export function loadProjectProvisioningRequest(
+  requestId: string,
+): Promise<ProjectProvisioningResponse> {
+  return api<ProjectProvisioningResponse>(
+    `/api/project-provisioning/requests/${encodeURIComponent(requestId)}`,
+  );
+}
+
+export function cancelProjectProvisioningRequest(
+  requestId: string,
+): Promise<ProjectProvisioningResponse> {
+  return api<ProjectProvisioningResponse>(
+    `/api/project-provisioning/requests/${encodeURIComponent(requestId)}/cancel`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
 }
 
 async function notifyMutationFailure(path: string): Promise<void> {

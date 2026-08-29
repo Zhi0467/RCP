@@ -40,9 +40,9 @@ transport only.
    import answer, and native relay capability, and each contextual entry
    preselected correctly. Confirm a browser against one backend cannot
    manufacture the cross-space move intent, then
-   choose new-team mode. Call the ordinary setup preflight
-   and create APIs directly with a path that would be observable if inspected;
-   confirm both are refused without touching that path or the catalog. Supply
+   choose new-team mode. Call the old direct registration API and the ordinary
+   setup preflight/create APIs with a path that would be observable if inspected;
+   confirm all three are refused without touching that path or the catalog. Supply
    accepted GitHub.com HTTPS and SSH repository forms and intended project
    settings, accept the home-derived SSH central-root default once, then use an
    explicit account-owned mounted root in a second request. Try
@@ -115,7 +115,7 @@ transport only.
 - `the_backend_exports_the_project_creation_control_for_the_current_space`
 - `move_requires_personal_export_team_import_and_native_relay_answers`
 - `the_team_index_and_direct_new_project_link_both_open_provisioning`
-- `ordinary_team_setup_apis_are_refused_before_path_or_catalog_access`
+- `ordinary_team_project_entry_apis_are_refused_before_path_or_catalog_access`
 - `personal_direct_project_setup_remains_available`
 - `a_new_request_reserves_one_project_id_without_creating_a_project`
 - `central_checkout_paths_use_the_reserved_project_id_before_confirmation`

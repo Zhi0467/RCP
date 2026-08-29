@@ -13,7 +13,7 @@ from rcp.config import load_manifest, permissions_for
 from rcp.history import HistoryManager
 from rcp.setup import ProjectSetupRequest, SetupAgents, render_manifest
 from rcp.sources import project_cache_roots
-from rcp.storage import AgentTaskRecord
+from rcp.storage import AgentTaskRecord, AppStore
 from rcp.transport import StateWorkspace
 
 from .helpers import seed_patch
@@ -56,6 +56,54 @@ def _local_payload(repository_path: str) -> dict[str, object]:
         },
         "confirmed": False,
     }
+
+
+def test_team_space_rejects_personal_setup_before_interpreting_the_path(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    data_dir = tmp_path / "team"
+    store, _bootstrap = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Team Lab")
+    member = store.preprovision_team_member("Alice")
+    app = create_app(
+        data_dir=data_dir,
+        trusted_principal_resolver=lambda _request, opened: opened.space_user(member.user_id),
+    )
+    submitted_path = tmp_path / "must-not-be-inspected-or-created"
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("team setup reached the personal setup manager")
+
+    monkeypatch.setattr(app.state.setup, "preflight", fail_if_called)
+    monkeypatch.setattr(app.state.setup, "create", fail_if_called)
+    monkeypatch.setattr(app.state.catalog, "register", fail_if_called)
+    client = TestClient(app)
+    payload = _local_payload(str(submitted_path))
+    payload["confirmed"] = True
+    payload["repositories"][0]["path"] = "/"
+
+    for path in ("/api/project-setup/preflight", "/api/project-setup/create"):
+        response = client.post(path, json=payload)
+        assert response.status_code == 409
+        assert response.json() == {
+            "detail": (
+                "Existing-checkout setup belongs to a personal space. "
+                "Create a team-project provisioning request instead."
+            )
+        }
+
+    registered = client.post("/api/projects", json={"locator": "/"})
+    assert registered.status_code == 409
+    assert registered.json() == {
+        "detail": (
+            "Existing-checkout setup belongs to a personal space. "
+            "Create a team-project provisioning request instead."
+        )
+    }
+
+    assert not submitted_path.exists()
+    assert app.state.catalog.cards() == []
+    assert app.state.background_tasks.store.project_provisioning_requests() == []
 
 
 def test_local_wizard_preflights_without_writing_then_creates(tmp_path) -> None:

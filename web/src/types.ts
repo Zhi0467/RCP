@@ -37,12 +37,229 @@ export interface Health {
   pid: number;
   projects?: number;
   project?: string | null;
+  project_creation: ProjectCreationControl;
 }
 
 export interface AuthorizedHuman {
   space_id: string;
   user_id: string;
   display_name: string;
+}
+
+export type ProjectCreationIntent =
+  | "use_existing_checkout_personally"
+  | "create_shared_team_project"
+  | "move_personal_project_to_team";
+
+export interface ProjectCreationIntentControl {
+  intent: ProjectCreationIntent;
+  eligible: boolean;
+  preselected: boolean;
+  primary_action_label: string;
+  required_fields: string[];
+  pinned_source_project_id: string | null;
+  unavailable_reason: string | null;
+}
+
+export interface ProjectCreationControl {
+  intents: ProjectCreationIntentControl[];
+  requires_authenticated_member: boolean;
+}
+
+/**
+ * Opaque because the backend publishes every display and action decision for
+ * this lifecycle. The browser renders those answers instead of interpreting a
+ * persisted status value.
+ */
+declare const OPAQUE_PROJECT_PROVISIONING_STATUS: unique symbol;
+export type ProjectProvisioningStatus = {
+  readonly [OPAQUE_PROJECT_PROVISIONING_STATUS]: "ProjectProvisioningStatus";
+};
+
+declare const OPAQUE_PROJECT_PROVISIONING_CHECK_STATUS: unique symbol;
+export type ProjectProvisioningCheckStatus = {
+  readonly [OPAQUE_PROJECT_PROVISIONING_CHECK_STATUS]: "ProjectProvisioningCheckStatus";
+};
+
+declare const OPAQUE_SERVER_STEP_STATE: unique symbol;
+export type ServerStepState = { readonly [OPAQUE_SERVER_STEP_STATE]: "ServerStepState" };
+
+export interface ProjectProvisioningMachineRequest {
+  alias: string;
+  location: "local" | "ssh";
+  host?: string;
+  os_account: string;
+  central_root?: string | null;
+}
+
+export interface ProjectProvisioningRepositoryRequest {
+  alias: string;
+  source: string;
+  machine_alias: string;
+}
+
+export interface ProjectProvisioningProviderRequest {
+  profile: AgentExecutionProfile;
+  provider: ProviderId;
+  runtime_id: string;
+  model: string;
+  reasoning: string;
+  machine_alias: string;
+}
+
+export interface ProjectProvisioningCreateRequest {
+  machines: ProjectProvisioningMachineRequest[];
+  repositories: ProjectProvisioningRepositoryRequest[];
+  provider_checks: ProjectProvisioningProviderRequest[];
+}
+
+export interface ServerMachineTarget {
+  kind: "machine";
+  host: string;
+  os_account: string;
+}
+
+export interface ServerExternalServiceTarget {
+  kind: "external_service";
+  service: string;
+  resource: string;
+  destination_url: string;
+  required_authority_role: string;
+}
+
+export type ServerStepTarget = ServerMachineTarget | ServerExternalServiceTarget;
+
+export interface ServerCommandAction {
+  kind: "command";
+  argv: string[];
+}
+
+export interface ServerExternalAction {
+  kind: "external";
+  instruction: string;
+}
+
+export type ServerOperatorAction = ServerCommandAction | ServerExternalAction;
+
+export interface ServerNonsecretField {
+  name: string;
+  value: string | number | boolean;
+}
+
+export interface ServerStep {
+  number: number;
+  title: string;
+  purpose: string;
+  performed_by: "system" | "human";
+  target: ServerStepTarget;
+  phase: string;
+  state: ServerStepState;
+  expected_success: string;
+  message: string;
+  actions: ServerOperatorAction[];
+  fields: ServerNonsecretField[];
+  resume_argv: string[];
+}
+
+export interface ProjectProvisioningMachineProjection {
+  alias: string;
+  location: "local" | "ssh";
+  host: string;
+  os_account: string;
+  intended_central_root: string;
+  resolved_central_root: string | null;
+  ready: boolean;
+  status_label: string;
+}
+
+export interface GitHubRepositoryRef {
+  identity: string;
+}
+
+export interface ProjectProvisioningRepositoryProjection {
+  alias: string;
+  repository: GitHubRepositoryRef;
+  https_clone_url: string;
+  ssh_clone_url: string;
+  settings_url: string;
+  machine_alias: string;
+  intended_path: string;
+  resolved_path: string | null;
+  status: ProjectProvisioningCheckStatus;
+  status_label: string;
+  ready: boolean;
+  commit: string | null;
+  write_verified: boolean;
+  deploy_key_label: string | null;
+  public_key_fingerprint: string | null;
+  checked_at: string | null;
+  diagnostic: string | null;
+}
+
+export interface ProjectProvisioningProviderProjection {
+  profile: AgentExecutionProfile;
+  provider: ProviderId;
+  runtime_id: string;
+  model: string;
+  reasoning: string;
+  machine_alias: string;
+  status: ProjectProvisioningCheckStatus;
+  status_label: string;
+  ready: boolean;
+  checked_at: string | null;
+  diagnostic: string | null;
+}
+
+export interface ProjectProvisioningReadinessProjection {
+  machines_ready: number;
+  machines_total: number;
+  repositories_ready: number;
+  repositories_total: number;
+  providers_ready: number;
+  providers_total: number;
+  all_ready: boolean;
+}
+
+export interface ProjectProvisioningFinalReview {
+  digest: string;
+  proposed_project_id: string;
+  authorized_by: AuthorizedHuman;
+  ready_at: string;
+}
+
+export type ProjectProvisioningCancellationDisposition =
+  | "nothing_to_remove"
+  | "request_owned_state_removed"
+  | "prepared_state_preserved"
+  | "operator_cleanup_confirmed";
+
+export interface ProjectProvisioningResponse {
+  request_id: string;
+  kind: "create_team_project";
+  status: ProjectProvisioningStatus;
+  status_label: string;
+  next_action: string | null;
+  can_run_setup: boolean;
+  can_review: boolean;
+  can_cancel: boolean;
+  target_space_id: string;
+  proposed_project_id: string;
+  authorized_by: AuthorizedHuman;
+  machines: ProjectProvisioningMachineProjection[];
+  repositories: ProjectProvisioningRepositoryProjection[];
+  provider_checks: ProjectProvisioningProviderProjection[];
+  readiness: ProjectProvisioningReadinessProjection;
+  diagnostic: string | null;
+  operator_action: ServerStep | null;
+  operator_argv: string[];
+  final_review: ProjectProvisioningFinalReview | null;
+  cancellation_disposition: ProjectProvisioningCancellationDisposition | null;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  setup_started_at: string | null;
+  completed_at: string | null;
+  cancelled_at: string | null;
 }
 
 export interface SpaceUser {

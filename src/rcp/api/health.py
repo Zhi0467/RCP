@@ -11,6 +11,7 @@ from rcp.api.dependencies import (
     get_health_composition,
     get_store,
 )
+from rcp.api.project_provisioning import project_creation_control
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore
 
@@ -55,6 +56,9 @@ async def health(
         "active_agent_tasks": active_agent_tasks,
         "projects": len(catalog.cards()),
         "agent_mode": composition.agent_mode,
+        "project_creation": project_creation_control(composition.space_kind).model_dump(
+            mode="json"
+        ),
     }
     if composition.default_project_name is not None:
         payload["project"] = composition.default_project_name

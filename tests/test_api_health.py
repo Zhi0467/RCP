@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from rcp import __version__
 from rcp.server_runtime import ServerMetadata, data_dir_identity
+from rcp.storage import AppStore
 
 from .helpers import create_named_app
 
@@ -74,4 +75,68 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
         "active_agent_tasks": 0,
         "projects": 0,
         "agent_mode": "provider",
+        "project_creation": {
+            "requires_authenticated_member": False,
+            "intents": [
+                {
+                    "intent": "use_existing_checkout_personally",
+                    "eligible": True,
+                    "preselected": True,
+                    "primary_action_label": "Use existing checkout",
+                    "required_fields": [
+                        "name",
+                        "repositories",
+                        "state_repository",
+                        "execution",
+                        "confirmed",
+                    ],
+                    "pinned_source_project_id": None,
+                    "unavailable_reason": None,
+                },
+                {
+                    "intent": "create_shared_team_project",
+                    "eligible": False,
+                    "preselected": False,
+                    "primary_action_label": "Create shared team project",
+                    "required_fields": ["machines", "repositories", "provider_checks"],
+                    "pinned_source_project_id": None,
+                    "unavailable_reason": "Connect to a team space to create a shared project.",
+                },
+                {
+                    "intent": "move_personal_project_to_team",
+                    "eligible": False,
+                    "preselected": False,
+                    "primary_action_label": "Move to team space",
+                    "required_fields": [],
+                    "pinned_source_project_id": None,
+                    "unavailable_reason": (
+                        "Personal-to-team transfer is not available in this build."
+                    ),
+                },
+            ],
+        },
     }
+
+
+def test_health_projects_team_creation_eligibility_without_member_authority(tmp_path) -> None:
+    data_dir = tmp_path / "team"
+    store, _bootstrap = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Team Lab")
+    member = store.preprovision_team_member("Alice")
+    app = create_app(
+        data_dir=data_dir,
+        trusted_principal_resolver=lambda _request, opened: opened.space_user(member.user_id),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/health")
+
+    assert response.status_code == 200
+    control = response.json()["project_creation"]
+    assert control["requires_authenticated_member"] is True
+    assert [intent["intent"] for intent in control["intents"]] == [
+        "use_existing_checkout_personally",
+        "create_shared_team_project",
+        "move_personal_project_to_team",
+    ]
+    assert [intent["eligible"] for intent in control["intents"]] == [False, True, False]
+    assert [intent["preselected"] for intent in control["intents"]] == [False, True, False]

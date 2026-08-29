@@ -174,9 +174,21 @@ creates a backend-owned durable provisioning request from GitHub repository
 sources and derived central paths. Personal-to-team transfer creates linked
 requests in the two authenticated backends and is available only in the
 source-built desktop because its native shell owns the archive relay. A direct
-team request to either ordinary project-setup API is refused before filesystem
-inspection or catalog mutation. The separately validated provisioning finalizer
-is the only team-project entrance into the existing setup/registration owners.
+team request to `/api/projects`, `/api/project-setup/preflight`, or
+`/api/project-setup/create` is refused before request-body interpretation,
+filesystem inspection, or catalog mutation. The separately validated
+provisioning finalizer is the only team-project entrance into the existing
+setup/registration owners.
+
+The backend health projection carries one `project_creation` control with all
+three intent identities, per-intent eligibility and preselection, primary action
+label, required fields, pinned source identity when one exists, and an explicit
+unavailable reason. The durable provisioning response similarly publishes the
+status and check labels, exact next action, `can_run_setup`, `can_review`,
+`can_cancel`, canonical repository URLs, intended and resolved paths, readiness
+counts, structured operator action, safe CLI argv, and final-review binding. The
+Web seals the complete provisioning and check-status vocabularies and consumes
+those answers instead of rebuilding lifecycle policy from strings.
 
 The UI renders the backend's status, diagnostic, exact next action, resolved
 paths, and final review. It cannot claim success from a desktop subprocess exit

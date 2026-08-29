@@ -33,6 +33,7 @@ from rcp.runs.auto_research_admission import (
 from rcp.runs.branch_merge import branch_merge_id
 from rcp.runs.tasks.branch_merge import _apply_receipt_to_execution
 from rcp.service import RunRequest, resolve_dispatch_authority
+from rcp.setup import ProjectSetupRequest
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -831,12 +832,13 @@ def test_merge_requires_a_named_member_without_disclosing_nonmember_projects(
         trusted_principal_resolver=lambda _request, opened: opened.space_user(acting[0]),
     )
     team_client = TestClient(team_app)
-    created = team_client.post(
-        "/api/project-setup/create",
-        json=_setup_payload(tmp_path / "team-project", name="Private project"),
+    created = team_app.state.setup.create(
+        ProjectSetupRequest.model_validate(
+            _setup_payload(tmp_path / "team-project", name="Private project")
+        ),
+        seat_member=creator.user_id,
     )
-    assert created.status_code == 200, created.text
-    project_id = created.json()["id"]
+    project_id = str(created["id"])
 
     acting[0] = outsider.user_id
     nonmember = team_client.post(f"/api/projects/{project_id}/episodes/{uuid.uuid4()}/merge")

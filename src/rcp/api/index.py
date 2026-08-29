@@ -50,6 +50,20 @@ SetupDependency = Annotated[ProjectSetupManager, Depends(get_setup)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 
 
+def _require_personal_project_entry(store: StoreDependency) -> None:
+    if store.space_kind == "team":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Existing-checkout setup belongs to a personal space. "
+                "Create a team-project provisioning request instead."
+            ),
+        )
+
+
+PersonalProjectEntryDependency = Annotated[None, Depends(_require_personal_project_entry)]
+
+
 class ProjectRegisterRequest(BaseModel):
     locator: str
 
@@ -325,6 +339,7 @@ def register_project(
     *,
     catalog: CatalogDependency,
     identity_access: IdentityDependency,
+    _personal_entry: PersonalProjectEntryDependency,
 ) -> dict[str, object]:
     # Deliberately not require_patch_capable_identity: creating a project
     # does not demand a display name, and S01/S112/S116 rely on that.
@@ -360,6 +375,7 @@ def preflight_project(
     body: ProjectSetupRequest,
     *,
     setup: SetupDependency,
+    _personal_entry: PersonalProjectEntryDependency,
 ) -> dict[str, object]:
     try:
         return setup.preflight(body).model_dump(mode="json")
@@ -374,6 +390,7 @@ def create_project(
     *,
     identity_access: IdentityDependency,
     setup: SetupDependency,
+    _personal_entry: PersonalProjectEntryDependency,
 ) -> dict[str, object]:
     try:
         return setup.create(
