@@ -389,11 +389,11 @@ def test_bootstrap_discovery_reads_origin_without_adopting_checkout(tmp_path: Pa
 def test_service_account_commands_clear_invoking_credentials_and_use_fixed_home(
     monkeypatch,
 ) -> None:
-    captured: list[tuple[str, ...]] = []
+    captured: list[tuple[tuple[str, ...], dict[str, object]]] = []
     account = SimpleNamespace(pw_name="rcp", pw_dir="/home/rcp")
 
-    def fake_run(argv, **_kwargs):
-        captured.append(argv)
+    def fake_run(argv, **kwargs):
+        captured.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, "ok", "")
 
     monkeypatch.setenv("SSH_AUTH_SOCK", "/operator/agent.sock")
@@ -401,8 +401,15 @@ def test_service_account_commands_clear_invoking_credentials_and_use_fixed_home(
     monkeypatch.setattr(server_install, "_run_process", fake_run)
 
     server_install._run_as_account(account, ("git", "--version"), timeout=1)
+    explicit_cwd = Path("/srv/rcp/source")
+    server_install._run_as_account(
+        account,
+        ("git", "status"),
+        cwd=explicit_cwd,
+        timeout=1,
+    )
 
-    argv = captured[0]
+    argv, default_kwargs = captured[0]
     assert argv[:7] == (
         "runuser",
         "--user",
@@ -414,6 +421,8 @@ def test_service_account_commands_clear_invoking_credentials_and_use_fixed_home(
     )
     assert "GIT_TERMINAL_PROMPT=0" in argv
     assert all("SSH_AUTH_SOCK" not in token and "GH_TOKEN" not in token for token in argv)
+    assert default_kwargs["cwd"] == Path("/home/rcp")
+    assert captured[1][1]["cwd"] == explicit_cwd
 
 
 @pytest.mark.parametrize(

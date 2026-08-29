@@ -1277,8 +1277,9 @@ class LinuxInstallMachine:
             )
             if installed.returncode != 0:
                 raise InstallRefused(
-                    "uv could not install the managed Python 3.12 runtime for rcp. Restore "
-                    "network access to Astral's Python downloads and rerun the same command."
+                    "uv could not install the managed Python 3.12 runtime for rcp. Run the same "
+                    "uv python install command as rcp from /home/rcp, correct the reported host "
+                    "or network issue, and rerun install."
                 )
             python = _run_as_account(
                 account,
@@ -1716,7 +1717,7 @@ def _run_as_account(
     env_argv = tuple(f"{name}={value}" for name, value in explicit_environment.items())
     return _run_process(
         ("runuser", "--user", account.pw_name, "--", "env", "-i", *env_argv, *argv),
-        cwd=cwd,
+        cwd=cwd or Path(account.pw_dir),
         timeout=timeout,
         capture_output=capture_output,
     )

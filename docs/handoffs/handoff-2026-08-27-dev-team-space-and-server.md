@@ -13,9 +13,9 @@ is pinned in the upgrade registry. F3a is therefore complete. F3b now has the
 operator guide, guarded live drive, and fixed 22.04/24.04 manual Actions matrix;
 its one independent audit is complete and every finding is fixed. Live
 qualification is in progress with the protected repository-admin test
-credential: both real disposable-host jobs now reach the installed host path,
-but the account-policy probe still needs a corrected rerun before F3b is
-complete. P1 now provides the durable,
+credential: both real disposable-host jobs now clear account and sudo-policy
+validation, but the corrected service-account working-directory boundary still
+needs a rerun before F3b is complete. P1 now provides the durable,
 strictly guarded project-provisioning state machine; its one independent audit
 is complete, every finding is fixed, and its exact schema boundary is retained
 in the chained upgrade registry. P1 is complete. D1 now provides the strict
@@ -623,6 +623,20 @@ gate are deliberately future work and do not block this plan.
   allowed to run sudo” result is accepted with either observed status; a
   successful listing without that denial is rejected as policy, and every
   other result fails closed. Focused regressions pin all three outcomes. No
+  source grant or deploy key was reached, and cleanup completed on both
+  runners. Another corrected rerun is required.
+- Corrected run
+  [33232623180](https://github.com/Zhi0467/RCP/actions/runs/33232623180)
+  ran exact commit `908d803328b758477bf5cdb6d343f51b95bcc72a` and cleared the
+  account and sudo-policy boundary on both releases. It then failed while uv
+  installed managed Python 3.12 as `rcp`. The live path exposed that the root
+  installer inherited the operator-owned bootstrap checkout as its current
+  directory; that checkout sits below a `0700` temporary parent. The shared
+  `_run_as_account` boundary changed identity and environment but not directory,
+  so `rcp` could run cwd-independent version probes yet could not perform uv's
+  real install from that inaccessible directory. Account commands now default
+  to the account's fixed home and retain an explicitly supplied checkout cwd.
+  The uv failure message no longer assumes every failure is network-owned. No
   source grant or deploy key was reached, and cleanup completed on both
   runners. Another corrected rerun is required.
 
