@@ -494,7 +494,7 @@ if not canonical_plan.complete:
     raise RuntimeError("live project canonical backup plan is incomplete")
 with tempfile.TemporaryDirectory(
     prefix="live-project-capture-",
-    dir=DEFAULT_SERVER_LAYOUT.checkpoint_root,
+    dir=DEFAULT_SERVER_LAYOUT.update_checkpoints_root,
 ) as capture_name:
     capture_root = Path(capture_name)
     capture_root.chmod(0o700)
