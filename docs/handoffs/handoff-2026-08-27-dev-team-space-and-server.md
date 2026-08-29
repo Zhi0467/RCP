@@ -609,13 +609,22 @@ gate are deliberately future work and do not block this plan.
   account validation on both Ubuntu 22.04 and 24.04 after caller-identity
   variables were removed. The remaining defect is the probe itself: a root
   process used `sudo -U rcp -l` and interpreted the query's zero exit status as
-  proof that `rcp` could use sudo. The installer now executes `sudo -n -l`
-  directly as the `rcp` account through the existing clean `runuser` boundary,
-  so the process being evaluated is the account under test; success means an
-  actual noninteractive grant, the exact C-locale “not allowed” result means no
-  grant, and every other result still fails closed. No source grant or deploy
-  key was reached, and cleanup completed on both runners. Another corrected
-  rerun is required.
+  proof that `rcp` could use sudo. The first correction executed `sudo -n -l`
+  directly as `rcp` through the existing clean `runuser` boundary. No source
+  grant or deploy key was reached, and cleanup completed on both runners.
+- Corrected run
+  [33232456126](https://github.com/Zhi0467/RCP/actions/runs/33232456126)
+  ran exact commit `26c3317fb6c22d5a7182f061fcf8486747aad67b` and disproved the
+  direct-account query: both Ubuntu releases returned an indeterminate result
+  because listing policy as the password-disabled `rcp` account can require
+  authentication before reporting that it has no grants. The installer now
+  returns to the root-authorized `sudo -U rcp -l` policy query but evaluates its
+  C-locale result before the query caller's exit status. The explicit “not
+  allowed to run sudo” result is accepted with either observed status; a
+  successful listing without that denial is rejected as policy, and every
+  other result fails closed. Focused regressions pin all three outcomes. No
+  source grant or deploy key was reached, and cleanup completed on both
+  runners. Another corrected rerun is required.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 

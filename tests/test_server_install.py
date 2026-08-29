@@ -706,10 +706,10 @@ def test_existing_service_account_must_be_unprivileged_and_have_no_sudo_policy(
         machine._converge_account()
 
     current = account()
-    sudo_calls: list[tuple[object, tuple[str, ...], dict[str, object]]] = []
+    sudo_calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
 
-    def privileged_policy(account, argv, **kwargs):
-        sudo_calls.append((account, argv, kwargs))
+    def privileged_policy(argv, **kwargs):
+        sudo_calls.append((argv, kwargs))
         return subprocess.CompletedProcess(
             argv,
             0,
@@ -717,13 +717,12 @@ def test_existing_service_account_must_be_unprivileged_and_have_no_sudo_policy(
             "",
         )
 
-    monkeypatch.setattr(server_install, "_run_as_account", privileged_policy)
+    monkeypatch.setattr(server_install, "_run_process", privileged_policy)
     with pytest.raises(InstallRefused, match="has sudo authority"):
         machine._converge_account()
     assert sudo_calls == [
         (
-            current,
-            ("sudo", "-n", "-l"),
+            ("sudo", "-n", "-U", "rcp", "-l"),
             {
                 "environment": {"LANG": "C", "LC_ALL": "C"},
                 "timeout": server_install.SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
@@ -733,22 +732,32 @@ def test_existing_service_account_must_be_unprivileged_and_have_no_sudo_policy(
 
     monkeypatch.setattr(
         server_install,
-        "_run_as_account",
-        lambda _account, argv, **_kwargs: subprocess.CompletedProcess(
-            argv, 1, "", "sudo policy error"
-        ),
+        "_run_process",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 1, "", "sudo policy error"),
     )
     with pytest.raises(InstallRefused, match="could not prove"):
         machine._converge_account()
 
     monkeypatch.setattr(
         server_install,
-        "_run_as_account",
-        lambda _account, argv, **_kwargs: subprocess.CompletedProcess(
+        "_run_process",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
             argv,
-            1,
+            0,
             "",
             "User rcp is not allowed to run sudo on lab.\n",
+        ),
+    )
+    assert machine._converge_account() == current
+
+    monkeypatch.setattr(
+        server_install,
+        "_run_process",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv,
+            1,
+            "User rcp is not allowed to run sudo on lab.\n",
+            "",
         ),
     )
     assert machine._converge_account() == current

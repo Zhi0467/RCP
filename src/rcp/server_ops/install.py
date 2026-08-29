@@ -1218,25 +1218,23 @@ class LinuxInstallMachine:
                 "The rcp account has supplemental groups. Remove all supplemental memberships "
                 "after reviewing them, then rerun install."
             )
-        sudo_policy = _run_as_account(
-            account,
-            ("sudo", "-n", "-l"),
+        sudo_policy = _run_process(
+            ("sudo", "-n", "-U", account.pw_name, "-l"),
             environment={"LANG": "C", "LC_ALL": "C"},
             timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
         )
+        diagnostic = f"{sudo_policy.stdout}\n{sudo_policy.stderr}".lower()
+        if "not allowed to run sudo" in diagnostic:
+            return account
         if sudo_policy.returncode == 0:
             raise InstallRefused(
                 "The rcp account has sudo authority. Remove every sudo grant for rcp and "
                 "rerun install."
             )
-        diagnostic = f"{sudo_policy.stdout}\n{sudo_policy.stderr}".lower()
-        if sudo_policy.returncode != 1 or "not allowed to run sudo" not in diagnostic:
-            raise InstallRefused(
-                "RCP could not prove that the rcp account has no sudo authority. Run "
-                "sudo -n -u rcp -H sudo -n -l as root, correct the sudo or NSS error, and "
-                "rerun install."
-            )
-        return account
+        raise InstallRefused(
+            "RCP could not prove that the rcp account has no sudo authority. Run "
+            "sudo -U rcp -l as root, correct the sudo or NSS error, and rerun install."
+        )
 
     def _validate_service_tooling(self) -> None:
         account = pwd.getpwnam(self.layout.service_account)
