@@ -133,6 +133,24 @@ class ProjectIdentityConflict(ValueError):
     """Canonical project identity is missing, conflicting, or owned elsewhere."""
 
 
+def _is_exact_prepared_identity_prefix(
+    materialization: MaterializationResult,
+    identity: ProjectIdentity,
+) -> bool:
+    if len(materialization.patches) != 1:
+        return False
+    patch = materialization.patches[0]
+    return bool(
+        patch.revision == 1
+        and patch.kind == "identity"
+        and patch.admission == "accepted"
+        and patch.author is None
+        and patch.producer == "system"
+        and patch.ops == []
+        and patch.project_identity == identity
+    )
+
+
 def _patch_failure_created_at(path: Path) -> datetime:
     """Retain useful failure chronology even when the Patch schema cannot load."""
 
@@ -305,13 +323,33 @@ class HistoryManager:
             result = self.materialize(write_outputs=False)
             return self._project_identity_from_replay(result)
 
-    def claim_project_identity(self, action: str) -> ProjectIdentity:
-        """Idempotently claim an untagged project for this manager's space."""
+    def claim_project_identity(
+        self,
+        action: str,
+        *,
+        project_id: str | None = None,
+    ) -> ProjectIdentity:
+        """Idempotently claim an untagged project for this manager's space.
+
+        Ordinary setup leaves ``project_id`` unset and mints one identity here.
+        A prepared team-project request has already reserved its identity, so its
+        finalizer supplies that exact id and this append owner refuses any other
+        retained nameplate.
+        """
 
         if action not in {"created", "adopted"}:
             raise ValueError("project identity action must be 'created' or 'adopted'")
         if self.expected_space_id is None:
             raise ValueError("claiming project identity requires expected_space_id")
+        reserved = (
+            ProjectIdentity(
+                project_id=project_id,
+                home_space_id=self.expected_space_id,
+                action=action,
+            )
+            if project_id is not None
+            else None
+        )
 
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
@@ -320,9 +358,20 @@ class HistoryManager:
             existing = self._project_identity_from_replay(current)
             if existing is not None:
                 self._require_expected_home(existing)
+                if reserved is not None and (
+                    existing != reserved
+                    or not _is_exact_prepared_identity_prefix(current, reserved)
+                ):
+                    raise ProjectIdentityConflict(
+                        "The retained project identity does not match the prepared project."
+                    )
                 return existing
+            if reserved is not None and current.patches:
+                raise ProjectIdentityConflict(
+                    "The prepared project acquired Patch history before its identity claim."
+                )
 
-            identity = ProjectIdentity(
+            identity = reserved or ProjectIdentity(
                 project_id=str(uuid.uuid4()),
                 home_space_id=self.expected_space_id,
                 action=action,

@@ -155,6 +155,42 @@ class ProjectCatalog:
         identity_action: Literal["created", "adopted"] | None = None,
         seat_member: str | None = None,
     ) -> ProjectRecord:
+        return self._register(
+            locator,
+            identity_action=identity_action,
+            seat_member=seat_member,
+            prepared_project_id=None,
+            seated_by=None,
+        )
+
+    def register_prepared_team_project(
+        self,
+        locator: str,
+        *,
+        project_id: str,
+        seat_member: str,
+    ) -> ProjectRecord:
+        """Register the exact identity reserved by a reviewed team request."""
+
+        if self.store.space_kind != "team":
+            raise ValueError("prepared team-project registration requires a team space")
+        return self._register(
+            locator,
+            identity_action="created",
+            seat_member=seat_member,
+            prepared_project_id=project_id,
+            seated_by=seat_member,
+        )
+
+    def _register(
+        self,
+        locator: str,
+        *,
+        identity_action: Literal["created", "adopted"] | None,
+        seat_member: str | None,
+        prepared_project_id: str | None,
+        seated_by: str | None,
+    ) -> ProjectRecord:
         """Register one canonical project after its durable nameplate is settled.
 
         ``seat_member`` is the acting person, who becomes the project's first
@@ -167,6 +203,19 @@ class ProjectCatalog:
             bootstrap = load_manifest(locator)
             canonical_locator = str(bootstrap.path)
             existing = self.store.project_by_locator(canonical_locator)
+            if prepared_project_id is not None:
+                if existing is not None and existing.project_id != prepared_project_id:
+                    raise ProjectIdentityConflict(
+                        "The prepared canonical location is registered as another project."
+                    )
+                reserved = self.store.project(prepared_project_id)
+                if reserved is not None and (
+                    reserved.locator != canonical_locator
+                    or reserved.home_space_id != self.store.space_id
+                ):
+                    raise ProjectIdentityConflict(
+                        "The prepared project identity is registered at another canonical home."
+                    )
             manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
             history = self._history_for_manifest(manifest, workspace)
             identity = history.project_identity()
@@ -180,10 +229,16 @@ class ProjectCatalog:
                         "This existing project has no durable identity. Connect it through "
                         "project setup and confirm that this space becomes its sole writable home."
                     )
-                identity = history.claim_project_identity(claim_action)
+                identity = history.claim_project_identity(
+                    claim_action,
+                    project_id=prepared_project_id,
+                )
             else:
                 # The idempotent claim path also enforces the expected home-space boundary.
-                identity = history.claim_project_identity(identity.action)
+                identity = history.claim_project_identity(
+                    "created" if prepared_project_id is not None else identity.action,
+                    project_id=prepared_project_id,
+                )
 
             if existing is None:
                 existing = self.store.project(identity.project_id)
@@ -250,7 +305,7 @@ class ProjectCatalog:
                     )
                 )
             self._finish_alias_file_migrations(identity.project_id)
-            self._seat_first_member(stored.project_id, seat_member)
+            self._seat_first_member(stored.project_id, seat_member, seated_by=seated_by)
             return stored
 
     def register_degraded_read_only(
@@ -318,7 +373,13 @@ class ProjectCatalog:
             self._seat_first_member(project_id, seat_member)
             return self.update_summary(project_id, snapshot)
 
-    def _seat_first_member(self, project_id: str, seat_member: str | None) -> None:
+    def _seat_first_member(
+        self,
+        project_id: str,
+        seat_member: str | None,
+        *,
+        seated_by: str | None = None,
+    ) -> None:
         """Seat the acting person on a project that has no members yet.
 
         Registration is idempotent — reopening an existing project comes back
@@ -336,7 +397,7 @@ class ProjectCatalog:
         if self.store.project_members(project_id):
             return
         if seat_member is not None:
-            self.store.seat_project_member(project_id, seat_member)
+            self.store.seat_project_member(project_id, seat_member, seated_by=seated_by)
             return
         owner = self.store.local_owner
         for user in [owner] if owner is not None else self.store.space_users():

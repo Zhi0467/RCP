@@ -3,7 +3,7 @@
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
-F2, F3a, F3b, F4, F5, F6a, P1, P2, P3, P4, P5, D1, and O3a are complete. D2
+F2, F3a, F3b, F4, F5, F6a, P1, P2, P3, P4, P5, P6b, D1, and O3a are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; it is not complete and still gates D3-D5. The live
 Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
@@ -17,9 +17,10 @@ central-checkout primitive, path receipts, retained-research refusal, and
 backward-compatible project-configuration persistence. P6a now implements the
 next provisioning boundary by durably composing P3-P5 through the installed
 service and stops at **ready for review** without creating a project; the
-packet's complete team-service/GitHub live qualification remains open. P6b
-still owns final human creation. F6b remains blocked on O2a/O2b's one capture
-primitive.
+packet's complete team-service/GitHub live qualification remains open. P6b now
+owns the exact final human confirmation, reserved identity append, registration,
+and crash recovery without rerunning machine preparation. F6b remains blocked
+on O2a/O2b's one capture primitive.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -111,10 +112,11 @@ The remaining seams are also concrete:
   write/remove a permanent member token in macOS Keychain, but it still trusts
   one current loopback backend and has no distinct-origin allocator, SSH tunnel,
   live token read/enrollment, multi-backend navigation, or operator-command owner;
-- the durable project-provisioning request and member create/read/cancel API,
-  repository-credential primitive, and exact-account provider check exist, but
-  checkout preparation, machine-step orchestration, finalizer, unified wizard, and
-  personal-to-team transfer record do not;
+- the durable project-provisioning request, complete finalizer, member API,
+  repository-credential primitive, exact-account provider check, checkout
+  preparation, and machine-step orchestration exist, but the unified wizard,
+  post-setup cancellation, complete live qualification, and personal-to-team
+  transfer record do not;
   and
 - canonical identity replay currently treats two differing identity payloads as
   corruption, so a home transfer cannot be represented by appending a second
@@ -1049,8 +1051,9 @@ gate are deliberately future work and do not block this plan.
   intended and resolved paths, readiness counts, retryable diagnostic,
   structured operator action, fixed safe CLI argv, and final-review binding.
   Regressions cover waiting, setup in progress, operator action needed, ready
-  for review, completed, and cancelled behavior. No project or catalog row is
-  created at ready-for-review or completed state; P6b remains the sole finalizer.
+  for review, completed, and cancelled behavior. No project or catalog row was
+  created at ready-for-review or completed state at the P2 boundary; P6b now
+  supplies the sole separately validated finalizer.
 - `/api/health` now publishes the three explicit project-creation intents with
   backend-owned eligibility, preselection, primary label, required fields,
   pinned source identity, and unavailable reason. The Web restates the response
@@ -1061,7 +1064,7 @@ gate are deliberately future work and do not block this plan.
   `/api/project-setup/create` reject a team request before body/path
   interpretation or any setup/catalog effect. The guard deliberately remains
   at the public route boundary rather than weakening `ProjectCatalog.register`,
-  which startup and P6b's future internal finalizer still need.
+  which startup and P6b's separately validated internal finalizer both need.
 - P2's one independent read-only audit found that the old generic
   `/api/projects` route initially bypassed provisioning and that downstream team
   membership/invitation fixtures still entered through the newly closed setup
@@ -1242,7 +1245,8 @@ gate are deliberately future work and do not block this plan.
   check or changing the human's account. P6a now surfaces that production
   credential-path precondition as an exact-account operator action.
 - P4 itself exposes no member HTTP route and creates no canonical team project.
-  P6a has since supplied the durable P3-P5 sequence; P6b retains final creation.
+  P6a has since supplied the durable P3-P5 sequence, and P6b now owns final
+  creation.
 
 ## What remains
 
@@ -1250,9 +1254,9 @@ The remaining implementation work is:
 
 1. candidate rehearsal, cutover, rollback, and recovery, consuming the completed
    source update/build receipt plus doctor and private CLI-to-server transport;
-2. concrete project provisioning, where machine orchestration is implemented
-   but still needs its complete live qualification, and final confirmation plus
-   post-setup cancellation remain;
+2. concrete project provisioning, where machine orchestration and final human
+   creation are implemented but still need the complete live qualification,
+   unified UI/desktop drive, deletion guard, and post-setup cancellation;
 3. source-built desktop distinct origins, tunnels, live Keychain
    enrollment/readback, navigation, cached team groups, and optional operator
    bridge (the strict metadata and token-write/remove substrate is complete);
@@ -2426,9 +2430,9 @@ Own:
   `tests/test_setup.py`, and response-shape Web tests.
 
 Deliver member-authorized create/read/cancel routes plus the final-review
-projection and request shape. P6b adds the one confirmation mutation only after
-its concrete finalizer exists. These routes create or change only durable product
-requests; they do not perform machine work. The
+projection and request shape. P6b has since added the one confirmation mutation
+through its concrete finalizer. The preparation routes create or change only
+durable product requests; they do not perform machine work. The
 projection owns status label, exact next action, `can_run_setup`, `can_review`,
 `can_cancel`, resolved paths, readiness summaries, and safe operator argv tokens.
 Seal any complete lifecycle vocabulary in the Web response type so the browser
@@ -2454,7 +2458,7 @@ backend, each must reject before calling `ProjectCatalog.register` or
 `ProjectSetupManager`, inspecting a submitted path, writing a cache or filesystem
 entry, or mutating the catalog. Do not guard
 `ProjectCatalog.register` globally: P6b's separately validated internal
-finalizer and normal startup reopening still need the existing owner. P6b is the
+finalizer and normal startup reopening both need the existing owner. P6b is the
 only new team-project entrance into that owner.
 
 ### P3 — Repository-scoped deploy-key lifecycle
@@ -2462,7 +2466,7 @@ only new team-project entrance into that owner.
 Status: complete on 2026-08-29. Implementation, focused regressions, the
 one-audit fixes, and the guarded disposable-GitHub-repository live drive pass.
 The primitive is not wired to member HTTP authority. P4 has since supplied the
-checkout consumer and P6a the durable composition; P6b owns finalization.
+checkout consumer, P6a the durable composition, and P6b finalization.
 
 Own:
 
@@ -2657,6 +2661,13 @@ cleanup path in this command.
 
 ### P6b — Final human project creation
 
+Status: complete hermetically on 2026-08-29. The named-member completion route,
+exact manifest renderer, reserved-id identity claim, first-member audit,
+retained-history fence, idempotent catalog registration, and crash recovery at
+every durable product boundary are implemented. S128's combined real
+team-service/GitHub/SSH/browser/desktop drive remains pending and is not implied
+by these regressions.
+
 Own:
 
 - final-review completion wiring in `src/rcp/api/project_provisioning.py`;
@@ -2668,16 +2679,21 @@ Own:
 The member-authorized P2 route revalidates the final-review digest, paths,
 Git/provider readiness, current membership, human identity, and unchanged
 request before using the existing setup/transition owners to create and register
-the project. It never runs P3–P5 or another machine command.
+the project. It never reruns P3–P5 or performs another preparation effect;
+read-only local/SSH state checks revalidate every reviewed checkout path and the
+selected canonical state before the identity append.
 
 Recheck that no retained canonical identity or Patch appeared after machine
 preparation. A direct team-project creation never adopts or archives existing
 research; it fails back to review with the transfer/clean-repository action.
 
 Final creation extends the existing identity-claim owner to append exactly the
-request's proposed id after revalidation; it must not mint a second id. Crash at
-each product-state boundary, and prove repeated confirmation returns the one same
-project and request.
+request's proposed id after revalidation; it never mints a second id. The
+durable order is manifest, exact identity Patch, catalog row, first-member seat,
+then completed request. A retry reads those boundaries back, accepts only
+the exact request-owned partial identity, and returns the same project and
+request. Parameterized regressions crash after every boundary and prove one
+Patch, one catalog project, one completion receipt, and one reviewed identity.
 
 ### P6c — Team-project deletion guard
 

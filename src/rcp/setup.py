@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.config import (
+    AGENT_EXECUTION_PROFILES,
     GRAPH_AGENT_EXECUTION_PROFILES,
     AgentExecutionProfile,
     Manifest,
@@ -22,12 +23,20 @@ from rcp.config import (
     permissions_for,
 )
 from rcp.core.materialize import MaterializationResult
+from rcp.core.models import ProjectIdentity
 from rcp.history import HistoryManager, ProjectIdentityConflict
 from rcp.projects import ProjectCatalog
-from rcp.providers import DEFAULT_PROVIDER, PROVIDER_IDS, ProviderId, configured_runtime
+from rcp.providers import (
+    DEFAULT_PROVIDER,
+    PROVIDER_IDS,
+    ProviderId,
+    configured_runtime,
+    configured_runtime_id,
+)
+from rcp.storage import ProjectProvisioningRequestRecord
 from rcp.transport import StateWorkspace
 from rcp.transport.ssh import ssh_arguments
-from rcp.transport.state import state_workspace_for_probe
+from rcp.transport.state import SSHStateWorkspace, state_workspace_for_probe
 
 
 class _StrictSetupModel(BaseModel):
@@ -524,6 +533,200 @@ class ProjectSetupManager:
                         self.catalog.delete(registered.project_id)
             raise
 
+    def create_prepared_team_project(
+        self,
+        request: ProjectProvisioningRequestRecord,
+        *,
+        seat_member: str,
+    ) -> dict[str, object]:
+        """Finalize one reviewed request without repeating machine preparation."""
+
+        if self.catalog.store.space_kind != "team":
+            raise ValueError("prepared team-project creation requires a team space")
+        if request.kind != "create_team_project" or request.status != "ready_for_review":
+            raise ValueError("only a ready new-team request can create a project")
+        if request.target_space_id != self.catalog.store.space_id:
+            raise ValueError("the prepared project targets another RCP space")
+
+        manifest_content = render_prepared_team_manifest(request)
+        prepared_repositories = self._prepared_repositories(request)
+        for repository in prepared_repositories.values():
+            self._require_prepared_checkout_path(repository)
+        assert request.state_repository is not None
+        canonical = prepared_repositories[request.state_repository]
+        self._require_prepared_state_path(canonical)
+        existing_content = self._read_existing_manifest(canonical)
+        if existing_content is None:
+            if self._prepared_patch_history_exists(canonical, manifest_content):
+                raise ValueError(
+                    "Canonical Patch history appeared after server preparation. Use Move to "
+                    "team space for retained personal research, or clean or choose a different "
+                    "repository outside this request before reviewing again."
+                )
+            if canonical.location == "local":
+                manifest_path = Path(canonical.path) / ".research" / "manifest.toml"
+                manifest_path.parent.mkdir(parents=True, exist_ok=True)
+                _exclusive_write(manifest_path, manifest_content)
+                locator = str(manifest_path)
+            else:
+                locator = str(self._write_bootstrap(canonical, manifest_content))
+        else:
+            self._require_prepared_manifest(existing_content, manifest_content)
+            retained = self._inspect_retained_research(canonical, existing_content)
+            self._require_resumable_prepared_identity(retained, request)
+            locator = (
+                str(Path(canonical.path) / ".research" / "manifest.toml")
+                if canonical.location == "local"
+                else str(self._write_bootstrap(canonical, manifest_content))
+            )
+
+        record = self.catalog.register_prepared_team_project(
+            locator,
+            project_id=request.proposed_project_id,
+            seat_member=seat_member,
+        )
+        _, snapshot = self.catalog.open_snapshot(record.project_id)
+        self.catalog.update_summary(record.project_id, snapshot)
+        return self.catalog.card(record.project_id)
+
+    @staticmethod
+    def _prepared_repositories(
+        request: ProjectProvisioningRequestRecord,
+    ) -> dict[str, SetupRepository]:
+        machine_map = {machine.alias: machine for machine in request.machines}
+        prepared: dict[str, SetupRepository] = {}
+        for repository in request.repositories:
+            if repository.resolved_path is None:
+                raise ValueError(f"the prepared checkout path for {repository.alias} is missing")
+            machine = machine_map[repository.machine_alias]
+            item = SetupRepository(
+                alias=repository.alias,
+                location=machine.location,
+                host=machine.host,
+                path=repository.resolved_path,
+                default_read=repository.alias in request.default_run_truth_scope,
+            )
+            if item.path != repository.resolved_path:
+                raise ValueError(
+                    f"the prepared checkout {repository.alias} now resolves to another path"
+                )
+            prepared[repository.alias] = item
+        return prepared
+
+    @staticmethod
+    def _require_prepared_checkout_path(repository: SetupRepository) -> None:
+        check = ProjectSetupManager._check_repository(repository)
+        if check.status == "fail":
+            raise ValueError(check.detail)
+        if repository.location == "local":
+            if Path(repository.path).is_symlink():
+                raise ValueError(f"the prepared checkout {repository.alias} became a symbolic link")
+            return
+        symlink = _ssh(repository.host, ["test", "-L", repository.path])
+        if symlink.returncode == 0:
+            raise ValueError(f"the prepared checkout {repository.alias} became a symbolic link")
+        if symlink.returncode != 1:
+            raise ValueError(f"could not recheck the prepared checkout {repository.alias}")
+
+    @staticmethod
+    def _require_prepared_state_path(canonical: SetupRepository) -> None:
+        if canonical.location == "local":
+            research = Path(canonical.path) / ".research"
+            manifest = research / "manifest.toml"
+            patches = research / "patches"
+            for label, path, directory in (
+                ("canonical state", research, True),
+                ("canonical manifest", manifest, False),
+                ("canonical Patch directory", patches, True),
+            ):
+                if path.is_symlink():
+                    raise ValueError(f"the prepared {label} became a symbolic link")
+                if path.exists() and (not path.is_dir() if directory else not path.is_file()):
+                    raise ValueError(f"the prepared {label} has an invalid file type")
+            return
+
+        research = str(PurePosixPath(canonical.path) / ".research")
+        for label, path, kind in (
+            ("canonical state", research, "d"),
+            ("canonical manifest", f"{research}/manifest.toml", "f"),
+            ("canonical Patch directory", f"{research}/patches", "d"),
+        ):
+            symlink = _ssh(canonical.host, ["test", "-L", path])
+            if symlink.returncode == 0:
+                raise ValueError(f"the prepared {label} became a symbolic link")
+            if symlink.returncode not in {0, 1}:
+                raise ValueError(f"could not recheck the prepared {label}")
+            exists = _ssh(canonical.host, ["test", "-e", path])
+            if exists.returncode == 1:
+                continue
+            if exists.returncode != 0:
+                raise ValueError(f"could not recheck the prepared {label}")
+            expected = _ssh(canonical.host, ["test", f"-{kind}", path])
+            if expected.returncode != 0:
+                raise ValueError(f"the prepared {label} has an invalid file type")
+
+    def _prepared_patch_history_exists(
+        self,
+        canonical: SetupRepository,
+        manifest_content: str,
+    ) -> bool:
+        if canonical.location == "local":
+            return bool(_retained_patch_paths(Path(canonical.path) / ".research"))
+        bootstrap = load_manifest(self._write_bootstrap(canonical, manifest_content))
+        workspace = state_workspace_for_probe(bootstrap, self.data_dir)
+        assert isinstance(workspace, SSHStateWorkspace)
+        reachable, head = workspace.probe_remote_patch_log_head()
+        if not reachable:
+            raise ValueError(
+                f"Could not recheck canonical Patch history at {_canonical_location(canonical)}."
+            )
+        return head is not None
+
+    @staticmethod
+    def _require_prepared_manifest(actual_content: str, expected_content: str) -> None:
+        try:
+            actual = Manifest.model_validate(tomlkit.parse(actual_content).unwrap())
+            expected = Manifest.model_validate(tomlkit.parse(expected_content).unwrap())
+        except (ValueError, tomlkit.exceptions.ParseError) as exc:
+            raise ValueError(f"The prepared canonical manifest is invalid: {exc}") from exc
+        if actual.model_dump(mode="json") != expected.model_dump(mode="json"):
+            raise ValueError(
+                "The canonical manifest changed after server preparation; review a new "
+                "provisioning request instead of adopting or overwriting it."
+            )
+
+    @staticmethod
+    def _require_resumable_prepared_identity(
+        retained: _RetainedResearch,
+        request: ProjectProvisioningRequestRecord,
+    ) -> None:
+        patches = retained.materialization.patches
+        if not patches:
+            return
+        expected_identity = ProjectIdentity(
+            project_id=request.proposed_project_id,
+            home_space_id=request.target_space_id,
+            action="created",
+        )
+        patch = patches[0]
+        if not (
+            len(patches) == 1
+            and retained.preview.retained_revision_count == 1
+            and retained.preview.replay_status == "complete"
+            and patch.revision == 1
+            and patch.kind == "identity"
+            and patch.admission == "accepted"
+            and patch.author is None
+            and patch.producer == "system"
+            and patch.ops == []
+            and patch.project_identity == expected_identity
+        ):
+            raise ValueError(
+                "Canonical identity or Patch history appeared after server preparation. Use "
+                "Move to team space for retained personal research, or clean or choose a "
+                "different repository outside this request before reviewing again."
+            )
+
     @staticmethod
     def _repository(request: ProjectSetupRequest, alias: str) -> SetupRepository:
         return next(repository for repository in request.repositories if repository.alias == alias)
@@ -698,6 +901,122 @@ class ProjectSetupManager:
         temp.write_text(content, encoding="utf-8")
         os.replace(temp, path)
         return path
+
+
+def render_prepared_team_manifest(request: ProjectProvisioningRequestRecord) -> str:
+    """Render the exact reviewed paths and execution profiles of a ready request."""
+
+    if not request.configuration_complete:
+        raise ValueError("the prepared project configuration is incomplete")
+    if request.final_review_digest is None:
+        raise ValueError("the prepared project has no final-review digest")
+    machine_map = {machine.alias: machine for machine in request.machines}
+    profile_map = {check.profile: check for check in request.provider_checks}
+    missing_profiles = set(AGENT_EXECUTION_PROFILES) - set(profile_map)
+    extra_profiles = set(profile_map) - set(AGENT_EXECUTION_PROFILES)
+    if missing_profiles or extra_profiles:
+        raise ValueError(
+            "the prepared project must review every agent execution profile; "
+            f"missing={sorted(missing_profiles)}, extra={sorted(extra_profiles)}"
+        )
+
+    provider_paths: dict[str, dict[str, str]] = {}
+    for check in request.provider_checks:
+        proof = (
+            check.binary_path,
+            check.version,
+            check.resolved_runtime_id,
+            check.execution_account,
+        )
+        if check.status != "ready" or any(value is None for value in proof):
+            raise ValueError(f"the prepared {check.profile} provider proof is incomplete")
+        machine = machine_map[check.machine_alias]
+        if check.execution_account != machine.os_account:
+            raise ValueError(f"the prepared {check.profile} execution account changed")
+        configured = check.runtime_id.removeprefix(f"{check.provider}:")
+        public_runtime = configured_runtime(check.provider, configured)
+        if check.resolved_runtime_id != configured_runtime_id(check.provider, public_runtime):
+            raise ValueError(f"the prepared {check.profile} runtime proof changed")
+        assert check.binary_path is not None
+        paths = provider_paths.setdefault(machine.alias, {})
+        prior = paths.get(check.provider)
+        if prior is not None and prior != check.binary_path:
+            raise ValueError(
+                f"the prepared {check.provider} executable differs across profiles on "
+                f"{machine.alias}"
+            )
+        paths[check.provider] = check.binary_path
+
+    document = tomlkit.document()
+    assert request.name is not None
+    assert request.state_repository is not None
+    document.add("name", request.name)
+
+    machines = tomlkit.aot()
+    for item in request.machines:
+        machine = tomlkit.table()
+        machine.add("alias", item.alias)
+        machine.add("host", item.host)
+        machine.add("os_account", item.os_account)
+        _add_provider_paths(machine, provider_paths.get(item.alias, {}))
+        machines.append(machine)
+    document.add("machines", machines)
+
+    repositories = tomlkit.aot()
+    for item in request.repositories:
+        if (
+            item.resolved_path is None
+            or item.checkout_disposition is None
+            or item.git_check.status != "ready"
+        ):
+            raise ValueError(f"the prepared repository {item.alias} is incomplete")
+        repository = tomlkit.table()
+        repository.add("alias", item.alias)
+        repository.add("machine", item.machine_alias)
+        repository.add("path", item.resolved_path)
+        repositories.append(repository)
+    document.add("repositories", repositories)
+
+    project = tomlkit.table()
+    project.add("truth_scope", request.project_truth_scope)
+    document.add("project", project)
+
+    state = tomlkit.table()
+    state.add("repository", request.state_repository)
+    document.add("state", state)
+
+    agent = tomlkit.table()
+    agent.add("default_run_truth_scope", request.default_run_truth_scope)
+    agent.add(
+        "default_auto_research_invocation_ceiling",
+        request.default_auto_research_invocation_ceiling,
+    )
+    for surface in AGENT_EXECUTION_PROFILES:
+        check = profile_map[surface]
+        configured = check.runtime_id.removeprefix(f"{check.provider}:")
+        profile = tomlkit.table()
+        profile.add("provider", check.provider)
+        profile.add("runtime", configured_runtime(check.provider, configured))
+        profile.add("model", check.model)
+        profile.add("reasoning", check.reasoning)
+        profile.add("run_on", check.machine_alias)
+        permissions = tomlkit.table()
+        for key, value in permissions_for(surface).model_dump(mode="json").items():
+            permissions.add(key, value)
+        profile.add("permissions", permissions)
+        agent.add(surface, profile)
+    document.add("agent", agent)
+
+    sources = tomlkit.table()
+    sources.add("claude_roots", ["~/.claude/projects"])
+    sources.add("codex_roots", ["~/.codex/sessions"])
+    sources.add("remote_claude_roots", ["~/.claude/projects"])
+    sources.add("remote_codex_roots", ["~/.codex/sessions"])
+    document.add("sources", sources)
+
+    content = tomlkit.dumps(document)
+    Manifest.model_validate(tomlkit.parse(content).unwrap())
+    return content
 
 
 def render_manifest(

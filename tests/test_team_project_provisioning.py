@@ -10,11 +10,15 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import rcp.setup as setup_code
+import rcp.storage.models as storage_models
 from rcp.__main__ import build_parser
 from rcp.agents.launcher import ProviderExecutionAccount, ProviderReadiness
 from rcp.api import create_app
+from rcp.config import AGENT_EXECUTION_PROFILES, load_manifest, permissions_for
 from rcp.core.models import AuthorizedHuman
-from rcp.providers import ModelChoice
+from rcp.history import HistoryManager
+from rcp.providers import ModelChoice, configured_runtime_id
 from rcp.server_ops.cli import (
     SERVER_CLI_EXIT_OPERATOR_ACTION,
     CallerIdentity,
@@ -27,7 +31,7 @@ from rcp.server_ops.git_credentials import (
     GitWriteProbe,
 )
 from rcp.server_ops.github import parse_github_repository_ref
-from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
+from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.project_checkout import (
     ProjectCheckoutRefused,
     ProjectCheckoutResult,
@@ -42,7 +46,9 @@ from rcp.server_ops.provider_readiness import ProviderReadinessCoordinator
 from rcp.server_runtime import ServerMetadata, published_server_metadata
 from rcp.storage import (
     AppStore,
+    ProjectProvisioningGitCheckRecord,
     ProjectProvisioningMachineIntent,
+    ProjectProvisioningProviderCheckRecord,
     ProjectProvisioningProviderIntent,
     ProjectProvisioningRepositoryIntent,
 )
@@ -822,3 +828,399 @@ def test_changed_request_refuses_stale_plan_before_machine_effect(tmp_path: Path
 
     assert first.request_status == "setup_in_progress"
     assert credentials.prepare_calls == 0
+
+
+def _test_server_layout(root: Path) -> ServerLayout:
+    service_home = root / "home" / "rcp"
+    server_root = service_home / "rcp-server"
+    runtime_root = root / "run" / "rcp"
+    return ServerLayout(
+        service_account="rcp",
+        service_home=service_home,
+        server_root=server_root,
+        source_checkout=server_root / "source",
+        releases_root=server_root / "releases",
+        data_dir=server_root / "data",
+        projects_root=server_root / "projects",
+        credentials_root=server_root / "credentials",
+        update_checkpoints_root=server_root / "update-checkpoints",
+        restore_operations_root=server_root / "restore-operations",
+        codex_state_root=service_home / ".codex",
+        claude_state_root=service_home / ".claude",
+        ssh_state_root=service_home / ".ssh",
+        config_path=root / "etc" / "rcp" / "server.toml",
+        current_release=root / "etc" / "rcp" / "current",
+        runtime_dir=runtime_root,
+        control_socket=runtime_root / "control.sock",
+        cli_wrapper=root / "usr" / "local" / "bin" / "rcp-server",
+        systemd_unit=(root / "etc" / "systemd" / "system" / "research-control-panel.service"),
+        service_unit_name="research-control-panel.service",
+    )
+
+
+def _ready_team_app(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    include_appendix: bool = False,
+):
+    layout = _test_server_layout(tmp_path / "installation")
+    monkeypatch.setattr(storage_models, "DEFAULT_SERVER_LAYOUT", layout)
+    data_dir = tmp_path / "app-data"
+    store, _bootstrap = AppStore.initialize_team_space(
+        data_dir / "rcp.sqlite3",
+        "Final review lab",
+    )
+    alice = store.preprovision_team_member("Alice")
+    bob = store.preprovision_team_member("Bob")
+    authorized_by = AuthorizedHuman(
+        space_id=store.space_id,
+        user_id=alice.user_id,
+        display_name="Alice",
+    )
+    repository_aliases = [
+        "paper",
+        *(("appendix",) if include_appendix else ()),
+    ]
+    request = store.create_project_provisioning_request(
+        kind="create_team_project",
+        authorized_by=authorized_by,
+        name="Reviewed team project",
+        state_repository="paper",
+        project_truth_scope=repository_aliases,
+        default_run_truth_scope=repository_aliases,
+        machines=[
+            ProjectProvisioningMachineIntent(
+                alias="server",
+                location="local",
+                os_account="rcp",
+                central_root=str(layout.projects_root),
+            )
+        ],
+        repositories=[
+            ProjectProvisioningRepositoryIntent(
+                alias=alias,
+                repository=parse_github_repository_ref(f"git@github.com:OpenAI/RCP-{alias}.git"),
+                machine_alias="server",
+            )
+            for alias in repository_aliases
+        ],
+        provider_checks=[
+            ProjectProvisioningProviderIntent(
+                profile=profile,
+                provider="codex",
+                runtime_id="codex:exec",
+                model="gpt-test",
+                reasoning="medium",
+                machine_alias="server",
+            )
+            for profile in AGENT_EXECUTION_PROFILES
+        ],
+    )
+    running = store.transition_project_provisioning_request(
+        request.request_id,
+        receipt_id="finalizer-start",
+        phase="provisioning_start",
+        expected_revision=request.revision,
+        expected_status="waiting_for_server_setup",
+        to_status="setup_in_progress",
+        machines=request.machines,
+        repositories=request.repositories,
+        provider_checks=request.provider_checks,
+    )
+    checked_at = store.now()
+    machines = [
+        running.machines[0].model_copy(update={"resolved_central_root": str(layout.projects_root)})
+    ]
+    repository_paths = {
+        alias: layout.project_repository_dir(request.proposed_project_id, alias)
+        for alias in repository_aliases
+    }
+    for repository_path in repository_paths.values():
+        repository_path.mkdir(parents=True)
+    repositories = [
+        repository.model_copy(
+            update={
+                "resolved_path": str(repository_paths[repository.alias]),
+                "checkout_disposition": "request_created",
+                "git_check": ProjectProvisioningGitCheckRecord(
+                    status="ready",
+                    commit="a" * 40,
+                    write_verified=True,
+                    deploy_key_label=(
+                        f"rcp:{store.space_id}:{request.proposed_project_id}:{repository.alias}"
+                    ),
+                    public_key_fingerprint="SHA256:" + ("A" * 43),
+                    checked_at=checked_at,
+                ),
+            }
+        )
+        for repository in running.repositories
+    ]
+    providers = [
+        ProjectProvisioningProviderCheckRecord(
+            **check.model_dump(
+                mode="json",
+                exclude={
+                    "status",
+                    "binary_path",
+                    "version",
+                    "resolved_runtime_id",
+                    "execution_account",
+                    "checked_at",
+                    "diagnostic",
+                },
+            ),
+            status="ready",
+            binary_path="/usr/local/bin/codex",
+            version="codex-cli 1.2.3",
+            resolved_runtime_id=configured_runtime_id("codex", "exec"),
+            execution_account="rcp",
+            checked_at=checked_at,
+        )
+        for check in running.provider_checks
+    ]
+    ready = store.transition_project_provisioning_request(
+        request.request_id,
+        receipt_id="finalizer-ready",
+        phase="provisioning_review",
+        expected_revision=running.revision,
+        expected_status="setup_in_progress",
+        to_status="ready_for_review",
+        machines=machines,
+        repositories=repositories,
+        provider_checks=providers,
+    )
+    selected = [bob.user_id]
+    app = create_app(
+        data_dir=data_dir,
+        trusted_principal_resolver=lambda _request, opened: opened.space_user(selected[0]),
+    )
+    return app, ready, alice, bob, repository_paths["paper"]
+
+
+def _complete_ready_request(client: TestClient, request) -> object:
+    return client.post(
+        f"/api/project-provisioning/requests/{request.request_id}/complete",
+        json={"final_review_digest": request.final_review_digest},
+    )
+
+
+def test_final_review_creates_exact_reserved_project_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, ready, _alice, bob, repository_path = _ready_team_app(tmp_path, monkeypatch)
+
+    with TestClient(app) as client:
+        completed = _complete_ready_request(client, ready)
+        repeated = _complete_ready_request(client, ready)
+        projects = client.get("/api/projects")
+
+    assert completed.status_code == 200
+    assert repeated.status_code == 200
+    assert completed.json() == repeated.json()
+    assert completed.json()["status"] == "completed"
+    assert completed.json()["proposed_project_id"] == ready.proposed_project_id
+    assert projects.status_code == 200
+    assert [project["id"] for project in projects.json()] == [ready.proposed_project_id]
+    store = app.state.services.store
+    project = store.project(ready.proposed_project_id)
+    assert project is not None
+    assert project.home_space_id == store.space_id
+    manifest = load_manifest(repository_path / ".research" / "manifest.toml")
+    assert manifest.name == "Reviewed team project"
+    assert [machine.model_dump() for machine in manifest.machines] == [
+        {
+            "alias": "server",
+            "host": "",
+            "os_account": "rcp",
+            "provider_paths": {"codex": "/usr/local/bin/codex"},
+        }
+    ]
+    assert manifest.repository_paths == {"paper": str(repository_path)}
+    assert manifest.project.truth_scope == ["paper"]
+    assert manifest.state.repository == "paper"
+    assert manifest.agent.default_run_truth_scope == ["paper"]
+    assert manifest.agent.default_auto_research_invocation_ceiling == 10
+    for profile_name in AGENT_EXECUTION_PROFILES:
+        profile = manifest.agent_profile(profile_name)
+        assert profile.provider == "codex"
+        assert profile.runtime == "exec"
+        assert profile.model == "gpt-test"
+        assert profile.reasoning == "medium"
+        assert profile.run_on == "server"
+        assert profile.permissions == permissions_for(profile_name)
+    members = store.project_members(ready.proposed_project_id)
+    assert [(member.user_id, member.seated_by) for member in members] == [
+        (bob.user_id, bob.user_id)
+    ]
+    patches = sorted((repository_path / ".research" / "patches").glob("*.json"))
+    assert [path.name for path in patches] == ["000001.json"]
+    patch = json.loads(patches[0].read_text(encoding="utf-8"))
+    assert patch["kind"] == "identity"
+    assert patch["project_identity"] == {
+        "project_id": ready.proposed_project_id,
+        "home_space_id": store.space_id,
+        "action": "created",
+    }
+    receipts = store.project_provisioning_step_receipts(ready.request_id)
+    assert [receipt.phase for receipt in receipts].count("member_finalize") == 1
+
+
+def test_final_review_refuses_stale_digest_and_new_retained_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, ready, _alice, _bob, repository_path = _ready_team_app(tmp_path, monkeypatch)
+    patches = repository_path / ".research" / "patches"
+    patches.mkdir(parents=True)
+    (patches / "000001.json").write_text("{}\n", encoding="utf-8")
+
+    with TestClient(app) as client:
+        stale = client.post(
+            f"/api/project-provisioning/requests/{ready.request_id}/complete",
+            json={"final_review_digest": "0" * 64},
+        )
+        retained = _complete_ready_request(client, ready)
+
+    assert stale.status_code == 409
+    assert "review changed" in stale.json()["detail"]
+    assert retained.status_code == 409
+    assert "Patch history appeared" in retained.json()["detail"]
+    assert app.state.services.store.project(ready.proposed_project_id) is None
+    assert not (repository_path / ".research" / "manifest.toml").exists()
+
+
+def test_final_review_refuses_a_checkout_path_replaced_by_a_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, ready, _alice, _bob, repository_path = _ready_team_app(tmp_path, monkeypatch)
+    moved = tmp_path / "moved-checkout"
+    repository_path.rename(moved)
+    replacement = tmp_path / "replacement-checkout"
+    replacement.mkdir()
+    repository_path.symlink_to(replacement, target_is_directory=True)
+
+    with TestClient(app) as client:
+        response = _complete_ready_request(client, ready)
+
+    assert response.status_code == 409
+    assert "resolves to another path" in response.json()["detail"]
+    assert app.state.services.store.project(ready.proposed_project_id) is None
+    assert not (replacement / ".research").exists()
+
+
+def test_final_review_rechecks_every_reviewed_checkout_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, ready, _alice, _bob, canonical_path = _ready_team_app(
+        tmp_path,
+        monkeypatch,
+        include_appendix=True,
+    )
+    appendix_path = Path(
+        next(
+            repository.resolved_path
+            for repository in ready.repositories
+            if repository.alias == "appendix"
+        )
+    )
+    moved = tmp_path / "moved-appendix"
+    appendix_path.rename(moved)
+    replacement = tmp_path / "replacement-appendix"
+    replacement.mkdir()
+    appendix_path.symlink_to(replacement, target_is_directory=True)
+
+    with TestClient(app) as client:
+        response = _complete_ready_request(client, ready)
+
+    assert response.status_code == 409
+    assert "prepared checkout appendix now resolves to another path" in response.json()["detail"]
+    assert app.state.services.store.project(ready.proposed_project_id) is None
+    assert not (canonical_path / ".research").exists()
+    assert not (replacement / ".research").exists()
+
+
+class _FinalizationBoundaryCrash(RuntimeError):
+    pass
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ["manifest", "identity", "catalog_row", "membership", "completion"],
+)
+def test_final_review_recovers_after_each_durable_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    app, ready, _alice, _bob, repository_path = _ready_team_app(tmp_path, monkeypatch)
+    store = app.state.services.store
+
+    with TestClient(app) as client:
+        with monkeypatch.context() as crash:
+            if boundary == "manifest":
+                original_write = setup_code._exclusive_write
+
+                def write_then_crash(path: Path, content: str) -> None:
+                    original_write(path, content)
+                    raise _FinalizationBoundaryCrash(boundary)
+
+                crash.setattr(setup_code, "_exclusive_write", write_then_crash)
+            elif boundary == "identity":
+                original_claim = HistoryManager.claim_project_identity
+
+                def claim_then_crash(self, *args, **kwargs):
+                    original_claim(self, *args, **kwargs)
+                    raise _FinalizationBoundaryCrash(boundary)
+
+                crash.setattr(HistoryManager, "claim_project_identity", claim_then_crash)
+            elif boundary == "catalog_row":
+
+                def seat_after_row_crashes(*_args, **_kwargs):
+                    raise _FinalizationBoundaryCrash(boundary)
+
+                crash.setattr(store, "seat_project_member", seat_after_row_crashes)
+            elif boundary == "membership":
+                original_register = app.state.catalog.register_prepared_team_project
+
+                def register_then_crash(*args, **kwargs):
+                    original_register(*args, **kwargs)
+                    raise _FinalizationBoundaryCrash(boundary)
+
+                crash.setattr(
+                    app.state.catalog,
+                    "register_prepared_team_project",
+                    register_then_crash,
+                )
+            else:
+                original_transition = store.transition_project_provisioning_request
+
+                def transition_then_crash(*args, **kwargs):
+                    result = original_transition(*args, **kwargs)
+                    if kwargs.get("to_status") == "completed":
+                        raise _FinalizationBoundaryCrash(boundary)
+                    return result
+
+                crash.setattr(
+                    store,
+                    "transition_project_provisioning_request",
+                    transition_then_crash,
+                )
+
+            with pytest.raises(_FinalizationBoundaryCrash, match=boundary):
+                _complete_ready_request(client, ready)
+
+        recovered = _complete_ready_request(client, ready)
+
+    assert recovered.status_code == 200
+    assert recovered.json()["status"] == "completed"
+    assert store.project(ready.proposed_project_id) is not None
+    assert [path.name for path in (repository_path / ".research" / "patches").glob("*.json")] == [
+        "000001.json"
+    ]
+    receipts = store.project_provisioning_step_receipts(ready.request_id)
+    assert [receipt.phase for receipt in receipts].count("member_finalize") == 1

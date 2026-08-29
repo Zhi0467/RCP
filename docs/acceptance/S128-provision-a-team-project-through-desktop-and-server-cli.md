@@ -13,9 +13,10 @@ covered_by:
 invariants: [3, 4, 6, 8]
 last_checked: >-
   2026-08-29 — the durable request, Git key/write proof, central checkout,
-  provider readiness, and resumable private-control orchestration pass hermetic
-  regressions; final creation, cancellation after preparation, unified UI,
-  desktop operator launch, and the complete live drive remain pending.
+  provider readiness, resumable private-control orchestration, and exact
+  human-confirmed final creation pass hermetic regressions; cancellation after
+  preparation, deletion guard, unified UI, desktop operator launch, and the
+  complete live drive remain pending.
 ---
 
 # A human starts team setup in the app and the server CLI prepares it

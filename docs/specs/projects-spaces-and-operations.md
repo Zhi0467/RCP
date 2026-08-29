@@ -779,6 +779,29 @@ crash after only the target confirmation leaves the source writable and the
 same request resumable. The machine import command must revalidate both human
 receipts and cannot supply either one itself.
 
+For direct new-team creation, `POST
+/api/project-provisioning/requests/{request-id}/complete` accepts the exact
+published final-review digest from a current named team member. The original
+preparation authorizer must also remain enrolled. The route rechecks the bound
+configuration, all six execution profiles, every resolved checkout path, Git
+and provider proofs, and retained canonical inputs without rerunning
+preparation.
+It renders the reviewed machine aliases, operating-system accounts, repository
+paths, truth scopes, provider runtimes, and fixed permission contracts into the
+manifest, then appends one system-owned `created` identity with the already
+reserved id. The reviewer becomes the first project member and is retained as
+the seating actor.
+
+The recoverable product boundaries are manifest publication, exact identity
+Patch, catalog registration, first-member seating, and request completion.
+A retry may accept only the exact one-Patch identity prefix created for this
+request; any other identity or Patch history returns to review with the
+transfer/clean-repository action. Repeating confirmation after any boundary or
+after completion returns the same project and request. A stale digest, changed
+manifest, moved or unsafe path, incomplete provider proof, departed authorizer,
+or conflicting catalog identity fails loudly without adopting or archiving
+research.
+
 Linking also binds a checksummed nonsecret source-configuration summary: source
 RCP/schema and supported archive-codec versions, repository sources and
 repository/machine aliases, state repository, truth-scope provenance, and the
@@ -1183,20 +1206,22 @@ restore.
 The fixed service-account layout, source installation, nonsecret desktop
 connection registry, durable provisioning-request boundary, disabled backup
 configuration, repository-scoped deploy-key primitive, exact central-checkout
-owner, and exact-account provider check now exist. The private installed-service
-control socket exposes probe, provider plan/check, and project-provision
-plan/step operations. `rcp server project provision <request-id>` publishes one
-complete plan, advances one stale-boundary-checked durable step at a time, and
-stops with a structured human action when Git, checkout, transport, or provider
-readiness needs repair. It exits successfully only after reading back the same
-request as **ready for review**, and it has no project-creation route.
+owner, exact-account provider check, and final human project creation now exist.
+The private installed-service control socket exposes probe, provider plan/check,
+and project-provision plan/step operations. `rcp server project provision
+<request-id>` publishes one complete plan, advances one
+stale-boundary-checked durable step at a time, and stops with a structured human
+action when Git, checkout, transport, or provider readiness needs repair. It
+exits successfully only after reading back the same request as **ready for
+review**, and it has no project-creation route; only the authenticated final
+review route can append the reserved identity and complete the request.
 
-That machine-orchestration path is hermetically covered but has not yet passed
-S128's complete source-built team-service/GitHub/SSH live drive. Final human
-creation, cancellation after machine preparation, the unified wizard and
-desktop operator bridge, backup capture/restore, member removal, and transfer
-remain active acceptance work. Current RCP must not simulate those unfinished
-journeys or describe **ready for review** as an existing project.
+Machine orchestration and final creation are hermetically covered but have not
+yet passed S128's complete source-built team-service/GitHub/SSH/browser/desktop
+live drive. Cancellation after machine preparation, the unified wizard and
+desktop operator bridge, deletion guard, backup capture/restore, member removal,
+and transfer remain active acceptance work. Current RCP must not simulate those
+unfinished journeys or describe **ready for review** as an existing project.
 
 ## Deletion
 

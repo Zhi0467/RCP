@@ -1197,6 +1197,35 @@ def test_project_identity_claim_is_visible_idempotent_and_semantically_empty(
     assert result.patches == [stored]
 
 
+def test_project_identity_claim_can_bind_one_prepared_id_and_refuses_another(
+    manifest,
+) -> None:
+    space_id = str(uuid.uuid4())
+    reserved_id = str(uuid.uuid4())
+    history = HistoryManager(manifest, expected_space_id=space_id)
+
+    identity = history.claim_project_identity("created", project_id=reserved_id)
+    repeated = history.claim_project_identity("created", project_id=reserved_id)
+
+    assert identity == repeated
+    assert identity.project_id == reserved_id
+    with pytest.raises(ProjectIdentityConflict, match="prepared project"):
+        history.claim_project_identity("created", project_id=str(uuid.uuid4()))
+    with pytest.raises(ProjectIdentityConflict, match="prepared project"):
+        history.claim_project_identity("adopted", project_id=reserved_id)
+    assert len(history.load_patches()) == 1
+
+
+def test_prepared_identity_claim_refuses_any_prior_patch_history(manifest) -> None:
+    HistoryManager(manifest).append(seed_patch())
+    history = HistoryManager(manifest, expected_space_id=str(uuid.uuid4()))
+
+    with pytest.raises(ProjectIdentityConflict, match="acquired Patch history"):
+        history.claim_project_identity("created", project_id=str(uuid.uuid4()))
+
+    assert len(history.load_patches()) == 1
+
+
 @pytest.mark.parametrize("write_outputs", [False, True])
 def test_replay_degrades_without_repairing_missing_scope_provenance(
     manifest,

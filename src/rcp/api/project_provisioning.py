@@ -5,16 +5,23 @@ from __future__ import annotations
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from rcp.api.dependencies import get_identity_access, get_store
+from rcp.api.dependencies import get_identity_access, get_setup, get_store
 from rcp.api.identity import IdentityAccess
-from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING, AgentExecutionProfile
+from rcp.config import (
+    AGENT_EXECUTION_PROFILES,
+    DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
+    GRAPH_AGENT_EXECUTION_PROFILES,
+    AgentExecutionProfile,
+)
 from rcp.core.models import AuthorizedHuman
+from rcp.history import ProjectIdentityConflict
 from rcp.providers import ProviderId
 from rcp.server_ops.github import GitHubRepositoryRef, parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.models import ServerStep
+from rcp.setup import ProjectSetupManager
 from rcp.storage import (
     AppStore,
     ProjectProvisioningCancellationDisposition,
@@ -29,11 +36,13 @@ from rcp.storage import (
     ProjectProvisioningStatus,
     SpaceKind,
 )
+from rcp.transport import StateUnavailable
 
 router = APIRouter()
 
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
+SetupDependency = Annotated[ProjectSetupManager, Depends(get_setup)]
 
 ProjectCreationIntent = Literal[
     "use_existing_checkout_personally",
@@ -133,6 +142,35 @@ class ProjectProvisioningCreateRequest(_StrictModel):
         min_length=1,
         max_length=32,
     )
+
+    @model_validator(mode="after")
+    def require_every_execution_profile(self) -> ProjectProvisioningCreateRequest:
+        profiles = [check.profile for check in self.provider_checks]
+        if len(profiles) != len(set(profiles)):
+            raise ValueError("project provisioning provider profiles must be unique")
+        missing = set(AGENT_EXECUTION_PROFILES) - set(profiles)
+        if missing:
+            raise ValueError(
+                "project provisioning must configure every agent execution profile; "
+                f"missing={sorted(missing)}"
+            )
+        repository_machines = {
+            repository.alias: repository.machine_alias for repository in self.repositories
+        }
+        canonical_machine = repository_machines.get(self.state_repository)
+        if canonical_machine is not None and any(
+            check.profile in GRAPH_AGENT_EXECUTION_PROFILES
+            and check.machine_alias != canonical_machine
+            for check in self.provider_checks
+        ):
+            raise ValueError(
+                "graph-writing provider profiles must run on the canonical state machine"
+            )
+        return self
+
+
+class ProjectProvisioningCompleteRequest(_StrictModel):
+    final_review_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ProjectProvisioningMachineProjection(_StrictModel):
@@ -403,6 +441,117 @@ def cancel_project_provisioning_request(
     return _project_provisioning_response(cancelled, viewer_user_id=viewer.user_id)
 
 
+@router.post(
+    "/api/project-provisioning/requests/{request_id}/complete",
+    response_model=ProjectProvisioningResponse,
+)
+def complete_project_provisioning_request(
+    request_id: str,
+    body: ProjectProvisioningCompleteRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    setup: SetupDependency,
+    store: StoreDependency,
+) -> ProjectProvisioningResponse:
+    """Create exactly the project reviewed by one current named team member."""
+
+    identity_access.require_team_space()
+    reviewer = identity_access.require_patch_capable_identity(request)
+    record = _request_or_404(store, request_id)
+    if record.kind != "create_team_project":
+        raise HTTPException(status_code=404, detail="Provisioning request not found")
+    if body.final_review_digest != record.final_review_digest:
+        raise HTTPException(
+            status_code=409,
+            detail="The provisioning review changed; reload it before creating the project.",
+        )
+    if record.status == "completed":
+        _require_completed_project(store, record)
+        return _project_provisioning_response(record, viewer_user_id=reviewer.user_id)
+    if record.status != "ready_for_review":
+        raise HTTPException(
+            status_code=409,
+            detail="Only a request that is ready for final review can create a project.",
+        )
+    authorizer = store.space_user(record.authorized_by.user_id)
+    if authorizer is None or authorizer.identity_kind != "team_member":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The member who authorized preparation is no longer enrolled. Create and "
+                "review a new provisioning request."
+            ),
+        )
+
+    try:
+        card = setup.create_prepared_team_project(record, seat_member=reviewer.user_id)
+    except (ProjectIdentityConflict, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (FileNotFoundError, OSError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if card.get("id") != record.proposed_project_id:
+        raise RuntimeError("prepared project registration returned another project identity")
+
+    current = _request_or_404(store, request_id)
+    if current.status == "completed":
+        _require_completed_project(store, current)
+        return _project_provisioning_response(current, viewer_user_id=reviewer.user_id)
+    if (
+        current.status != "ready_for_review"
+        or current.revision != record.revision
+        or current.final_review_digest != body.final_review_digest
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The provisioning request changed while the reviewed project was being "
+                "registered. Reload the same request to reconcile it."
+            ),
+        )
+    try:
+        completed = store.transition_project_provisioning_request(
+            request_id,
+            receipt_id=f"member-finalize:{reviewer.user_id}",
+            phase="member_finalize",
+            expected_revision=current.revision,
+            expected_status="ready_for_review",
+            to_status="completed",
+            machines=current.machines,
+            repositories=current.repositories,
+            provider_checks=current.provider_checks,
+        )
+    except (KeyError, ValueError) as exc:
+        reconciled = _request_or_404(store, request_id)
+        if (
+            reconciled.status == "completed"
+            and reconciled.final_review_digest == body.final_review_digest
+        ):
+            _require_completed_project(store, reconciled)
+            return _project_provisioning_response(
+                reconciled,
+                viewer_user_id=reviewer.user_id,
+            )
+        raise HTTPException(
+            status_code=409,
+            detail="The provisioning request changed; reload it before creating the project.",
+        ) from exc
+    _require_completed_project(store, completed)
+    return _project_provisioning_response(completed, viewer_user_id=reviewer.user_id)
+
+
+def _require_completed_project(
+    store: AppStore,
+    request: ProjectProvisioningRequestRecord,
+) -> None:
+    project = store.project(request.proposed_project_id)
+    if project is None or project.home_space_id != request.target_space_id:
+        raise HTTPException(
+            status_code=503,
+            detail="The completed provisioning request lost its exact registered project.",
+        )
+
+
 def _request_or_404(store: AppStore, request_id: str) -> ProjectProvisioningRequestRecord:
     try:
         record = store.project_provisioning_request(request_id)
@@ -567,6 +716,7 @@ def _provider_projection(
 
 __all__ = [
     "ProjectCreationControl",
+    "ProjectProvisioningCompleteRequest",
     "ProjectProvisioningCreateRequest",
     "ProjectProvisioningResponse",
     "project_creation_control",

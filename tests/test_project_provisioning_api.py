@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from rcp.api import create_app
+from rcp.config import AGENT_EXECUTION_PROFILES
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.models import ExternalAction, ExternalServiceTarget, ServerStep
 from rcp.storage import (
@@ -40,13 +41,14 @@ def _payload(*, source: str = "https://github.com/OpenAI/RCP.git") -> dict[str, 
         ],
         "provider_checks": [
             {
-                "profile": "seed",
+                "profile": profile,
                 "provider": "codex",
                 "runtime_id": "codex:exec",
                 "model": "gpt-5.6-luna",
                 "reasoning": "medium",
                 "machine_alias": "server",
             }
+            for profile in AGENT_EXECUTION_PROFILES
         ],
     }
 
@@ -145,7 +147,7 @@ def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_p
         "repositories_ready": 0,
         "repositories_total": 1,
         "providers_ready": 0,
-        "providers_total": 1,
+        "providers_total": len(AGENT_EXECUTION_PROFILES),
         "all_ready": False,
     }
     assert created["operator_argv"] == [
@@ -212,7 +214,9 @@ def test_ssh_machine_can_defer_its_default_root_to_exact_account_resolution(tmp_
     assert isinstance(repositories, list) and isinstance(repositories[0], dict)
     assert isinstance(providers, list) and isinstance(providers[0], dict)
     repositories[0]["machine_alias"] = "gpu"
-    providers[0]["machine_alias"] = "gpu"
+    for provider in providers:
+        assert isinstance(provider, dict)
+        provider["machine_alias"] = "gpu"
 
     with TestClient(app) as client:
         response = client.post("/api/project-provisioning/requests", json=payload)
@@ -243,6 +247,44 @@ def test_invalid_repository_is_rejected_before_persistence(tmp_path, monkeypatch
         )
 
     assert response.status_code == 422
+    assert app.state.background_tasks.store.project_provisioning_requests() == []
+
+
+def test_new_team_request_requires_all_profiles_on_their_valid_machines(tmp_path) -> None:
+    _data_dir, _members, _selected, app = _team_app(tmp_path, "Alice")
+    incomplete = _payload()
+    checks = incomplete["provider_checks"]
+    assert isinstance(checks, list)
+    incomplete["provider_checks"] = checks[:-1]
+    misplaced = _payload()
+    machines = misplaced["machines"]
+    misplaced_checks = misplaced["provider_checks"]
+    assert isinstance(machines, list) and isinstance(misplaced_checks, list)
+    machines.append(
+        {
+            "alias": "worker",
+            "location": "ssh",
+            "host": "alice@gpu-lab",
+            "os_account": "alice",
+        }
+    )
+    assert isinstance(misplaced_checks[0], dict)
+    misplaced_checks[0]["machine_alias"] = "worker"
+
+    with TestClient(app) as client:
+        incomplete_response = client.post(
+            "/api/project-provisioning/requests",
+            json=incomplete,
+        )
+        misplaced_response = client.post(
+            "/api/project-provisioning/requests",
+            json=misplaced,
+        )
+
+    assert incomplete_response.status_code == 422
+    assert "every agent execution profile" in incomplete_response.text
+    assert misplaced_response.status_code == 422
+    assert "canonical state machine" in misplaced_response.text
     assert app.state.background_tasks.store.project_provisioning_requests() == []
 
 
@@ -378,13 +420,14 @@ def test_final_review_projection_contains_only_backend_decisions(tmp_path) -> No
         ]
         providers = [
             ProjectProvisioningProviderCheckRecord(
-                **running.provider_checks[0].model_dump(
+                **check.model_dump(
                     mode="json",
                     exclude={"status", "checked_at", "diagnostic"},
                 ),
                 status="ready",
                 checked_at=checked_at,
             )
+            for check in running.provider_checks
         ]
         ready = store.transition_project_provisioning_request(
             request.request_id,
