@@ -32,7 +32,12 @@ operation, member/API projection, finalizer, and the unified wizard remain later
 packets. O3a now implements strict backup machine configuration and installs the
 matching backup service/timer units in a proven disabled state; encrypted
 capture, integrity readback, retention, and safe timer enablement remain O1,
-O2a, O2b, and O3b.
+O2a, O2b, and O3b. F4 now provides the installed team's private, probe-only
+machine control socket without a second SQLite owner. Its source review and
+security diff scan found no reportable issue, and manual run 33236544453 passed
+the exact installed-service boundary on Ubuntu 22.04 and 24.04 at commit
+`9e2b676b5db62ac78dc39b1a50a22eb53ef61585`. F4 is complete; F5 server
+identity and doctor is the next server packet.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -114,8 +119,9 @@ slice, not the pending server or desktop journeys.
 The remaining seams are also concrete:
 
 - the strict `rcp server` command/event shell, Linux layout, and source installer
-  now exist and are live-qualified on both supported Ubuntu releases, but doctor,
-  control-socket, update, backup, restore, and member-removal owners do not yet exist;
+  now exist and are live-qualified on both supported Ubuntu releases; the
+  private probe-only control socket also exists, but doctor, update, backup,
+  restore, and member-removal owners do not yet exist;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
 - the Web UI still says “Team connections are not implemented in this build”;
@@ -866,12 +872,58 @@ gate are deliberately future work and do not block this plan.
   no Ubuntu live drive was claimed. O3b and the later live milestone own those
   checks.
 
+#### 2026-08-29 — F4 private installed-service control socket complete
+
+- The installed, CLI-owned team service now publishes protocol-v1 metadata for
+  one fixed `/run/rcp/control.sock` endpoint and starts its listener inside the
+  already-composed FastAPI lifespan. Personal, desktop, embedded, mismatched
+  data-directory, wrong-service-identity, and non-installed launches publish no
+  usable control endpoint. Direct `create_app` metadata injection remains an
+  internal composition/test seam, not a supported deployment route.
+- `ServerControlServer` verifies the owner-only mode-`0700` runtime directory,
+  creates and rechecks the owner-only mode-`0600` socket, authenticates Linux
+  peers with `SO_PEERCRED`, and admits only root or the service UID before
+  parsing. Requests and responses use strict frozen models, canonical UUID4
+  identities, one named `probe` operation, 64-KiB/256-KiB frame bounds, bounded
+  I/O, and fixed secret-safe errors. The client authenticates the server UID and
+  binds success to the request id, process instance, and kernel server PID.
+- Socket recovery refuses unsafe type/owner/group/mode or a live listener,
+  rechecks the stale inode before unlinking, and shutdown removes only the exact
+  inode created by its owning process. The non-daemon listener must reach its
+  bounded operation boundary before shutdown completes.
+- The current in-process handler returns only captured process/data/team
+  identity. It uses the application's already-open `AppStore`; the control
+  client reads strict server metadata and never opens SQLite. Neither request nor
+  response carries a member/session identity, so root/`rcp` machine authority
+  does not become product membership.
+- Focused control, runtime, main, health, layout, installer, and live-test source
+  tests pass; the complete backend suite passes with its two expected skips.
+  Repository-wide Ruff and all-file pre-commit pass. The independent Codex
+  Security diff scan `0efca9e6-6eeb-4ae0-b6ab-ebab0a883fbf` reviewed all five
+  changed source files, closed all five coverage rows, and reported no finding
+  or deferred work.
+- Live qualification run
+  [33236544453](https://github.com/Zhi0467/RCP/actions/runs/33236544453)
+  ran exact commit `9e2b676b5db62ac78dc39b1a50a22eb53ef61585`.
+  Ubuntu 24.04 job 99058407050 and Ubuntu 22.04 job 99058407140 both proved the
+  real runtime/socket owner and modes, ordinary-runner permission refusal,
+  service-account probe, exact systemd PID binding, space identity agreement
+  with HTTP health, and restart recovery with a new instance id and stable
+  space id. Every cleanup step passed, and a separate repository API readback
+  found no remaining `rcp-source:` deploy key.
+- Not done in F4: no stateful server operation is wired through the socket, and
+  no doctor, update, backup, restore, provisioning, or member-removal behavior is
+  implied. Before a future mutating request can act, its named owner must bind
+  both expected `data_dir_id` and `space_id` in addition to the existing
+  request/instance/UID/PID checks. F5 owns the first read-only production caller
+  and authoritative status projection.
+
 ## What remains
 
 The remaining implementation work is:
 
-1. private machine-local CLI-to-server control, then server health/doctor and
-   source update;
+1. server health/doctor and source update, using the completed private
+   CLI-to-server control transport;
 2. project-provisioning API projections and concrete machine orchestration;
 3. central Git checkout and write-deploy-key setup;
 4. local/remote provider readiness against authentication already present on
@@ -1723,6 +1775,12 @@ documented rule permits D6's fixed provisioning command and refuses an
 unlisted command.
 
 ### F4 — Private machine-local control socket
+
+Status: complete. Commit `9e2b676b5db62ac78dc39b1a50a22eb53ef61585`
+implements the probe-only transport. Security scan
+`0efca9e6-6eeb-4ae0-b6ab-ebab0a883fbf` found no reportable issue or deferred
+row, and live run 33236544453 passed on Ubuntu 22.04 and 24.04 with clean
+credential cleanup.
 
 Own:
 

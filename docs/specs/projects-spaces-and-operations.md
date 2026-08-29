@@ -1115,9 +1115,13 @@ provider-native login action. The operator performs that login outside RCP and
 then asks RCP to recheck; missing provider auth is not reported as failed data
 restore.
 
-These service-account, CLI, backup/restore, desktop connection, provisioning,
-and transfer workflows remain unimplemented active acceptance work. Current RCP
-must not simulate them or describe partial setup or capture as authoritative.
+The fixed service-account layout, source installation, probe-only private
+control socket, nonsecret desktop connection registry, durable provisioning
+request boundary, and disabled backup configuration now exist. Stateful control
+operations, doctor/update, live desktop connection and enrollment, concrete
+project provisioning, backup capture/restore, member removal, and transfer
+remain active acceptance work. Current RCP must not simulate those unfinished
+journeys or describe partial setup or capture as authoritative.
 
 ## Deletion
 
