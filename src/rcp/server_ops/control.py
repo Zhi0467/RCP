@@ -22,13 +22,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rcp.limits import (
     SERVER_CONTROL_ACCEPT_POLL_INTERVAL_SECONDS,
     SERVER_CONTROL_IO_TIMEOUT_SECONDS,
+    SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS,
     SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
     SERVER_CONTROL_STOP_TIMEOUT_SECONDS,
 )
-from rcp.server_ops.models import ServerStep, redact_server_text
+from rcp.server_ops.models import SERVER_CLI_MAX_STEPS, ServerStep, redact_server_text
 from rcp.server_runtime import ServerMetadata, read_server_metadata
 
-SERVER_CONTROL_PROTOCOL_VERSION = 2
+SERVER_CONTROL_PROTOCOL_VERSION = 3
 SERVER_CONTROL_MAX_REQUEST_BYTES = 64 * 1024
 SERVER_CONTROL_MAX_RESPONSE_BYTES = 256 * 1024
 SERVER_CONTROL_SOCKET_MODE = 0o600
@@ -42,12 +43,22 @@ ServerControlOperation = Literal[
     "probe",
     "provider_readiness_plan",
     "provider_readiness_check",
+    "project_provision_plan",
+    "project_provision_step",
 ]
 SERVER_CONTROL_OPERATIONS: tuple[ServerControlOperation, ...] = (
     "probe",
     "provider_readiness_plan",
     "provider_readiness_check",
+    "project_provision_plan",
+    "project_provision_step",
 )
+ServerControlProjectStatus = Literal[
+    "waiting_for_server_setup",
+    "setup_in_progress",
+    "operator_action_needed",
+    "ready_for_review",
+]
 
 
 class ServerControlError(RuntimeError):
@@ -91,7 +102,7 @@ class ServerControlRequest(_StrictModel):
         _canonical_uuid4(self.request_id, label="control request id")
         _canonical_uuid4(self.instance_id, label="control instance id")
         if self.selector_id is not None:
-            _canonical_uuid4(self.selector_id, label="provider selector id")
+            _canonical_uuid4(self.selector_id, label="control selector id")
         if self.operation == "probe":
             if any(
                 value is not None
@@ -103,11 +114,13 @@ class ServerControlRequest(_StrictModel):
                 )
             ):
                 raise ValueError("control probe cannot carry provider selector fields")
-        elif self.operation == "provider_readiness_plan":
+        elif self.operation in {"provider_readiness_plan", "project_provision_plan"}:
             if self.selector_kind is None or self.selector_id is None:
-                raise ValueError("provider readiness plan requires one selector")
+                raise ValueError("control plan requires one selector")
+            if self.operation == "project_provision_plan" and self.selector_kind != "request":
+                raise ValueError("project provisioning plan requires one request selector")
             if self.boundary_sha256 is not None or self.target_id is not None:
-                raise ValueError("provider readiness plan cannot carry a check boundary")
+                raise ValueError("control plan cannot carry a step boundary")
         elif any(
             value is None
             for value in (
@@ -117,10 +130,12 @@ class ServerControlRequest(_StrictModel):
                 self.target_id,
             )
         ):
-            raise ValueError("provider readiness check requires its exact plan boundary")
+            raise ValueError("control step requires its exact plan boundary")
+        elif self.operation == "project_provision_step" and self.selector_kind != "request":
+            raise ValueError("project provisioning step requires one request selector")
         for value, label in (
-            (self.boundary_sha256, "provider readiness boundary"),
-            (self.target_id, "provider readiness target"),
+            (self.boundary_sha256, "control boundary"),
+            (self.target_id, "control target"),
         ):
             if value is not None and (
                 len(value) != 64 or any(character not in _HEX_DIGEST for character in value)
@@ -238,6 +253,92 @@ class ServerControlProviderCheckResult(_StrictModel):
         return self
 
 
+class ServerControlProjectTarget(_StrictModel):
+    target_id: str
+    step: ServerStep
+
+    @model_validator(mode="after")
+    def validate_target(self) -> ServerControlProjectTarget:
+        if len(self.target_id) != 64 or any(
+            character not in _HEX_DIGEST for character in self.target_id
+        ):
+            raise ValueError("project provisioning target must be a lowercase SHA-256 digest")
+        if self.step.state != "pending":
+            raise ValueError("project provisioning plans require pending steps")
+        return self
+
+
+class ServerControlProjectPlanResult(_StrictModel):
+    instance_id: str
+    pid: int = Field(gt=0)
+    data_dir_id: str
+    space_id: str
+    space_kind: Literal["team"] = "team"
+    request_id: str
+    request_status: ServerControlProjectStatus
+    revision: int = Field(ge=0)
+    boundary_sha256: str
+    targets: tuple[ServerControlProjectTarget, ...] = Field(
+        min_length=1,
+        max_length=SERVER_CLI_MAX_STEPS,
+    )
+
+    @model_validator(mode="after")
+    def validate_plan(self) -> ServerControlProjectPlanResult:
+        _validate_provider_result_identity(
+            self.instance_id,
+            self.space_id,
+            self.data_dir_id,
+            self.request_id,
+            self.boundary_sha256,
+        )
+        if [target.step.number for target in self.targets] != list(range(1, len(self.targets) + 1)):
+            raise ValueError("project provisioning plan steps must be consecutive")
+        ids = [target.target_id for target in self.targets]
+        if len(ids) != len(set(ids)):
+            raise ValueError("project provisioning plan targets must be unique")
+        return self
+
+
+class ServerControlProjectStepResult(_StrictModel):
+    instance_id: str
+    pid: int = Field(gt=0)
+    data_dir_id: str
+    space_id: str
+    space_kind: Literal["team"] = "team"
+    request_id: str
+    request_status: ServerControlProjectStatus
+    revision: int = Field(ge=0)
+    target_id: str
+    boundary_sha256: str
+    next_boundary_sha256: str
+    step: ServerStep
+
+    @model_validator(mode="after")
+    def validate_step(self) -> ServerControlProjectStepResult:
+        _validate_provider_result_identity(
+            self.instance_id,
+            self.space_id,
+            self.data_dir_id,
+            self.request_id,
+            self.boundary_sha256,
+        )
+        for value, label in (
+            (self.target_id, "project provisioning target"),
+            (self.next_boundary_sha256, "next project provisioning boundary"),
+        ):
+            if len(value) != 64 or any(character not in _HEX_DIGEST for character in value):
+                raise ValueError(f"{label} must be a lowercase SHA-256 digest")
+        if self.step.state not in {
+            "succeeded",
+            "failed",
+            "operator_action_needed",
+            "unavailable",
+        }:
+            raise ValueError("project provisioning step requires one terminal step")
+        return self
+
+
 def _validate_provider_result_identity(
     instance_id: str,
     space_id: str,
@@ -247,10 +348,10 @@ def _validate_provider_result_identity(
 ) -> None:
     _canonical_uuid4(instance_id, label="control instance id")
     _canonical_uuid4(space_id, label="space id")
-    _canonical_uuid4(selector_id, label="provider selector id")
+    _canonical_uuid4(selector_id, label="control selector id")
     for value, label in (
         (data_dir_id, "data directory identity"),
-        (boundary_sha256, "provider readiness boundary"),
+        (boundary_sha256, "control boundary"),
     ):
         if len(value) != 64 or any(character not in _HEX_DIGEST for character in value):
             raise ValueError(f"{label} must be a lowercase SHA-256 digest")
@@ -283,6 +384,8 @@ class ServerControlResponse(_StrictModel):
         ServerControlProbeResult
         | ServerControlProviderPlanResult
         | ServerControlProviderCheckResult
+        | ServerControlProjectPlanResult
+        | ServerControlProjectStepResult
         | None
     ) = None
     error: ServerControlFailure | None = None
@@ -320,7 +423,11 @@ class ServerControlPeer:
 
 ServerControlHandler = Callable[
     [ServerControlRequest, ServerControlPeer],
-    ServerControlProbeResult | ServerControlProviderPlanResult | ServerControlProviderCheckResult,
+    ServerControlProbeResult
+    | ServerControlProviderPlanResult
+    | ServerControlProviderCheckResult
+    | ServerControlProjectPlanResult
+    | ServerControlProjectStepResult,
 ]
 PeerResolver = Callable[[socket.socket], ServerControlPeer]
 
@@ -439,6 +546,50 @@ class ServerControlClient:
             )
         return result
 
+    def project_provision_plan(
+        self,
+        *,
+        request_id: str,
+    ) -> ServerControlProjectPlanResult:
+        request = ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=self.metadata.instance_id,
+            operation="project_provision_plan",
+            selector_kind="request",
+            selector_id=request_id,
+        )
+        result = self._exchange(request)
+        if not isinstance(result, ServerControlProjectPlanResult):
+            raise ServerControlError(
+                "invalid_response",
+                "The running RCP process returned the wrong project provisioning plan.",
+            )
+        return result
+
+    def advance_project_provision(
+        self,
+        *,
+        request_id: str,
+        boundary_sha256: str,
+        target_id: str,
+    ) -> ServerControlProjectStepResult:
+        request = ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=self.metadata.instance_id,
+            operation="project_provision_step",
+            selector_kind="request",
+            selector_id=request_id,
+            boundary_sha256=boundary_sha256,
+            target_id=target_id,
+        )
+        result = self._exchange(request)
+        if not isinstance(result, ServerControlProjectStepResult):
+            raise ServerControlError(
+                "invalid_response",
+                "The running RCP process returned the wrong project provisioning step.",
+            )
+        return result
+
     def _exchange(
         self,
         request: ServerControlRequest,
@@ -446,13 +597,16 @@ class ServerControlClient:
         ServerControlProbeResult
         | ServerControlProviderPlanResult
         | ServerControlProviderCheckResult
+        | ServerControlProjectPlanResult
+        | ServerControlProjectStepResult
     ):
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        connection.settimeout(
-            SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS
-            if request.operation == "provider_readiness_check"
-            else SERVER_CONTROL_IO_TIMEOUT_SECONDS
-        )
+        timeout = SERVER_CONTROL_IO_TIMEOUT_SECONDS
+        if request.operation == "provider_readiness_check":
+            timeout = SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS
+        elif request.operation == "project_provision_step":
+            timeout = SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS
+        connection.settimeout(timeout)
         try:
             connection.connect(str(self.socket_path))
             peer = self.peer_resolver(connection)
@@ -779,8 +933,16 @@ def _validated_control_result(
     request: ServerControlRequest,
     result: ServerControlProbeResult
     | ServerControlProviderPlanResult
-    | ServerControlProviderCheckResult,
-) -> ServerControlProbeResult | ServerControlProviderPlanResult | ServerControlProviderCheckResult:
+    | ServerControlProviderCheckResult
+    | ServerControlProjectPlanResult
+    | ServerControlProjectStepResult,
+) -> (
+    ServerControlProbeResult
+    | ServerControlProviderPlanResult
+    | ServerControlProviderCheckResult
+    | ServerControlProjectPlanResult
+    | ServerControlProjectStepResult
+):
     if request.operation == "probe":
         if not isinstance(result, ServerControlProbeResult):
             raise ValueError("control probe returned another operation's result")
@@ -795,17 +957,35 @@ def _validated_control_result(
         ):
             raise ValueError("provider readiness plan returned another selector")
         return validated
-    if not isinstance(result, ServerControlProviderCheckResult):
-        raise ValueError("provider readiness check returned another operation's result")
-    validated = ServerControlProviderCheckResult.model_validate(result)
+    if request.operation == "provider_readiness_check":
+        if not isinstance(result, ServerControlProviderCheckResult):
+            raise ValueError("provider readiness check returned another operation's result")
+        validated_provider = ServerControlProviderCheckResult.model_validate(result)
+        if (
+            validated_provider.selector_kind != request.selector_kind
+            or validated_provider.selector_id != request.selector_id
+            or validated_provider.boundary_sha256 != request.boundary_sha256
+            or validated_provider.target_id != request.target_id
+        ):
+            raise ValueError("provider readiness check returned another planned target")
+        return validated_provider
+    if request.operation == "project_provision_plan":
+        if not isinstance(result, ServerControlProjectPlanResult):
+            raise ValueError("project provisioning plan returned another operation's result")
+        validated_plan = ServerControlProjectPlanResult.model_validate(result)
+        if validated_plan.request_id != request.selector_id:
+            raise ValueError("project provisioning plan returned another request")
+        return validated_plan
+    if not isinstance(result, ServerControlProjectStepResult):
+        raise ValueError("project provisioning step returned another operation's result")
+    validated_step = ServerControlProjectStepResult.model_validate(result)
     if (
-        validated.selector_kind != request.selector_kind
-        or validated.selector_id != request.selector_id
-        or validated.boundary_sha256 != request.boundary_sha256
-        or validated.target_id != request.target_id
+        validated_step.request_id != request.selector_id
+        or validated_step.boundary_sha256 != request.boundary_sha256
+        or validated_step.target_id != request.target_id
     ):
-        raise ValueError("provider readiness check returned another planned target")
-    return validated
+        raise ValueError("project provisioning step returned another planned target")
+    return validated_step
 
 
 def _safe_operation_refusal(message: str) -> str:
@@ -911,6 +1091,9 @@ __all__ = [
     "ServerControlHandler",
     "ServerControlPeer",
     "ServerControlProbeResult",
+    "ServerControlProjectPlanResult",
+    "ServerControlProjectStepResult",
+    "ServerControlProjectTarget",
     "ServerControlProviderCheckResult",
     "ServerControlProviderPlanResult",
     "ServerControlProviderTarget",

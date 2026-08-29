@@ -1180,16 +1180,23 @@ provider-native login action. The operator performs that login outside RCP and
 then asks RCP to recheck; missing provider auth is not reported as failed data
 restore.
 
-The fixed service-account layout, source installation, probe-only private
-control socket, nonsecret desktop connection registry, durable provisioning
-request boundary, disabled backup configuration, and repository-scoped
-deploy-key primitive now exist. The key primitive is not yet wired to durable
-provisioning and has not passed its required disposable-GitHub-repository live
-drive, so it is not a completed project-setup path. Stateful control operations,
-doctor/update, live desktop connection and enrollment, concrete project
-provisioning, backup capture/restore, member removal, and transfer remain active
-acceptance work. Current RCP must not simulate those unfinished journeys or
-describe partial setup or capture as authoritative.
+The fixed service-account layout, source installation, nonsecret desktop
+connection registry, durable provisioning-request boundary, disabled backup
+configuration, repository-scoped deploy-key primitive, exact central-checkout
+owner, and exact-account provider check now exist. The private installed-service
+control socket exposes probe, provider plan/check, and project-provision
+plan/step operations. `rcp server project provision <request-id>` publishes one
+complete plan, advances one stale-boundary-checked durable step at a time, and
+stops with a structured human action when Git, checkout, transport, or provider
+readiness needs repair. It exits successfully only after reading back the same
+request as **ready for review**, and it has no project-creation route.
+
+That machine-orchestration path is hermetically covered but has not yet passed
+S128's complete source-built team-service/GitHub/SSH live drive. Final human
+creation, cancellation after machine preparation, the unified wizard and
+desktop operator bridge, backup capture/restore, member removal, and transfer
+remain active acceptance work. Current RCP must not simulate those unfinished
+journeys or describe **ready for review** as an existing project.
 
 ## Deletion
 

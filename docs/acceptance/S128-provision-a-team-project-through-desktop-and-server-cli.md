@@ -3,13 +3,24 @@ id: S128-provision-a-team-project-through-desktop-and-server-cli
 status: pending
 tier: live
 driver: pytest + browser + desktop + ssh
-covered_by: none
+covered_by:
+  - tests/test_project_provisioning_api.py
+  - tests/test_project_provisioning_storage.py
+  - tests/test_git_credentials.py
+  - tests/test_project_checkout.py
+  - tests/test_server_provider_readiness.py
+  - tests/test_team_project_provisioning.py
 invariants: [3, 4, 6, 8]
+last_checked: >-
+  2026-08-29 — the durable request, Git key/write proof, central checkout,
+  provider readiness, and resumable private-control orchestration pass hermetic
+  regressions; final creation, cancellation after preparation, unified UI,
+  desktop operator launch, and the complete live drive remain pending.
 ---
 
 # A human starts team setup in the app and the server CLI prepares it
 
-This scenario is human-confirmed and pending implementation. It owns the seam
+This scenario is human-confirmed and partially implemented. It owns the seam
 between [Durable project provisioning](../specs/projects-spaces-and-operations.md#durable-project-provisioning)
 and the [Confirmed team desktop target](../specs/api-web-and-desktop-projections.md#confirmed-team-desktop-target).
 

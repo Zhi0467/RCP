@@ -20,7 +20,9 @@ from pydantic import (
 )
 
 SERVER_CLI_PROTOCOL_VERSION = 1
-SERVER_CLI_MAX_STEPS = 64
+# One project plan may contain start + three steps for each of 64 repositories
+# + one check for each of 32 provider records + final review.
+SERVER_CLI_MAX_STEPS = 256
 SERVER_CLI_MAX_EVENTS = 1 + (SERVER_CLI_MAX_STEPS * 4)
 SERVER_CLI_MAX_ACTIONS = 16
 SERVER_CLI_MAX_FIELDS = 32
@@ -548,13 +550,18 @@ def _validate_event_sequence(
         for field in (
             "title",
             "purpose",
-            "performed_by",
             "target",
             "phase",
             "expected_success",
         ):
             if getattr(event.step, field) != getattr(expected, field):
                 raise ValueError(f"step events cannot change planned {field}")
+        if event.step.performed_by != expected.performed_by and not (
+            expected.performed_by == "system"
+            and event.step.performed_by == "human"
+            and event.step.state == "operator_action_needed"
+        ):
+            raise ValueError("only an operator-action pause may transfer responsibility to a human")
         previous = latest.get(event.step.number)
         if event.step.state == "running" and previous is not None:
             raise ValueError("a step can start only once")

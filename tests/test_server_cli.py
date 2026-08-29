@@ -435,6 +435,48 @@ def test_operator_action_requires_human_responsibility_actions_and_resume() -> N
         ServerStep(**common, performed_by="human")
 
 
+def test_system_step_may_transfer_responsibility_only_for_a_human_action_pause() -> None:
+    pending = _machine_step("server project provision", state="pending")
+    paused = pending.model_copy(
+        update={
+            "performed_by": "human",
+            "state": "operator_action_needed",
+            "message": "The exact account path needs operator repair.",
+            "actions": (ExternalAction(instruction="Repair the named path, then resume."),),
+            "resume_argv": ("rcp", "server", "project", "provision", REQUEST_ID),
+        }
+    )
+    execution = ServerCommandExecution(
+        events=(
+            ServerPlanEvent(
+                command="server project provision",
+                timestamp=NOW,
+                steps=(pending,),
+            ),
+            ServerStepEvent(
+                command="server project provision",
+                timestamp=NOW,
+                step=paused,
+            ),
+        ),
+        exit_code=SERVER_CLI_EXIT_OPERATOR_ACTION,
+    )
+
+    assert execution.events[-1].step.performed_by == "human"
+    with pytest.raises(ValidationError, match="transfer responsibility"):
+        ServerCommandExecution(
+            events=(
+                execution.events[0],
+                ServerStepEvent(
+                    command="server project provision",
+                    timestamp=NOW,
+                    step=pending.model_copy(update={"performed_by": "human", "state": "failed"}),
+                ),
+            ),
+            exit_code=1,
+        )
+
+
 def test_external_target_names_a_role_without_accepting_an_invented_user() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         ExternalServiceTarget.model_validate(
@@ -735,7 +777,7 @@ def test_unimplemented_concrete_owner_fails_loudly() -> None:
     output = StringIO()
 
     exit_code = run_server_command(
-        _parse("server", "project", "provision", REQUEST_ID, "--machine-readable"),
+        _parse("server", "project", "transfer-import", REQUEST_ID, "--machine-readable"),
         identity=CallerIdentity(uid=501, username="rcp", host="lab"),
         stream=output,
     )

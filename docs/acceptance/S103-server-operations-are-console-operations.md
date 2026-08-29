@@ -3,13 +3,24 @@ id: S103-server-operations-are-console-operations
 status: pending
 tier: live
 driver: pytest + api + ssh
-covered_by: none
+covered_by:
+  - tests/test_server_cli.py
+  - tests/test_server_control.py
+  - tests/test_server_install.py
+  - tests/test_server_provider_readiness.py
+  - tests/test_server_update_prepare.py
+  - tests/test_team_project_provisioning.py
 invariants: [1, 8]
+last_checked: >-
+  2026-08-29 — install, update preparation, provider readiness, and project
+  machine preparation have concrete OS-authority/private-control regressions;
+  backup/restore, member removal, the complete remote drive, and the full
+  scenario remain pending.
 ---
 
 # Dangerous operations need the machine, not a login
 
-This scenario is human-confirmed and pending implementation. Its boundary is in
+This scenario is human-confirmed and partially implemented. Its boundary is in
 [Server and machine operations](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
 
 Every member has equal space authority and there is no admin role. That only

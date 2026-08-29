@@ -274,6 +274,37 @@ class ProviderReadinessCoordinator:
             step=step,
         )
 
+    def check_for_project_provision(
+        self,
+        request_id: str,
+        *,
+        target_id: str,
+        pending: ServerStep,
+    ) -> ServerStep:
+        """Run one request target with the unified project-provision contract."""
+
+        boundary = self._resolve_request(request_id)
+        target = next(
+            (candidate for candidate in boundary.targets if candidate.target_id == target_id),
+            None,
+        )
+        if target is None:
+            raise ProviderReadinessRefused(
+                "The provider target changed after the project plan was shown; rerun the command."
+            )
+        if pending.state != "pending" or pending.phase != "provider_readiness":
+            raise ValueError("project provisioning supplied an invalid provider step")
+        step, ready_proof = self._check_target(
+            target,
+            "request",
+            request_id,
+            pending=pending,
+            resume_argv=self._project_resume_argv(request_id),
+        )
+        assert boundary.request is not None
+        self._persist_request_result(boundary.request, target, step, ready_proof)
+        return step
+
     def _resolve(
         self,
         selector_kind: ProviderSelectorKind,
@@ -407,8 +438,11 @@ class ProviderReadinessCoordinator:
         target: _ProviderTarget,
         selector_kind: ProviderSelectorKind,
         selector_id: str,
+        *,
+        pending: ServerStep | None = None,
+        resume_argv: tuple[str, ...] | None = None,
     ) -> tuple[ServerStep, dict[str, str] | None]:
-        pending = self._pending_step(target)
+        pending = pending or self._pending_step(target)
         account = self.launcher.execution_account(host=target.host)
         if not account.reachable or account.os_account is None:
             return (
@@ -419,6 +453,7 @@ class ProviderReadinessCoordinator:
                     selector_id,
                     account.reason or "The configured execution account is unavailable.",
                     actions=self._transport_actions(target),
+                    resume_argv=resume_argv,
                 ),
                 None,
             )
@@ -435,6 +470,7 @@ class ProviderReadinessCoordinator:
                         "provider under the wrong account."
                     ),
                     actions=self._transport_actions(target),
+                    resume_argv=resume_argv,
                 ),
                 None,
             )
@@ -455,6 +491,7 @@ class ProviderReadinessCoordinator:
                     selector_id,
                     problem.message,
                     actions=actions,
+                    resume_argv=resume_argv,
                 ),
                 None,
             )
@@ -665,10 +702,12 @@ class ProviderReadinessCoordinator:
         message: str,
         *,
         actions: tuple[CommandAction | ExternalAction, ...],
+        resume_argv: tuple[str, ...] | None = None,
     ) -> ServerStep:
         return pending.model_copy(
             update={
                 "state": "operator_action_needed",
+                "performed_by": "human",
                 "message": message,
                 "actions": actions,
                 "fields": (
@@ -677,7 +716,7 @@ class ProviderReadinessCoordinator:
                     NonsecretField(name="machine", value=target.machine_alias),
                     NonsecretField(name="execution_account", value=target.os_account),
                 ),
-                "resume_argv": self._resume_argv(selector_kind, selector_id),
+                "resume_argv": resume_argv or self._resume_argv(selector_kind, selector_id),
             }
         )
 
@@ -779,6 +818,20 @@ class ProviderReadinessCoordinator:
             "check",
             f"--{selector_kind}",
             selector_id,
+        )
+
+    def _project_resume_argv(self, request_id: str) -> tuple[str, ...]:
+        return (
+            "sudo",
+            "-n",
+            "-u",
+            self.layout.service_account,
+            "-H",
+            str(self.layout.cli_wrapper),
+            "server",
+            "project",
+            "provision",
+            request_id,
         )
 
     def _identity_fields(self) -> dict[str, object]:

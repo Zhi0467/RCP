@@ -14,9 +14,12 @@ answers, sealed Web response vocabularies, and a fail-before-input guard on all
 three ordinary existing-checkout entry routes. It performs no machine work and
 does not create a team project. P4 now supplies the exact-account local/SSH
 central-checkout primitive, path receipts, retained-research refusal, and
-backward-compatible project-configuration persistence. P6a owns the next
-provisioning boundary: durable composition of P3-P5. F6b remains blocked on
-O2a/O2b's one capture primitive.
+backward-compatible project-configuration persistence. P6a now implements the
+next provisioning boundary by durably composing P3-P5 through the installed
+service and stops at **ready for review** without creating a project; the
+packet's complete team-service/GitHub live qualification remains open. P6b
+still owns final human creation. F6b remains blocked on O2a/O2b's one capture
+primitive.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -1134,9 +1137,10 @@ gate are deliberately future work and do not block this plan.
   then reported zero deploy keys and HTTP 404 for the exact temporary ref. The
   initialized sandbox remains intentionally available for repeatable live
   qualification; no ordinary repository was repurposed.
-- P3 is complete and unblocks P4. P6 still owns durable orchestration receipts,
-  cancellation disposition ordering, and invocation of these primitives; no
-  HTTP/member route can call them yet.
+- P3 is complete and unblocks P4. P6a has since supplied durable orchestration
+  receipts and invocation of these primitives. Post-setup cancellation
+  disposition and final project creation remain open, and no HTTP/member route
+  can call the machine primitives directly.
 - Final local verification passes all 2,655 backend tests with the three
   expected skips, all 436 Web tests, focused Ruff, and the documentation suite.
   The first backend run was intentionally discarded as evidence because the
@@ -1153,13 +1157,15 @@ gate are deliberately future work and do not block this plan.
   project must record `machines[].os_account`; the server-local team account is
   `rcp`, including for an older local manifest without that field.
 - The service, not the CLI, owns resolution and effects through the private
-  control socket. Control protocol v2 advertises the exact probe, plan, and
-  check operations. A read-only plan binds the request revision/status or
-  project profiles and target ids; each check revalidates the digest before any
-  subprocess. A concurrent change returns one safe visible refusal rather than
-  probing a stale target. The effectful check has its own bounded 60-second
-  client timeout instead of inheriting the five-second probe/plan timeout, and
-  `server doctor` reports whether both provider operations are installed.
+  control socket. P5 introduced control protocol v2 for the exact probe, plan,
+  and check operations; P6a has since extended it as protocol v3 with project
+  plan/step operations. A read-only provider plan binds the request
+  revision/status or project profiles and target ids; each check revalidates the
+  digest before any subprocess. A concurrent change returns one safe visible
+  refusal rather than probing a stale target. The effectful check has its own
+  bounded 60-second client timeout instead of inheriting the five-second
+  probe/plan timeout, and `server doctor` reports whether both provider
+  operations are installed.
 - The shared launcher first proves the exact local effective account or the
   account reached by the existing OpenSSH route. It then uses the ordinary
   provider readiness implementation for the exact executable, bounded version,
@@ -1233,11 +1239,10 @@ gate are deliberately future work and do not block this plan.
   writable. P3 correctly refuses to place a durable private key below that
   unsafe ancestry. P4's SSH checkout primitive was therefore qualified with a
   disposable exact-account key/root under `/tmp`, not by weakening the path
-  check or changing the human's account. P6 must surface that production
-  credential-path precondition as an operator action on this host.
-- Not done in P4: no member HTTP route can invoke checkout work, no durable owner
-  sequences P3-P5, and no canonical team project is created. P6 retains those
-  boundaries.
+  check or changing the human's account. P6a now surfaces that production
+  credential-path precondition as an exact-account operator action.
+- P4 itself exposes no member HTTP route and creates no canonical team project.
+  P6a has since supplied the durable P3-P5 sequence; P6b retains final creation.
 
 ## What remains
 
@@ -1245,9 +1250,9 @@ The remaining implementation work is:
 
 1. candidate rehearsal, cutover, rollback, and recovery, consuming the completed
    source update/build receipt plus doctor and private CLI-to-server transport;
-2. concrete project-provisioning machine orchestration and final confirmation,
-   consuming the completed durable member API, deploy-key, checkout, and
-   exact-account provider primitives;
+2. concrete project provisioning, where machine orchestration is implemented
+   but still needs its complete live qualification, and final confirmation plus
+   post-setup cancellation remain;
 3. source-built desktop distinct origins, tunnels, live Keychain
    enrollment/readback, navigation, cached team groups, and optional operator
    bridge (the strict metadata and token-write/remove substrate is complete);
@@ -2456,9 +2461,8 @@ only new team-project entrance into that owner.
 
 Status: complete on 2026-08-29. Implementation, focused regressions, the
 one-audit fixes, and the guarded disposable-GitHub-repository live drive pass.
-The primitive is not wired to member HTTP authority or durable provisioning
-orchestration. P4 has since supplied the checkout consumer; P6 owns durable
-composition and finalization.
+The primitive is not wired to member HTTP authority. P4 has since supplied the
+checkout consumer and P6a the durable composition; P6b owns finalization.
 
 Own:
 
@@ -2522,8 +2526,8 @@ P6c until a future operator-owned deprovision workflow is designed.
 Status: complete on 2026-08-29. The local/SSH exact-account helper and checkout
 manager, safe Git recovery, retained-research boundary, durable path/disposition
 receipts, backward-compatible configuration persistence, focused regressions,
-and gated local plus reachable-SSH live drive pass. P6a remains the owner that
-sequences this primitive with P3 and P5 and publishes each durable step.
+and gated local plus reachable-SSH live drive pass. P6a has since sequenced this
+primitive with P3 and P5 and publishes each durable step.
 
 Own:
 
@@ -2573,9 +2577,9 @@ incoming transfer.
 Status: complete in the working tree on 2026-08-29. The command, versioned
 private-control operations, exact-account local/SSH probe, request proof
 persistence, existing-project resolver, doctor readback, and focused/live
-regressions are implemented. P6a remains the owner that composes P3–P5 into one
-project-provisioning command; P5 itself creates no project and exposes no member
-machine-authority route.
+regressions are implemented. P6a has since composed P3–P5 into one
+project-provisioning command; P5 itself creates no project and exposes no
+member machine-authority route.
 
 Own:
 
@@ -2609,6 +2613,13 @@ same machine.
 
 ### P6a — Server preparation orchestration
 
+Status: implemented hermetically on 2026-08-29; the complete numbered command,
+private-control plan/step protocol, durable P3-P5 composition, recovery tests,
+and installed-app socket regression pass. The packet remains live-unqualified:
+no complete source-built team-service run has yet driven this composed command
+against its disposable GitHub repository and reachable SSH target. P6a creates
+no project; P6b remains the only finalizer.
+
 Own:
 
 - new `src/rcp/server_ops/project_provision.py`;
@@ -2624,6 +2635,25 @@ The interactive command is sufficient to complete every machine step without
 the wizard: at each pause it prints the concrete account/action/success/resume
 contract. The desktop is a structured renderer and fixed launcher for that same
 workflow, not a second implementation.
+
+The implementation publishes separate durable boundaries for entering setup,
+preparing each repository key identity, proving Git write access, preparing
+each central checkout, checking each provider profile, and binding the final
+review. Every effectful step rechecks the request revision/status and target
+digest before work. Resume replays already-published answers without duplicate
+authority, including a crash after every boundary. Unsafe credential ancestry,
+missing GitHub write grant, provider-native login, retained RCP research, key
+rotation after write proof, and incomplete legacy configuration all stop with
+one exact human target/action and the same request-bound resume command.
+
+The CLI refuses a successful exit before emitting its final success event when
+the installed service does not read back **ready for review**. Provider-only
+machines do not invent checkout roots, while multiple repositories on one
+machine may publish their paths one at a time. The coordinator explicitly
+refuses completed, cancelled, stale, already-created, or cancellation-handling
+requests instead of clearing or reinterpreting them. Post-setup cancellation is
+still unfinished product behavior and remains part of S128 rather than a hidden
+cleanup path in this command.
 
 ### P6b — Final human project creation
 

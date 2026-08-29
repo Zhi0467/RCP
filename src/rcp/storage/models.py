@@ -661,7 +661,7 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
                     or repository.checkout_disposition is not None
                 ):
                     raise ValueError("repository path cannot resolve before its central root")
-            else:
+            elif repository.resolved_path is not None:
                 resolved = (
                     PurePosixPath(machine.resolved_central_root)
                     / self.proposed_project_id
@@ -672,6 +672,8 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
                     raise ValueError("provisioning repository resolved path is not derived")
                 if self.configuration_complete and repository.checkout_disposition is None:
                     raise ValueError("resolved repository path requires its checkout disposition")
+            elif repository.checkout_disposition is not None:
+                raise ValueError("checkout disposition requires a resolved repository path")
             expected_key_label = (
                 f"rcp:{self.target_space_id}:{self.proposed_project_id}:{repository.alias}"
             )
@@ -727,8 +729,12 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
         if review_status:
             if self.final_review_digest is None or self.ready_at is None:
                 raise ValueError("reviewable provisioning requires a digest and ready time")
-            if any(machine.resolved_central_root is None for machine in self.machines):
-                raise ValueError("reviewable provisioning requires every central root")
+            repository_machines = {repository.machine_alias for repository in self.repositories}
+            if any(
+                machine.alias in repository_machines and machine.resolved_central_root is None
+                for machine in self.machines
+            ):
+                raise ValueError("reviewable provisioning requires every checkout central root")
             if self.configuration_complete and any(
                 repository.resolved_path is None or repository.checkout_disposition is None
                 for repository in self.repositories

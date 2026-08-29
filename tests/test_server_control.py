@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from rcp.api import create_app
 from rcp.limits import (
     SERVER_CONTROL_IO_TIMEOUT_SECONDS,
+    SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS,
     SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
 )
 from rcp.server_ops import control
@@ -193,10 +194,17 @@ def test_provider_check_uses_its_bounded_operation_timeout(
             boundary_sha256="a" * 64,
             target_id="b" * 64,
         )
+    with pytest.raises(RuntimeError, match="stop after observing"):
+        client.advance_project_provision(
+            request_id=str(uuid.uuid4()),
+            boundary_sha256="a" * 64,
+            target_id="b" * 64,
+        )
 
     assert observed == [
         SERVER_CONTROL_IO_TIMEOUT_SECONDS,
         SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
+        SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS,
     ]
 
 
@@ -279,7 +287,7 @@ def test_unauthorized_os_peer_is_rejected_before_request_dispatch(control_root: 
         (
             lambda instance_id: _framed_json(
                 {
-                    "protocol_version": 2,
+                    "protocol_version": control.SERVER_CONTROL_PROTOCOL_VERSION,
                     "request_id": str(uuid.uuid4()),
                     "instance_id": instance_id,
                     "operation": "probe",
