@@ -495,6 +495,42 @@ def test_update_build_command_order_and_environment_are_fixed(
     assert not layout.current_release.exists()
 
 
+def test_update_admission_uses_the_installed_service_group_for_etc_rcp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _layout(tmp_path)
+    observed: dict[str, object] = {}
+
+    def stop_after_directory_check(path, *, uid, gid, mode, label):
+        observed.update(path=path, uid=uid, gid=gid, mode=mode, label=label)
+        raise UpdateRefused("ownership check observed")
+
+    monkeypatch.setattr(
+        "rcp.server_ops.update._require_owned_directory",
+        stop_after_directory_check,
+    )
+    machine = LinuxUpdateMachine(
+        layout,
+        config_loader=lambda _path: _config(layout),
+        doctor=SimpleNamespace(inspect=lambda: None),
+        service_runner=lambda *args, **kwargs: pytest.fail("no subprocess expected"),
+        service_identity=(701, 702),
+        root_identity=(0, 0),
+    )
+
+    with pytest.raises(UpdateRefused, match="ownership check observed"), machine.admission():
+        pytest.fail("ownership refusal must happen before admission")
+
+    assert observed == {
+        "path": layout.config_path.parent,
+        "uid": 0,
+        "gid": 702,
+        "mode": 0o750,
+        "label": "server configuration directory",
+    }
+
+
 def test_rehearsal_coordinator_runs_from_current_release_not_candidate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

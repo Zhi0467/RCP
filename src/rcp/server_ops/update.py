@@ -1006,7 +1006,7 @@ class LinuxUpdateMachine:
             _require_owned_directory(
                 lock_path.parent,
                 uid=self._root_uid,
-                gid=self._root_gid,
+                gid=self._service_gid,
                 mode=_CONFIG_DIRECTORY_MODE,
                 label="server configuration directory",
             )
