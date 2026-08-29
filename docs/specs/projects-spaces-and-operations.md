@@ -1167,11 +1167,14 @@ restore.
 
 The fixed service-account layout, source installation, probe-only private
 control socket, nonsecret desktop connection registry, durable provisioning
-request boundary, and disabled backup configuration now exist. Stateful control
-operations, doctor/update, live desktop connection and enrollment, concrete
-project provisioning, backup capture/restore, member removal, and transfer
-remain active acceptance work. Current RCP must not simulate those unfinished
-journeys or describe partial setup or capture as authoritative.
+request boundary, disabled backup configuration, and repository-scoped
+deploy-key primitive now exist. The key primitive is not yet wired to durable
+provisioning and has not passed its required disposable-GitHub-repository live
+drive, so it is not a completed project-setup path. Stateful control operations,
+doctor/update, live desktop connection and enrollment, concrete project
+provisioning, backup capture/restore, member removal, and transfer remain active
+acceptance work. Current RCP must not simulate those unfinished journeys or
+describe partial setup or capture as authoritative.
 
 ## Deletion
 

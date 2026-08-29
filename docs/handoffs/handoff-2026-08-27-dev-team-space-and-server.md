@@ -3,7 +3,9 @@
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
-F2, F3a, F3b, F4, F5, F6a, P1, P2, D1, D2, and O3a are complete. The live
+F2, F3a, F3b, F4, F5, F6a, P1, P2, D1, D2, and O3a are complete. P3's
+repository-credential implementation and focused regressions now exist, but P3
+remains open until its disposable-GitHub-repository live drive passes. The live
 Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
 pushed at `fff75c3` with exact-target confirmation, an immutable built-candidate
 receipt, and an unchanged live-service boundary. P2 now provides the
@@ -11,7 +13,8 @@ member-authorized provisioning API, backend-owned project-creation and lifecycle
 answers, sealed Web response vocabularies, and a fail-before-input guard on all
 three ordinary existing-checkout entry routes. It performs no machine work and
 does not create a team project. F6b remains dependency-blocked on O2a/O2b's one
-capture primitive; P3, P4, and P5 own the next provisioning machine boundaries.
+capture primitive; P3's external qualification plus P4 and P5 own the next
+provisioning machine boundaries.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -1070,6 +1073,69 @@ gate are deliberately future work and do not block this plan.
   operator command executed, project finalized, wizard rendered, or personal
   project transferred. P3 through P6, D6/D7, and T2 onward retain those owners.
 
+#### 2026-08-29 — P3 deploy-key implementation complete; live gate remains
+
+- `GitCredentialManager` now creates, inspects, and fingerprint-binds one
+  Ed25519 key for each canonical project/repository alias on the exact local or
+  SSH checkout account. The fixed shipped helper validates the effective uid,
+  passwd home, normalized derived paths, ownership, directory/file modes, and
+  private/public pairing. Its protocol returns only the public key,
+  fingerprint, deterministic `rcp:<space-id>:<project-id>:<alias>` label, and
+  nonsecret path identity; private bytes never return to the coordinator.
+- Local execution crosses the installed `rcp` account boundary. Remote
+  execution crosses that same service account's strict OpenSSH route and then
+  runs as the saved remote account. Git uses only P1's canonical GitHub.com SSH
+  URL, the exact derived private-key path, empty ambient Git configuration,
+  disabled prompts, and strict execution-host and GitHub-host verification.
+- The write proof reads exactly `HEAD`, fetches that commit into one
+  request-owned bare probe directory with templates disabled, proves the
+  request ref absent, pushes and reads back the exact commit, deletes the exact
+  ref, and proves absence. Empty repositories, missing GitHub grants/host trust,
+  network failure, preexisting refs, and unproved cleanup are explicit states;
+  only the latter leaves an exact operator-cleanup action.
+- Final diff review closed the remaining ref race: creation uses an atomic
+  empty-ref lease, deletion uses an exact-commit lease, and a failed push never
+  guesses that a subsequently observed ref is still RCP-owned. Ambiguous
+  outcomes leave the one exact ref visible for operator inspection instead of
+  overwriting or deleting another writer's work. Invalid readback still runs
+  the lease-protected cleanup path, and local probe-directory cleanup failures
+  cannot hide the original error.
+- Key removal is bound to the expected public fingerprint and deletes only the
+  exact pair plus now-empty derived parents. The helper also rejects any
+  lexical overlap between the credential root and the intended repository
+  checkout path; P4 still owns real existing-root ownership, symlink, special-
+  file, and resolved-path proof before cloning.
+- The packet's one Codex Security diff scan
+  (`fbb7dc80-61da-401c-baa5-c04b9c665c12`) reported one low-severity issue: the
+  nominal Git-output bound ran after `subprocess.run` had already captured
+  arbitrary output. The default runner now reads both pipes incrementally,
+  kills on the first byte over the bound, and retains the timeout even when a
+  child closes its pipes before hanging. Focused real-process regressions prove
+  ordinary exit/output, pre-capture overflow termination, and that closed-pipe
+  timeout. The scan's deferred checkout/credential overlap concern is narrowed
+  by the new lexical guard without stealing P4's filesystem-resolution owner.
+  No second audit was run.
+- Twenty-nine focused P3 unit/helper tests pass, with the external live drive
+  skipped by its explicit gate. The separately gated live test
+  also verifies GitHub's published Ed25519 host fingerprint, exact write deploy-
+  key creation, push/readback/delete, exact ref/key cleanup, and local private-
+  key removal. Its ambiguous-POST cleanup now re-identifies only the exact label
+  and public key if GitHub may have created the key before returning an invalid
+  response.
+- P3 is not yet complete: the current environment exposes neither the required
+  explicitly disposable GitHub repository nor a cleanup-capable live-test
+  credential, so the external mutation drive was collected but skipped. No
+  ordinary repository was repurposed and no undeletable test repository was
+  created. P4 and P6 remain gated on that live proof. P6 still owns durable step
+  receipts, cancellation disposition ordering, and invocation of these
+  primitives; no HTTP/member route can call them yet.
+- Final local verification passes all 2,655 backend tests with the three
+  expected skips, all 436 Web tests, focused Ruff, and the documentation suite.
+  The first backend run was intentionally discarded as evidence because the
+  restricted sandbox denied the suite's Unix sockets, PTYs, broker subprocesses,
+  and real-home check; the canonical unsandboxed `uv run pytest` is the passing
+  result above.
+
 ## What remains
 
 The remaining implementation work is:
@@ -1078,7 +1144,8 @@ The remaining implementation work is:
    source update/build receipt plus doctor and private CLI-to-server transport;
 2. concrete project-provisioning machine orchestration and final confirmation,
    consuming the completed durable member API and backend projection;
-3. central Git checkout and write-deploy-key setup;
+3. the disposable-repository qualification for the implemented deploy-key
+   primitive, then central Git checkout and provisioning orchestration;
 4. local/remote provider readiness against authentication already present on
    each execution account;
 5. source-built desktop distinct origins, tunnels, live Keychain
@@ -2284,6 +2351,12 @@ finalizer and normal startup reopening still need the existing owner. P6b is the
 only new team-project entrance into that owner.
 
 ### P3 — Repository-scoped deploy-key lifecycle
+
+Status: implementation and focused regressions are complete in the current
+packet, including the one-audit fixes. The packet remains open and does not
+unblock P4 or P6 until the guarded disposable-GitHub-repository live drive
+passes. The primitive is not wired to member HTTP authority or durable
+provisioning orchestration.
 
 Own:
 

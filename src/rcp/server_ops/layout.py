@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
+_PROJECT_ALIAS = re.compile(r"[a-z][a-z0-9-]{0,47}")
 
 
 @dataclass(frozen=True)
@@ -92,14 +93,12 @@ class ServerLayout:
         return self.releases_root / commit
 
     def project_repository_dir(self, project_id: str, alias: str) -> Path:
-        try:
-            parsed = uuid.UUID(project_id)
-        except (AttributeError, ValueError) as exc:
-            raise ValueError("project id must be a canonical UUID4") from exc
-        if parsed.version != 4 or str(parsed) != project_id:
-            raise ValueError("project id must be a lowercase, hyphenated canonical UUID4")
-        _safe_component(alias, label="repository alias")
+        _project_credential_components(project_id, alias)
         return self.projects_root / project_id / "repositories" / alias
+
+    def project_deploy_key_path(self, project_id: str, alias: str) -> Path:
+        relative = project_deploy_key_relative_path(project_id, alias)
+        return self.credentials_root / Path(relative)
 
 
 DEFAULT_SERVER_LAYOUT = ServerLayout(
@@ -137,6 +136,22 @@ def remote_credentials_root(remote_home: str) -> PurePosixPath:
     return home / ".local" / "share" / "rcp" / "credentials"
 
 
+def project_deploy_key_relative_path(project_id: str, alias: str) -> PurePosixPath:
+    _project_credential_components(project_id, alias)
+    return PurePosixPath("projects") / project_id / alias / "id_ed25519"
+
+
+def remote_project_deploy_key_path(
+    remote_home: str,
+    project_id: str,
+    alias: str,
+) -> PurePosixPath:
+    return remote_credentials_root(remote_home) / project_deploy_key_relative_path(
+        project_id,
+        alias,
+    )
+
+
 def server_service_unit_text() -> str:
     return (
         importlib.resources.files("rcp.server_ops")
@@ -145,22 +160,22 @@ def server_service_unit_text() -> str:
     )
 
 
-def _safe_component(value: str, *, label: str) -> None:
-    if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > 255
-        or value in {".", ".."}
-        or "/" in value
-        or "\\" in value
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
-    ):
-        raise ValueError(f"{label} must be one safe path component")
+def _project_credential_components(project_id: str, alias: str) -> None:
+    try:
+        parsed = uuid.UUID(project_id)
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("project id must be a canonical UUID4") from exc
+    if parsed.version != 4 or str(parsed) != project_id:
+        raise ValueError("project id must be a lowercase, hyphenated canonical UUID4")
+    if not isinstance(alias, str) or _PROJECT_ALIAS.fullmatch(alias) is None:
+        raise ValueError("repository alias must be a canonical provisioning alias")
 
 
 __all__ = [
     "DEFAULT_SERVER_LAYOUT",
     "ServerLayout",
+    "project_deploy_key_relative_path",
     "remote_credentials_root",
+    "remote_project_deploy_key_path",
     "server_service_unit_text",
 ]
