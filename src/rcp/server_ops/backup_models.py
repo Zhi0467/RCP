@@ -895,6 +895,8 @@ class BackupProjectCapture(_StrictBackupModel):
 
     @model_validator(mode="after")
     def validate_capture(self) -> BackupProjectCapture:
+        if len(self.files) > BACKUP_INVENTORY_MAX_ENTRIES:
+            raise ValueError("project backup file inventory exceeds its entry bound")
         if self.status == "captured":
             if (
                 self.main_head is None

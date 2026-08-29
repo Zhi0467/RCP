@@ -7,7 +7,7 @@ import re
 import stat
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -77,6 +77,7 @@ from rcp.core.validation.proposals import (
 )
 from rcp.history import HistoryManager
 from rcp.limits import (
+    BACKUP_INVENTORY_MAX_ENTRIES,
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
     CHAT_PREVIEW_MAX_CHARS,
@@ -346,6 +347,172 @@ class _StoredChatRecord(BaseModel):
     graph_update: GraphUpdateResult | None = Field(default=None, alias="graphUpdate")
     trigger: TaskTrigger = "human"
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CanonicalChatBackupSource:
+    """One safe append-only chat and the exact byte boundary backup may read."""
+
+    path: Path
+    observed_bytes: int
+    device: int
+    inode: int
+
+
+def _canonical_chat_path(
+    root: Path,
+    chat_id: str,
+    *,
+    chat_scope: Literal["node", "project"],
+    node_id: str | None,
+) -> Path:
+    target = node_id if chat_scope == "node" else "project"
+    if target is None:
+        raise ValueError("Node chat requires a node_id")
+    safe_target = re.sub(r"[^A-Za-z0-9._-]+", "_", target).strip("._") or "node"
+    return root / "chat" / f"{safe_target}-{chat_id}.jsonl"
+
+
+def canonical_chat_backup_sources(root: Path) -> tuple[CanonicalChatBackupSource, ...]:
+    """Inventory every canonical chat without refreshing or taking its append lock."""
+
+    chat_dir = root / "chat"
+    try:
+        directory = chat_dir.lstat()
+    except FileNotFoundError:
+        return ()
+    except OSError as exc:
+        raise ValueError("The canonical chat directory is unavailable.") from exc
+    if not stat.S_ISDIR(directory.st_mode):
+        raise ValueError("The canonical chat path is not a safe directory.")
+    try:
+        candidates = sorted(chat_dir.iterdir(), key=lambda path: path.name)
+    except OSError as exc:
+        raise ValueError("The canonical chat directory cannot be enumerated.") from exc
+    if len(candidates) > BACKUP_INVENTORY_MAX_ENTRIES:
+        raise ValueError("The canonical chat inventory exceeds its entry bound.")
+    sources: list[CanonicalChatBackupSource] = []
+    for path in candidates:
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise ValueError("A canonical chat file cannot be inspected.") from exc
+        if path.parent != chat_dir or path.suffix != ".jsonl" or not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("The canonical chat directory contains an unsafe entry.")
+        sources.append(
+            CanonicalChatBackupSource(
+                path=path,
+                observed_bytes=metadata.st_size,
+                device=metadata.st_dev,
+                inode=metadata.st_ino,
+            )
+        )
+    return tuple(sources)
+
+
+def iter_canonical_chat_backup_prefix(
+    source: CanonicalChatBackupSource,
+    *,
+    project_id: str,
+    operation_projects: Mapping[str, str],
+) -> Iterator[bytes]:
+    """Yield the typed complete prefix whose operations exist in the DB snapshot."""
+
+    descriptor = os.open(source.path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        initial = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(initial.st_mode)
+            or (initial.st_dev, initial.st_ino) != (source.device, source.inode)
+            or initial.st_size < source.observed_bytes
+        ):
+            raise ValueError("The canonical chat changed before its backup read.")
+        first: _StoredChatRecord | None = None
+        remaining = source.observed_bytes
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            while remaining:
+                line = handle.readline(remaining)
+                remaining -= len(line)
+                if not line or not line.endswith(b"\n"):
+                    break
+                try:
+                    raw = json.loads(line)
+                    record = _StoredChatRecord.model_validate(raw)
+                    _validate_stored_chat_record(
+                        record,
+                        first=first,
+                        root=source.path.parent.parent,
+                        path=source.path,
+                    )
+                except (TypeError, UnicodeError, ValueError) as exc:
+                    raise ValueError("A canonical chat record is malformed.") from exc
+                if first is None:
+                    first = record
+                if record.operation_id is not None:
+                    try:
+                        operation_id = str(uuid.UUID(record.operation_id))
+                    except ValueError as exc:
+                        raise ValueError(
+                            "A canonical chat operation identity is malformed."
+                        ) from exc
+                    if operation_id != record.operation_id:
+                        raise ValueError("A canonical chat operation identity is not canonical.")
+                    owner = operation_projects.get(operation_id)
+                    if owner is None:
+                        break
+                    if owner != project_id:
+                        raise ValueError("A canonical chat references another project's task.")
+                yield line
+        final = os.fstat(descriptor)
+        try:
+            current = source.path.lstat()
+        except OSError as exc:
+            raise ValueError("The canonical chat changed during its backup read.") from exc
+        if (
+            (final.st_dev, final.st_ino) != (source.device, source.inode)
+            or (current.st_dev, current.st_ino) != (source.device, source.inode)
+            or final.st_size < source.observed_bytes
+        ):
+            raise ValueError("The canonical chat changed during its backup read.")
+    finally:
+        os.close(descriptor)
+
+
+def _validate_stored_chat_record(
+    record: _StoredChatRecord,
+    *,
+    first: _StoredChatRecord | None,
+    root: Path,
+    path: Path,
+) -> None:
+    chat_id = str(uuid.UUID(record.session_id))
+    message_id = str(uuid.UUID(record.uuid))
+    timestamp = datetime.fromisoformat(record.timestamp)
+    if (
+        chat_id != record.session_id
+        or message_id != record.uuid
+        or timestamp.tzinfo is None
+        or record.type != record.role
+    ):
+        raise ValueError("canonical chat record identity is invalid")
+    anchor = first or record
+    if (
+        record.session_id != anchor.session_id
+        or record.chat_scope != anchor.chat_scope
+        or record.node_id != anchor.node_id
+    ):
+        raise ValueError("canonical chat record context changed")
+    if (anchor.chat_scope == "node" and not anchor.node_id) or (
+        anchor.chat_scope == "project" and anchor.node_id is not None
+    ):
+        raise ValueError("canonical chat scope is invalid")
+    if path != _canonical_chat_path(
+        root,
+        anchor.session_id,
+        chat_scope=anchor.chat_scope,
+        node_id=anchor.node_id,
+    ):
+        raise ValueError("canonical chat path does not match its records")
 
 
 class ReviewRequest(BaseModel):
@@ -773,11 +940,12 @@ class ProjectService:
         chat_scope: Literal["node", "project"],
         node_id: str | None,
     ) -> Path:
-        target = node_id if chat_scope == "node" else "project"
-        if target is None:
-            raise ValueError("Node chat requires a node_id")
-        safe_target = re.sub(r"[^A-Za-z0-9._-]+", "_", target).strip("._") or "node"
-        return self.history.workspace.root / "chat" / f"{safe_target}-{chat_id}.jsonl"
+        return _canonical_chat_path(
+            self.history.workspace.root,
+            chat_id,
+            chat_scope=chat_scope,
+            node_id=node_id,
+        )
 
     def chat_summaries(
         self,
@@ -915,39 +1083,21 @@ class ProjectService:
 
         first = records[0]
         try:
-            chat_id = str(uuid.UUID(first.session_id))
-            if chat_id != first.session_id:
-                return None
             timestamps = [datetime.fromisoformat(record.timestamp) for record in records]
-            if any(timestamp.tzinfo is None for timestamp in timestamps):
-                return None
             for record in records:
-                if str(uuid.UUID(record.uuid)) != record.uuid:
-                    return None
+                _validate_stored_chat_record(
+                    record,
+                    first=first,
+                    root=self.history.workspace.root,
+                    path=path,
+                )
         except ValueError:
             return None
-        if any(
-            record.session_id != chat_id
-            or record.chat_scope != first.chat_scope
-            or record.node_id != first.node_id
-            or record.type != record.role
-            for record in records
-        ):
-            return None
+        chat_id = first.session_id
         if first.chat_scope == "node":
-            if not first.node_id:
-                return None
             kind: Literal["node_chat", "project_chat"] = "node_chat"
         else:
-            if first.node_id is not None:
-                return None
             kind = "project_chat"
-        if path != self.chat_path(
-            chat_id,
-            chat_scope=first.chat_scope,
-            node_id=first.node_id,
-        ):
-            return None
 
         messages = [
             ChatMessage(

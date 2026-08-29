@@ -280,7 +280,10 @@ class BackupSnapshotProjectInventory(_StrictCaptureModel):
         artifact_keys = [
             (reference.operation_id, reference.artifact_id) for reference in self.kept_artifacts
         ]
-        if len(artifact_keys) != len(set(artifact_keys)):
+        artifact_filenames = [reference.kept_filename for reference in self.kept_artifacts]
+        if len(artifact_keys) != len(set(artifact_keys)) or len(artifact_filenames) != len(
+            set(artifact_filenames)
+        ):
             raise ValueError("project backup inventory repeats a kept artifact")
         if any(reference.operation_id not in task_ids for reference in self.kept_artifacts):
             raise ValueError("kept artifacts must belong to the captured project task set")
@@ -368,6 +371,11 @@ class BackupSQLiteCaptureReceipt(_StrictCaptureModel):
             for project in self.projects
         ):
             raise ValueError("SQLite capture cannot include another space's project")
+        task_ids = [
+            operation_id for project in self.projects for operation_id in project.task_operation_ids
+        ]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError("SQLite capture cannot assign one task to multiple projects")
         partial = bool(
             not self.app_data_plan.complete
             or any(project.status == "uncaptured" for project in self.projects)
@@ -466,7 +474,7 @@ class BackupCaptureCoordinator:
             status="partial" if partial else "complete",
         )
         receipt_path = capture_root / "sqlite-capture.json"
-        receipt_sha256 = _write_immutable_receipt(receipt_path, receipt)
+        receipt_sha256 = write_immutable_backup_receipt(receipt_path, receipt)
         _fsync_directory(capture_root)
         return BackupSQLiteCapturePublication(
             receipt=receipt,
@@ -670,7 +678,9 @@ def _file_sha256(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
-def _write_immutable_receipt(path: Path, receipt: BackupSQLiteCaptureReceipt) -> str:
+def write_immutable_backup_receipt(path: Path, receipt: BaseModel) -> str:
+    """Publish one strict bounded JSON receipt as a new read-only file."""
+
     payload = (
         json.dumps(
             receipt.model_dump(mode="json"),
@@ -682,7 +692,7 @@ def _write_immutable_receipt(path: Path, receipt: BackupSQLiteCaptureReceipt) ->
         + "\n"
     ).encode("utf-8")
     if len(payload) > BACKUP_RECEIPT_MAX_BYTES:
-        raise BackupCaptureUnavailable("The SQLite capture receipt exceeds its size bound.")
+        raise BackupCaptureUnavailable("The backup receipt exceeds its size bound.")
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags, 0o400)
     try:
@@ -706,22 +716,37 @@ def read_backup_sqlite_capture_receipt(
 ) -> BackupSQLiteCaptureReceipt:
     """Read one immutable O2a receipt through its published digest."""
 
+    payload = read_immutable_backup_receipt(path, expected_sha256=expected_sha256)
+    try:
+        receipt = BackupSQLiteCaptureReceipt.model_validate_json(payload)
+    except ValueError as exc:
+        raise BackupCaptureUnavailable("The SQLite capture receipt is invalid.") from exc
+    if path.name != "sqlite-capture.json" or path.parent.name != f"backup-{receipt.capture_id}":
+        raise BackupCaptureUnavailable(
+            "The SQLite capture receipt path is not bound to its capture identity."
+        )
+    return receipt
+
+
+def read_immutable_backup_receipt(path: Path, *, expected_sha256: str) -> bytes:
+    """Read one stable bounded receipt and verify its caller-published digest."""
+
     if _SHA256.fullmatch(expected_sha256) is None:
-        raise ValueError("the expected SQLite capture receipt digest is invalid")
+        raise ValueError("the expected backup receipt digest is invalid")
     if not isinstance(path, Path) or not path.is_absolute() or ".." in path.parts:
-        raise ValueError("the SQLite capture receipt path must be absolute and normalized")
+        raise ValueError("the backup receipt path must be absolute and normalized")
     no_follow = getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, os.O_RDONLY | no_follow)
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > BACKUP_RECEIPT_MAX_BYTES:
-            raise BackupCaptureUnavailable("The SQLite capture receipt is unsafe or oversized.")
+            raise BackupCaptureUnavailable("The backup receipt is unsafe or oversized.")
         chunks: list[bytes] = []
         remaining = metadata.st_size
         while remaining:
             chunk = os.read(descriptor, min(BACKUP_COPY_BUFFER_BYTES, remaining))
             if not chunk:
-                raise BackupCaptureUnavailable("The SQLite capture receipt is incomplete.")
+                raise BackupCaptureUnavailable("The backup receipt is incomplete.")
             chunks.append(chunk)
             remaining -= len(chunk)
         payload = b"".join(chunks)
@@ -734,18 +759,29 @@ def read_backup_sqlite_capture_receipt(
         final.st_size,
         final.st_mtime_ns,
     ):
-        raise BackupCaptureUnavailable("The SQLite capture receipt changed while reading.")
+        raise BackupCaptureUnavailable("The backup receipt changed while reading.")
     if hashlib.sha256(payload).hexdigest() != expected_sha256:
-        raise BackupCaptureUnavailable("The SQLite capture receipt digest does not match.")
-    try:
-        receipt = BackupSQLiteCaptureReceipt.model_validate_json(payload)
-    except ValueError as exc:
-        raise BackupCaptureUnavailable("The SQLite capture receipt is invalid.") from exc
-    if path.name != "sqlite-capture.json" or path.parent.name != f"backup-{receipt.capture_id}":
+        raise BackupCaptureUnavailable("The backup receipt digest does not match.")
+    return payload
+
+
+def validate_backup_sqlite_snapshot(receipt: BackupSQLiteCaptureReceipt) -> None:
+    """Revalidate the O2a database bytes and identity before project-file capture."""
+
+    snapshot_path = Path(receipt.snapshot_path)
+    digest, size = _file_sha256(snapshot_path)
+    if digest != receipt.sqlite_snapshot.sha256 or size != receipt.sqlite_snapshot.size_bytes:
+        raise BackupCaptureUnavailable("The SQLite snapshot no longer matches its receipt.")
+    store = AppStore.open_read_only_snapshot(snapshot_path)
+    if (
+        store.space_id != receipt.space_id
+        or store.space_name != receipt.space_name
+        or store.space_kind != "team"
+        or _database_schema_sha256(store) != receipt.database_schema_sha256
+    ):
         raise BackupCaptureUnavailable(
-            "The SQLite capture receipt path is not bound to its capture identity."
+            "The SQLite snapshot identity no longer matches its receipt."
         )
-    return receipt
 
 
 def _fsync_directory(path: Path) -> None:
@@ -765,5 +801,8 @@ __all__ = [
     "BackupSQLiteCapturePublication",
     "BackupSQLiteCaptureReceipt",
     "BackupSnapshotProjectInventory",
+    "read_immutable_backup_receipt",
     "read_backup_sqlite_capture_receipt",
+    "validate_backup_sqlite_snapshot",
+    "write_immutable_backup_receipt",
 ]

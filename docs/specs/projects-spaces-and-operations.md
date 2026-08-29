@@ -1214,8 +1214,14 @@ backup boundary classifies every direct app-data and `.research` root, rejects
 materialized or credential-bearing archive entries, binds a captured project to
 its unchanged completed provisioning proof, and can record a project as
 uncaptured without refreshing remote state or taking a canonical writer lock.
-It does not yet copy project files, build or encrypt an archive, enable the
-timer, or restore bytes.
+It now consumes that immutable SQLite receipt to optimistically copy exact local
+or SSH canonical main/branch history, typed chat prefixes, Paper introduction,
+facts, and only SQLite-referenced kept files. Checkout identity and remote
+direct-root inventories are revalidated without fetch or provider credentials;
+one unavailable or continuously changing project becomes uncaptured while
+healthy projects remain usable. It does not yet build or encrypt an archive,
+enable the timer, publish durable backup status, apply retention, or restore
+bytes.
 The private installed-service control socket exposes probe, provider plan/check,
 project-provision plan/step, and online SQLite-capture operations. `rcp server
 project provision <request-id>` publishes one complete plan, advances one
@@ -1229,8 +1235,9 @@ Machine orchestration, final creation, and the team deletion guard are
 hermetically covered, but provisioning has not yet passed S128's complete
 source-built team-service/GitHub/SSH/browser/desktop live drive. Cancellation
 after machine preparation, the unified wizard and desktop operator bridge,
-project-file backup capture, encryption/restore, member removal, and transfer
-remain active acceptance work. Current RCP must not simulate those unfinished
+encryption/restore, member removal, and transfer remain active acceptance work.
+Project-file capture is hermetically complete but still awaits S104's full live
+Linux/SSH no-pause drive. Current RCP must not simulate the other unfinished
 journeys or describe **ready for review** as an existing project.
 
 ## Deletion

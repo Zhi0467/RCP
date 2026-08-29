@@ -28,6 +28,7 @@ from rcp.config import Manifest, load_manifest
 from rcp.core.models import GraphBranchMetadata
 from rcp.limits import (
     BACKUP_INVENTORY_MAX_ENTRIES,
+    BACKUP_REMOTE_EXPORT_TIMEOUT_SECONDS,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS,
     REMOTE_STATE_HEAD_PROBE_TIMEOUT_SECONDS,
@@ -794,6 +795,11 @@ class StateWorkspace:
         """
 
         return _canonical_backup_source_plan(self.root)
+
+    def backup_source_root(self, destination: Path) -> Path:
+        """Return local live sources; SSH overrides with one private lock-free export."""
+
+        return self.root
 
     def archive_research(self, *, expected_history_fingerprint: str | None = None) -> str:
         """Atomically move the complete canonical ``.research`` directory aside."""
@@ -1641,6 +1647,129 @@ class SSHStateWorkspace(StateWorkspace):
             raise StateUnavailable(self.error or "canonical state sync failed")
         self._mark_reachable(synced=True)
         return True
+
+    def backup_source_root(self, destination: Path) -> Path:
+        """Export remote research optimistically without refresh/publication locks."""
+
+        direct_root = self._remote_backup_direct_root_inventory()
+        if not destination.is_absolute() or ".." in destination.parts:
+            raise ValueError("backup source export requires one normalized absolute directory")
+        try:
+            metadata = destination.lstat()
+            entries = list(destination.iterdir())
+        except OSError as exc:
+            raise StateUnavailable("Backup source export staging is unavailable.") from exc
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+            or entries
+        ):
+            raise StateUnavailable(
+                "Backup source export staging is not one empty private directory."
+            )
+        remote = f"{self.host}:{shlex.quote(str(self.remote_root))}/"
+        try:
+            result = subprocess.run(
+                [
+                    "rsync",
+                    "-a",
+                    "--delete",
+                    "--exclude=/patches/.batch-*/***",
+                    "--exclude=/patches/.unconfirmed-*",
+                    "--exclude=/branches/.unconfirmed-*/***",
+                    "--exclude=/branches/*/graph.json",
+                    "--exclude=/branches/*/research.md",
+                    "--exclude=/branches/*/glossary.json",
+                    "--exclude=/branches/*/proposals.json",
+                    "--exclude=/branches/*/coverage.json",
+                    "--exclude=/branches/*/patches/.unconfirmed-*",
+                    "--include=/manifest.toml",
+                    "--include=/scope-base.json",
+                    "--include=/patches/***",
+                    "--include=/branches/***",
+                    "--include=/chat/***",
+                    "--include=/facts/***",
+                    "--include=/paper/***",
+                    "--exclude=.refresh.lock",
+                    "--exclude=.agent-run.lock",
+                    "--exclude=.append.lock",
+                    "--exclude=.chat.lock",
+                    "--exclude=.publish",
+                    "--exclude=*",
+                    *rsync_ssh_arguments(),
+                    remote,
+                    f"{destination}/",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=BACKUP_REMOTE_EXPORT_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self._mark_unreachable(str(exc))
+            raise StateUnavailable("The remote backup source export was unavailable.") from exc
+        if (
+            len(result.stdout.encode("utf-8", errors="replace")) > 256 * 1024
+            or len(result.stderr.encode("utf-8", errors="replace")) > 256 * 1024
+        ):
+            self._mark_unreachable("remote backup source export returned too much output")
+            raise StateUnavailable(self.error or "The remote backup source export failed.")
+        if result.returncode:
+            self._mark_unreachable(result.stderr)
+            raise StateUnavailable(self.error or "The remote backup source export failed.")
+        if self._remote_backup_direct_root_inventory() != direct_root:
+            raise StateUnavailable("The remote backup root changed during its export.")
+        self._mark_reachable()
+        return destination
+
+    def _remote_backup_direct_root_inventory(self) -> tuple[tuple[str, str], ...]:
+        result = self._ssh(
+            [
+                "python3",
+                "-c",
+                _remote_script("remote_backup_inventory.py"),
+                str(self.remote_root),
+            ],
+            timeout=REMOTE_STATE_HEAD_PROBE_TIMEOUT_SECONDS,
+        )
+        if (
+            result.returncode != 0
+            or len(result.stdout) > 256 * 1024
+            or len(result.stderr) > 256 * 1024
+        ):
+            self._mark_unreachable(result.stderr.decode(errors="replace"))
+            raise StateUnavailable("The remote backup root could not be classified.")
+        try:
+            document = json.loads(result.stdout)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            self._mark_unreachable("remote backup root returned an invalid inventory")
+            raise StateUnavailable("The remote backup root inventory is invalid.") from exc
+        if not isinstance(document, list) or len(document) > BACKUP_INVENTORY_MAX_ENTRIES:
+            raise StateUnavailable("The remote backup root inventory is invalid.")
+        known = (
+            BACKUP_RESEARCH_CANONICAL_ROOTS
+            | BACKUP_RESEARCH_DELEGATED_ROOTS
+            | BACKUP_RESEARCH_EXCLUSIONS
+        )
+        seen: set[str] = set()
+        inventory: list[tuple[str, str]] = []
+        for entry in document:
+            if (
+                not isinstance(entry, dict)
+                or set(entry) != {"name", "kind"}
+                or not isinstance(entry["name"], str)
+                or entry["kind"] not in {"directory", "file", "other"}
+                or entry["name"] in seen
+            ):
+                raise StateUnavailable("The remote backup root inventory is invalid.")
+            seen.add(entry["name"])
+            if entry["name"] not in known:
+                raise StateUnavailable(
+                    "The remote project contains an unclassified durable research root."
+                )
+            inventory.append((entry["name"], entry["kind"]))
+        return tuple(inventory)
 
     def refresh_if_stale(
         self,

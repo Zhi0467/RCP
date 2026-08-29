@@ -6,6 +6,7 @@ driver: pytest + ssh
 covered_by:
   - tests/test_backup_manifest.py
   - tests/test_backup_sqlite_capture.py
+  - tests/test_backup_capture.py
 invariants: [1, 2, 7]
 ---
 
@@ -15,9 +16,12 @@ This scenario is human-confirmed and pending its live drive. The strict archive
 schema, closed app-data/research-root classifications, nonsecret checkout
 recovery descriptor, and lock-free retained-history inventory are covered
 hermetically. The online SQLite snapshot and copied-database-only typed project
-inventory are also covered with concurrent writers; project-file copy,
-encryption, status, restore, and the full live no-pause drive are not yet
-implemented. Its boundary is in
+inventory are also covered with concurrent writers. Optimistic local/SSH
+project-file capture now has hermetic coverage for typed source selection,
+main/branch heads, complete chat boundaries, stable mutable reads, filtered
+remote export, and per-project failure isolation. Encryption, durable status,
+restore, and the full live no-pause drive are not yet implemented. Its boundary
+is in
 [Server and machine operations](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
 
 An earlier design had the server delay dispatch and delay applying results for

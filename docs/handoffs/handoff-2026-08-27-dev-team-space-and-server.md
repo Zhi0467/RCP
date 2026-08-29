@@ -4,7 +4,7 @@ Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
 F2, F3a, F3b, F4, F5, F6a, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
-and O3a are complete. D2
+O2b, and O3a are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; it is not complete and still gates D3-D5. The live
 Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
@@ -20,8 +20,9 @@ next provisioning boundary by durably composing P3-P5 through the installed
 service and stops at **ready for review** without creating a project; the
 packet's complete team-service/GitHub live qualification remains open. P6b now
 owns the exact final human confirmation, reserved identity append, registration,
-and crash recovery without rerunning machine preparation. F6b remains blocked
-on O2b's project-file capture primitive. P6c now publishes and independently
+and crash recovery without rerunning machine preparation. F6b is now unblocked
+by O2b's project-file capture primitive and remains the next incomplete
+source-update packet. P6c now publishes and independently
 enforces the ordinary team-project deletion guard through the card, Web, API,
 and catalog.
 The previously planned G1 pull-request transition was rejected by the human for this
@@ -106,9 +107,9 @@ The remaining seams are also concrete:
 
 - the strict `rcp server` shell, Linux layout, source installer, private control
   socket, installed doctor, source-update candidate builder, inert backup
-  configuration, and online SQLite capture now exist; project-file capture,
-  copied-state update rehearsal, cutover/rollback, encrypted archive/restore,
-  and member removal do not;
+  configuration, online SQLite capture, and optimistic project-file capture now
+  exist; copied-state update rehearsal, cutover/rollback, encrypted
+  archive/restore, and member removal do not;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
 - the Web UI still says “Team connections are not implemented in this build”;
@@ -1290,10 +1291,11 @@ gate are deliberately future work and do not block this plan.
   now binds the raw canonical TOML meaning; it also caught that existing
   unconfirmed branch/Patch quarantine needed an explicit exclusion before the
   retained walker could safely serve backup.
-- Not done: O1 creates no SQLite snapshot, stable file copy, archive,
-  encryption, retention, timer activation, status projection, or restore
-  effect. O2a/O2b, O3b, and O4 retain those responsibilities, and S104 remains
-  pending its live no-pause/partial-capture/restore drive.
+- O1 itself creates no SQLite snapshot, stable file copy, archive, encryption,
+  retention, timer activation, status projection, or restore effect. O2a and
+  O2b have since supplied the SQLite and project-file captures; O3b and O4
+  retain archive and restore responsibility, and S104 remains pending its live
+  no-pause/partial-capture/restore drive.
 
 #### 2026-08-29 — O2a online SQLite capture and typed inventory complete
 
@@ -1327,7 +1329,8 @@ gate are deliberately future work and do not block this plan.
   diagnosis and cleanup; nothing in O2a enables `backup run` or the systemd
   timer. It does not open a project checkout, copy canonical/chat/Paper/fact or
   kept-file bytes, build or encrypt an archive, apply retention, publish backup
-  status, or restore anything. O2b, O3b, and O4 still own those effects.
+  status, or restore anything. O2b has since supplied the project-file copy;
+  O3b and O4 still own archive, status, retention, and restore effects.
 - Focused backup, control, storage, provisioning, and result-view regressions
   pass (157 tests), including a concurrent writer that commits through the
   snapshot, a late project excluded from the copied database, per-project
@@ -1335,6 +1338,44 @@ gate are deliberately future work and do not block this plan.
   TestClient service plus Unix control-socket call. S104 remains pending its
   full live dispatch/Apply, remote partial-capture, encryption, and restore
   drive.
+
+#### 2026-08-29 — O2b optimistic project-file capture complete
+
+- `BackupProjectFileCaptureCoordinator` consumes the immutable O2a receipt and
+  revalidates its digest, exact data-directory/capture binding, SQLite bytes,
+  schema, and team identity. It never asks the later live database which
+  projects, tasks, artifacts, or result views exist.
+- Each capturable project reloads and compares its canonical manifest with the
+  captured recovery descriptor, then verifies the exact local or SSH account,
+  central checkout path, Git `origin`/optional push URL, and retained
+  provisioning commit without fetching or reading credentials. One bad or
+  unreachable project becomes **uncaptured** without spoiling healthy projects.
+- Canonical main and branch heads use the existing retained-history inventory.
+  The copy includes only manifest/scope base, retained main and branch Patches,
+  branch metadata and merge receipts, typed canonical chats, the optional Paper
+  introduction, bounded safe facts, and the O2a-referenced kept files. It never
+  walks source repositories, `.git`, provider homes, arbitrary artifact/view
+  directories, materializations, caches, locks, or staging roots.
+- SSH capture first classifies the direct remote `.research` root, exports only
+  canonical/delegated roots through filtered `rsync`, excludes branch
+  materializations and quarantine, and requires the direct-root inventory to be
+  unchanged after export. It takes no refresh/publication/append/chat lock.
+- Chats are streamed only through their observed complete JSONL prefix and stop
+  before the first task absent from the SQLite snapshot. Paper, facts, canonical
+  files, artifacts, and views use bounded stable reads; atomic replacement
+  yields old or new whole bytes, while continued churn removes only that
+  project's staging and records a generic nonsecret failure with time.
+- The immutable `project-files.json` receipt binds the O2a receipt and SQLite
+  digest, captured heads, per-file groups/hashes/sizes, recovery descriptors,
+  per-project failures, and complete/partial status. The packet does not build
+  or encrypt an archive, enable the timer, publish long-lived backup status,
+  apply retention, or restore data; O3b and O4 own those effects.
+- Focused O2b and affected owner suites pass, including real local Git identity,
+  main/branch canonical capture, materialization and unreferenced-file
+  exclusion, post-boundary and post-snapshot chat truncation, remote filtering,
+  unavailable-host isolation, and a real concurrent atomic fact replacement.
+  S104 remains pending its full live Linux/SSH no-pause, encrypted readback, and
+  restore drive.
 
 ## What remains
 
@@ -1349,10 +1390,10 @@ The remaining implementation work is:
    enrollment/readback, navigation, cached team groups, and optional operator
    bridge (the strict metadata and token-write/remove substrate is complete);
 4. app-visible project setup driven by the backend and prepared by the CLI;
-5. optimistic project-file capture, encrypted archive readback, safe timer
-   enablement, retention, restore, and server status (the strict manifest,
-   online SQLite snapshot/typed inventory, configuration, and disabled units
-   are complete);
+5. encrypted archive readback, safe timer enablement, retention, restore, and
+   server status (the strict manifest, online SQLite snapshot/typed inventory,
+   optimistic project-file capture, configuration, and disabled units are
+   complete);
 6. console member removal;
 7. append-only personal-to-team home transfer and recovery; and
 8. a live one-lab acceptance drill and operator documentation.
@@ -2256,8 +2297,9 @@ Doctor is read-only and works interactively and as one structured document.
 Status: complete and pushed at `fff75c3` on 2026-08-29. Its one independent audit
 is closed: the detached-worktree and receipt-race concerns have regressions, the
 Python-symlink report was disproven by a real-worktree regression, and the
-trusted-`origin/main`/same-UID build boundary is explicit. F6b waits for O2b and
-will consume the now-complete P2 projection rather than duplicating that owner.
+trusted-`origin/main`/same-UID build boundary is explicit. F6b was unblocked when
+O2b completed; it will consume the now-complete P2 projection rather than
+duplicating that owner.
 
 Own:
 
@@ -3097,8 +3139,9 @@ memory.
 
 Status: complete hermetically on 2026-08-29. The installed-service online
 snapshot, copied-database-only inventory, per-project failure isolation, and
-immutable handoff receipt have focused coverage. It neither captures project
-files nor activates a backup workflow; those boundaries remain with O2b/O3b.
+immutable handoff receipt have focused coverage. O2b now consumes that receipt
+and captures project files; O2a itself still does neither and does not activate
+a backup workflow. O3b owns activation.
 
 Own:
 
@@ -3125,11 +3168,23 @@ project lock.
 
 ### O2b — Optimistic canonical and project-file capture
 
+Status: complete hermetically on 2026-08-29. The immutable O2a-to-O2b handoff,
+local/SSH checkout proof, filtered remote export, typed source selection,
+bounded stable reads, per-project failure isolation, and immutable project-file
+receipt have focused coverage. The full live S104 drive remains pending; O3b
+still owns archive encryption, readback, status, retention, and timer activation.
+
 Own:
 
-- O2a's `src/rcp/server_ops/backup_capture.py` for file-capture orchestration;
-- retained canonical-history export helpers in `src/rcp/transport/state.py` and
-  `src/rcp/history/manager.py`;
+- O2a's `src/rcp/server_ops/backup_capture.py` plus
+  `src/rcp/server_ops/backup_project_files.py`,
+  `src/rcp/server_ops/backup_project_io.py`, and
+  `src/rcp/server_ops/backup_checkout.py` for receipt orchestration, bounded
+  copy mechanics, and checkout verification;
+- retained canonical-history export helpers in `src/rcp/transport/state.py`
+  plus shipped stdlib-only remote inspection helpers in
+  `src/rcp/transport/remote_backup_checkout.py` and
+  `src/rcp/transport/remote_backup_inventory.py`;
 - narrow typed readers beside the chat owner in `src/rcp/service.py` and Paper
   owner in `src/rcp/paper/service.py`; and
 - `tests/test_backup_capture.py` with concurrent file writers and remote
@@ -4380,10 +4435,11 @@ Close this handoff only when all of the following are true:
 
 ## Suggested skills for pickup
 
-- The design grilling and final cross-document fact-check are complete. Dispatch
-  G0 directly on `main`, then begin G2, F1, and D1 according to the dependency
-  map; all decisions are settled. Implement the remaining packets without
-  reopening product boundaries unless current code contradicts their authority.
+- The design grilling and final cross-document fact-check are complete. Continue
+  directly on `main` from the dependency-ready packets; O2b now unblocks both
+  F6b's copied-state rehearsal and O3b's encrypted backup workflow. Implement
+  the remaining packets without reopening product boundaries unless current
+  code contradicts their authority.
 - Use `computer-use:computer-use` for the real source-built desktop drives in
   D2, D4a, D4b, D6, D7, T5a, T5b, and V1; browser tests cannot prove native SSH,
   Keychain, cookie-store, or navigation behavior.

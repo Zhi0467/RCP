@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import codecs
 import hashlib
 import os
+import stat
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -27,6 +29,58 @@ INTRODUCTION_TEMPLATE = """# Introduction
 
 ## Why this deserves publication and communication to the community
 """
+
+
+def canonical_introduction_backup_source(root: Path) -> Path | None:
+    """Return the only canonical Paper file without refreshing or locking it."""
+
+    paper_root = root / "paper"
+    try:
+        directory = paper_root.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError("The canonical Paper directory is unavailable.") from exc
+    if not stat.S_ISDIR(directory.st_mode):
+        raise ValueError("The canonical Paper path is not a safe directory.")
+    try:
+        entries = sorted(paper_root.iterdir(), key=lambda path: path.name)
+    except OSError as exc:
+        raise ValueError("The canonical Paper directory cannot be enumerated.") from exc
+    if not entries:
+        return None
+    introduction = paper_root / "introduction.md"
+    if entries != [introduction]:
+        raise ValueError("The canonical Paper directory contains an unclassified entry.")
+    try:
+        metadata = introduction.lstat()
+    except OSError as exc:
+        raise ValueError("The canonical Paper introduction cannot be inspected.") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("The canonical Paper introduction is not a safe regular file.")
+    return introduction
+
+
+def validate_canonical_introduction_backup(path: Path) -> None:
+    """Validate one copied introduction as UTF-8 Markdown without loading it whole."""
+
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("The copied Paper introduction is not a regular file.")
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            if "\x00" in decoder.decode(chunk):
+                raise ValueError("The copied Paper introduction contains NUL text.")
+        if "\x00" in decoder.decode(b"", final=True):
+            raise ValueError("The copied Paper introduction contains NUL text.")
+    except UnicodeDecodeError as exc:
+        raise ValueError("The copied Paper introduction is not UTF-8 Markdown.") from exc
+    finally:
+        os.close(descriptor)
 
 
 class PaperSnapshot(BaseModel):
