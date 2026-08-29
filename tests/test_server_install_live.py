@@ -35,7 +35,6 @@ from pydantic import TypeAdapter
 
 from rcp.server_ops.models import ServerCommandEvent
 from rcp.server_ops.update import BuiltCandidateReceipt
-from rcp.server_runtime import web_build_identity
 
 _LIVE_GATE = "RCP_RUN_SERVER_INSTALL_LIVE"
 _DISPOSABLE_CONFIRMATION = "RCP_SERVER_INSTALL_LIVE_DISPOSABLE"
@@ -569,7 +568,7 @@ def _prepare_live_cutover(
         candidate_commit=candidate_commit,
         release_path=str(release),
         receipt_path=str(receipt_path),
-        web_build_id=web_build_identity(release / "web" / "dist"),
+        web_build_id=_candidate_web_build_identity(release),
         prepared_at=datetime.now(UTC),
     )
     descriptor, receipt_name = tempfile.mkstemp(prefix="rcp-live-built-candidate-")
@@ -618,6 +617,28 @@ def _prepare_live_cutover(
         pytest.fail("synthetic candidate rehearsal did not return one receipt path")
     preflight_path = Path(rehearsal_lines[0])
     return receipt_path, preflight_path, base_control, base_doctor
+
+
+def _candidate_web_build_identity(release: Path) -> str:
+    script = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from rcp.server_runtime import web_build_identity\n"
+        "print(web_build_identity(Path(sys.argv[1])))\n"
+    )
+    return _run_checked(
+        (
+            "sudo",
+            "-n",
+            "-u",
+            "rcp",
+            "-H",
+            str(release / ".venv" / "bin" / "python"),
+            "-c",
+            script,
+            str(release / "web" / "dist"),
+        )
+    ).stdout.strip()
 
 
 def _assert_live_rollback(
