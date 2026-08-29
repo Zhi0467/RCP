@@ -10,13 +10,15 @@ covered_by:
   - tests/test_server_provider_readiness.py
   - tests/test_server_update_prepare.py
   - tests/test_server_update_rehearsal.py
+  - tests/test_server_update_checkpoint.py
   - tests/test_team_project_provisioning.py
 invariants: [1, 8]
 last_checked: >-
   2026-08-29 — install, update preparation, copied-state candidate rehearsal,
-  provider readiness, and project machine preparation have concrete
-  OS-authority/private-control regressions; cutover/rollback, restore, member
-  removal, the complete remote drive, and the full scenario remain pending.
+  coherent local rollback checkpoint/re-entry, provider readiness, and project
+  machine preparation have concrete OS-authority/private-control regressions;
+  cutover and old-service restart, restore, member removal, the complete remote
+  drive, and the full scenario remain pending.
 ---
 
 # Dangerous operations need the machine, not a login

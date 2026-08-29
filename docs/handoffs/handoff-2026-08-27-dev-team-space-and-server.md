@@ -3,7 +3,7 @@
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
-F2, F3a, F3b, F4, F5, F6a, F6b, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
+F2, F3a, F3b, F4, F5, F6a, F6b, F6c, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
 O2b, O3a, and O3b are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; it is not complete and still gates D3-D5. The live
@@ -22,7 +22,10 @@ packet's complete team-service/GitHub live qualification remains open. P6b now
 owns the exact final human confirmation, reserved identity append, registration,
 and crash recovery without rerunning machine preparation. F6b now consumes
 O2a/O2b to rehearse the candidate against copied real state under one reusable
-startup-effect fence; F6c is the next incomplete source-update packet. P6c now
+startup-effect fence. F6c's current-owner checkpoint core now publishes and
+temp-restores one exact local rollback boundary with crash-safe replacement
+journals; later T3e/T4b owners extend its typed inventory, while F6d is the next
+incomplete source-update packet. P6c now
 publishes and independently
 enforces the ordinary team-project deletion guard through the card, Web, API,
 and catalog.
@@ -109,8 +112,9 @@ The remaining seams are also concrete:
 - the strict `rcp server` shell, Linux layout, source installer, private control
   socket, installed doctor, source-update candidate builder, protected backup
   run/configuration/status/retention path, online SQLite capture, and optimistic
-  project-file capture, and copied-state update rehearsal now exist;
-  update checkpoint/cutover/rollback, restore, and member removal do not;
+  project-file capture, copied-state update rehearsal, and the coherent local
+  update rollback checkpoint now exist;
+  cutover/post-switch rollback coordination, restore, and member removal do not;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
 - the Web UI still says “Team connections are not implemented in this build”;
@@ -1479,13 +1483,70 @@ gate are deliberately future work and do not block this plan.
   short maintenance barrier, cutover, post-switch verification, fence release,
   loud rollback, and live systemd failure drive.
 
+#### 2026-08-29 — F6c coherent local update rollback checkpoint complete
+
+- `update_checkpoint.py` now binds one final O2a SQLite receipt, O2b project-file
+  receipt, matching capture-specific F6b receipt, previous immutable release,
+  and candidate release into one private checkpoint. It refuses another data
+  directory, capture UUID, space, source commit, project inventory, project-file
+  digest, or candidate receipt; a failed copy never publishes `checkpoint.json`
+  and therefore cannot authorize cutover.
+- The app-data replacement payload contains the online SQLite snapshot, every
+  present ledger-referenced local task/Experiment/wrap-up/result-view stage,
+  every structurally complete attachment set, and local bootstrap manifests.
+  Missing stages fail only while an active task, episode, or wrap-up still needs
+  them; retention-swept historical references are known-absent rather than a
+  permanent update blocker. It explicitly excludes remote stages, provider/SSH
+  homes, credentials, source
+  and project checkouts, locks, runtime metadata, and rebuildable caches.
+  `project-sources` remains a loud deferred root for T3e. Nonempty transfer
+  inbox/export roots also fail closed until their later typed receipt owners
+  can distinguish complete durable files from partial work.
+- Every captured project remains in the proof inventory. Server-local state
+  repositories additionally become exact `.research` replacement roots;
+  reachable SSH project captures remain proof-only and are never written
+  locally, while only an already-proven SSH-unreachable project may retain the
+  explicit `remote_unreachable` exclusion. Repository-level kept artifacts and
+  views remain in the capture proof but outside startup-owned replacement.
+- Checkpoint files are stable-streamed with no-follow opens, byte counts,
+  SHA-256, inode/timestamp rechecks, private modes, and fsync. The exact O2a,
+  O2b, and candidate receipt bytes are read once, chained by digest, and copied
+  as those same bytes. Before publication the coordinator rebuilds every
+  replacement root plus every retained project file into a temporary
+  verification root and verifies bytes, file modes, directory modes, and owner
+  identity exactly. It also preflights every live root and its atomic sibling
+  quarantine before declaring the checkpoint verified.
+- Rollback is replacement, not overlay. A mode-0600 fsynced journal is written
+  before the first move; candidate app data and each local `.research` root are
+  atomically moved to checkpoint-specific sibling quarantines, rebuilt from the
+  immutable payload, reverified, and finalized through monotonic `prepared`,
+  `quarantined`, `restored`, `verified`, and `complete` phases. Quarantines are
+  retained. Re-entry tolerates a crash between individual root moves/restores
+  and never chooses an unjournaled path.
+- The narrow update-machine seam invokes checkpoint creation through the
+  current release as the `rcp` account. F6c does not close admission, retain a
+  final F6b capture, stop/restart systemd, switch `current`, restore the release
+  pointer, or reopen work; F6d must fresh-rehearse and checkpoint the same
+  closed-admission capture, then own those steps and unfinished-journal routing
+  through update/install/doctor.
+- Seventeen focused checkpoint tests cover all five crash phases, exact
+  app-data and local-project replacement, permission-only drift, candidate-only
+  root quarantine, attachment and bootstrap retention, active-versus-historical
+  stage handling, receipt and journal binding, transfer fail-closed behavior,
+  parent-directory durability, and payload tamper rejection. The complete
+  backend suite, all 437 Web tests, the production Web build, and Ruff pass.
+  The independent audit's seven findings are closed here: five in this core,
+  unfinished-journal entry wiring in F6d, and future typed-root extensions in
+  their already-assigned T3e/T4b owners.
+
 ## What remains
 
 The remaining implementation work is:
 
-1. update checkpoint, cutover, rollback, and recovery, consuming the completed
-   source build and copied-state rehearsal receipts plus doctor and private
-   CLI-to-server transport;
+1. update cutover, post-switch verification, loud rollback coordination, and
+   recovery, consuming the completed source build, copied-state rehearsal, and
+   coherent local checkpoint receipts plus doctor and private CLI-to-server
+   transport;
 2. concrete project provisioning, where machine orchestration and final human
    creation are implemented but still need the complete live qualification,
    unified UI/desktop drive and post-setup cancellation;
@@ -2508,6 +2569,12 @@ closed admission boundary before switching.
 
 ### F6c — Coherent update rollback checkpoint
 
+Status: current-owner checkpoint core complete on 2026-08-29. This means F6d
+can consume the verified local replacement and journal mechanism; it does not
+claim the future imported-source or transfer roots already exist. Their
+already-ordered T3e/T4b packets must add typed inventory through this owner.
+Until then, a nonempty deferred root fails the update rather than being omitted.
+
 Own:
 
 - new `src/rcp/server_ops/update_checkpoint.py` for the explicit local rollback
@@ -2534,21 +2601,24 @@ into a temporary verification root must reproduce every included byte before
 F6d consumes it. Rollback is replacement, not an overlay: after the candidate is
 stopped, its app-data root and each candidate-touched server-local `.research`
 root are atomically moved to an operation-specific quarantine, then rebuilt from
-the checkpoint's SQLite, retained canonical/chat/Paper/facts inputs,
-project-owned imported sources, local stages, attachments, and completed
-transfer inbox entries. Materialized outputs and caches are regenerated by the
-previous release. This removes candidate-created unknown roots instead of
+the checkpoint's SQLite, retained canonical/chat/Paper/facts inputs, local
+stages, complete attachment sets, and bootstrap manifests. T3e later adds
+project-owned imported sources, and T4b later adds completed transfer entries,
+through typed owner inventories; their presence fails closed until then.
+Materialized outputs and caches are regenerated by the previous release. This
+removes candidate-created unknown roots instead of
 leaving them beside restored state; the quarantine remains for diagnosis until
 explicit safe cleanup. The startup-effect fence forbids remote canonical writes,
 so rollback never pretends to replace a remote root it did not snapshot.
 Persist a small fsynced rollback journal beside the checkpoint, outside the
 live app-data and project roots, before the first move. It records the exact
 checkpoint, previous release, quarantine paths, and replacement phase. Every
-move, restore, verification, and finalization is idempotent. `install`, `update`,
-and `doctor` detect an unfinished journal; they keep the service stopped and
-resume verification of the previous state rather than starting either release
-or deleting an uncertain path. Inject a coordinator crash after every journaled
-phase and prove re-entry restores the same pre-cutover bytes exactly once.
+move, restore, verification, and finalization is idempotent. F6c exposes strict
+unfinished-journal discovery and exact re-entry; F6d wires `install`, `update`,
+and `doctor` to keep the service stopped, resume the previous state, and refuse
+ambiguous maintenance instead of starting a release or deleting an uncertain
+path. Inject a coordinator crash after every journaled phase and prove re-entry
+restores the same pre-cutover bytes exactly once.
 This update-local checkpoint is separate from O1-O4 encrypted backup and
 disaster restore.
 
@@ -2560,7 +2630,9 @@ Own:
 - narrow dispatch in `src/rcp/server_ops/control.py` and the F3a system-service
   restart/readback seam in `src/rcp/server_ops/install.py`;
 - the durable update receipt and read model in this update owner;
-- narrow receipt integration in `src/rcp/server_ops/doctor.py`; and
+- narrow receipt integration in `src/rcp/server_ops/doctor.py`;
+- centralized unfinished-update journal routing from install, update, and
+  doctor into F6c's strict re-entry path; and
 - `tests/test_server_update_cutover.py` plus the live systemd failure drive.
 
 Consume and revalidate F6b's verified-candidate receipt, then implement the

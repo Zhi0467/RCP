@@ -9,6 +9,8 @@ import tempfile
 import threading
 import uuid
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -134,6 +136,16 @@ class _AttachmentMetadataRewrite:
 @dataclass(frozen=True)
 class _AttachmentProjectIdentityMigration:
     rewrites: tuple[_AttachmentMetadataRewrite, ...]
+
+
+@dataclass(frozen=True)
+class AttachmentRecoverySet:
+    """One complete temporary attachment set that recovery may still consume."""
+
+    attachment_set_id: str
+    project_id: str
+    root: Path
+    claimed_by: str | None
 
 
 class ChatAttachmentStore:
@@ -479,6 +491,70 @@ class ChatAttachmentStore:
     def _write(self, stored: _StoredSet) -> None:
         destination = self._metadata_path(stored.attachment_set_id)
         _atomic_write_metadata(destination, _stored_set_bytes(stored))
+
+
+@contextmanager
+def checkpoint_attachment_sets(root: Path) -> Iterator[tuple[AttachmentRecoverySet, ...]]:
+    """Hold attachment ingress still while inventorying exact recoverable set roots."""
+
+    with _STORE_LOCK:
+        if not root.exists():
+            yield ()
+            return
+        try:
+            root_metadata = root.lstat()
+        except OSError as exc:
+            raise ValueError("the attachment checkpoint root is unavailable") from exc
+        if not stat.S_ISDIR(root_metadata.st_mode) or root.is_symlink():
+            raise ValueError("the attachment checkpoint root is not an ordinary directory")
+
+        store = ChatAttachmentStore(root)
+        inventory: list[AttachmentRecoverySet] = []
+        try:
+            candidates = sorted(root.iterdir(), key=lambda item: item.name)
+        except OSError as exc:
+            raise ValueError("the attachment checkpoint root cannot be listed") from exc
+        if len(candidates) > _ATTACHMENT_SET_MIGRATION_MAX_COUNT:
+            raise ValueError("too many attachment sets to checkpoint safely")
+        for candidate in candidates:
+            set_id = _canonical_uuid(candidate.name, "saved attachment set id")
+            try:
+                candidate_metadata = candidate.lstat()
+                metadata = candidate / "metadata.json"
+                metadata_status = metadata.lstat()
+                files = candidate / "files"
+                files_status = files.lstat()
+            except OSError as exc:
+                raise ValueError("a recovery-critical attachment set is incomplete") from exc
+            if (
+                not stat.S_ISDIR(candidate_metadata.st_mode)
+                or candidate.is_symlink()
+                or not stat.S_ISREG(metadata_status.st_mode)
+                or metadata.is_symlink()
+                or metadata_status.st_size > _ATTACHMENT_METADATA_MAX_BYTES
+                or not stat.S_ISDIR(files_status.st_mode)
+                or files.is_symlink()
+            ):
+                raise ValueError("a recovery-critical attachment set has an unsafe shape")
+            try:
+                children = {item.name for item in candidate.iterdir()}
+            except OSError as exc:
+                raise ValueError("a recovery-critical attachment set cannot be listed") from exc
+            if children != {"metadata.json", "files"}:
+                raise ValueError("a recovery-critical attachment set has unknown entries")
+            stored = store._load(set_id)
+            if stored.attachment_set_id != set_id:
+                raise ValueError("saved attachment metadata names a different set")
+            store._verify(stored)
+            inventory.append(
+                AttachmentRecoverySet(
+                    attachment_set_id=set_id,
+                    project_id=stored.project_id,
+                    root=candidate,
+                    claimed_by=stored.claimed_by,
+                )
+            )
+        yield tuple(inventory)
 
 
 def _stored_set_bytes(stored: _StoredSet) -> bytes:

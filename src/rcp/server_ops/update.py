@@ -23,6 +23,7 @@ from rcp.limits import (
     SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
     SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
     SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
+    SERVER_UPDATE_CHECKPOINT_TIMEOUT_SECONDS,
     SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
 )
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
@@ -47,6 +48,7 @@ from rcp.server_runtime import ServerMetadataError, web_build_identity
 
 if TYPE_CHECKING:
     from rcp.server_ops.rehearsal import VerifiedCandidateReceipt
+    from rcp.server_ops.update_checkpoint import VerifiedUpdateCheckpoint
 
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _WEB_BUILD_ID = re.compile(r"sha256:[0-9a-f]{64}")
@@ -60,6 +62,7 @@ _LOCK_MODE = 0o600
 _DIRECTORY_MODE = 0o700
 _CONFIG_DIRECTORY_MODE = 0o750
 _MAX_RECEIPT_BYTES = 16 * 1024
+_MAX_VERIFIED_RECEIPT_BYTES = 4 * 1024 * 1024
 
 
 class UpdateRefused(RuntimeError):
@@ -210,6 +213,17 @@ class UpdateMachine(Protocol):
         target: UpdateTarget,
         built: BuiltCandidateReceipt,
     ) -> VerifiedCandidateReceipt: ...
+
+    def create_rollback_checkpoint(
+        self,
+        target: UpdateTarget,
+        verified: VerifiedCandidateReceipt,
+        *,
+        sqlite_receipt_path: Path,
+        sqlite_receipt_sha256: str,
+        project_receipt_path: Path,
+        project_receipt_sha256: str,
+    ) -> VerifiedUpdateCheckpoint: ...
 
 
 def prepare_update_command(
@@ -1171,6 +1185,100 @@ class LinuxUpdateMachine:
             )
         return receipt
 
+    def create_rollback_checkpoint(
+        self,
+        target: UpdateTarget,
+        verified: VerifiedCandidateReceipt,
+        *,
+        sqlite_receipt_path: Path,
+        sqlite_receipt_sha256: str,
+        project_receipt_path: Path,
+        project_receipt_sha256: str,
+    ) -> VerifiedUpdateCheckpoint:
+        """Run F6c as rcp after F6d has closed admission at this exact capture."""
+
+        from rcp.server_ops.update_checkpoint import (
+            UpdateCheckpointRefused,
+            read_verified_update_checkpoint,
+        )
+
+        if (
+            verified.candidate_commit != target.target_commit
+            or verified.base_running_commit != target.inspection.running_commit
+            or verified.base_current_commit != target.inspection.current_commit
+            or verified.project_capture_sha256 != project_receipt_sha256
+            or Path(verified.receipt_path).parent != self.layout.update_checkpoints_root
+        ):
+            raise UpdateRefused(
+                "The final rollback checkpoint request differs from its verified candidate."
+            )
+        candidate_receipt_sha256 = _owned_file_sha256(
+            Path(verified.receipt_path),
+            uid=self._service_uid,
+            gid=self._service_gid,
+            mode=_RECEIPT_MODE,
+            maximum=_MAX_VERIFIED_RECEIPT_BYTES,
+            label="verified-candidate receipt",
+        )
+        current_python = (
+            self.layout.release_dir(verified.base_running_commit) / ".venv" / "bin" / "python"
+        )
+        completed = self._run_service_checked(
+            (
+                str(current_python),
+                "-m",
+                "rcp.server_ops.update_checkpoint",
+                "create",
+                str(self.layout.data_dir),
+                str(self.layout.update_checkpoints_root),
+                str(self.layout.release_dir(verified.base_running_commit)),
+                str(sqlite_receipt_path),
+                sqlite_receipt_sha256,
+                str(project_receipt_path),
+                project_receipt_sha256,
+                verified.receipt_path,
+                candidate_receipt_sha256,
+            ),
+            cwd=self.layout.release_dir(verified.base_running_commit),
+            environment={"PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=SERVER_UPDATE_CHECKPOINT_TIMEOUT_SECONDS,
+            error=(
+                "The final rollback checkpoint failed. The current release is unchanged; "
+                "inspect the retained checkpoint operation before retrying."
+            ),
+        )
+        lines = completed.stdout.splitlines()
+        if len(lines) != 1:
+            raise UpdateRefused(
+                "The current release did not report one exact rollback checkpoint manifest."
+            )
+        manifest_path = Path(lines[0])
+        if manifest_path.parent.parent != self.layout.update_checkpoints_root:
+            raise UpdateRefused(
+                "The current release reported a rollback checkpoint outside its private root."
+            )
+        try:
+            checkpoint = read_verified_update_checkpoint(
+                manifest_path,
+                expected_uid=self._service_uid,
+            )
+        except UpdateCheckpointRefused as exc:
+            raise UpdateRefused(
+                "The current release did not publish one valid rollback checkpoint."
+            ) from exc
+        if (
+            checkpoint.installation_id != verified.installation_id
+            or checkpoint.space_id != verified.space_id
+            or checkpoint.capture_id != verified.capture_id
+            or checkpoint.base_commit != verified.base_running_commit
+            or checkpoint.candidate_commit != verified.candidate_commit
+            or checkpoint.candidate_receipt_sha256 != candidate_receipt_sha256
+        ):
+            raise UpdateRefused(
+                "The rollback checkpoint differs from its exact candidate and capture."
+            )
+        return checkpoint
+
     def _inspect_maintenance_roots(self) -> None:
         _require_owned_directory(
             self.layout.restore_operations_root,
@@ -1688,9 +1796,22 @@ def _owned_file_sha256(
             or info.st_size > maximum
         ):
             raise ValueError("unsafe file")
-        content = os.read(descriptor, maximum + 1)
-        if len(content) > maximum or len(content) != info.st_size:
-            raise ValueError("unsafe file size")
+        chunks: list[bytes] = []
+        remaining = info.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                raise ValueError("unsafe file size")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        final = os.fstat(descriptor)
+        path_final = path.lstat()
+        stable = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(info, name) != getattr(final, name) for name in stable) or any(
+            getattr(final, name) != getattr(path_final, name) for name in stable
+        ):
+            raise ValueError("unstable file")
+        content = b"".join(chunks)
     except (OSError, ValueError) as exc:
         raise UpdateRefused(f"The {label} has unsafe identity or bytes.") from exc
     finally:

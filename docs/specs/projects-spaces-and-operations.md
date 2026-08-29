@@ -543,6 +543,42 @@ a fresh rehearsal after admission closes; matching only candidate commit,
 process instance, or PID is not sufficient. A fenced startup starts no deferred
 runtime owner, and releasing that same fence starts those owners exactly once.
 
+The final local rollback checkpoint is a separate update-local artifact, not an
+encrypted backup. The current release creates it as `rcp` only after the cutover
+owner has closed admission and reached the durable boundary. Its immutable
+manifest binds the exact O2a SQLite snapshot, O2b per-project file receipt,
+capture-specific rehearsal receipt, previous release, candidate release, and
+every replacement root. A partial or failed copy has no manifest and cannot
+authorize a switch.
+
+The app-data replacement contains the database, structurally complete temporary
+attachment sets, bootstrap manifests, and each present local stage still
+referenced by task, Experiment episode/wrap-up, or result-view state. An absent
+stage blocks publication only while an active task, episode, or wrap-up still
+needs it; a historical reference whose stage was removed by ordinary retention
+is known-absent. Each server-local project state repository contributes one
+exact `.research` replacement root.
+Remote stages and SSH project roots, provider/SSH homes, credentials, checkouts,
+locks, runtime metadata, and rebuildable materializations/caches are not copied.
+Every captured remote project remains in the proof inventory, but rollback never
+writes a remote root while startup effects are fenced. A future durable root is
+rejected until its concrete owner classifies it; currently this includes
+imported provider sources and nonempty transfer inbox/export roots pending their
+settled lifecycle packets.
+
+Before publication, the checkpoint is restored into a private temporary root
+and every included byte, declared file mode, private directory mode, and owner
+identity is verified. Actual rollback writes a private fsynced journal before
+moving anything, then atomically moves the candidate app-data root and local
+`.research` roots to operation-specific sibling quarantines. It rebuilds clean
+replacement roots instead of overlaying files, verifies their bytes and
+permissions, and advances monotonic prepared, quarantined, restored, verified,
+and complete phases. Re-entry accepts only the exact checkpoint-derived
+quarantine and partial paths and resumes after any phase or individual root
+move. Quarantines remain for diagnosis. The later cutover owner keeps the
+service stopped, restores the previous release pointer and verifies the old
+service before work admission can reopen.
+
 The rehearsal copy never resolves a transfer request to the live
 `transfer-inbox/`, whether that request names a partial upload or a complete
 verified inbox file. Every copied lease/path is rebound to a request-owned

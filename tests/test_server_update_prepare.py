@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import rcp.server_ops.update_checkpoint as update_checkpoint_module
 from rcp.__main__ import build_parser
 from rcp.server_ops.cli import (
     SERVER_CLI_EXIT_OPERATOR_ACTION,
@@ -523,6 +524,62 @@ def test_rehearsal_coordinator_runs_from_current_release_not_candidate(
             current_release,
         )
     ]
+
+
+def test_checkpoint_child_is_bound_to_the_parent_hashed_candidate_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _layout(tmp_path)
+    _prepare_owned_roots(layout)
+    current_release = layout.release_dir(BASE)
+    current_release.mkdir(parents=True, mode=0o700)
+    verified = _verified_receipt(layout)
+    verified_path = Path(verified.receipt_path)
+    verified_path.write_text(verified.model_dump_json(), encoding="utf-8")
+    verified_path.chmod(0o600)
+    candidate_digest = hashlib.sha256(verified_path.read_bytes()).hexdigest()
+    manifest_path = layout.update_checkpoints_root / "checkpoint-fixture" / "checkpoint.json"
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv, *, cwd, environment, timeout, capture_output):
+        del cwd, environment, timeout, capture_output
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, f"{manifest_path}\n", "")
+
+    machine = LinuxUpdateMachine(
+        layout,
+        config_loader=lambda _path: _config(layout),
+        doctor=SimpleNamespace(inspect=lambda: None),
+        service_runner=runner,
+        service_identity=(os.getuid(), os.getgid()),
+        root_identity=(os.getuid(), os.getgid()),
+    )
+    checkpoint = SimpleNamespace(
+        installation_id=verified.installation_id,
+        space_id=verified.space_id,
+        capture_id=verified.capture_id,
+        base_commit=verified.base_running_commit,
+        candidate_commit=verified.candidate_commit,
+        candidate_receipt_sha256=candidate_digest,
+    )
+    monkeypatch.setattr(
+        update_checkpoint_module,
+        "read_verified_update_checkpoint",
+        lambda _path, *, expected_uid: checkpoint,
+    )
+
+    observed = machine.create_rollback_checkpoint(
+        UpdateTarget(inspection=_inspection(layout), target_commit=TARGET),
+        verified,
+        sqlite_receipt_path=tmp_path / "sqlite-capture.json",
+        sqlite_receipt_sha256="2" * 64,
+        project_receipt_path=tmp_path / "project-files.json",
+        project_receipt_sha256=verified.project_capture_sha256,
+    )
+
+    assert observed is checkpoint
+    assert calls[0][-2:] == (verified.receipt_path, candidate_digest)
 
 
 def test_failure_status_can_report_identities_even_when_doctor_blocks_update(
