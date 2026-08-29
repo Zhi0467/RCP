@@ -735,7 +735,7 @@ def test_unimplemented_concrete_owner_fails_loudly() -> None:
     output = StringIO()
 
     exit_code = run_server_command(
-        _parse("server", "provider", "check", "--request", REQUEST_ID, "--machine-readable"),
+        _parse("server", "project", "provision", REQUEST_ID, "--machine-readable"),
         identity=CallerIdentity(uid=501, username="rcp", host="lab"),
         stream=output,
     )

@@ -190,6 +190,13 @@ counts, structured operator action, safe CLI argv, and final-review binding. The
 Web seals the complete provisioning and check-status vocabularies and consumes
 those answers instead of rebuilding lifecycle policy from strings.
 
+A provider-check projection also carries the nonsecret proof read back from the
+server: resolved executable path, provider version, durable runtime id, observed
+execution account, and check time. Those fields are present only for a ready
+check; credentials and provider-home paths are never response fields. The Web
+renders or relays this backend evidence and does not reproduce provider version,
+model, runtime, authentication, or OS-account decisions.
+
 The UI renders the backend's status, diagnostic, exact next action, resolved
 paths, and final review. It cannot claim success from a desktop subprocess exit
 code. A local-only codebase is not uploaded through the wizard: the new-team

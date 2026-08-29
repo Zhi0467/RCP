@@ -100,6 +100,7 @@ class ServerDoctorReport(_StrictModel):
     process_pid: int | None
     data_dir_id: str
     control_socket_status: str
+    provider_check_status: Literal["available", "unavailable"]
     dependencies_ready: bool
     dependency_versions: str
     problems: tuple[str, ...]
@@ -169,6 +170,7 @@ class ServerDoctorReport(_StrictModel):
             NonsecretField(name="process_pid", value=_shown(self.process_pid)),
             NonsecretField(name="data_dir_id", value=self.data_dir_id),
             NonsecretField(name="control_socket_status", value=self.control_socket_status),
+            NonsecretField(name="provider_check_status", value=self.provider_check_status),
             NonsecretField(name="dependencies_ready", value=self.dependencies_ready),
             NonsecretField(name="dependency_versions", value=self.dependency_versions),
             NonsecretField(name="problems", value=_problem_text(self.problems)),
@@ -349,6 +351,15 @@ class LinuxServerDoctorMachine:
             current_commit,
             add_problem,
         )
+        provider_check_status: Literal["available", "unavailable"] = (
+            "available"
+            if probe is not None
+            and "provider_readiness_plan" in probe.operations
+            and "provider_readiness_check" in probe.operations
+            else "unavailable"
+        )
+        if control_status == "healthy" and provider_check_status == "unavailable":
+            add_problem("private control socket does not offer provider readiness")
         overall_state = _overall_state(
             problems,
             release_state=release_state,
@@ -384,6 +395,7 @@ class LinuxServerDoctorMachine:
             process_pid=metadata.pid if metadata is not None else None,
             data_dir_id=data_dir_identity(self.layout.data_dir),
             control_socket_status=control_status,
+            provider_check_status=provider_check_status,
             dependencies_ready=dependencies_ready,
             dependency_versions=dependency_versions,
             problems=tuple(problems),

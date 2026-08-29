@@ -236,6 +236,7 @@ class ProviderProfile:
     default_runtime: str
     runtime_aliases: dict[str, str]
     runtime_choices: tuple[ProviderRuntimeChoice, ...]
+    work_like_minimum_version: tuple[int, int, int] | None = None
 
     def session_roots(self, sources: object, *, remote: bool) -> list[str]:
         """Return this provider's configured native-session roots.
@@ -253,6 +254,27 @@ class ProviderProfile:
     def auth_command(self, binary: str) -> list[str]:
         """The argv that reports whether this CLI is logged in."""
         raise NotImplementedError
+
+    def login_command(self, binary: str) -> list[str]:
+        """The provider-native interactive command an operator runs directly."""
+        raise NotImplementedError
+
+    def validate_readiness_version(
+        self,
+        actual: str | None,
+        *,
+        capability: AgentCapability,
+    ) -> None:
+        """Apply the same version floor used by a real launch of this capability."""
+
+        if capability in {"work_auto", "orchestrate"}:
+            minimum = self.work_like_minimum_version
+            if minimum is not None:
+                _require_provider_version(
+                    provider=self.label,
+                    actual=actual,
+                    minimum=minimum,
+                )
 
     def is_authenticated(self, result: subprocess.CompletedProcess[str]) -> bool:
         raise NotImplementedError
@@ -377,6 +399,7 @@ class CodexProfile(ProviderProfile):
         ProviderRuntimeChoice(id="exec", label="Codex exec"),
         ProviderRuntimeChoice(id="app-server", label="Codex app server"),
     )
+    work_like_minimum_version = (0, 138, 0)
 
     def runtime(self, runtime_id: str) -> ProviderRuntime:
         if runtime_id == self.legacy_runtime_id:
@@ -391,6 +414,9 @@ class CodexProfile(ProviderProfile):
 
     def auth_command(self, binary: str) -> list[str]:
         return [binary, "login", "status"]
+
+    def login_command(self, binary: str) -> list[str]:
+        return [binary, "login"]
 
     def is_authenticated(self, result: subprocess.CompletedProcess[str]) -> bool:
         if result.returncode != 0:
@@ -511,11 +537,7 @@ class CodexProfile(ProviderProfile):
                 capability=capability,
                 write_dirs=write_dirs,
             )
-            _require_provider_version(
-                provider="Codex",
-                actual=provider_version,
-                minimum=(0, 138, 0),
-            )
+            self.validate_readiness_version(provider_version, capability=capability)
             command.extend(
                 [
                     "--config",
@@ -631,11 +653,15 @@ class ClaudeProfile(ProviderProfile):
         legacy_runtime_id: legacy_runtime_id,
     }
     runtime_choices = (ProviderRuntimeChoice(id="stream-json", label="Claude stream JSON"),)
+    work_like_minimum_version = (2, 1, 233)
     declared_against = "2.1.233"
     declared = _CLAUDE_MODELS
 
     def auth_command(self, binary: str) -> list[str]:
         return [binary, "auth", "status"]
+
+    def login_command(self, binary: str) -> list[str]:
+        return [binary, "auth", "login"]
 
     def is_authenticated(self, result: subprocess.CompletedProcess[str]) -> bool:
         try:
@@ -725,11 +751,7 @@ class ClaudeProfile(ProviderProfile):
                 capability=capability,
                 write_dirs=write_dirs,
             )
-            _require_provider_version(
-                provider="Claude",
-                actual=provider_version,
-                minimum=(2, 1, 233),
-            )
+            self.validate_readiness_version(provider_version, capability=capability)
         elif write_scope is not None:
             raise ValueError(f"capability {capability!r} cannot carry a project write scope")
         permission_mode = {

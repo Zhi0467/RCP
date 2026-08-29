@@ -120,11 +120,15 @@ from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, st
 from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.server_ops.control import (
+    SERVER_CONTROL_OPERATIONS,
     ServerControlPeer,
     ServerControlProbeResult,
+    ServerControlProviderCheckResult,
+    ServerControlProviderPlanResult,
     ServerControlRequest,
     ServerControlServer,
 )
+from rcp.server_ops.provider_readiness import ProviderReadinessCoordinator
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
 from rcp.service import (
     CoachRequest,
@@ -251,6 +255,7 @@ def create_app(
     space_id = store.space_id
     space_kind = store.space_kind
     control_server: ServerControlServer | None = None
+    provider_readiness_coordinator: ProviderReadinessCoordinator | None = None
     if identity.control_socket is not None:
         if space_kind != "team" or identity.owner_kind != "cli":
             raise ValueError(
@@ -260,7 +265,11 @@ def create_app(
         def dispatch_server_control(
             request: ServerControlRequest,
             _peer: ServerControlPeer,
-        ) -> ServerControlProbeResult:
+        ) -> (
+            ServerControlProbeResult
+            | ServerControlProviderPlanResult
+            | ServerControlProviderCheckResult
+        ):
             match request.operation:
                 case "probe":
                     return ServerControlProbeResult(
@@ -268,6 +277,24 @@ def create_app(
                         pid=identity.pid,
                         data_dir_id=identity.data_dir_id,
                         space_id=space_id,
+                        operations=SERVER_CONTROL_OPERATIONS,
+                    )
+                case "provider_readiness_plan":
+                    assert provider_readiness_coordinator is not None
+                    assert request.selector_kind is not None and request.selector_id is not None
+                    return provider_readiness_coordinator.plan(
+                        request.selector_kind,
+                        request.selector_id,
+                    )
+                case "provider_readiness_check":
+                    assert provider_readiness_coordinator is not None
+                    assert request.selector_kind is not None and request.selector_id is not None
+                    assert request.boundary_sha256 is not None and request.target_id is not None
+                    return provider_readiness_coordinator.check(
+                        request.selector_kind,
+                        request.selector_id,
+                        boundary_sha256=request.boundary_sha256,
+                        target_id=request.target_id,
                     )
             raise AssertionError(f"Unhandled server control operation {request.operation!r}")
 
@@ -287,6 +314,12 @@ def create_app(
     set_team_session_cookie = identity_access.set_team_session_cookie
     resolve_team_user = identity_access.resolve_team_user
     launcher = AcceptanceAgentLauncher() if acceptance_agent else AgentLauncher()
+    if control_server is not None:
+        provider_readiness_coordinator = ProviderReadinessCoordinator(
+            store,
+            launcher,
+            identity,
+        )
     agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
     provider_skills = ProviderSkillInventoryManager(store)
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)

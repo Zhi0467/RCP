@@ -452,13 +452,62 @@ class ProjectProvisioningProviderIntent(_StrictProvisioningModel):
 
 class ProjectProvisioningProviderCheckRecord(ProjectProvisioningProviderIntent):
     status: ProjectProvisioningCheckStatus = "pending"
+    binary_path: str | None = None
+    version: str | None = Field(default=None, max_length=240)
+    resolved_runtime_id: str | None = None
+    execution_account: str | None = None
     checked_at: str | None = None
     diagnostic: MessageText | None = None
+
+    @field_validator("binary_path")
+    @classmethod
+    def validate_binary_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _provisioning_absolute_path(value, label="provider executable path")
+
+    @field_validator("version")
+    @classmethod
+    def validate_version(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if (
+            not value.strip()
+            or value != value.strip()
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+            or redact_server_text(value) != value
+        ):
+            raise ValueError("provider version must be one nonsecret safe line")
+        return value
+
+    @field_validator("resolved_runtime_id")
+    @classmethod
+    def validate_resolved_runtime_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return ProjectProvisioningProviderIntent.validate_runtime_id(value)
+
+    @field_validator("execution_account")
+    @classmethod
+    def validate_execution_account(cls, value: str | None) -> str | None:
+        if value is not None and _PROVISIONING_ACCOUNT.fullmatch(value) is None:
+            raise ValueError("provider execution account is invalid")
+        return value
 
     @model_validator(mode="after")
     def ready_has_check_time(self) -> ProjectProvisioningProviderCheckRecord:
         if self.status == "ready" and self.checked_at is None:
             raise ValueError("a ready provider check requires its check time")
+        proof = (
+            self.binary_path,
+            self.version,
+            self.resolved_runtime_id,
+            self.execution_account,
+        )
+        if any(value is not None for value in proof) and (
+            self.status != "ready" or any(value is None for value in proof)
+        ):
+            raise ValueError("provider readiness proof fields must be complete and ready")
         return self
 
 

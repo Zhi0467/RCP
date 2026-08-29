@@ -429,7 +429,9 @@ def _dispatch_server_command(
 
             return prepare_doctor_command(request, identity)
         case "server provider check":
-            return _unavailable_command(request, identity)
+            from rcp.server_ops.provider_readiness import prepare_provider_check_command
+
+            return prepare_provider_check_command(request, identity)
         case "server project provision":
             return _unavailable_command(request, identity)
         case "server project transfer-import":

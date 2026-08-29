@@ -18,6 +18,7 @@ from rcp.__main__ import build_parser
 from rcp.server_ops import doctor as server_doctor
 from rcp.server_ops.cli import CallerIdentity, run_server_command
 from rcp.server_ops.config import ServerSourceConfig
+from rcp.server_ops.control import SERVER_CONTROL_OPERATIONS
 from rcp.server_ops.doctor import (
     LinuxServerDoctorMachine,
     ServerDoctorReport,
@@ -82,6 +83,7 @@ def _report(*, problems: tuple[str, ...] = ()) -> ServerDoctorReport:
         process_pid=421,
         data_dir_id="d" * 64,
         control_socket_status="healthy",
+        provider_check_status="available",
         dependencies_ready=True,
         dependency_versions=(
             "git=2.43.0,node=24.1.0,npm=11.0.0,uv=0.8.0,age=1.2.1,ssh=OpenSSH_9.6p1,python=3.12.10"
@@ -114,10 +116,11 @@ def test_doctor_renders_one_complete_report_through_both_cli_modes() -> None:
     assert [event["event"] for event in events] == ["plan", "step", "step"]
     assert events[-1]["step"]["state"] == "succeeded"
     fields = {item["name"]: item["value"] for item in events[-1]["step"]["fields"]}
-    assert len(fields) == 30
+    assert len(fields) == 31
     assert fields["overall_state"] == "healthy"
     assert fields["candidate_commit"] == "none"
     assert fields["running_commit"] == COMMIT
+    assert fields["provider_check_status"] == "available"
     assert fields["problems"] == "none"
 
     interactive_code, interactive, interactive_calls = _run_doctor(
@@ -396,6 +399,7 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
             pid=metadata.pid,
             data_dir_id=metadata.data_dir_id,
             space_id=SPACE_ID,
+            operations=SERVER_CONTROL_OPERATIONS,
         )
 
     runner = _HealthyRunner(layout=layout, commit=COMMIT, pid=metadata.pid)

@@ -421,6 +421,14 @@ the lock-owning process. Installation and restore may open the data directory
 only while they prove the service is stopped and acquire the normal ownership
 lock. No member HTTP route exposes this machine authority.
 
+The versioned control probe advertises its exact operation set. `server doctor`
+reports provider checking as available only when the running service advertises
+both provider-plan and provider-check operations; a healthy socket that omits
+them is an installation problem. `server provider check` resolves only one
+durable request or existing team project through that service, shows the full
+plan before probing, and returns the same bounded success, failure, or operator
+action in interactive and machine-readable modes.
+
 `member remove` previews the target's active work, project memberships, tokens,
 sessions, and pending invitations before confirmation. It refuses to remove the
 last active member who has completed enrollment: a pending invitation or a

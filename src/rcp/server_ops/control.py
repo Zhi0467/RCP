@@ -22,11 +22,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rcp.limits import (
     SERVER_CONTROL_ACCEPT_POLL_INTERVAL_SECONDS,
     SERVER_CONTROL_IO_TIMEOUT_SECONDS,
+    SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
     SERVER_CONTROL_STOP_TIMEOUT_SECONDS,
 )
+from rcp.server_ops.models import ServerStep, redact_server_text
 from rcp.server_runtime import ServerMetadata, read_server_metadata
 
-SERVER_CONTROL_PROTOCOL_VERSION = 1
+SERVER_CONTROL_PROTOCOL_VERSION = 2
 SERVER_CONTROL_MAX_REQUEST_BYTES = 64 * 1024
 SERVER_CONTROL_MAX_RESPONSE_BYTES = 256 * 1024
 SERVER_CONTROL_SOCKET_MODE = 0o600
@@ -35,6 +37,17 @@ SERVER_CONTROL_MAX_SOCKET_PATH_BYTES = 99
 
 _FRAME_HEADER = struct.Struct("!I")
 _HEX_DIGEST = frozenset("0123456789abcdef")
+
+ServerControlOperation = Literal[
+    "probe",
+    "provider_readiness_plan",
+    "provider_readiness_check",
+]
+SERVER_CONTROL_OPERATIONS: tuple[ServerControlOperation, ...] = (
+    "probe",
+    "provider_readiness_plan",
+    "provider_readiness_check",
+)
 
 
 class ServerControlError(RuntimeError):
@@ -67,12 +80,52 @@ class ServerControlRequest(_StrictModel):
     protocol_version: Literal[SERVER_CONTROL_PROTOCOL_VERSION] = SERVER_CONTROL_PROTOCOL_VERSION
     request_id: str
     instance_id: str
-    operation: Literal["probe"]
+    operation: ServerControlOperation
+    selector_kind: Literal["request", "project"] | None = None
+    selector_id: str | None = None
+    boundary_sha256: str | None = None
+    target_id: str | None = None
 
     @model_validator(mode="after")
     def validate_ids(self) -> ServerControlRequest:
         _canonical_uuid4(self.request_id, label="control request id")
         _canonical_uuid4(self.instance_id, label="control instance id")
+        if self.selector_id is not None:
+            _canonical_uuid4(self.selector_id, label="provider selector id")
+        if self.operation == "probe":
+            if any(
+                value is not None
+                for value in (
+                    self.selector_kind,
+                    self.selector_id,
+                    self.boundary_sha256,
+                    self.target_id,
+                )
+            ):
+                raise ValueError("control probe cannot carry provider selector fields")
+        elif self.operation == "provider_readiness_plan":
+            if self.selector_kind is None or self.selector_id is None:
+                raise ValueError("provider readiness plan requires one selector")
+            if self.boundary_sha256 is not None or self.target_id is not None:
+                raise ValueError("provider readiness plan cannot carry a check boundary")
+        elif any(
+            value is None
+            for value in (
+                self.selector_kind,
+                self.selector_id,
+                self.boundary_sha256,
+                self.target_id,
+            )
+        ):
+            raise ValueError("provider readiness check requires its exact plan boundary")
+        for value, label in (
+            (self.boundary_sha256, "provider readiness boundary"),
+            (self.target_id, "provider readiness target"),
+        ):
+            if value is not None and (
+                len(value) != 64 or any(character not in _HEX_DIGEST for character in value)
+            ):
+                raise ValueError(f"{label} must be a lowercase SHA-256 digest")
         return self
 
 
@@ -82,6 +135,7 @@ class ServerControlProbeResult(_StrictModel):
     data_dir_id: str
     space_id: str
     space_kind: Literal["team"] = "team"
+    operations: tuple[ServerControlOperation, ...]
 
     @model_validator(mode="after")
     def validate_identity(self) -> ServerControlProbeResult:
@@ -91,7 +145,115 @@ class ServerControlProbeResult(_StrictModel):
             character not in _HEX_DIGEST for character in self.data_dir_id
         ):
             raise ValueError("data directory identity must be a lowercase SHA-256 digest")
+        expected_order = tuple(
+            operation for operation in SERVER_CONTROL_OPERATIONS if operation in self.operations
+        )
+        if (
+            not self.operations
+            or self.operations[0] != "probe"
+            or self.operations != expected_order
+        ):
+            raise ValueError("control probe operations must be unique and in registry order")
         return self
+
+
+class ServerControlProviderTarget(_StrictModel):
+    target_id: str
+    step: ServerStep
+
+    @model_validator(mode="after")
+    def validate_target(self) -> ServerControlProviderTarget:
+        if len(self.target_id) != 64 or any(
+            character not in _HEX_DIGEST for character in self.target_id
+        ):
+            raise ValueError("provider readiness target must be a lowercase SHA-256 digest")
+        if self.step.state != "pending":
+            raise ValueError("provider readiness plans require pending steps")
+        return self
+
+
+class ServerControlProviderPlanResult(_StrictModel):
+    instance_id: str
+    pid: int = Field(gt=0)
+    data_dir_id: str
+    space_id: str
+    space_kind: Literal["team"] = "team"
+    selector_kind: Literal["request", "project"]
+    selector_id: str
+    boundary_sha256: str
+    targets: tuple[ServerControlProviderTarget, ...] = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_plan(self) -> ServerControlProviderPlanResult:
+        _validate_provider_result_identity(
+            self.instance_id,
+            self.space_id,
+            self.data_dir_id,
+            self.selector_id,
+            self.boundary_sha256,
+        )
+        if [target.step.number for target in self.targets] != list(range(1, len(self.targets) + 1)):
+            raise ValueError("provider readiness plan steps must be consecutive")
+        ids = [target.target_id for target in self.targets]
+        if len(ids) != len(set(ids)):
+            raise ValueError("provider readiness plan targets must be unique")
+        return self
+
+
+class ServerControlProviderCheckResult(_StrictModel):
+    instance_id: str
+    pid: int = Field(gt=0)
+    data_dir_id: str
+    space_id: str
+    space_kind: Literal["team"] = "team"
+    selector_kind: Literal["request", "project"]
+    selector_id: str
+    target_id: str
+    boundary_sha256: str
+    next_boundary_sha256: str
+    step: ServerStep
+
+    @model_validator(mode="after")
+    def validate_check(self) -> ServerControlProviderCheckResult:
+        _validate_provider_result_identity(
+            self.instance_id,
+            self.space_id,
+            self.data_dir_id,
+            self.selector_id,
+            self.boundary_sha256,
+        )
+        for value, label in (
+            (self.target_id, "provider readiness target"),
+            (self.next_boundary_sha256, "next provider readiness boundary"),
+        ):
+            if len(value) != 64 or any(character not in _HEX_DIGEST for character in value):
+                raise ValueError(f"{label} must be a lowercase SHA-256 digest")
+        if self.step.state not in {
+            "succeeded",
+            "failed",
+            "operator_action_needed",
+            "unavailable",
+        }:
+            raise ValueError("provider readiness check requires one terminal step")
+        return self
+
+
+def _validate_provider_result_identity(
+    instance_id: str,
+    space_id: str,
+    data_dir_id: str,
+    selector_id: str,
+    boundary_sha256: str,
+) -> None:
+    _canonical_uuid4(instance_id, label="control instance id")
+    _canonical_uuid4(space_id, label="space id")
+    _canonical_uuid4(selector_id, label="provider selector id")
+    for value, label in (
+        (data_dir_id, "data directory identity"),
+        (boundary_sha256, "provider readiness boundary"),
+    ):
+        if len(value) != 64 or any(character not in _HEX_DIGEST for character in value):
+            raise ValueError(f"{label} must be a lowercase SHA-256 digest")
 
 
 class ServerControlFailure(_StrictModel):
@@ -99,6 +261,7 @@ class ServerControlFailure(_StrictModel):
         "invalid_request",
         "oversized_request",
         "operation_failed",
+        "operation_refused",
         "unauthorized_peer",
         "wrong_instance",
     ]
@@ -116,7 +279,12 @@ class ServerControlResponse(_StrictModel):
     request_id: str | None
     instance_id: str
     ok: bool
-    result: ServerControlProbeResult | None = None
+    result: (
+        ServerControlProbeResult
+        | ServerControlProviderPlanResult
+        | ServerControlProviderCheckResult
+        | None
+    ) = None
     error: ServerControlFailure | None = None
 
     @model_validator(mode="after")
@@ -152,7 +320,7 @@ class ServerControlPeer:
 
 ServerControlHandler = Callable[
     [ServerControlRequest, ServerControlPeer],
-    ServerControlProbeResult,
+    ServerControlProbeResult | ServerControlProviderPlanResult | ServerControlProviderCheckResult,
 ]
 PeerResolver = Callable[[socket.socket], ServerControlPeer]
 
@@ -217,8 +385,74 @@ class ServerControlClient:
             instance_id=self.metadata.instance_id,
             operation="probe",
         )
+        result = self._exchange(request)
+        if not isinstance(result, ServerControlProbeResult):
+            raise ServerControlError(
+                "invalid_response",
+                "The running RCP process returned the wrong control result.",
+            )
+        return result
+
+    def provider_readiness_plan(
+        self,
+        *,
+        selector_kind: Literal["request", "project"],
+        selector_id: str,
+    ) -> ServerControlProviderPlanResult:
+        request = ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=self.metadata.instance_id,
+            operation="provider_readiness_plan",
+            selector_kind=selector_kind,
+            selector_id=selector_id,
+        )
+        result = self._exchange(request)
+        if not isinstance(result, ServerControlProviderPlanResult):
+            raise ServerControlError(
+                "invalid_response",
+                "The running RCP process returned the wrong provider plan.",
+            )
+        return result
+
+    def check_provider_readiness(
+        self,
+        *,
+        selector_kind: Literal["request", "project"],
+        selector_id: str,
+        boundary_sha256: str,
+        target_id: str,
+    ) -> ServerControlProviderCheckResult:
+        request = ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=self.metadata.instance_id,
+            operation="provider_readiness_check",
+            selector_kind=selector_kind,
+            selector_id=selector_id,
+            boundary_sha256=boundary_sha256,
+            target_id=target_id,
+        )
+        result = self._exchange(request)
+        if not isinstance(result, ServerControlProviderCheckResult):
+            raise ServerControlError(
+                "invalid_response",
+                "The running RCP process returned the wrong provider check.",
+            )
+        return result
+
+    def _exchange(
+        self,
+        request: ServerControlRequest,
+    ) -> (
+        ServerControlProbeResult
+        | ServerControlProviderPlanResult
+        | ServerControlProviderCheckResult
+    ):
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        connection.settimeout(SERVER_CONTROL_IO_TIMEOUT_SECONDS)
+        connection.settimeout(
+            SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS
+            if request.operation == "provider_readiness_check"
+            else SERVER_CONTROL_IO_TIMEOUT_SECONDS
+        )
         try:
             connection.connect(str(self.socket_path))
             peer = self.peer_resolver(connection)
@@ -256,12 +490,19 @@ class ServerControlClient:
             assert response.error is not None
             raise ServerControlError(response.error.code, response.error.message)
         assert response.result is not None
-        if response.result.pid != peer.pid:
+        try:
+            result = _validated_control_result(request, response.result)
+        except ValueError as exc:
+            raise ServerControlError(
+                "invalid_response",
+                "The running RCP process returned a mismatched control result.",
+            ) from exc
+        if result.pid != peer.pid:
             raise ServerControlError(
                 "wrong_server_identity",
                 "The control response does not match the kernel-authenticated server process.",
             )
-        return response.result
+        return result
 
 
 class ServerControlServer:
@@ -398,9 +639,27 @@ class ServerControlServer:
                 )
                 return
             try:
-                result = ServerControlProbeResult.model_validate(self.handler(request, peer))
+                result = _validated_control_result(request, self.handler(request, peer))
                 if result.instance_id != self.instance_id:
                     raise ValueError("control handler returned a different process instance")
+            except ServerControlError as exc:
+                if exc.code != "operation_refused":
+                    self._send_error(
+                        connection,
+                        request_id=request_id,
+                        code="operation_failed",
+                        message=(
+                            "The named control operation failed inside the running RCP process."
+                        ),
+                    )
+                    return
+                self._send_error(
+                    connection,
+                    request_id=request_id,
+                    code="operation_refused",
+                    message=_safe_operation_refusal(str(exc)),
+                )
+                return
             except Exception:
                 self._send_error(
                     connection,
@@ -443,6 +702,7 @@ class ServerControlServer:
             "invalid_request",
             "oversized_request",
             "operation_failed",
+            "operation_refused",
             "unauthorized_peer",
             "wrong_instance",
         ],
@@ -515,6 +775,50 @@ class ServerControlServer:
             self.socket_path.unlink()
 
 
+def _validated_control_result(
+    request: ServerControlRequest,
+    result: ServerControlProbeResult
+    | ServerControlProviderPlanResult
+    | ServerControlProviderCheckResult,
+) -> ServerControlProbeResult | ServerControlProviderPlanResult | ServerControlProviderCheckResult:
+    if request.operation == "probe":
+        if not isinstance(result, ServerControlProbeResult):
+            raise ValueError("control probe returned another operation's result")
+        return ServerControlProbeResult.model_validate(result)
+    if request.operation == "provider_readiness_plan":
+        if not isinstance(result, ServerControlProviderPlanResult):
+            raise ValueError("provider readiness plan returned another operation's result")
+        validated = ServerControlProviderPlanResult.model_validate(result)
+        if (
+            validated.selector_kind != request.selector_kind
+            or validated.selector_id != request.selector_id
+        ):
+            raise ValueError("provider readiness plan returned another selector")
+        return validated
+    if not isinstance(result, ServerControlProviderCheckResult):
+        raise ValueError("provider readiness check returned another operation's result")
+    validated = ServerControlProviderCheckResult.model_validate(result)
+    if (
+        validated.selector_kind != request.selector_kind
+        or validated.selector_id != request.selector_id
+        or validated.boundary_sha256 != request.boundary_sha256
+        or validated.target_id != request.target_id
+    ):
+        raise ValueError("provider readiness check returned another planned target")
+    return validated
+
+
+def _safe_operation_refusal(message: str) -> str:
+    safe = redact_server_text(message.strip())
+    if (
+        not safe
+        or len(safe) > 240
+        or any(ord(character) < 32 or ord(character) == 127 for character in safe)
+    ):
+        return "The named control operation was refused at its durable boundary."
+    return safe
+
+
 def _validated_socket_path(path: Path) -> Path:
     if not isinstance(path, Path) or not path.is_absolute() or ".." in path.parts:
         raise ValueError("the control socket path must be absolute and normalized")
@@ -557,23 +861,27 @@ def _receive_exact(connection: socket.socket, size: int) -> bytes:
 
 
 def _receive_json(connection: socket.socket, *, maximum: int) -> object:
-    header = _receive_exact(connection, _FRAME_HEADER.size)
-    (size,) = _FRAME_HEADER.unpack(header)
-    if size == 0:
-        raise ServerControlError("invalid_frame", "The control frame is empty.")
-    if size > maximum:
-        raise ServerControlError("oversized_frame", "The control frame is too large.")
-    body = _receive_exact(connection, size)
+    body = _receive_body(connection, maximum=maximum)
     try:
         return json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ServerControlError("invalid_frame", "The control frame is not valid JSON.") from exc
 
 
+def _receive_body(connection: socket.socket, *, maximum: int) -> bytes:
+    header = _receive_exact(connection, _FRAME_HEADER.size)
+    (size,) = _FRAME_HEADER.unpack(header)
+    if size == 0:
+        raise ServerControlError("invalid_frame", "The control frame is empty.")
+    if size > maximum:
+        raise ServerControlError("oversized_frame", "The control frame is too large.")
+    return _receive_exact(connection, size)
+
+
 def _receive_response(connection: socket.socket) -> ServerControlResponse:
     try:
-        return ServerControlResponse.model_validate(
-            _receive_json(connection, maximum=SERVER_CONTROL_MAX_RESPONSE_BYTES)
+        return ServerControlResponse.model_validate_json(
+            _receive_body(connection, maximum=SERVER_CONTROL_MAX_RESPONSE_BYTES)
         )
     except ServerControlError:
         raise
@@ -592,6 +900,7 @@ def _send_model(connection: socket.socket, model: BaseModel, *, maximum: int) ->
 
 
 __all__ = [
+    "SERVER_CONTROL_OPERATIONS",
     "SERVER_CONTROL_MAX_REQUEST_BYTES",
     "SERVER_CONTROL_MAX_RESPONSE_BYTES",
     "SERVER_CONTROL_PROTOCOL_VERSION",
@@ -602,6 +911,9 @@ __all__ = [
     "ServerControlHandler",
     "ServerControlPeer",
     "ServerControlProbeResult",
+    "ServerControlProviderCheckResult",
+    "ServerControlProviderPlanResult",
+    "ServerControlProviderTarget",
     "ServerControlRequest",
     "ServerControlServer",
     "ServerControlUnavailable",

@@ -16,9 +16,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.api import create_app
+from rcp.limits import (
+    SERVER_CONTROL_IO_TIMEOUT_SECONDS,
+    SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
+)
 from rcp.server_ops import control
 from rcp.server_ops.control import (
     SERVER_CONTROL_MAX_REQUEST_BYTES,
+    SERVER_CONTROL_OPERATIONS,
     SERVER_CONTROL_SOCKET_MODE,
     ServerControlClient,
     ServerControlError,
@@ -89,6 +94,7 @@ def test_team_lifespan_publishes_private_socket_without_opening_a_second_store(
             pid=os.getpid(),
             data_dir_id=metadata.data_dir_id,
             space_id=app.state.space_id,
+            operations=SERVER_CONTROL_OPERATIONS,
         )
         assert set(result.model_dump()) == {
             "instance_id",
@@ -96,9 +102,30 @@ def test_team_lifespan_publishes_private_socket_without_opening_a_second_store(
             "data_dir_id",
             "space_id",
             "space_kind",
+            "operations",
         }
 
     assert not os.path.lexists(socket_path)
+
+
+def test_control_probe_can_report_a_known_incomplete_operation_set() -> None:
+    result = ServerControlProbeResult(
+        instance_id=str(uuid.uuid4()),
+        pid=os.getpid(),
+        data_dir_id="d" * 64,
+        space_id=str(uuid.uuid4()),
+        operations=("probe",),
+    )
+
+    assert result.operations == ("probe",)
+    with pytest.raises(ValueError, match="registry order"):
+        ServerControlProbeResult(
+            instance_id=str(uuid.uuid4()),
+            pid=os.getpid(),
+            data_dir_id="d" * 64,
+            space_id=str(uuid.uuid4()),
+            operations=("probe", "provider_readiness_check", "provider_readiness_plan"),
+        )
 
 
 def test_control_socket_is_refused_for_a_personal_or_non_cli_app(
@@ -126,6 +153,51 @@ def test_control_socket_is_refused_for_a_personal_or_non_cli_app(
     )
     with pytest.raises(ValueError, match="only to an installed CLI-owned team service"):
         create_app(data_dir=team_data, instance_metadata=desktop)
+
+
+def test_provider_check_uses_its_bounded_operation_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = ServerMetadata.create(
+        tmp_path / "data",
+        host="127.0.0.1",
+        port=8421,
+        owner_kind="cli",
+        control_socket=tmp_path / "control.sock",
+    )
+    observed: list[float] = []
+
+    class RefusingSocket:
+        def settimeout(self, timeout: float) -> None:
+            observed.append(timeout)
+
+        def connect(self, _path: str) -> None:
+            raise RuntimeError("stop after observing the timeout")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(control.socket, "socket", lambda *_args: RefusingSocket())
+    client = ServerControlClient(
+        metadata,
+        expected_server_uid=os.geteuid(),
+    )
+
+    with pytest.raises(RuntimeError, match="stop after observing"):
+        client.probe()
+    with pytest.raises(RuntimeError, match="stop after observing"):
+        client.check_provider_readiness(
+            selector_kind="request",
+            selector_id=str(uuid.uuid4()),
+            boundary_sha256="a" * 64,
+            target_id="b" * 64,
+        )
+
+    assert observed == [
+        SERVER_CONTROL_IO_TIMEOUT_SECONDS,
+        SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
+    ]
 
 
 def test_installed_control_socket_is_discovered_only_for_the_service_account(
@@ -207,7 +279,7 @@ def test_unauthorized_os_peer_is_rejected_before_request_dispatch(control_root: 
         (
             lambda instance_id: _framed_json(
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "request_id": str(uuid.uuid4()),
                     "instance_id": instance_id,
                     "operation": "probe",
@@ -309,6 +381,7 @@ def _standalone_server(
             pid=os.getpid(),
             data_dir_id=metadata.data_dir_id,
             space_id=str(uuid.uuid4()),
+            operations=SERVER_CONTROL_OPERATIONS,
         )
 
     return (

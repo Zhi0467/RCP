@@ -172,6 +172,10 @@ class ProjectProvisioningProviderProjection(_StrictModel):
     status: ProjectProvisioningCheckStatus
     status_label: str
     ready: bool
+    binary_path: str | None
+    version: str | None
+    resolved_runtime_id: str | None
+    execution_account: str | None
     checked_at: str | None
     diagnostic: str | None
 
@@ -529,6 +533,10 @@ def _provider_projection(
         status=check.status,
         status_label=_CHECK_LABELS[check.status],
         ready=check.status == "ready",
+        binary_path=check.binary_path,
+        version=check.version,
+        resolved_runtime_id=check.resolved_runtime_id,
+        execution_account=check.execution_account,
         checked_at=check.checked_at,
         diagnostic=check.diagnostic,
     )

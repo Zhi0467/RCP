@@ -3,7 +3,7 @@
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
-F2, F3a, F3b, F4, F5, F6a, P1, P2, D1, D2, and O3a are complete. P3's
+F2, F3a, F3b, F4, F5, F6a, P1, P2, P5, D1, D2, and O3a are complete. P3's
 repository-credential implementation and focused regressions now exist, but P3
 remains open until its disposable-GitHub-repository live drive passes. The live
 Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
@@ -13,8 +13,8 @@ member-authorized provisioning API, backend-owned project-creation and lifecycle
 answers, sealed Web response vocabularies, and a fail-before-input guard on all
 three ordinary existing-checkout entry routes. It performs no machine work and
 does not create a team project. F6b remains dependency-blocked on O2a/O2b's one
-capture primitive; P3's external qualification plus P4 and P5 own the next
-provisioning machine boundaries.
+capture primitive; P3's external qualification plus P4 own the remaining
+pre-orchestration provisioning machine boundaries.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -106,8 +106,9 @@ The remaining seams are also concrete:
   write/remove a permanent member token in macOS Keychain, but it still trusts
   one current loopback backend and has no distinct-origin allocator, SSH tunnel,
   live token read/enrollment, multi-backend navigation, or operator-command owner;
-- the durable project-provisioning request and member create/read/cancel API
-  exist, but machine-side workers, finalizer, unified wizard, and
+- the durable project-provisioning request and member create/read/cancel API,
+  repository-credential primitive, and exact-account provider check exist, but
+  checkout preparation, machine-step orchestration, finalizer, unified wizard, and
   personal-to-team transfer record do not;
   and
 - canonical identity replay currently treats two differing identity payloads as
@@ -1135,6 +1136,56 @@ gate are deliberately future work and do not block this plan.
   restricted sandbox denied the suite's Unix sockets, PTYs, broker subprocesses,
   and real-home check; the canonical unsandboxed `uv run pytest` is the passing
   result above.
+
+#### 2026-08-29 — P5 exact-account provider readiness complete
+
+- `rcp server provider check --request <id>` now resolves only P1's durable
+  intended profiles; `--project <id>` resolves only the six profiles in an
+  existing team project's manifest. There is still no host, account, provider,
+  executable, runtime, model, or provider-home override in the CLI. A remote
+  project must record `machines[].os_account`; the server-local team account is
+  `rcp`, including for an older local manifest without that field.
+- The service, not the CLI, owns resolution and effects through the private
+  control socket. Control protocol v2 advertises the exact probe, plan, and
+  check operations. A read-only plan binds the request revision/status or
+  project profiles and target ids; each check revalidates the digest before any
+  subprocess. A concurrent change returns one safe visible refusal rather than
+  probing a stale target. The effectful check has its own bounded 60-second
+  client timeout instead of inheriting the five-second probe/plan timeout, and
+  `server doctor` reports whether both provider operations are installed.
+- The shared launcher first proves the exact local effective account or the
+  account reached by the existing OpenSSH route. It then uses the ordinary
+  provider readiness implementation for the exact executable, bounded version,
+  provider-native authentication, provider-owned runtime, explicit model and
+  reasoning catalog, and the same minimum version enforced by a real
+  orchestrator launch. An unavailable catalog cannot approve an explicit model,
+  and an unexpected launcher error fails loudly instead of being recast as an
+  install problem.
+- Successful request checks persist only the absolute executable, provider
+  version, durable runtime id, observed OS account, and check time. Later checks
+  reuse that executable rather than rediscovering `PATH`. The backend and Web
+  response shape expose those nonsecret proof fields for final review. Failure
+  clears ready proof, retains a bounded diagnostic, and publishes an exact
+  install, configuration, OpenSSH, or provider-native login action plus the
+  request-bound resume command. RCP never invokes login, changes `HOME`, stores
+  credentials, or falls back to another account, laptop, provider, or runtime.
+- Multi-profile persistence is target-bound: success for one profile cannot
+  clear another profile's operator action. Initial waiting requests may enter
+  operator action directly, every mutation retains an idempotent step receipt,
+  and a proof or action from another durable revision is rejected.
+- Focused provider, launcher, CLI, control, doctor, storage, API, config, and
+  app-socket regressions pass. The real read-only live gate also passes both
+  branches without changing authentication: local Claude at
+  `/Users/zhiwang/.local/bin/claude` was naturally unauthenticated, while the
+  existing SSH route to `tianhaowang-gpu0.ucsd.edu` reached OS account
+  `zhiwang` and proved authenticated Codex readiness at the discovered remote
+  executable. Local account probing, remote account mismatch, native login
+  guidance, model/runtime/version refusal, stale boundaries, exact-path reuse,
+  and CLI-to-socket-to-storage publication all have focused regressions.
+- Not done in P5: it does not clone a checkout, create/revoke a deploy key,
+  orchestrate all preparation steps, create a team project, render the unified
+  wizard, or expose machine authority through HTTP. P4, P6, and D7 retain those
+  owners.
 
 ## What remains
 
@@ -2461,6 +2512,13 @@ transfer configuration packet owns the separate matching-history rule for an
 incoming transfer.
 
 ### P5 — Provider readiness on the execution account
+
+Status: complete in the working tree on 2026-08-29. The command, versioned
+private-control operations, exact-account local/SSH probe, request proof
+persistence, existing-project resolver, doctor readback, and focused/live
+regressions are implemented. P6a remains the owner that composes P3–P5 into one
+project-provisioning command; P5 itself creates no project and exposes no member
+machine-authority route.
 
 Own:
 

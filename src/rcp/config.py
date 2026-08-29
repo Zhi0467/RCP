@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
@@ -21,6 +22,7 @@ DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING = 10
 class MachineConfig(BaseModel):
     alias: str
     host: str = ""
+    os_account: str = ""
     provider_paths: dict[ProviderId, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -36,6 +38,15 @@ class MachineConfig(BaseModel):
                 raise ValueError(f"provider path for {provider!r} on {target} must be absolute")
             normalized[provider] = path
         self.provider_paths = normalized
+        return self
+
+    @model_validator(mode="after")
+    def validate_os_account(self) -> MachineConfig:
+        if (
+            self.os_account
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,127}", self.os_account) is None
+        ):
+            raise ValueError("machine operating-system account is invalid")
         return self
 
 
@@ -210,7 +221,7 @@ class Manifest(BaseModel):
                 deep=True,
                 update={"permissions": permissions_for("orchestrate")},
             )
-        for surface in _AGENT_EXECUTION_PROFILES:
+        for surface in AGENT_EXECUTION_PROFILES:
             profile = getattr(self.agent, surface)
             assert profile is not None
             if profile.run_on not in machines:
@@ -283,7 +294,7 @@ _AGENT_SURFACES: tuple[AgentSurface, ...] = (
     "project_chat",
     "paper_coach",
 )
-_AGENT_EXECUTION_PROFILES: tuple[AgentExecutionProfile, ...] = (
+AGENT_EXECUTION_PROFILES: tuple[AgentExecutionProfile, ...] = (
     *_AGENT_SURFACES,
     "orchestrator",
 )
@@ -463,7 +474,7 @@ def write_agent_settings(
     defaults_table.add("skill_ids", list(selected_defaults.skill_ids))
     agent["skill_defaults"] = defaults_table
 
-    for surface in _AGENT_EXECUTION_PROFILES:
+    for surface in AGENT_EXECUTION_PROFILES:
         # A settings write is a merge: a client that predates a surface omits it,
         # and the omitted surface keeps what the manifest already holds rather
         # than failing the whole save.

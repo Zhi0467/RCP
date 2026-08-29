@@ -252,12 +252,16 @@ RCP does not perform provider login, store provider credentials, switch accounts
 refresh tokens, or create alternate provider homes. The operator uses each
 provider's own login command directly as the target execution account. RCP's
 server CLI checks executable, version, provider-reported authentication status,
-and configured runtime through the same launch abstraction used by tasks; the
-later provider call then uses that native authentication in place. A failed check
-names the provider, machine/account, and provider-native action to perform, then
-waits for the operator to do it outside RCP. Provider credentials never enter a
-project manifest, provisioning request, prompt, backup, or member's desktop
-credential store.
+configured runtime, explicit model catalog entry, reasoning effort, and the
+provider-owned minimum version for that profile through the same launch
+abstraction used by tasks. A catalog failure cannot approve an explicitly saved
+model, and an unexpected implementation error fails the command rather than
+being relabelled as a missing install. The later provider call uses the same
+native authentication and version rule. A failed check names the provider,
+machine/account, and provider-native action to perform, then waits for the
+operator to do it outside RCP. Provider credentials never enter a project
+manifest, provisioning request, prompt, backup, or member's desktop credential
+store.
 
 The check always resolves an existing configuration boundary:
 `rcp server provider check --request <request-id>` checks the intended profiles
@@ -266,6 +270,18 @@ profiles of one existing project. Exactly one selector is required. The command
 does not accept an arbitrary host, account, executable, provider home, or runtime
 that could bypass the request/manifest contract.
 
+The service owns resolution and probing through its private control socket; the
+`rcp` CLI never opens SQLite beside the running process. Planning is read-only
+and binds one SHA-256 boundary over the durable request revision or stored
+project profiles. Each check revalidates that boundary before a subprocess and
+publishes a safe refusal if it changed. A successful request check stores only
+the resolved absolute executable path, bounded version, durable runtime id,
+observed OS account, and check time. Rechecking that request uses the stored
+executable instead of rediscovering `PATH`. The provisioning projection exposes
+those nonsecret proof fields for final review; no provider home or credential is
+added. `server doctor` separately reports whether the running private control
+protocol offers provider readiness.
+
 The central Git checkout and its repository-scoped deploy key are independent of
 the provider login. A Git key grants repository transport; a provider login
 grants provider execution; an RCP member token grants product authority. None is
@@ -273,7 +289,10 @@ accepted in place of another.
 
 Remote execution adds one more transport boundary: the server's `rcp` account
 must already be able to authenticate with ordinary OpenSSH to the exact account
-in the selected machine profile. RCP checks and uses that configured route; it
+in the selected machine profile. A remote project manifest records that account
+as `machines[].os_account`; omission is refused rather than guessed. A
+server-local team profile executes as `rcp`, including for older manifests that
+predate the explicit field. RCP checks and uses that configured route; it
 does not import a member's SSH key, collect one through Web/desktop state, or try
 a different login. This SSH transport authentication does not select the remote
 provider identity—the remote operating-system account and its native provider

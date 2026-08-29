@@ -1305,6 +1305,7 @@ class ProjectService:
             candidate = MachineConfig(
                 alias=machine.alias,
                 host=machine.host,
+                os_account=machine.os_account,
                 provider_paths=merged,
             )
             validated[alias] = {

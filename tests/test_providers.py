@@ -249,10 +249,16 @@ def test_claude_declares_its_lists_and_says_which_cli_they_came_from() -> None:
 
 
 def test_authentication_is_read_the_way_each_cli_reports_it() -> None:
+    assert CodexProfile().login_command("/opt/codex") == ["/opt/codex", "login"]
     assert CodexProfile().is_authenticated(_result("Logged in using ChatGPT"))
     assert not CodexProfile().is_authenticated(_result("Not logged in"))
     assert not CodexProfile().is_authenticated(_result("Logged in", returncode=1))
 
+    assert ClaudeProfile().login_command("/opt/claude") == [
+        "/opt/claude",
+        "auth",
+        "login",
+    ]
     assert ClaudeProfile().is_authenticated(_result(json.dumps({"loggedIn": True})))
     assert not ClaudeProfile().is_authenticated(_result(json.dumps({"loggedIn": False})))
     assert not ClaudeProfile().is_authenticated(_result("not json"))
@@ -322,11 +328,40 @@ def test_machine_provider_paths_are_backward_compatible_and_absolute(manifest) -
     configured = MachineConfig(
         alias="remote",
         host="gpu.example",
+        os_account="alice",
         provider_paths={"codex": "/opt/codex/bin/codex"},
     )
+    assert configured.os_account == "alice"
     assert configured.provider_paths == {"codex": "/opt/codex/bin/codex"}
     with pytest.raises(ValueError, match="must be absolute"):
         MachineConfig(alias="local", provider_paths={"codex": "bin/codex"})
+    with pytest.raises(ValueError, match="operating-system account"):
+        MachineConfig(alias="remote", host="gpu.example", os_account="alice@example")
+
+
+def test_failed_version_command_does_not_publish_stderr_as_a_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rcp.agents.launcher import AgentLauncher
+
+    binary = tmp_path / "codex"
+    monkeypatch.setattr(shutil, "which", lambda _provider: str(binary))
+
+    def probe(_host: str, command: list[str], **_kwargs):
+        if command[-1] == "--version":
+            return _result("provider internal error", returncode=1)
+        if command[-2:] == ["login", "status"]:
+            return _result("Logged in using ChatGPT")
+        return _result(json.dumps({"models": []}))
+
+    monkeypatch.setattr(AgentLauncher, "_probe", staticmethod(probe))
+
+    readiness = AgentLauncher().readiness("codex")
+
+    assert readiness.installed is True
+    assert readiness.authenticated is True
+    assert readiness.version is None
 
 
 def test_provider_commands_use_the_recorded_binary_as_argv_zero() -> None:

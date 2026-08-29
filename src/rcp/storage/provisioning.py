@@ -28,7 +28,9 @@ from rcp.storage.models import (
 )
 
 _PROVISIONING_TRANSITIONS: dict[ProjectProvisioningStatus, frozenset[ProjectProvisioningStatus]] = {
-    "waiting_for_server_setup": frozenset({"setup_in_progress", "cancelled"}),
+    "waiting_for_server_setup": frozenset(
+        {"setup_in_progress", "operator_action_needed", "cancelled"}
+    ),
     "setup_in_progress": frozenset(
         {"setup_in_progress", "operator_action_needed", "ready_for_review", "cancelled"}
     ),

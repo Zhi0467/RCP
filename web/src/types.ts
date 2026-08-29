@@ -206,6 +206,10 @@ export interface ProjectProvisioningProviderProjection {
   status: ProjectProvisioningCheckStatus;
   status_label: string;
   ready: boolean;
+  binary_path: string | null;
+  version: string | null;
+  resolved_runtime_id: string | null;
+  execution_account: string | null;
   checked_at: string | null;
   diagnostic: string | null;
 }
@@ -1151,6 +1155,7 @@ export interface Repository {
 export interface Machine {
   alias: string;
   host: string;
+  os_account: string;
   provider_paths: Record<ProviderId, string>;
 }
 

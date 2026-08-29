@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import pwd
+import re
 import shlex
 import shutil
 import signal
@@ -38,6 +40,8 @@ ProviderPathState = Literal[
     "unconfigured",
     "unreachable",
 ]
+
+_EXECUTION_ACCOUNT = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,127}")
 
 
 _REMOTE_PATH_MISSING = 40
@@ -93,6 +97,25 @@ class ProviderReadiness(BaseModel):
             self.runtimes = list(profile.runtime_choices)
         if not self.default_runtime:
             self.default_runtime = profile.default_runtime
+        return self
+
+
+class ProviderExecutionAccount(BaseModel):
+    """The nonsecret OS identity reached by the provider launch transport."""
+
+    host: str
+    reachable: bool
+    os_account: str | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def identity_matches_reachability(self) -> ProviderExecutionAccount:
+        if self.reachable != (self.os_account is not None):
+            raise ValueError("reachable execution accounts require one observed account")
+        if self.reachable and self.reason is not None:
+            raise ValueError("a reachable execution account cannot carry a failure reason")
+        if not self.reachable and not self.reason:
+            raise ValueError("an unreachable execution account requires a reason")
         return self
 
 
@@ -317,6 +340,36 @@ class AgentLauncher:
             self._readiness_cache.pop(key, None)
             self._readiness_generations[key] = self._readiness_generations.get(key, 0) + 1
 
+    def execution_account(self, *, host: str = "") -> ProviderExecutionAccount:
+        """Resolve the exact OS account reached by the same local or SSH route as launches."""
+
+        if not host:
+            try:
+                account = pwd.getpwuid(os.geteuid()).pw_name
+            except (KeyError, OSError):
+                return ProviderExecutionAccount(
+                    host="",
+                    reachable=False,
+                    reason="The local provider execution account could not be resolved.",
+                )
+            return ProviderExecutionAccount(host="", reachable=True, os_account=account)
+        result = self._probe(host, ["id", "-un"], login_shell=False)
+        if result.returncode != 0:
+            return ProviderExecutionAccount(
+                host=host,
+                reachable=False,
+                reason=f"The configured SSH route to {host} is unavailable.",
+            )
+        lines = result.stdout.strip().splitlines()
+        account = lines[-1].strip() if len(lines) == 1 else ""
+        if _EXECUTION_ACCOUNT.fullmatch(account) is None:
+            return ProviderExecutionAccount(
+                host=host,
+                reachable=False,
+                reason=f"The configured SSH route to {host} did not report one safe OS account.",
+            )
+        return ProviderExecutionAccount(host=host, reachable=True, os_account=account)
+
     def _readiness_uncached(
         self,
         provider: str,
@@ -384,7 +437,7 @@ class AgentLauncher:
                 reason=f"{host} became unreachable while checking {candidate}.",
             )
         version_lines = (version_result.stdout or version_result.stderr).strip().splitlines()
-        version = version_lines[-1] if version_lines else None
+        version = version_lines[-1] if version_result.returncode == 0 and version_lines else None
         auth = self._probe(host, profile.auth_command(candidate))
         authenticated = profile.is_authenticated(auth)
         # Enumerate only once the CLI is known to answer. An unauthenticated
@@ -870,10 +923,18 @@ class AgentLauncher:
         )
 
     @staticmethod
-    def _probe(host: str, command: list[str]) -> subprocess.CompletedProcess[str]:
+    def _probe(
+        host: str,
+        command: list[str],
+        *,
+        login_shell: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
         arguments = command
         if host:
-            arguments = ssh_arguments(host, AgentLauncher._remote_login_command(command))
+            remote = (
+                AgentLauncher._remote_login_command(command) if login_shell else shlex.join(command)
+            )
+            arguments = ssh_arguments(host, remote)
         try:
             return subprocess.run(
                 arguments,
