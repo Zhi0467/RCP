@@ -547,6 +547,7 @@ def test_data_state_refuses_unknown_content_without_opening_sqlite(tmp_path: Pat
 def test_wrapper_is_fixed_to_configured_data_and_current_release() -> None:
     wrapper = server_install._wrapper_text(server_install.DEFAULT_SERVER_LAYOUT)
 
+    assert "PYTHONDONTWRITEBYTECODE=1" in wrapper
     assert "RCP_DATA_DIR=/home/rcp/rcp-server/data" in wrapper
     assert 'exec /etc/rcp/current/.venv/bin/rcp "$@"' in wrapper
     assert "server.toml" not in wrapper

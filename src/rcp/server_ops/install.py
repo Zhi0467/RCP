@@ -1787,6 +1787,7 @@ def _wrapper_text(layout: ServerLayout) -> str:
         "#!/bin/sh\n"
         "set -eu\n"
         "umask 077\n"
+        "export PYTHONDONTWRITEBYTECODE=1\n"
         f"export RCP_DATA_DIR={layout.data_dir}\n"
         f'exec {layout.current_release}/.venv/bin/rcp "$@"\n'
     )

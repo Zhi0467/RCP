@@ -128,8 +128,11 @@ Still in the bootstrap checkout, enter the first RCP command as root. Replace
 the team name, but keep the executable path absolute:
 
 ```bash
-sudo "$PWD/.venv/bin/rcp" server install --team-name "My lab"
+sudo /usr/bin/env PYTHONDONTWRITEBYTECODE=1 "$PWD/.venv/bin/rcp" server install --team-name "My lab"
 ```
+
+The fixed environment flag prevents a root invocation from leaving root-owned
+Python cache files in the operator-owned disposable checkout.
 
 RCP first prints all nine steps. It then validates the host, creates or checks
 the dedicated unprivileged `rcp` account, installs its managed Python 3.12, and
@@ -156,7 +159,7 @@ is still stopped and disabled.
 For structured output, place `--machine-readable` after `install`:
 
 ```bash
-sudo "$PWD/.venv/bin/rcp" server install --team-name "My lab" --machine-readable
+sudo /usr/bin/env PYTHONDONTWRITEBYTECODE=1 "$PWD/.venv/bin/rcp" server install --team-name "My lab" --machine-readable
 ```
 
 Every line is one validated JSON event. Exit status 3 means the final event is

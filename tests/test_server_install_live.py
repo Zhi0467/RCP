@@ -142,11 +142,11 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
         assert restarted["status"] == "ok"
         assert restarted["space_kind"] == "team"
     finally:
-        if bootstrap_parent.exists():
-            shutil.rmtree(bootstrap_parent)
         if deploy_key_id is not None:
             _delete_deploy_key(token, deploy_key_id)
             _clear_deploy_key_receipt()
+        if bootstrap_parent.exists():
+            shutil.rmtree(bootstrap_parent)
 
 
 def _require_explicit_disposable_host() -> None:
@@ -377,6 +377,8 @@ def _run_install(
         (
             "sudo",
             "-n",
+            "/usr/bin/env",
+            "PYTHONDONTWRITEBYTECODE=1",
             str(executable),
             "server",
             "install",
@@ -388,7 +390,10 @@ def _run_install(
         timeout=_COMMAND_TIMEOUT_SECONDS,
     )
     if result.returncode not in {0, 3}:
-        pytest.fail(f"server install returned unexpected exit status {result.returncode}")
+        pytest.fail(
+            f"server install returned unexpected exit status {result.returncode}; "
+            f"stdout tail={result.stdout[-4096:]!r}; stderr tail={result.stderr[-4096:]!r}"
+        )
     lines = result.stdout.splitlines()
     if not lines:
         pytest.fail("server install emitted no machine-readable events")

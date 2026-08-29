@@ -561,6 +561,20 @@ gate are deliberately future work and do not block this plan.
   absence, and an indeterminate probe. The test failed before reading the
   protected token or creating a deploy key, and workflow cleanup completed on
   both runners; another corrected rerun remains required.
+- Corrected run
+  [33231556482](https://github.com/Zhi0467/RCP/actions/runs/33231556482)
+  passed all clean-host gates and reached the first real root installer call on
+  both releases. That call returned 1, but a second defect masked its event and
+  stderr: root's Python import created bytecode in the operator-owned bootstrap
+  environment, then ordinary-user cleanup failed on those root-owned files.
+  The documented/bootstrap live command now fixes
+  `PYTHONDONTWRITEBYTECODE=1` before Python starts, and the installed wrapper
+  applies the same invariant to root maintenance commands and the service.
+  Live diagnostics now retain only bounded output tails, and in-process
+  deploy-key revocation precedes bootstrap cleanup. Workflow cleanup completed
+  on both runners and no deploy-key receipt was present; the next run must both
+  prove ownership-safe cleanup and expose or clear the underlying installer
+  exit.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 
