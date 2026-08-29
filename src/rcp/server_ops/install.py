@@ -629,6 +629,8 @@ def _emit_source_grant_pause(
         "-o",
         "StrictHostKeyChecking=ask",
         "-o",
+        "GlobalKnownHostsFile=/dev/null",
+        "-o",
         f"UserKnownHostsFile={DEFAULT_SERVER_LAYOUT.ssh_state_root / 'known_hosts'}",
         "-T",
         "git@github.com",
@@ -1414,7 +1416,8 @@ class LinuxInstallMachine:
         private = self.layout.credentials_root / _SOURCE_PRIVATE_KEY
         command = (
             f"ssh -F /dev/null -i {private} -o IdentitiesOnly=yes -o BatchMode=yes "
-            f"-o StrictHostKeyChecking=yes -o UserKnownHostsFile="
+            f"-o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null "
+            f"-o UserKnownHostsFile="
             f"{self.layout.ssh_state_root / 'known_hosts'}"
         )
         return {**environment, "GIT_SSH_COMMAND": command}

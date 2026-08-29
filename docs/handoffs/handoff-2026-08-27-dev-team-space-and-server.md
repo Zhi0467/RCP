@@ -14,8 +14,9 @@ operator guide, guarded live drive, and fixed 22.04/24.04 manual Actions matrix;
 its one independent audit is complete and every finding is fixed. Live
 qualification is in progress with the protected repository-admin test
 credential: both real disposable-host jobs now clear account and sudo-policy
-validation, but the corrected service-account working-directory boundary still
-needs a rerun before F3b is complete. P1 now provides the durable,
+validation, managed-Python installation, and source-grant creation, but the
+corrected SSH host-trust isolation still needs a rerun before F3b is complete.
+P1 now provides the durable,
 strictly guarded project-provisioning state machine; its one independent audit
 is complete, every finding is fixed, and its exact schema boundary is retained
 in the chained upgrade registry. P1 is complete. D1 now provides the strict
@@ -639,6 +640,19 @@ gate are deliberately future work and do not block this plan.
   The uv failure message no longer assumes every failure is network-owned. No
   source grant or deploy key was reached, and cleanup completed on both
   runners. Another corrected rerun is required.
+- Corrected run
+  [33232916530](https://github.com/Zhi0467/RCP/actions/runs/33232916530)
+  ran exact commit `bdf51500c151349b5a5afe7528d12789a4d048d8` and proved the
+  fixed home-directory boundary: both releases installed and rediscovered the
+  managed Python, created the private-source key, paused for the read-only
+  deploy-key grant, and authenticated that key to GitHub. The harness then
+  stopped because no fingerprint prompt appeared. GitHub-hosted runners already
+  carry system-wide host trust, while RCP named only its user known-hosts file;
+  OpenSSH therefore accepted the global record without exercising the required
+  human comparison. The trust action and all later source Git operations now
+  set `GlobalKnownHostsFile=/dev/null`, leaving RCP's owned known-hosts file as
+  the sole trust source. Both temporary read-only deploy keys were revoked and
+  workflow cleanup completed. Another corrected rerun is required.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 

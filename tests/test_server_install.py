@@ -262,6 +262,8 @@ def test_private_source_stops_before_checkout_with_complete_read_only_grant_step
         "-o",
         "StrictHostKeyChecking=ask",
         "-o",
+        "GlobalKnownHostsFile=/dev/null",
+        "-o",
         "UserKnownHostsFile=/home/rcp/.ssh/known_hosts",
         "-T",
         "git@github.com",
@@ -490,6 +492,7 @@ def test_private_source_environment_uses_only_fixed_key_and_strict_host_checking
     assert environment["GIT_SSH_COMMAND"] == (
         "ssh -F /dev/null -i /home/rcp/rcp-server/credentials/source_ed25519 "
         "-o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes "
+        "-o GlobalKnownHostsFile=/dev/null "
         "-o UserKnownHostsFile=/home/rcp/.ssh/known_hosts"
     )
     assert "SSH_AUTH_SOCK" not in environment
