@@ -1145,6 +1145,16 @@ class LinuxInstallMachine:
             raise InstallRefused(
                 "Loopback health omitted the team-space name. Inspect the service and rerun install."
             )
+        if self.layout.config_path.exists() or self.layout.config_path.is_symlink():
+            from rcp.server_ops.backup_config import (
+                BackupConfigurationRefused,
+                activate_configured_backup_timer,
+            )
+
+            try:
+                activate_configured_backup_timer(self.layout)
+            except BackupConfigurationRefused as exc:
+                raise InstallRefused(str(exc)) from exc
         return ServiceHealth(status="ok", space_kind="team", space_name=space_name)
 
     def _converge_account(self) -> pwd.struct_passwd:
@@ -1905,6 +1915,40 @@ def reload_and_disable_backup_timer() -> None:
     _fence_service_stopped_disabled("rcp-backup.timer")
 
 
+def run_backup_service_once() -> None:
+    """Run one first backup while the timer remains fenced off."""
+
+    _require_command(
+        ("systemctl", "start", "rcp-backup.service"),
+        "The first protected backup failed. The timer remains disabled; inspect systemctl "
+        "status --no-pager rcp-backup.service and backup-status.json, then rerun backup configure.",
+        timeout=SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
+    )
+    result = _read_systemd_property("rcp-backup.service", "Result")
+    if result != "success":
+        raise InstallRefused(
+            "The first protected backup did not report a successful systemd result. The timer "
+            "remains disabled; inspect rcp-backup.service and rerun backup configure."
+        )
+
+
+def enable_backup_timer() -> None:
+    """Enable the rendered timer and prove the loaded systemd state."""
+
+    _require_command(
+        ("systemctl", "enable", "--now", "rcp-backup.timer"),
+        "systemd could not enable the verified backup timer. Inspect rcp-backup.timer and rerun "
+        "backup configure.",
+        timeout=SERVER_INSTALL_SERVICE_TIMEOUT_SECONDS,
+    )
+    active, enabled = read_systemd_unit_state("rcp-backup.timer")
+    if active != "active" or enabled != "enabled":
+        raise InstallRefused(
+            "The verified backup timer is not both active and enabled. Disable it, inspect the "
+            "unit, and rerun backup configure."
+        )
+
+
 def read_systemd_unit_state(unit: str) -> tuple[str, str]:
     return _read_systemd_property(unit, "ActiveState"), _read_systemd_property(
         unit, "UnitFileState"
@@ -1988,11 +2032,13 @@ __all__ = [
     "ServiceInstallState",
     "SourceAccess",
     "discover_bootstrap_repository",
+    "enable_backup_timer",
     "fence_backup_timer_before_unit_change",
     "install_backup_unit_files",
     "normalize_github_repository",
     "prepare_install_command",
     "read_systemd_unit_state",
     "reload_and_disable_backup_timer",
+    "run_backup_service_once",
     "source_git_environment",
 ]

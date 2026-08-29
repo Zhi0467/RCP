@@ -4,7 +4,7 @@ Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
 F2, F3a, F3b, F4, F5, F6a, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
-O2b, and O3a are complete. D2
+O2b, O3a, and O3b are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; it is not complete and still gates D3-D5. The live
 Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
@@ -106,10 +106,10 @@ slice, not the pending server or desktop journeys.
 The remaining seams are also concrete:
 
 - the strict `rcp server` shell, Linux layout, source installer, private control
-  socket, installed doctor, source-update candidate builder, inert backup
-  configuration, online SQLite capture, and optimistic project-file capture now
-  exist; copied-state update rehearsal, cutover/rollback, encrypted
-  archive/restore, and member removal do not;
+  socket, installed doctor, source-update candidate builder, protected backup
+  run/configuration/status/retention path, online SQLite capture, and optimistic
+  project-file capture now exist; copied-state update rehearsal,
+  cutover/rollback, restore, and member removal do not;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
 - the Web UI still says “Team connections are not implemented in this build”;
@@ -820,7 +820,7 @@ gate are deliberately future work and do not block this plan.
   choose a larger native transport design. D3 through D5 remain dependent on
   that decision; unrelated server and provisioning lanes remain available.
 
-#### 2026-08-28 — O3a backup configuration and inert timer implemented
+#### 2026-08-28 — O3a backup configuration boundary implemented
 
 - `sudo rcp server backup configure` now requires one absolute destination, one
   checksum-valid native X25519 `age1...` public recipient, explicit `--confirm`,
@@ -856,11 +856,11 @@ gate are deliberately future work and do not block this plan.
   destination helper, configured-file atomic round-trip, concurrent-lock
   refusal, and injected publication recovery were exercised against real
   temporary files. Focused Ruff and formatting checks pass.
-- Not done: no archive is captured, encrypted, integrity-read, retained, or
-  deleted; `backup run` remains unavailable and the timer remains disabled.
-  No real root-owned `/etc` file or systemd manager was changed on this Mac, and
-  no Ubuntu live drive was claimed. O3b and the later live milestone own those
-  checks.
+- At this packet boundary no archive was captured, encrypted, integrity-read,
+  retained, or deleted, so the timer deliberately remained disabled. O3b has
+  since installed those effects and the first-run activation gate. No real
+  root-owned `/etc` file or systemd manager was changed on this Mac; the later
+  live milestone still owns the Ubuntu systemd/no-pause qualification.
 
 #### 2026-08-29 — F4 private installed-service control socket complete
 
@@ -973,9 +973,10 @@ gate are deliberately future work and do not block this plan.
   packet made no desktop UI promise, so the disposable installed Ubuntu service
   is the relevant user-visible runtime proof.
 - Not done in F5: no source fetch, fast-forward, build receipt, rehearsal,
-  cutover, rollback, provider summary, or backup summary exists. F6a through
-  F6d own update; P5 and O3b later extend doctor only through their concrete
-  owner state.
+  cutover, rollback, provider summary, or backup summary existed. F6a and P5
+  have since supplied the candidate build and provider summary, and O3b now
+  supplies the backup summary through its concrete owner state. F6b through
+  F6d still own rehearsal, cutover, rollback, and recovery.
 
 #### 2026-08-29 — F6a source update and immutable candidate build complete
 
@@ -1292,10 +1293,10 @@ gate are deliberately future work and do not block this plan.
   unconfirmed branch/Patch quarantine needed an explicit exclusion before the
   retained walker could safely serve backup.
 - O1 itself creates no SQLite snapshot, stable file copy, archive, encryption,
-  retention, timer activation, status projection, or restore effect. O2a and
-  O2b have since supplied the SQLite and project-file captures; O3b and O4
-  retain archive and restore responsibility, and S104 remains pending its live
-  no-pause/partial-capture/restore drive.
+  retention, timer activation, status projection, or restore effect. O2a/O2b
+  have since supplied the captures and O3b has supplied archive protection,
+  status, retention, and timer activation. O4 retains restore responsibility,
+  and S104 remains pending its live no-pause/partial-capture/restore drive.
 
 #### 2026-08-29 — O2a online SQLite capture and typed inventory complete
 
@@ -1329,15 +1330,16 @@ gate are deliberately future work and do not block this plan.
   diagnosis and cleanup; nothing in O2a enables `backup run` or the systemd
   timer. It does not open a project checkout, copy canonical/chat/Paper/fact or
   kept-file bytes, build or encrypt an archive, apply retention, publish backup
-  status, or restore anything. O2b has since supplied the project-file copy;
-  O3b and O4 still own archive, status, retention, and restore effects.
+  status, or restore anything. O2b has since supplied the project-file copy and
+  O3b has supplied archive, status, retention, and timer effects; O4 still owns
+  restore.
 - Focused backup, control, storage, provisioning, and result-view regressions
   pass (157 tests), including a concurrent writer that commits through the
   snapshot, a late project excluded from the copied database, per-project
   malformed/cross-home isolation, immutable readback/tamper checks, and a real
   TestClient service plus Unix control-socket call. S104 remains pending its
-  full live dispatch/Apply, remote partial-capture, encryption, and restore
-  drive.
+  full live dispatch/Apply, remote partial-capture, encrypted-archive, and
+  restore drive.
 
 #### 2026-08-29 — O2b optimistic project-file capture complete
 
@@ -1367,15 +1369,60 @@ gate are deliberately future work and do not block this plan.
   project's staging and records a generic nonsecret failure with time.
 - The immutable `project-files.json` receipt binds the O2a receipt and SQLite
   digest, captured heads, per-file groups/hashes/sizes, recovery descriptors,
-  per-project failures, and complete/partial status. The packet does not build
+  per-project failures, and complete/partial status. O2b itself does not build
   or encrypt an archive, enable the timer, publish long-lived backup status,
-  apply retention, or restore data; O3b and O4 own those effects.
+  apply retention, or restore data. O3b has since supplied the first four
+  effects; O4 still owns restore.
 - Focused O2b and affected owner suites pass, including real local Git identity,
   main/branch canonical capture, materialization and unreferenced-file
   exclusion, post-boundary and post-snapshot chat truncation, remote filtering,
   unavailable-host isolation, and a real concurrent atomic fact replacement.
   S104 remains pending its full live Linux/SSH no-pause, encrypted readback, and
   restore drive.
+
+#### 2026-08-29 — O3b protected archive, retention, status, and timer complete
+
+- `rcp server backup run` now composes the installed service's exact O2a SQLite
+  capture with O2b's immutable project-file receipt under one nonblocking backup
+  lock. It rejects missing/mismatched configuration, requires upstream `age`
+  1.x, builds the final typed manifest from those receipts, and never accepts a
+  private recovery identity or consults a later live project list.
+- The archive writer emits one deterministic streaming PAX tar containing only
+  `manifest.json` and the manifest's verified regular files. Every source is
+  rechecked for inode, size, timestamps, byte count, and SHA-256 while streaming
+  directly into `age --encrypt --recipient`; plaintext is never assembled into
+  another archive file or loaded wholesale into memory.
+- Ciphertext first lands in an exclusive mode-0600 hidden partial. RCP fsyncs it,
+  validates the age-v1 header, publishes with a same-directory no-overwrite hard
+  link, fully hashes and sizes the published bytes, and writes an immutable
+  adjacent receipt bound to installation, space, capture, destination, recipient
+  fingerprint, manifest digest, project counts, and complete/partial status. A
+  bounded mode-0600 `backup-status.json` outside the backed-up data directory
+  records the last protected, partial, or failed run without secret text.
+- Retention inventories only strict same-installation receipts and ignores every
+  foreign, malformed, owner/mode-mismatched, or unreceipted file. It keeps the
+  configured newest count plus the newest complete archive, exposes exact
+  deletion names in a typed plan, and fully revalidates and rehashes each target
+  immediately before unlink. The private plaintext capture stage is removed only
+  after archive/receipt publication and retention complete; failures preserve it
+  for diagnosis.
+- Backup configuration now runs one real protected backup while the systemd
+  timer remains fenced, enables the timer only after success, and reads back both
+  active and enabled state before clearing the pending configuration. Installer
+  re-entry restores an existing configured timer through the same first-run
+  proof. Doctor reports configured policy, timer state, recipient fingerprint,
+  last outcome, archive path/bytes/project counts, and receipt agreement through
+  bounded nonsecret fields.
+- The focused configuration/encryption/retention/doctor suite passes with 56
+  tests and one environment skip. A separately downloaded official `age` 1.3.1
+  binary passed a real encrypt/decrypt archive drive. The complete backend suite
+  passes with 2,764 tests and eight expected environment skips; 437 Web tests,
+  the production Web build, and Ruff also pass. A complete Codex Security diff
+  scan reviewed every changed production surface and reported no finding.
+- Not done: O3b does not decrypt or restore an archive, reconstruct a checkout,
+  classify pre-restore lifecycle state, or prove the timer/no-pause behavior on
+  Ubuntu. O3c/O3d and O4 own restore safety, and S104 remains pending its full
+  Linux/SSH/systemd live drive.
 
 ## What remains
 
@@ -1390,10 +1437,10 @@ The remaining implementation work is:
    enrollment/readback, navigation, cached team groups, and optional operator
    bridge (the strict metadata and token-write/remove substrate is complete);
 4. app-visible project setup driven by the backend and prepared by the CLI;
-5. encrypted archive readback, safe timer enablement, retention, restore, and
-   server status (the strict manifest, online SQLite snapshot/typed inventory,
-   optimistic project-file capture, configuration, and disabled units are
-   complete);
+5. restore and the complete live no-pause/partial-capture qualification (archive
+   encryption/readback, durable status, retention, first-run timer activation,
+   strict manifests, online SQLite capture, and optimistic project-file capture
+   are complete hermetically);
 6. console member removal;
 7. append-only personal-to-team home transfer and recovery; and
 8. a live one-lab acceptance drill and operator documentation.
@@ -2285,9 +2332,9 @@ Report source/release roots, configured origin/branch, managed-main HEAD,
 upstream HEAD, candidate/current/running commits, service/reload state,
 space/process/data identities, ownership and mode problems, control-socket
 health, Web bundle build identity, and installed dependency readiness without
-revealing secrets. P5 and O3b later add their concrete provider and backup
-summaries; F5 does not invent placeholders or a generic status registry for
-owners that have not landed.
+revealing secrets. P5 and O3b have added their concrete provider and backup
+summaries through the same report; F5 did not invent placeholders or a generic
+status registry for owners that had not landed.
 
 Distinguish “checkout updated but old process still running” from corruption.
 Doctor is read-only and works interactively and as one structured document.
@@ -3139,9 +3186,9 @@ memory.
 
 Status: complete hermetically on 2026-08-29. The installed-service online
 snapshot, copied-database-only inventory, per-project failure isolation, and
-immutable handoff receipt have focused coverage. O2b now consumes that receipt
-and captures project files; O2a itself still does neither and does not activate
-a backup workflow. O3b owns activation.
+immutable handoff receipt have focused coverage. O2b consumes that receipt and
+captures project files; O2a itself still does neither. O3b now composes both
+captures into the active protected-backup workflow.
 
 Own:
 
@@ -3171,8 +3218,9 @@ project lock.
 Status: complete hermetically on 2026-08-29. The immutable O2a-to-O2b handoff,
 local/SSH checkout proof, filtered remote export, typed source selection,
 bounded stable reads, per-project failure isolation, and immutable project-file
-receipt have focused coverage. The full live S104 drive remains pending; O3b
-still owns archive encryption, readback, status, retention, and timer activation.
+receipt have focused coverage. O3b now consumes this receipt for archive
+encryption, readback, status, retention, and timer activation. The full live
+S104 drive remains pending.
 
 Own:
 
@@ -3227,9 +3275,9 @@ arbitrary symlink targets.
 
 ### O3a — Backup configuration and systemd timer
 
-Status: implemented in the working tree on 2026-08-28; focused verification and
-the one independent audit are complete. O3b still owns every archive side
-effect and the only transition that may enable the timer.
+Status: complete on 2026-08-28. Focused verification and the one independent
+audit are complete. O3b now supplies every archive side effect and owns the
+verified transition that enables this packet's configured timer.
 
 Own:
 
@@ -3260,20 +3308,26 @@ after interruption, and clear it only after exact config/timer/systemd
 readback. The service must see every accepted destination, including `/tmp` and
 `/var/tmp`; do not add a private temporary namespace that changes path meaning.
 
-Until O3b's concrete `backup run` owner is present, installation may render the
-unit and persist validated configuration but must leave the timer disabled and
-the feature unadvertised. O3b owns the final readback that makes enabling the
-  configured timer safe; an intermediate `main` commit never schedules a
-missing command.
+The original O3a-only commit rendered the unit and persisted validated
+configuration while leaving the timer disabled. O3b now supplies the command,
+first protected run, and final readback that make enabling the configured timer
+safe; no intermediate `main` commit scheduled a missing command.
 
 The destination is one writable filesystem directory and may be local or
 mounted. Do not add S3, SSH upload, cloud-sync, filesystem-topology detection, or
 an on-server/off-server warning.
 
-Scheduled execution invokes O3b's same `backup run` command. This packet stores
-retention policy but does not delete an archive.
+Scheduled execution invokes O3b's same `backup run` command. O3a stores the
+retention policy; O3b alone applies it.
 
 ### O3b — `age` encryption, readback, retention, and status
+
+Status: complete hermetically on 2026-08-29. The concrete command, deterministic
+encrypted archive, immutable readback receipt, durable last-run outcome,
+proof-before-delete retention, doctor projection, and first-run timer activation
+are implemented. The real `age` encrypt/decrypt drive passed with upstream
+`age` 1.3.1. The full Ubuntu systemd/no-pause/remote-partial S104 drive and all
+restore behavior remain pending.
 
 Own:
 
@@ -4436,10 +4490,11 @@ Close this handoff only when all of the following are true:
 ## Suggested skills for pickup
 
 - The design grilling and final cross-document fact-check are complete. Continue
-  directly on `main` from the dependency-ready packets; O2b now unblocks both
-  F6b's copied-state rehearsal and O3b's encrypted backup workflow. Implement
-  the remaining packets without reopening product boundaries unless current
-  code contradicts their authority.
+  directly on `main` from the dependency-ready packets. F6b's copied-state
+  rehearsal is the next incomplete source-update packet; O3c and the later
+  restore lane may also consume the now-complete protected-backup boundary.
+  Implement remaining packets without reopening product boundaries unless
+  current code contradicts their authority.
 - Use `computer-use:computer-use` for the real source-built desktop drives in
   D2, D4a, D4b, D6, D7, T5a, T5b, and V1; browser tests cannot prove native SSH,
   Keychain, cookie-store, or navigation behavior.

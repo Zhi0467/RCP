@@ -102,8 +102,8 @@ class RecordingMachine:
         self._call("readback", config)
         return BackupConfigurationReadback(
             config=config,
-            timer_active_state="inactive",
-            timer_unit_file_state="disabled",
+            timer_active_state="active",
+            timer_unit_file_state="enabled",
         )
 
 
@@ -210,8 +210,8 @@ def test_interactive_and_structured_renderers_execute_the_same_policy() -> None:
         {"name": "schedule", "value": "02:00"},
         {"name": "retention", "value": 30},
         {"name": "age_recipient", "value": AGE_RECIPIENT},
-        {"name": "timer_active_state", "value": "inactive"},
-        {"name": "timer_unit_file_state", "value": "disabled"},
+        {"name": "timer_active_state", "value": "active"},
+        {"name": "timer_unit_file_state", "value": "enabled"},
     ]
 
 
@@ -226,7 +226,6 @@ def test_known_failure_stops_before_later_configuration_steps() -> None:
         "persist_and_install",
     ]
     assert "Focused persist_and_install refusal" in output
-    assert "readback" not in output
 
 
 def test_backup_section_round_trips_and_legacy_v1_loads_unconfigured() -> None:
@@ -471,7 +470,7 @@ def test_failed_pre_fence_mutates_neither_journal_nor_units(
     assert mutations == []
 
 
-def test_persist_preserves_installation_identity_and_installs_disabled_units(
+def test_persist_preserves_identity_and_activates_only_after_first_backup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     base = _installed()
@@ -529,7 +528,19 @@ def test_persist_preserves_installation_identity_and_installs_disabled_units(
     monkeypatch.setattr(
         backup_owner,
         "_readback_backup_configuration",
-        lambda _config, _layout: events.append("readback"),
+        lambda _config, _layout, *, expected_enabled=True: events.append(
+            "readback_enabled" if expected_enabled else "readback_disabled"
+        ),
+    )
+    monkeypatch.setattr(
+        backup_owner,
+        "run_backup_service_once",
+        lambda: events.append("first_backup"),
+    )
+    monkeypatch.setattr(
+        backup_owner,
+        "enable_backup_timer",
+        lambda: events.append("enable"),
     )
     monkeypatch.setattr(
         backup_owner,
@@ -553,12 +564,15 @@ def test_persist_preserves_installation_identity_and_installs_disabled_units(
         "units",
         "post_fence",
         "config",
-        "readback",
+        "readback_disabled",
+        "first_backup",
+        "enable",
+        "readback_enabled",
         "clear",
     ]
 
 
-def test_readback_requires_the_same_timer_text_and_disabled_systemd_state(
+def test_readback_requires_the_same_timer_text_and_enabled_systemd_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _settings(schedule="03:17", retention=45)
@@ -582,15 +596,15 @@ def test_readback_requires_the_same_timer_text_and_disabled_systemd_state(
     monkeypatch.setattr(
         backup_owner,
         "read_systemd_unit_state",
-        lambda _unit: ("inactive", "disabled"),
+        lambda _unit: ("active", "enabled"),
     )
 
     readback = machine.readback(config)
 
     assert readback == BackupConfigurationReadback(
         config=config,
-        timer_active_state="inactive",
-        timer_unit_file_state="disabled",
+        timer_active_state="active",
+        timer_unit_file_state="enabled",
     )
     assert checked[0][0] == Path("/etc/systemd/system/rcp-backup.timer")
     assert "OnCalendar=*-*-* 03:17:00" in checked[0][1]
@@ -598,7 +612,92 @@ def test_readback_requires_the_same_timer_text_and_disabled_systemd_state(
     monkeypatch.setattr(
         backup_owner,
         "read_systemd_unit_state",
-        lambda _unit: ("inactive", "enabled"),
+        lambda _unit: ("inactive", "disabled"),
     )
-    with pytest.raises(BackupConfigurationRefused, match="not both inactive and disabled"):
+    with pytest.raises(BackupConfigurationRefused, match="not both active and enabled"):
         machine.readback(config)
+
+
+def test_failed_first_backup_fences_the_timer_and_keeps_the_pending_intent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _settings()
+    installed = _installed(backup=config)
+    layout = SimpleNamespace(
+        config_path=Path("/etc/rcp/server.toml"),
+        systemd_unit=Path("/etc/systemd/system/rcp.service"),
+    )
+    events: list[str] = []
+    monkeypatch.setattr(backup_owner, "install_backup_unit_files", lambda **_kwargs: None)
+    monkeypatch.setattr(backup_owner, "reload_and_disable_backup_timer", lambda: None)
+    monkeypatch.setattr(backup_owner, "write_installed_server_config", lambda *_args: None)
+    monkeypatch.setattr(
+        backup_owner, "_readback_backup_configuration", lambda *_args, **_kwargs: None
+    )
+
+    def fail_first_backup() -> None:
+        events.append("first_backup")
+        raise backup_owner.InstallRefused("injected first backup failure")
+
+    monkeypatch.setattr(backup_owner, "run_backup_service_once", fail_first_backup)
+    monkeypatch.setattr(backup_owner, "enable_backup_timer", lambda: events.append("enable"))
+    monkeypatch.setattr(
+        backup_owner,
+        "fence_backup_timer_before_unit_change",
+        lambda: events.append("fence"),
+    )
+
+    with pytest.raises(backup_owner.InstallRefused, match="injected first backup failure"):
+        backup_owner._converge_installed_backup_configuration(installed, layout)
+
+    assert events == ["first_backup", "fence"]
+
+
+def test_install_reactivation_runs_backup_before_enabling_a_disabled_timer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _settings()
+    installed = _installed(backup=config)
+    layout = SimpleNamespace(config_path=Path("/etc/rcp/server.toml"))
+    events: list[str] = []
+    monkeypatch.setattr(backup_owner, "backup_configuration_lock", lambda _layout: nullcontext())
+    monkeypatch.setattr(
+        backup_owner,
+        "recover_pending_backup_configuration",
+        lambda _layout: events.append("recover"),
+    )
+    monkeypatch.setattr(backup_owner, "load_installed_server_config", lambda _path: installed)
+
+    def readback(_config, _layout, *, expected_enabled=True):
+        events.append("readback_enabled" if expected_enabled else "readback_disabled")
+        if expected_enabled and events.count("readback_enabled") == 1:
+            raise BackupConfigurationRefused("timer is still disabled")
+        return BackupConfigurationReadback(
+            config=config,
+            timer_active_state="active" if expected_enabled else "inactive",
+            timer_unit_file_state="enabled" if expected_enabled else "disabled",
+        )
+
+    monkeypatch.setattr(backup_owner, "_readback_backup_configuration", readback)
+    monkeypatch.setattr(
+        backup_owner,
+        "run_backup_service_once",
+        lambda: events.append("first_backup"),
+    )
+    monkeypatch.setattr(
+        backup_owner,
+        "enable_backup_timer",
+        lambda: events.append("enable"),
+    )
+
+    result = backup_owner.activate_configured_backup_timer(layout)
+
+    assert result.timer_active_state == "active"
+    assert events == [
+        "recover",
+        "readback_enabled",
+        "readback_disabled",
+        "first_backup",
+        "enable",
+        "readback_enabled",
+    ]

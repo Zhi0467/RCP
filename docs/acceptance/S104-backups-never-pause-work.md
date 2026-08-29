@@ -7,6 +7,10 @@ covered_by:
   - tests/test_backup_manifest.py
   - tests/test_backup_sqlite_capture.py
   - tests/test_backup_capture.py
+  - tests/test_backup_configuration.py
+  - tests/test_backup_encryption.py
+  - tests/test_backup_retention.py
+  - tests/test_server_doctor.py
 invariants: [1, 2, 7]
 ---
 
@@ -19,9 +23,12 @@ hermetically. The online SQLite snapshot and copied-database-only typed project
 inventory are also covered with concurrent writers. Optimistic local/SSH
 project-file capture now has hermetic coverage for typed source selection,
 main/branch heads, complete chat boundaries, stable mutable reads, filtered
-remote export, and per-project failure isolation. Encryption, durable status,
-restore, and the full live no-pause drive are not yet implemented. Its boundary
-is in
+remote export, and per-project failure isolation. Deterministic `age` 1.x
+encryption, atomic publication, ciphertext readback, immutable receipts, durable
+status, proven retention, doctor projection, and first-run timer activation are
+also covered hermetically, including one real upstream `age` 1.3.1
+encrypt/decrypt drive. Restore and the full live Linux/SSH/systemd no-pause drive
+are not yet implemented. Its boundary is in
 [Server and machine operations](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
 
 An earlier design had the server delay dispatch and delay applying results for

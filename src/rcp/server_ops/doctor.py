@@ -8,6 +8,7 @@ import re
 import stat
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO, Literal, Protocol
@@ -64,6 +65,14 @@ DoctorSourceState = Literal[
     "diverged",
     "unavailable",
 ]
+DoctorBackupState = Literal[
+    "not_configured",
+    "never_run",
+    "protected",
+    "partial",
+    "failure",
+    "unavailable",
+]
 
 
 class _StrictModel(BaseModel):
@@ -104,6 +113,19 @@ class ServerDoctorReport(_StrictModel):
     dependencies_ready: bool
     dependency_versions: str
     problems: tuple[str, ...]
+    backup_status: DoctorBackupState = "not_configured"
+    backup_destination: str | None = None
+    backup_schedule: str | None = None
+    backup_retention: int | None = None
+    backup_recipient_fingerprint: str | None = None
+    backup_timer_active_state: str = "not_configured"
+    backup_timer_unit_file_state: str = "not_configured"
+    last_backup_at: datetime | None = None
+    last_backup_archive: str | None = None
+    last_backup_captured_bytes: int | None = None
+    last_backup_protected_projects: int | None = None
+    last_backup_uncaptured_projects: int | None = None
+    last_backup_failure: str | None = None
 
     @field_validator(
         "managed_main_head",
@@ -130,6 +152,22 @@ class ServerDoctorReport(_StrictModel):
             for problem in value
         ):
             raise ValueError("doctor problems must be bounded one-line messages")
+        return value
+
+    @field_validator("backup_recipient_fingerprint")
+    @classmethod
+    def validate_backup_fingerprint(cls, value: str | None) -> str | None:
+        if value is not None and (
+            len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise ValueError("doctor backup recipient fingerprint must be lowercase SHA-256")
+        return value
+
+    @field_validator("last_backup_at")
+    @classmethod
+    def validate_last_backup_time(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("doctor backup time requires a timezone")
         return value
 
     @model_validator(mode="after")
@@ -173,8 +211,59 @@ class ServerDoctorReport(_StrictModel):
             NonsecretField(name="provider_check_status", value=self.provider_check_status),
             NonsecretField(name="dependencies_ready", value=self.dependencies_ready),
             NonsecretField(name="dependency_versions", value=self.dependency_versions),
+            NonsecretField(name="backup_status", value=self.backup_status),
+            NonsecretField(name="backup_destination", value=_shown(self.backup_destination)),
+            NonsecretField(name="backup_schedule", value=_shown(self.backup_schedule)),
+            NonsecretField(name="backup_retention", value=_shown(self.backup_retention)),
+            NonsecretField(
+                name="backup_recipient_fingerprint",
+                value=_shown(self.backup_recipient_fingerprint),
+            ),
+            NonsecretField(
+                name="backup_timer_active_state",
+                value=self.backup_timer_active_state,
+            ),
+            NonsecretField(
+                name="backup_timer_unit_file_state",
+                value=self.backup_timer_unit_file_state,
+            ),
+            NonsecretField(
+                name="last_backup_at",
+                value=(self.last_backup_at.isoformat() if self.last_backup_at else _NO_VALUE),
+            ),
+            NonsecretField(name="last_backup_archive", value=_shown(self.last_backup_archive)),
+            NonsecretField(
+                name="last_backup_captured_bytes",
+                value=_shown(self.last_backup_captured_bytes),
+            ),
+            NonsecretField(
+                name="last_backup_protected_projects",
+                value=_shown(self.last_backup_protected_projects),
+            ),
+            NonsecretField(
+                name="last_backup_uncaptured_projects",
+                value=_shown(self.last_backup_uncaptured_projects),
+            ),
+            NonsecretField(name="last_backup_failure", value=_shown(self.last_backup_failure)),
             NonsecretField(name="problems", value=_problem_text(self.problems)),
         )
+
+
+@dataclass(frozen=True)
+class _BackupDoctorSummary:
+    status: DoctorBackupState
+    destination: str | None = None
+    schedule: str | None = None
+    retention: int | None = None
+    recipient_fingerprint: str | None = None
+    timer_active_state: str = "not_configured"
+    timer_unit_file_state: str = "not_configured"
+    last_at: datetime | None = None
+    archive: str | None = None
+    captured_bytes: int | None = None
+    protected_projects: int | None = None
+    uncaptured_projects: int | None = None
+    failure: str | None = None
 
 
 class ServerDoctorMachine(Protocol):
@@ -351,6 +440,11 @@ class LinuxServerDoctorMachine:
             current_commit,
             add_problem,
         )
+        backup = self._inspect_backup(
+            config,
+            service_uid=service_uid,
+            add_problem=add_problem,
+        )
         provider_check_status: Literal["available", "unavailable"] = (
             "available"
             if probe is not None
@@ -398,6 +492,19 @@ class LinuxServerDoctorMachine:
             provider_check_status=provider_check_status,
             dependencies_ready=dependencies_ready,
             dependency_versions=dependency_versions,
+            backup_status=backup.status,
+            backup_destination=backup.destination,
+            backup_schedule=backup.schedule,
+            backup_retention=backup.retention,
+            backup_recipient_fingerprint=backup.recipient_fingerprint,
+            backup_timer_active_state=backup.timer_active_state,
+            backup_timer_unit_file_state=backup.timer_unit_file_state,
+            last_backup_at=backup.last_at,
+            last_backup_archive=backup.archive,
+            last_backup_captured_bytes=backup.captured_bytes,
+            last_backup_protected_projects=backup.protected_projects,
+            last_backup_uncaptured_projects=backup.uncaptured_projects,
+            last_backup_failure=backup.failure,
             problems=tuple(problems),
         )
 
@@ -886,6 +993,93 @@ class LinuxServerDoctorMachine:
             add_problem("one or more installed runtime dependencies are unavailable or unsupported")
         return ready, ",".join(versions)
 
+    def _inspect_backup(
+        self,
+        config: InstalledServerConfig | None,
+        *,
+        service_uid: int,
+        add_problem: Callable[[str], None],
+    ) -> _BackupDoctorSummary:
+        if config is None or config.backup is None:
+            return _BackupDoctorSummary(status="not_configured")
+        import hashlib
+
+        from rcp.server_ops.backup import (
+            BackupRunRefused,
+            read_backup_archive_receipt,
+            read_backup_outcome,
+        )
+
+        backup = config.backup
+        active = self._systemd_property("ActiveState", unit="rcp-backup.timer")
+        enabled = self._systemd_property("UnitFileState", unit="rcp-backup.timer")
+        if active != "active" or enabled != "enabled":
+            add_problem("configured backup timer is not both active and enabled")
+        common = {
+            "destination": backup.destination,
+            "schedule": backup.schedule,
+            "retention": backup.retention,
+            "recipient_fingerprint": hashlib.sha256(
+                backup.age_recipient.encode("ascii")
+            ).hexdigest(),
+            "timer_active_state": active or "unavailable",
+            "timer_unit_file_state": enabled or "unavailable",
+        }
+        try:
+            outcome = read_backup_outcome(self.layout, expected_uid=service_uid)
+        except FileNotFoundError:
+            add_problem("configured backup has no durable run status")
+            return _BackupDoctorSummary(status="never_run", **common)
+        except (OSError, ValueError):
+            add_problem("configured backup status is missing, unsafe, or invalid")
+            return _BackupDoctorSummary(status="unavailable", **common)
+        if (
+            outcome.installation_id != config.installation_id
+            or outcome.destination != backup.destination
+        ):
+            add_problem("backup status belongs to another installation or destination")
+            return _BackupDoctorSummary(status="unavailable", **common)
+
+        archive = outcome.archive
+        archive_path = None
+        captured_bytes = None
+        protected_projects = None
+        uncaptured_projects = None
+        if archive is not None:
+            archive_path = str(Path(backup.destination) / archive.archive_name)
+            captured_bytes = archive.captured_bytes
+            protected_projects = archive.protected_project_count
+            uncaptured_projects = archive.uncaptured_project_count
+            try:
+                observed = read_backup_archive_receipt(
+                    Path(f"{archive_path}.receipt.json"),
+                    expected_destination=Path(backup.destination),
+                    expected_installation_id=config.installation_id,
+                    expected_uid=service_uid,
+                    verify_digest=False,
+                    expected_receipt_sha256=outcome.archive_receipt_sha256,
+                )
+            except (BackupRunRefused, OSError, ValueError):
+                add_problem("last protected backup no longer matches its archive receipt")
+            else:
+                if observed != archive:
+                    add_problem("backup status and archive receipt disagree")
+
+        if outcome.status == "failure":
+            add_problem("the last protected backup failed; inspect last_backup_failure")
+        elif outcome.status == "partial":
+            add_problem("the last protected backup is partial; inspect uncaptured projects")
+        return _BackupDoctorSummary(
+            status=outcome.status,
+            last_at=outcome.completed_at,
+            archive=archive_path,
+            captured_bytes=captured_bytes,
+            protected_projects=protected_projects,
+            uncaptured_projects=uncaptured_projects,
+            failure=outcome.failure,
+            **common,
+        )
+
     def _git_text(self, root: Path, argv: tuple[str, ...]) -> str | None:
         result = self._runner(
             ("git", "-c", f"safe.directory={root}", "-C", str(root), *argv),
@@ -923,6 +1117,7 @@ class LinuxServerDoctorMachine:
         self,
         name: str,
         *,
+        unit: str | None = None,
         allow_empty: bool = False,
         max_length: int = 120,
     ) -> str | None:
@@ -932,7 +1127,7 @@ class LinuxServerDoctorMachine:
                 "show",
                 f"--property={name}",
                 "--value",
-                self.layout.service_unit_name,
+                unit or self.layout.service_unit_name,
             )
         )
         if result.returncode != 0:

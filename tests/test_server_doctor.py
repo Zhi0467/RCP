@@ -7,6 +7,7 @@ import stat
 import subprocess
 import tempfile
 from dataclasses import replace
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,9 +16,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.__main__ import build_parser
+from rcp.server_ops import backup as backup_owner
 from rcp.server_ops import doctor as server_doctor
+from rcp.server_ops.backup import BackupArchiveReceipt, BackupRunOutcome
 from rcp.server_ops.cli import CallerIdentity, run_server_command
-from rcp.server_ops.config import ServerSourceConfig
+from rcp.server_ops.config import ServerBackupConfig, ServerSourceConfig
 from rcp.server_ops.control import SERVER_CONTROL_OPERATIONS
 from rcp.server_ops.doctor import (
     LinuxServerDoctorMachine,
@@ -116,7 +119,7 @@ def test_doctor_renders_one_complete_report_through_both_cli_modes() -> None:
     assert [event["event"] for event in events] == ["plan", "step", "step"]
     assert events[-1]["step"]["state"] == "succeeded"
     fields = {item["name"]: item["value"] for item in events[-1]["step"]["fields"]}
-    assert len(fields) == 31
+    assert len(fields) == 44
     assert fields["overall_state"] == "healthy"
     assert fields["candidate_commit"] == "none"
     assert fields["running_commit"] == COMMIT
@@ -144,6 +147,76 @@ def test_doctor_returns_a_complete_failed_report_for_owned_problems() -> None:
     fields = {item["name"]: item["value"] for item in final["fields"]}
     assert fields["overall_state"] == "problems"
     assert fields["problems"] == report.problems[0]
+
+
+def test_doctor_reports_the_exact_last_protected_backup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    destination = tmp_path / "backups"
+    backup = ServerBackupConfig(
+        destination=str(destination),
+        age_recipient="age1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusqmwn7f2",
+    )
+    capture_id = "9c59550a-9787-466a-9435-1e59f0a9803f"
+    archive = BackupArchiveReceipt(
+        installation_id=INSTALLATION_ID,
+        space_id=SPACE_ID,
+        capture_id=capture_id,
+        destination=str(destination),
+        archive_name=(f"rcp-team-backup-v1-20260829T120000000000Z-{capture_id}.tar.age"),
+        captured_at=datetime(2026, 8, 29, 12, 0, tzinfo=UTC),
+        protected_at=datetime(2026, 8, 29, 12, 1, tzinfo=UTC),
+        capture_status="complete",
+        age_version="1.2.1",
+        age_recipient_fingerprint="a" * 64,
+        archive_sha256="b" * 64,
+        archive_size_bytes=4096,
+        manifest_sha256="c" * 64,
+        captured_bytes=2048,
+        project_count=2,
+        protected_project_count=2,
+        uncaptured_project_count=0,
+    )
+    outcome = BackupRunOutcome(
+        operation_id="cf4d29d0-a1bd-4d38-8620-242adf195bf6",
+        installation_id=INSTALLATION_ID,
+        destination=str(destination),
+        started_at=datetime(2026, 8, 29, 12, 0, tzinfo=UTC),
+        completed_at=datetime(2026, 8, 29, 12, 2, tzinfo=UTC),
+        status="protected",
+        archive=archive,
+        archive_receipt_sha256="d" * 64,
+    )
+    receipt_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(backup_owner, "read_backup_outcome", lambda *_args, **_kwargs: outcome)
+
+    def read_receipt(_path, **kwargs):
+        receipt_calls.append(kwargs)
+        return archive
+
+    monkeypatch.setattr(backup_owner, "read_backup_archive_receipt", read_receipt)
+
+    def runner(argv: tuple[str, ...], *, cwd: Path | None = None):
+        del cwd
+        value = "active" if "--property=ActiveState" in argv else "enabled"
+        return subprocess.CompletedProcess(argv, 0, value + "\n", "")
+
+    problems: list[str] = []
+    summary = LinuxServerDoctorMachine(layout, runner=runner)._inspect_backup(
+        SimpleNamespace(installation_id=INSTALLATION_ID, backup=backup),
+        service_uid=os.geteuid(),
+        add_problem=problems.append,
+    )
+
+    assert problems == []
+    assert summary.status == "protected"
+    assert summary.archive == str(destination / archive.archive_name)
+    assert summary.captured_bytes == 2048
+    assert summary.protected_projects == 2
+    assert summary.uncaptured_projects == 0
+    assert receipt_calls[0]["expected_receipt_sha256"] == "d" * 64
 
 
 def test_running_release_identity_and_health_are_exact(tmp_path: Path) -> None:
@@ -383,6 +456,7 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
             authentication="public",
         ),
         paths=SimpleNamespace(model_dump=lambda: layout.recorded_paths()),
+        backup=None,
     )
 
     def config_loader(_path: Path):

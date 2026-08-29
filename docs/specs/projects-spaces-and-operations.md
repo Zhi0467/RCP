@@ -1204,8 +1204,8 @@ then asks RCP to recheck; missing provider auth is not reported as failed data
 restore.
 
 The fixed service-account layout, source installation, nonsecret desktop
-connection registry, durable provisioning-request boundary, disabled backup
-configuration, repository-scoped deploy-key primitive, exact central-checkout
+connection registry, durable provisioning-request boundary, active protected
+backup workflow, repository-scoped deploy-key primitive, exact central-checkout
 owner, exact-account provider check, final human project creation, and strict
 backup-manifest/read-only inventory boundary now exist. The installed service
 also creates a private immutable online SQLite snapshot and derives typed
@@ -1219,9 +1219,11 @@ or SSH canonical main/branch history, typed chat prefixes, Paper introduction,
 facts, and only SQLite-referenced kept files. Checkout identity and remote
 direct-root inventories are revalidated without fetch or provider credentials;
 one unavailable or continuously changing project becomes uncaptured while
-healthy projects remain usable. It does not yet build or encrypt an archive,
-enable the timer, publish durable backup status, apply retention, or restore
-bytes.
+healthy projects remain usable. It streams that captured boundary through
+upstream `age` 1.x, atomically publishes and fully reads back the ciphertext and
+immutable receipt, records durable protected/partial/failure status, deletes
+only revalidated proven retention targets, and enables the systemd timer only
+after a successful first run. Restore remains unimplemented.
 The private installed-service control socket exposes probe, provider plan/check,
 project-provision plan/step, and online SQLite-capture operations. `rcp server
 project provision <request-id>` publishes one complete plan, advances one
@@ -1235,9 +1237,9 @@ Machine orchestration, final creation, and the team deletion guard are
 hermetically covered, but provisioning has not yet passed S128's complete
 source-built team-service/GitHub/SSH/browser/desktop live drive. Cancellation
 after machine preparation, the unified wizard and desktop operator bridge,
-encryption/restore, member removal, and transfer remain active acceptance work.
-Project-file capture is hermetically complete but still awaits S104's full live
-Linux/SSH no-pause drive. Current RCP must not simulate the other unfinished
+restore, member removal, and transfer remain active acceptance work. Protected
+backup is hermetically complete but still awaits S104's full live Linux/SSH
+no-pause and systemd drive. Current RCP must not simulate the other unfinished
 journeys or describe **ready for review** as an existing project.
 
 ## Deletion

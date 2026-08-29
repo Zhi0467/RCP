@@ -443,7 +443,9 @@ def _dispatch_server_command(
 
             return prepare_backup_configure_command(request, identity)
         case "server backup run":
-            return _unavailable_command(request, identity)
+            from rcp.server_ops.backup import prepare_backup_run_command
+
+            return prepare_backup_run_command(request, identity)
         case "server restore":
             return _unavailable_command(request, identity)
         case "server member remove":

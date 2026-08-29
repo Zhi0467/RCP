@@ -1,4 +1,4 @@
-"""Root-owned backup configuration and disabled systemd schedule installation."""
+"""Root-owned backup configuration and verified systemd schedule activation."""
 
 from __future__ import annotations
 
@@ -32,10 +32,12 @@ from rcp.server_ops.config import (
 )
 from rcp.server_ops.install import (
     InstallRefused,
+    enable_backup_timer,
     fence_backup_timer_before_unit_change,
     install_backup_unit_files,
     read_systemd_unit_state,
     reload_and_disable_backup_timer,
+    run_backup_service_once,
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import (
@@ -143,34 +145,34 @@ def _configuration_plan(target: MachineTarget) -> tuple[ServerStep, ...]:
         ),
         ServerStep(
             number=3,
-            title="Publish configuration and disabled units",
+            title="Publish configuration and prove the first backup",
             purpose=(
                 "Atomically replace the versioned machine config, render the timer from its "
-                "same schedule, and keep that timer disabled until backup run exists."
+                "same schedule, keep it disabled during one real backup, then enable it only "
+                "after that archive passes readback."
             ),
             performed_by="system",
             target=target,
             phase="backup_configuration_publish",
             state="pending",
             expected_success=(
-                "The root-owned config and units are exact and rcp-backup.timer is disabled."
+                "The root-owned config and units are exact, the first backup passed, and the "
+                "timer is enabled."
             ),
-            message="RCP will publish configuration and disabled systemd units.",
+            message="RCP will publish the policy, prove one backup, and activate its timer.",
         ),
         ServerStep(
             number=4,
-            title="Read back the inert schedule",
+            title="Read back the active schedule",
             purpose=(
-                "Prove the stored values and rendered OnCalendar agree without scheduling the "
-                "not-yet-installed backup command."
+                "Prove the stored values, rendered OnCalendar, and loaded enabled timer agree "
+                "after the first protected archive."
             ),
             performed_by="system",
             target=target,
             phase="backup_configuration_readback",
             state="pending",
-            expected_success=(
-                "Config and timer agree, and the timer remains inactive and disabled."
-            ),
+            expected_success=("Config and timer agree, and the timer is active and enabled."),
             message="RCP will read back the config, timer text, and systemd state.",
         ),
     )
@@ -203,16 +205,16 @@ def _execute_configuration(
         _run_step(
             emitter,
             steps[2],
-            running="Writing the machine config and rendering disabled backup units.",
+            running="Publishing the policy, running one backup, and enabling the verified timer.",
             operation=lambda: machine.persist_and_install(config),
-            succeeded="The config and units were published while the timer stayed disabled.",
+            succeeded="The config, first protected archive, and enabled timer were published.",
         )
         readback = _run_step(
             emitter,
             steps[3],
             running="Reading back machine config, timer text, and systemd timer state.",
             operation=lambda: machine.readback(config),
-            succeeded="The stored policy and inert systemd schedule agree exactly.",
+            succeeded="The stored policy and active systemd schedule agree exactly.",
             fields=lambda value: (
                 *_configuration_fields(value.config),
                 NonsecretField(name="timer_active_state", value=value.timer_active_state),
@@ -464,6 +466,41 @@ def recover_pending_backup_configuration(
         ) from exc
 
 
+def activate_configured_backup_timer(
+    layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
+) -> BackupConfigurationReadback | None:
+    """Restore a configured schedule after install has safely fenced its units."""
+
+    try:
+        with backup_configuration_lock(layout):
+            recover_pending_backup_configuration(layout)
+            installed = load_installed_server_config(layout.config_path)
+            config = installed.backup
+            if config is None:
+                return None
+            try:
+                return _readback_backup_configuration(config, layout, expected_enabled=True)
+            except BackupConfigurationRefused:
+                _readback_backup_configuration(config, layout, expected_enabled=False)
+            try:
+                run_backup_service_once()
+                enable_backup_timer()
+                return _readback_backup_configuration(config, layout, expected_enabled=True)
+            except (InstallRefused, OSError, ValueError):
+                with suppress(InstallRefused, OSError):
+                    fence_backup_timer_before_unit_change()
+                raise
+    except BackupConfigurationRefused:
+        raise
+    except InstallRefused as exc:
+        raise BackupConfigurationRefused(str(exc)) from exc
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise BackupConfigurationRefused(
+            "RCP could not restore the configured backup schedule after service installation. "
+            "The timer remains disabled; inspect its unit and backup status, then rerun install."
+        ) from exc
+
+
 def _converge_installed_backup_configuration(
     installed: InstalledServerConfig,
     layout: ServerLayout,
@@ -478,12 +515,22 @@ def _converge_installed_backup_configuration(
     )
     reload_and_disable_backup_timer()
     write_installed_server_config(installed, layout.config_path)
-    _readback_backup_configuration(config, layout)
+    _readback_backup_configuration(config, layout, expected_enabled=False)
+    try:
+        run_backup_service_once()
+        enable_backup_timer()
+        _readback_backup_configuration(config, layout, expected_enabled=True)
+    except (InstallRefused, OSError, ValueError):
+        with suppress(InstallRefused, OSError):
+            fence_backup_timer_before_unit_change()
+        raise
 
 
 def _readback_backup_configuration(
     config: ServerBackupConfig,
     layout: ServerLayout,
+    *,
+    expected_enabled: bool = True,
 ) -> BackupConfigurationReadback:
     installed = load_installed_server_config(layout.config_path)
     if installed.backup != config:
@@ -491,10 +538,12 @@ def _readback_backup_configuration(
     timer_path = layout.systemd_unit.parent / "rcp-backup.timer"
     _require_root_unit(timer_path, render_backup_timer_unit(config.schedule))
     active, enabled = read_systemd_unit_state("rcp-backup.timer")
-    if active != "inactive" or enabled != "disabled":
+    expected = ("active", "enabled") if expected_enabled else ("inactive", "disabled")
+    if (active, enabled) != expected:
+        state = "active and enabled" if expected_enabled else "inactive and disabled"
         raise BackupConfigurationRefused(
-            "The backup timer is not both inactive and disabled. Run systemctl disable "
-            "--now rcp-backup.timer, inspect it, then rerun the same command."
+            f"The backup timer is not both {state}. Disable it, inspect rcp-backup.timer, then "
+            "rerun the same command."
         )
     return BackupConfigurationReadback(
         config=installed.backup,
@@ -653,6 +702,7 @@ __all__ = [
     "BackupConfigurationReadback",
     "BackupConfigurationRefused",
     "LinuxBackupConfigurationMachine",
+    "activate_configured_backup_timer",
     "backup_configuration_lock",
     "backup_service_unit_text",
     "prepare_backup_configure_command",
