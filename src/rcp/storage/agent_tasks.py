@@ -844,6 +844,59 @@ class AgentTaskStoreMixin:
             connection.execute("BEGIN IMMEDIATE")
             return self.detach_agent_tasks_for_history(connection, operation_ids)
 
+    def detach_agent_tasks_for_restore(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        diagnostic: str,
+        now: str,
+    ) -> None:
+        """Interrupt and fence every task captured by an offline restore."""
+
+        if not connection.in_transaction:
+            raise ValueError("restored task detachment requires an active transaction")
+        detail = " ".join(diagnostic.split())[:2000]
+        if not detail:
+            raise ValueError("restored task detachment requires a diagnostic")
+        _required_timestamp(now)
+        rows = connection.execute(
+            "SELECT operation_id, status FROM graph_runs ORDER BY operation_id"
+        ).fetchall()
+        interrupted = [
+            str(row["operation_id"])
+            for row in rows
+            if row["status"] not in {"succeeded", "failed", "interrupted"}
+        ]
+        if interrupted:
+            selected_json = json.dumps(interrupted, separators=(",", ":"))
+            connection.execute(
+                """
+                UPDATE graph_runs
+                SET status = 'interrupted', updated_at = ?, finished_at = COALESCE(finished_at, ?),
+                    status_message = ?, error = ?, phase = 'interrupted', last_activity_at = ?
+                WHERE operation_id IN (SELECT value FROM json_each(?))
+                """,
+                (now, now, detail, detail, now, selected_json),
+            )
+            for operation_id in interrupted:
+                self._insert_agent_task_event(
+                    connection,
+                    operation_id,
+                    detail,
+                    level="warning",
+                    created_at=now,
+                )
+                self._insert_agent_task_receipt(
+                    connection,
+                    operation_id,
+                    "operation_interrupted",
+                    self._bounded_receipt_payload({"status": "interrupted", "reason": "restore"}),
+                    tier="summary",
+                    created_at=now,
+                )
+        operation_ids = tuple(str(row["operation_id"]) for row in rows)
+        self.detach_agent_tasks_for_history(connection, operation_ids)
+
     def mark_agent_artifact_kept(
         self,
         operation_id: str,

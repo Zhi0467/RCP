@@ -20,6 +20,7 @@ from rcp.storage.models import (
     EpisodeReportConflict,
     EpisodeReportRecord,
     EpisodeWrapupRecord,
+    _required_timestamp,
 )
 
 _LIVE_EPISODE_STATUSES = ("queued", "running", "stopping", "wrapping_up")
@@ -166,6 +167,139 @@ class EpisodeStoreMixin:
                 """
             ).fetchall()
         return [self._episode_record(row) for row in rows]
+
+    @staticmethod
+    def detach_episode_reports_for_restore(
+        connection: sqlite3.Connection,
+        *,
+        diagnostic: str,
+        now: str,
+    ) -> None:
+        """Fail captured report calls and remove their native restart bindings."""
+
+        if not connection.in_transaction:
+            raise ValueError("restored report detachment requires an active transaction")
+        detail = " ".join(diagnostic.split())[:2000]
+        if not detail:
+            raise ValueError("restored report detachment requires a diagnostic")
+        _required_timestamp(now)
+        connection.execute(
+            """
+            UPDATE episode_report_attempts
+            SET status = 'failed', error = ?, updated_at = ?, finished_at = COALESCE(finished_at, ?)
+            WHERE status IN ('queued', 'running')
+            """,
+            (detail, now, now),
+        )
+        connection.execute(
+            """
+            UPDATE episode_wrapups
+            SET native_session_id = NULL, stage_host = NULL, stage_root = NULL,
+                updated_at = ?
+            WHERE state IN ('pending', 'running')
+              AND (native_session_id IS NOT NULL OR stage_host IS NOT NULL OR stage_root IS NOT NULL)
+            """,
+            (now,),
+        )
+
+    def detach_experiment_episodes_for_restore(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        diagnostic: str,
+        now: str,
+    ) -> None:
+        """Stop every captured nonterminal Experiment episode without a report retry."""
+
+        if not connection.in_transaction:
+            raise ValueError("restored Experiment detachment requires an active transaction")
+        detail = " ".join(diagnostic.split())[:2000]
+        if not detail:
+            raise ValueError("restored Experiment detachment requires a diagnostic")
+        _required_timestamp(now)
+        connection.execute(
+            """
+            UPDATE experiment_episode_state
+            SET native_session_id = NULL, stage_host = NULL, stage_root = NULL, updated_at = ?
+            WHERE native_session_id IS NOT NULL OR stage_host IS NOT NULL OR stage_root IS NOT NULL
+            """,
+            (now,),
+        )
+        episodes = connection.execute(
+            """
+            SELECT * FROM episodes
+            WHERE mode = 'experiment_loop'
+              AND status IN ('queued', 'running', 'stopping', 'wrapping_up')
+            ORDER BY episode_id
+            """
+        ).fetchall()
+        for episode in episodes:
+            episode_id = str(episode["episode_id"])
+            receipt_json, receipt_sha256 = compact_episode_receipt(
+                {
+                    "diagnostic": detail,
+                    "ending": "stopped",
+                    "episode_id": episode_id,
+                    "reason": "restore",
+                }
+            )
+            wrapup = connection.execute(
+                "SELECT * FROM episode_wrapups WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+            if wrapup is None:
+                concluding = connection.execute(
+                    """
+                    SELECT operation_id FROM episode_invocations
+                    WHERE episode_id = ? ORDER BY invocation_number DESC LIMIT 1
+                    """,
+                    (episode_id,),
+                ).fetchone()
+                self._insert_episode_wrapup(
+                    connection,
+                    EpisodeWrapupRecord(
+                        episode_id=episode_id,
+                        ending="stopped",
+                        partial=True,
+                        concluding_operation_id=(
+                            str(concluding["operation_id"]) if concluding is not None else None
+                        ),
+                        receipt_json=receipt_json,
+                        receipt_sha256=receipt_sha256,
+                        state="skipped",
+                        diagnostic=detail,
+                        created_at=now,
+                        updated_at=now,
+                        finished_at=now,
+                    ),
+                )
+            else:
+                if wrapup["state"] not in {"pending", "running"}:
+                    raise EpisodeReportConflict(
+                        "a nonterminal restored Experiment has a terminal report wrap-up"
+                    )
+                connection.execute(
+                    """
+                    UPDATE episode_wrapups
+                    SET ending = 'stopped', partial = 1, native_session_id = NULL,
+                        stage_host = NULL, stage_root = NULL, receipt_json = ?,
+                        receipt_sha256 = ?, state = 'skipped', diagnostic = ?,
+                        updated_at = ?, finished_at = COALESCE(finished_at, ?)
+                    WHERE episode_id = ?
+                    """,
+                    (receipt_json, receipt_sha256, detail, now, now, episode_id),
+                )
+            connection.execute(
+                """
+                UPDATE episodes
+                SET status = 'stopped', stop_requested_at = COALESCE(stop_requested_at, ?),
+                    stop_settled_at = COALESCE(stop_settled_at, ?), ending = 'stopped',
+                    ending_diagnostic = ?, wrapup_state = 'skipped', wrapup_error = NULL,
+                    updated_at = ?, ended_at = COALESCE(ended_at, ?)
+                WHERE episode_id = ?
+                """,
+                (now, now, detail, now, now, episode_id),
+            )
 
     def episode_budget_meter(self, episode_id: str) -> EpisodeBudgetMeter:
         record = self.episode(episode_id)

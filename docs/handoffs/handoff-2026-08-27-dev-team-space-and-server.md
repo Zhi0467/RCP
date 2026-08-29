@@ -4,7 +4,7 @@ Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
 F2, F3a, F3b, F4, F5, F6a, F6b, F6c, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
-O2b, O3a, O3b, O3c, and O3c-ui are complete. D2
+O2b, O3a, O3b, O3c, O3c-ui, and O3d-a are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; a 2026-08-29 local-HTTPS spike then proved that candidate mechanism on
 one host, so D3-D5 are unblocked in principle while D2 itself remains
@@ -3693,6 +3693,19 @@ surface for a route that becomes unavailable after projection, but do not use
 that failure as ordinary lifecycle discovery.
 
 ### O3d-a — Restored task, Experiment, session, and code detachment
+
+Status: complete hermetically on 2026-08-29. The task, episode/report, and
+space-authentication owners now expose transaction-required, idempotent restore
+helpers. Together they interrupt and mark every captured task history-only,
+stop nonterminal Experiment episodes with skipped wrap-up receipts, fail
+in-flight report attempts, clear native report/Experiment restart bindings,
+delete restored browser sessions, and lock unused bootstrap/invitation codes.
+Focused fixtures prove completed tasks, reports, answers, receipts, attribution,
+consumed codes, and permanent member-token hashes remain intact. O3d-b still
+owns the single offline composition transaction and the Auto-research, watcher,
+recovery, child-admission, and startup-effect fence; O4 still owns restore
+orchestration. The complete Python suite, focused task/episode/authentication
+owners, Ruff, documentation tests, and all-file pre-commit are green.
 
 Own:
 

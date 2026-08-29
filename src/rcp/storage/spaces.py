@@ -622,6 +622,35 @@ class SpaceStoreMixin:
                 "DELETE FROM team_sessions WHERE session_hash = ?", (_sha256(session),)
             )
 
+    @staticmethod
+    def detach_space_authentication_for_restore(
+        connection: sqlite3.Connection,
+        *,
+        now: str,
+    ) -> None:
+        """Invalidate restored browser and unused enrollment capabilities."""
+
+        if not connection.in_transaction:
+            raise ValueError("restored space authentication detachment requires a transaction")
+        _required_timestamp(now)
+        connection.execute("DELETE FROM team_sessions")
+        connection.execute(
+            """
+            UPDATE team_bootstrap_codes
+            SET locked_at = COALESCE(locked_at, ?)
+            WHERE consumed_at IS NULL
+            """,
+            (now,),
+        )
+        connection.execute(
+            """
+            UPDATE team_invitations
+            SET locked_at = COALESCE(locked_at, ?)
+            WHERE consumed_at IS NULL
+            """,
+            (now,),
+        )
+
     def _require_authenticating_team_session(
         self,
         connection: sqlite3.Connection,
