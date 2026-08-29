@@ -755,7 +755,7 @@ def _drive_live_root_death_during_rollback(
     try:
         journal_path = _wait_for_cutover_crash_marker(marker_path, process)
         _wait_for_rollback_phase(journal_path, phase, process)
-        _kill_process_group(process)
+        _kill_privileged_process_group(process)
         stdout, stderr = process.communicate(timeout=10)
         if process.returncode is None or process.returncode == 0:
             pytest.fail(f"root coordinator was not killed at rollback phase {phase}")
@@ -859,7 +859,7 @@ def _drive_live_root_death_during_rollback(
         )
     finally:
         if process.poll() is None:
-            _kill_process_group(process)
+            _kill_privileged_process_group(process)
             with contextlib.suppress(subprocess.TimeoutExpired):
                 process.communicate(timeout=10)
         _run(
@@ -1156,7 +1156,7 @@ def _wait_for_cutover_crash_marker(
                 pytest.fail("rollback crash marker named a relative journal")
             return journal_path
         time.sleep(0.05)
-    _kill_process_group(process)
+    _kill_privileged_process_group(process)
     pytest.fail("root coordinator did not reach rollback restoration before timeout")
 
 
@@ -1186,7 +1186,7 @@ def _wait_for_rollback_phase(
             if isinstance(journal, dict) and journal.get("phase") == phase:
                 return
         time.sleep(0.05)
-    _kill_process_group(process)
+    _kill_privileged_process_group(process)
     pytest.fail(f"root coordinator did not stop at rollback phase {phase}")
 
 
@@ -2178,6 +2178,25 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     process.wait(timeout=5)
 
 
+def _kill_privileged_process_group(process: subprocess.Popen[str]) -> None:
+    """Kill the root coordinator and its service-account rollback worker."""
+
+    result = _run(
+        (
+            "sudo",
+            "-n",
+            "/usr/bin/kill",
+            "-KILL",
+            "--",
+            f"-{process.pid}",
+        ),
+        timeout=_PTY_TIMEOUT_SECONDS,
+    )
+    if result.returncode != 0:
+        pytest.fail("could not kill the privileged live rollback process group")
+    process.wait(timeout=10)
+
+
 def test_bounded_command_runner_keeps_separate_output() -> None:
     result = _run(
         (
@@ -2198,6 +2217,36 @@ def test_bounded_command_runner_stops_excess_output(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(pytest.fail.Exception, match="exceeded its output bound"):
         _run((sys.executable, "-c", "print('x' * 4096)"), timeout=5)
+
+
+def test_privileged_process_group_kill_uses_sudo(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[tuple[str, ...]] = []
+    waits: list[float] = []
+
+    def fake_run(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path | None = None,
+        environment: dict[str, str] | None = None,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, environment, timeout
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    class Process:
+        pid = 1234
+
+        def wait(self, timeout: float) -> int:
+            waits.append(timeout)
+            return -signal.SIGKILL
+
+    monkeypatch.setattr(sys.modules[__name__], "_run", fake_run)
+
+    _kill_privileged_process_group(Process())  # type: ignore[arg-type]
+
+    assert commands == [("sudo", "-n", "/usr/bin/kill", "-KILL", "--", "-1234")]
+    assert waits == [10]
 
 
 def test_pty_runner_supplies_controlling_terminal_for_host_confirmation() -> None:
