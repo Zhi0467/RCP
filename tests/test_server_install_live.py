@@ -890,8 +890,17 @@ def _build_failing_candidate(workspace: Path, research: Path) -> tuple[str, Path
             )
         )
         _run_checked(
-            ("sudo", "-n", "-u", "rcp", "-H", "/usr/local/bin/npm", "--prefix", "web", "ci"),
-            cwd=release,
+            (
+                "sudo",
+                "-n",
+                "-u",
+                "rcp",
+                "-H",
+                "/usr/local/bin/npm",
+                "--prefix",
+                str(release / "web"),
+                "ci",
+            )
         )
         _run_checked(
             (
@@ -902,11 +911,10 @@ def _build_failing_candidate(workspace: Path, research: Path) -> tuple[str, Path
                 "-H",
                 "/usr/local/bin/npm",
                 "--prefix",
-                "web",
+                str(release / "web"),
                 "run",
                 "build",
-            ),
-            cwd=release,
+            )
         )
         _run_checked(
             (
@@ -919,10 +927,11 @@ def _build_failing_candidate(workspace: Path, research: Path) -> tuple[str, Path
                 "UV_MANAGED_PYTHON=1",
                 "UV_PYTHON=3.12",
                 "/usr/local/bin/uv",
+                "--directory",
+                str(release),
                 "sync",
                 "--frozen",
-            ),
-            cwd=release,
+            )
         )
         return candidate_commit, release
     finally:
