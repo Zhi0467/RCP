@@ -26,10 +26,12 @@ and crash recovery without rerunning machine preparation. F6b now consumes
 O2a/O2b to rehearse the candidate against copied real state under one reusable
 startup-effect fence. F6c's current-owner checkpoint core now publishes and
 temp-restores one exact local rollback boundary with crash-safe replacement
-journals. F6d is implemented in the working tree with closed admission,
+journals. F6d is implemented and pushed on `main` with closed admission,
 systemd cutover, loud rollback, crash re-entry, and a disposable-host death
 drive, but remains incomplete until that Ubuntu 22.04/24.04 workflow passes;
-later T3e/T4b owners extend the checkpoint's typed inventory. P6c now
+the latest exact-head rerun was refused before either job started because the
+GitHub account's hosted-runner spending limit is currently unavailable.
+Later T3e/T4b owners extend the checkpoint's typed inventory. P6c now
 publishes and independently
 enforces the ordinary team-project deletion guard through the card, Web, API,
 and catalog.
@@ -1544,7 +1546,7 @@ gate are deliberately future work and do not block this plan.
   unfinished-journal entry wiring in F6d, and future typed-root extensions in
   their already-assigned T3e/T4b owners.
 
-#### 2026-08-29 — F6d cutover and loud rollback implemented; live drive pending
+#### 2026-08-29 — F6d cutover and loud rollback implemented; live rerun externally blocked
 
 - `update_cutover.py` now owns one fsynced operation receipt from maintenance
   closure through candidate verification, commit, rollback, or pre-switch
@@ -1595,16 +1597,33 @@ gate are deliberately future work and do not block this plan.
   receive the post-join idle check; selected-release startup has a durable
   preterminal state; and restore consumes the recorded checkpoint digest. Its
   final review reports no remaining blocker or High finding.
-- Not yet complete: the destructive workflow has not yet run with this commit on
-  both Ubuntu 22.04 and 24.04. Do not mark F6d complete or rely on its live
-  qualification until both matrix jobs pass and their run is recorded here.
+- The implementation landed through `6427077`, with integration corrections in
+  `19cb720`, `a2b1fd7`, `62a3fd9`, and `029831c`. The live drive exposed and
+  closed two harness-only process-boundary defects in `7974254` and `75fcafc`:
+  hardened Linux `/tmp` ownership for the root-written crash marker, and
+  privileged termination of the mixed root/`rcp` stopped process group.
+  Production rollback and old-release readback passed before those later
+  injected-crash checks. Run
+  [33278422722](https://github.com/Zhi0467/RCP/actions/runs/33278422722)
+  reached the first `prepared` crash boundary on both Ubuntu versions; its
+  failure was the now-fixed harness termination issue.
+- The exact-head rerun for `75fcafc`, run
+  [33278678760](https://github.com/Zhi0467/RCP/actions/runs/33278678760),
+  started no workflow steps on either matrix job because GitHub rejected hosted
+  runner use for the account's payment/spending-limit state. The complete local
+  backend suite, Ruff, production Web build, all 437 Web tests, the focused live
+  harness suite, and commit hooks pass. Do not mark F6d complete or rely on its
+  live qualification until one exact-head Ubuntu 22.04/24.04 run passes and is
+  recorded here.
 
 ## What remains
 
 The remaining implementation work is:
 
-1. finish F6d's Ubuntu 22.04/24.04 live qualification for the implemented
-   update cutover, post-switch verification, loud rollback, and crash recovery;
+1. rerun F6d's Ubuntu 22.04/24.04 live qualification for exact head `75fcafc`
+   or a descendant after GitHub hosted-runner billing is available, then record
+   both passing matrix jobs for update cutover, post-switch verification, loud
+   rollback, and crash recovery;
 2. concrete project provisioning, where machine orchestration and final human
    creation are implemented but still need the complete live qualification,
    unified UI/desktop drive and post-setup cancellation;
@@ -2682,11 +2701,12 @@ disaster restore.
 
 ### F6d — Update cutover, verification, and loud rollback
 
-Status: implemented in the working tree on 2026-08-29 with focused and complete
-backend verification plus a closed independent audit. The required destructive
-Ubuntu 22.04/24.04 workflow is still pending; this packet is not complete until
-both matrix jobs pass and the live evidence is recorded in the implementation
-log.
+Status: implemented and pushed on `main` through `75fcafc` on 2026-08-29 with
+focused and complete local verification plus a closed independent audit. The
+required destructive Ubuntu 22.04/24.04 workflow is still pending: its latest
+exact-head rerun was refused before job setup by the GitHub account's hosted-
+runner payment/spending-limit state. This packet is not complete until both
+matrix jobs pass and the live evidence is recorded in the implementation log.
 
 Own:
 

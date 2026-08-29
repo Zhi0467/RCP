@@ -19,10 +19,13 @@ last_checked: >-
   2026-08-29 — install, update preparation, copied-state candidate rehearsal,
   coherent local rollback checkpoint/re-entry, cutover, loud old-service
   rollback, provider readiness, and project machine preparation have concrete
-  OS-authority/private-control regressions. The disposable Ubuntu cutover and
-  five-phase root-death drive is implemented but has not yet passed its 22.04
-  and 24.04 workflow; restore, member removal, the complete remote drive, and
-  the full scenario remain pending.
+  OS-authority/private-control regressions. Live run 33278422722 reached the
+  first injected rollback-crash boundary on both Ubuntu versions after the
+  ordinary forced rollback, exposing a harness-only mixed-account process-group
+  cleanup defect now fixed at 75fcafc. Exact-head run 33278678760 started no
+  steps because GitHub rejected hosted runners for the account's payment or
+  spending-limit state. A passing 22.04/24.04 rerun, restore, member removal,
+  the complete remote drive, and the full scenario remain pending.
 ---
 
 # Dangerous operations need the machine, not a login
