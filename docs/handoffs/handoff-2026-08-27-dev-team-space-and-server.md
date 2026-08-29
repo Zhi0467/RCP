@@ -15,8 +15,8 @@ its one independent audit is complete and every finding is fixed. Live
 qualification is in progress with the protected repository-admin test
 credential: both real disposable-host jobs now clear account and sudo-policy
 validation, managed-Python installation, and source-grant creation, but the
-corrected SSH host-trust isolation still needs a rerun before F3b is complete.
-P1 now provides the durable,
+isolated SSH trust probe still exits 255 after the verified fingerprint prompt.
+A diagnostic rerun is pending before F3b is complete. P1 now provides the durable,
 strictly guarded project-provisioning state machine; its one independent audit
 is complete, every finding is fixed, and its exact schema boundary is retained
 in the chained upgrade registry. P1 is complete. D1 now provides the strict
@@ -653,6 +653,17 @@ gate are deliberately future work and do not block this plan.
   set `GlobalKnownHostsFile=/dev/null`, leaving RCP's owned known-hosts file as
   the sole trust source. Both temporary read-only deploy keys were revoked and
   workflow cleanup completed. Another corrected rerun is required.
+- Corrected run
+  [33233089933](https://github.com/Zhi0467/RCP/actions/runs/33233089933)
+  ran exact commit `da2bac852eccf640ec4ad6f0d16cf620f5542333`. Both releases
+  reached the isolated GitHub trust command; the PTY helper observed the
+  confirmation prompt and accepted it only after finding GitHub's published
+  Ed25519 fingerprint. SSH then exited 255 rather than producing GitHub's
+  expected authenticated/no-shell result. The assertion previously discarded
+  the captured SSH explanation, so it now includes only a bounded output tail
+  on failure. No acceptance condition was weakened. Both temporary read-only
+  deploy keys were revoked and workflow cleanup completed; a diagnostic rerun
+  is required before choosing a fix.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 

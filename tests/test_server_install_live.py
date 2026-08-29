@@ -85,7 +85,10 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
         )
         trust_argv = _command_actions(source_pause)[0]
         trust_code, trust_output = _run_pty(trust_argv, answer_host_key=True)
-        assert trust_code == 1, "GitHub's successful no-shell SSH probe must exit 1"
+        assert trust_code == 1, (
+            "GitHub's successful no-shell SSH probe must exit 1; "
+            f"output tail={trust_output[-4096:]!r}"
+        )
         assert _GITHUB_ED25519_FINGERPRINT in trust_output
         assert "successfully authenticated" in trust_output.lower()
 
