@@ -15,12 +15,12 @@ its one independent audit is complete and every finding is fixed. Live
 qualification is in progress with the protected repository-admin test
 credential: both real disposable-host jobs now clear account and sudo-policy
 validation, managed-Python installation, and source-grant creation, but the
-isolated SSH trust probe exposed that the live driver attached a PTY without
-making it SSH's controlling terminal. The driver and its `/dev/tty` regression
-are fixed; a two-release rerun is pending before F3b is complete. P1 now provides the durable,
-strictly guarded project-provisioning state machine; its one independent audit
-is complete, every finding is fixed, and its exact schema boundary is retained
-in the chained upgrade registry. P1 is complete. D1 now provides the strict
+latest two-release drive exposed that team initialization did not itself seal
+the SQLite file to mode `0600`. The initialization owner and its recovery path
+are fixed; a rerun is pending before F3b is complete. P1 now provides the
+durable, strictly guarded project-provisioning state machine; its one independent
+audit is complete, every finding is fixed, and its exact schema boundary is
+retained in the chained upgrade registry. P1 is complete. D1 now provides the strict
 nonsecret desktop team-connection registry and the macOS Keychain write/removal
 boundary; its one independent audit is complete and its in-scope findings are
 fixed. D2's real WKWebView spike has reached its prescribed stop condition:
@@ -676,6 +676,20 @@ gate are deliberately future work and do not block this plan.
   and proves that the guarded `yes` answer reaches it. Both temporary read-only
   deploy keys were revoked and workflow cleanup completed. A corrected
   two-release rerun remains required.
+- Corrected run
+  [33233599317](https://github.com/Zhi0467/RCP/actions/runs/33233599317)
+  ran exact commit `84ba2d89b53264295960b7e248c679e633aa9ff3`. The real
+  controlling PTY cleared GitHub first trust, both releases cloned and built the
+  exact managed source commit, and the interactive team-space command completed.
+  The resumed installer then refused the initialized SQLite file because it was
+  readable or writable outside the `rcp` account. The data-directory ancestry
+  was already `rcp`-owned mode `0700`, but the team-initialization owner must not
+  depend only on an invoking wrapper's process mask. `space init --team` now
+  restricts the database to mode `0600` before revealing its one-time bootstrap
+  code; an interrupted unclaimed initialization is restricted on recovery too.
+  Focused tests prove fresh and recovery modes. Both temporary read-only deploy
+  keys were revoked and workflow cleanup completed. A corrected two-release
+  rerun remains required.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 

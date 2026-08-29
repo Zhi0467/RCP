@@ -210,6 +210,12 @@ def _run_space_command(args: argparse.Namespace, data_dir: Path) -> None:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    try:
+        database_path.chmod(0o600)
+    except OSError as exc:
+        raise SystemExit(
+            "Team-space initialization could not restrict the database to its owner."
+        ) from exc
     action = "Recovered unclaimed" if recovering else "Initialized"
     print(f"{action} team space {store.space_name!r} ({store.space_id}).")
     print("One-time bootstrap code (shown once):")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import signal
+import stat
 import sys
 import urllib.error
 from argparse import Namespace
@@ -111,6 +112,7 @@ def test_space_init_creates_a_named_team_without_locking_or_serving(
     codes = re.findall(r"rcp_bootstrap_[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{43}", output)
     assert len(codes) == 1
     store = AppStore(tmp_path / "rcp.sqlite3")
+    assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
     assert store.space_kind == "team"
     assert store.space_name == "Lab"
     with store.connection() as connection:
@@ -140,6 +142,7 @@ def test_space_init_recovers_an_unclaimed_team_after_terminal_interruption(
     tmp_path, monkeypatch, capsys
 ) -> None:
     store, unseen_code = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
+    store.path.chmod(0o644)
     monkeypatch.setattr("rcp.__main__.default_data_dir", lambda: tmp_path)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(sys, "argv", ["rcp", "space", "init", "--team", "--name", "Lab"])
@@ -151,6 +154,7 @@ def test_space_init_recovers_an_unclaimed_team_after_terminal_interruption(
     replacement = re.findall(r"rcp_bootstrap_[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{43}", output)
     assert len(replacement) == 1
     assert replacement[0] != unseen_code
+    assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
     member, _token = store.enroll_team_member(replacement[0], "Alice")
     assert member.display_name == "Alice"
 
