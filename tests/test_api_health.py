@@ -69,6 +69,8 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
         "pid": metadata.pid,
         "data_dir_id": data_dir_identity(data_dir),
         "owner_kind": "desktop",
+        "running_commit": None,
+        "web_build_id": None,
         "active_agent_tasks": 0,
         "projects": 0,
         "agent_mode": "provider",

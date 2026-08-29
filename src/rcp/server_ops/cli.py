@@ -408,7 +408,9 @@ def _dispatch_server_command(
 
             return prepare_install_command(request, identity)
         case "server doctor":
-            return _unavailable_command(request, identity)
+            from rcp.server_ops.doctor import prepare_doctor_command
+
+            return prepare_doctor_command(request, identity)
         case "server provider check":
             return _unavailable_command(request, identity)
         case "server project provision":

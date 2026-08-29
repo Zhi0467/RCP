@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 import pwd
+import re
+import stat
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -12,14 +14,26 @@ from pathlib import Path
 from typing import Literal
 
 from rcp import __version__
+from rcp.limits import SERVER_WEB_BUILD_MAX_BYTES, SERVER_WEB_BUILD_MAX_FILES
+from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 
-SERVER_METADATA_SCHEMA_VERSION = 2
+SERVER_METADATA_SCHEMA_VERSION = 3
 SERVER_METADATA_FILENAME = "rcp-server.json"
 ServerOwnerKind = Literal["cli", "desktop", "embedded"]
+
+_FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
+_WEB_BUILD_ID = re.compile(r"sha256:[0-9a-f]{64}")
+_MAX_WEB_RELATIVE_PATH_BYTES = 4096
 
 
 class ServerMetadataError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class RunningReleaseIdentity:
+    commit: str
+    web_build_id: str
 
 
 @dataclass(frozen=True)
@@ -33,6 +47,8 @@ class ServerMetadata:
     data_dir_id: str
     owner_kind: ServerOwnerKind
     control_socket: str | None
+    running_commit: str | None
+    web_build_id: str | None
 
     @classmethod
     def create(
@@ -43,6 +59,8 @@ class ServerMetadata:
         port: int,
         owner_kind: ServerOwnerKind,
         control_socket: Path | None = None,
+        running_commit: str | None = None,
+        web_build_id: str | None = None,
     ) -> ServerMetadata:
         return cls(
             schema_version=SERVER_METADATA_SCHEMA_VERSION,
@@ -54,6 +72,8 @@ class ServerMetadata:
             data_dir_id=data_dir_identity(data_dir),
             owner_kind=owner_kind,
             control_socket=str(control_socket) if control_socket is not None else None,
+            running_commit=running_commit,
+            web_build_id=web_build_id,
         )
 
     @classmethod
@@ -70,6 +90,8 @@ class ServerMetadata:
             "data_dir_id",
             "owner_kind",
             "control_socket",
+            "running_commit",
+            "web_build_id",
         }
         if set(raw) != expected:
             raise ServerMetadataError("server metadata has an unsupported shape")
@@ -98,6 +120,7 @@ class ServerMetadata:
             or not isinstance(metadata.owner_kind, str)
             or metadata.owner_kind not in {"cli", "desktop", "embedded"}
             or not _valid_control_socket(metadata.control_socket)
+            or not _valid_release_identity(metadata.running_commit, metadata.web_build_id)
         ):
             raise ServerMetadataError("server metadata contains invalid values")
         return metadata
@@ -154,6 +177,88 @@ def _valid_control_socket(value: object) -> bool:
         return False
     path = Path(value)
     return path.is_absolute() and ".." not in path.parts and str(path) == value
+
+
+def _valid_release_identity(running_commit: object, web_build_id: object) -> bool:
+    if running_commit is None or web_build_id is None:
+        return running_commit is None and web_build_id is None
+    return (
+        isinstance(running_commit, str)
+        and _FULL_GIT_COMMIT.fullmatch(running_commit) is not None
+        and isinstance(web_build_id, str)
+        and _WEB_BUILD_ID.fullmatch(web_build_id) is not None
+    )
+
+
+def capture_installed_release_identity(
+    layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
+    *,
+    working_dir: Path | None = None,
+) -> RunningReleaseIdentity:
+    """Capture the physical immutable release before the service starts."""
+
+    try:
+        physical = (working_dir or Path.cwd()).resolve(strict=True)
+        current = layout.current_release.resolve(strict=True)
+    except OSError as exc:
+        raise ServerMetadataError("installed release identity is unavailable") from exc
+    if (
+        physical != current
+        or physical.parent != layout.releases_root
+        or _FULL_GIT_COMMIT.fullmatch(physical.name) is None
+    ):
+        raise ServerMetadataError("installed service is not running from one canonical release")
+    return RunningReleaseIdentity(
+        commit=physical.name,
+        web_build_id=web_build_identity(physical / "web" / "dist"),
+    )
+
+
+def web_build_identity(root: Path) -> str:
+    """Hash one bounded, symlink-free Web bundle including its relative paths."""
+
+    try:
+        if root.is_symlink() or not root.is_dir() or not (root / "index.html").is_file():
+            raise ServerMetadataError("Web build is unavailable")
+        paths = sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix())
+    except OSError as exc:
+        raise ServerMetadataError("Web build could not be inspected") from exc
+    files: list[tuple[Path, bytes, int]] = []
+    total = 0
+    for path in paths:
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise ServerMetadataError("Web build could not be inspected") from exc
+        if stat.S_ISDIR(info.st_mode):
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            raise ServerMetadataError("Web build contains a non-regular entry")
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        if not relative or len(relative) > _MAX_WEB_RELATIVE_PATH_BYTES:
+            raise ServerMetadataError("Web build contains an invalid path")
+        total += info.st_size
+        files.append((path, relative, info.st_size))
+        if len(files) > SERVER_WEB_BUILD_MAX_FILES or total > SERVER_WEB_BUILD_MAX_BYTES:
+            raise ServerMetadataError("Web build exceeds its inspection bound")
+    if not files:
+        raise ServerMetadataError("Web build is empty")
+    digest = hashlib.sha256(b"rcp-web-build-v1\0")
+    for path, relative, expected_size in files:
+        digest.update(len(relative).to_bytes(4, "big"))
+        digest.update(relative)
+        digest.update(expected_size.to_bytes(8, "big"))
+        observed_size = 0
+        try:
+            with path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    digest.update(chunk)
+                    observed_size += len(chunk)
+        except OSError as exc:
+            raise ServerMetadataError("Web build could not be read") from exc
+        if observed_size != expected_size:
+            raise ServerMetadataError("Web build changed during inspection")
+    return f"sha256:{digest.hexdigest()}"
 
 
 def read_server_metadata(data_dir: Path) -> ServerMetadata:

@@ -31,6 +31,8 @@ export interface Health {
   instance_id: string;
   data_dir_id: string;
   owner_kind: string;
+  running_commit: string | null;
+  web_build_id: string | null;
   active_agent_tasks: number;
   pid: number;
   projects?: number;

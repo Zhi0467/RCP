@@ -36,6 +36,7 @@ from rcp.server_ops.cli import add_server_parser, run_server_command
 from rcp.server_runtime import (
     ServerMetadata,
     ServerMetadataError,
+    capture_installed_release_identity,
     data_dir_identity,
     installed_control_socket_path,
     published_server_metadata,
@@ -313,12 +314,16 @@ def _require_team_bind_is_loopback(args: argparse.Namespace, data_dir: Path) -> 
 
 def _serve_as_owner(args: argparse.Namespace, data_dir: Path) -> None:
     _require_team_bind_is_loopback(args, data_dir)
+    control_socket = installed_control_socket_path(data_dir)
+    release_identity = capture_installed_release_identity() if control_socket is not None else None
     metadata = ServerMetadata.create(
         data_dir,
         host=args.host,
         port=args.port,
         owner_kind=getattr(args, "owner", "cli"),
-        control_socket=installed_control_socket_path(data_dir),
+        control_socket=control_socket,
+        running_commit=release_identity.commit if release_identity is not None else None,
+        web_build_id=release_identity.web_build_id if release_identity is not None else None,
     )
     try:
         with (

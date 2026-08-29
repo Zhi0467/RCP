@@ -50,6 +50,8 @@ async def health(
         "pid": composition.instance_metadata.pid,
         "data_dir_id": composition.instance_metadata.data_dir_id,
         "owner_kind": composition.instance_metadata.owner_kind,
+        "running_commit": composition.instance_metadata.running_commit,
+        "web_build_id": composition.instance_metadata.web_build_id,
         "active_agent_tasks": active_agent_tasks,
         "projects": len(catalog.cards()),
         "agent_mode": composition.agent_mode,

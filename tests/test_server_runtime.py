@@ -5,6 +5,7 @@ import json
 from fastapi.testclient import TestClient
 
 from rcp.server_runtime import (
+    SERVER_METADATA_SCHEMA_VERSION,
     ServerMetadata,
     published_server_metadata,
     read_server_metadata,
@@ -37,7 +38,7 @@ def test_metadata_is_published_atomically_and_removed_by_its_owner(tmp_path, mon
     with published_server_metadata(tmp_path, metadata):
         assert read_server_metadata(tmp_path) == metadata
         payload = json.loads((tmp_path / "rcp-server.json").read_text(encoding="utf-8"))
-        assert payload["schema_version"] == 2
+        assert payload["schema_version"] == SERVER_METADATA_SCHEMA_VERSION
 
     assert len(replaced) == 1
     assert replaced[0][0].name.startswith(".rcp-server.json.")

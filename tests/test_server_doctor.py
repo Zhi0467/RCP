@@ -1,0 +1,565 @@
+from __future__ import annotations
+
+import json
+import os
+import socket
+import stat
+import subprocess
+import tempfile
+from dataclasses import replace
+from io import StringIO
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi.testclient import TestClient
+
+from rcp.__main__ import build_parser
+from rcp.server_ops import doctor as server_doctor
+from rcp.server_ops.cli import CallerIdentity, run_server_command
+from rcp.server_ops.config import ServerSourceConfig
+from rcp.server_ops.doctor import (
+    LinuxServerDoctorMachine,
+    ServerDoctorReport,
+    prepare_doctor_command,
+    release_relationship,
+)
+from rcp.server_ops.layout import ServerLayout, server_service_unit_text
+from rcp.server_runtime import (
+    ServerMetadata,
+    ServerMetadataError,
+    capture_installed_release_identity,
+    metadata_path,
+    web_build_identity,
+)
+
+from .helpers import create_named_app
+
+INSTALLATION_ID = "123e4567-e89b-42d3-a456-426614174000"
+SPACE_ID = "123e4567-e89b-42d3-b456-426614174001"
+COMMIT = "a" * 40
+OTHER_COMMIT = "b" * 40
+WEB_BUILD_ID = "sha256:" + ("c" * 64)
+IDENTITY = CallerIdentity(uid=501, username="rcp", host="lab.example")
+
+
+class FakeDoctorMachine:
+    def __init__(self, report: ServerDoctorReport) -> None:
+        self.report = report
+        self.calls = 0
+
+    def inspect(self) -> ServerDoctorReport:
+        self.calls += 1
+        return self.report
+
+
+def _report(*, problems: tuple[str, ...] = ()) -> ServerDoctorReport:
+    return ServerDoctorReport(
+        overall_state="problems" if problems else "healthy",
+        installation_id=INSTALLATION_ID,
+        service_account="rcp",
+        data_dir="/home/rcp/rcp-server/data",
+        source_root="/home/rcp/rcp-server/source",
+        releases_root="/home/rcp/rcp-server/releases",
+        configured_origin="https://github.com/openai/rcp.git",
+        configured_branch="main",
+        source_public_key_fingerprint=None,
+        managed_main_head=COMMIT,
+        upstream_head=COMMIT,
+        candidate_commit=None,
+        current_commit=COMMIT,
+        running_commit=COMMIT,
+        release_state="aligned",
+        source_state="aligned",
+        current_web_build_id=WEB_BUILD_ID,
+        running_web_build_id=WEB_BUILD_ID,
+        service_active_state="active",
+        service_unit_file_state="enabled",
+        service_main_pid=421,
+        reload_mode="disabled",
+        space_id=SPACE_ID,
+        instance_id=INSTALLATION_ID,
+        process_pid=421,
+        data_dir_id="d" * 64,
+        control_socket_status="healthy",
+        dependencies_ready=True,
+        dependency_versions=(
+            "git=2.43.0,node=24.1.0,npm=11.0.0,uv=0.8.0,age=1.2.1,ssh=OpenSSH_9.6p1,python=3.12.10"
+        ),
+        problems=problems,
+    )
+
+
+def _run_doctor(report: ServerDoctorReport, *, machine_readable: bool) -> tuple[int, str, int]:
+    machine = FakeDoctorMachine(report)
+    argv = ["server", "doctor"]
+    if machine_readable:
+        argv.append("--machine-readable")
+    args = build_parser().parse_args(argv)
+
+    def handler(request, identity):
+        return prepare_doctor_command(request, identity, machine=machine)
+
+    output = StringIO()
+    exit_code = run_server_command(args, identity=IDENTITY, handler=handler, stream=output)
+    return exit_code, output.getvalue(), machine.calls
+
+
+def test_doctor_renders_one_complete_report_through_both_cli_modes() -> None:
+    exit_code, machine_output, calls = _run_doctor(_report(), machine_readable=True)
+
+    assert exit_code == 0
+    assert calls == 1
+    events = [json.loads(line) for line in machine_output.splitlines()]
+    assert [event["event"] for event in events] == ["plan", "step", "step"]
+    assert events[-1]["step"]["state"] == "succeeded"
+    fields = {item["name"]: item["value"] for item in events[-1]["step"]["fields"]}
+    assert len(fields) == 30
+    assert fields["overall_state"] == "healthy"
+    assert fields["candidate_commit"] == "none"
+    assert fields["running_commit"] == COMMIT
+    assert fields["problems"] == "none"
+
+    interactive_code, interactive, interactive_calls = _run_doctor(
+        _report(), machine_readable=False
+    )
+    assert interactive_code == 0
+    assert interactive_calls == 1
+    for name, value in fields.items():
+        assert f"{name}: {value}" in interactive
+
+
+def test_doctor_returns_a_complete_failed_report_for_owned_problems() -> None:
+    report = _report(problems=("runtime directory has the wrong type, owner, group, or mode",))
+
+    exit_code, output, calls = _run_doctor(report, machine_readable=True)
+
+    assert exit_code == 1
+    assert calls == 1
+    final = json.loads(output.splitlines()[-1])["step"]
+    assert final["state"] == "failed"
+    fields = {item["name"]: item["value"] for item in final["fields"]}
+    assert fields["overall_state"] == "problems"
+    assert fields["problems"] == report.problems[0]
+
+
+def test_running_release_identity_and_health_are_exact(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    release = layout.release_dir(COMMIT)
+    dist = release / "web" / "dist"
+    dist.mkdir(parents=True)
+    (dist / "index.html").write_text("<main>one</main>", encoding="utf-8")
+    layout.current_release.parent.mkdir(parents=True)
+    layout.current_release.symlink_to(release)
+
+    identity = capture_installed_release_identity(layout, working_dir=release)
+    metadata = ServerMetadata.create(
+        layout.data_dir,
+        host="127.0.0.1",
+        port=8421,
+        owner_kind="cli",
+        running_commit=identity.commit,
+        web_build_id=identity.web_build_id,
+    )
+    app = create_named_app(data_dir=layout.data_dir, instance_metadata=metadata)
+
+    with TestClient(app) as client:
+        health = client.get("/api/health").json()
+
+    assert identity.commit == COMMIT
+    assert identity.web_build_id == web_build_identity(dist)
+    assert health["running_commit"] == COMMIT
+    assert health["web_build_id"] == identity.web_build_id
+    restored = ServerMetadata.from_dict(metadata.as_dict())
+    assert restored == metadata
+    malformed = metadata.as_dict()
+    malformed.pop("web_build_id")
+    with pytest.raises(ServerMetadataError, match="unsupported shape"):
+        ServerMetadata.from_dict(malformed)
+
+
+def test_web_build_identity_covers_paths_and_bytes_and_rejects_symlinks(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    assets = dist / "assets"
+    assets.mkdir(parents=True)
+    (dist / "index.html").write_text("one", encoding="utf-8")
+    script = assets / "app.js"
+    script.write_text("one", encoding="utf-8")
+    first = web_build_identity(dist)
+
+    script.write_text("two", encoding="utf-8")
+    assert web_build_identity(dist) != first
+
+    script.unlink()
+    script.symlink_to(dist / "index.html")
+    with pytest.raises(ServerMetadataError, match="non-regular"):
+        web_build_identity(dist)
+
+
+def test_web_build_identity_wraps_traversal_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("ready", encoding="utf-8")
+
+    def fail_traversal(_path: Path, _pattern: str):
+        raise OSError("fixture traversal failure")
+
+    monkeypatch.setattr(Path, "rglob", fail_traversal)
+
+    with pytest.raises(ServerMetadataError, match="could not be inspected"):
+        web_build_identity(dist)
+
+
+def test_default_doctor_runner_disables_optional_git_writes(monkeypatch) -> None:
+    observed = {}
+
+    def run(argv, **kwargs):
+        observed.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(server_doctor.subprocess, "run", run)
+
+    server_doctor._run_read_only(("git", "status"))
+
+    assert observed["env"]["GIT_OPTIONAL_LOCKS"] == "0"
+    assert observed["check"] is False
+
+
+@pytest.mark.parametrize(
+    ("managed", "current", "running", "expected"),
+    [
+        (COMMIT, COMMIT, COMMIT, "aligned"),
+        (OTHER_COMMIT, COMMIT, COMMIT, "candidate_pending"),
+        (OTHER_COMMIT, OTHER_COMMIT, COMMIT, "restart_pending"),
+        (COMMIT, OTHER_COMMIT, "c" * 40, "inconsistent"),
+        (None, COMMIT, COMMIT, "unavailable"),
+    ],
+)
+def test_release_relationship_distinguishes_update_from_corruption(
+    managed: str | None,
+    current: str | None,
+    running: str | None,
+    expected: str,
+) -> None:
+    assert release_relationship(managed, current, running) == expected
+
+
+def test_doctor_does_not_traverse_an_unsafe_release_directory(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    layout.releases_root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    layout.release_dir(COMMIT).symlink_to(outside)
+    calls: list[tuple[str, ...]] = []
+    problems: list[str] = []
+
+    def runner(argv: tuple[str, ...], *, cwd: Path | None = None):
+        del cwd
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, COMMIT + "\n", "")
+
+    result = LinuxServerDoctorMachine(layout, runner=runner)._inspect_release(
+        COMMIT,
+        label="current",
+        service_uid=os.getuid(),
+        service_gid=os.getgid(),
+        add_problem=problems.append,
+    )
+
+    assert result is None
+    assert calls == []
+    assert problems == ["current release directory has the wrong type, owner, group, or mode"]
+
+
+def test_doctor_does_not_probe_a_metadata_selected_control_socket(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    layout.data_dir.mkdir(parents=True)
+    metadata = ServerMetadata.create(
+        layout.data_dir,
+        host="127.0.0.1",
+        port=8421,
+        owner_kind="cli",
+        control_socket=tmp_path / "wrong.sock",
+        running_commit=COMMIT,
+        web_build_id=WEB_BUILD_ID,
+    )
+    probe_calls = 0
+    problems: list[str] = []
+
+    def probe(_metadata: ServerMetadata, _expected_uid: int):
+        nonlocal probe_calls
+        probe_calls += 1
+        raise AssertionError("an untrusted socket must not be probed")
+
+    observed, result, status = LinuxServerDoctorMachine(
+        layout,
+        metadata_reader=lambda _data_dir: metadata,
+        control_probe=probe,
+    )._inspect_process(
+        service_uid=os.getuid(),
+        main_pid=metadata.pid,
+        add_problem=problems.append,
+    )
+
+    assert observed is metadata
+    assert result is None
+    assert status == "identity_mismatch"
+    assert probe_calls == 0
+    assert problems == ["running process metadata names a different control socket"]
+
+
+def test_doctor_rejects_systemd_drop_ins(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    uid = os.getuid()
+    gid = os.getgid()
+    _prepare_layout(layout, uid=uid, gid=gid)
+    problems: list[str] = []
+    runner = _HealthyRunner(
+        layout=layout,
+        commit=COMMIT,
+        pid=os.getpid(),
+        systemd_overrides={"DropInPaths": "/etc/systemd/system/rcp.service.d/override.conf"},
+    )
+
+    _active, _enabled, _pid, reload_mode = LinuxServerDoctorMachine(
+        layout,
+        runner=runner,
+    )._inspect_service(problems.append)
+
+    assert reload_mode == "unknown"
+    assert "systemd has not loaded the exact unit without overrides" in problems
+
+
+def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
+    tmp_path: Path,
+) -> None:
+    runtime_temp = tempfile.TemporaryDirectory(prefix="rcpd-", dir="/tmp")
+    runtime_dir = Path(runtime_temp.name)
+    layout = replace(
+        _layout(tmp_path),
+        runtime_dir=runtime_dir,
+        control_socket=runtime_dir / "control.sock",
+    )
+    uid = os.getuid()
+    gid = os.getgid()
+    _prepare_layout(layout, uid=uid, gid=gid)
+    release = _prepare_release(layout, COMMIT)
+    web_identity = web_build_identity(release / "web" / "dist")
+    metadata = ServerMetadata.create(
+        layout.data_dir,
+        host="127.0.0.1",
+        port=8421,
+        owner_kind="cli",
+        control_socket=layout.control_socket,
+        running_commit=COMMIT,
+        web_build_id=web_identity,
+    )
+    metadata_path(layout.data_dir).write_text("{}\n", encoding="utf-8")
+    os.chmod(metadata_path(layout.data_dir), 0o600)
+    for name in ("rcp.sqlite3", "rcp.lock"):
+        path = layout.data_dir / name
+        path.write_text("fixture\n", encoding="utf-8")
+        os.chmod(path, 0o600)
+    layout.current_release.symlink_to(release)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(layout.control_socket))
+    os.chown(layout.runtime_dir, uid, gid)
+    os.chown(layout.control_socket, uid, gid)
+    os.chmod(layout.control_socket, 0o600)
+    before = _tree_snapshot(tmp_path)
+
+    config = SimpleNamespace(
+        installation_id=INSTALLATION_ID,
+        service_account="rcp",
+        service_unit="rcp.service",
+        source=ServerSourceConfig(
+            origin="https://github.com/openai/rcp.git",
+            authentication="public",
+        ),
+        paths=SimpleNamespace(model_dump=lambda: layout.recorded_paths()),
+    )
+
+    def config_loader(_path: Path):
+        return config
+
+    def metadata_reader(_data_dir: Path) -> ServerMetadata:
+        return metadata
+
+    def control_probe(observed: ServerMetadata, expected_uid: int):
+        assert observed is metadata
+        assert expected_uid == uid
+        return SimpleNamespace(
+            instance_id=metadata.instance_id,
+            pid=metadata.pid,
+            data_dir_id=metadata.data_dir_id,
+            space_id=SPACE_ID,
+        )
+
+    runner = _HealthyRunner(layout=layout, commit=COMMIT, pid=metadata.pid)
+    try:
+        report = LinuxServerDoctorMachine(
+            layout,
+            config_loader=config_loader,
+            metadata_reader=metadata_reader,
+            control_probe=control_probe,
+            runner=runner,
+            service_identity=(uid, gid),
+            root_identity=(uid, gid),
+        ).inspect()
+    finally:
+        listener.close()
+
+    assert report.overall_state == "healthy", report.problems
+    assert report.problems == ()
+    assert report.current_commit == report.running_commit == report.managed_main_head == COMMIT
+    assert report.current_web_build_id == report.running_web_build_id == web_identity
+    assert report.control_socket_status == "healthy"
+    assert report.dependencies_ready is True
+    assert _tree_snapshot(tmp_path) == before
+    runtime_temp.cleanup()
+
+
+class _HealthyRunner:
+    def __init__(
+        self,
+        *,
+        layout: ServerLayout,
+        commit: str,
+        pid: int,
+        systemd_overrides: dict[str, str] | None = None,
+    ) -> None:
+        self.layout = layout
+        self.commit = commit
+        self.pid = pid
+        self.systemd_overrides = systemd_overrides or {}
+
+    def __call__(
+        self,
+        argv: tuple[str, ...],
+        *,
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd
+        if argv[0] == "systemctl":
+            property_name = next(
+                value.split("=", 1)[1] for value in argv if value.startswith("--property=")
+            )
+            values = {
+                "ActiveState": "active",
+                "UnitFileState": "enabled",
+                "MainPID": str(self.pid),
+                "NeedDaemonReload": "no",
+                "FragmentPath": str(self.layout.systemd_unit),
+                "DropInPaths": "",
+                **self.systemd_overrides,
+            }
+            return subprocess.CompletedProcess(argv, 0, values[property_name] + "\n", "")
+        if argv[0] == "git":
+            if "remote" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 0, "https://github.com/openai/rcp.git\n", ""
+                )
+            if "symbolic-ref" in argv:
+                return subprocess.CompletedProcess(argv, 0, "main\n", "")
+            if "status" in argv:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            if "rev-parse" in argv:
+                return subprocess.CompletedProcess(argv, 0, self.commit + "\n", "")
+            if "merge-base" in argv:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+        versions = {
+            ("git", "--version"): ("git version 2.43.0\n", ""),
+            ("node", "--version"): ("v24.1.0\n", ""),
+            ("npm", "--version"): ("11.0.0\n", ""),
+            ("uv", "--version"): ("uv 0.8.0\n", ""),
+            ("age", "--version"): ("1.2.1\n", ""),
+            ("ssh", "-V"): ("", "OpenSSH_9.6p1\n"),
+        }
+        if argv in versions:
+            stdout, stderr = versions[argv]
+            return subprocess.CompletedProcess(argv, 0, stdout, stderr)
+        if argv[-1:] == ("--version",) and Path(argv[0]).name == "python":
+            return subprocess.CompletedProcess(argv, 0, "Python 3.12.10\n", "")
+        return subprocess.CompletedProcess(argv, 1, "", "")
+
+
+def _layout(root: Path) -> ServerLayout:
+    home = root / "home" / "rcp"
+    server = home / "rcp-server"
+    return ServerLayout(
+        service_account="rcp",
+        service_home=home,
+        server_root=server,
+        source_checkout=server / "source",
+        releases_root=server / "releases",
+        data_dir=server / "data",
+        projects_root=server / "projects",
+        credentials_root=server / "credentials",
+        update_checkpoints_root=server / "update-checkpoints",
+        restore_operations_root=server / "restore-operations",
+        codex_state_root=home / ".codex",
+        claude_state_root=home / ".claude",
+        ssh_state_root=home / ".ssh",
+        config_path=root / "etc" / "rcp" / "server.toml",
+        current_release=root / "etc" / "rcp" / "current",
+        runtime_dir=root / "run" / "rcp",
+        control_socket=root / "run" / "rcp" / "control.sock",
+        cli_wrapper=root / "usr" / "local" / "bin" / "rcp",
+        systemd_unit=root / "etc" / "systemd" / "system" / "rcp.service",
+        service_unit_name="rcp.service",
+    )
+
+
+def _prepare_layout(layout: ServerLayout, *, uid: int, gid: int) -> None:
+    del uid, gid
+    for path in (
+        layout.service_home,
+        layout.server_root,
+        layout.releases_root,
+        layout.data_dir,
+        layout.projects_root,
+        layout.credentials_root,
+        layout.update_checkpoints_root,
+        layout.restore_operations_root,
+        layout.codex_state_root,
+        layout.claude_state_root,
+        layout.ssh_state_root,
+        layout.source_checkout,
+        layout.runtime_dir,
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+        os.chmod(path, 0o700)
+    layout.config_path.parent.mkdir(parents=True)
+    os.chmod(layout.config_path.parent, 0o750)
+    layout.config_path.write_text("fixture\n", encoding="utf-8")
+    os.chmod(layout.config_path, 0o640)
+    layout.cli_wrapper.parent.mkdir(parents=True)
+    layout.cli_wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+    os.chmod(layout.cli_wrapper, 0o755)
+    layout.systemd_unit.parent.mkdir(parents=True)
+    layout.systemd_unit.write_text(server_service_unit_text(), encoding="utf-8")
+    os.chmod(layout.systemd_unit, 0o644)
+
+
+def _prepare_release(layout: ServerLayout, commit: str) -> Path:
+    release = layout.release_dir(commit)
+    for path in (release / ".venv" / "bin", release / "web" / "dist"):
+        path.mkdir(parents=True)
+    for path, content in (
+        (release / ".venv" / "bin" / "rcp", "#!/bin/sh\n"),
+        (release / ".venv" / "bin" / "python", "python\n"),
+        (release / "web" / "dist" / "index.html", "<main>ready</main>\n"),
+    ):
+        path.write_text(content, encoding="utf-8")
+    return release
+
+
+def _tree_snapshot(root: Path) -> tuple[tuple[str, int, int], ...]:
+    entries = []
+    for path in sorted(root.rglob("*")):
+        info = path.lstat()
+        entries.append((str(path.relative_to(root)), stat.S_IFMT(info.st_mode), info.st_mtime_ns))
+    return tuple(entries)

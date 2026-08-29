@@ -129,6 +129,30 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
         _assert_service_process_and_listener()
         first_control = _probe_private_control_socket()
         assert first_control["space_id"] == health["space_id"]
+        first_doctor = _run_doctor()
+        assert first_doctor["overall_state"] == "healthy"
+        assert first_doctor["managed_main_head"] == os.environ.get("GITHUB_SHA")
+        assert first_doctor["upstream_head"] == os.environ.get("GITHUB_SHA")
+        assert first_doctor["candidate_commit"] == "none"
+        assert first_doctor["current_commit"] == os.environ.get("GITHUB_SHA")
+        assert first_doctor["running_commit"] == os.environ.get("GITHUB_SHA")
+        assert first_doctor["release_state"] == "aligned"
+        assert first_doctor["source_state"] == "aligned"
+        assert first_doctor["current_web_build_id"] == first_doctor["running_web_build_id"]
+        assert str(first_doctor["running_web_build_id"]).startswith("sha256:")
+        assert first_doctor["service_active_state"] == "active"
+        assert first_doctor["service_unit_file_state"] == "enabled"
+        assert first_doctor["reload_mode"] == "disabled"
+        assert first_doctor["space_id"] == health["space_id"]
+        assert first_doctor["instance_id"] == first_control["instance_id"]
+        assert first_doctor["process_pid"] == first_control["pid"]
+        assert first_doctor["service_main_pid"] == first_control["pid"]
+        assert first_doctor["data_dir_id"] == first_control["data_dir_id"]
+        assert first_doctor["control_socket_status"] == "healthy"
+        assert first_doctor["dependencies_ready"] is True
+        assert first_doctor["problems"] == "none"
+        assert health["running_commit"] == first_doctor["running_commit"]
+        assert health["web_build_id"] == first_doctor["running_web_build_id"]
         _assert_password_refused_and_public_key_accepted()
         _assert_narrow_operator_rule()
 
@@ -168,6 +192,13 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
         restarted_control = _probe_private_control_socket()
         assert restarted_control["space_id"] == first_control["space_id"]
         assert restarted_control["instance_id"] != first_control["instance_id"]
+        restarted_doctor = _run_doctor()
+        assert restarted_doctor["overall_state"] == "healthy"
+        assert restarted_doctor["running_commit"] == first_doctor["running_commit"]
+        assert restarted_doctor["running_web_build_id"] == first_doctor["running_web_build_id"]
+        assert restarted_doctor["space_id"] == first_doctor["space_id"]
+        assert restarted_doctor["instance_id"] == restarted_control["instance_id"]
+        assert restarted_doctor["process_pid"] == restarted_control["pid"]
     finally:
         if deploy_key_id is not None:
             _delete_deploy_key(token, deploy_key_id)
@@ -434,6 +465,41 @@ def _run_install(
     assert events[0]["event"] == "plan"
     assert events[0]["command"] == "server install"
     return result.returncode, events
+
+
+def _run_doctor() -> dict[str, object]:
+    result = _run(
+        (
+            "sudo",
+            "-n",
+            "-u",
+            "rcp",
+            "-H",
+            "/usr/local/bin/rcp",
+            "server",
+            "doctor",
+            "--machine-readable",
+        ),
+        timeout=_COMMAND_TIMEOUT_SECONDS,
+    )
+    if result.returncode != 0:
+        pytest.fail(
+            f"server doctor returned {result.returncode}; stdout tail={result.stdout[-4096:]!r}; "
+            f"stderr tail={result.stderr[-4096:]!r}"
+        )
+    events = []
+    for line in result.stdout.splitlines():
+        try:
+            event = _EVENT_ADAPTER.validate_json(line)
+        except Exception:
+            pytest.fail("server doctor mixed non-JSON output into its machine-readable stream")
+        events.append(event.model_dump(mode="json"))
+    if [event["event"] for event in events] != ["plan", "step", "step"]:
+        pytest.fail("server doctor did not emit one complete plan and report")
+    final = events[-1]["step"]
+    if not isinstance(final, dict) or final.get("state") != "succeeded":
+        pytest.fail("server doctor did not publish one successful final report")
+    return _fields(final)
 
 
 def _terminal_step(events: list[dict[str, object]], phase: str) -> dict[str, object]:
