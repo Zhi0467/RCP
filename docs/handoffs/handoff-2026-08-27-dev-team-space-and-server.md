@@ -15,8 +15,9 @@ its one independent audit is complete and every finding is fixed. Live
 qualification is in progress with the protected repository-admin test
 credential: both real disposable-host jobs now clear account and sudo-policy
 validation, managed-Python installation, and source-grant creation, but the
-isolated SSH trust probe still exits 255 after the verified fingerprint prompt.
-A diagnostic rerun is pending before F3b is complete. P1 now provides the durable,
+isolated SSH trust probe exposed that the live driver attached a PTY without
+making it SSH's controlling terminal. The driver and its `/dev/tty` regression
+are fixed; a two-release rerun is pending before F3b is complete. P1 now provides the durable,
 strictly guarded project-provisioning state machine; its one independent audit
 is complete, every finding is fixed, and its exact schema boundary is retained
 in the chained upgrade registry. P1 is complete. D1 now provides the strict
@@ -115,7 +116,7 @@ slice, not the pending server or desktop journeys.
 The remaining seams are also concrete:
 
 - the strict `rcp server` command/event shell, Linux layout, and source installer
-  now exist, but F3b's two real Ubuntu runs are still pending and doctor,
+  now exist, but F3b's corrected two-release Ubuntu rerun is still pending and doctor,
   control-socket, update, backup, restore, and member-removal owners do not yet
   exist;
 - `default_data_dir()` still falls back to the macOS Application Support path;
@@ -656,14 +657,25 @@ gate are deliberately future work and do not block this plan.
 - Corrected run
   [33233089933](https://github.com/Zhi0467/RCP/actions/runs/33233089933)
   ran exact commit `da2bac852eccf640ec4ad6f0d16cf620f5542333`. Both releases
-  reached the isolated GitHub trust command; the PTY helper observed the
-  confirmation prompt and accepted it only after finding GitHub's published
-  Ed25519 fingerprint. SSH then exited 255 rather than producing GitHub's
-  expected authenticated/no-shell result. The assertion previously discarded
-  the captured SSH explanation, so it now includes only a bounded output tail
-  on failure. No acceptance condition was weakened. Both temporary read-only
-  deploy keys were revoked and workflow cleanup completed; a diagnostic rerun
-  is required before choosing a fix.
+  reached the isolated GitHub trust command, which exited 255 rather than
+  producing GitHub's expected authenticated/no-shell result. The assertion
+  previously discarded the captured SSH explanation, so it now includes only
+  a bounded output tail on failure. No acceptance condition was weakened. Both
+  temporary read-only deploy keys were revoked and workflow cleanup completed;
+  a diagnostic rerun was required before choosing a fix.
+- Diagnostic run
+  [33233283009](https://github.com/Zhi0467/RCP/actions/runs/33233283009)
+  ran exact commit `c5058c3fd4c57ce6d0a8419045216c9f747022df`. Both Ubuntu
+  releases again reached the isolated trust command and returned only `Host key
+  verification failed` with status 255. This identified a live-driver defect,
+  not a source-key failure: `_run_pty` connected SSH's standard streams to a PTY
+  but did not give the child a controlling terminal. OpenSSH reads first-trust
+  confirmation from `/dev/tty`, so no human-equivalent fingerprint prompt or
+  answer could occur. The runner now uses a real controlling PTY, and a focused
+  regression opens `/dev/tty`, emits the fixed published fingerprint prompt,
+  and proves that the guarded `yes` answer reaches it. Both temporary read-only
+  deploy keys were revoked and workflow cleanup completed. A corrected
+  two-release rerun remains required.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 

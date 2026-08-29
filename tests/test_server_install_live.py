@@ -511,46 +511,57 @@ def _run_pty(
     *,
     answer_host_key: bool = False,
 ) -> tuple[int, str]:
-    master, slave = pty.openpty()
-    process = subprocess.Popen(
-        argv,
-        stdin=slave,
-        stdout=slave,
-        stderr=slave,
-        close_fds=True,
-    )
-    os.close(slave)
+    pid, master = pty.fork()
+    if pid == 0:
+        try:
+            os.execvp(argv[0], argv)
+        except OSError:
+            os._exit(127)
     output = bytearray()
     answered = False
+    child_status: int | None = None
     deadline = time.monotonic() + _PTY_TIMEOUT_SECONDS
     try:
         while time.monotonic() < deadline:
             readable, _, _ = select.select([master], [], [], 0.2)
+            chunk = b""
             if readable:
                 try:
                     chunk = os.read(master, 4096)
                 except OSError:
                     chunk = b""
-                if not chunk and process.poll() is not None:
-                    break
                 output.extend(chunk)
                 if len(output) > _MAX_OUTPUT_BYTES:
-                    process.kill()
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(pid, signal.SIGKILL)
                     pytest.fail("interactive live-test output exceeded its bound")
                 text = output.decode("utf-8", errors="replace")
                 if answer_host_key and not answered and "Are you sure" in text:
                     if _GITHUB_ED25519_FINGERPRINT not in text:
-                        process.kill()
+                        with contextlib.suppress(ProcessLookupError):
+                            os.killpg(pid, signal.SIGKILL)
                         pytest.fail("GitHub host prompt did not show the published fingerprint")
                     os.write(master, b"yes\n")
                     answered = True
-            if process.poll() is not None and not readable:
+            if child_status is None:
+                waited_pid, status = os.waitpid(pid, os.WNOHANG)
+                if waited_pid == pid:
+                    child_status = status
+            if child_status is not None and (not readable or not chunk):
                 break
         else:
-            process.kill()
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(pid, signal.SIGKILL)
             pytest.fail("interactive live-test command timed out")
-        return process.wait(timeout=5), output.decode("utf-8", errors="replace")
+        if child_status is None:
+            _, child_status = os.waitpid(pid, 0)
+        return os.waitstatus_to_exitcode(child_status), output.decode("utf-8", errors="replace")
     finally:
+        if child_status is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(pid, signal.SIGKILL)
+            with contextlib.suppress(ChildProcessError):
+                os.waitpid(pid, 0)
         os.close(master)
 
 
@@ -885,6 +896,26 @@ def test_bounded_command_runner_stops_excess_output(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(pytest.fail.Exception, match="exceeded its output bound"):
         _run((sys.executable, "-c", "print('x' * 4096)"), timeout=5)
+
+
+def test_pty_runner_supplies_controlling_terminal_for_host_confirmation() -> None:
+    script = (
+        "import os\n"
+        "terminal = os.open('/dev/tty', os.O_RDWR)\n"
+        f"os.write(terminal, b'{_GITHUB_ED25519_FINGERPRINT} Are you sure? ')\n"
+        "answer = os.read(terminal, 128).decode().strip()\n"
+        "os.close(terminal)\n"
+        "print(f'answer={answer}')\n"
+        "raise SystemExit(0 if answer == 'yes' else 2)\n"
+    )
+
+    return_code, output = _run_pty(
+        (sys.executable, "-c", script),
+        answer_host_key=True,
+    )
+
+    assert return_code == 0, output
+    assert "answer=yes" in output
 
 
 def _os_release() -> dict[str, str]:
