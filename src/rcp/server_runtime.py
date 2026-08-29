@@ -290,6 +290,7 @@ def published_server_metadata(data_dir: Path, metadata: ServerMetadata) -> Itera
     temporary = path.with_name(f".{path.name}.{metadata.instance_id}.tmp")
     try:
         with temporary.open("x", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
             json.dump(metadata.as_dict(), handle, sort_keys=True)
             handle.write("\n")
             handle.flush()

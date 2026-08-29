@@ -694,6 +694,7 @@ def instance_lock(
     data_dir.mkdir(parents=True, exist_ok=True)
     path = data_dir / "rcp.lock"
     with path.open("a+", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), 0o600)
         deadline = time.monotonic() + timeout
         while True:
             try:

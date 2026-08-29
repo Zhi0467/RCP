@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 
 from fastapi.testclient import TestClient
 
@@ -37,8 +38,10 @@ def test_metadata_is_published_atomically_and_removed_by_its_owner(tmp_path, mon
 
     with published_server_metadata(tmp_path, metadata):
         assert read_server_metadata(tmp_path) == metadata
-        payload = json.loads((tmp_path / "rcp-server.json").read_text(encoding="utf-8"))
+        metadata_file = tmp_path / "rcp-server.json"
+        payload = json.loads(metadata_file.read_text(encoding="utf-8"))
         assert payload["schema_version"] == SERVER_METADATA_SCHEMA_VERSION
+        assert stat.S_IMODE(metadata_file.stat().st_mode) == 0o600
 
     assert len(replaced) == 1
     assert replaced[0][0].name.startswith(".rcp-server.json.")

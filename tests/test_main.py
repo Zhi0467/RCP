@@ -297,6 +297,16 @@ def test_serve_replaces_the_server_that_holds_the_instance_lock(
     assert replaced == [("serve", reload, tmp_path)]
 
 
+def test_instance_lock_enforces_private_mode_on_an_existing_file(tmp_path) -> None:
+    tmp_path.mkdir(exist_ok=True)
+    lock_file = tmp_path / "rcp.lock"
+    lock_file.write_text("stale\n", encoding="utf-8")
+    lock_file.chmod(0o644)
+
+    with instance_lock(tmp_path):
+        assert stat.S_IMODE(lock_file.stat().st_mode) == 0o600
+
+
 def test_replace_existing_server_requests_shutdown_then_runs_under_lock(
     tmp_path, monkeypatch
 ) -> None:
