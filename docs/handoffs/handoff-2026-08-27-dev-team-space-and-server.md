@@ -3,9 +3,9 @@
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
-F2, F3a, F3b, F4, F5, F6a, P1, P2, P5, D1, D2, and O3a are complete. P3's
-repository-credential implementation and focused regressions now exist, but P3
-remains open until its disposable-GitHub-repository live drive passes. The live
+F2, F3a, F3b, F4, F5, F6a, P1, P2, P3, P5, D1, and O3a are complete. D2
+reached and preserved its required stop condition at Q11's secure local-origin
+decision; it is not complete and still gates D3-D5. The live
 Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
 pushed at `fff75c3` with exact-target confirmation, an immutable built-candidate
 receipt, and an unchanged live-service boundary. P2 now provides the
@@ -13,8 +13,8 @@ member-authorized provisioning API, backend-owned project-creation and lifecycle
 answers, sealed Web response vocabularies, and a fail-before-input guard on all
 three ordinary existing-checkout entry routes. It performs no machine work and
 does not create a team project. F6b remains dependency-blocked on O2a/O2b's one
-capture primitive; P3's external qualification plus P4 own the remaining
-pre-orchestration provisioning machine boundaries.
+capture primitive; P4 owns the remaining pre-orchestration provisioning machine
+boundary.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -1074,7 +1074,7 @@ gate are deliberately future work and do not block this plan.
   operator command executed, project finalized, wizard rendered, or personal
   project transferred. P3 through P6, D6/D7, and T2 onward retain those owners.
 
-#### 2026-08-29 — P3 deploy-key implementation complete; live gate remains
+#### 2026-08-29 — P3 deploy-key lifecycle complete
 
 - `GitCredentialManager` now creates, inspects, and fingerprint-binds one
   Ed25519 key for each canonical project/repository alias on the exact local or
@@ -1123,13 +1123,18 @@ gate are deliberately future work and do not block this plan.
   key removal. Its ambiguous-POST cleanup now re-identifies only the exact label
   and public key if GitHub may have created the key before returning an invalid
   response.
-- P3 is not yet complete: the current environment exposes neither the required
-  explicitly disposable GitHub repository nor a cleanup-capable live-test
-  credential, so the external mutation drive was collected but skipped. No
-  ordinary repository was repurposed and no undeletable test repository was
-  created. P4 and P6 remain gated on that live proof. P6 still owns durable step
-  receipts, cancellation disposition ordering, and invocation of these
-  primitives; no HTTP/member route can call them yet.
+- The remaining live gate passed on 2026-08-29 against the new private,
+  explicitly named `zhi0467/rcp-git-credentials-live-test` sandbox. The existing
+  GitHub CLI credential was supplied only to the gated process and was not
+  written into RCP state, output, or the repository. The drive created one write
+  deploy key, proved push/readback/delete of its exact request ref, removed the
+  exact key, and removed the local private key. A separate GitHub API readback
+  then reported zero deploy keys and HTTP 404 for the exact temporary ref. The
+  initialized sandbox remains intentionally available for repeatable live
+  qualification; no ordinary repository was repurposed.
+- P3 is complete and unblocks P4. P6 still owns durable orchestration receipts,
+  cancellation disposition ordering, and invocation of these primitives; no
+  HTTP/member route can call them yet.
 - Final local verification passes all 2,655 backend tests with the three
   expected skips, all 436 Web tests, focused Ruff, and the documentation suite.
   The first backend run was intentionally discarded as evidence because the
@@ -2403,11 +2408,10 @@ only new team-project entrance into that owner.
 
 ### P3 — Repository-scoped deploy-key lifecycle
 
-Status: implementation and focused regressions are complete in the current
-packet, including the one-audit fixes. The packet remains open and does not
-unblock P4 or P6 until the guarded disposable-GitHub-repository live drive
-passes. The primitive is not wired to member HTTP authority or durable
-provisioning orchestration.
+Status: complete on 2026-08-29. Implementation, focused regressions, the
+one-audit fixes, and the guarded disposable-GitHub-repository live drive pass.
+The primitive is not wired to member HTTP authority or durable provisioning
+orchestration; P4 and P6 own those later boundaries.
 
 Own:
 
