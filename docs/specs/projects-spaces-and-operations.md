@@ -606,7 +606,10 @@ one fence and reopening work. Because the candidate cannot touch remote run
 stages before this decision, the local checkpoint does not pretend to copy
 them; it does include local run stages and temporary attachment sets through
 their concrete owners. Rebuildable caches and materialized snapshots remain
-excluded.
+excluded, except that the update-local rollback checkpoint retains the exact
+pre-switch project display snapshots required to verify the restored release's
+fenced read model. Those snapshots remain derived output and never become graph
+authority.
 A failed pre-switch candidate never changes `current`. If post-switch
 verification fails, the updater automatically stops the candidate, restores the
 checkpoint and previous pointer, starts and verifies the previous release, and

@@ -558,6 +558,15 @@ class UpdateCheckpointCoordinator:
                 )
                 app_directories.update(directories)
                 app_files.extend(files)
+            project_snapshots_root = self.data_dir / "project-snapshots"
+            if project_snapshots_root.exists():
+                directories, files = _snapshot_tree(
+                    project_snapshots_root,
+                    app_root_path / "project-snapshots",
+                    relative_prefix=PurePosixPath("project-snapshots"),
+                )
+                app_directories.update(directories)
+                app_files.extend(files)
             for stage in stages:
                 relative_root = PurePosixPath("run-stage") / stage.root.name
                 directories, files = _snapshot_tree(

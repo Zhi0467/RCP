@@ -123,6 +123,9 @@ def _checkpoint_fixture(
     bootstrap_root = data_dir / "bootstrap-manifests"
     bootstrap_root.mkdir(mode=0o700)
     (bootstrap_root / "remote-project.toml").write_bytes(b'name = "Remote fixture"\n')
+    project_snapshots_root = data_dir / "project-snapshots"
+    project_snapshots_root.mkdir(mode=0o700)
+    (project_snapshots_root / "project.json").write_bytes(b'{"graph":{"revision":0}}\n')
     attachment_store = ChatAttachmentStore(data_dir / "chat-attachments")
     attachment = attachment_store.add(
         project_id=str(uuid.uuid4()),
@@ -512,6 +515,7 @@ def test_checkpoint_captures_attachment_bytes_and_excludes_runtime_debris(
     paths = {item.relative_path for item in app_root.files}
     assert "rcp.sqlite3" in paths
     assert "bootstrap-manifests/remote-project.toml" in paths
+    assert "project-snapshots/project.json" in paths
     assert any(path.startswith("chat-attachments/") for path in paths)
     assert not any(path.endswith("rcp-server.json") or path.endswith("rcp.lock") for path in paths)
     assert checkpoint.status == "verified"
@@ -557,6 +561,9 @@ def test_rollback_reentry_restores_exact_bytes_after_every_journaled_phase(
     checkpoint, data_dir, attachment_file = _checkpoint_fixture(tmp_path)
     original_attachment = attachment_file.read_bytes()
     attachment_file.write_bytes(b"candidate changed this\n")
+    project_snapshot = data_dir / "project-snapshots" / "project.json"
+    original_project_snapshot = project_snapshot.read_bytes()
+    project_snapshot.write_bytes(b'{"graph":{"revision":1}}\n')
     (data_dir / "candidate-only-root").mkdir()
     (data_dir / "candidate-only-root" / "unknown").write_bytes(b"candidate\n")
 
@@ -610,6 +617,7 @@ restore_update_checkpoint(
         / attachment_file.name
     )
     assert restored_attachment.read_bytes() == original_attachment
+    assert project_snapshot.read_bytes() == original_project_snapshot
     quarantine = Path(
         next(root for root in checkpoint.roots if root.kind == "app_data").quarantine_path
     )
