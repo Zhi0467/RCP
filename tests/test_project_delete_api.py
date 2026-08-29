@@ -21,6 +21,9 @@ def _tree_digest(root: Path) -> str:
 def test_delete_project_route_refuses_active_task(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
+    card = app.state.catalog.card(project_id)
+    assert card["can_delete"] is True
+    assert card["delete_unavailable_reason"] is None
     now = app.state.background_tasks.store.now()
     app.state.background_tasks.store.create_agent_task(
         AgentTaskRecord(

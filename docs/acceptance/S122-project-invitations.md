@@ -1,22 +1,25 @@
 ---
 id: S122-project-invitations
-status: pending
+status: implemented
 tier: hermetic
 driver: pytest + browser
 covered_by:
   - tests/test_project_invitations.py
+  - tests/test_team_project_deletion_guard.py
   - web/tests/landingIdentity.test.mjs
   - api 2026-08-15 — a real two-member team space over browser sessions drove
     invite, accept, membership, leaving, and the last-member refusal
   - browser 2026-08-15 — the Members panel in Project Settings rendered its
     member list with Invite and Leave, and the last-member refusal explained
     itself; no server traceback or 5xx
-last_checked: 2026-08-28 — the 2026-08-15 baseline passed invitation without any
-  credential, acceptance granting
-  membership, decline leaving no residue, leaving removing read/dispatch/apply,
-  the last member refused with a reason, the Stop-style fence surviving a
-  restart, and revocation deliberately fencing nothing; the accepted team
-  deletion guard and revised refusal copy remain pending under S128
+  - browser 2026-08-29 — a disposable one-member team project rendered Leave
+    disabled with the add-another-member action and exposed no ordinary Delete
+    action; no browser console or application error
+last_passed: >-
+  2026-08-29 — invitation without credentials, membership acceptance and
+  decline, loss-of-membership fencing, token-revocation asymmetry, the exact
+  last-member refusal, and the team deletion guard pass their hermetic and
+  browser drives.
 invariants: [1, 3, 10g]
 ---
 
@@ -46,13 +49,10 @@ what becomes of an agent that was running on your authorization.
   restart-safe fence in invariant 10g rather than adding a mechanism, and it
   never kills a turn mid-flight.
 - **The last member cannot leave.** A memberless project would be invisible to
-  everyone with no administrator to recover it. The implemented baseline could
-  also point at ordinary deletion, but the accepted pending team-server boundary
-  in [S128](S128-provision-a-team-project-through-desktop-and-server-cli.md)
-  makes ordinary team-project deletion unavailable because it would orphan the
-  managed checkout and deploy key. When that guard lands, the only team action
-  named here is to invite and enroll another project member; personal deletion
-  remains separately governed by [S26](S26-delete-project.md).
+  everyone with no administrator to recover it. Ordinary team-project deletion
+  is unavailable because it would orphan the managed checkout and deploy key.
+  The only team action named here is to add another project member; personal
+  deletion remains separately governed by [S26](S26-delete-project.md).
 - **Revoking a token and losing membership are deliberately asymmetric.**
   Revocation is about a credential and does not stop already-authorized work —
   rotating after a lost laptop must not kill a week-long episode. Removal from a
@@ -119,9 +119,7 @@ the project, with no rank, owner, or role beside any name.
 
 **Leaving** is in the same place. When you are the only member it is visibly
 unavailable. The completed team-server target says the project needs another
-member and does not offer ordinary team deletion. Until S128's deletion guard
-lands, the older implemented copy may still mention deletion; that copy must be
-removed and this scenario re-driven with the guard. This is the one case where
+member and does not offer ordinary team deletion. This is the one case where
 the refusal has to explain itself, because the control is otherwise identical.
 
 **Deliberately not possible:** inviting someone who is not in the space, an

@@ -324,8 +324,8 @@ class SpaceStoreMixin:
         """Give up your own membership of one project.
 
         The last member cannot leave: a memberless project would be invisible to
-        everyone, and there is no administrator rank able to recover it. Invite
-        somebody first, or delete the project.
+        everyone, and there is no administrator rank able to recover it. Add
+        another member first.
         """
 
         with self.connection() as connection:
@@ -339,8 +339,7 @@ class SpaceStoreMixin:
                 raise KeyError(f"{user_id} is not a member of {project_id}.")
             if len(member_ids) == 1:
                 raise ValueError(
-                    "You are the only member of this project. Invite someone else "
-                    "before leaving, or delete the project."
+                    "You are the only member of this project. Add another member before leaving."
                 )
             connection.execute(
                 "DELETE FROM project_members WHERE project_id = ? AND user_id = ?",

@@ -114,6 +114,12 @@ class ProjectDeletionResult(BaseModel):
     removed_paper_snapshot: bool
 
 
+TEAM_PROJECT_DELETE_UNAVAILABLE_REASON = (
+    "Team projects cannot be deleted here. A server operator must deprovision the "
+    "managed checkout and Git deploy keys."
+)
+
+
 EpisodeSerializer = Callable[
     [str, EpisodeRecord, ExperimentEpisodeProjectionSnapshot | None],
     dict[str, object],
@@ -686,14 +692,15 @@ class ProjectCatalog:
                 mapping[canonical_project_id] = old_value
 
     def cards(self) -> list[dict[str, object]]:
-        return [self._card(record) for record in self.store.projects()]
+        can_delete = self.store.space_kind == "personal"
+        return [self._card(record, can_delete=can_delete) for record in self.store.projects()]
 
     def card(self, project_id: str) -> dict[str, object]:
         project_id = self._canonical_project_id(project_id)
         record = self.store.project(project_id)
         if record is None:
             raise KeyError(project_id)
-        return self._card(record)
+        return self._card(record, can_delete=self.store.space_kind == "personal")
 
     def state_host(self, project_id: str) -> str:
         """Read the registered state host without opening canonical history."""
@@ -890,6 +897,8 @@ class ProjectCatalog:
 
     def delete(self, project_id: str) -> ProjectDeletionResult:
         """Forget one RCP registration without touching any research source."""
+        if self.store.space_kind == "team":
+            raise ValueError(TEAM_PROJECT_DELETE_UNAVAILABLE_REASON)
         project_id = self._canonical_project_id(project_id)
         with self._services_lock:
             if self.store.project(project_id) is None or project_id in self._deleting:
@@ -1429,7 +1438,7 @@ class ProjectCatalog:
             os.replace(temp, locator)
 
     @staticmethod
-    def _card(record: ProjectRecord) -> dict[str, object]:
+    def _card(record: ProjectRecord, *, can_delete: bool) -> dict[str, object]:
         return {
             "id": record.project_id,
             "home_space_id": record.home_space_id,
@@ -1444,6 +1453,10 @@ class ProjectCatalog:
             "last_refresh_at": record.last_refresh_at,
             "reachable": record.reachable,
             "error": record.error,
+            "can_delete": can_delete,
+            "delete_unavailable_reason": (
+                None if can_delete else TEAM_PROJECT_DELETE_UNAVAILABLE_REASON
+            ),
         }
 
 

@@ -452,13 +452,11 @@ def test_replay_succeeds_with_no_membership_records_present(manifest, tmp_path) 
     assert replayed.state.revision > 0
 
 
-def test_deleting_a_project_takes_its_membership_with_it(manifest, tmp_path) -> None:
-    app, client, store, _people, _acting = _team_app(tmp_path)
-    project_id = _create_project(
-        client,
-        tmp_path / "repo",
-        seat_member=store.space_users()[0].user_id,
-    )
+def test_deleting_a_personal_project_takes_its_membership_with_it(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "personal")
+    client = TestClient(app)
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
     assert store.project_members(project_id)
 
     deleted = client.delete(f"/api/projects/{project_id}")

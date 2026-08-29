@@ -1799,6 +1799,8 @@ export interface ProjectCard {
   last_refresh_at?: string | null;
   reachable?: boolean | null;
   error?: string | null;
+  can_delete: boolean;
+  delete_unavailable_reason: string | null;
 }
 
 export interface ProjectMember {

@@ -3,7 +3,7 @@
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
-F2, F3a, F3b, F4, F5, F6a, P1, P2, P3, P4, P5, P6b, D1, and O3a are complete. D2
+F2, F3a, F3b, F4, F5, F6a, P1, P2, P3, P4, P5, P6b, P6c, D1, and O3a are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; it is not complete and still gates D3-D5. The live
 Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
@@ -20,7 +20,8 @@ service and stops at **ready for review** without creating a project; the
 packet's complete team-service/GitHub live qualification remains open. P6b now
 owns the exact final human confirmation, reserved identity append, registration,
 and crash recovery without rerunning machine preparation. F6b remains blocked
-on O2a/O2b's one capture primitive.
+on O2a/O2b's one capture primitive. P6c now publishes and independently enforces
+the ordinary team-project deletion guard through the card, Web, API, and catalog.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -1256,7 +1257,7 @@ The remaining implementation work is:
    source update/build receipt plus doctor and private CLI-to-server transport;
 2. concrete project provisioning, where machine orchestration and final human
    creation are implemented but still need the complete live qualification,
-   unified UI/desktop drive, deletion guard, and post-setup cancellation;
+   unified UI/desktop drive and post-setup cancellation;
 3. source-built desktop distinct origins, tunnels, live Keychain
    enrollment/readback, navigation, cached team groups, and optional operator
    bridge (the strict metadata and token-write/remove substrate is complete);
@@ -2521,9 +2522,9 @@ it never walks the credential root. If the public key was already installed at
 GitHub, cancellation names its label/fingerprint and remains **operator action
 needed** until the operator confirms that grant was revoked or explicitly keeps
 the prepared request for reuse; deleting a private key is not presented as
-GitHub cleanup. An activated team project's key remains
-machine state and is protected from the ordinary member Delete-project path by
-P6c until a future operator-owned deprovision workflow is designed.
+GitHub cleanup. An activated team project's key remains machine state and is
+protected from the ordinary member Delete-project path by P6c's backend-owned
+guard until a future operator-owned deprovision workflow is designed.
 
 ### P4 — Central checkout preparation
 
@@ -2696,6 +2697,12 @@ request. Parameterized regressions crash after every boundary and prove one
 Patch, one catalog project, one completion receipt, and one reviewed identity.
 
 ### P6c — Team-project deletion guard
+
+Status: complete on 2026-08-29. Team cards publish the backend-owned decision,
+the Web omits ordinary Delete, the API and catalog refuse independently before
+cleanup, personal deletion stays unchanged, and the last-member action now says
+to add another member. Focused backend/Web regressions and a disposable rendered
+team-browser drive pass without console or application errors.
 
 Own:
 

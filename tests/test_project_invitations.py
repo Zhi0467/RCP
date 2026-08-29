@@ -216,7 +216,9 @@ def test_the_only_member_cannot_leave_the_project(manifest, tmp_path) -> None:
     refused = client.post(f"/api/projects/{project_id}/leave")
 
     assert refused.status_code == 409
-    assert "only member" in refused.json()["detail"]
+    assert refused.json()["detail"] == (
+        "You are the only member of this project. Add another member before leaving."
+    )
     assert store.is_project_member(project_id, creator.user_id)
 
 

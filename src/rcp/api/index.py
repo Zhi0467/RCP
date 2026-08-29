@@ -21,7 +21,7 @@ from rcp.api.episodes import serialize_episode
 from rcp.api.experiment_controls import _experiment_control_response
 from rcp.api.identity import IdentityAccess
 from rcp.core.models import Experiment, GraphState
-from rcp.projects import ProjectCatalog
+from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON, ProjectCatalog
 from rcp.providers import PROVIDER_IDS
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager, ProjectSetupRequest
@@ -358,7 +358,10 @@ def delete_project(
     project_id: str,
     *,
     catalog: CatalogDependency,
+    store: StoreDependency,
 ) -> dict[str, object]:
+    if store.space_kind == "team":
+        raise HTTPException(status_code=409, detail=TEAM_PROJECT_DELETE_UNAVAILABLE_REASON)
     try:
         return catalog.delete(project_id).model_dump(mode="json")
     except KeyError as exc:

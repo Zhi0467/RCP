@@ -3,8 +3,17 @@ id: S26-delete-project
 status: implemented
 tier: hermetic
 driver: pytest + browser
-covered_by: tests/test_project_deletion.py, tests/test_project_delete_api.py, browser 2026-07-31
-last_passed: 2026-07-31
+covered_by:
+  - tests/test_project_deletion.py
+  - tests/test_project_delete_api.py
+  - tests/test_team_project_deletion_guard.py
+  - web/tests/landingIdentity.test.mjs
+  - browser 2026-07-31 — personal deletion flow
+  - browser 2026-08-29 — team action omission
+last_passed: >-
+  2026-08-29 — personal deletion remains green, while team cards, direct API,
+  catalog, and rendered action-menu guards refuse ordinary deletion before any
+  project or managed-machine state changes.
 invariants: [1, 2, 8]
 ---
 
@@ -16,7 +25,7 @@ canonical `.research/` state, append-only patches, provider conversation logs,
 or any other source material. This implemented scenario predates team projects
 and remains the personal-space contract.
 
-## UI path (proposal)
+## UI path
 
 Each project cover on the project index has one compact action menu. The menu
 keeps the existing cover choice and adds **Delete project** as a destructive
@@ -65,9 +74,8 @@ research history while performing an app-catalog operation.
 
 ## Team boundary
 
-Ordinary deletion is not team-project deprovisioning. The pending team-server
-journey in [S128](S128-provision-a-team-project-through-desktop-and-server-cli.md)
-requires the backend to publish team deletion unavailable and to reject a direct
-API attempt before touching either RCP records or managed machine state. A future
-operator-owned deprovision flow must separately decide checkout disposition and
-Git deploy-key revocation.
+Ordinary deletion is not team-project deprovisioning. The backend publishes team
+deletion unavailable, the Web omits the action, and the API plus catalog reject
+a direct attempt before touching either RCP records or managed machine state. A
+future operator-owned deprovision flow must separately decide checkout
+disposition and Git deploy-key revocation.

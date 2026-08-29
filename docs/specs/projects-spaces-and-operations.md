@@ -1216,12 +1216,13 @@ exits successfully only after reading back the same request as **ready for
 review**, and it has no project-creation route; only the authenticated final
 review route can append the reserved identity and complete the request.
 
-Machine orchestration and final creation are hermetically covered but have not
-yet passed S128's complete source-built team-service/GitHub/SSH/browser/desktop
-live drive. Cancellation after machine preparation, the unified wizard and
-desktop operator bridge, deletion guard, backup capture/restore, member removal,
-and transfer remain active acceptance work. Current RCP must not simulate those
-unfinished journeys or describe **ready for review** as an existing project.
+Machine orchestration, final creation, and the team deletion guard are
+hermetically covered, but provisioning has not yet passed S128's complete
+source-built team-service/GitHub/SSH/browser/desktop live drive. Cancellation
+after machine preparation, the unified wizard and desktop operator bridge,
+backup capture/restore, member removal, and transfer remain active acceptance
+work. Current RCP must not simulate those unfinished journeys or describe
+**ready for review** as an existing project.
 
 ## Deletion
 

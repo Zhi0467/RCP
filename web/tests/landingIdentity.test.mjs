@@ -11,7 +11,9 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { ProjectLanding } = await server.ssrLoadModule("/src/views/ProjectLanding.tsx");
+const { ProjectActionsMenu, ProjectLanding } = await server.ssrLoadModule(
+  "/src/views/ProjectLanding.tsx",
+);
 const { IdentityProvenanceSlip, copyIdentityId } = await server.ssrLoadModule(
   "/src/components/LandingIdentityMenu.tsx",
 );
@@ -66,6 +68,45 @@ test("the project index starts with covers and exposes the named identity with i
   assert.match(html, /Personal space/);
   assert.match(html, new RegExp(userId));
   assert.match(html, /data-identity-record="provenance-slip"/);
+});
+
+test("the project menu renders Delete only from the backend-owned card decision", () => {
+  const personal = {
+    id: "project-1",
+    home_space_id: identity.space_id,
+    name: "Personal paper",
+    locator: "/tmp/personal/.research/manifest.toml",
+    state_location: "/tmp/personal",
+    remote: false,
+    attention_count: 0,
+    can_delete: true,
+    delete_unavailable_reason: null,
+  };
+  const team = {
+    ...personal,
+    id: "project-2",
+    name: "Team paper",
+    can_delete: false,
+    delete_unavailable_reason:
+      "Team projects cannot be deleted here. A server operator must deprovision the managed checkout and Git deploy keys.",
+  };
+  const props = {
+    cover: "wood",
+    onChooseCover() {},
+    onDelete() {},
+  };
+
+  const personalMenu = renderToStaticMarkup(
+    React.createElement(ProjectActionsMenu, { ...props, project: personal }),
+  );
+  const teamMenu = renderToStaticMarkup(
+    React.createElement(ProjectActionsMenu, { ...props, project: team }),
+  );
+
+  assert.match(personalMenu, />Delete project</);
+  assert.doesNotMatch(teamMenu, /Delete project/);
+  assert.match(teamMenu, />Cover</);
+  assert.doesNotMatch(teamMenu, /server operator|deploy key/i);
 });
 
 test("an unnamed personal identity presents the landing sign-in action", () => {

@@ -51,6 +51,54 @@ const COVER_LABELS: Record<CoverStyle, string> = {
   diffusion: "Diffusion",
 };
 
+interface ProjectActionsMenuProps {
+  project: ProjectCard;
+  cover: CoverStyle;
+  onChooseCover: (cover: CoverStyle) => void;
+  onDelete: () => void;
+}
+
+export function ProjectActionsMenu({
+  project,
+  cover,
+  onChooseCover,
+  onDelete,
+}: ProjectActionsMenuProps) {
+  return (
+    <div className="project-cover-menu" role="menu" aria-label={`Actions for ${project.name}`}>
+      <span className="project-cover-menu-label" role="presentation">
+        Cover
+      </span>
+      <div className="project-cover-options" role="presentation">
+        {COVER_STYLES.map((style) => (
+          <button
+            className="project-cover-option"
+            type="button"
+            role="menuitemradio"
+            key={style}
+            aria-checked={cover === style}
+            onClick={() => onChooseCover(style)}
+          >
+            <span className="project-cover-swatch">
+              <span
+                className={`project-cover-swatch-zoom project-material-${style}`}
+                aria-hidden="true"
+              />
+            </span>
+            <span className="project-cover-option-label">{COVER_LABELS[style]}</span>
+          </button>
+        ))}
+      </div>
+      {project.can_delete && (
+        <button className="project-delete-action" type="button" role="menuitem" onClick={onDelete}>
+          <Trash2 size={13} aria-hidden="true" />
+          Delete project
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function ProjectLanding({
   projects,
   invitations,
@@ -103,7 +151,8 @@ export function ProjectLanding({
     };
   }, [deleteBusy]);
 
-  const deleteProject = projects.find((project) => project.id === deleteProjectId) ?? null;
+  const deleteProject =
+    projects.find((project) => project.id === deleteProjectId && project.can_delete) ?? null;
 
   const closeDeleteConfirmation = () => {
     if (deleteBusy) return;
@@ -201,51 +250,19 @@ export function ProjectLanding({
                   <MoreHorizontal size={14} aria-hidden="true" />
                 </button>
                 {openMenuProject === project.id && (
-                  <div
-                    className="project-cover-menu"
-                    role="menu"
-                    aria-label={`Actions for ${project.name}`}
-                  >
-                    <span className="project-cover-menu-label" role="presentation">
-                      Cover
-                    </span>
-                    <div className="project-cover-options" role="presentation">
-                      {COVER_STYLES.map((style) => (
-                        <button
-                          className="project-cover-option"
-                          type="button"
-                          role="menuitemradio"
-                          key={style}
-                          aria-checked={cover === style}
-                          onClick={() => {
-                            setCovers((current) => ({ ...current, [project.id]: style }));
-                            setOpenMenuProject(null);
-                          }}
-                        >
-                          <span className="project-cover-swatch">
-                            <span
-                              className={`project-cover-swatch-zoom project-material-${style}`}
-                              aria-hidden="true"
-                            />
-                          </span>
-                          <span className="project-cover-option-label">{COVER_LABELS[style]}</span>
-                        </button>
-                      ))}
-                    </div>
-                    <button
-                      className="project-delete-action"
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setOpenMenuProject(null);
-                        setDeleteError(null);
-                        setDeleteProjectId(project.id);
-                      }}
-                    >
-                      <Trash2 size={13} aria-hidden="true" />
-                      Delete project
-                    </button>
-                  </div>
+                  <ProjectActionsMenu
+                    project={project}
+                    cover={cover}
+                    onChooseCover={(style) => {
+                      setCovers((current) => ({ ...current, [project.id]: style }));
+                      setOpenMenuProject(null);
+                    }}
+                    onDelete={() => {
+                      setOpenMenuProject(null);
+                      setDeleteError(null);
+                      setDeleteProjectId(project.id);
+                    }}
+                  />
                 )}
               </div>
             );

@@ -124,11 +124,7 @@ export function ProjectMembers({ projectId, identity, api, onLeft }: Props) {
           className="project-member-leave"
           disabled={busy || alone}
           onClick={leave}
-          title={
-            alone
-              ? "This project needs another member before you can leave, or delete it instead."
-              : undefined
-          }
+          title={alone ? "Add another member to this project before leaving." : undefined}
         >
           Leave project
         </button>
