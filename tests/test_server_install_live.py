@@ -595,7 +595,7 @@ def _prepare_live_cutover(
     finally:
         temporary_receipt.unlink(missing_ok=True)
 
-    rehearsal = _run_checked(
+    rehearsal = _run(
         (
             "sudo",
             "-n",
@@ -612,6 +612,12 @@ def _prepare_live_cutover(
         ),
         timeout=_COMMAND_TIMEOUT_SECONDS,
     )
+    if rehearsal.returncode != 0:
+        pytest.fail(
+            "synthetic candidate rehearsal failed; "
+            f"stdout tail={rehearsal.stdout[-4096:]!r}; "
+            f"stderr tail={rehearsal.stderr[-4096:]!r}"
+        )
     rehearsal_lines = rehearsal.stdout.splitlines()
     if len(rehearsal_lines) != 1:
         pytest.fail("synthetic candidate rehearsal did not return one receipt path")
