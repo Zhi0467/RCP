@@ -517,6 +517,32 @@ Provider capability warming, watcher poll/delivery, timers, recovery dispatch,
 remote-stage cleanup, Git writes, and every other external effect remain
 deferred while the switched candidate is eligible for rollback.
 
+The current running release owns rehearsal capture, orchestration, expected
+answers, and final judgment. It revalidates the built receipt, obtains one
+online SQLite/project-file capture, and computes the expected canonical graph
+and startup-recovery models with current code. The candidate receives only the
+copied database: first it runs its migration twice to prove idempotence, then it
+starts behind the fence and serves bounded reads. Path inventory and escape
+validation happen after candidate migration, so a new unclassified durable path
+column fails before startup.
+
+The copied database and captured files live in a private typed overlay. Local
+project locators, task/result/episode stages, watcher cwd/log paths, and transfer
+inbox references are rebound to overlay-owned or known-absent paths; remote
+paths are inert data. Candidate startup acquires the overlay data directory's
+real instance lock. Verification reads health, startup recovery, the union of
+all enrolled members' visible projects, and representative project/task/watcher
+responses. Captured projects must match current-release graph revisions and
+digests exactly.
+
+A successful rehearsal publishes one immutable private receipt named by both
+candidate commit and capture UUID and bound to the SQLite and project-file
+digests. A prior receipt is never reused. The later maintenance owner must prove
+that its final closed-admission checkpoint matches that capture boundary or run
+a fresh rehearsal after admission closes; matching only candidate commit,
+process instance, or PID is not sufficient. A fenced startup starts no deferred
+runtime owner, and releasing that same fence starts those owners exactly once.
+
 The rehearsal copy never resolves a transfer request to the live
 `transfer-inbox/`, whether that request names a partial upload or a complete
 verified inbox file. Every copied lease/path is rebound to a request-owned

@@ -91,6 +91,93 @@ _NATIVE_CHECKPOINT_CONTINUATIONS = frozenset(
 )
 
 
+class StartupEffectBlocked(RuntimeError):
+    """A candidate tried to cross the closed startup-effect boundary."""
+
+
+class StartupEffectFence:
+    """One shared gate for startup verification and later update cutover.
+
+    The fence is deliberately an in-process object rather than an environment
+    flag. Callers hold the exact object that records an attempted effect, and
+    releasing it changes the same gate consulted by the background engine.
+    Candidate rehearsal never releases it.
+    """
+
+    def __init__(self, reason: str) -> None:
+        if not reason or reason != reason.strip():
+            raise ValueError("startup-effect fence reason must be one nonempty line")
+        self.reason = reason
+        self._active = True
+        self._attempts: list[str] = []
+        self._release_callbacks: list[Callable[[], None]] = []
+        self._lock = threading.Lock()
+
+    @property
+    def active(self) -> bool:
+        with self._lock:
+            return self._active
+
+    @property
+    def attempted_effects(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(self._attempts)
+
+    def require_open(self, effect: str) -> None:
+        if not effect or effect != effect.strip():
+            raise ValueError("startup effect name must be one nonempty line")
+        with self._lock:
+            if not self._active:
+                return
+            self._attempts.append(effect)
+        raise StartupEffectBlocked(
+            f"Startup effects are closed for {self.reason}; blocked {effect}."
+        )
+
+    def release(self) -> None:
+        with self._lock:
+            if self._attempts:
+                raise StartupEffectBlocked(
+                    "Startup effects cannot open after a blocked effect was attempted."
+                )
+            if not self._active:
+                return
+            self._active = False
+            callbacks = tuple(self._release_callbacks)
+            self._release_callbacks.clear()
+        for callback in callbacks:
+            callback()
+
+    def on_release(self, callback: Callable[[], None]) -> None:
+        """Run one callback when this exact fence opens, including late registration."""
+
+        with self._lock:
+            if self._active:
+                self._release_callbacks.append(callback)
+                return
+        callback()
+
+
+@dataclass(frozen=True)
+class StartupRecoveryPlan:
+    """Read-only inventory of work ordinary startup would reconcile."""
+
+    active_operation_ids: tuple[str, ...]
+    stopping_experiment_operation_ids: tuple[str, ...]
+    report_episode_ids: tuple[str, ...]
+    auto_research_recovery_operation_ids: tuple[str, ...]
+    active_watcher_ids: tuple[str, ...]
+
+    def as_dict(self) -> dict[str, tuple[str, ...]]:
+        return {
+            "active_operation_ids": self.active_operation_ids,
+            "stopping_experiment_operation_ids": self.stopping_experiment_operation_ids,
+            "report_episode_ids": self.report_episode_ids,
+            "auto_research_recovery_operation_ids": (self.auto_research_recovery_operation_ids),
+            "active_watcher_ids": self.active_watcher_ids,
+        }
+
+
 @dataclass
 class AgentTaskExecution:
     operation_id: str
@@ -199,6 +286,7 @@ class BackgroundAgentTasks:
         on_task_settled: AgentTaskSettledHook | None = None,
         on_auto_research_admission_exhausted: AutoResearchAdmissionExhaustedHook | None = None,
         dispatch_authority_resolver: DispatchAuthorityResolver | None = None,
+        startup_effect_fence: StartupEffectFence | None = None,
     ) -> None:
         self.store = store
         self.stream = stream
@@ -206,11 +294,49 @@ class BackgroundAgentTasks:
         self.on_task_settled = on_task_settled
         self.on_auto_research_admission_exhausted = on_auto_research_admission_exhausted
         self.dispatch_authority_resolver = dispatch_authority_resolver or resolve_dispatch_authority
+        self.startup_effect_fence = startup_effect_fence
         self._controls: dict[str, AgentProcessControl] = {}
         self._workers: dict[str, threading.Thread] = {}
         self._controls_lock = threading.Lock()
         self._watcher_delivery_lock = threading.Lock()
-        self._accepting_watcher_deliveries = True
+        self._accepting_watcher_deliveries = not (
+            startup_effect_fence is not None and startup_effect_fence.active
+        )
+
+    def plan_startup_recovery(self) -> StartupRecoveryPlan:
+        """Describe recovery work without changing a row or resolving a stage."""
+
+        projects = self.store.projects()
+        tasks = [
+            task
+            for project in projects
+            for task in self.store.all_project_agent_tasks(project.project_id)
+        ]
+        watchers = [
+            watcher
+            for project in projects
+            for watcher in self.store.active_graph_watchers(project.project_id)
+        ]
+        return StartupRecoveryPlan(
+            active_operation_ids=tuple(sorted(task.operation_id for task in tasks if task.active)),
+            stopping_experiment_operation_ids=tuple(
+                sorted(
+                    task.operation_id
+                    for task in self.store.stopping_experiment_recovery_candidates()
+                )
+            ),
+            report_episode_ids=tuple(
+                sorted(episode.episode_id for episode in self.store.episodes_awaiting_report())
+            ),
+            auto_research_recovery_operation_ids=tuple(
+                sorted(task.operation_id for task in self.store.auto_research_recovery_candidates())
+            ),
+            active_watcher_ids=tuple(sorted(watcher.watcher_id for watcher in watchers)),
+        )
+
+    def _require_startup_effects_open(self, effect: str) -> None:
+        if self.startup_effect_fence is not None:
+            self.startup_effect_fence.require_open(effect)
 
     def recover_at_startup(self) -> None:
         """Reconcile work a previous process left behind. Called once, by the lifespan.
@@ -225,6 +351,7 @@ class BackgroundAgentTasks:
         state nobody reconciled.
         """
 
+        self._require_startup_effects_open("startup recovery")
         preserved_dispatches = proven_committed_auto_research_dispatches(self)
         reserved_roots = proven_reserved_auto_research_roots(self)
         self.store.interrupt_active_agent_tasks(
@@ -248,6 +375,7 @@ class BackgroundAgentTasks:
         stage_host: str | None = None,
         stage_root: str | None = None,
     ) -> AgentTaskRecord:
+        self._require_startup_effects_open("provider task dispatch")
         if kind == "auto_research":
             raise ValueError(
                 "Use start_auto_research so its episode and root are created atomically."
@@ -312,6 +440,7 @@ class BackgroundAgentTasks:
         skills: SkillSelection | None = None,
         authorized_by: AuthorizedHuman | None = None,
     ) -> AgentTaskRecord:
+        self._require_startup_effects_open("provider task resume")
         previous = self._require_operation(operation_id)
         if previous.kind == "episode_report":
             raise ValueError("Episode report recovery is automatic and has no Resume control.")
@@ -357,6 +486,7 @@ class BackgroundAgentTasks:
         skills: SkillSelection | None = None,
         authorized_by: AuthorizedHuman | None = None,
     ) -> AgentTaskRecord:
+        self._require_startup_effects_open("provider task retry")
         previous = self._require_operation(operation_id)
         if previous.kind == "episode_report":
             raise ValueError("Episode report recovery is automatic and has no Retry control.")
@@ -555,6 +685,7 @@ class BackgroundAgentTasks:
     ) -> AgentTaskRecord:
         """Create one idempotent patch-only continuation for a rejected Work result."""
 
+        self._require_startup_effects_open("provider graph-repair dispatch")
         previous = self._require_operation(operation_id)
         if previous.kind not in {"node_chat", "project_chat"}:
             raise ValueError("Only a conversation Work task can repair a graph update.")
@@ -588,6 +719,7 @@ class BackgroundAgentTasks:
         )
 
     def pause(self, operation_id: str) -> AgentTaskRecord:
+        self._require_startup_effects_open("provider task pause")
         current = self._require_operation(operation_id)
         if current.kind == "episode_report":
             raise ValueError("Episode report generation has no manual Pause control.")
@@ -626,6 +758,7 @@ class BackgroundAgentTasks:
     def accept_watcher_notifications(self) -> None:
         """Open automatic delivery admission for one app lifespan."""
 
+        self._require_startup_effects_open("watcher delivery admission")
         with self._watcher_delivery_lock:
             self._accepting_watcher_deliveries = True
 
@@ -658,6 +791,7 @@ class BackgroundAgentTasks:
         rejected.
         """
 
+        self._require_startup_effects_open("provider task admission")
         episode: EpisodeRecord | None = None
         task_graph_target = parent.graph_target if parent is not None else GraphTargetRef()
         if isinstance(request, BranchMergeRunRequest):
@@ -864,6 +998,7 @@ class BackgroundAgentTasks:
         seam for a task that was admitted before the process disappeared.
         """
 
+        self._require_startup_effects_open("provider task launch")
         record = self._require_operation(operation_id)
         with self._controls_lock:
             if operation_id in self._workers:

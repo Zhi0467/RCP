@@ -3,7 +3,7 @@
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
-F2, F3a, F3b, F4, F5, F6a, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
+F2, F3a, F3b, F4, F5, F6a, F6b, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
 O2b, O3a, and O3b are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; it is not complete and still gates D3-D5. The live
@@ -20,9 +20,10 @@ next provisioning boundary by durably composing P3-P5 through the installed
 service and stops at **ready for review** without creating a project; the
 packet's complete team-service/GitHub live qualification remains open. P6b now
 owns the exact final human confirmation, reserved identity append, registration,
-and crash recovery without rerunning machine preparation. F6b is now unblocked
-by O2b's project-file capture primitive and remains the next incomplete
-source-update packet. P6c now publishes and independently
+and crash recovery without rerunning machine preparation. F6b now consumes
+O2a/O2b to rehearse the candidate against copied real state under one reusable
+startup-effect fence; F6c is the next incomplete source-update packet. P6c now
+publishes and independently
 enforces the ordinary team-project deletion guard through the card, Web, API,
 and catalog.
 The previously planned G1 pull-request transition was rejected by the human for this
@@ -108,8 +109,8 @@ The remaining seams are also concrete:
 - the strict `rcp server` shell, Linux layout, source installer, private control
   socket, installed doctor, source-update candidate builder, protected backup
   run/configuration/status/retention path, online SQLite capture, and optimistic
-  project-file capture now exist; copied-state update rehearsal,
-  cutover/rollback, restore, and member removal do not;
+  project-file capture, and copied-state update rehearsal now exist;
+  update checkpoint/cutover/rollback, restore, and member removal do not;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
 - the Web UI still says “Team connections are not implemented in this build”;
@@ -1424,12 +1425,67 @@ gate are deliberately future work and do not block this plan.
   Ubuntu. O3c/O3d and O4 own restore safety, and S104 remains pending its full
   Linux/SSH/systemd live drive.
 
+#### 2026-08-29 — F6b copied-state candidate rehearsal complete
+
+- The running release, not the candidate, now owns rehearsal orchestration and
+  judgment. It revalidates F6a's immutable build receipt, asks the installed
+  service for one online O2a/O2b capture, constructs the expected current graph
+  and startup-recovery read models itself, and gives the candidate only two
+  bounded subprocess phases: migrate the copied database twice, then start and
+  answer reads behind the startup-effect fence.
+- The private typed overlay streams and rechecks copied bytes instead of loading
+  them wholesale. It rebinds every local project locator, task/result/episode
+  stage, watcher cwd/log, and partial or complete transfer-inbox path to an
+  overlay-owned or known-absent path. Remote paths remain inert data. Unknown
+  future database path/root columns fail the rehearsal after candidate migration
+  instead of escaping the inventory.
+- Candidate verification acquires the copied data directory's real instance
+  lock and exercises health, the union of every enrolled member's project list,
+  every project detail, task history, watcher history, and exact startup
+  recovery plan. Locally captured projects must match the current release's
+  canonical graph revision and digest. Only an SSH transport failure already
+  observed by the current release may remain explicitly unavailable, and its
+  project card must match exactly; reachable or unclassified capture failures
+  still block the update.
+- One `StartupEffectFence` now gates startup recovery, task dispatch and
+  continuation, watcher polling/delivery, report and Auto-research recovery, and
+  every background launch entrypoint. Fenced startup publishes its read model
+  without starting owners. Releasing that same object starts the deferred
+  runtime exactly once, which is the seam F6d will use after post-switch
+  verification.
+- Success publishes one private immutable receipt named by candidate commit and
+  capture UUID and bound to the copied SQLite and project-file digests. No prior
+  rehearsal receipt is reused. The operation overlay is removed only after
+  receipt readback; failures retain their evidence, and update maintenance
+  rejects retained rehearsal roots. F6d must still match its final closed-
+  admission boundary to this receipt and rerun rehearsal if live state changed;
+  matching only process, PID, or commit is insufficient.
+- The independent review's trust-boundary findings are closed: the old release
+  owns expected answers, candidate migrations precede path inventory, reads
+  cover all members rather than an arbitrary principal, graph/recovery answers
+  are exact, receipts are capture-specific, fence release starts the deferred
+  owners, and the real instance lock is exercised. Tests also trap reads and
+  metadata probes into live data, checkout, stage, provider-home, transfer, and
+  remote-effect sentinels and cross a real candidate subprocess boundary.
+- Focused rehearsal/update/backup/background/API tests pass. The complete
+  backend suite passes with 2,774 tests and eight expected environment skips;
+  all 437 Web tests, the production build, Ruff, documentation checks, and
+  all-file pre-commit also pass. The earlier failures were reproduced as
+  sandbox denial of the suite's local Unix-socket broker, not a product
+  regression.
+- Not done: F6b never closes live admission, captures the final rollback
+  checkpoint, switches `current`, restarts systemd, or decides rollback. F6c
+  owns the coherent checkpoint and crash-safe replacement inputs; F6d owns the
+  short maintenance barrier, cutover, post-switch verification, fence release,
+  loud rollback, and live systemd failure drive.
+
 ## What remains
 
 The remaining implementation work is:
 
-1. candidate rehearsal, cutover, rollback, and recovery, consuming the completed
-   source update/build receipt plus doctor and private CLI-to-server transport;
+1. update checkpoint, cutover, rollback, and recovery, consuming the completed
+   source build and copied-state rehearsal receipts plus doctor and private
+   CLI-to-server transport;
 2. concrete project provisioning, where machine orchestration and final human
    creation are implemented but still need the complete live qualification,
    unified UI/desktop drive and post-setup cancellation;
@@ -2377,6 +2433,13 @@ cannot open live app data, switch `current`, or restart systemd.
 
 ### F6b — Candidate rehearsal against copied real state
 
+Status: complete on 2026-08-29. The current release owns
+capture, expected answers, orchestration, and the immutable receipt; the
+candidate owns only idempotent migration of the copied database and fenced
+representative reads. Its one independent audit is closed as recorded in the
+implementation log above. F6c and F6d must consume this boundary rather than
+adding another copy implementation or a second startup-effect list.
+
 Own:
 
 - new `src/rcp/server_ops/rehearsal.py`;
@@ -2436,6 +2499,12 @@ partial maintenance-mode list. A rehearsal failure leaves the old release
 serving and reports the candidate/current/running commits. Success produces one
 immutable verified-candidate receipt consumed by F6d; this packet cannot switch
 `current` or restart systemd.
+
+The receipt is deliberately capture-specific. F6d cannot treat a prior success
+for the same candidate, process, or commit as authority after admission closes:
+it must compare the final checkpoint boundary with the receipt's capture UUID,
+SQLite digest, and project-file digests, or run a fresh rehearsal under the
+closed admission boundary before switching.
 
 ### F6c — Coherent update rollback checkpoint
 
@@ -4490,8 +4559,8 @@ Close this handoff only when all of the following are true:
 ## Suggested skills for pickup
 
 - The design grilling and final cross-document fact-check are complete. Continue
-  directly on `main` from the dependency-ready packets. F6b's copied-state
-  rehearsal is the next incomplete source-update packet; O3c and the later
+  directly on `main` from the dependency-ready packets. F6c's coherent rollback
+  checkpoint is the next incomplete source-update packet; O3c and the later
   restore lane may also consume the now-complete protected-backup boundary.
   Implement remaining packets without reopening product boundaries unless
   current code contradicts their authority.

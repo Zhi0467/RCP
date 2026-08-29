@@ -30,7 +30,10 @@ from rcp.server_ops.backup_capture import (
     validate_backup_sqlite_snapshot,
     write_immutable_backup_receipt,
 )
-from rcp.server_ops.backup_checkout import verify_checkout_identities
+from rcp.server_ops.backup_checkout import (
+    BackupCheckoutHostUnavailable,
+    verify_checkout_identities,
+)
 from rcp.server_ops.backup_models import (
     BackupFileEntry,
     BackupManifestConfiguration,
@@ -256,6 +259,7 @@ class BackupProjectFileCaptureCoordinator:
                 home_space_id=inventory.home_space_id,
                 locator=inventory.locator,
                 status="uncaptured",
+                unavailable_kind="inventory_failure",
                 unavailable_reason=inventory.unavailable_reason,
                 unavailable_at=inventory.unavailable_at,
                 total_bytes=0,
@@ -269,6 +273,7 @@ class BackupProjectFileCaptureCoordinator:
                 home_space_id=inventory.home_space_id,
                 locator=inventory.locator,
                 status="uncaptured",
+                unavailable_kind="capture_failure",
                 unavailable_reason=_PROJECT_CAPTURE_FAILURE,
                 unavailable_at=datetime.now(UTC),
                 total_bytes=0,
@@ -280,11 +285,58 @@ class BackupProjectFileCaptureCoordinator:
                 inventory,
                 operation_projects=operation_projects,
             )
+        except BackupCheckoutHostUnavailable as exc:
+            discard_failed_project_capture(capture_root, project_root)
+            if _inventory_state_machine_alias(inventory) == exc.machine_alias:
+                return BackupProjectCapture(
+                    project_id=inventory.project_id,
+                    home_space_id=inventory.home_space_id,
+                    locator=inventory.locator,
+                    status="uncaptured",
+                    recovery=inventory.recovery,
+                    unavailable_kind="remote_unreachable",
+                    unavailable_reason="The configured SSH canonical state was unreachable.",
+                    unavailable_at=datetime.now(UTC),
+                    total_bytes=0,
+                )
+            return BackupProjectCapture(
+                project_id=inventory.project_id,
+                home_space_id=inventory.home_space_id,
+                locator=inventory.locator,
+                status="uncaptured",
+                unavailable_kind="capture_failure",
+                unavailable_reason=_PROJECT_CAPTURE_FAILURE,
+                unavailable_at=datetime.now(UTC),
+                total_bytes=0,
+            )
+        except StateUnavailable:
+            discard_failed_project_capture(capture_root, project_root)
+            if _inventory_state_is_remote(inventory):
+                return BackupProjectCapture(
+                    project_id=inventory.project_id,
+                    home_space_id=inventory.home_space_id,
+                    locator=inventory.locator,
+                    status="uncaptured",
+                    recovery=inventory.recovery,
+                    unavailable_kind="remote_unreachable",
+                    unavailable_reason="The configured SSH canonical state was unreachable.",
+                    unavailable_at=datetime.now(UTC),
+                    total_bytes=0,
+                )
+            return BackupProjectCapture(
+                project_id=inventory.project_id,
+                home_space_id=inventory.home_space_id,
+                locator=inventory.locator,
+                status="uncaptured",
+                unavailable_kind="capture_failure",
+                unavailable_reason=_PROJECT_CAPTURE_FAILURE,
+                unavailable_at=datetime.now(UTC),
+                total_bytes=0,
+            )
         except (
             BackupProjectFileUnavailable,
             CheckoutInspectionError,
             OSError,
-            StateUnavailable,
             TypeError,
             ValueError,
         ):
@@ -294,6 +346,7 @@ class BackupProjectFileCaptureCoordinator:
                 home_space_id=inventory.home_space_id,
                 locator=inventory.locator,
                 status="uncaptured",
+                unavailable_kind="capture_failure",
                 unavailable_reason=_PROJECT_CAPTURE_FAILURE,
                 unavailable_at=datetime.now(UTC),
                 total_bytes=0,
@@ -428,6 +481,26 @@ class BackupProjectFileCaptureCoordinator:
             recovery=recovery,
             total_bytes=sum(item.size_bytes for item in ordered),
         )
+
+
+def _inventory_state_is_remote(inventory: BackupSnapshotProjectInventory) -> bool:
+    return _inventory_state_machine_alias(inventory) is not None
+
+
+def _inventory_state_machine_alias(
+    inventory: BackupSnapshotProjectInventory,
+) -> str | None:
+    recovery = inventory.recovery
+    if recovery is None:
+        return None
+    configuration = recovery.configuration
+    repositories = {repository.alias: repository for repository in configuration.repositories}
+    machines = {machine.alias: machine for machine in configuration.machines}
+    repository = repositories.get(configuration.state_repository)
+    if repository is None:
+        return None
+    machine = machines.get(repository.machine)
+    return machine.alias if machine is not None and machine.host else None
 
 
 def read_backup_project_file_capture_receipt(

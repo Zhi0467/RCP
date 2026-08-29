@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import rcp.server_ops.backup_checkout as backup_checkout
 import rcp.server_ops.backup_project_files as project_files
 import rcp.server_ops.backup_project_io as project_io
 import rcp.transport.state as state_module
@@ -27,6 +28,7 @@ from rcp.server_ops.backup_capture import (
     BackupSnapshotProjectInventory,
     write_immutable_backup_receipt,
 )
+from rcp.server_ops.backup_checkout import BackupCheckoutHostUnavailable
 from rcp.server_ops.backup_models import (
     BackupCheckoutRecoveryDescriptor,
     BackupManifestConfiguration,
@@ -80,6 +82,7 @@ def _initialize_git_repository(path: Path) -> str:
     _git(path, "add", "README.md")
     _git(path, "commit", "-q", "-m", "initial")
     _git(path, "remote", "add", "origin", "git@github.com:openai/rcp.git")
+    _git(path, "config", "remote.origin.pushurl", "git@github.com:openai/rcp.git")
     return _git(path, "rev-parse", "HEAD")
 
 
@@ -420,7 +423,10 @@ def test_one_unavailable_ssh_project_does_not_spoil_a_healthy_capture(
 
     def fail_remote(recovery: BackupCheckoutRecoveryDescriptor) -> None:
         if recovery.machines[0].location == "ssh":
-            raise StateUnavailable("host unavailable")
+            raise BackupCheckoutHostUnavailable(
+                "host unavailable",
+                machine_alias=recovery.machines[0].alias,
+            )
         original(recovery)
 
     monkeypatch.setattr(project_files, "verify_checkout_identities", fail_remote)
@@ -434,9 +440,43 @@ def test_one_unavailable_ssh_project_does_not_spoil_a_healthy_capture(
         .receipt
     )
 
-    status = {project.project_id: project.status for project in receipt.projects}
-    assert status == {healthy_id: "captured", remote_id: "uncaptured"}
+    projects = {project.project_id: project for project in receipt.projects}
+    assert {project_id: project.status for project_id, project in projects.items()} == {
+        healthy_id: "captured",
+        remote_id: "uncaptured",
+    }
+    assert projects[remote_id].unavailable_kind == "remote_unreachable"
+    assert projects[remote_id].recovery is not None
+    assert projects[remote_id].recovery.project_id == remote_id
     assert receipt.status == "partial"
+
+
+def test_only_an_ssh_transport_failure_is_classified_as_host_unreachable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inventory, _ = _project_inventory(
+        tmp_path,
+        project_id=str(uuid.uuid4()),
+        task_id=str(uuid.uuid4()),
+        with_files=False,
+        host="unreachable.example",
+    )
+    recovery = inventory.recovery
+    assert recovery is not None
+    results = iter(
+        (
+            subprocess.CompletedProcess(("ssh",), 255, "", "route unavailable"),
+            subprocess.CompletedProcess(("ssh",), 1, "", "checkout identity invalid"),
+        )
+    )
+    monkeypatch.setattr(backup_checkout.subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+    with pytest.raises(BackupCheckoutHostUnavailable):
+        backup_checkout.verify_checkout_identities(recovery)
+    with pytest.raises(CheckoutInspectionError) as invalid:
+        backup_checkout.verify_checkout_identities(recovery)
+    assert not isinstance(invalid.value, BackupCheckoutHostUnavailable)
 
 
 def test_continued_fact_replacement_marks_only_that_project_uncaptured(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import os
 import pwd
 import re
@@ -14,7 +15,7 @@ from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, BinaryIO, Literal, Protocol, TypeVar
+from typing import TYPE_CHECKING, Annotated, BinaryIO, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator, model_validator
 
@@ -22,6 +23,7 @@ from rcp.limits import (
     SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
     SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
     SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
+    SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
 )
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.config import InstalledServerConfig, load_installed_server_config
@@ -43,9 +45,14 @@ from rcp.server_ops.models import (
 )
 from rcp.server_runtime import ServerMetadataError, web_build_identity
 
+if TYPE_CHECKING:
+    from rcp.server_ops.rehearsal import VerifiedCandidateReceipt
+
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _WEB_BUILD_ID = re.compile(r"sha256:[0-9a-f]{64}")
 _RECEIPT_NAME = re.compile(r"built-candidate-([0-9a-f]{40})\.json")
+_VERIFIED_RECEIPT_NAME = re.compile(r"verified-candidate-([0-9a-f]{40})-([0-9a-f-]{36})\.json")
+_REHEARSAL_ROOT_NAME = re.compile(r"rehearsal-([0-9a-f]{40})-([0-9a-f]{32})")
 _UPDATE_LOCK_NAME = ".server-update.lock"
 _RECEIPT_SCHEMA_VERSION = 1
 _RECEIPT_MODE = 0o600
@@ -198,6 +205,12 @@ class UpdateMachine(Protocol):
         build: CandidateBuild,
     ) -> BuiltCandidateReceipt: ...
 
+    def rehearse_candidate(
+        self,
+        target: UpdateTarget,
+        built: BuiltCandidateReceipt,
+    ) -> VerifiedCandidateReceipt: ...
+
 
 def prepare_update_command(
     request: ServerCommandRequest,
@@ -322,6 +335,24 @@ def _update_plan(identity: CallerIdentity) -> tuple[ServerStep, ...]:
             state="pending",
             expected_success="One owner-only immutable receipt binds the unchanged base and built candidate.",
             message="RCP will read back identities and publish the candidate handoff.",
+        ),
+        ServerStep(
+            number=8,
+            title="Rehearse the candidate against copied server state",
+            purpose=(
+                "Reuse the online SQLite and project-file capture, rebind every local runtime "
+                "path into a private overlay, and run candidate startup and representative "
+                "reads with all external effects closed."
+            ),
+            performed_by="system",
+            target=service,
+            phase="update_candidate_rehearsal",
+            state="pending",
+            expected_success=(
+                "Every captured project replays or retains one proven pre-existing SSH "
+                "unavailable projection, with no provider, watcher, Git, cleanup, or remote effect."
+            ),
+            message="RCP will capture live state once and run the candidate only on its overlay.",
         ),
     )
 
@@ -454,7 +485,7 @@ def _execute_admitted_update(
         ),
         failure_fields=lambda: _failure_status_fields(machine, target),
     )
-    _run_step(
+    built = _run_step(
         emitter,
         steps[6],
         running="Rechecking the unchanged live service and publishing the owner-only build receipt.",
@@ -466,6 +497,35 @@ def _execute_admitted_update(
             NonsecretField(name="current_commit", value=value.base_current_commit),
             NonsecretField(name="running_commit", value=value.base_running_commit),
             NonsecretField(name="release_path", value=value.release_path),
+            NonsecretField(name="receipt_path", value=value.receipt_path),
+        ),
+        failure_fields=lambda: _failure_status_fields(machine, target),
+    )
+    _run_step(
+        emitter,
+        steps[7],
+        running=(
+            "Capturing one consistent live boundary and starting the candidate behind the "
+            "closed startup-effect fence."
+        ),
+        operation=lambda: machine.rehearse_candidate(target, built),
+        succeeded=(
+            "The candidate migrated, planned recovery, replayed copied projects, and answered "
+            "representative reads without crossing the effect fence."
+        ),
+        fields=lambda value: (
+            NonsecretField(name="update_state", value="candidate_verified"),
+            NonsecretField(name="candidate_commit", value=value.candidate_commit),
+            NonsecretField(name="current_commit", value=value.base_current_commit),
+            NonsecretField(name="running_commit", value=value.base_running_commit),
+            NonsecretField(
+                name="verified_projects",
+                value=sum(project.status == "verified" for project in value.projects),
+            ),
+            NonsecretField(
+                name="unavailable_projects",
+                value=sum(project.status == "not_replay_verified" for project in value.projects),
+            ),
             NonsecretField(name="receipt_path", value=value.receipt_path),
         ),
         failure_fields=lambda: _failure_status_fields(machine, target),
@@ -563,6 +623,7 @@ def _complete_already_current(
         "The current immutable release already names this commit; no candidate was created.",
         "The current source build was left untouched; no candidate build was run.",
         "No candidate receipt is needed because the server already runs the fetched commit.",
+        "No candidate rehearsal is needed because the fetched commit is already serving.",
     )
     if confirmation_completed:
         messages = messages[1:]
@@ -1014,6 +1075,102 @@ class LinuxUpdateMachine:
             )
         return published
 
+    def rehearse_candidate(
+        self,
+        target: UpdateTarget,
+        built: BuiltCandidateReceipt,
+    ) -> VerifiedCandidateReceipt:
+        from rcp.server_ops.rehearsal import (
+            CandidateRehearsalRefused,
+            read_verified_candidate_receipt,
+            verified_candidate_receipt_path,
+        )
+
+        self._validate_receipt_for_target(built, target)
+        built_path = Path(built.receipt_path)
+        built_sha256 = _owned_file_sha256(
+            built_path,
+            uid=self._service_uid,
+            gid=self._service_gid,
+            mode=_RECEIPT_MODE,
+            maximum=_MAX_RECEIPT_BYTES,
+            label="built-candidate receipt",
+        )
+        current_python = (
+            self.layout.release_dir(built.base_running_commit) / ".venv" / "bin" / "python"
+        )
+        completed = self._run_service_checked(
+            (
+                str(current_python),
+                "-m",
+                "rcp.server_ops.rehearsal",
+                "--orchestrate",
+                str(built_path),
+                str(self.layout.data_dir),
+                str(self.layout.update_checkpoints_root),
+            ),
+            cwd=self.layout.release_dir(built.base_running_commit),
+            environment={"PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
+            error=(
+                "Candidate copied-state rehearsal failed. The current release is unchanged; "
+                "inspect the retained rehearsal and backup capture before retrying."
+            ),
+        )
+        receipt_lines = completed.stdout.splitlines()
+        if len(receipt_lines) != 1:
+            raise UpdateRefused(
+                "The current release did not report one exact verified-candidate receipt."
+            )
+        receipt_path = Path(receipt_lines[0])
+        if receipt_path.parent != self.layout.update_checkpoints_root:
+            raise UpdateRefused(
+                "The current release reported a verified-candidate receipt outside its checkpoint root."
+            )
+        try:
+            receipt = read_verified_candidate_receipt(
+                receipt_path,
+                expected_uid=self._service_uid,
+            )
+        except CandidateRehearsalRefused as exc:
+            raise UpdateRefused(
+                "The candidate rehearsal did not publish one valid verified-candidate receipt."
+            ) from exc
+        if (
+            receipt.installation_id != built.installation_id
+            or receipt.candidate_commit != built.candidate_commit
+            or receipt.base_current_commit != built.base_current_commit
+            or receipt.base_running_commit != built.base_running_commit
+            or receipt.base_instance_id != built.base_instance_id
+            or receipt.base_process_pid != built.base_process_pid
+            or receipt.release_path != built.release_path
+            or receipt.built_receipt_path != built.receipt_path
+            or receipt.built_receipt_sha256 != built_sha256
+            or receipt.web_build_id != built.web_build_id
+            or receipt_path
+            != verified_candidate_receipt_path(
+                target.target_commit,
+                receipt.capture_id,
+                self.layout.update_checkpoints_root,
+            )
+        ):
+            raise UpdateRefused(
+                "The verified-candidate receipt differs from its exact build and live base."
+            )
+        readback = self.inspect()
+        if (
+            readback.managed_head != target.target_commit
+            or readback.current_commit != target.inspection.current_commit
+            or readback.running_commit != target.inspection.running_commit
+            or readback.instance_id != target.inspection.instance_id
+            or readback.process_pid != target.inspection.process_pid
+        ):
+            raise UpdateRefused(
+                "The live service changed during candidate rehearsal. The release pointer was "
+                "not switched; inspect server doctor before continuing."
+            )
+        return receipt
+
     def _inspect_maintenance_roots(self) -> None:
         _require_owned_directory(
             self.layout.restore_operations_root,
@@ -1035,12 +1192,32 @@ class LinuxUpdateMachine:
                     "An unfinished restore operation blocks source update. Resume server restore first."
                 )
             for entry in self.layout.update_checkpoints_root.iterdir():
-                if _RECEIPT_NAME.fullmatch(entry.name) is None:
-                    raise UpdateRefused(
-                        "Unfinished update maintenance blocks a new source preparation. Resume or "
-                        "repair that exact operation first."
+                if _RECEIPT_NAME.fullmatch(entry.name) is not None:
+                    self._read_receipt(entry)
+                    continue
+                if _VERIFIED_RECEIPT_NAME.fullmatch(entry.name) is not None:
+                    from rcp.server_ops.rehearsal import (
+                        CandidateRehearsalRefused,
+                        read_verified_candidate_receipt,
                     )
-                self._read_receipt(entry)
+
+                    try:
+                        read_verified_candidate_receipt(entry, expected_uid=self._service_uid)
+                    except CandidateRehearsalRefused as exc:
+                        raise UpdateRefused(
+                            "A verified-candidate receipt is unsafe or invalid. Preserve and "
+                            "inspect it before retrying."
+                        ) from exc
+                    continue
+                if _REHEARSAL_ROOT_NAME.fullmatch(entry.name) is not None:
+                    raise UpdateRefused(
+                        "A retained failed candidate rehearsal blocks another update. Inspect "
+                        "and explicitly clean that exact rehearsal before retrying."
+                    )
+                raise UpdateRefused(
+                    "Unfinished update maintenance blocks a new source preparation. Resume or "
+                    "repair that exact operation first."
+                )
         except OSError as exc:
             raise UpdateRefused(
                 "RCP could not inspect update and restore maintenance state."
@@ -1486,6 +1663,40 @@ def _require_safe_descendant_file(
         or (executable and not stat.S_IMODE(info.st_mode) & 0o111)
     ):
         raise UpdateRefused(f"The {label} has unexpected type, ownership, or mode.")
+
+
+def _owned_file_sha256(
+    path: Path,
+    *,
+    uid: int,
+    gid: int,
+    mode: int,
+    maximum: int,
+    label: str,
+) -> str:
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+        )
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or (info.st_uid, info.st_gid) != (uid, gid)
+            or stat.S_IMODE(info.st_mode) != mode
+            or info.st_size > maximum
+        ):
+            raise ValueError("unsafe file")
+        content = os.read(descriptor, maximum + 1)
+        if len(content) > maximum or len(content) != info.st_size:
+            raise ValueError("unsafe file size")
+    except (OSError, ValueError) as exc:
+        raise UpdateRefused(f"The {label} has unsafe identity or bytes.") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    return hashlib.sha256(content).hexdigest()
 
 
 def _fsync_directory(path: Path) -> None:

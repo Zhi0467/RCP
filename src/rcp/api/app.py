@@ -66,6 +66,7 @@ from rcp.background import (
     AgentTaskExecution,
     AgentTaskRequest,
     BackgroundAgentTasks,
+    StartupEffectFence,
 )
 from rcp.control import admit_experiment_watcher_invocation
 from rcp.history import PatchRejected, ReplayHalted
@@ -243,6 +244,7 @@ def create_app(
     instance_metadata: ServerMetadata | None = None,
     acceptance_agent: bool = False,
     trusted_principal_resolver: TrustedPrincipalResolver | None = None,
+    startup_effect_fence: StartupEffectFence | None = None,
 ) -> FastAPI:
     # macOS exposes /tmp through /private/tmp. Keep every cache and manifest
     # pointer in the same canonical spelling so relative canonical-state paths
@@ -280,6 +282,12 @@ def create_app(
             | ServerControlProjectStepResult
             | ServerControlBackupCaptureResult
         ):
+            if (
+                startup_effect_fence is not None
+                and startup_effect_fence.active
+                and request.operation != "probe"
+            ):
+                startup_effect_fence.require_open(f"server-control operation {request.operation}")
             match request.operation:
                 case "probe":
                     return ServerControlProbeResult(
@@ -669,6 +677,7 @@ def create_app(
         store,
         background_task_stream,
         on_stream_closed=refresh_cached_project_after_stream,
+        startup_effect_fence=startup_effect_fence,
     )
     auto_research_experiment_coordinator = AutoResearchExperimentCoordinator(
         store,
@@ -977,108 +986,152 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        # First, before anything else observes the store.  Construction no longer
-        # reconciles the previous process's work, and interruption must still
-        # precede both `reconcile_committed_auto_research_dispatches` (or a task
-        # just relaunched gets interrupted) and `prune_operational_storage`
-        # (which skips tasks still marked active).  Outside the `try` so a
-        # failure here fails startup without running the shutdown path.
-        background_tasks.recover_at_startup()
         startup_maintenance: list[asyncio.Task[None]] = []
         control_started = False
-        try:
-            background_tasks.accept_watcher_notifications()
-            store.prune_operational_storage()
-            await asyncio.to_thread(
-                reconcile_reserved_auto_research_roots,
-                background_tasks,
-                ensure_auto_research_graph_target,
-            )
-            await asyncio.to_thread(
-                reconcile_committed_auto_research_dispatches,
-                background_tasks,
-            )
-            child_reconciliation = await asyncio.to_thread(
-                reconcile_auto_research_children,
-            )
-            if child_reconciliation.cancelled:
-                logger.warning(
-                    "Cancelled %s unlaunchable Auto-research child admission(s) at startup.",
-                    child_reconciliation.cancelled,
-                )
-            for project in store.projects():
-                for episode in store.episodes(project.project_id):
-                    if episode.mode == "auto_research":
-                        await asyncio.to_thread(
-                            auto_research_experiment_coordinator.reconcile,
-                            episode.episode_id,
-                        )
-            orphaned_endings = await asyncio.to_thread(
-                reconcile_orphaned_auto_research_failures,
-                background_tasks,
-            )
-            for ending in orphaned_endings:
+        runtime_started = False
+        runtime_start_lock = asyncio.Lock()
+
+        async def start_deferred_runtime() -> None:
+            nonlocal control_started, runtime_started
+            async with runtime_start_lock:
+                if runtime_started:
+                    return
+                # This is the one ordinary startup sequence. Normal startup calls
+                # it immediately; a cutover candidate calls it after the shared
+                # effect fence opens. Recovery must precede every other owner.
+                background_tasks.recover_at_startup()
+                background_tasks.accept_watcher_notifications()
+                store.prune_operational_storage()
                 await asyncio.to_thread(
-                    reconcile_auto_research_wrapup,
-                    ending,
-                    source="startup failure recovery",
+                    reconcile_reserved_auto_research_roots,
+                    background_tasks,
+                    ensure_auto_research_graph_target,
                 )
-            try:
                 await asyncio.to_thread(
-                    reconcile_pending_auto_research_lifecycle,
+                    reconcile_committed_auto_research_dispatches,
                     background_tasks,
                 )
-                await asyncio.to_thread(reconcile_pending_auto_research_mail, background_tasks)
-            except Exception as exc:
-                logger.warning(
-                    "Could not reconcile pending Auto-research lifecycle or mail at startup: %s",
-                    exc,
+                child_reconciliation = await asyncio.to_thread(
+                    reconcile_auto_research_children,
                 )
-            for project in store.projects():
-                for episode in store.episodes(project.project_id):
-                    if episode.mode == "auto_research":
-                        await asyncio.to_thread(
-                            reconcile_auto_research_episode,
-                            episode.episode_id,
-                            source="startup",
-                        )
-                    elif episode.mode == "experiment_loop":
-                        await asyncio.to_thread(
-                            reconcile_experiment_episode,
-                            episode.episode_id,
-                            source="startup",
-                        )
-            await asyncio.to_thread(reconcile_auto_research_recovery_pass)
-            _sweep_stale_stages(app_data / "run-stage", now=time.time())
-            attachment_store.sweep()
-            cache_roots = [
-                *discover_project_cache_roots(app_data),
-                legacy_shared_cache_roots(app_data),
-            ]
-            for source_root, slice_root in cache_roots:
-                RebuildableCache(
-                    source_root,
-                    REMOTE_SOURCE_CACHE_LIMITS,
-                    layout="files",
-                ).sweep()
-                RebuildableCache(
-                    slice_root,
-                    SESSION_SLICE_CACHE_LIMITS,
-                    layout="directories",
-                ).sweep()
-            # Scheduling happens before the app becomes available, but the task
-            # itself cannot run until control returns to the server after yield.
-            startup_maintenance.append(asyncio.create_task(warm_provider_capabilities()))
-            if default_state_host:
-                startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
-            await asyncio.to_thread(sweep_graph_conditions_at_startup)
-            graph_watcher_retry_worker.start()
-            watcher_poller.start()
-            if control_server is not None:
-                control_server.start()
-                control_started = True
+                if child_reconciliation.cancelled:
+                    logger.warning(
+                        "Cancelled %s unlaunchable Auto-research child admission(s) at startup.",
+                        child_reconciliation.cancelled,
+                    )
+                for project in store.projects():
+                    for episode in store.episodes(project.project_id):
+                        if episode.mode == "auto_research":
+                            await asyncio.to_thread(
+                                auto_research_experiment_coordinator.reconcile,
+                                episode.episode_id,
+                            )
+                orphaned_endings = await asyncio.to_thread(
+                    reconcile_orphaned_auto_research_failures,
+                    background_tasks,
+                )
+                for ending in orphaned_endings:
+                    await asyncio.to_thread(
+                        reconcile_auto_research_wrapup,
+                        ending,
+                        source="startup failure recovery",
+                    )
+                try:
+                    await asyncio.to_thread(
+                        reconcile_pending_auto_research_lifecycle,
+                        background_tasks,
+                    )
+                    await asyncio.to_thread(
+                        reconcile_pending_auto_research_mail,
+                        background_tasks,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Could not reconcile pending Auto-research lifecycle or mail at startup: %s",
+                        exc,
+                    )
+                for project in store.projects():
+                    for episode in store.episodes(project.project_id):
+                        if episode.mode == "auto_research":
+                            await asyncio.to_thread(
+                                reconcile_auto_research_episode,
+                                episode.episode_id,
+                                source="startup",
+                            )
+                        elif episode.mode == "experiment_loop":
+                            await asyncio.to_thread(
+                                reconcile_experiment_episode,
+                                episode.episode_id,
+                                source="startup",
+                            )
+                await asyncio.to_thread(reconcile_auto_research_recovery_pass)
+                _sweep_stale_stages(app_data / "run-stage", now=time.time())
+                attachment_store.sweep()
+                cache_roots = [
+                    *discover_project_cache_roots(app_data),
+                    legacy_shared_cache_roots(app_data),
+                ]
+                for source_root, slice_root in cache_roots:
+                    RebuildableCache(
+                        source_root,
+                        REMOTE_SOURCE_CACHE_LIMITS,
+                        layout="files",
+                    ).sweep()
+                    RebuildableCache(
+                        slice_root,
+                        SESSION_SLICE_CACHE_LIMITS,
+                        layout="directories",
+                    ).sweep()
+                startup_maintenance.append(asyncio.create_task(warm_provider_capabilities()))
+                if default_state_host:
+                    startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
+                await asyncio.to_thread(sweep_graph_conditions_at_startup)
+                graph_watcher_retry_worker.start()
+                watcher_poller.start()
+                if control_server is not None and not control_started:
+                    control_server.start()
+                    control_started = True
+                runtime_started = True
+                app.state.startup_effect_runtime_started = True
+                app.state.startup_effect_runtime_event.set()
+
+        release_task: asyncio.Task[None] | None = None
+        fenced_startup = startup_effect_fence is not None and startup_effect_fence.active
+        # Preserve ordinary startup's fail-fast boundary: if recovery fails, do
+        # not run the shutdown path over state that never completed startup.
+        if not fenced_startup:
+            await start_deferred_runtime()
+        try:
+            if fenced_startup:
+                app.state.startup_recovery_plan = background_tasks.plan_startup_recovery().as_dict()
+                if control_server is not None:
+                    control_server.start()
+                    control_started = True
+                released = asyncio.Event()
+                loop = asyncio.get_running_loop()
+
+                def notify_release() -> None:
+                    if not loop.is_closed():
+                        loop.call_soon_threadsafe(released.set)
+
+                startup_effect_fence.on_release(notify_release)
+
+                async def resume_after_release() -> None:
+                    await released.wait()
+                    try:
+                        await start_deferred_runtime()
+                    except BaseException as exc:
+                        app.state.startup_effect_release_error = str(exc)
+                        logger.exception("Deferred startup failed after the effect fence opened.")
+
+                release_task = asyncio.create_task(resume_after_release())
+                app.state.startup_effect_release_task = release_task
             yield
         finally:
+            if release_task is not None and not release_task.done():
+                release_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await release_task
             if control_started and control_server is not None:
                 control_server.stop()
             for task in startup_maintenance:
@@ -1119,6 +1172,12 @@ def create_app(
     app.state.space_kind = space_kind
     app.state.launcher = launcher
     app.state.agent_mode = agent_mode
+    app.state.startup_effect_fence = startup_effect_fence
+    app.state.startup_recovery_plan = None
+    app.state.startup_effect_runtime_started = False
+    app.state.startup_effect_runtime_event = threading.Event()
+    app.state.startup_effect_release_task = None
+    app.state.startup_effect_release_error = None
     if space_kind == "team":
         app.add_middleware(TeamPublicAuthBodyLimit)
     app.add_middleware(

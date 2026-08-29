@@ -858,6 +858,14 @@ class BackupProjectCapture(_StrictBackupModel):
     branch_heads: tuple[GraphHeadRef, ...] = ()
     files: tuple[BackupFileEntry, ...] = ()
     recovery: BackupCheckoutRecoveryDescriptor | None = None
+    unavailable_kind: (
+        Literal[
+            "inventory_failure",
+            "remote_unreachable",
+            "capture_failure",
+        ]
+        | None
+    ) = None
     unavailable_reason: str | None = None
     unavailable_at: datetime | None = None
     total_bytes: int = Field(ge=0)
@@ -904,6 +912,7 @@ class BackupProjectCapture(_StrictBackupModel):
                 or self.home_space_id is None
                 or self.main_head.target.kind != "main"
                 or self.recovery is None
+                or self.unavailable_kind is not None
                 or self.unavailable_reason is not None
                 or self.unavailable_at is not None
             ):
@@ -920,17 +929,26 @@ class BackupProjectCapture(_StrictBackupModel):
                 for entry in self.files
             ):
                 raise ValueError("a captured project requires its canonical manifest")
-        elif any(
-            (
-                self.main_head is not None,
-                bool(self.branch_heads),
-                bool(self.files),
-                self.recovery is not None,
-                self.unavailable_reason is None,
-                self.unavailable_at is None,
-            )
-        ):
-            raise ValueError("an uncaptured project carries only its reason and time")
+        else:
+            if any(
+                (
+                    self.main_head is not None,
+                    bool(self.branch_heads),
+                    bool(self.files),
+                    self.unavailable_reason is None,
+                    self.unavailable_at is None,
+                )
+            ):
+                raise ValueError("an uncaptured project carries only its failure proof")
+            if self.unavailable_kind == "remote_unreachable":
+                if self.recovery is None or self.locator is None or self.home_space_id is None:
+                    raise ValueError(
+                        "an unreachable remote project requires its captured recovery descriptor"
+                    )
+            elif self.recovery is not None:
+                raise ValueError(
+                    "only an unreachable remote project may retain its recovery descriptor"
+                )
         branch_ids: list[str] = []
         for head in self.branch_heads:
             if head.target.kind != "branch" or head.target.branch_id is None:

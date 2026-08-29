@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -22,6 +23,12 @@ from rcp.server_ops.cli import (
 )
 from rcp.server_ops.layout import ServerLayout
 from rcp.server_ops.models import ServerCommandRequest
+from rcp.server_ops.rehearsal import (
+    CandidateProjectVerification,
+    StartupRecoveryReadModel,
+    VerifiedCandidateReceipt,
+    verified_candidate_receipt_path,
+)
 from rcp.server_ops.update import (
     BuiltCandidateReceipt,
     CandidateBuild,
@@ -160,6 +167,17 @@ class FakeUpdateMachine:
             raise UpdateRefused("receipt fixture refused")
         return _receipt(self.layout, target=target.target_commit)
 
+    def rehearse_candidate(
+        self,
+        target: UpdateTarget,
+        built: BuiltCandidateReceipt,
+    ) -> VerifiedCandidateReceipt:
+        self.calls.append("rehearse_candidate")
+        if self.fail_at == "rehearse_candidate":
+            raise UpdateRefused("rehearsal fixture refused")
+        assert built.candidate_commit == target.target_commit
+        return _verified_receipt(self.layout, target=target.target_commit)
+
 
 def _run_update(
     layout: ServerLayout,
@@ -200,7 +218,7 @@ def test_update_emits_plan_before_fetch_and_pauses_on_one_exact_target(tmp_path:
     assert exit_code == SERVER_CLI_EXIT_OPERATOR_ACTION
     assert machine.calls == ["admission_enter", "inspect", "fetch", "admission_exit"]
     assert events[0]["event"] == "plan"
-    assert len(events[0]["steps"]) == 7
+    assert len(events[0]["steps"]) == 8
     paused = events[-1]["step"]
     assert paused["number"] == 3
     assert paused["state"] == "operator_action_needed"
@@ -270,19 +288,60 @@ def test_confirmed_update_builds_candidate_without_switching_live_release(
         "prepare_release",
         "build_candidate",
         "finalize_candidate",
+        "rehearse_candidate",
         "admission_exit",
     ]
     assert all(event["step"]["state"] == "succeeded" for event in events[2::2])
     fields = _final_fields(events)
     assert fields == {
-        "update_state": "candidate_built",
+        "update_state": "candidate_verified",
         "candidate_commit": TARGET,
         "current_commit": BASE,
         "running_commit": BASE,
-        "release_path": str(layout.release_dir(TARGET)),
-        "receipt_path": str(built_candidate_receipt_path(TARGET, layout)),
+        "verified_projects": 0,
+        "unavailable_projects": 0,
+        "receipt_path": str(
+            verified_candidate_receipt_path(
+                TARGET,
+                "123e4567-e89b-42d3-a456-426614174002",
+                layout.update_checkpoints_root,
+            )
+        ),
     }
     assert not layout.current_release.exists()
+
+
+def test_update_reports_replay_verified_and_unavailable_projects_separately(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    machine = FakeUpdateMachine(layout)
+    verified = _verified_receipt(layout).model_copy(
+        update={
+            "projects": (
+                CandidateProjectVerification(
+                    project_id="123e4567-e89b-42d3-a456-426614174010",
+                    status="verified",
+                    revision=3,
+                    projection_sha256="1" * 64,
+                ),
+                CandidateProjectVerification(
+                    project_id="123e4567-e89b-42d3-a456-426614174011",
+                    status="not_replay_verified",
+                    revision=None,
+                    projection_sha256="2" * 64,
+                ),
+            )
+        }
+    )
+    machine.rehearse_candidate = lambda _target, _built: verified  # type: ignore[method-assign]
+
+    exit_code, events = _run_update(layout, machine, confirmed=TARGET)
+
+    assert exit_code == 0
+    fields = _final_fields(events)
+    assert fields["verified_projects"] == 1
+    assert fields["unavailable_projects"] == 1
 
 
 def test_update_skips_confirmation_and_mutation_when_origin_main_is_running(
@@ -405,6 +464,65 @@ def test_update_build_command_order_and_environment_are_fixed(
     assert calls[2][2] == {"UV_MANAGED_PYTHON": "1", "UV_PYTHON": "3.12"}
     assert all("systemctl" not in call[0] for call in calls)
     assert not layout.current_release.exists()
+
+
+def test_rehearsal_coordinator_runs_from_current_release_not_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _layout(tmp_path)
+    _prepare_owned_roots(layout)
+    current_release = layout.release_dir(BASE)
+    current_release.mkdir(parents=True, mode=0o700)
+    layout.release_dir(TARGET).mkdir(parents=True, mode=0o700)
+    calls: list[tuple[tuple[str, ...], Path | None]] = []
+    target = UpdateTarget(inspection=_inspection(layout), target_commit=TARGET)
+
+    machine = LinuxUpdateMachine(
+        layout,
+        config_loader=lambda _path: _config(layout),
+        doctor=SimpleNamespace(inspect=lambda: None),
+        service_runner=lambda *args, **kwargs: pytest.fail("runner installed below"),
+        service_identity=(os.getuid(), os.getgid()),
+        root_identity=(os.getuid(), os.getgid()),
+    )
+    built = machine._publish_receipt(_receipt(layout))
+    built_bytes = Path(built.receipt_path).read_bytes()
+    capture_id = "123e4567-e89b-42d3-a456-426614174002"
+    verified = _verified_receipt(layout).model_copy(
+        update={"built_receipt_sha256": hashlib.sha256(built_bytes).hexdigest()}
+    )
+    receipt_path = verified_candidate_receipt_path(
+        TARGET,
+        capture_id,
+        layout.update_checkpoints_root,
+    )
+    receipt_path.write_text(verified.model_dump_json(), encoding="utf-8")
+    receipt_path.chmod(0o600)
+
+    def runner(argv, *, cwd, environment, timeout, capture_output):
+        del environment, timeout, capture_output
+        calls.append((argv, cwd))
+        return subprocess.CompletedProcess(argv, 0, str(receipt_path) + "\n", "")
+
+    machine._service_runner = runner
+    monkeypatch.setattr(machine, "inspect", lambda: _inspection(layout, managed=TARGET))
+
+    assert machine.rehearse_candidate(target, built) == verified
+    assert calls == [
+        (
+            (
+                str(current_release / ".venv" / "bin" / "python"),
+                "-m",
+                "rcp.server_ops.rehearsal",
+                "--orchestrate",
+                built.receipt_path,
+                str(layout.data_dir),
+                str(layout.update_checkpoints_root),
+            ),
+            current_release,
+        )
+    ]
 
 
 def test_failure_status_can_report_identities_even_when_doctor_blocks_update(
@@ -735,6 +853,47 @@ def _receipt(layout: ServerLayout, *, target: str = TARGET) -> BuiltCandidateRec
         receipt_path=str(built_candidate_receipt_path(target, layout)),
         web_build_id=WEB_BUILD_ID,
         prepared_at=datetime(2026, 8, 29, 12, 0, tzinfo=UTC),
+    )
+
+
+def _verified_receipt(
+    layout: ServerLayout,
+    *,
+    target: str = TARGET,
+) -> VerifiedCandidateReceipt:
+    capture_id = "123e4567-e89b-42d3-a456-426614174002"
+    return VerifiedCandidateReceipt(
+        installation_id=INSTALLATION_ID,
+        candidate_commit=target,
+        base_current_commit=BASE,
+        base_running_commit=BASE,
+        base_instance_id=INSTANCE_ID,
+        base_process_pid=421,
+        release_path=str(layout.release_dir(target)),
+        built_receipt_path=str(built_candidate_receipt_path(target, layout)),
+        built_receipt_sha256="e" * 64,
+        receipt_path=str(
+            verified_candidate_receipt_path(
+                target,
+                capture_id,
+                layout.update_checkpoints_root,
+            )
+        ),
+        web_build_id=WEB_BUILD_ID,
+        capture_id=capture_id,
+        sqlite_snapshot_sha256="f" * 64,
+        project_capture_sha256="1" * 64,
+        space_id="123e4567-e89b-42d3-a456-426614174003",
+        projects=(),
+        startup_recovery=StartupRecoveryReadModel(
+            active_operation_ids=(),
+            stopping_experiment_operation_ids=(),
+            report_episode_ids=(),
+            auto_research_recovery_operation_ids=(),
+            active_watcher_ids=(),
+        ),
+        reads=("/api/health", "/api/projects"),
+        verified_at=datetime(2026, 8, 29, 12, 5, tzinfo=UTC),
     )
 
 

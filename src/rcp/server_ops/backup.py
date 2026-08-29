@@ -447,7 +447,7 @@ class LinuxBackupRunMachine:
                     installation_id=config.installation_id,
                     expected_uid=os.geteuid(),
                 )
-                _discard_capture_root(
+                discard_backup_capture_root(
                     Path(sqlite_result.receipt_path).parent,
                     data_dir=self.layout.data_dir,
                     capture_id=sqlite_result.capture_id,
@@ -1246,7 +1246,12 @@ def _validate_destination_boundary(destination: Path) -> None:
         os.close(descriptor)
 
 
-def _discard_capture_root(capture_root: Path, *, data_dir: Path, capture_id: str) -> None:
+def discard_backup_capture_root(
+    capture_root: Path,
+    *,
+    data_dir: Path,
+    capture_id: str,
+) -> None:
     expected = data_dir.resolve() / "run-stage" / f"backup-{capture_id}"
     try:
         info = capture_root.lstat()
@@ -1307,6 +1312,7 @@ __all__ = [
     "backup_run_lock",
     "backup_status_path",
     "build_archive_manifest",
+    "discard_backup_capture_root",
     "plan_backup_retention",
     "prepare_backup_run_command",
     "protect_backup_archive",

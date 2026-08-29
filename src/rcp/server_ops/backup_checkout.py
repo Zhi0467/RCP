@@ -18,6 +18,14 @@ _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _REMOTE_CHECKOUT_OUTPUT_MAX_BYTES = 64 * 1024
 
 
+class BackupCheckoutHostUnavailable(CheckoutInspectionError):
+    """The configured SSH route could not reach its checkout host."""
+
+    def __init__(self, message: str, *, machine_alias: str) -> None:
+        super().__init__(message)
+        self.machine_alias = machine_alias
+
+
 @lru_cache(maxsize=1)
 def _remote_checkout_source() -> str:
     return (
@@ -57,9 +65,15 @@ def verify_checkout_identities(recovery: BackupCheckoutRecoveryDescriptor) -> No
                     check=False,
                 )
             except (OSError, subprocess.TimeoutExpired) as exc:
-                raise CheckoutInspectionError(
-                    "The remote checkout identity is unavailable."
+                raise BackupCheckoutHostUnavailable(
+                    "The remote checkout identity is unavailable.",
+                    machine_alias=machine.alias,
                 ) from exc
+            if result.returncode == 255:
+                raise BackupCheckoutHostUnavailable(
+                    "The remote checkout host is unreachable.",
+                    machine_alias=machine.alias,
+                )
             if (
                 result.returncode != 0
                 or len(result.stdout.encode("utf-8", errors="replace"))
@@ -90,4 +104,4 @@ def verify_checkout_identities(recovery: BackupCheckoutRecoveryDescriptor) -> No
             )
 
 
-__all__ = ["verify_checkout_identities"]
+__all__ = ["BackupCheckoutHostUnavailable", "verify_checkout_identities"]
