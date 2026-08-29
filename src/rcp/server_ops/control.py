@@ -26,11 +26,14 @@ from rcp.limits import (
     SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS,
     SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
     SERVER_CONTROL_STOP_TIMEOUT_SECONDS,
+    SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
+    SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
 )
 from rcp.server_ops.models import SERVER_CLI_MAX_STEPS, ServerStep, redact_server_text
+from rcp.server_ops.update_cutover import TERMINAL_UPDATE_STATES, UpdateOperationState
 from rcp.server_runtime import ServerMetadata, read_server_metadata
 
-SERVER_CONTROL_PROTOCOL_VERSION = 4
+SERVER_CONTROL_PROTOCOL_VERSION = 5
 SERVER_CONTROL_MAX_REQUEST_BYTES = 64 * 1024
 SERVER_CONTROL_MAX_RESPONSE_BYTES = 256 * 1024
 SERVER_CONTROL_SOCKET_MODE = 0o600
@@ -47,6 +50,10 @@ ServerControlOperation = Literal[
     "project_provision_plan",
     "project_provision_step",
     "backup_sqlite_capture",
+    "update_maintenance_enter",
+    "update_candidate_verify",
+    "update_fence_release",
+    "update_maintenance_abort",
 ]
 SERVER_CONTROL_OPERATIONS: tuple[ServerControlOperation, ...] = (
     "probe",
@@ -55,6 +62,10 @@ SERVER_CONTROL_OPERATIONS: tuple[ServerControlOperation, ...] = (
     "project_provision_plan",
     "project_provision_step",
     "backup_sqlite_capture",
+    "update_maintenance_enter",
+    "update_candidate_verify",
+    "update_fence_release",
+    "update_maintenance_abort",
 )
 ServerControlProjectStatus = Literal[
     "waiting_for_server_setup",
@@ -117,6 +128,21 @@ class ServerControlRequest(_StrictModel):
                 )
             ):
                 raise ValueError("selector-free control operations cannot carry selector fields")
+        elif self.operation in {
+            "update_maintenance_enter",
+            "update_candidate_verify",
+            "update_fence_release",
+            "update_maintenance_abort",
+        }:
+            if (
+                self.selector_kind is not None
+                or self.selector_id is None
+                or self.boundary_sha256 is None
+                or self.target_id is not None
+            ):
+                raise ValueError(
+                    "update control operations require one receipt-bound operation identity"
+                )
         elif self.operation in {"provider_readiness_plan", "project_provision_plan"}:
             if self.selector_kind is None or self.selector_id is None:
                 raise ValueError("control plan requires one selector")
@@ -386,6 +412,61 @@ class ServerControlBackupCaptureResult(_StrictModel):
         return self
 
 
+class ServerControlUpdateResult(_StrictModel):
+    """Receipt-bound maintenance, verification, or fence-release readback."""
+
+    instance_id: str
+    pid: int = Field(gt=0)
+    data_dir_id: str
+    space_id: str
+    space_kind: Literal["team"] = "team"
+    operation_id: str
+    operation_state: UpdateOperationState
+    receipt_sha256: str
+    running_commit: str
+    capture: ServerControlBackupCaptureResult | None = None
+    verification_sha256: str | None = None
+
+    @model_validator(mode="after")
+    def validate_update(self) -> ServerControlUpdateResult:
+        for value, label in (
+            (self.instance_id, "control instance id"),
+            (self.space_id, "space id"),
+            (self.operation_id, "update operation id"),
+        ):
+            _canonical_uuid4(value, label=label)
+        for value, label in (
+            (self.data_dir_id, "data directory identity"),
+            (self.receipt_sha256, "update receipt digest"),
+            (self.verification_sha256, "update verification digest"),
+        ):
+            if value is not None and (
+                len(value) != 64 or any(character not in _HEX_DIGEST for character in value)
+            ):
+                raise ValueError(f"{label} must be a lowercase SHA-256 digest")
+        if len(self.running_commit) != 40 or any(
+            character not in _HEX_DIGEST for character in self.running_commit
+        ):
+            raise ValueError("update control results require one full lowercase Git commit")
+        if self.capture is not None and (
+            self.capture.instance_id != self.instance_id
+            or self.capture.pid != self.pid
+            or self.capture.data_dir_id != self.data_dir_id
+            or self.capture.space_id != self.space_id
+        ):
+            raise ValueError("update capture identity differs from its control process")
+        if self.operation_state == "maintenance_closed" and self.capture is None:
+            raise ValueError("closed maintenance results require their exact capture")
+        if (
+            self.operation_state in {"candidate_verified", "old_release_verified"}
+            and self.verification_sha256 is None
+        ):
+            raise ValueError("release verification results require a read-model digest")
+        if self.operation_state in TERMINAL_UPDATE_STATES and self.capture is not None:
+            raise ValueError("terminal update results cannot repeat a capture boundary")
+        return self
+
+
 def _validate_provider_result_identity(
     instance_id: str,
     space_id: str,
@@ -434,6 +515,7 @@ class ServerControlResponse(_StrictModel):
         | ServerControlProjectPlanResult
         | ServerControlProjectStepResult
         | ServerControlBackupCaptureResult
+        | ServerControlUpdateResult
         | None
     ) = None
     error: ServerControlFailure | None = None
@@ -476,7 +558,8 @@ ServerControlHandler = Callable[
     | ServerControlProviderCheckResult
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
-    | ServerControlBackupCaptureResult,
+    | ServerControlBackupCaptureResult
+    | ServerControlUpdateResult,
 ]
 PeerResolver = Callable[[socket.socket], ServerControlPeer]
 
@@ -653,6 +736,81 @@ class ServerControlClient:
             )
         return result
 
+    def enter_update_maintenance(
+        self,
+        *,
+        operation_id: str,
+        receipt_sha256: str,
+    ) -> ServerControlUpdateResult:
+        return self._update_operation(
+            "update_maintenance_enter",
+            operation_id=operation_id,
+            receipt_sha256=receipt_sha256,
+        )
+
+    def verify_update_candidate(
+        self,
+        *,
+        operation_id: str,
+        receipt_sha256: str,
+    ) -> ServerControlUpdateResult:
+        return self._update_operation(
+            "update_candidate_verify",
+            operation_id=operation_id,
+            receipt_sha256=receipt_sha256,
+        )
+
+    def release_update_fence(
+        self,
+        *,
+        operation_id: str,
+        receipt_sha256: str,
+    ) -> ServerControlUpdateResult:
+        return self._update_operation(
+            "update_fence_release",
+            operation_id=operation_id,
+            receipt_sha256=receipt_sha256,
+        )
+
+    def abort_update_maintenance(
+        self,
+        *,
+        operation_id: str,
+        receipt_sha256: str,
+    ) -> ServerControlUpdateResult:
+        return self._update_operation(
+            "update_maintenance_abort",
+            operation_id=operation_id,
+            receipt_sha256=receipt_sha256,
+        )
+
+    def _update_operation(
+        self,
+        operation: Literal[
+            "update_maintenance_enter",
+            "update_candidate_verify",
+            "update_fence_release",
+            "update_maintenance_abort",
+        ],
+        *,
+        operation_id: str,
+        receipt_sha256: str,
+    ) -> ServerControlUpdateResult:
+        request = ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=self.metadata.instance_id,
+            operation=operation,
+            selector_id=operation_id,
+            boundary_sha256=receipt_sha256,
+        )
+        result = self._exchange(request)
+        if not isinstance(result, ServerControlUpdateResult):
+            raise ServerControlError(
+                "invalid_response",
+                "The running RCP process returned the wrong update result.",
+            )
+        return result
+
     def _exchange(
         self,
         request: ServerControlRequest,
@@ -663,11 +821,20 @@ class ServerControlClient:
         | ServerControlProjectPlanResult
         | ServerControlProjectStepResult
         | ServerControlBackupCaptureResult
+        | ServerControlUpdateResult
     ):
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         timeout = SERVER_CONTROL_IO_TIMEOUT_SECONDS
         if request.operation == "backup_sqlite_capture":
             timeout = SERVER_CONTROL_BACKUP_CAPTURE_TIMEOUT_SECONDS
+        elif request.operation == "update_maintenance_enter":
+            timeout = SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS
+        elif request.operation in {
+            "update_candidate_verify",
+            "update_fence_release",
+            "update_maintenance_abort",
+        }:
+            timeout = SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS
         elif request.operation == "provider_readiness_check":
             timeout = SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS
         elif request.operation == "project_provision_step":
@@ -1002,7 +1169,8 @@ def _validated_control_result(
     | ServerControlProviderCheckResult
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
-    | ServerControlBackupCaptureResult,
+    | ServerControlBackupCaptureResult
+    | ServerControlUpdateResult,
 ) -> (
     ServerControlProbeResult
     | ServerControlProviderPlanResult
@@ -1010,6 +1178,7 @@ def _validated_control_result(
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
     | ServerControlBackupCaptureResult
+    | ServerControlUpdateResult
 ):
     if request.operation == "probe":
         if not isinstance(result, ServerControlProbeResult):
@@ -1048,6 +1217,18 @@ def _validated_control_result(
         if not isinstance(result, ServerControlBackupCaptureResult):
             raise ValueError("backup SQLite capture returned another operation's result")
         return ServerControlBackupCaptureResult.model_validate(result)
+    if request.operation in {
+        "update_maintenance_enter",
+        "update_candidate_verify",
+        "update_fence_release",
+        "update_maintenance_abort",
+    }:
+        if not isinstance(result, ServerControlUpdateResult):
+            raise ValueError("update control returned another operation's result")
+        validated_update = ServerControlUpdateResult.model_validate(result)
+        if validated_update.operation_id != request.selector_id:
+            raise ValueError("update control returned another operation")
+        return validated_update
     if not isinstance(result, ServerControlProjectStepResult):
         raise ValueError("project provisioning step returned another operation's result")
     validated_step = ServerControlProjectStepResult.model_validate(result)
@@ -1172,6 +1353,7 @@ __all__ = [
     "ServerControlProviderTarget",
     "ServerControlRequest",
     "ServerControlServer",
+    "ServerControlUpdateResult",
     "ServerControlUnavailable",
     "unix_peer_identity",
 ]

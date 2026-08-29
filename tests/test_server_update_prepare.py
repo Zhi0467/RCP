@@ -17,6 +17,7 @@ import pytest
 
 import rcp.server_ops.update_checkpoint as update_checkpoint_module
 from rcp.__main__ import build_parser
+from rcp.server_ops.backup import backup_run_coordination_lock
 from rcp.server_ops.cli import (
     SERVER_CLI_EXIT_OPERATOR_ACTION,
     CallerIdentity,
@@ -40,6 +41,7 @@ from rcp.server_ops.update import (
     built_candidate_receipt_path,
     prepare_update_command,
 )
+from rcp.server_ops.update_cutover import UpdateCutoverOutcome
 from rcp.server_runtime import web_build_identity
 
 INSTALLATION_ID = "123e4567-e89b-42d3-a456-426614174000"
@@ -179,6 +181,34 @@ class FakeUpdateMachine:
         assert built.candidate_commit == target.target_commit
         return _verified_receipt(self.layout, target=target.target_commit)
 
+    def cutover_candidate(
+        self,
+        target: UpdateTarget,
+        built: BuiltCandidateReceipt,
+        preflight: VerifiedCandidateReceipt,
+        *,
+        progress,
+    ) -> UpdateCutoverOutcome:
+        self.calls.append("cutover_candidate")
+        if self.fail_at == "cutover_candidate":
+            raise UpdateRefused("cutover fixture refused")
+        assert built.candidate_commit == target.target_commit == preflight.candidate_commit
+        for phase in (
+            "maintenance_closed",
+            "checkpoint_ready",
+            "candidate_started",
+            "candidate_verified",
+        ):
+            progress(phase)
+        return UpdateCutoverOutcome(
+            operation_id="123e4567-e89b-42d3-a456-426614174099",
+            operation_state="committed",
+            candidate_commit=target.target_commit,
+            running_commit=target.target_commit,
+            receipt_path=self.layout.update_checkpoints_root / "update-operation-fixture.json",
+            receipt_sha256="f" * 64,
+        )
+
 
 def _run_update(
     layout: ServerLayout,
@@ -219,7 +249,7 @@ def test_update_emits_plan_before_fetch_and_pauses_on_one_exact_target(tmp_path:
     assert exit_code == SERVER_CLI_EXIT_OPERATOR_ACTION
     assert machine.calls == ["admission_enter", "inspect", "fetch", "admission_exit"]
     assert events[0]["event"] == "plan"
-    assert len(events[0]["steps"]) == 8
+    assert len(events[0]["steps"]) == 13
     paused = events[-1]["step"]
     assert paused["number"] == 3
     assert paused["state"] == "operator_action_needed"
@@ -272,7 +302,7 @@ def test_update_refetches_and_refuses_a_stale_confirmation(tmp_path: Path) -> No
     assert "build_candidate" not in machine.calls
 
 
-def test_confirmed_update_builds_candidate_without_switching_live_release(
+def test_confirmed_update_builds_and_commits_candidate(
     tmp_path: Path,
 ) -> None:
     layout = _layout(tmp_path)
@@ -290,24 +320,17 @@ def test_confirmed_update_builds_candidate_without_switching_live_release(
         "build_candidate",
         "finalize_candidate",
         "rehearse_candidate",
+        "cutover_candidate",
         "admission_exit",
     ]
     assert all(event["step"]["state"] == "succeeded" for event in events[2::2])
     fields = _final_fields(events)
     assert fields == {
-        "update_state": "candidate_verified",
+        "update_state": "committed",
         "candidate_commit": TARGET,
-        "current_commit": BASE,
-        "running_commit": BASE,
-        "verified_projects": 0,
-        "unavailable_projects": 0,
-        "receipt_path": str(
-            verified_candidate_receipt_path(
-                TARGET,
-                "123e4567-e89b-42d3-a456-426614174002",
-                layout.update_checkpoints_root,
-            )
-        ),
+        "running_commit": TARGET,
+        "operation_id": "123e4567-e89b-42d3-a456-426614174099",
+        "receipt_path": str(layout.update_checkpoints_root / "update-operation-fixture.json"),
     }
     assert not layout.current_release.exists()
 
@@ -340,7 +363,12 @@ def test_update_reports_replay_verified_and_unavailable_projects_separately(
     exit_code, events = _run_update(layout, machine, confirmed=TARGET)
 
     assert exit_code == 0
-    fields = _final_fields(events)
+    rehearsal_success = next(
+        event["step"]
+        for event in events
+        if event.get("step", {}).get("number") == 8 and event["step"]["state"] == "succeeded"
+    )
+    fields = {item["name"]: item["value"] for item in rehearsal_success["fields"]}
     assert fields["verified_projects"] == 1
     assert fields["unavailable_projects"] == 1
 
@@ -798,7 +826,10 @@ def test_candidate_release_must_be_a_detached_managed_worktree(tmp_path: Path) -
         machine._validate_release_git(release, commit)
 
 
-def test_update_lock_and_active_maintenance_fail_closed(tmp_path: Path) -> None:
+def test_update_lock_and_active_maintenance_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     layout = _layout(tmp_path)
     _prepare_owned_roots(layout)
     kwargs = {
@@ -834,6 +865,18 @@ def test_update_lock_and_active_maintenance_fail_closed(tmp_path: Path) -> None:
         first.admission(),
     ):
         pytest.fail("unknown update maintenance should block update")
+
+    unknown.unlink()
+    monkeypatch.setattr(
+        "rcp.server_ops.update.SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS",
+        0.0,
+    )
+    with (
+        backup_run_coordination_lock(layout),
+        pytest.raises(UpdateRefused, match="protected backup did not reach"),
+        first.admission(),
+    ):
+        pytest.fail("an active backup should block update admission")
 
 
 def test_candidate_receipt_is_private_validated_and_never_overwritten(tmp_path: Path) -> None:

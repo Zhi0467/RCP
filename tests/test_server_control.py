@@ -21,6 +21,8 @@ from rcp.limits import (
     SERVER_CONTROL_IO_TIMEOUT_SECONDS,
     SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS,
     SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
+    SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
+    SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
 )
 from rcp.server_ops import control
 from rcp.server_ops.control import (
@@ -66,6 +68,40 @@ def _team_app(tmp_path: Path, control_root: Path):
         control_socket=control_root / "control.sock",
     )
     return data_dir, metadata, create_app(data_dir=data_dir, instance_metadata=metadata)
+
+
+def test_installed_app_refuses_to_open_before_pending_restoration_completes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service_home = tmp_path / "home"
+    server_root = service_home / "server"
+    layout = replace(
+        DEFAULT_SERVER_LAYOUT,
+        service_home=service_home,
+        server_root=server_root,
+        source_checkout=server_root / "source",
+        releases_root=server_root / "releases",
+        data_dir=server_root / "data",
+        projects_root=server_root / "projects",
+        credentials_root=server_root / "credentials",
+        update_checkpoints_root=server_root / "update-checkpoints",
+        restore_operations_root=server_root / "restore-operations",
+        codex_state_root=service_home / ".codex",
+        claude_state_root=service_home / ".claude",
+        ssh_state_root=service_home / ".ssh",
+    )
+    layout.update_checkpoints_root.mkdir(parents=True)
+    journal = layout.update_checkpoints_root / "checkpoint-fixture" / "rollback-journal.json"
+    monkeypatch.setattr(
+        "rcp.api.app._installed_rollback_journals",
+        lambda _root: (journal,),
+    )
+
+    with pytest.raises(RuntimeError, match="restoration is incomplete"):
+        create_app(data_dir=layout.data_dir, server_layout=layout)
+
+    assert not layout.data_dir.exists()
 
 
 def test_team_lifespan_publishes_private_socket_without_opening_a_second_store(
@@ -157,6 +193,62 @@ def test_control_socket_is_refused_for_a_personal_or_non_cli_app(
         create_app(data_dir=team_data, instance_metadata=desktop)
 
 
+def test_update_maintenance_blocks_new_machine_operations(
+    tmp_path: Path,
+    control_root: Path,
+) -> None:
+    _data_dir, metadata, app = _team_app(tmp_path, control_root)
+    app.state.background_admission_gate.close_and_wait(timeout=1)
+    request = ServerControlRequest(
+        request_id=str(uuid.uuid4()),
+        instance_id=metadata.instance_id,
+        operation="project_provision_plan",
+        selector_kind="request",
+        selector_id=str(uuid.uuid4()),
+    )
+
+    with pytest.raises(ServerControlError, match="maintenance") as caught:
+        app.state.server_control.handler(
+            request,
+            ServerControlPeer(pid=os.getpid(), uid=os.geteuid(), gid=os.getegid()),
+        )
+
+    assert caught.value.code == "operation_refused"
+
+
+def test_update_maintenance_blocks_get_routes_that_can_mutate(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path / "data")
+    app.state.runtime_admission_gate.close_and_wait(timeout=1)
+
+    with TestClient(app) as client:
+        response = client.get("/api/health")
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "server_update_maintenance"
+
+
+def test_update_control_operations_require_a_root_peer(
+    tmp_path: Path,
+    control_root: Path,
+) -> None:
+    _data_dir, metadata, app = _team_app(tmp_path, control_root)
+    request = ServerControlRequest(
+        request_id=str(uuid.uuid4()),
+        instance_id=metadata.instance_id,
+        operation="update_maintenance_enter",
+        selector_id=str(uuid.uuid4()),
+        boundary_sha256="a" * 64,
+    )
+
+    with pytest.raises(ServerControlError, match="root server coordinator") as caught:
+        app.state.server_control.handler(
+            request,
+            ServerControlPeer(pid=os.getpid(), uid=1, gid=1),
+        )
+
+    assert caught.value.code == "operation_refused"
+
+
 def test_provider_check_uses_its_bounded_operation_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -203,12 +295,37 @@ def test_provider_check_uses_its_bounded_operation_timeout(
             boundary_sha256="a" * 64,
             target_id="b" * 64,
         )
+    operation_id = str(uuid.uuid4())
+    with pytest.raises(RuntimeError, match="stop after observing"):
+        client.enter_update_maintenance(
+            operation_id=operation_id,
+            receipt_sha256="c" * 64,
+        )
+    with pytest.raises(RuntimeError, match="stop after observing"):
+        client.verify_update_candidate(
+            operation_id=operation_id,
+            receipt_sha256="c" * 64,
+        )
+    with pytest.raises(RuntimeError, match="stop after observing"):
+        client.release_update_fence(
+            operation_id=operation_id,
+            receipt_sha256="c" * 64,
+        )
+    with pytest.raises(RuntimeError, match="stop after observing"):
+        client.abort_update_maintenance(
+            operation_id=operation_id,
+            receipt_sha256="c" * 64,
+        )
 
     assert observed == [
         SERVER_CONTROL_IO_TIMEOUT_SECONDS,
         SERVER_CONTROL_BACKUP_CAPTURE_TIMEOUT_SECONDS,
         SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
         SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS,
+        SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
+        SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
+        SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
+        SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     ]
 
 

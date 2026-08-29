@@ -11,14 +11,18 @@ covered_by:
   - tests/test_server_update_prepare.py
   - tests/test_server_update_rehearsal.py
   - tests/test_server_update_checkpoint.py
+  - tests/test_server_update_cutover.py
+  - tests/test_server_install_live.py
   - tests/test_team_project_provisioning.py
 invariants: [1, 8]
 last_checked: >-
   2026-08-29 — install, update preparation, copied-state candidate rehearsal,
-  coherent local rollback checkpoint/re-entry, provider readiness, and project
-  machine preparation have concrete OS-authority/private-control regressions;
-  cutover and old-service restart, restore, member removal, the complete remote
-  drive, and the full scenario remain pending.
+  coherent local rollback checkpoint/re-entry, cutover, loud old-service
+  rollback, provider readiness, and project machine preparation have concrete
+  OS-authority/private-control regressions. The disposable Ubuntu cutover and
+  five-phase root-death drive is implemented but has not yet passed its 22.04
+  and 24.04 workflow; restore, member removal, the complete remote drive, and
+  the full scenario remain pending.
 ---
 
 # Dangerous operations need the machine, not a login
@@ -88,8 +92,8 @@ member running a long task plus active Auto-research and Experiment episodes.
    local and remote run stage plus partial and complete transfer-inbox sentinels
    before rehearsal; prove the candidate touches none of those live paths, then
    inspect both stages after forced rollback. Kill the root coordinator after
-   every rollback journal phase,
-   re-enter through doctor/update, and inspect the service and exact old data
+   every rollback journal phase, inspect the durable failure through doctor,
+   re-enter through update, and inspect the service and exact old data
    before continuing. Keep a separate configured SSH project unreachable throughout one
    successful rehearsal and cutover, then inspect its update receipt and
    unavailable project projection.

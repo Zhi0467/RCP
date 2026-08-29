@@ -10,6 +10,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from typing import TYPE_CHECKING, Annotated, BinaryIO, Literal, Protocol, TypeVa
 from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator, model_validator
 
 from rcp.limits import (
+    SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
+    SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
     SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
     SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
@@ -28,12 +31,18 @@ from rcp.limits import (
 )
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.config import InstalledServerConfig, load_installed_server_config
+from rcp.server_ops.control import ServerControlClient, ServerControlError
 from rcp.server_ops.doctor import (
     LinuxServerDoctorMachine,
     ServerDoctorMachine,
     ServerDoctorReport,
 )
-from rcp.server_ops.install import _run_as_account, source_git_environment
+from rcp.server_ops.install import (
+    InstalledServiceControlRefused,
+    InstalledSystemServiceController,
+    _run_as_account,
+    source_git_environment,
+)
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import (
     CommandAction,
@@ -49,12 +58,15 @@ from rcp.server_runtime import ServerMetadataError, web_build_identity
 if TYPE_CHECKING:
     from rcp.server_ops.rehearsal import VerifiedCandidateReceipt
     from rcp.server_ops.update_checkpoint import VerifiedUpdateCheckpoint
+    from rcp.server_ops.update_cutover import UpdateCutoverOutcome, UpdateOperationReceipt
 
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _WEB_BUILD_ID = re.compile(r"sha256:[0-9a-f]{64}")
 _RECEIPT_NAME = re.compile(r"built-candidate-([0-9a-f]{40})\.json")
 _VERIFIED_RECEIPT_NAME = re.compile(r"verified-candidate-([0-9a-f]{40})-([0-9a-f-]{36})\.json")
 _REHEARSAL_ROOT_NAME = re.compile(r"rehearsal-([0-9a-f]{40})-([0-9a-f]{32})")
+_UPDATE_OPERATION_NAME = re.compile(r"update-operation-([0-9a-f]{32})\.json")
+_CHECKPOINT_ROOT_NAME = re.compile(r"checkpoint-([0-9a-f]{40})-([0-9a-f]{32})")
 _UPDATE_LOCK_NAME = ".server-update.lock"
 _RECEIPT_SCHEMA_VERSION = 1
 _RECEIPT_MODE = 0o600
@@ -225,6 +237,15 @@ class UpdateMachine(Protocol):
         project_receipt_sha256: str,
     ) -> VerifiedUpdateCheckpoint: ...
 
+    def cutover_candidate(
+        self,
+        target: UpdateTarget,
+        built: BuiltCandidateReceipt,
+        preflight: VerifiedCandidateReceipt,
+        *,
+        progress: Callable[[str], None],
+    ) -> UpdateCutoverOutcome: ...
+
 
 def prepare_update_command(
     request: ServerCommandRequest,
@@ -367,6 +388,76 @@ def _update_plan(identity: CallerIdentity) -> tuple[ServerStep, ...]:
                 "unavailable projection, with no provider, watcher, Git, cleanup, or remote effect."
             ),
             message="RCP will capture live state once and run the candidate only on its overlay.",
+        ),
+        ServerStep(
+            number=9,
+            title="Close admission and capture the final boundary",
+            purpose=(
+                "Stop new mutations and launches, wait for active providers, and bind one final "
+                "SQLite and project-file capture to this update."
+            ),
+            performed_by="system",
+            target=service,
+            phase="update_maintenance_close",
+            state="pending",
+            expected_success="The old process is idle with normal work closed and one exact capture.",
+            message="RCP will enter the short update maintenance window.",
+        ),
+        ServerStep(
+            number=10,
+            title="Verify the final rollback checkpoint",
+            purpose=(
+                "Fresh-rehearse the candidate on the closed boundary and snapshot every owned "
+                "local recovery input before any pointer switch."
+            ),
+            performed_by="system",
+            target=service,
+            phase="update_rollback_checkpoint",
+            state="pending",
+            expected_success="One complete verified checkpoint names the exact final rehearsal.",
+            message="RCP will prove the exact rollback bytes before switching releases.",
+        ),
+        ServerStep(
+            number=11,
+            title="Switch and restart behind the effect fence",
+            purpose=(
+                "Stop systemd, atomically switch current, and start the candidate while all "
+                "deferred runtime effects remain fenced."
+            ),
+            performed_by="system",
+            target=root,
+            phase="update_release_cutover",
+            state="pending",
+            expected_success="systemd runs the exact candidate commit behind the startup fence.",
+            message="RCP will perform the bounded root-only release switch.",
+        ),
+        ServerStep(
+            number=12,
+            title="Verify the switched candidate",
+            purpose=(
+                "Repeat startup, recovery, project projection, task, and watcher reads against "
+                "the real data while external effects remain closed."
+            ),
+            performed_by="system",
+            target=service,
+            phase="update_candidate_readback",
+            state="pending",
+            expected_success="The running candidate exactly matches the final rehearsal read model.",
+            message="RCP will verify the candidate process before committing the update.",
+        ),
+        ServerStep(
+            number=13,
+            title="Commit the release and reopen work",
+            purpose=(
+                "Durably choose the verified release, release the one startup fence exactly "
+                "once, and start deferred runtime owners."
+            ),
+            performed_by="system",
+            target=service,
+            phase="update_fence_release",
+            state="pending",
+            expected_success="The verified candidate serves normally, or loud rollback restores the base.",
+            message="RCP will commit the candidate or report the exact restored base release.",
         ),
     )
 
@@ -515,7 +606,7 @@ def _execute_admitted_update(
         ),
         failure_fields=lambda: _failure_status_fields(machine, target),
     )
-    _run_step(
+    preflight = _run_step(
         emitter,
         steps[7],
         running=(
@@ -544,6 +635,149 @@ def _execute_admitted_update(
         ),
         failure_fields=lambda: _failure_status_fields(machine, target),
     )
+    _run_cutover_steps(
+        emitter,
+        steps[8:],
+        machine,
+        target,
+        built,
+        preflight,
+    )
+
+
+def _run_cutover_steps(
+    emitter: ServerEventEmitter,
+    steps: tuple[ServerStep, ...],
+    machine: UpdateMachine,
+    target: UpdateTarget,
+    built: BuiltCandidateReceipt,
+    preflight: VerifiedCandidateReceipt,
+) -> None:
+    phases = (
+        "maintenance_closed",
+        "checkpoint_ready",
+        "candidate_started",
+        "candidate_verified",
+    )
+    if len(steps) != len(phases) + 1:
+        raise AssertionError("cutover execution requires five exact planned steps")
+    index = 0
+    emitter.emit_step(
+        steps[index].model_copy(
+            update={
+                "state": "running",
+                "message": "Closing normal work and waiting for active provider turns to settle.",
+            }
+        )
+    )
+
+    def progress(phase: str) -> None:
+        nonlocal index
+        if phase == "rolled_back":
+            return
+        if index >= len(phases) or phase != phases[index]:
+            raise UpdateRefused("The update coordinator reported an out-of-order durable phase.")
+        emitter.emit_step(
+            steps[index].model_copy(
+                update={
+                    "state": "succeeded",
+                    "message": _cutover_phase_success(phase),
+                }
+            )
+        )
+        index += 1
+        if index < len(steps):
+            emitter.emit_step(
+                steps[index].model_copy(
+                    update={
+                        "state": "running",
+                        "message": _cutover_phase_running(
+                            phases[index] if index < len(phases) else "committed"
+                        ),
+                    }
+                )
+            )
+
+    try:
+        outcome = machine.cutover_candidate(
+            target,
+            built,
+            preflight,
+            progress=progress,
+        )
+    except UpdateRefused as exc:
+        emitter.emit_step(
+            steps[index].model_copy(
+                update={
+                    "state": "failed",
+                    "message": str(exc),
+                    "fields": _failure_status_fields(machine, target),
+                }
+            )
+        )
+        raise _ReportedUpdateFailure from exc
+    if outcome.operation_state == "rolled_back":
+        emitter.emit_step(
+            steps[index].model_copy(
+                update={
+                    "state": "failed",
+                    "message": (
+                        "Candidate verification failed; RCP restored and verified the previous "
+                        "release before reopening work."
+                    ),
+                    "fields": (
+                        NonsecretField(name="update_state", value="rolled_back"),
+                        NonsecretField(
+                            name="failed_candidate_commit", value=outcome.candidate_commit
+                        ),
+                        NonsecretField(name="restored_commit", value=outcome.running_commit),
+                        NonsecretField(name="operation_id", value=outcome.operation_id),
+                        NonsecretField(name="receipt_path", value=str(outcome.receipt_path)),
+                        NonsecretField(
+                            name="failure", value=outcome.failure or "verification failed"
+                        ),
+                    ),
+                }
+            )
+        )
+        raise _ReportedUpdateFailure
+    if index != len(phases):
+        raise AssertionError("committed cutover did not report every pre-commit phase")
+    emitter.emit_step(
+        steps[-1].model_copy(
+            update={
+                "state": "succeeded",
+                "message": _cutover_phase_success("committed"),
+                "fields": (
+                    NonsecretField(name="update_state", value="committed"),
+                    NonsecretField(name="candidate_commit", value=outcome.candidate_commit),
+                    NonsecretField(name="running_commit", value=outcome.running_commit),
+                    NonsecretField(name="operation_id", value=outcome.operation_id),
+                    NonsecretField(name="receipt_path", value=str(outcome.receipt_path)),
+                ),
+            }
+        )
+    )
+
+
+def _cutover_phase_running(phase: str) -> str:
+    return {
+        "maintenance_closed": "Closing normal work and capturing the final live boundary.",
+        "checkpoint_ready": "Fresh-rehearsing and verifying the exact rollback checkpoint.",
+        "candidate_started": "Stopping systemd and switching to the fenced candidate.",
+        "candidate_verified": "Comparing the real candidate with the final rehearsal read model.",
+        "committed": "Committing the verified release and starting deferred runtime owners.",
+    }[phase]
+
+
+def _cutover_phase_success(phase: str) -> str:
+    return {
+        "maintenance_closed": "Normal work is closed at one exact durable capture boundary.",
+        "checkpoint_ready": "The final rehearsal and complete rollback checkpoint are verified.",
+        "candidate_started": "systemd runs the exact candidate behind the startup-effect fence.",
+        "candidate_verified": "The real candidate matches the final rehearsal read model.",
+        "committed": "The candidate is committed and deferred runtime startup was released once.",
+    }[phase]
 
 
 _T = TypeVar("_T")
@@ -638,6 +872,11 @@ def _complete_already_current(
         "The current source build was left untouched; no candidate build was run.",
         "No candidate receipt is needed because the server already runs the fetched commit.",
         "No candidate rehearsal is needed because the fetched commit is already serving.",
+        "No maintenance boundary is needed because the fetched commit is already serving.",
+        "No rollback checkpoint is needed because no release switch is pending.",
+        "No release switch is needed because current already names the running commit.",
+        "No switched-candidate verification is needed for the already-running commit.",
+        "No fence release is needed because ordinary runtime is already open.",
     )
     if confirmation_completed:
         messages = messages[1:]
@@ -725,6 +964,8 @@ class LinuxUpdateMachine:
         service_runner: ServiceCommandRunner | None = None,
         service_identity: tuple[int, int] | None = None,
         root_identity: tuple[int, int] | None = None,
+        system_service: InstalledSystemServiceController | None = None,
+        cutover_control_factory: Callable[[str], object] | None = None,
     ) -> None:
         self.layout = layout
         self._config_loader = config_loader or load_installed_server_config
@@ -741,6 +982,11 @@ class LinuxUpdateMachine:
             ) from exc
         self._service_uid, self._service_gid = service_identity
         self._root_uid, self._root_gid = root_identity
+        self._system_service = system_service or InstalledSystemServiceController(
+            layout,
+            root_identity=(self._root_uid, self._root_gid),
+        )
+        self._cutover_control_factory = cutover_control_factory
         self._service_runner = service_runner or self._run_as_installed_service
         self._doctor = doctor or LinuxServerDoctorMachine(
             layout,
@@ -752,6 +998,8 @@ class LinuxUpdateMachine:
 
     @contextmanager
     def admission(self) -> Iterator[None]:
+        from rcp.server_ops.backup import BackupRunRefused, backup_run_coordination_lock
+
         lock_path = self.layout.config_path.parent / _UPDATE_LOCK_NAME
         descriptor = -1
         try:
@@ -788,8 +1036,21 @@ class LinuxUpdateMachine:
                     "Another server update is running. Wait for it to finish, then rerun the "
                     "same command."
                 ) from exc
-            self._inspect_maintenance_roots()
-            yield
+            try:
+                with backup_run_coordination_lock(
+                    self.layout,
+                    expected_uid=self._service_uid,
+                    expected_gid=self._service_gid,
+                    timeout=SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
+                ):
+                    self._recover_unfinished_update()
+                    self._inspect_maintenance_roots()
+                    yield
+            except BackupRunRefused as exc:
+                raise UpdateRefused(
+                    "A protected backup did not reach its durable boundary before update "
+                    "maintenance timed out."
+                ) from exc
         except UpdateRefused:
             raise
         except OSError as exc:
@@ -1279,7 +1540,175 @@ class LinuxUpdateMachine:
             )
         return checkpoint
 
+    def cutover_candidate(
+        self,
+        target: UpdateTarget,
+        built: BuiltCandidateReceipt,
+        preflight: VerifiedCandidateReceipt,
+        *,
+        progress: Callable[[str], None],
+    ) -> UpdateCutoverOutcome:
+        from rcp.server_ops.update_cutover import (
+            UpdateCutoverCoordinator,
+            UpdateCutoverRefused,
+        )
+
+        try:
+            return UpdateCutoverCoordinator(
+                layout=self.layout,
+                actions=_LinuxCutoverActions(self, target, built),
+                expected_uid=self._service_uid,
+                expected_gid=self._service_gid,
+                progress=progress,
+            ).run(built, preflight)
+        except (InstalledServiceControlRefused, ServerControlError, UpdateCutoverRefused) as exc:
+            raise UpdateRefused(
+                str(exc) or "The server update failed at its safe boundary."
+            ) from exc
+
+    def _enter_update_maintenance(self, *, operation_id: str, receipt_sha256: str):
+        return self._control_for_running(self._current_pointer_commit()).enter_update_maintenance(
+            operation_id=operation_id,
+            receipt_sha256=receipt_sha256,
+        )
+
+    def _final_maintenance_rehearsal(
+        self,
+        target: UpdateTarget,
+        built: BuiltCandidateReceipt,
+        operation: UpdateOperationReceipt,
+        receipt_sha256: str,
+    ) -> VerifiedCandidateReceipt:
+        from rcp.server_ops.rehearsal import (
+            CandidateRehearsalRefused,
+            read_verified_candidate_receipt,
+            verified_candidate_receipt_path,
+        )
+
+        current_python = (
+            self.layout.release_dir(built.base_running_commit) / ".venv" / "bin" / "python"
+        )
+        completed = self._run_service_checked(
+            (
+                str(current_python),
+                "-m",
+                "rcp.server_ops.rehearsal",
+                "--orchestrate-maintenance",
+                built.receipt_path,
+                str(self.layout.data_dir),
+                str(self.layout.update_checkpoints_root),
+                operation.receipt_path,
+                receipt_sha256,
+            ),
+            cwd=self.layout.release_dir(built.base_running_commit),
+            environment={"PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
+            error=(
+                "Final closed-admission rehearsal failed. The old release remains selected; "
+                "RCP will reopen work only after the maintenance receipt is resolved."
+            ),
+        )
+        lines = completed.stdout.splitlines()
+        if len(lines) != 1:
+            raise UpdateRefused(
+                "The current release did not report one final verified-candidate receipt."
+            )
+        receipt_path = Path(lines[0])
+        try:
+            receipt = read_verified_candidate_receipt(
+                receipt_path,
+                expected_uid=self._service_uid,
+            )
+        except CandidateRehearsalRefused as exc:
+            raise UpdateRefused(
+                "The final maintenance rehearsal did not publish a valid receipt."
+            ) from exc
+        if (
+            operation.capture is None
+            or receipt_path
+            != verified_candidate_receipt_path(
+                target.target_commit,
+                operation.capture.capture_id,
+                self.layout.update_checkpoints_root,
+            )
+            or receipt.capture_id != operation.capture.capture_id
+            or receipt.built_receipt_path != built.receipt_path
+            or receipt.base_instance_id != built.base_instance_id
+            or receipt.base_process_pid != built.base_process_pid
+            or receipt.candidate_commit != built.candidate_commit
+        ):
+            raise UpdateRefused(
+                "The final verified-candidate receipt differs from its maintenance capture."
+            )
+        return receipt
+
+    def _control_for_running(self, commit: str):
+        if self._cutover_control_factory is not None:
+            return self._cutover_control_factory(commit)
+        deadline = time.monotonic() + SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                client = ServerControlClient.from_data_dir(
+                    self.layout.data_dir,
+                    expected_server_uid=self._service_uid,
+                )
+                probe = client.probe()
+                if (
+                    client.metadata.running_commit == commit
+                    and probe.data_dir_id == client.metadata.data_dir_id
+                    and probe.pid == client.metadata.pid
+                ):
+                    return client
+            except (OSError, ServerControlError, ValueError):
+                pass
+            time.sleep(0.1)
+        raise UpdateRefused(
+            f"The restarted service did not publish the expected running commit {commit}."
+        )
+
+    def _restore_cutover_checkpoint(
+        self,
+        checkpoint_path: Path,
+        checkpoint_sha256: str,
+        base_commit: str,
+    ) -> None:
+        current_python = self.layout.release_dir(base_commit) / ".venv" / "bin" / "python"
+        completed = self._run_service_checked(
+            (
+                str(current_python),
+                "-m",
+                "rcp.server_ops.update_checkpoint",
+                "restore",
+                str(checkpoint_path),
+                checkpoint_sha256,
+            ),
+            cwd=self.layout.release_dir(base_commit),
+            environment={"PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=SERVER_UPDATE_CHECKPOINT_TIMEOUT_SECONDS,
+            error=(
+                "The rollback checkpoint could not be restored. RCP kept the service stopped "
+                "and retained the exact journal for re-entry."
+            ),
+        )
+        if completed.stdout.splitlines() != ["complete"]:
+            raise UpdateRefused(
+                "The rollback worker did not report one complete replacement journal."
+            )
+
+    def _current_pointer_commit(self) -> str:
+        return self._system_service.current_release().name
+
     def _inspect_maintenance_roots(self) -> None:
+        from rcp.server_ops.update_checkpoint import (
+            UpdateCheckpointRefused,
+            read_rollback_journal,
+            read_verified_update_checkpoint,
+        )
+        from rcp.server_ops.update_cutover import (
+            UpdateCutoverRefused,
+            read_update_operation,
+        )
+
         _require_owned_directory(
             self.layout.restore_operations_root,
             uid=self._service_uid,
@@ -1317,6 +1746,42 @@ class LinuxUpdateMachine:
                             "inspect it before retrying."
                         ) from exc
                     continue
+                if _UPDATE_OPERATION_NAME.fullmatch(entry.name) is not None:
+                    try:
+                        read_update_operation(entry, expected_uid=self._service_uid)
+                    except UpdateCutoverRefused as exc:
+                        raise UpdateRefused(
+                            "An update operation receipt is unsafe or invalid. Preserve and "
+                            "inspect it before retrying."
+                        ) from exc
+                    continue
+                if _CHECKPOINT_ROOT_NAME.fullmatch(entry.name) is not None:
+                    manifest = entry / "checkpoint.json"
+                    try:
+                        read_verified_update_checkpoint(
+                            manifest,
+                            expected_uid=self._service_uid,
+                        )
+                        journal = entry / "rollback-journal.json"
+                        if (
+                            journal.exists()
+                            and read_rollback_journal(
+                                journal,
+                                expected_uid=self._service_uid,
+                            ).phase
+                            != "complete"
+                        ):
+                            raise UpdateRefused(
+                                "An unfinished rollback journal still blocks a new source update."
+                            )
+                    except UpdateRefused:
+                        raise
+                    except (OSError, UpdateCheckpointRefused) as exc:
+                        raise UpdateRefused(
+                            "A retained update checkpoint is incomplete or unsafe. Preserve and "
+                            "inspect it before retrying."
+                        ) from exc
+                    continue
                 if _REHEARSAL_ROOT_NAME.fullmatch(entry.name) is not None:
                     raise UpdateRefused(
                         "A retained failed candidate rehearsal blocks another update. Inspect "
@@ -1330,6 +1795,69 @@ class LinuxUpdateMachine:
             raise UpdateRefused(
                 "RCP could not inspect update and restore maintenance state."
             ) from exc
+
+    def _recover_unfinished_update(self) -> None:
+        from rcp.server_ops.update_checkpoint import (
+            UpdateCheckpointRefused,
+            unfinished_rollback_journals,
+        )
+        from rcp.server_ops.update_cutover import (
+            UpdateCutoverCoordinator,
+            UpdateCutoverRefused,
+            update_operation_needing_recovery,
+        )
+
+        try:
+            pending = update_operation_needing_recovery(
+                self.layout.update_checkpoints_root,
+                expected_uid=self._service_uid,
+            )
+            journals = unfinished_rollback_journals(
+                self.layout.update_checkpoints_root,
+                expected_uid=self._service_uid,
+            )
+        except (OSError, UpdateCheckpointRefused, UpdateCutoverRefused) as exc:
+            with suppress(InstalledServiceControlRefused):
+                self._system_service.stop()
+            raise UpdateRefused(
+                "Update recovery state is unsafe. RCP kept the service stopped; inspect the "
+                "private update receipts and journals."
+            ) from exc
+        if pending is None:
+            if journals:
+                with suppress(InstalledServiceControlRefused):
+                    self._system_service.stop()
+                raise UpdateRefused(
+                    "An unfinished rollback journal has no active update receipt. RCP kept the "
+                    "service stopped for repair."
+                )
+            return
+        _path, operation, digest = pending
+        coordinator = UpdateCutoverCoordinator(
+            layout=self.layout,
+            actions=_LinuxRecoveryActions(self, operation.base_commit),
+            expected_uid=self._service_uid,
+            expected_gid=self._service_gid,
+        )
+        try:
+            if operation.state in {"committed", "rolled_back"}:
+                recovered, _recovered_digest = coordinator.repair_selected_release(
+                    operation,
+                    digest,
+                )
+            else:
+                recovered, _recovered_digest = coordinator.recover(operation, digest)
+        except (InstalledServiceControlRefused, ServerControlError, UpdateCutoverRefused) as exc:
+            with suppress(InstalledServiceControlRefused):
+                self._system_service.stop()
+            raise UpdateRefused(
+                "Unfinished source update recovery failed. RCP kept the service stopped; rerun "
+                "the same command after inspecting doctor and the durable receipt."
+            ) from exc
+        raise UpdateRefused(
+            f"Recovered unfinished source update as {recovered.state}. Rerun sudo rcp server "
+            "update to begin a fresh, fully inspected command."
+        )
 
     def _validate_source_checkout(
         self,
@@ -1705,6 +2233,108 @@ class LinuxUpdateMachine:
                 os.close(descriptor)
             temporary.unlink(missing_ok=True)
         return self._read_receipt(path)
+
+
+@dataclass(frozen=True)
+class _LinuxCutoverActions:
+    machine: LinuxUpdateMachine
+    target: UpdateTarget
+    built: BuiltCandidateReceipt
+
+    def enter_maintenance(self, *, operation_id: str, receipt_sha256: str):
+        return self.machine._enter_update_maintenance(
+            operation_id=operation_id,
+            receipt_sha256=receipt_sha256,
+        )
+
+    def final_rehearsal(
+        self,
+        operation: UpdateOperationReceipt,
+        receipt_sha256: str,
+    ) -> VerifiedCandidateReceipt:
+        return self.machine._final_maintenance_rehearsal(
+            self.target,
+            self.built,
+            operation,
+            receipt_sha256,
+        )
+
+    def create_checkpoint(
+        self,
+        final_receipt: VerifiedCandidateReceipt,
+        *,
+        sqlite_receipt_path: Path,
+        sqlite_receipt_sha256: str,
+        project_receipt_path: Path,
+        project_receipt_sha256: str,
+    ) -> VerifiedUpdateCheckpoint:
+        return self.machine.create_rollback_checkpoint(
+            self.target,
+            final_receipt,
+            sqlite_receipt_path=sqlite_receipt_path,
+            sqlite_receipt_sha256=sqlite_receipt_sha256,
+            project_receipt_path=project_receipt_path,
+            project_receipt_sha256=project_receipt_sha256,
+        )
+
+    def stop_service(self) -> None:
+        self.machine._system_service.stop()
+
+    def switch_current(self, *, expected: Path, target: Path) -> None:
+        self.machine._system_service.switch_current(expected=expected, target=target)
+
+    def start_service(self) -> int:
+        return self.machine._system_service.start()
+
+    def control_for_running(self, commit: str):
+        return self.machine._control_for_running(commit)
+
+    def restore_checkpoint(self, checkpoint_path: Path, checkpoint_sha256: str) -> None:
+        self.machine._restore_cutover_checkpoint(
+            checkpoint_path,
+            checkpoint_sha256,
+            self.target.inspection.running_commit,
+        )
+
+    def current_release(self) -> Path:
+        return self.machine._system_service.current_release()
+
+
+@dataclass(frozen=True)
+class _LinuxRecoveryActions:
+    machine: LinuxUpdateMachine
+    base_commit: str
+
+    def stop_service(self) -> None:
+        self.machine._system_service.stop()
+
+    def switch_current(self, *, expected: Path, target: Path) -> None:
+        self.machine._system_service.switch_current(expected=expected, target=target)
+
+    def start_service(self) -> int:
+        return self.machine._system_service.start()
+
+    def control_for_running(self, commit: str):
+        return self.machine._control_for_running(commit)
+
+    def restore_checkpoint(self, checkpoint_path: Path, checkpoint_sha256: str) -> None:
+        self.machine._restore_cutover_checkpoint(
+            checkpoint_path,
+            checkpoint_sha256,
+            self.base_commit,
+        )
+
+    def current_release(self) -> Path:
+        return self.machine._system_service.current_release()
+
+    def enter_maintenance(self, **_kwargs):  # pragma: no cover - recovery rejects this phase
+        raise AssertionError("recovery cannot enter new maintenance")
+
+    def final_rehearsal(self, *_args):  # pragma: no cover - recovery never recaptures
+        raise AssertionError("recovery cannot rehearse a new capture")
+
+    def create_checkpoint(self, *_args, **_kwargs):  # pragma: no cover - recovery never snapshots
+        raise AssertionError("recovery cannot create a new checkpoint")
 
 
 def _require_commit(value: str) -> None:

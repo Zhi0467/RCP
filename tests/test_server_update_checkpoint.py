@@ -7,6 +7,8 @@ import os
 import pwd
 import sqlite3
 import stat
+import subprocess
+import sys
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -558,20 +560,41 @@ def test_rollback_reentry_restores_exact_bytes_after_every_journaled_phase(
     (data_dir / "candidate-only-root").mkdir()
     (data_dir / "candidate-only-root" / "unknown").write_bytes(b"candidate\n")
 
-    def crash_after(phase: str) -> None:
-        if phase == crash_phase:
-            raise RuntimeError(f"crash after {phase}")
+    checkpoint_path = Path(checkpoint.manifest_path)
+    checkpoint_sha256 = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+    child = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            """
+import os
+import sys
+from pathlib import Path
+from rcp.server_ops.update_checkpoint import restore_update_checkpoint
 
-    with pytest.raises(RuntimeError, match=f"crash after {crash_phase}"):
-        restore_update_checkpoint(
-            Path(checkpoint.manifest_path),
-            expected_uid=os.geteuid(),
-            after_phase=crash_after,
-        )
+def crash_after(phase: str) -> None:
+    if phase == sys.argv[3]:
+        os._exit(91)
+
+restore_update_checkpoint(
+    Path(sys.argv[1]),
+    expected_uid=os.geteuid(),
+    expected_sha256=sys.argv[2],
+    after_phase=crash_after,
+)
+""",
+            str(checkpoint_path),
+            checkpoint_sha256,
+            crash_phase,
+        ),
+        check=False,
+    )
+    assert child.returncode == 91
 
     journal = restore_update_checkpoint(
-        Path(checkpoint.manifest_path),
+        checkpoint_path,
         expected_uid=os.geteuid(),
+        expected_sha256=checkpoint_sha256,
     )
 
     assert journal.phase == "complete"
@@ -596,6 +619,21 @@ def test_rollback_reentry_restores_exact_bytes_after_every_journaled_phase(
         expected_uid=os.geteuid(),
     )
     assert persisted.phase == "complete"
+
+
+def test_rollback_refuses_a_checkpoint_whose_bound_digest_changed(tmp_path: Path) -> None:
+    checkpoint, data_dir, _attachment_file = _checkpoint_fixture(tmp_path)
+    candidate_only = data_dir / "candidate-only"
+    candidate_only.write_text("candidate\n", encoding="utf-8")
+
+    with pytest.raises(UpdateCheckpointRefused, match="manifest digest changed"):
+        restore_update_checkpoint(
+            Path(checkpoint.manifest_path),
+            expected_uid=os.geteuid(),
+            expected_sha256="f" * 64,
+        )
+
+    assert candidate_only.read_text(encoding="utf-8") == "candidate\n"
 
 
 def test_rollback_rejects_journal_paths_that_do_not_match_the_checkpoint(

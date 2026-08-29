@@ -126,6 +126,10 @@ class ServerDoctorReport(_StrictModel):
     last_backup_protected_projects: int | None = None
     last_backup_uncaptured_projects: int | None = None
     last_backup_failure: str | None = None
+    update_operation_state: str = "none"
+    update_candidate_commit: str | None = None
+    update_restored_commit: str | None = None
+    update_failure: str | None = None
 
     @field_validator(
         "managed_main_head",
@@ -133,6 +137,8 @@ class ServerDoctorReport(_StrictModel):
         "candidate_commit",
         "current_commit",
         "running_commit",
+        "update_candidate_commit",
+        "update_restored_commit",
     )
     @classmethod
     def validate_commit(cls, value: str | None) -> str | None:
@@ -245,6 +251,16 @@ class ServerDoctorReport(_StrictModel):
                 value=_shown(self.last_backup_uncaptured_projects),
             ),
             NonsecretField(name="last_backup_failure", value=_shown(self.last_backup_failure)),
+            NonsecretField(name="update_operation_state", value=self.update_operation_state),
+            NonsecretField(
+                name="update_candidate_commit",
+                value=_shown(self.update_candidate_commit),
+            ),
+            NonsecretField(
+                name="update_restored_commit",
+                value=_shown(self.update_restored_commit),
+            ),
+            NonsecretField(name="update_failure", value=_shown(self.update_failure)),
             NonsecretField(name="problems", value=_problem_text(self.problems)),
         )
 
@@ -263,6 +279,14 @@ class _BackupDoctorSummary:
     captured_bytes: int | None = None
     protected_projects: int | None = None
     uncaptured_projects: int | None = None
+    failure: str | None = None
+
+
+@dataclass(frozen=True)
+class _DoctorUpdateSummary:
+    state: str
+    candidate_commit: str | None = None
+    restored_commit: str | None = None
     failure: str | None = None
 
 
@@ -445,6 +469,11 @@ class LinuxServerDoctorMachine:
             service_uid=service_uid,
             add_problem=add_problem,
         )
+        update = self._inspect_update(
+            service_uid=service_uid,
+            installation_id=config.installation_id if config is not None else None,
+            add_problem=add_problem,
+        )
         provider_check_status: Literal["available", "unavailable"] = (
             "available"
             if probe is not None
@@ -505,7 +534,63 @@ class LinuxServerDoctorMachine:
             last_backup_protected_projects=backup.protected_projects,
             last_backup_uncaptured_projects=backup.uncaptured_projects,
             last_backup_failure=backup.failure,
+            update_operation_state=update.state,
+            update_candidate_commit=update.candidate_commit,
+            update_restored_commit=update.restored_commit,
+            update_failure=update.failure,
             problems=tuple(problems),
+        )
+
+    def _inspect_update(
+        self,
+        *,
+        service_uid: int,
+        installation_id: str | None,
+        add_problem: Callable[[str], None],
+    ) -> _DoctorUpdateSummary:
+        from rcp.server_ops.update_checkpoint import (
+            UpdateCheckpointRefused,
+            unfinished_rollback_journals,
+        )
+        from rcp.server_ops.update_cutover import (
+            UpdateCutoverRefused,
+            update_operation_receipts,
+        )
+
+        try:
+            operations = update_operation_receipts(
+                self.layout.update_checkpoints_root,
+                expected_uid=service_uid,
+            )
+            journals = unfinished_rollback_journals(
+                self.layout.update_checkpoints_root,
+                expected_uid=service_uid,
+            )
+        except (OSError, UpdateCheckpointRefused, UpdateCutoverRefused):
+            add_problem("update maintenance receipts or rollback journals are unsafe")
+            return _DoctorUpdateSummary(state="unavailable")
+        if journals:
+            add_problem("unfinished update rollback requires sudo rcp server update re-entry")
+        if not operations:
+            return _DoctorUpdateSummary(state="none")
+        _path, latest, _digest = max(
+            operations,
+            key=lambda item: (item[1].updated_at, item[1].operation_id),
+        )
+        if installation_id is not None and latest.installation_id != installation_id:
+            add_problem("latest update receipt belongs to another server installation")
+        runtime_failure = getattr(latest, "runtime_failure", None)
+        if not latest.terminal:
+            add_problem("unfinished source update requires sudo rcp server update re-entry")
+        elif latest.state in {"committed", "rolled_back"} and runtime_failure is not None:
+            add_problem(
+                "selected source release needs safe runtime restart via sudo rcp server update"
+            )
+        return _DoctorUpdateSummary(
+            state=latest.state,
+            candidate_commit=latest.candidate_commit,
+            restored_commit=(latest.base_commit if latest.state == "rolled_back" else None),
+            failure=runtime_failure or latest.failure,
         )
 
     def _resolve_service_identity(

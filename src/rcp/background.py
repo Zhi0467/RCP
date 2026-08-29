@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast, get_args
+from typing import Protocol, cast, get_args
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.write_scope import ProjectWriteScope
@@ -158,6 +158,12 @@ class StartupEffectFence:
         callback()
 
 
+class RuntimeAdmissionGate(Protocol):
+    """The installed-service owner may close new launches during maintenance."""
+
+    def require_open(self, effect: str) -> None: ...
+
+
 @dataclass(frozen=True)
 class StartupRecoveryPlan:
     """Read-only inventory of work ordinary startup would reconcile."""
@@ -287,6 +293,7 @@ class BackgroundAgentTasks:
         on_auto_research_admission_exhausted: AutoResearchAdmissionExhaustedHook | None = None,
         dispatch_authority_resolver: DispatchAuthorityResolver | None = None,
         startup_effect_fence: StartupEffectFence | None = None,
+        runtime_admission_gate: RuntimeAdmissionGate | None = None,
     ) -> None:
         self.store = store
         self.stream = stream
@@ -295,6 +302,7 @@ class BackgroundAgentTasks:
         self.on_auto_research_admission_exhausted = on_auto_research_admission_exhausted
         self.dispatch_authority_resolver = dispatch_authority_resolver or resolve_dispatch_authority
         self.startup_effect_fence = startup_effect_fence
+        self.runtime_admission_gate = runtime_admission_gate
         self._controls: dict[str, AgentProcessControl] = {}
         self._workers: dict[str, threading.Thread] = {}
         self._controls_lock = threading.Lock()
@@ -337,6 +345,8 @@ class BackgroundAgentTasks:
     def _require_startup_effects_open(self, effect: str) -> None:
         if self.startup_effect_fence is not None:
             self.startup_effect_fence.require_open(effect)
+        if self.runtime_admission_gate is not None:
+            self.runtime_admission_gate.require_open(effect)
 
     def recover_at_startup(self) -> None:
         """Reconcile work a previous process left behind. Called once, by the lifespan.
@@ -761,6 +771,18 @@ class BackgroundAgentTasks:
         self._require_startup_effects_open("watcher delivery admission")
         with self._watcher_delivery_lock:
             self._accepting_watcher_deliveries = True
+
+    def close_watcher_notifications(self) -> None:
+        """Close automatic wake admission without stopping durable watchers."""
+
+        with self._watcher_delivery_lock:
+            self._accepting_watcher_deliveries = False
+
+    def runtime_is_idle(self) -> bool:
+        """Report whether every already-launched provider worker has settled."""
+
+        with self._controls_lock:
+            return not self._workers and not self._controls
 
     def _create_and_spawn(
         self,

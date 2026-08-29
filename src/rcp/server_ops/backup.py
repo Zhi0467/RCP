@@ -13,6 +13,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
@@ -1083,28 +1084,50 @@ def read_backup_outcome(
 
 
 @contextmanager
-def backup_run_lock(layout: ServerLayout = DEFAULT_SERVER_LAYOUT) -> Iterator[None]:
+def backup_run_coordination_lock(
+    layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
+    *,
+    expected_uid: int | None = None,
+    expected_gid: int | None = None,
+    timeout: float = 0.0,
+) -> Iterator[None]:
+    """Fence a service-account backup against the root update coordinator."""
+
+    if timeout < 0:
+        raise ValueError("backup coordination timeout must be nonnegative")
+    owner_uid = os.geteuid() if expected_uid is None else expected_uid
+    owner_gid = os.getegid() if expected_gid is None else expected_gid
     path = layout.server_root / _LOCK_NAME
     descriptor = -1
     try:
-        descriptor = os.open(
-            path,
-            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
-            _ARCHIVE_MODE,
-        )
+        flags = os.O_RDWR | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(path, flags | os.O_CREAT | os.O_EXCL, _ARCHIVE_MODE)
+            if (owner_uid, owner_gid) != (os.geteuid(), os.getegid()):
+                os.fchown(descriptor, owner_uid, owner_gid)
+            os.fchmod(descriptor, _ARCHIVE_MODE)
+            os.fsync(descriptor)
+            _fsync_directory(path.parent)
+        except FileExistsError:
+            descriptor = os.open(path, flags)
         metadata = os.fstat(descriptor)
         if (
             not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
+            or (metadata.st_uid, metadata.st_gid) != (owner_uid, owner_gid)
             or stat.S_IMODE(metadata.st_mode) != _ARCHIVE_MODE
         ):
             raise BackupRunRefused("The backup operation lock has unsafe ownership or mode.")
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise BackupRunRefused(
-                "Another backup run is already active. Wait for it to finish before retrying."
-            ) from exc
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    raise BackupRunRefused(
+                        "Another backup run is already active. Wait for it to finish before retrying."
+                    ) from exc
+                time.sleep(min(0.1, deadline - time.monotonic()))
         yield
     except BackupRunRefused:
         raise
@@ -1115,6 +1138,12 @@ def backup_run_lock(layout: ServerLayout = DEFAULT_SERVER_LAYOUT) -> Iterator[No
             with suppress(OSError):
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
+
+
+@contextmanager
+def backup_run_lock(layout: ServerLayout = DEFAULT_SERVER_LAYOUT) -> Iterator[None]:
+    with backup_run_coordination_lock(layout):
+        yield
 
 
 def _publish_new_json(path: Path, model: BaseModel) -> str:
@@ -1309,6 +1338,7 @@ __all__ = [
     "LinuxBackupRunMachine",
     "ProtectedBackupArchive",
     "apply_backup_retention",
+    "backup_run_coordination_lock",
     "backup_run_lock",
     "backup_status_path",
     "build_archive_manifest",

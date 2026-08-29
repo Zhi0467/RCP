@@ -1,4 +1,4 @@
-"""Destructive, explicitly gated qualification of the source-server installer.
+"""Destructive, explicitly gated qualification of source install and rollback.
 
 This test is intentionally absent from ordinary CI execution. It owns an entire
 disposable Ubuntu host, installs system state, and temporarily adds one read-only
@@ -8,6 +8,7 @@ deploy key to the private source repository. See ``docs/server.md``.
 from __future__ import annotations
 
 import contextlib
+import http.cookies
 import json
 import os
 import pty
@@ -25,6 +26,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
 
@@ -32,6 +34,8 @@ import pytest
 from pydantic import TypeAdapter
 
 from rcp.server_ops.models import ServerCommandEvent
+from rcp.server_ops.update import BuiltCandidateReceipt
+from rcp.server_runtime import web_build_identity
 
 _LIVE_GATE = "RCP_RUN_SERVER_INSTALL_LIVE"
 _DISPOSABLE_CONFIRMATION = "RCP_SERVER_INSTALL_LIVE_DISPOSABLE"
@@ -48,6 +52,9 @@ _PTY_TIMEOUT_SECONDS = 60
 _MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 _MAX_COMMAND_OUTPUT_BYTES = 32 * 1024 * 1024
 _EVENT_ADAPTER = TypeAdapter(ServerCommandEvent)
+_CANDIDATE_APP_MARKER = "candidate-only-f6d-live.txt"
+_CANDIDATE_RESEARCH_MARKER = "candidate-only-f6d-live.txt"
+_ROLLBACK_JOURNAL_PHASES = ("prepared", "quarantined", "restored", "verified", "complete")
 
 _LIVE_TEST_ONLY = pytest.mark.skipif(
     os.environ.get(_LIVE_GATE) != "1",
@@ -108,6 +115,7 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
         bootstrap_codes = _BOOTSTRAP_CODE.findall(init_output)
         if len(bootstrap_codes) != 1:
             pytest.fail("interactive team initialization did not show exactly one bootstrap code")
+        bootstrap_code = bootstrap_codes[0]
 
         final_code, final_events = _run_install(Path("/usr/local/bin/rcp"), cwd=Path("/tmp"))
         assert final_code == 0
@@ -155,6 +163,7 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
         assert health["web_build_id"] == first_doctor["running_web_build_id"]
         _assert_password_refused_and_public_key_accepted()
         _assert_narrow_operator_rule()
+        member_id, session_cookie = _enroll_live_member(bootstrap_code)
 
         journal = _run_checked(
             ("sudo", "-n", "journalctl", "--unit=rcp.service", "--no-pager", "--output=cat")
@@ -199,12 +208,1014 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
         assert restarted_doctor["space_id"] == first_doctor["space_id"]
         assert restarted_doctor["instance_id"] == restarted_control["instance_id"]
         assert restarted_doctor["process_pid"] == restarted_control["pid"]
+
+        project = _create_live_update_project(member_id)
+        before_projects = _authenticated_get_json("/api/projects", session_cookie)
+        assert [item["id"] for item in before_projects] == [project["project_id"]]
+        _drive_live_candidate_rollback(
+            workspace=workspace,
+            project=project,
+            base_projects=before_projects,
+            session_cookie=session_cookie,
+        )
     finally:
         if deploy_key_id is not None:
             _delete_deploy_key(token, deploy_key_id)
             _clear_deploy_key_receipt()
         if bootstrap_parent.exists():
             shutil.rmtree(bootstrap_parent)
+
+
+def _enroll_live_member(bootstrap_code: str) -> tuple[str, str]:
+    enrolled, _headers = _http_json(
+        "POST",
+        "/api/team/enroll",
+        {"code": bootstrap_code, "display_name": "Live update operator"},
+    )
+    identity = enrolled.get("identity")
+    token = enrolled.get("token")
+    if not isinstance(identity, dict) or not isinstance(token, str):
+        pytest.fail("team enrollment returned an unsupported response")
+    user = identity.get("user")
+    if not isinstance(user, dict) or not isinstance(user.get("user_id"), str):
+        pytest.fail("team enrollment did not return one member identity")
+    _session, headers = _http_json(
+        "POST",
+        "/api/team/session/exchange",
+        {"token": token},
+    )
+    cookies = http.cookies.SimpleCookie()
+    cookies.load(headers.get("Set-Cookie", ""))
+    if len(cookies) != 1:
+        pytest.fail("team session exchange did not return one cookie")
+    morsel = next(iter(cookies.values()))
+    return str(user["user_id"]), f"{morsel.key}={morsel.value}"
+
+
+def _http_json(
+    method: str,
+    path: str,
+    body: dict[str, object] | None = None,
+    *,
+    cookie: str | None = None,
+) -> tuple[dict[str, object] | list[object], object]:
+    payload = None if body is None else json.dumps(body).encode("utf-8")
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    if cookie is not None:
+        headers["Cookie"] = cookie
+    request = urllib.request.Request(
+        f"http://127.0.0.1:8421{path}",
+        method=method,
+        data=payload,
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            content = response.read(2 * 1024 * 1024 + 1)
+            response_headers = response.headers
+    except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+        pytest.fail(f"live team API request {path} failed: {type(exc).__name__}")
+    if len(content) > 2 * 1024 * 1024:
+        pytest.fail("live team API response exceeded its fixed bound")
+    try:
+        value = json.loads(content)
+    except json.JSONDecodeError:
+        pytest.fail("live team API returned invalid JSON")
+    if not isinstance(value, (dict, list)):
+        pytest.fail("live team API returned an unsupported JSON value")
+    return value, response_headers
+
+
+def _authenticated_get_json(path: str, cookie: str) -> list[dict[str, object]]:
+    value, _headers = _http_json("GET", path, cookie=cookie)
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        pytest.fail("authenticated live read did not return an object list")
+    return value
+
+
+def _create_live_update_project(member_id: str) -> dict[str, str]:
+    script = r"""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from rcp.api import create_app
+from rcp.config import AGENT_EXECUTION_PROFILES
+from rcp.core.models import AuthorizedHuman
+from rcp.providers import configured_runtime_id
+from rcp.server_ops.github import parse_github_repository_ref
+from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
+from rcp.storage import (
+    ProjectProvisioningGitCheckRecord,
+    ProjectProvisioningMachineIntent,
+    ProjectProvisioningProviderCheckRecord,
+    ProjectProvisioningProviderIntent,
+    ProjectProvisioningRepositoryIntent,
+)
+
+member_id = sys.argv[1]
+app = create_app(data_dir=DEFAULT_SERVER_LAYOUT.data_dir)
+store = app.state.services.store
+member = store.space_user(member_id)
+if member is None:
+    raise RuntimeError("live update member disappeared")
+authorized = AuthorizedHuman(
+    space_id=store.space_id,
+    user_id=member.user_id,
+    display_name=member.display_name,
+)
+request = store.create_project_provisioning_request(
+    kind="create_team_project",
+    authorized_by=authorized,
+    name="Live rollback project",
+    state_repository="paper",
+    project_truth_scope=["paper"],
+    default_run_truth_scope=["paper"],
+    machines=[
+        ProjectProvisioningMachineIntent(
+            alias="server",
+            location="local",
+            os_account="rcp",
+            central_root=str(DEFAULT_SERVER_LAYOUT.projects_root),
+        )
+    ],
+    repositories=[
+        ProjectProvisioningRepositoryIntent(
+            alias="paper",
+            repository=parse_github_repository_ref("git@github.com:Zhi0467/RCP.git"),
+            machine_alias="server",
+        )
+    ],
+    provider_checks=[
+        ProjectProvisioningProviderIntent(
+            profile=profile,
+            provider="codex",
+            runtime_id="codex:exec",
+            model="gpt-test",
+            reasoning="medium",
+            machine_alias="server",
+        )
+        for profile in AGENT_EXECUTION_PROFILES
+    ],
+)
+running = store.transition_project_provisioning_request(
+    request.request_id,
+    receipt_id="live-update-start",
+    phase="provisioning_start",
+    expected_revision=request.revision,
+    expected_status="waiting_for_server_setup",
+    to_status="setup_in_progress",
+    machines=request.machines,
+    repositories=request.repositories,
+    provider_checks=request.provider_checks,
+)
+repository = DEFAULT_SERVER_LAYOUT.project_repository_dir(request.proposed_project_id, "paper")
+repository.mkdir(parents=True)
+subprocess.run(("git", "init", "--initial-branch=main", str(repository)), check=True)
+subprocess.run(("git", "-C", str(repository), "config", "user.name", "RCP Live Test"), check=True)
+subprocess.run(
+    ("git", "-C", str(repository), "config", "user.email", "rcp-live@example.invalid"),
+    check=True,
+)
+subprocess.run(
+    (
+        "git",
+        "-C",
+        str(repository),
+        "remote",
+        "add",
+        "origin",
+        "git@github.com:Zhi0467/RCP.git",
+    ),
+    check=True,
+)
+(repository / "README.md").write_text("live rollback fixture\n", encoding="utf-8")
+subprocess.run(("git", "-C", str(repository), "add", "README.md"), check=True)
+subprocess.run(("git", "-C", str(repository), "commit", "-m", "live fixture"), check=True)
+commit = subprocess.run(
+    ("git", "-C", str(repository), "rev-parse", "HEAD"),
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.strip()
+checked_at = store.now()
+machines = [
+    running.machines[0].model_copy(
+        update={"resolved_central_root": str(DEFAULT_SERVER_LAYOUT.projects_root)}
+    )
+]
+repositories = [
+    running.repositories[0].model_copy(
+        update={
+            "resolved_path": str(repository),
+            "checkout_disposition": "request_created",
+            "git_check": ProjectProvisioningGitCheckRecord(
+                status="ready",
+                commit=commit,
+                write_verified=True,
+                deploy_key_label=(
+                    f"rcp:{store.space_id}:{request.proposed_project_id}:paper"
+                ),
+                public_key_fingerprint="SHA256:" + ("A" * 43),
+                checked_at=checked_at,
+            ),
+        }
+    )
+]
+providers = [
+    ProjectProvisioningProviderCheckRecord(
+        **check.model_dump(
+            mode="json",
+            exclude={
+                "status",
+                "binary_path",
+                "version",
+                "resolved_runtime_id",
+                "execution_account",
+                "checked_at",
+                "diagnostic",
+            },
+        ),
+        status="ready",
+        binary_path="/bin/true",
+        version="live-fixture",
+        resolved_runtime_id=configured_runtime_id("codex", "exec"),
+        execution_account="rcp",
+        checked_at=checked_at,
+    )
+    for check in running.provider_checks
+]
+ready = store.transition_project_provisioning_request(
+    request.request_id,
+    receipt_id="live-update-ready",
+    phase="provisioning_review",
+    expected_revision=running.revision,
+    expected_status="setup_in_progress",
+    to_status="ready_for_review",
+    machines=machines,
+    repositories=repositories,
+    provider_checks=providers,
+)
+card = app.state.setup.create_prepared_team_project(ready, seat_member=member.user_id)
+completed = store.transition_project_provisioning_request(
+    request.request_id,
+    receipt_id=f"live-update-complete:{member.user_id}",
+    phase="member_finalize",
+    expected_revision=ready.revision,
+    expected_status="ready_for_review",
+    to_status="completed",
+    machines=ready.machines,
+    repositories=ready.repositories,
+    provider_checks=ready.provider_checks,
+)
+if card["id"] != completed.proposed_project_id:
+    raise RuntimeError("live project finalization changed its reserved identity")
+print(json.dumps({
+    "project_id": completed.proposed_project_id,
+    "repository": str(repository),
+    "research": str(repository / ".research"),
+}, sort_keys=True))
+"""
+    _run_checked(("sudo", "-n", "systemctl", "stop", "rcp.service"))
+    result = _run(
+        (
+            "sudo",
+            "-n",
+            "-u",
+            "rcp",
+            "-H",
+            "/etc/rcp/current/.venv/bin/python",
+            "-c",
+            script,
+            member_id,
+        ),
+        timeout=_COMMAND_TIMEOUT_SECONDS,
+    )
+    _run_checked(("sudo", "-n", "systemctl", "start", "rcp.service"))
+    _wait_for_team_health()
+    if result.returncode != 0:
+        pytest.fail(
+            "live update project setup failed; "
+            f"stdout tail={result.stdout[-4096:]!r}; stderr tail={result.stderr[-4096:]!r}"
+        )
+    try:
+        project = json.loads(result.stdout.splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        pytest.fail("live update project setup returned invalid JSON")
+    if set(project) != {"project_id", "repository", "research"} or not all(
+        isinstance(value, str) for value in project.values()
+    ):
+        pytest.fail("live update project setup returned an unsupported shape")
+    return project
+
+
+def _drive_live_candidate_rollback(
+    *,
+    workspace: Path,
+    project: dict[str, str],
+    base_projects: list[dict[str, object]],
+    session_cookie: str,
+) -> None:
+    candidate_commit, release = _build_failing_candidate(workspace, Path(project["research"]))
+    receipt_path, preflight_path, base_control, base_doctor = _prepare_live_cutover(
+        candidate_commit,
+        release,
+    )
+    outcome = _run_cutover(receipt_path, preflight_path, candidate_commit)
+    if outcome.get("operation_state") != "rolled_back":
+        pytest.fail(f"forced live candidate was not rolled back: {outcome!r}")
+    assert outcome["candidate_commit"] == candidate_commit
+    assert outcome["running_commit"] == base_doctor["running_commit"]
+    assert "forced live candidate readback failure" in str(outcome.get("failure"))
+
+    _assert_live_rollback(
+        outcome=outcome,
+        candidate_commit=candidate_commit,
+        base_commit=str(base_doctor["running_commit"]),
+        project=project,
+        base_projects=base_projects,
+        session_cookie=session_cookie,
+    )
+    for phase in _ROLLBACK_JOURNAL_PHASES:
+        _drive_live_root_death_during_rollback(
+            phase=phase,
+            candidate_commit=candidate_commit,
+            release=release,
+            project=project,
+            base_projects=base_projects,
+            session_cookie=session_cookie,
+        )
+
+
+def _prepare_live_cutover(
+    candidate_commit: str,
+    release: Path,
+) -> tuple[Path, Path, dict[str, object], dict[str, object]]:
+    base_control = _probe_private_control_socket()
+    base_doctor = _run_doctor()
+    receipt_path = Path(
+        f"/home/rcp/rcp-server/update-checkpoints/built-candidate-{candidate_commit}.json"
+    )
+    receipt = BuiltCandidateReceipt(
+        installation_id=str(base_doctor["installation_id"]),
+        source_origin=str(base_doctor["configured_origin"]),
+        base_current_commit=str(base_doctor["current_commit"]),
+        base_running_commit=str(base_doctor["running_commit"]),
+        base_instance_id=str(base_control["instance_id"]),
+        base_process_pid=int(base_control["pid"]),
+        candidate_commit=candidate_commit,
+        release_path=str(release),
+        receipt_path=str(receipt_path),
+        web_build_id=web_build_identity(release / "web" / "dist"),
+        prepared_at=datetime.now(UTC),
+    )
+    descriptor, receipt_name = tempfile.mkstemp(prefix="rcp-live-built-candidate-")
+    os.close(descriptor)
+    temporary_receipt = Path(receipt_name)
+    try:
+        temporary_receipt.write_text(receipt.model_dump_json() + "\n", encoding="utf-8")
+        temporary_receipt.chmod(0o600)
+        # This synthetic candidate is reused across destructive failure drives,
+        # while each receipt remains bound to the newly restarted base process.
+        _run_checked(("sudo", "-n", "rm", "-f", "--", str(receipt_path)))
+        _run_checked(
+            (
+                "sudo",
+                "-n",
+                "install",
+                "--owner=rcp",
+                "--group=rcp",
+                "--mode=0600",
+                str(temporary_receipt),
+                str(receipt_path),
+            )
+        )
+    finally:
+        temporary_receipt.unlink(missing_ok=True)
+
+    rehearsal = _run_checked(
+        (
+            "sudo",
+            "-n",
+            "-u",
+            "rcp",
+            "-H",
+            "/etc/rcp/current/.venv/bin/python",
+            "-m",
+            "rcp.server_ops.rehearsal",
+            "--orchestrate",
+            str(receipt_path),
+            "/home/rcp/rcp-server/data",
+            "/home/rcp/rcp-server/update-checkpoints",
+        ),
+        timeout=_COMMAND_TIMEOUT_SECONDS,
+    )
+    rehearsal_lines = rehearsal.stdout.splitlines()
+    if len(rehearsal_lines) != 1:
+        pytest.fail("synthetic candidate rehearsal did not return one receipt path")
+    preflight_path = Path(rehearsal_lines[0])
+    return receipt_path, preflight_path, base_control, base_doctor
+
+
+def _assert_live_rollback(
+    *,
+    outcome: dict[str, object],
+    candidate_commit: str,
+    base_commit: str,
+    project: dict[str, str],
+    base_projects: list[dict[str, object]],
+    session_cookie: str,
+) -> None:
+    _wait_for_team_health()
+    after_projects = _authenticated_get_json("/api/projects", session_cookie)
+    assert after_projects == base_projects
+    after_doctor = _run_doctor()
+    assert after_doctor["overall_state"] == "healthy"
+    assert after_doctor["current_commit"] == base_commit
+    assert after_doctor["running_commit"] == base_commit
+    assert after_doctor["update_operation_state"] == "rolled_back"
+    assert after_doctor["update_candidate_commit"] == candidate_commit
+    assert after_doctor["update_restored_commit"] == base_commit
+
+    operation = _read_root_json(Path(str(outcome["receipt_path"])))
+    checkpoint = _read_root_json(Path(str(operation["checkpoint_path"])))
+    roots = checkpoint.get("roots")
+    if not isinstance(roots, list):
+        pytest.fail("live rollback checkpoint has no typed replacement roots")
+    app_root = next(
+        (item for item in roots if isinstance(item, dict) and item.get("kind") == "app_data"),
+        None,
+    )
+    project_root = next(
+        (
+            item
+            for item in roots
+            if isinstance(item, dict)
+            and item.get("kind") == "project_research"
+            and item.get("identity") == project["project_id"]
+        ),
+        None,
+    )
+    if app_root is None or project_root is None:
+        pytest.fail("live rollback checkpoint omitted an expected replacement root")
+    live_app_marker = Path(str(app_root["live_path"])) / _CANDIDATE_APP_MARKER
+    live_research_marker = Path(str(project_root["live_path"])) / _CANDIDATE_RESEARCH_MARKER
+    quarantined_app_marker = Path(str(app_root["quarantine_path"])) / _CANDIDATE_APP_MARKER
+    quarantined_research_marker = (
+        Path(str(project_root["quarantine_path"])) / _CANDIDATE_RESEARCH_MARKER
+    )
+    assert not _root_path_exists_or_is_symlink(live_app_marker)
+    assert not _root_path_exists_or_is_symlink(live_research_marker)
+    assert _root_path_exists_or_is_symlink(quarantined_app_marker)
+    assert _root_path_exists_or_is_symlink(quarantined_research_marker)
+    assert _run_checked(("sudo", "-n", "cat", "--", str(quarantined_app_marker))).stdout == (
+        "candidate app data\n"
+    )
+    assert (
+        _run_checked(("sudo", "-n", "cat", "--", str(quarantined_research_marker))).stdout
+        == "candidate project data\n"
+    )
+
+
+def _drive_live_root_death_during_rollback(
+    *,
+    phase: str,
+    candidate_commit: str,
+    release: Path,
+    project: dict[str, str],
+    base_projects: list[dict[str, object]],
+    session_cookie: str,
+) -> None:
+    receipt_path, preflight_path, _base_control, base_doctor = _prepare_live_cutover(
+        candidate_commit,
+        release,
+    )
+    marker_descriptor, marker_name = tempfile.mkstemp(prefix=f"rcp-live-{phase}-")
+    os.close(marker_descriptor)
+    marker_path = Path(marker_name)
+    process = _start_crashing_cutover(
+        receipt_path,
+        preflight_path,
+        candidate_commit,
+        phase=phase,
+        marker_path=marker_path,
+    )
+    try:
+        journal_path = _wait_for_cutover_crash_marker(marker_path, process)
+        _wait_for_rollback_phase(journal_path, phase, process)
+        _kill_process_group(process)
+        stdout, stderr = process.communicate(timeout=10)
+        if process.returncode is None or process.returncode == 0:
+            pytest.fail(f"root coordinator was not killed at rollback phase {phase}")
+        if len(stdout) + len(stderr) > _MAX_COMMAND_OUTPUT_BYTES:
+            pytest.fail("killed root coordinator exceeded its output bound")
+
+        operation = _read_active_update_operation()
+        assert operation["state"] == "rollback_restoring"
+        assert operation["candidate_commit"] == candidate_commit
+        assert operation["base_commit"] == base_doctor["running_commit"]
+
+        # Depending on the killed phase, the replacement roots may be absent or
+        # already restored. A direct systemd start may therefore fail closed or
+        # publish only the update-fenced control plane; it must never serve HTTP.
+        _run(
+            ("sudo", "-n", "systemctl", "start", "rcp.service"),
+            timeout=_PTY_TIMEOUT_SECONDS,
+        )
+        active = (
+            _run(
+                ("sudo", "-n", "systemctl", "is-active", "--quiet", "rcp.service"),
+                timeout=_PTY_TIMEOUT_SECONDS,
+            ).returncode
+            == 0
+        )
+        if active:
+            _wait_for_private_control_socket()
+        response = _run(
+            (
+                "curl",
+                "--silent",
+                "--output",
+                "/dev/null",
+                "--write-out",
+                "%{http_code}",
+                "http://127.0.0.1:8421/api/health",
+            ),
+            timeout=_PTY_TIMEOUT_SECONDS,
+        )
+        assert response.stdout != "200"
+        assert _read_active_update_operation()["state"] == "rollback_restoring"
+        _run_checked(("sudo", "-n", "systemctl", "stop", "rcp.service"))
+
+        resumed = _run(
+            (
+                "sudo",
+                "-n",
+                "/usr/local/bin/rcp",
+                "server",
+                "update",
+                "--machine-readable",
+            ),
+            timeout=_COMMAND_TIMEOUT_SECONDS,
+        )
+        if resumed.returncode != 1:
+            pytest.fail(
+                f"rollback recovery returned an unexpected exit after {phase}; "
+                f"stdout tail={resumed.stdout[-4096:]!r}; "
+                f"stderr tail={resumed.stderr[-4096:]!r}"
+            )
+        recovery_events = []
+        for line in resumed.stdout.splitlines():
+            try:
+                recovery_events.append(_EVENT_ADAPTER.validate_json(line))
+            except Exception:
+                pytest.fail("rollback recovery mixed non-JSON output into its event stream")
+        if len(recovery_events) != 3:
+            pytest.fail("rollback recovery did not return one plan and admission transition")
+        assert recovery_events[0].event == "plan"
+        running_step = recovery_events[1].step
+        assert running_step.phase == "update_admission"
+        assert running_step.state == "running"
+        recovery_step = recovery_events[-1].step
+        assert recovery_step.phase == "update_admission"
+        assert recovery_step.state == "failed"
+        assert recovery_step.message == (
+            "Recovered unfinished source update as rolled_back. Rerun sudo rcp server update "
+            "to begin a fresh, fully inspected command."
+        )
+        recovered = _read_root_json(Path(str(operation["receipt_path"])))
+        assert recovered["state"] == "rolled_back"
+        assert _read_root_json(journal_path)["phase"] == "complete"
+        checkpoint = _read_root_json(Path(str(recovered["checkpoint_path"])))
+        roots = checkpoint.get("roots")
+        if not isinstance(roots, list):
+            pytest.fail("recovered rollback checkpoint lost its replacement roots")
+        for root in roots:
+            if not isinstance(root, dict):
+                pytest.fail("recovered rollback checkpoint has an invalid root")
+            assert not _root_path_exists_or_is_symlink(Path(str(root["partial_path"])))
+
+        _assert_live_rollback(
+            outcome={
+                "receipt_path": operation["receipt_path"],
+            },
+            candidate_commit=candidate_commit,
+            base_commit=str(base_doctor["running_commit"]),
+            project=project,
+            base_projects=base_projects,
+            session_cookie=session_cookie,
+        )
+    finally:
+        if process.poll() is None:
+            _kill_process_group(process)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.communicate(timeout=10)
+        marker_path.unlink(missing_ok=True)
+
+
+def _build_failing_candidate(workspace: Path, research: Path) -> tuple[str, Path]:
+    source_parent = Path(tempfile.mkdtemp(prefix="rcp-live-update-candidate-"))
+    source_parent.chmod(0o755)
+    source = source_parent / "source"
+    try:
+        _run_checked(("git", "clone", "--no-hardlinks", str(workspace), str(source)))
+        target = source / "src" / "rcp" / "server_ops" / "update_cutover.py"
+        content = target.read_text(encoding="utf-8")
+        needle = (
+            "def _live_read_model_digest(receipt, background, catalog, store, "
+            "expected_uid: int) -> str:\n"
+        )
+        injection = (
+            f"    Path('/home/rcp/rcp-server/data/{_CANDIDATE_APP_MARKER}').write_text(\n"
+            "        'candidate app data\\n', encoding='utf-8'\n"
+            "    )\n"
+            f"    Path({str(research / _CANDIDATE_RESEARCH_MARKER)!r}).write_text(\n"
+            "        'candidate project data\\n', encoding='utf-8'\n"
+            "    )\n"
+            "    raise UpdateCutoverRefused('forced live candidate readback failure')\n"
+        )
+        if content.count(needle) != 1:
+            pytest.fail("live candidate injection lost its exact verification owner")
+        target.write_text(content.replace(needle, needle + injection), encoding="utf-8")
+        _run_checked(("git", "-C", str(source), "config", "user.name", "RCP Live Test"))
+        _run_checked(
+            (
+                "git",
+                "-C",
+                str(source),
+                "config",
+                "user.email",
+                "rcp-live@example.invalid",
+            )
+        )
+        _run_checked(("git", "-C", str(source), "add", str(target.relative_to(source))))
+        _run_checked(("git", "-C", str(source), "commit", "-m", "Force live cutover rollback"))
+        candidate_commit = _run_checked(
+            ("git", "-C", str(source), "rev-parse", "HEAD")
+        ).stdout.strip()
+        if re.fullmatch(r"[0-9a-f]{40}", candidate_commit) is None:
+            pytest.fail("synthetic candidate commit is not canonical")
+        release = Path(f"/home/rcp/rcp-server/releases/{candidate_commit}")
+        _run_checked(
+            (
+                "sudo",
+                "-n",
+                "-u",
+                "rcp",
+                "-H",
+                "git",
+                "clone",
+                "--no-checkout",
+                "--no-hardlinks",
+                str(source),
+                str(release),
+            )
+        )
+        _run_checked(
+            (
+                "sudo",
+                "-n",
+                "-u",
+                "rcp",
+                "-H",
+                "git",
+                "-C",
+                str(release),
+                "checkout",
+                "--detach",
+                candidate_commit,
+            )
+        )
+        _run_checked(
+            ("sudo", "-n", "-u", "rcp", "-H", "/usr/local/bin/npm", "--prefix", "web", "ci"),
+            cwd=release,
+        )
+        _run_checked(
+            (
+                "sudo",
+                "-n",
+                "-u",
+                "rcp",
+                "-H",
+                "/usr/local/bin/npm",
+                "--prefix",
+                "web",
+                "run",
+                "build",
+            ),
+            cwd=release,
+        )
+        _run_checked(
+            (
+                "sudo",
+                "-n",
+                "-u",
+                "rcp",
+                "-H",
+                "/usr/bin/env",
+                "UV_MANAGED_PYTHON=1",
+                "UV_PYTHON=3.12",
+                "/usr/local/bin/uv",
+                "sync",
+                "--frozen",
+            ),
+            cwd=release,
+        )
+        return candidate_commit, release
+    finally:
+        shutil.rmtree(source_parent)
+
+
+_CUTOVER_DRIVER = r"""
+import json
+import os
+import pwd
+import signal
+import sys
+from pathlib import Path
+
+from rcp.server_ops.rehearsal import read_verified_candidate_receipt
+from rcp.server_ops.update import BuiltCandidateReceipt, LinuxUpdateMachine, UpdateTarget
+from rcp.server_ops.update_checkpoint import restore_update_checkpoint
+
+built_path = Path(sys.argv[1])
+preflight_path = Path(sys.argv[2])
+candidate_commit = sys.argv[3]
+crash_phase = sys.argv[4] if len(sys.argv) > 4 else None
+marker_path = Path(sys.argv[5]) if len(sys.argv) > 5 else None
+service_uid = pwd.getpwnam("rcp").pw_uid
+built = BuiltCandidateReceipt.model_validate_json(built_path.read_bytes())
+preflight = read_verified_candidate_receipt(preflight_path, expected_uid=service_uid)
+machine = LinuxUpdateMachine()
+if crash_phase is not None:
+    if crash_phase not in {"prepared", "quarantined", "restored", "verified", "complete"}:
+        raise RuntimeError("unsupported rollback crash phase")
+    if marker_path is None or not marker_path.is_absolute():
+        raise RuntimeError("rollback crash marker must be absolute")
+
+    def crash_during_restore(checkpoint_path, checkpoint_sha256, _base_commit):
+        marker_path.write_text(
+            json.dumps({
+                "checkpoint_path": str(checkpoint_path),
+                "journal_path": str(checkpoint_path.parent / "rollback-journal.json"),
+            }, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        child = os.fork()
+        if child == 0:
+            try:
+                account = pwd.getpwnam("rcp")
+                os.setgroups([])
+                os.setgid(account.pw_gid)
+                os.setuid(account.pw_uid)
+
+                def stop_at_phase(observed):
+                    if observed == crash_phase:
+                        os.kill(os.getpid(), signal.SIGSTOP)
+
+                restore_update_checkpoint(
+                    checkpoint_path,
+                    expected_uid=account.pw_uid,
+                    expected_sha256=checkpoint_sha256,
+                    after_phase=stop_at_phase,
+                )
+            except BaseException:
+                os._exit(70)
+            os._exit(0)
+        _pid, status = os.waitpid(child, 0)
+        if status != 0:
+            raise RuntimeError("rollback crash worker exited unexpectedly")
+
+    machine._restore_cutover_checkpoint = crash_during_restore
+with machine.admission():
+    target = UpdateTarget(inspection=machine.inspect(), target_commit=candidate_commit)
+    outcome = machine.cutover_candidate(
+        target,
+        built,
+        preflight,
+        progress=lambda _phase: None,
+    )
+print(json.dumps({
+    "operation_id": outcome.operation_id,
+    "operation_state": outcome.operation_state,
+    "candidate_commit": outcome.candidate_commit,
+    "running_commit": outcome.running_commit,
+    "receipt_path": str(outcome.receipt_path),
+    "receipt_sha256": outcome.receipt_sha256,
+    "failure": outcome.failure,
+}, sort_keys=True))
+"""
+
+
+def _run_cutover(
+    built_receipt: Path,
+    preflight_receipt: Path,
+    candidate_commit: str,
+) -> dict[str, object]:
+    result = _run(
+        (
+            "sudo",
+            "-n",
+            "/etc/rcp/current/.venv/bin/python",
+            "-c",
+            _CUTOVER_DRIVER,
+            str(built_receipt),
+            str(preflight_receipt),
+            candidate_commit,
+        ),
+        timeout=_COMMAND_TIMEOUT_SECONDS,
+    )
+    if result.returncode != 0:
+        pytest.fail(
+            "live source cutover failed outside its automatic rollback path; "
+            f"stdout tail={result.stdout[-4096:]!r}; stderr tail={result.stderr[-4096:]!r}"
+        )
+    try:
+        value = json.loads(result.stdout.splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        pytest.fail("live source cutover returned invalid JSON")
+    if not isinstance(value, dict):
+        pytest.fail("live source cutover returned an unsupported shape")
+    return value
+
+
+def _start_crashing_cutover(
+    built_receipt: Path,
+    preflight_receipt: Path,
+    candidate_commit: str,
+    *,
+    phase: str,
+    marker_path: Path,
+) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        (
+            "sudo",
+            "-n",
+            "/etc/rcp/current/.venv/bin/python",
+            "-c",
+            _CUTOVER_DRIVER,
+            str(built_receipt),
+            str(preflight_receipt),
+            candidate_commit,
+            phase,
+            str(marker_path),
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+
+
+def _wait_for_cutover_crash_marker(
+    marker_path: Path,
+    process: subprocess.Popen[str],
+) -> Path:
+    deadline = time.monotonic() + _COMMAND_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            stdout, stderr = process.communicate(timeout=10)
+            pytest.fail(
+                "root coordinator exited before publishing its rollback crash marker; "
+                f"stdout tail={stdout[-4096:]!r}; stderr tail={stderr[-4096:]!r}"
+            )
+        if marker_path.stat().st_size:
+            try:
+                marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                time.sleep(0.05)
+                continue
+            if not isinstance(marker, dict) or not isinstance(marker.get("journal_path"), str):
+                pytest.fail("rollback crash marker has an unsupported shape")
+            journal_path = Path(marker["journal_path"])
+            if not journal_path.is_absolute():
+                pytest.fail("rollback crash marker named a relative journal")
+            return journal_path
+        time.sleep(0.05)
+    _kill_process_group(process)
+    pytest.fail("root coordinator did not reach rollback restoration before timeout")
+
+
+def _wait_for_rollback_phase(
+    journal_path: Path,
+    phase: str,
+    process: subprocess.Popen[str],
+) -> None:
+    deadline = time.monotonic() + _PTY_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            stdout, stderr = process.communicate(timeout=10)
+            pytest.fail(
+                f"root coordinator exited before rollback phase {phase}; "
+                f"stdout tail={stdout[-4096:]!r}; stderr tail={stderr[-4096:]!r}"
+            )
+        result = _run(
+            ("sudo", "-n", "cat", "--", str(journal_path)),
+            timeout=_PTY_TIMEOUT_SECONDS,
+        )
+        if result.returncode == 0:
+            try:
+                journal = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                time.sleep(0.05)
+                continue
+            if isinstance(journal, dict) and journal.get("phase") == phase:
+                return
+        time.sleep(0.05)
+    _kill_process_group(process)
+    pytest.fail(f"root coordinator did not stop at rollback phase {phase}")
+
+
+def _read_active_update_operation() -> dict[str, object]:
+    script = r"""
+import json
+import os
+from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
+from rcp.server_ops.update_cutover import active_update_operation
+
+active = active_update_operation(
+    DEFAULT_SERVER_LAYOUT.update_checkpoints_root,
+    expected_uid=os.geteuid(),
+)
+if active is None:
+    raise RuntimeError("no active update operation")
+print(active[1].model_dump_json())
+"""
+    output = _run_checked(
+        (
+            "sudo",
+            "-n",
+            "-u",
+            "rcp",
+            "-H",
+            "/etc/rcp/current/.venv/bin/python",
+            "-c",
+            script,
+        ),
+        timeout=_PTY_TIMEOUT_SECONDS,
+    ).stdout
+    try:
+        operation = json.loads(output)
+    except json.JSONDecodeError:
+        pytest.fail("active update operation returned invalid JSON")
+    if not isinstance(operation, dict):
+        pytest.fail("active update operation has an unsupported shape")
+    return operation
+
+
+def _wait_for_private_control_socket() -> dict[str, object]:
+    deadline = time.monotonic() + _PTY_TIMEOUT_SECONDS
+    last_error: BaseException | None = None
+    while time.monotonic() < deadline:
+        try:
+            return _probe_private_control_socket()
+        except pytest.fail.Exception as exc:
+            last_error = exc
+            time.sleep(0.1)
+    pytest.fail(f"fenced service did not publish its control socket: {last_error}")
+
+
+def _read_root_json(path: Path) -> dict[str, object]:
+    output = _run_checked(("sudo", "-n", "cat", "--", str(path))).stdout
+    try:
+        value = json.loads(output)
+    except json.JSONDecodeError:
+        pytest.fail(f"root-owned live receipt {path.name} is invalid")
+    if not isinstance(value, dict):
+        pytest.fail(f"root-owned live receipt {path.name} has an unsupported shape")
+    return value
+
+
+def _wait_for_team_health() -> dict[str, object]:
+    output = _run_checked(
+        (
+            "curl",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--retry",
+            "30",
+            "--retry-connrefused",
+            "--retry-delay",
+            "1",
+            "--retry-max-time",
+            "30",
+            "--max-time",
+            "35",
+            "http://127.0.0.1:8421/api/health",
+        ),
+        timeout=45,
+    ).stdout
+    try:
+        health = json.loads(output)
+    except json.JSONDecodeError:
+        pytest.fail("restarted live service returned invalid health JSON")
+    if not isinstance(health, dict) or health.get("space_kind") != "team":
+        pytest.fail("restarted live service did not return team health")
+    return health
 
 
 def _require_explicit_disposable_host() -> None:
@@ -788,9 +1799,17 @@ def _probe_private_control_socket() -> dict[str, object]:
         result = json.loads(output)
     except json.JSONDecodeError:
         pytest.fail("the installed control probe returned invalid JSON")
-    if set(result) != {"instance_id", "pid", "data_dir_id", "space_id", "space_kind"}:
+    if set(result) != {
+        "instance_id",
+        "pid",
+        "data_dir_id",
+        "space_id",
+        "space_kind",
+        "operations",
+    }:
         pytest.fail("the installed control probe returned an unsupported shape")
     assert result["space_kind"] == "team"
+    assert "update_candidate_verify" in result["operations"]
     assert result["pid"] == int(
         _run_checked(
             (

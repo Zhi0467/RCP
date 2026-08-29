@@ -6,6 +6,7 @@ import socket
 import stat
 import subprocess
 import tempfile
+import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 from io import StringIO
@@ -29,6 +30,7 @@ from rcp.server_ops.doctor import (
     release_relationship,
 )
 from rcp.server_ops.layout import ServerLayout, server_service_unit_text
+from rcp.server_ops.update_cutover import new_update_operation, publish_update_operation
 from rcp.server_runtime import (
     ServerMetadata,
     ServerMetadataError,
@@ -119,11 +121,12 @@ def test_doctor_renders_one_complete_report_through_both_cli_modes() -> None:
     assert [event["event"] for event in events] == ["plan", "step", "step"]
     assert events[-1]["step"]["state"] == "succeeded"
     fields = {item["name"]: item["value"] for item in events[-1]["step"]["fields"]}
-    assert len(fields) == 44
+    assert len(fields) == 48
     assert fields["overall_state"] == "healthy"
     assert fields["candidate_commit"] == "none"
     assert fields["running_commit"] == COMMIT
     assert fields["provider_check_status"] == "available"
+    assert fields["update_operation_state"] == "none"
     assert fields["problems"] == "none"
 
     interactive_code, interactive, interactive_calls = _run_doctor(
@@ -217,6 +220,88 @@ def test_doctor_reports_the_exact_last_protected_backup(
     assert summary.protected_projects == 2
     assert summary.uncaptured_projects == 0
     assert receipt_calls[0]["expected_receipt_sha256"] == "d" * 64
+
+
+def test_doctor_reports_an_unfinished_source_update_as_a_problem(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    layout.update_checkpoints_root.mkdir(parents=True, mode=0o700)
+    built = layout.update_checkpoints_root / f"built-candidate-{OTHER_COMMIT}.json"
+    preflight = layout.update_checkpoints_root / "preflight.json"
+    for path in (built, preflight):
+        path.write_text("receipt\n", encoding="utf-8")
+        path.chmod(0o600)
+    operation = new_update_operation(
+        operation_id=str(uuid.uuid4()),
+        installation_id=INSTALLATION_ID,
+        space_id=SPACE_ID,
+        base_commit=COMMIT,
+        candidate_commit=OTHER_COMMIT,
+        base_instance_id=str(uuid.uuid4()),
+        base_process_pid=421,
+        built_receipt_path=built,
+        built_receipt_sha256="a" * 64,
+        preflight_receipt_path=preflight,
+        preflight_receipt_sha256="b" * 64,
+        update_root=layout.update_checkpoints_root,
+    )
+    publish_update_operation(
+        operation,
+        expected_uid=os.geteuid(),
+        expected_gid=os.getegid(),
+    )
+    problems: list[str] = []
+
+    summary = LinuxServerDoctorMachine(layout)._inspect_update(
+        service_uid=os.geteuid(),
+        installation_id=INSTALLATION_ID,
+        add_problem=problems.append,
+    )
+
+    assert summary.state == "maintenance_closing"
+    assert summary.candidate_commit == OTHER_COMMIT
+    assert summary.restored_commit is None
+    assert problems == ["unfinished source update requires sudo rcp server update re-entry"]
+
+
+@pytest.mark.parametrize("state", ["committed", "rolled_back"])
+def test_doctor_reports_a_selected_release_that_needs_runtime_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    state: str,
+) -> None:
+    layout = _layout(tmp_path)
+    latest = SimpleNamespace(
+        updated_at=datetime(2026, 8, 29, 12, 0, tzinfo=UTC),
+        operation_id=str(uuid.uuid4()),
+        installation_id=INSTALLATION_ID,
+        terminal=True,
+        state=state,
+        candidate_commit=OTHER_COMMIT,
+        base_commit=COMMIT,
+        failure="candidate verification failed" if state == "rolled_back" else None,
+        runtime_failure="deferred runtime restart failed",
+    )
+    monkeypatch.setattr(
+        "rcp.server_ops.update_cutover.update_operation_receipts",
+        lambda _root, *, expected_uid: ((Path("/receipt"), latest, "a" * 64),),
+    )
+    monkeypatch.setattr(
+        "rcp.server_ops.update_checkpoint.unfinished_rollback_journals",
+        lambda _root, *, expected_uid: (),
+    )
+    problems: list[str] = []
+
+    summary = LinuxServerDoctorMachine(layout)._inspect_update(
+        service_uid=os.geteuid(),
+        installation_id=INSTALLATION_ID,
+        add_problem=problems.append,
+    )
+
+    assert summary.state == state
+    assert summary.failure == "deferred runtime restart failed"
+    assert problems == [
+        "selected source release needs safe runtime restart via sudo rcp server update"
+    ]
 
 
 def test_running_release_identity_and_health_are_exact(tmp_path: Path) -> None:

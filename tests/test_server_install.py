@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import uuid
 from contextlib import nullcontext
 from io import StringIO
 from pathlib import Path
@@ -33,6 +34,7 @@ from rcp.server_ops.install import (
     prepare_install_command,
 )
 from rcp.server_ops.layout import ServerLayout
+from rcp.server_ops.update_cutover import new_update_operation, publish_update_operation
 
 INSTALLATION_ID = "123e4567-e89b-42d3-a456-426614174000"
 COMMIT = "a" * 40
@@ -960,6 +962,7 @@ def test_managed_checkout_fetches_clean_main_but_refuses_install_owned_version_c
     layout.source_checkout.mkdir(parents=True)
     (layout.source_checkout / ".git").mkdir()
     layout.restore_operations_root.mkdir(parents=True)
+    layout.update_checkpoints_root.mkdir(parents=True, mode=0o700)
     machine = server_install.LinuxInstallMachine(layout)
     machine._service_uid = os.getuid()
     machine._service_gid = os.getgid()
@@ -1010,6 +1013,53 @@ def test_managed_checkout_fetches_clean_main_but_refuses_install_owned_version_c
     monkeypatch.setattr(machine, "_git_text", advanced_git_text)
     with pytest.raises(InstallRefused, match="Version changes belong"):
         machine.converge_source_checkout(access)
+
+
+def test_install_routes_an_unfinished_update_before_touching_source(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    layout = _temporary_layout(tmp_path)
+    layout.restore_operations_root.mkdir(parents=True)
+    layout.update_checkpoints_root.mkdir(parents=True, mode=0o700)
+    built = layout.update_checkpoints_root / f"built-candidate-{'b' * 40}.json"
+    preflight = layout.update_checkpoints_root / "preflight.json"
+    for path in (built, preflight):
+        path.write_text("receipt\n", encoding="utf-8")
+        path.chmod(0o600)
+    operation = new_update_operation(
+        operation_id=str(uuid.uuid4()),
+        installation_id=INSTALLATION_ID,
+        space_id=str(uuid.uuid4()),
+        base_commit=COMMIT,
+        candidate_commit="b" * 40,
+        base_instance_id=str(uuid.uuid4()),
+        base_process_pid=421,
+        built_receipt_path=built,
+        built_receipt_sha256="a" * 64,
+        preflight_receipt_path=preflight,
+        preflight_receipt_sha256="b" * 64,
+        update_root=layout.update_checkpoints_root,
+    )
+    publish_update_operation(
+        operation,
+        expected_uid=os.geteuid(),
+        expected_gid=os.getegid(),
+    )
+    machine = server_install.LinuxInstallMachine(layout)
+    machine._service_uid = os.geteuid()
+    machine._service_gid = os.getegid()
+    stopped: list[str] = []
+    monkeypatch.setattr(
+        server_install.InstalledSystemServiceController,
+        "stop",
+        lambda _self: stopped.append("stopped"),
+    )
+
+    with pytest.raises(InstallRefused, match="sudo rcp server update"):
+        machine.converge_source_checkout(_source_access(private=False))
+
+    assert stopped == ["stopped"]
 
 
 def test_release_build_runs_exact_managed_commands_as_service_account(
@@ -1065,6 +1115,7 @@ def test_service_install_keeps_fresh_data_stopped_and_disabled(
     layout = _temporary_layout(tmp_path)
     release = layout.release_dir(COMMIT)
     layout.restore_operations_root.mkdir(parents=True)
+    layout.update_checkpoints_root.mkdir(parents=True)
     machine = server_install.LinuxInstallMachine(layout)
     machine._service_uid = os.getuid()
     machine._service_gid = os.getgid()
@@ -1179,6 +1230,7 @@ def test_backup_timer_is_fenced_before_loaded_unit_changes(monkeypatch) -> None:
 
 def test_activation_reads_team_health_and_stops_a_wrong_space(monkeypatch) -> None:
     machine = server_install.LinuxInstallMachine()
+    monkeypatch.setattr(machine, "_require_no_unfinished_update", lambda: None)
     commands = []
     fenced = False
 

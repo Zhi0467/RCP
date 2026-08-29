@@ -72,6 +72,8 @@ from rcp.control import admit_experiment_watcher_invocation
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
+    SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
+    SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
 )
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
@@ -124,6 +126,7 @@ from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.control import (
     SERVER_CONTROL_OPERATIONS,
     ServerControlBackupCaptureResult,
+    ServerControlError,
     ServerControlPeer,
     ServerControlProbeResult,
     ServerControlProjectPlanResult,
@@ -132,9 +135,19 @@ from rcp.server_ops.control import (
     ServerControlProviderPlanResult,
     ServerControlRequest,
     ServerControlServer,
+    ServerControlUpdateResult,
 )
+from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.project_provision import ProjectProvisionCoordinator
 from rcp.server_ops.provider_readiness import ProviderReadinessCoordinator
+from rcp.server_ops.update_cutover import (
+    RuntimeAdmissionGate,
+    UpdateAdmissionClosed,
+    UpdateCutoverRefused,
+    UpdateRuntimeBoundary,
+    UpdateServiceCoordinator,
+    load_update_runtime_boundary,
+)
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
 from rcp.service import (
     CoachRequest,
@@ -167,6 +180,22 @@ from rcp.watchers import (
 from rcp.web_assets import web_dist_path
 
 logger = logging.getLogger(__name__)
+
+
+def _installed_rollback_journals(update_root: Path) -> tuple[Path, ...]:
+    """Inspect rollback state without importing the rehearsal cycle at module load."""
+
+    from rcp.server_ops.update_checkpoint import (
+        UpdateCheckpointRefused,
+        unfinished_rollback_journals,
+    )
+
+    try:
+        return unfinished_rollback_journals(update_root, expected_uid=os.geteuid())
+    except (OSError, UpdateCheckpointRefused) as exc:
+        raise RuntimeError(
+            "Installed update recovery state is unsafe; run sudo rcp server update."
+        ) from exc
 
 
 class TeamPublicAuthBodyLimit:
@@ -245,6 +274,7 @@ def create_app(
     acceptance_agent: bool = False,
     trusted_principal_resolver: TrustedPrincipalResolver | None = None,
     startup_effect_fence: StartupEffectFence | None = None,
+    server_layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
 ) -> FastAPI:
     # macOS exposes /tmp through /private/tmp. Keep every cache and manifest
     # pointer in the same canonical spelling so relative canonical-state paths
@@ -258,6 +288,35 @@ def create_app(
     )
     if identity.data_dir_id != data_dir_identity(app_data):
         raise ValueError("Server metadata does not identify this RCP data directory.")
+    update_runtime_boundary: UpdateRuntimeBoundary | None = None
+    installed_update_layout = app_data == server_layout.data_dir.resolve(strict=False)
+    if installed_update_layout and server_layout.update_checkpoints_root.exists():
+        pending_rollback_journals = _installed_rollback_journals(
+            server_layout.update_checkpoints_root
+        )
+        if pending_rollback_journals:
+            raise RuntimeError(
+                "Installed rollback restoration is incomplete; run sudo rcp server update."
+            )
+    runtime_admission_gate = RuntimeAdmissionGate()
+    background_admission_gate = RuntimeAdmissionGate()
+    if (
+        identity.control_socket is not None
+        and identity.running_commit is not None
+        and installed_update_layout
+    ):
+        update_runtime_boundary = load_update_runtime_boundary(
+            running_commit=identity.running_commit,
+            layout=server_layout,
+            expected_uid=os.geteuid(),
+        )
+        if update_runtime_boundary is not None:
+            runtime_admission_gate = RuntimeAdmissionGate(closed=True)
+            background_admission_gate = RuntimeAdmissionGate(closed=True)
+            if startup_effect_fence is None:
+                startup_effect_fence = StartupEffectFence(
+                    f"server update {update_runtime_boundary.receipt.operation_id}"
+                )
     store = AppStore(app_data / "rcp.sqlite3")
     space_id = store.space_id
     space_kind = store.space_kind
@@ -265,6 +324,55 @@ def create_app(
     provider_readiness_coordinator: ProviderReadinessCoordinator | None = None
     project_provision_coordinator: ProjectProvisionCoordinator | None = None
     backup_capture_coordinator: BackupCaptureCoordinator | None = None
+    update_service_coordinator: UpdateServiceCoordinator | None = None
+    startup_effect_runtime_event = threading.Event()
+    startup_effect_release_error: list[str | None] = [None]
+
+    def capture_sqlite_for_control() -> ServerControlBackupCaptureResult:
+        assert backup_capture_coordinator is not None
+        publication = backup_capture_coordinator.capture_sqlite()
+        receipt = publication.receipt
+        return ServerControlBackupCaptureResult(
+            instance_id=identity.instance_id,
+            pid=identity.pid,
+            data_dir_id=identity.data_dir_id,
+            space_id=space_id,
+            capture_id=receipt.capture_id,
+            receipt_path=str(publication.receipt_path),
+            receipt_sha256=publication.receipt_sha256,
+            snapshot_sha256=receipt.sqlite_snapshot.sha256,
+            status=receipt.status,
+            project_count=len(receipt.projects),
+            uncaptured_project_count=sum(
+                project.status == "uncaptured" for project in receipt.projects
+            ),
+        )
+
+    def update_control_result(
+        receipt,
+        digest: str,
+        *,
+        capture: ServerControlBackupCaptureResult | None = None,
+        verification_sha256: str | None = None,
+    ) -> ServerControlUpdateResult:
+        if identity.running_commit is None:
+            raise ServerControlError(
+                "operation_refused",
+                "Update maintenance requires one installed running release commit.",
+            )
+        return ServerControlUpdateResult(
+            instance_id=identity.instance_id,
+            pid=identity.pid,
+            data_dir_id=identity.data_dir_id,
+            space_id=space_id,
+            operation_id=receipt.operation_id,
+            operation_state=receipt.state,
+            receipt_sha256=digest,
+            running_commit=identity.running_commit,
+            capture=capture,
+            verification_sha256=verification_sha256,
+        )
+
     if identity.control_socket is not None:
         if space_kind != "team" or identity.owner_kind != "cli":
             raise ValueError(
@@ -281,13 +389,37 @@ def create_app(
             | ServerControlProjectPlanResult
             | ServerControlProjectStepResult
             | ServerControlBackupCaptureResult
+            | ServerControlUpdateResult
         ):
+            update_operations = {
+                "update_maintenance_enter",
+                "update_candidate_verify",
+                "update_fence_release",
+                "update_maintenance_abort",
+            }
+            if request.operation not in {"probe", *update_operations}:
+                try:
+                    background_admission_gate.require_open(
+                        f"server-control operation {request.operation}"
+                    )
+                except UpdateAdmissionClosed as exc:
+                    raise ServerControlError("operation_refused", str(exc)) from exc
             if (
                 startup_effect_fence is not None
                 and startup_effect_fence.active
-                and request.operation != "probe"
+                and request.operation not in {"probe", *update_operations}
             ):
                 startup_effect_fence.require_open(f"server-control operation {request.operation}")
+            if request.operation in update_operations and _peer.uid != 0:
+                raise ServerControlError(
+                    "operation_refused",
+                    "Update maintenance requires the root server coordinator.",
+                )
+            if request.operation in update_operations and update_service_coordinator is None:
+                raise ServerControlError(
+                    "operation_refused",
+                    "This process does not own the installed server update layout.",
+                )
             match request.operation:
                 case "probe":
                     return ServerControlProbeResult(
@@ -328,24 +460,64 @@ def create_app(
                         target_id=request.target_id,
                     )
                 case "backup_sqlite_capture":
-                    assert backup_capture_coordinator is not None
-                    publication = backup_capture_coordinator.capture_sqlite()
-                    receipt = publication.receipt
-                    return ServerControlBackupCaptureResult(
-                        instance_id=identity.instance_id,
-                        pid=identity.pid,
-                        data_dir_id=identity.data_dir_id,
-                        space_id=space_id,
-                        capture_id=receipt.capture_id,
-                        receipt_path=str(publication.receipt_path),
-                        receipt_sha256=publication.receipt_sha256,
-                        snapshot_sha256=receipt.sqlite_snapshot.sha256,
-                        status=receipt.status,
-                        project_count=len(receipt.projects),
-                        uncaptured_project_count=sum(
-                            project.status == "uncaptured" for project in receipt.projects
-                        ),
+                    return capture_sqlite_for_control()
+                case "update_maintenance_enter":
+                    assert update_service_coordinator is not None
+                    assert request.selector_id is not None
+                    assert request.boundary_sha256 is not None
+                    try:
+                        receipt, digest, capture = update_service_coordinator.enter_maintenance(
+                            operation_id=request.selector_id,
+                            receipt_sha256=request.boundary_sha256,
+                            timeout=SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
+                        )
+                    except UpdateCutoverRefused as exc:
+                        raise ServerControlError("operation_refused", str(exc)) from exc
+                    return update_control_result(receipt, digest, capture=capture)
+                case "update_candidate_verify":
+                    assert update_service_coordinator is not None
+                    assert request.selector_id is not None
+                    assert request.boundary_sha256 is not None
+                    try:
+                        receipt, digest, verification = (
+                            update_service_coordinator.verify_running_release(
+                                operation_id=request.selector_id,
+                                receipt_sha256=request.boundary_sha256,
+                            )
+                        )
+                    except UpdateCutoverRefused as exc:
+                        raise ServerControlError("operation_refused", str(exc)) from exc
+                    return update_control_result(
+                        receipt,
+                        digest,
+                        verification_sha256=verification,
                     )
+                case "update_fence_release":
+                    assert update_service_coordinator is not None
+                    assert request.selector_id is not None
+                    assert request.boundary_sha256 is not None
+                    try:
+                        receipt, digest = update_service_coordinator.release_fence(
+                            operation_id=request.selector_id,
+                            receipt_sha256=request.boundary_sha256,
+                            timeout=SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
+                        )
+                    except UpdateCutoverRefused as exc:
+                        raise ServerControlError("operation_refused", str(exc)) from exc
+                    return update_control_result(receipt, digest)
+                case "update_maintenance_abort":
+                    assert update_service_coordinator is not None
+                    assert request.selector_id is not None
+                    assert request.boundary_sha256 is not None
+                    try:
+                        receipt, digest = update_service_coordinator.abort_before_switch(
+                            operation_id=request.selector_id,
+                            receipt_sha256=request.boundary_sha256,
+                            timeout=SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
+                        )
+                    except UpdateCutoverRefused as exc:
+                        raise ServerControlError("operation_refused", str(exc)) from exc
+                    return update_control_result(receipt, digest)
             raise AssertionError(f"Unhandled server control operation {request.operation!r}")
 
         control_server = ServerControlServer(
@@ -678,6 +850,7 @@ def create_app(
         background_task_stream,
         on_stream_closed=refresh_cached_project_after_stream,
         startup_effect_fence=startup_effect_fence,
+        runtime_admission_gate=background_admission_gate,
     )
     auto_research_experiment_coordinator = AutoResearchExperimentCoordinator(
         store,
@@ -984,9 +1157,68 @@ def create_app(
             # availability when the project's remote machine is unavailable.
             logger.warning("Could not sweep remote run stages: %s", exc)
 
+    startup_maintenance: list[asyncio.Task[None]] = []
+    runtime_loop: list[asyncio.AbstractEventLoop | None] = [None]
+
+    def pause_update_runtime_owners(timeout: float) -> None:
+        """Stop process-owned pollers and wait for already-scheduled async reads."""
+
+        watcher_poller.stop()
+        graph_watcher_retry_worker.stop(timeout=timeout)
+        if watcher_poller.is_running() or graph_watcher_retry_worker.is_running():
+            raise UpdateCutoverRefused("Timed out stopping watcher polling at the update boundary.")
+        loop = runtime_loop[0]
+        if loop is None or loop.is_closed():
+            raise UpdateCutoverRefused(
+                "The app runtime loop is unavailable at the update boundary."
+            )
+
+        async def wait_for_scheduled_reads() -> None:
+            pending = {
+                task
+                for task in (
+                    *startup_maintenance,
+                    *project_display_cache.reconciliation_tasks.values(),
+                )
+                if not task.done()
+            }
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        future = asyncio.run_coroutine_threadsafe(wait_for_scheduled_reads(), loop)
+        try:
+            future.result(timeout=timeout)
+        except TimeoutError as exc:
+            raise UpdateCutoverRefused(
+                "Timed out waiting for scheduled runtime reads to settle."
+            ) from exc
+
+    def resume_update_runtime_owners() -> None:
+        graph_watcher_retry_worker.start()
+        watcher_poller.start()
+
+    if control_server is not None and installed_update_layout:
+        update_service_coordinator = UpdateServiceCoordinator(
+            layout=server_layout,
+            instance_metadata=identity,
+            space_id=space_id,
+            admission=runtime_admission_gate,
+            background_admission=background_admission_gate,
+            background=background_tasks,
+            capture_sqlite=capture_sqlite_for_control,
+            catalog=catalog,
+            store=store,
+            startup_effect_fence=startup_effect_fence,
+            runtime_started=startup_effect_runtime_event,
+            runtime_error=lambda: startup_effect_release_error[0],
+            pause_runtime_owners=pause_update_runtime_owners,
+            resume_runtime_owners=resume_update_runtime_owners,
+        )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        startup_maintenance: list[asyncio.Task[None]] = []
+        startup_maintenance.clear()
+        runtime_loop[0] = asyncio.get_running_loop()
         control_started = False
         runtime_started = False
         runtime_start_lock = asyncio.Lock()
@@ -1093,7 +1325,7 @@ def create_app(
                     control_started = True
                 runtime_started = True
                 app.state.startup_effect_runtime_started = True
-                app.state.startup_effect_runtime_event.set()
+                startup_effect_runtime_event.set()
 
         release_task: asyncio.Task[None] | None = None
         fenced_startup = startup_effect_fence is not None and startup_effect_fence.active
@@ -1121,7 +1353,8 @@ def create_app(
                     try:
                         await start_deferred_runtime()
                     except BaseException as exc:
-                        app.state.startup_effect_release_error = str(exc)
+                        startup_effect_release_error[0] = str(exc)
+                        app.state.startup_effect_release_error = startup_effect_release_error[0]
                         logger.exception("Deferred startup failed after the effect fence opened.")
 
                 release_task = asyncio.create_task(resume_after_release())
@@ -1153,6 +1386,7 @@ def create_app(
             # so they must leave it in place across worker restarts.
             if getattr(sys, "frozen", False):
                 remove_server_metadata(app_data, instance_id=identity.instance_id)
+            runtime_loop[0] = None
 
     app = FastAPI(title="RCP", version=__version__, lifespan=lifespan)
     app.state.services = services
@@ -1175,9 +1409,12 @@ def create_app(
     app.state.startup_effect_fence = startup_effect_fence
     app.state.startup_recovery_plan = None
     app.state.startup_effect_runtime_started = False
-    app.state.startup_effect_runtime_event = threading.Event()
+    app.state.startup_effect_runtime_event = startup_effect_runtime_event
     app.state.startup_effect_release_task = None
     app.state.startup_effect_release_error = None
+    app.state.update_runtime_boundary = update_runtime_boundary
+    app.state.runtime_admission_gate = runtime_admission_gate
+    app.state.background_admission_gate = background_admission_gate
     if space_kind == "team":
         app.add_middleware(TeamPublicAuthBodyLimit)
     app.add_middleware(
@@ -1187,6 +1424,23 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def enforce_update_maintenance(request: Request, call_next):
+        try:
+            with runtime_admission_gate.mutation(f"HTTP {request.method} {request.scope['path']}"):
+                return await call_next(request)
+        except UpdateAdmissionClosed as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": {
+                        "code": "server_update_maintenance",
+                        "message": str(exc),
+                    }
+                },
+                headers={"Retry-After": "5"},
+            )
 
     @app.middleware("http")
     async def require_current_instance(request: Request, call_next):

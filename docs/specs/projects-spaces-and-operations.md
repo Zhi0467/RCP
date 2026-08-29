@@ -509,9 +509,14 @@ every other external effect. Any attempted effect fails preflight. After it
 passes, the updater closes mutation and machine-operation admission, waits for
 in-flight provider turns, mutations, backups, provisioning steps, and transfer
 uploads to reach a durable boundary, and enters a short maintenance window.
-Watchers remain durable and do not have to finish. The updater takes a final
-local rollback checkpoint of all RCP-owned state the candidate startup may
-change, then the narrow root portion switches `current` and restarts systemd
+The update holds the same fixed lock as protected backup for the entire admitted
+operation, so an already-running backup must finish before maintenance and a new
+backup cannot overlap cutover. Every HTTP method and non-update control-socket
+operation is fenced. Watchers remain durable, but their polling and retry owners
+are stopped; after those owners join, provider-worker idleness and already
+scheduled reconciliation reads are checked again before capture. The updater
+takes a final local rollback checkpoint of all RCP-owned state the candidate
+startup may change, then the narrow root portion switches `current` and restarts systemd
 with normal work still closed and the same external-effect fence still active.
 Provider capability warming, watcher poll/delivery, timers, recovery dispatch,
 remote-stage cleanup, Git writes, and every other external effect remain
@@ -611,14 +616,31 @@ silent rollback. The checkpoint is an update-local safety boundary, not the
 off-server backup format. The service account receives no general sudo or
 systemd-control permission.
 
+Fence release has its own durable point of no return. The selected candidate or
+restored old release first enters a nonterminal reopening state; only after its
+deferred runtime owners start successfully does the receipt become `committed`
+or `rolled_back`. A crash or startup failure remains separately recorded as a
+selected-release runtime failure. Re-entry performs one ordinary stop/start and
+identity probe for that already-selected release without reversing a completed
+rollback decision. The candidate failure remains loud on a healthy rollback;
+it is not confused with failure to restart the restored service.
+
 Rollback is a crash-safe replacement, not an overlay. Before moving the failed
 candidate's app-data or server-local `.research` roots to request-specific
 quarantine, the coordinator fsyncs a phase journal beside the verified
-checkpoint. Re-entry through install, update, or doctor sees an unfinished
-journal, leaves service stopped, and idempotently restores and verifies the
-previous bytes/release before anything can serve. Candidate-created unknown
+checkpoint. Update re-entry sees one unambiguous unfinished journal, leaves
+service stopped, and idempotently restores and verifies the previous
+bytes/release before anything can serve. Install refuses activation and routes
+the operator to that update recovery; doctor reports the same state without
+mutating it. Candidate-created unknown
 roots remain only in quarantine; a coordinator crash cannot strand a mixed old
-and new data tree or make startup skip the pending restoration.
+and new data tree or make startup skip the pending restoration. Restore consumes
+the exact checkpoint path and SHA-256 recorded in the update receipt. An
+installed process checks for an unfinished rollback journal before opening
+SQLite or creating any live root, so direct systemd startup fails closed during
+partial replacement; if restoration is already complete but the update receipt
+is not, startup remains behind the same maintenance/effect fence until ordinary
+`sudo rcp server update` recovery finishes the selected old release.
 
 The source checkout has its own fetch identity, separate from every project. A
 public RCP origin needs no secret; a private origin uses a dedicated read-only

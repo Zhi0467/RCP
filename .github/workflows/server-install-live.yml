@@ -1,4 +1,4 @@
-name: Team server install qualification
+name: Team server install and update qualification
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
     name: install on ${{ matrix.runner }}
     if: github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -86,7 +86,7 @@ jobs:
           umask 077
           printf '%s' "$RCP_LIVE_GITHUB_ADMIN_TOKEN" > "$RUNNER_TEMP/rcp-live-github-admin-token"
 
-      - name: Drive the full source-server installation
+      - name: Drive source installation and forced update rollback
         shell: bash
         env:
           RCP_RUN_SERVER_INSTALL_LIVE: "1"

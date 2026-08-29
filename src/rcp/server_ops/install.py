@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -907,6 +908,7 @@ class LinuxInstallMachine:
 
     def converge_source_checkout(self, access: SourceAccess) -> ManagedCheckout:
         self._require_service_identity()
+        self._require_no_unfinished_update()
         if any(self.layout.restore_operations_root.iterdir()):
             raise InstallRefused(
                 "An unfinished restore operation blocks install. Resume server restore before "
@@ -1061,6 +1063,7 @@ class LinuxInstallMachine:
         release: Path,
     ) -> ServiceInstallState:
         self._require_service_identity()
+        self._require_no_unfinished_update()
         if any(self.layout.restore_operations_root.iterdir()):
             raise InstallRefused(
                 "An unfinished restore operation appeared before activation. Resume server "
@@ -1113,7 +1116,45 @@ class LinuxInstallMachine:
         state = "active" if active == "active" else "initialized_stopped"
         return ServiceInstallState(data_state="initialized", service_state=state)
 
+    def _require_no_unfinished_update(self) -> None:
+        from rcp.server_ops.update_checkpoint import (
+            UpdateCheckpointRefused,
+            unfinished_rollback_journals,
+        )
+        from rcp.server_ops.update_cutover import (
+            UpdateCutoverRefused,
+            update_operation_needing_recovery,
+        )
+
+        self._require_service_identity()
+        assert self._service_uid is not None
+        try:
+            pending = update_operation_needing_recovery(
+                self.layout.update_checkpoints_root,
+                expected_uid=self._service_uid,
+            )
+            journals = unfinished_rollback_journals(
+                self.layout.update_checkpoints_root,
+                expected_uid=self._service_uid,
+            )
+        except (OSError, UpdateCheckpointRefused, UpdateCutoverRefused) as exc:
+            with suppress(InstalledServiceControlRefused):
+                InstalledSystemServiceController(self.layout).stop()
+            raise InstallRefused(
+                "Update recovery state is unsafe. RCP kept the service stopped; run sudo rcp "
+                "server update to resume the exact durable operation."
+            ) from exc
+        if pending is None and not journals:
+            return
+        with suppress(InstalledServiceControlRefused):
+            InstalledSystemServiceController(self.layout).stop()
+        raise InstallRefused(
+            "An unfinished source update or rollback blocks install. RCP kept the service "
+            "stopped; run sudo rcp server update to resume it."
+        )
+
     def activate_and_verify(self) -> ServiceHealth:
+        self._require_no_unfinished_update()
         _require_command(
             ("systemctl", "enable", "--now", self.layout.service_unit_name),
             "systemd could not enable and start rcp.service. Run systemctl status --no-pager "
@@ -1955,6 +1996,139 @@ def read_systemd_unit_state(unit: str) -> tuple[str, str]:
     )
 
 
+class InstalledServiceControlRefused(RuntimeError):
+    """The narrow installed-service stop/start or pointer fence failed."""
+
+
+class InstalledSystemServiceController:
+    """Root-only stop/switch/start seam shared by install recovery and update."""
+
+    def __init__(
+        self,
+        layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
+        *,
+        runner=None,
+        root_identity: tuple[int, int] = (0, 0),
+    ) -> None:
+        self.layout = layout
+        self.runner = runner or (
+            lambda argv: _run_process(
+                argv,
+                timeout=SERVER_INSTALL_SERVICE_TIMEOUT_SECONDS,
+            )
+        )
+        self.root_uid, self.root_gid = root_identity
+
+    def current_release(self) -> Path:
+        current = self.layout.current_release
+        try:
+            metadata = current.lstat()
+            target = Path(os.readlink(current))
+        except OSError as exc:
+            raise InstalledServiceControlRefused(
+                "The installed current release pointer is unavailable."
+            ) from exc
+        if (
+            not stat.S_ISLNK(metadata.st_mode)
+            or (metadata.st_uid, metadata.st_gid) != (self.root_uid, self.root_gid)
+            or not target.is_absolute()
+            or target.parent != self.layout.releases_root
+        ):
+            raise InstalledServiceControlRefused(
+                "The installed current release pointer is unsafe or unowned."
+            )
+        try:
+            if self.layout.release_dir(target.name) != target:
+                raise ValueError
+        except ValueError as exc:
+            raise InstalledServiceControlRefused(
+                "The installed current pointer does not name one exact release commit."
+            ) from exc
+        return target
+
+    def stop(self) -> None:
+        self._command(("systemctl", "stop", self.layout.service_unit_name))
+        if self._property("ActiveState") != "inactive" or self._property("MainPID") != "0":
+            raise InstalledServiceControlRefused(
+                "systemd did not prove the RCP service stopped with no main process."
+            )
+
+    def start(self) -> int:
+        self._command(("systemctl", "start", self.layout.service_unit_name))
+        active = self._property("ActiveState")
+        main_pid = self._property("MainPID")
+        try:
+            pid = int(main_pid)
+        except ValueError as exc:
+            raise InstalledServiceControlRefused(
+                "systemd returned an invalid RCP main process identity."
+            ) from exc
+        if active != "active" or pid <= 0:
+            raise InstalledServiceControlRefused(
+                "systemd did not prove the RCP service started with one main process."
+            )
+        return pid
+
+    def switch_current(self, *, expected: Path, target: Path) -> None:
+        expected = expected.resolve(strict=False)
+        target = target.resolve(strict=False)
+        if self.current_release() != expected:
+            raise InstalledServiceControlRefused(
+                "The installed current release changed before the atomic switch."
+            )
+        for release in (expected, target):
+            try:
+                if (
+                    self.layout.release_dir(release.name) != release
+                    or not stat.S_ISDIR(release.lstat().st_mode)
+                    or release.is_symlink()
+                ):
+                    raise ValueError
+            except (OSError, ValueError) as exc:
+                raise InstalledServiceControlRefused(
+                    "A release pointer target is missing, unsafe, or outside the release root."
+                ) from exc
+        current = self.layout.current_release
+        temporary = current.parent / f".{current.name}.update-{uuid.uuid4().hex}"
+        try:
+            os.symlink(target, temporary)
+            os.lchown(temporary, self.root_uid, self.root_gid)
+            os.replace(temporary, current)
+            _fsync_directory(current.parent)
+        except OSError as exc:
+            raise InstalledServiceControlRefused(
+                "The installed current release could not be switched atomically."
+            ) from exc
+        finally:
+            temporary.unlink(missing_ok=True)
+        if self.current_release() != target:
+            raise InstalledServiceControlRefused(
+                "The installed current release switch did not survive readback."
+            )
+
+    def _property(self, name: str) -> str:
+        completed = self.runner(
+            (
+                "systemctl",
+                "show",
+                f"--property={name}",
+                "--value",
+                self.layout.service_unit_name,
+            )
+        )
+        value = completed.stdout.strip()
+        if completed.returncode != 0 or not value or "\n" in value:
+            raise InstalledServiceControlRefused(f"systemd could not read the RCP service {name}.")
+        return value
+
+    def _command(self, argv: tuple[str, ...]) -> None:
+        completed = self.runner(argv)
+        if completed.returncode != 0:
+            raise InstalledServiceControlRefused(
+                "systemd refused the bounded RCP service lifecycle command."
+            )
+
+
 def _converge_current_release(layout: ServerLayout, release: Path) -> None:
     current = layout.current_release
     _reject_symlink_ancestry(current.parent)
@@ -2026,6 +2200,8 @@ __all__ = [
     "HostFacts",
     "InstallMachine",
     "InstallRefused",
+    "InstalledServiceControlRefused",
+    "InstalledSystemServiceController",
     "LinuxInstallMachine",
     "ManagedCheckout",
     "ServiceHealth",

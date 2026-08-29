@@ -966,11 +966,13 @@ def restore_update_checkpoint(
     checkpoint_path: Path,
     *,
     expected_uid: int,
+    expected_sha256: str | None = None,
     after_phase: Callable[[str], None] | None = None,
 ) -> RollbackJournal:
     checkpoint, checkpoint_sha256 = _read_verified_update_checkpoint(
         checkpoint_path,
         expected_uid=expected_uid,
+        expected_sha256=expected_sha256,
     )
     journal_path = Path(checkpoint.operation_root) / "rollback-journal.json"
     if journal_path.exists():
@@ -1730,6 +1732,7 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("candidate_receipt_sha256")
     restore = subparsers.add_parser("restore")
     restore.add_argument("checkpoint", type=Path)
+    restore.add_argument("checkpoint_sha256")
     return parser
 
 
@@ -1755,6 +1758,7 @@ def main(argv: list[str] | None = None) -> int:
         journal = restore_update_checkpoint(
             arguments.checkpoint,
             expected_uid=os.geteuid(),
+            expected_sha256=arguments.checkpoint_sha256,
         )
         print(journal.phase)
         return 0

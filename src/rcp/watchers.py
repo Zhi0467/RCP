@@ -1391,6 +1391,10 @@ class WatcherPoller:
             if not thread.is_alive():
                 self._thread = None
 
+    def is_running(self) -> bool:
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
     def poll_once(self) -> list[list[WatcherRecord]]:
         with self._poll_lock:
             records = self.store.pollable_watchers(as_of=self.clock())
@@ -1546,6 +1550,10 @@ class WatcherRetryWorker:
                 self._thread = None
                 self._pending = None
                 self._stop = None
+
+    def is_running(self) -> bool:
+        with self._lifecycle_lock:
+            return self._thread is not None and self._thread.is_alive()
 
     def _run(
         self,

@@ -26,8 +26,10 @@ and crash recovery without rerunning machine preparation. F6b now consumes
 O2a/O2b to rehearse the candidate against copied real state under one reusable
 startup-effect fence. F6c's current-owner checkpoint core now publishes and
 temp-restores one exact local rollback boundary with crash-safe replacement
-journals; later T3e/T4b owners extend its typed inventory, while F6d is the next
-incomplete source-update packet. P6c now
+journals. F6d is implemented in the working tree with closed admission,
+systemd cutover, loud rollback, crash re-entry, and a disposable-host death
+drive, but remains incomplete until that Ubuntu 22.04/24.04 workflow passes;
+later T3e/T4b owners extend the checkpoint's typed inventory. P6c now
 publishes and independently
 enforces the ordinary team-project deletion guard through the card, Web, API,
 and catalog.
@@ -113,10 +115,11 @@ The remaining seams are also concrete:
 
 - the strict `rcp server` shell, Linux layout, source installer, private control
   socket, installed doctor, source-update candidate builder, protected backup
-  run/configuration/status/retention path, online SQLite capture, and optimistic
+  run/configuration/status/retention path, online SQLite capture, optimistic
   project-file capture, copied-state update rehearsal, and the coherent local
-  update rollback checkpoint now exist;
-  cutover/post-switch rollback coordination, restore, and member removal do not;
+  update rollback checkpoint now exist; cutover/post-switch rollback
+  coordination and recovery are implemented pending their live Ubuntu drive,
+  while restore and member removal do not;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
 - the Web UI still says “Team connections are not implemented in this build”;
@@ -1541,14 +1544,67 @@ gate are deliberately future work and do not block this plan.
   unfinished-journal entry wiring in F6d, and future typed-root extensions in
   their already-assigned T3e/T4b owners.
 
+#### 2026-08-29 — F6d cutover and loud rollback implemented; live drive pending
+
+- `update_cutover.py` now owns one fsynced operation receipt from maintenance
+  closure through candidate verification, commit, rollback, or pre-switch
+  abort. It binds the F6a build receipt, F6b capture-specific rehearsal receipt,
+  F6c checkpoint path and SHA-256, exact base/candidate process identities, and
+  separate candidate-versus-selected-runtime failures. Illegal transitions,
+  ambiguous active operations, changed digests, and mismatched running releases
+  fail closed.
+- The installed service exposes four root-only update operations over the
+  existing private control socket. Maintenance fences every HTTP method and
+  other machine operation, closes provider/background admission, stops watcher
+  poll and retry owners, joins already-scheduled provider/reconciliation work,
+  rechecks worker idleness, and only then captures the final boundary. The root
+  update lock holds the protected-backup flock throughout the admitted command,
+  so an active backup finishes first and no new backup overlaps cutover.
+- Root performs only service stop/start and the atomic `current` pointer switch.
+  Both candidate and restored old service start behind F6b's effect fence. The
+  service replays the final read model and process/data/space identity before
+  the decision. Fence release first records a nonterminal point-of-no-return
+  state; only successful deferred runtime startup records `committed` or
+  `rolled_back`. Re-entry normally restarts the already-selected release and
+  never reverses a completed rollback decision.
+- Any post-switch failure stops the candidate, restores only the digest-bound
+  F6c checkpoint, switches back, verifies the old release while still fenced,
+  and retains the candidate-created data and local `.research` entries only in
+  operation-specific quarantine. CLI output and doctor keep both the failed
+  candidate and restored base explicit. A normal rollback remains healthy but
+  loud; failure to restart the selected release is a distinct recoverable
+  runtime fault.
+- Startup now checks unfinished restore journals before constructing `AppStore`,
+  so systemd cannot recreate a missing live root or open SQLite during partial
+  replacement. Update recovery consumes one unambiguous operation; install
+  refuses activation and routes to it, while doctor reports without mutation.
+  The CLI deliberately returns a
+  recovery-only nonzero result after success and requires a fresh invocation
+  before another source update.
+- The focused cutover/control/checkpoint/doctor/install/backup suite passes, and
+  the complete backend suite passes with expected environment skips. The live
+  disposable-host test now performs one uninterrupted forced candidate rollback
+  and a second five-phase drive. At each `prepared`, `quarantined`, `restored`,
+  `verified`, and `complete` journal boundary it stops the restore child, kills
+  the root coordinator process group, attempts direct systemd startup, proves
+  normal HTTP cannot serve, then re-enters through ordinary `rcp server update`
+  and requires exact `rolled_back`/`complete` receipts, no partial root, exact
+  pre-cutover project reads, and quarantine-only candidate markers.
+- One independent read-only audit found and then closed four code blockers:
+  GET-like mutating routes now share the HTTP fence; late watcher/retry launches
+  receive the post-join idle check; selected-release startup has a durable
+  preterminal state; and restore consumes the recorded checkpoint digest. Its
+  final review reports no remaining blocker or High finding.
+- Not yet complete: the destructive workflow has not yet run with this commit on
+  both Ubuntu 22.04 and 24.04. Do not mark F6d complete or rely on its live
+  qualification until both matrix jobs pass and their run is recorded here.
+
 ## What remains
 
 The remaining implementation work is:
 
-1. update cutover, post-switch verification, loud rollback coordination, and
-   recovery, consuming the completed source build, copied-state rehearsal, and
-   coherent local checkpoint receipts plus doctor and private CLI-to-server
-   transport;
+1. finish F6d's Ubuntu 22.04/24.04 live qualification for the implemented
+   update cutover, post-switch verification, loud rollback, and crash recovery;
 2. concrete project provisioning, where machine orchestration and final human
    creation are implemented but still need the complete live qualification,
    unified UI/desktop drive and post-setup cancellation;
@@ -2625,6 +2681,12 @@ This update-local checkpoint is separate from O1-O4 encrypted backup and
 disaster restore.
 
 ### F6d — Update cutover, verification, and loud rollback
+
+Status: implemented in the working tree on 2026-08-29 with focused and complete
+backend verification plus a closed independent audit. The required destructive
+Ubuntu 22.04/24.04 workflow is still pending; this packet is not complete until
+both matrix jobs pass and the live evidence is recorded in the implementation
+log.
 
 Own:
 
@@ -4652,8 +4714,8 @@ Close this handoff only when all of the following are true:
 ## Suggested skills for pickup
 
 - The design grilling and final cross-document fact-check are complete. Continue
-  directly on `main` from the dependency-ready packets. F6c's coherent rollback
-  checkpoint is the next incomplete source-update packet; O3c and the later
+  directly on `main` from the dependency-ready packets. Finish F6d's two-release
+  live workflow before starting another source-update packet; O3c and the later
   restore lane may also consume the now-complete protected-backup boundary.
   Implement remaining packets without reopening product boundaries unless
   current code contradicts their authority.

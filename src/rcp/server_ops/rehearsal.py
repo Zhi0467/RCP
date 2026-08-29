@@ -394,6 +394,8 @@ class CandidateRehearsalCoordinator:
         control: RehearsalCaptureControl | None = None,
         runner: CandidateProcessRunner | None = None,
         candidate_python: Path | None = None,
+        capture_result: ServerControlBackupCaptureResult | None = None,
+        retain_capture: bool = False,
     ) -> None:
         self.data_dir = data_dir.resolve()
         self.update_root = update_root.resolve()
@@ -404,20 +406,23 @@ class CandidateRehearsalCoordinator:
         self.candidate_python = candidate_python or (
             Path(built_receipt.release_path) / ".venv" / "bin" / "python"
         )
+        self.capture_result = capture_result
+        self.retain_capture = retain_capture
 
     def run(self) -> VerifiedCandidateReceipt:
         self._validate_boundary()
         operation_root = self.update_root / (
             f"rehearsal-{self.built_receipt.candidate_commit}-{uuid.uuid4().hex}"
         )
-        capture_result: ServerControlBackupCaptureResult | None = None
+        capture_result = self.capture_result
         try:
             operation_root.mkdir(mode=_DIRECTORY_MODE)
-            control = self.control or ServerControlClient.from_data_dir(
-                self.data_dir,
-                expected_server_uid=os.geteuid(),
-            )
-            capture_result = control.capture_backup_sqlite()
+            if capture_result is None:
+                control = self.control or ServerControlClient.from_data_dir(
+                    self.data_dir,
+                    expected_server_uid=os.geteuid(),
+                )
+                capture_result = control.capture_backup_sqlite()
             self._validate_live_capture(capture_result)
             project_publication = BackupProjectFileCaptureCoordinator(self.data_dir).capture(
                 Path(capture_result.receipt_path),
@@ -515,11 +520,12 @@ class CandidateRehearsalCoordinator:
             # publication/readback fails, both the capture and overlay remain.
             # If cleanup itself fails, the receipt plus the remaining exact root
             # make that failure explicit to the next maintenance inspection.
-            discard_backup_capture_root(
-                Path(capture_result.receipt_path).parent,
-                data_dir=self.data_dir,
-                capture_id=capture_result.capture_id,
-            )
+            if not self.retain_capture:
+                discard_backup_capture_root(
+                    Path(capture_result.receipt_path).parent,
+                    data_dir=self.data_dir,
+                    capture_id=capture_result.capture_id,
+                )
             _discard_operation_root(operation_root, update_root=self.update_root)
             return published
         except CandidateRehearsalRefused:
@@ -1354,6 +1360,9 @@ def run_rehearsal_orchestrator(
     built_receipt_path: Path,
     data_dir: Path,
     update_root: Path,
+    *,
+    operation_receipt_path: Path | None = None,
+    operation_receipt_sha256: str | None = None,
 ) -> int:
     """Service-account entrypoint invoked by the narrow root update coordinator."""
 
@@ -1368,11 +1377,46 @@ def run_rehearsal_orchestrator(
             raise CandidateRehearsalRefused(
                 "The built-candidate receipt does not name its exact path."
             )
+        if (operation_receipt_path is None) != (operation_receipt_sha256 is None):
+            raise CandidateRehearsalRefused(
+                "Final rehearsal requires both the update receipt and its digest."
+            )
+        capture_result = None
+        retain_capture = False
+        if operation_receipt_path is not None:
+            from rcp.server_ops.update_cutover import (
+                control_capture_from_boundary,
+                read_update_operation,
+            )
+
+            operation, _digest = read_update_operation(
+                operation_receipt_path,
+                expected_uid=os.geteuid(),
+                expected_sha256=operation_receipt_sha256,
+            )
+            if operation.state != "maintenance_closed" or operation.capture is None:
+                raise CandidateRehearsalRefused(
+                    "Final rehearsal requires one closed-admission capture boundary."
+                )
+            built_sha256 = hashlib.sha256(content).hexdigest()
+            if (
+                operation.base_instance_id != built.base_instance_id
+                or operation.base_process_pid != built.base_process_pid
+                or operation.built_receipt_path != built.receipt_path
+                or operation.built_receipt_sha256 != built_sha256
+            ):
+                raise CandidateRehearsalRefused(
+                    "The update maintenance receipt differs from its built candidate."
+                )
+            capture_result = control_capture_from_boundary(operation.capture)
+            retain_capture = True
         receipt = CandidateRehearsalCoordinator(
             data_dir=data_dir,
             update_root=update_root,
             built_receipt=built,
             built_receipt_sha256=hashlib.sha256(content).hexdigest(),
+            capture_result=capture_result,
+            retain_capture=retain_capture,
         ).run()
         print(receipt.receipt_path, flush=True)
         return 0
@@ -1747,6 +1791,17 @@ def _main(argv: list[str]) -> int:
         nargs=3,
         metavar=("BUILT_RECEIPT", "DATA_DIR", "UPDATE_ROOT"),
     )
+    modes.add_argument(
+        "--orchestrate-maintenance",
+        nargs=5,
+        metavar=(
+            "BUILT_RECEIPT",
+            "DATA_DIR",
+            "UPDATE_ROOT",
+            "OPERATION_RECEIPT",
+            "OPERATION_SHA256",
+        ),
+    )
     arguments = parser.parse_args(argv)
     if arguments.candidate_child is not None:
         overlay, result = (Path(value) for value in arguments.candidate_child)
@@ -1754,8 +1809,19 @@ def _main(argv: list[str]) -> int:
     if arguments.candidate_migrate is not None:
         database, result = (Path(value) for value in arguments.candidate_migrate)
         return run_candidate_migration(database, result)
-    built_receipt, data_dir, update_root = (Path(value) for value in arguments.orchestrate)
-    return run_rehearsal_orchestrator(built_receipt, data_dir, update_root)
+    if arguments.orchestrate is not None:
+        built_receipt, data_dir, update_root = (Path(value) for value in arguments.orchestrate)
+        return run_rehearsal_orchestrator(built_receipt, data_dir, update_root)
+    built_receipt, data_dir, update_root, operation_receipt, operation_sha256 = (
+        arguments.orchestrate_maintenance
+    )
+    return run_rehearsal_orchestrator(
+        Path(built_receipt),
+        Path(data_dir),
+        Path(update_root),
+        operation_receipt_path=Path(operation_receipt),
+        operation_receipt_sha256=operation_sha256,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through the candidate subprocess
