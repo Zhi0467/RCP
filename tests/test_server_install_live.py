@@ -177,7 +177,7 @@ def _require_explicit_disposable_host() -> None:
         Path("/usr/lib/systemd/system/rcp.service"),
         Path("/usr/local/bin/rcp"),
     ):
-        if path.exists() or path.is_symlink():
+        if _root_path_exists_or_is_symlink(path):
             pytest.fail(f"disposable host is not clean: {path} already exists")
     for account in ("rcp", "rcp-live-operator"):
         try:
@@ -197,6 +197,73 @@ def _require_explicit_disposable_host() -> None:
     processes = _run_checked(("ps", "-eo", "args=")).stdout
     if any(_looks_like_rcp_server(line) for line in processes.splitlines()):
         pytest.fail("disposable host is not clean: an RCP server process is already running")
+
+
+def _root_path_exists_or_is_symlink(path: Path) -> bool:
+    for predicate in ("-e", "-L"):
+        result = _run(
+            ("sudo", "-n", "test", predicate, str(path)),
+            timeout=_PTY_TIMEOUT_SECONDS,
+        )
+        if result.returncode == 0:
+            return True
+        if result.returncode != 1:
+            pytest.fail(f"could not inspect root-owned path {path}")
+    return False
+
+
+@pytest.mark.parametrize(
+    ("return_codes", "expected"),
+    [
+        ((0,), True),
+        ((1, 0), True),
+        ((1, 1), False),
+    ],
+)
+def test_root_path_probe_uses_sudo(
+    monkeypatch: pytest.MonkeyPatch,
+    return_codes: tuple[int, ...],
+    expected: bool,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    results = iter(return_codes)
+
+    def fake_run(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path | None = None,
+        environment: dict[str, str] | None = None,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, environment, timeout
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, next(results), "", "")
+
+    monkeypatch.setattr(sys.modules[__name__], "_run", fake_run)
+    path = Path("/etc/sudoers.d/rcp-project-provision")
+
+    assert _root_path_exists_or_is_symlink(path) is expected
+    assert calls == [
+        ("sudo", "-n", "test", predicate, str(path))
+        for predicate in ("-e", "-L")[: len(return_codes)]
+    ]
+
+
+def test_root_path_probe_fails_on_probe_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path | None = None,
+        environment: dict[str, str] | None = None,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, environment, timeout
+        return subprocess.CompletedProcess(argv, 2, "", "permission failure")
+
+    monkeypatch.setattr(sys.modules[__name__], "_run", fake_run)
+
+    with pytest.raises(pytest.fail.Exception, match="could not inspect root-owned path"):
+        _root_path_exists_or_is_symlink(Path("/etc/sudoers.d/rcp-project-provision"))
 
 
 def _looks_like_rcp_server(command: str) -> bool:

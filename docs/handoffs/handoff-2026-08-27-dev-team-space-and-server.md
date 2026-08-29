@@ -551,6 +551,16 @@ gate are deliberately future work and do not block this plan.
   prerequisite step. The secret and live installer were not reached, so no
   deploy key or RCP-owned host state was created; another corrected rerun
   remains required.
+- Corrected run
+  [33231425876](https://github.com/Zhi0467/RCP/actions/runs/33231425876)
+  passed prerequisite installation and the complete bootstrap build on both
+  releases, then found the first live-harness privilege defect: its clean-host
+  fence used ordinary-user `Path.exists()` below root-only `/etc/sudoers.d`.
+  The fence now uses bounded noninteractive-root probes for both existence and
+  symlink identity, with focused tests for a present object, broken symlink,
+  absence, and an indeterminate probe. The test failed before reading the
+  protected token or creating a deploy key, and workflow cleanup completed on
+  both runners; another corrected rerun remains required.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 
