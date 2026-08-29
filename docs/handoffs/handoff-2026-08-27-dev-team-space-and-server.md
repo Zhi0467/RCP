@@ -36,8 +36,14 @@ O2a, O2b, and O3b. F4 now provides the installed team's private, probe-only
 machine control socket without a second SQLite owner. Its source review and
 security diff scan found no reportable issue, and manual run 33236544453 passed
 the exact installed-service boundary on Ubuntu 22.04 and 24.04 at commit
-`9e2b676b5db62ac78dc39b1a50a22eb53ef61585`. F4 is complete; F5 server
-identity and doctor is the next server packet.
+`9e2b676b5db62ac78dc39b1a50a22eb53ef61585`. F4 is complete. F5 now
+publishes the exact running source/Web identity and provides the read-only,
+secret-safe installed-server doctor. Its one independent audit is complete;
+accepted findings are fixed, and the built-candidate distinction is explicitly
+left to its F6a receipt owner. Manual run 33238829032 passed the full installed
+doctor/start/restart boundary on Ubuntu 22.04 and 24.04 at exact commit
+`b63eda636ec6c3769638d476549f38cec69269e5`. F5 is complete; F6a source
+update and candidate build is the next server packet.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -918,12 +924,81 @@ gate are deliberately future work and do not block this plan.
   request/instance/UID/PID checks. F5 owns the first read-only production caller
   and authoritative status projection.
 
+#### 2026-08-29 — F5 exact commit identity and installed-server doctor complete
+
+- Installed-service metadata schema 3 now captures the physical immutable
+  release commit and a deterministic SHA-256 identity of the bounded,
+  symlink-free built Web bundle before the process starts. The two values are an
+  all-or-nothing validated pair and are exposed by `/api/health`; personal,
+  desktop, and embedded launches retain explicit nulls rather than pretending to
+  be installed releases. Startup refuses a service whose working directory and
+  root-controlled `current` pointer do not resolve to the same canonical
+  per-commit release.
+- `rcp server doctor` now emits one common interactive/machine-readable
+  structured report through the existing server CLI. It names the fixed source,
+  release, and data roots; configured GitHub origin and branch; managed `main`,
+  last locally fetched `origin/main`, checkout candidate, current, and running
+  commits; current/running Web identities; systemd active/enabled/PID/reload
+  state; space, process, data, and private-control identities; dependency
+  versions/readiness; and every ownership/mode problem. It never fetches,
+  contacts GitHub, opens SQLite, changes the index, repairs state, or reveals a
+  private credential. Consequently `upstream_head` is deliberately the last
+  fetched local ref, not a network-fresh claim.
+- The report distinguishes aligned, upstream-update-available,
+  checkout-candidate-pending, restart-pending, and inconsistent states. A
+  coherent pending state succeeds with its explicit state; corruption or an
+  owned check failure returns the same complete report as a failed final step.
+  In F5, `candidate_commit` names a clean managed-checkout target that differs
+  from the running process. F6a owns the separate immutable built-candidate
+  receipt and will refine candidate build readiness without inventing a generic
+  status registry here.
+- Readback validates the fixed path owners/modes, rejects unsafe release or
+  artifact ancestry before traversal, uses Git with optional locks and ambient
+  configuration disabled, verifies release Git identity and cleanliness, and
+  bounds Web hashing by path, file count, and total bytes. It verifies the
+  on-disk service asset, systemd's loaded fragment, absence of drop-ins, and
+  `NeedDaemonReload=no`; a matching file with an overridden or stale effective
+  unit is not reported healthy. It probes only the fixed authenticated control
+  socket after metadata has matched the installed owner, data directory, and
+  socket identity.
+- The packet's one independent read-only audit reported five medium concerns.
+  Four produced focused fixes: unsafe-path traversal after reporting a bad
+  layout, probing a metadata-selected socket after an identity mismatch,
+  missing effective-systemd/drop-in verification, and unstructured Web
+  traversal errors. The fifth asked that `candidate_commit` prove a built
+  release; that is not F5 state and is deliberately assigned to F6a's required
+  built-candidate receipt. No second audit was run.
+- The first live qualification, run 33238598618 at implementation commit
+  `61d32463ba94556bb1d3a318e826877c1d1a12ce`, correctly failed on both Ubuntu
+  releases because `rcp.lock` and `rcp-server.json` had inherited the creating
+  process's umask. Interactive and service launch paths therefore did not prove
+  the private `0600` contract consistently. The concrete owners now apply
+  `fchmod(0600)` when acquiring/publishing those files, including convergence of
+  an existing permissive lock; focused regressions pin both behaviors.
+- Successful live run
+  [33238829032](https://github.com/Zhi0467/RCP/actions/runs/33238829032)
+  used exact fix commit `b63eda636ec6c3769638d476549f38cec69269e5`.
+  Ubuntu 24.04 job 99064504477 and Ubuntu 22.04 job 99064504575 both passed the
+  complete source install, initialization, activation, doctor, restart, stable
+  commit/Web/space identity, changed process instance, exact systemd readback,
+  and cleanup drive. Every cleanup step passed, and a separate repository API
+  readback found no remaining `rcp-source:` deploy key.
+- Focused doctor/runtime/health/CLI/live-driver regressions, the complete backend
+  suite with its two expected skips, 434 Web tests, the production Web build,
+  Ruff, formatting, and repository-wide pre-commit all pass. This CLI/server
+  packet made no desktop UI promise, so the disposable installed Ubuntu service
+  is the relevant user-visible runtime proof.
+- Not done in F5: no source fetch, fast-forward, build receipt, rehearsal,
+  cutover, rollback, provider summary, or backup summary exists. F6a through
+  F6e own update; P5 and O3b later extend doctor only through their concrete
+  owner state.
+
 ## What remains
 
 The remaining implementation work is:
 
-1. server health/doctor and source update, using the completed private
-   CLI-to-server control transport;
+1. source update, candidate rehearsal, cutover, rollback, and recovery, using
+   the completed doctor and private CLI-to-server control transport;
 2. project-provisioning API projections and concrete machine orchestration;
 3. central Git checkout and write-deploy-key setup;
 4. local/remote provider readiness against authentication already present on
@@ -1801,6 +1876,11 @@ the socket, malformed/oversized requests fail, restart recovers the socket, and
 root/`rcp` authority does not become an RCP member identity.
 
 ### F5 — Commit identity and `server doctor`
+
+Status: complete. Implementation commit
+`61d32463ba94556bb1d3a318e826877c1d1a12ce` plus focused runtime-mode repair
+`b63eda636ec6c3769638d476549f38cec69269e5` provide the exact readback. Live
+run 33238829032 passed Ubuntu 22.04 and 24.04 with clean credential cleanup.
 
 Own:
 

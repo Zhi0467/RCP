@@ -453,8 +453,27 @@ ordinary loss recovery is re-invitation by the other enrolled member.
 
 The installed version is the exact commit of the service's current source
 release. `rcp server doctor` reports the managed-main, candidate, current, and
-running commits plus the configured upstream. An authorized machine operator
-invokes `sudo rcp server update`. Its coordinator fetches and fast-forwards the
+running commits plus the configured upstream. The running process captures its
+physical immutable release and a bounded, deterministic SHA-256 identity of the
+symlink-free Web bundle before startup and publishes both through server
+metadata and health. Non-installed personal/desktop processes publish neither.
+
+Doctor is a read-only, secret-safe interactive or structured CLI operation. It
+does not fetch: its `upstream_head` is the last locally fetched `origin/main`.
+It validates the configured origin/branch and clean checkout; source/release
+roots and owners; current and running Git/Web identities; effective loaded
+systemd fragment, absence of drop-ins, reload state and PID; space/process/data
+identity through the private authenticated control socket; private runtime-file
+modes; and the required installed dependencies. It refuses to traverse an
+unsafe release or probe a socket selected by mismatched metadata. Healthy,
+upstream-update-available, checkout-candidate-pending, and restart-pending are
+distinct coherent results; inconsistent identity or any failed owned check is a
+complete failed report. Before F6a's build receipt exists, `candidate_commit`
+means the clean managed-checkout target that differs from the running process,
+not a claim that its immutable release has already been built.
+
+An authorized machine operator invokes `sudo rcp server update`. Its coordinator
+fetches and fast-forwards the
 managed checkout to `origin/main`, creates a separate clean release directory
 for that exact commit, and runs `npm --prefix web ci`,
 `npm --prefix web run build`, `uv sync --frozen`, and migration/readiness
