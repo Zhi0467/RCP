@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 import sqlite3
@@ -69,6 +70,20 @@ def _provider() -> ProjectProvisioningProviderIntent:
 
 
 def _create(store: AppStore, authorizer: AuthorizedHuman):
+    return store.create_project_provisioning_request(
+        kind="create_team_project",
+        authorized_by=authorizer,
+        machines=[_machine()],
+        repositories=[_repository()],
+        provider_checks=[_provider()],
+        name="Shared paper project",
+        state_repository="paper",
+        project_truth_scope=["paper"],
+        default_run_truth_scope=["paper"],
+    )
+
+
+def _create_legacy(store: AppStore, authorizer: AuthorizedHuman):
     return store.create_project_provisioning_request(
         kind="create_team_project",
         authorized_by=authorizer,
@@ -357,6 +372,7 @@ def test_guarded_receipted_transitions_resume_and_bind_final_review(
         resumed.repositories[0].model_copy(
             update={
                 "resolved_path": resolved_path,
+                "checkout_disposition": "request_created",
                 "git_check": ProjectProvisioningGitCheckRecord(
                     status="ready",
                     commit="a" * 40,
@@ -435,6 +451,117 @@ def test_guarded_receipted_transitions_resume_and_bind_final_review(
         )
     with pytest.raises(RuntimeError, match="stored project provisioning request is invalid"):
         store.project_provisioning_request(request.request_id)
+
+
+@pytest.mark.parametrize("terminal_status", ["ready_for_review", "completed"])
+def test_pre_configuration_review_digest_remains_readable_after_upgrade(
+    tmp_path: Path,
+    terminal_status: str,
+) -> None:
+    store, authorizer = _team_store(tmp_path)
+    request = _create_legacy(store, authorizer)
+    running = store.transition_project_provisioning_request(
+        request.request_id,
+        receipt_id="legacy-setup-started",
+        phase="setup_start",
+        expected_revision=0,
+        expected_status="waiting_for_server_setup",
+        to_status="setup_in_progress",
+        machines=request.machines,
+        repositories=request.repositories,
+        provider_checks=request.provider_checks,
+    )
+    checked_at = store.now()
+    machines = [
+        running.machines[0].model_copy(
+            update={"resolved_central_root": running.machines[0].central_root}
+        )
+    ]
+    repositories = [
+        running.repositories[0].model_copy(
+            update={
+                "resolved_path": running.repositories[0].intended_path,
+                "git_check": ProjectProvisioningGitCheckRecord(
+                    status="ready",
+                    commit="a" * 40,
+                    write_verified=True,
+                    deploy_key_label=(f"rcp:{store.space_id}:{request.proposed_project_id}:paper"),
+                    public_key_fingerprint="SHA256:" + ("A" * 43),
+                    checked_at=checked_at,
+                ),
+            }
+        )
+    ]
+    providers = [
+        ProjectProvisioningProviderCheckRecord(
+            **_provider().model_dump(mode="json"),
+            status="ready",
+            checked_at=checked_at,
+        )
+    ]
+    terminal = store.transition_project_provisioning_request(
+        request.request_id,
+        receipt_id="legacy-ready",
+        phase="final_review",
+        expected_revision=1,
+        expected_status="setup_in_progress",
+        to_status="ready_for_review",
+        machines=machines,
+        repositories=repositories,
+        provider_checks=providers,
+    )
+    if terminal_status == "completed":
+        terminal = store.transition_project_provisioning_request(
+            request.request_id,
+            receipt_id="legacy-completed",
+            phase="final_review",
+            expected_revision=2,
+            expected_status="ready_for_review",
+            to_status="completed",
+            machines=terminal.machines,
+            repositories=terminal.repositories,
+            provider_checks=terminal.provider_checks,
+        )
+    legacy_payload = {
+        "request_id": terminal.request_id,
+        "kind": terminal.kind,
+        "target_space_id": terminal.target_space_id,
+        "authorized_by": terminal.authorized_by.model_dump(mode="json"),
+        "proposed_project_id": terminal.proposed_project_id,
+        "machines": [machine.model_dump(mode="json") for machine in terminal.machines],
+        "repositories": [
+            repository.model_dump(mode="json", exclude={"checkout_disposition"})
+            for repository in terminal.repositories
+        ],
+        "provider_checks": [
+            provider.model_dump(mode="json") for provider in terminal.provider_checks
+        ],
+    }
+    legacy_digest = hashlib.sha256(
+        json.dumps(
+            legacy_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    with sqlite3.connect(store.path) as connection:
+        project_config = connection.execute(
+            "SELECT project_config_json FROM project_provisioning_requests WHERE request_id = ?",
+            (request.request_id,),
+        ).fetchone()[0]
+        assert project_config is None
+        connection.execute(
+            "UPDATE project_provisioning_requests SET final_review_digest = ? WHERE request_id = ?",
+            (legacy_digest, request.request_id),
+        )
+
+    loaded = store.project_provisioning_request(request.request_id)
+    assert loaded.status == terminal_status
+    assert loaded.final_review_digest == legacy_digest
+    assert loaded.configuration_complete is False
+    assert loaded.repositories[0].checkout_disposition is None
 
 
 def test_operator_action_is_bound_to_the_request_and_declared_target(tmp_path: Path) -> None:
@@ -605,6 +732,51 @@ def test_secret_shaped_provider_and_path_values_never_enter_a_request(tmp_path: 
     assert store.project_provisioning_requests() == []
 
 
+def test_new_project_configuration_is_complete_safe_and_repository_bound(
+    tmp_path: Path,
+) -> None:
+    store, authorizer = _team_store(tmp_path)
+    base = {
+        "kind": "create_team_project",
+        "authorized_by": authorizer,
+        "machines": [_machine()],
+        "repositories": [_repository()],
+        "provider_checks": [_provider()],
+    }
+
+    with pytest.raises(ValidationError, match="credential-shaped"):
+        store.create_project_provisioning_request(
+            **base,
+            name="github_pat_abcdefghijklmnop",
+            state_repository="paper",
+            project_truth_scope=["paper"],
+            default_run_truth_scope=["paper"],
+        )
+    with pytest.raises(ValidationError, match="must be complete"):
+        store.create_project_provisioning_request(
+            **base,
+            default_auto_research_invocation_ceiling=11,
+        )
+    with pytest.raises(ValidationError, match="state repository must name"):
+        store.create_project_provisioning_request(
+            **base,
+            name="Shared paper project",
+            state_repository="code",
+            project_truth_scope=["paper"],
+            default_run_truth_scope=["paper"],
+        )
+    with pytest.raises(ValidationError, match="default run truth scope"):
+        store.create_project_provisioning_request(
+            **base,
+            name="Shared paper project",
+            state_repository="paper",
+            project_truth_scope=["paper"],
+            default_run_truth_scope=["code"],
+        )
+
+    assert store.project_provisioning_requests() == []
+
+
 def test_raw_rows_are_revalidated_instead_of_becoming_authority(tmp_path: Path) -> None:
     store, authorizer = _team_store(tmp_path)
     request = _create(store, authorizer)
@@ -618,6 +790,25 @@ def test_raw_rows_are_revalidated_instead_of_becoming_authority(tmp_path: Path) 
         connection.execute(
             "UPDATE project_provisioning_requests SET repositories_json = ?",
             (json.dumps(repositories),),
+        )
+
+    with pytest.raises(RuntimeError, match="stored project provisioning request is invalid"):
+        store.project_provisioning_request(request.request_id)
+
+
+def test_project_configuration_json_cannot_shadow_request_columns(tmp_path: Path) -> None:
+    store, authorizer = _team_store(tmp_path)
+    request = _create(store, authorizer)
+    with sqlite3.connect(store.path) as connection:
+        project_config = json.loads(
+            connection.execute(
+                "SELECT project_config_json FROM project_provisioning_requests"
+            ).fetchone()[0]
+        )
+        project_config["status"] = "completed"
+        connection.execute(
+            "UPDATE project_provisioning_requests SET project_config_json = ?",
+            (json.dumps(project_config),),
         )
 
     with pytest.raises(RuntimeError, match="stored project provisioning request is invalid"):

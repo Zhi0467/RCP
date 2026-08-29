@@ -26,6 +26,7 @@ from rcp.server_ops.layout import (
     DEFAULT_SERVER_LAYOUT,
     ServerLayout,
     remote_project_deploy_key_path,
+    remote_projects_root,
 )
 from rcp.server_ops.models import (
     CommandAction,
@@ -157,7 +158,7 @@ class GitCredentialManager:
                 machine.os_account,
                 machine.location,
                 str(self.layout.credentials_root) if machine.location == "local" else "-",
-                machine.central_root,
+                machine.central_root or "-",
                 space_id,
                 project_id,
                 repository_alias,
@@ -185,7 +186,7 @@ class GitCredentialManager:
                 machine.os_account,
                 machine.location,
                 str(self.layout.credentials_root) if machine.location == "local" else "-",
-                machine.central_root,
+                machine.central_root or "-",
                 material.space_id,
                 material.project_id,
                 material.repository_alias,
@@ -223,7 +224,7 @@ class GitCredentialManager:
                 machine.os_account,
                 machine.location,
                 str(self.layout.credentials_root) if machine.location == "local" else "-",
-                machine.central_root,
+                machine.central_root or "-",
                 material.space_id,
                 material.project_id,
                 material.repository_alias,
@@ -683,14 +684,7 @@ class GitCredentialManager:
         *,
         timeout: float,
     ) -> subprocess.CompletedProcess[str]:
-        _validate_machine(machine, self.layout)
-        if machine.location == "local":
-            argv = _runuser_argv(self.layout, command)
-        else:
-            argv = _runuser_argv(
-                self.layout,
-                tuple(_strict_ssh_arguments(machine.host, shlex.join(command))),
-            )
+        argv = target_account_argv(self.layout, machine, command)
         try:
             result = self._runner(argv, timeout=timeout)
         except (OSError, subprocess.TimeoutExpired):
@@ -768,7 +762,11 @@ class GitCredentialManager:
             location=machine.location,
             host=machine.host,
             os_account=machine.os_account,
-            central_root=machine.central_root,
+            central_root=(
+                machine.central_root
+                if machine.central_root is not None
+                else str(remote_projects_root(home))
+            ),
             account_home=home,
             credentials_root=expected_root,
             private_key_path=expected_private,
@@ -788,7 +786,12 @@ class GitCredentialManager:
             or material.location != machine.location
             or material.host != machine.host
             or material.os_account != machine.os_account
-            or material.central_root != machine.central_root
+            or material.central_root
+            != (
+                machine.central_root
+                if machine.central_root is not None
+                else str(remote_projects_root(material.account_home))
+            )
         ):
             raise GitCredentialRefused("The deploy key belongs to another execution target.")
 
@@ -1007,6 +1010,28 @@ def _git_ssh_command(material: DeployKeyMaterial) -> str:
     )
 
 
+def deploy_key_ssh_command(material: DeployKeyMaterial) -> str:
+    """Return the exact noninteractive SSH command bound to one prepared key."""
+
+    return _git_ssh_command(material)
+
+
+def target_account_argv(
+    layout: ServerLayout,
+    machine: ProjectProvisioningMachineIntent,
+    command: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Wrap one command for the reviewed local or SSH execution account."""
+
+    _validate_machine(machine, layout)
+    if machine.location == "local":
+        return _runuser_argv(layout, command)
+    return _runuser_argv(
+        layout,
+        tuple(_strict_ssh_arguments(machine.host, shlex.join(command))),
+    )
+
+
 def _parse_remote_refs(output: str) -> dict[str, str]:
     if len(output.encode("utf-8", errors="replace")) > _MAX_GIT_OUTPUT_BYTES:
         raise GitCredentialRefused("Git returned too much ref output.")
@@ -1156,6 +1181,16 @@ def _run_process(
         process.stderr.close()
 
 
+def run_bounded_process(
+    argv: tuple[str, ...],
+    *,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run one subprocess with the server Git output and timeout bounds."""
+
+    return _run_process(argv, timeout=timeout)
+
+
 def _terminate_process(process: subprocess.Popen[bytes]) -> None:
     with contextlib.suppress(OSError):
         process.kill()
@@ -1164,11 +1199,15 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
 
 
 __all__ = [
+    "CommandRunner",
     "DeployKeyMaterial",
     "GitCredentialManager",
     "GitCredentialRefused",
     "GitWriteProbe",
     "cleanup_ref_operator_step",
+    "deploy_key_ssh_command",
     "deploy_key_operator_step",
     "empty_repository_operator_step",
+    "run_bounded_process",
+    "target_account_argv",
 ]

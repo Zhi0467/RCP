@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from rcp.api.dependencies import get_identity_access, get_store
 from rcp.api.identity import IdentityAccess
-from rcp.config import AgentExecutionProfile
+from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING, AgentExecutionProfile
 from rcp.core.models import AuthorizedHuman
 from rcp.providers import ProviderId
 from rcp.server_ops.github import GitHubRepositoryRef, parse_github_repository_ref
@@ -87,10 +87,6 @@ class ProjectProvisioningMachineRequest(_StrictModel):
         central_root = self.central_root
         if self.location == "local" and central_root is None:
             central_root = str(DEFAULT_SERVER_LAYOUT.projects_root)
-        if central_root is None:
-            raise ValueError(
-                "An SSH provisioning machine requires one reviewed absolute central root."
-            )
         return ProjectProvisioningMachineIntent(
             alias=self.alias,
             location=self.location,
@@ -120,6 +116,14 @@ class ProjectProvisioningRepositoryRequest(_StrictModel):
 
 
 class ProjectProvisioningCreateRequest(_StrictModel):
+    name: str = Field(min_length=1, max_length=120)
+    state_repository: str
+    project_truth_scope: list[str] = Field(min_length=1, max_length=64)
+    default_run_truth_scope: list[str] = Field(min_length=1, max_length=64)
+    default_auto_research_invocation_ceiling: int = Field(
+        default=DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
+        ge=1,
+    )
     machines: list[ProjectProvisioningMachineRequest] = Field(min_length=1, max_length=32)
     repositories: list[ProjectProvisioningRepositoryRequest] = Field(
         min_length=1,
@@ -136,7 +140,7 @@ class ProjectProvisioningMachineProjection(_StrictModel):
     location: Literal["local", "ssh"]
     host: str
     os_account: str
-    intended_central_root: str
+    intended_central_root: str | None
     resolved_central_root: str | None
     ready: bool
     status_label: str
@@ -149,8 +153,9 @@ class ProjectProvisioningRepositoryProjection(_StrictModel):
     ssh_clone_url: str
     settings_url: str
     machine_alias: str
-    intended_path: str
+    intended_path: str | None
     resolved_path: str | None
+    checkout_disposition: Literal["request_created", "reused_existing"] | None
     status: ProjectProvisioningCheckStatus
     status_label: str
     ready: bool
@@ -208,6 +213,11 @@ class ProjectProvisioningResponse(_StrictModel):
     can_cancel: bool
     target_space_id: str
     proposed_project_id: str
+    name: str | None
+    state_repository: str | None
+    project_truth_scope: list[str]
+    default_run_truth_scope: list[str]
+    default_auto_research_invocation_ceiling: int
     authorized_by: AuthorizedHuman
     machines: list[ProjectProvisioningMachineProjection]
     repositories: list[ProjectProvisioningRepositoryProjection]
@@ -290,6 +300,13 @@ def create_project_provisioning_request(
             machines=[machine.intent() for machine in body.machines],
             repositories=[repository.intent() for repository in body.repositories],
             provider_checks=body.provider_checks,
+            name=body.name,
+            state_repository=body.state_repository,
+            project_truth_scope=body.project_truth_scope,
+            default_run_truth_scope=body.default_run_truth_scope,
+            default_auto_research_invocation_ceiling=(
+                body.default_auto_research_invocation_ceiling
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -432,6 +449,11 @@ def _project_provisioning_response(
         ),
         target_space_id=record.target_space_id,
         proposed_project_id=record.proposed_project_id,
+        name=record.name,
+        state_repository=record.state_repository,
+        project_truth_scope=record.project_truth_scope,
+        default_run_truth_scope=record.default_run_truth_scope,
+        default_auto_research_invocation_ceiling=(record.default_auto_research_invocation_ceiling),
         authorized_by=record.authorized_by,
         machines=machines,
         repositories=repositories,
@@ -508,6 +530,7 @@ def _repository_projection(
         machine_alias=repository.machine_alias,
         intended_path=repository.intended_path,
         resolved_path=repository.resolved_path,
+        checkout_disposition=repository.checkout_disposition,
         status=check.status,
         status_label=_CHECK_LABELS[check.status],
         ready=check.status == "ready",

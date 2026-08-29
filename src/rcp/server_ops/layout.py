@@ -136,6 +136,17 @@ def remote_credentials_root(remote_home: str) -> PurePosixPath:
     return home / ".local" / "share" / "rcp" / "credentials"
 
 
+def remote_projects_root(remote_home: str) -> PurePosixPath:
+    if not isinstance(remote_home, str) or any(
+        ord(character) < 32 or ord(character) == 127 for character in remote_home
+    ):
+        raise ValueError("remote account home must be one safe line")
+    home = PurePosixPath(remote_home)
+    if not home.is_absolute() or home == PurePosixPath("/") or ".." in home.parts:
+        raise ValueError("remote account home must be an absolute normalized non-root path")
+    return home / ".local" / "share" / "rcp" / "projects"
+
+
 def project_deploy_key_relative_path(project_id: str, alias: str) -> PurePosixPath:
     _project_credential_components(project_id, alias)
     return PurePosixPath("projects") / project_id / alias / "id_ed25519"
@@ -176,6 +187,7 @@ __all__ = [
     "ServerLayout",
     "project_deploy_key_relative_path",
     "remote_credentials_root",
+    "remote_projects_root",
     "remote_project_deploy_key_path",
     "server_service_unit_text",
 ]

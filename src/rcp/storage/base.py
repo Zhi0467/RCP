@@ -524,6 +524,7 @@ class AppStoreBase:
                     target_space_id TEXT NOT NULL,
                     authorized_by_json TEXT NOT NULL,
                     proposed_project_id TEXT NOT NULL UNIQUE,
+                    project_config_json TEXT,
                     machines_json TEXT NOT NULL,
                     repositories_json TEXT NOT NULL,
                     provider_checks_json TEXT NOT NULL,
@@ -1094,6 +1095,12 @@ class AppStoreBase:
             # Existing v0.2 databases need additive migration before the index
             # can include the new transitional state.
             self._ensure_column(connection, "projects", "home_space_id", "TEXT")
+            self._ensure_column(
+                connection,
+                "project_provisioning_requests",
+                "project_config_json",
+                "TEXT",
+            )
             self._ensure_column(connection, "space_identity", "space_name", "TEXT")
             self._ensure_column(connection, "paper_drafts", "ancestor_content", "TEXT")
             self._ensure_column(

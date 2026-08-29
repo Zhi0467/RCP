@@ -51,9 +51,11 @@ transport only.
    components; confirm each is rejected before request persistence, filesystem
    access, DNS, or another network call.
 2. Read the newly persisted request, its **waiting for server setup** status, its
-   proposed canonical project id, resolved target paths, and the exact
-   `rcp server project provision <request-id>` command. Confirm the paths use the
-   proposed project id, then reload the page and restart the backend.
+   proposed canonical project id, explicit intended target paths, and the exact
+   `rcp server project provision <request-id>` command. Confirm explicit paths
+   use the proposed project id while a home-derived SSH default stays unresolved
+   rather than guessing the remote home, then reload the page and restart the
+   backend.
 3. From a browser or the member-only SSH connection, attempt to run the machine
    steps. Confirm the UI offers only the copyable operator command.
 4. From the desktop with the operator route, click **Run setup now**. Inspect the
@@ -76,9 +78,11 @@ transport only.
    off once, then enable it and retry. Inspect the server-local key root and the
    remote account's verified home-derived key root; search the transport and
    server temporary files for the remote private key.
-6. Let the CLI clone or fetch both central checkouts, perform request-scoped Git
-   push/readback/cleanup with each key, and check the configured local or remote
-   provider execution account without logging it into the provider.
+6. Let the CLI resolve the home-derived SSH root, clone or fetch both central
+   checkouts, perform request-scoped Git push/readback/cleanup with each key, and
+   check the configured local or remote provider execution account without
+   logging it into the provider. Read back the exact resolved roots and paths and
+   confirm every checkout uses the proposed project id.
 7. Read **operator action needed** for the refused write key and any provider
    failure, then **ready for review** after both are corrected. Compare another
    member's view of the same request.

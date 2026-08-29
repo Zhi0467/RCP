@@ -3,7 +3,7 @@
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
-F2, F3a, F3b, F4, F5, F6a, P1, P2, P3, P5, D1, and O3a are complete. D2
+F2, F3a, F3b, F4, F5, F6a, P1, P2, P3, P4, P5, D1, and O3a are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; it is not complete and still gates D3-D5. The live
 Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
@@ -12,9 +12,11 @@ receipt, and an unchanged live-service boundary. P2 now provides the
 member-authorized provisioning API, backend-owned project-creation and lifecycle
 answers, sealed Web response vocabularies, and a fail-before-input guard on all
 three ordinary existing-checkout entry routes. It performs no machine work and
-does not create a team project. F6b remains dependency-blocked on O2a/O2b's one
-capture primitive; P4 owns the remaining pre-orchestration provisioning machine
-boundary.
+does not create a team project. P4 now supplies the exact-account local/SSH
+central-checkout primitive, path receipts, retained-research refusal, and
+backward-compatible project-configuration persistence. P6a owns the next
+provisioning boundary: durable composition of P3-P5. F6b remains blocked on
+O2a/O2b's one capture primitive.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -1104,8 +1106,8 @@ gate are deliberately future work and do not block this plan.
 - Key removal is bound to the expected public fingerprint and deletes only the
   exact pair plus now-empty derived parents. The helper also rejects any
   lexical overlap between the credential root and the intended repository
-  checkout path; P4 still owns real existing-root ownership, symlink, special-
-  file, and resolved-path proof before cloning.
+  checkout path. P4 has since closed the real existing-root ownership, symlink,
+  special-file, and resolved-path proof before cloning.
 - The packet's one Codex Security diff scan
   (`fbb7dc80-61da-401c-baa5-c04b9c665c12`) reported one low-severity issue: the
   nominal Git-output bound ran after `subprocess.run` had already captured
@@ -1113,9 +1115,9 @@ gate are deliberately future work and do not block this plan.
   kills on the first byte over the bound, and retains the timeout even when a
   child closes its pipes before hanging. Focused real-process regressions prove
   ordinary exit/output, pre-capture overflow termination, and that closed-pipe
-  timeout. The scan's deferred checkout/credential overlap concern is narrowed
-  by the new lexical guard without stealing P4's filesystem-resolution owner.
-  No second audit was run.
+  timeout. The scan's deferred checkout/credential overlap concern was narrowed
+  by the lexical guard and P4's later filesystem-resolution proof. No second
+  audit was run.
 - Twenty-nine focused P3 unit/helper tests pass, with the external live drive
   skipped by its explicit gate. The separately gated live test
   also verifies GitHub's published Ed25519 host fingerprint, exact write deploy-
@@ -1189,8 +1191,53 @@ gate are deliberately future work and do not block this plan.
   and CLI-to-socket-to-storage publication all have focused regressions.
 - Not done in P5: it does not clone a checkout, create/revoke a deploy key,
   orchestrate all preparation steps, create a team project, render the unified
-  wizard, or expose machine authority through HTTP. P4, P6, and D7 retain those
-  owners.
+  wizard, or expose machine authority through HTTP. P4 has since supplied the
+  checkout primitive; P6 and D7 retain orchestration, finalization, and the
+  unified app flow.
+
+#### 2026-08-29 — P4 central checkout preparation complete
+
+- `ProjectCheckoutManager` now prepares one exact
+  `<central-root>/<project-id>/repositories/<alias>` checkout through P3's
+  reviewed local or SSH account transport. A shipped account-local helper
+  verifies the effective uid and passwd home, traverses path components without
+  following symlinks, refuses unsafe types/ownership/modes, proves the root is
+  writable, and reports whether the exact checkout was request-created or
+  reused. The SSH default root is deliberately unresolved in the member request
+  until the helper proves the account home.
+- Clone and recovery use only the canonical GitHub SSH URL and exact repository
+  deploy key, with empty ambient Git configuration, prompts and submodules off,
+  hooks disabled, bounded output, and the inherited strict host-key policy. A
+  reused checkout must be the exact clean non-bare worktree with only canonical
+  `origin`, no unsafe local Git execution or URL rewrites, and the same local and
+  GitHub HEAD. RCP never resets, cleans, stashes, rewrites, or recursively
+  removes conflicting work.
+- The state-repository check reads retained `.research` and bounded Patch
+  identity through the same account-local helper. Direct creation stops with the
+  **Move to team space** action when research is retained; incoming transfer
+  reports the retained identity for its later matching-history owner instead of
+  adopting it here.
+- P1's request now durably retains the project name, state repository, project
+  and default-run truth scopes, and Auto-research ceiling needed by P6b's final
+  manifest. The nullable additive column preserves older requests, including
+  old reviewable rows, while every newly configured request must carry one
+  complete internally consistent configuration. Checkout receipts also retain
+  the resolved path and explicit created/reused disposition.
+- Focused helper, Git-conflict, retained-state, API, storage, upgrade, and Web
+  regressions pass. The separately gated live drive passed against the disposable
+  private GitHub repository for both a local checkout and the reachable SSH
+  account, including exact write-key use, clone, idempotent reuse, and cleanup;
+  GitHub readback showed no retained key and the remote disposable roots were
+  absent afterward.
+- The reachable SSH account's persistent `~/.local` ancestry is currently group-
+  writable. P3 correctly refuses to place a durable private key below that
+  unsafe ancestry. P4's SSH checkout primitive was therefore qualified with a
+  disposable exact-account key/root under `/tmp`, not by weakening the path
+  check or changing the human's account. P6 must surface that production
+  credential-path precondition as an operator action on this host.
+- Not done in P4: no member HTTP route can invoke checkout work, no durable owner
+  sequences P3-P5, and no canonical team project is created. P6 retains those
+  boundaries.
 
 ## What remains
 
@@ -1199,20 +1246,17 @@ The remaining implementation work is:
 1. candidate rehearsal, cutover, rollback, and recovery, consuming the completed
    source update/build receipt plus doctor and private CLI-to-server transport;
 2. concrete project-provisioning machine orchestration and final confirmation,
-   consuming the completed durable member API and backend projection;
-3. the disposable-repository qualification for the implemented deploy-key
-   primitive, then central Git checkout and provisioning orchestration;
-4. local/remote provider readiness against authentication already present on
-   each execution account;
-5. source-built desktop distinct origins, tunnels, live Keychain
+   consuming the completed durable member API, deploy-key, checkout, and
+   exact-account provider primitives;
+3. source-built desktop distinct origins, tunnels, live Keychain
    enrollment/readback, navigation, cached team groups, and optional operator
    bridge (the strict metadata and token-write/remove substrate is complete);
-6. app-visible project setup driven by the backend and prepared by the CLI;
-7. encrypted online backup capture, safe timer enablement, retention, restore,
+4. app-visible project setup driven by the backend and prepared by the CLI;
+5. encrypted online backup capture, safe timer enablement, retention, restore,
    and server status (strict configuration and disabled units are complete);
-8. console member removal;
-9. append-only personal-to-team home transfer and recovery; and
-10. a live one-lab acceptance drill and operator documentation.
+6. console member removal;
+7. append-only personal-to-team home transfer and recovery; and
+8. a live one-lab acceptance drill and operator documentation.
 
 No item in that list is implemented merely because its design is now confirmed.
 
@@ -2318,10 +2362,12 @@ Own:
 
 Model one request id, kind (`create_team_project` or incoming transfer), target
 space, human authorizer, proposed canonical project id, canonical
-`GitHubRepositoryRef` values, the fixed local central root or one requested
-absolute SSH central root,
-intended/resolved paths, Git and provider checks, timestamps, retryable
-diagnostic, final-review digest, and explicit cancellation disposition. A new
+`GitHubRepositoryRef` values, the fixed local central root or one explicit/null-
+default SSH central-root intent, project name, state repository, project and
+default-run truth scopes, Auto-research ceiling, intended/resolved paths, Git
+and provider checks, timestamps, retryable diagnostic, final-review digest, and
+explicit checkout/cancellation dispositions. A default SSH checkout path stays
+unresolved until the exact remote account home is proved. A new
 project request mints one random proposed `project_id` when the request is
 created; an incoming transfer uses the source project's existing id. This
 reserves a collision-resistant path namespace only. It does not append project
@@ -2411,7 +2457,8 @@ only new team-project entrance into that owner.
 Status: complete on 2026-08-29. Implementation, focused regressions, the
 one-audit fixes, and the guarded disposable-GitHub-repository live drive pass.
 The primitive is not wired to member HTTP authority or durable provisioning
-orchestration; P4 and P6 own those later boundaries.
+orchestration. P4 has since supplied the checkout consumer; P6 owns durable
+composition and finalization.
 
 Own:
 
@@ -2471,6 +2518,12 @@ machine state and is protected from the ordinary member Delete-project path by
 P6c until a future operator-owned deprovision workflow is designed.
 
 ### P4 — Central checkout preparation
+
+Status: complete on 2026-08-29. The local/SSH exact-account helper and checkout
+manager, safe Git recovery, retained-research boundary, durable path/disposition
+receipts, backward-compatible configuration persistence, focused regressions,
+and gated local plus reachable-SSH live drive pass. P6a remains the owner that
+sequences this primitive with P3 and P5 and publishes each durable step.
 
 Own:
 

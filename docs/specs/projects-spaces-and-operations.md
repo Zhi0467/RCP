@@ -616,14 +616,16 @@ nor imports them implicitly. A new team project or personal-to-team transfer
 prepares the complete central checkout set before registration.
 
 The server-local central root is the fixed installed layout. For an SSH account,
-the durable setup request records one nonsecret absolute central root, defaulting
-to `<remote-home>/.local/share/rcp/projects` after the account home is resolved by
-the shipped helper. A lab may deliberately choose another absolute account-owned
-root, such as mounted research storage, but it is displayed in final review and
-the machine operator's CLI revalidates ownership, modes, symlink-free ancestry,
-and the exact `<project-id>/repositories/<alias>` descendants before cloning.
-The project manifest records only the resolved repository paths, not authority
-to pick a different root later.
+the durable setup request records either one reviewed nonsecret absolute central
+root or a null default-root intent. The API never guesses the remote home. The
+shipped exact-account helper resolves that home and turns the default intent into
+`<remote-home>/.local/share/rcp/projects`; the machine receipt then persists the
+resolved central root and exact `<project-id>/repositories/<alias>` descendants
+for final review. A lab may deliberately choose another absolute account-owned
+root, such as mounted research storage, but the machine operator's CLI
+revalidates ownership, modes, symlink-free ancestry, and the exact descendants
+before cloning. The project manifest records only the resolved repository paths,
+not authority to pick a different root later.
 
 This first slice is GitHub.com-only. Before persisting a provisioning request or
 performing filesystem or network work, one `GitHubRepositoryRef` parser accepts
@@ -707,11 +709,16 @@ server setup**, **setup in progress**, **operator action needed**, **ready for
 review**, **completed**, or **cancelled**. The browser renders those answers and
 the exact next action; it does not infer progress from files or Git output.
 
-The request names the target space, canonical `GitHubRepositoryRef` values,
-intended central paths, and the human who authorized preparation. Invalid source
-text is rejected before the request, filesystem access, or network access. For a
-new project it also mints one random proposed `project_id`; an incoming transfer
-uses its existing project id.
+The request names the target space; project name; canonical
+`GitHubRepositoryRef` values and repository/machine aliases; state repository;
+project and default-run truth scopes; default Auto-research invocation ceiling;
+explicit central roots or default-root intent; and the human who authorized
+preparation. An explicit root has a derived intended checkout path immediately;
+an SSH default-root intent keeps that path null until the exact account home is
+resolved. Invalid source or project-configuration text is rejected before the
+request, filesystem access, or network access. For a new project it also mints
+one random proposed `project_id`; an incoming transfer uses its existing project
+id.
 That id reserves the final central path namespace but creates no canonical
 identity or writable home. `rcp server project provision <request-id>` performs
 and resumes the server steps: path and permission checks, deploy-key

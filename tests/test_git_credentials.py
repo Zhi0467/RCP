@@ -459,6 +459,30 @@ def test_manager_ships_one_helper_through_strict_local_and_ssh_account_boundarie
         ALIAS,
     ]
 
+    default_remote = remote.model_copy(update={"central_root": None})
+    default_runner = QueueRunner(
+        _result(stdout=json.dumps(_receipt(layout, default_remote, home="/srv/accounts/alice")))
+    )
+    default_material = GitCredentialManager(layout, runner=default_runner).prepare_key(
+        default_remote,
+        REPOSITORY,
+        space_id=SPACE_ID,
+        project_id=PROJECT_ID,
+        repository_alias=ALIAS,
+    )
+    default_inner = shlex.split(default_runner.calls[0][0][-1])
+    assert default_inner[-8:] == [
+        "prepare",
+        "alice",
+        "ssh",
+        "-",
+        "-",
+        SPACE_ID,
+        PROJECT_ID,
+        ALIAS,
+    ]
+    assert default_material.central_root == "/srv/accounts/alice/.local/share/rcp/projects"
+
 
 def test_manager_rejects_a_local_machine_for_another_project_root(tmp_path: Path) -> None:
     layout = _layout(tmp_path)

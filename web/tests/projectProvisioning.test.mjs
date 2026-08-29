@@ -10,6 +10,11 @@ import {
 } from "../src/api.ts";
 
 const requestBody = {
+  name: "Shared paper project",
+  state_repository: "paper",
+  project_truth_scope: ["paper"],
+  default_run_truth_scope: ["paper"],
+  default_auto_research_invocation_ceiling: 10,
   machines: [
     {
       alias: "server",
@@ -47,6 +52,11 @@ const projectedResponse = {
   can_cancel: true,
   target_space_id: "space",
   proposed_project_id: "project",
+  name: "Shared paper project",
+  state_repository: "paper",
+  project_truth_scope: ["paper"],
+  default_run_truth_scope: ["paper"],
+  default_auto_research_invocation_ceiling: 10,
   authorized_by: { space_id: "space", user_id: "alice", display_name: "Alice" },
   machines: [],
   repositories: [],

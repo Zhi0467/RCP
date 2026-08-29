@@ -149,6 +149,14 @@ def _absolute_path(value: str, label: str) -> Path:
     return path
 
 
+def _central_root(location: str, home: Path, configured_root: str) -> str:
+    if location == "ssh" and configured_root == "-":
+        return str(home / ".local" / "share" / "rcp" / "projects")
+    if configured_root == "-":
+        raise ValueError("server-local central checkout root cannot be defaulted")
+    return str(_absolute_path(configured_root, "central checkout root"))
+
+
 def _key_locations(
     root: Path,
     central_root: str,
@@ -314,9 +322,10 @@ def _prepare_or_inspect(
     _uuid4(space_id, "space id")
     account, home = _account(expected_account)
     root = _credentials_root(account, home, location, configured_root)
+    resolved_central_root = _central_root(location, home, central_root)
     private, public = _key_paths(
         root,
-        central_root,
+        resolved_central_root,
         uid=account.pw_uid,
         project_id=project_id,
         alias=alias,
@@ -386,9 +395,10 @@ def _remove(
     _uuid4(space_id, "space id")
     account, home = _account(expected_account)
     root = _credentials_root(account, home, location, configured_root)
+    resolved_central_root = _central_root(location, home, central_root)
     private, public = _key_locations(
         root,
-        central_root,
+        resolved_central_root,
         project_id=project_id,
         alias=alias,
     )
@@ -396,7 +406,7 @@ def _remove(
         return {"removed": False}
     private, public = _key_paths(
         root,
-        central_root,
+        resolved_central_root,
         uid=account.pw_uid,
         project_id=project_id,
         alias=alias,

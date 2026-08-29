@@ -10,6 +10,7 @@ from pathlib import PurePosixPath
 
 from pydantic import TypeAdapter
 
+from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING
 from rcp.core.models import AuthorizedHuman
 from rcp.server_ops.models import MessageText, ServerStep
 from rcp.storage.models import (
@@ -42,6 +43,15 @@ _PROVISIONING_TRANSITIONS: dict[ProjectProvisioningStatus, frozenset[ProjectProv
     "cancelled": frozenset(),
 }
 _MESSAGE_TEXT_ADAPTER = TypeAdapter(MessageText)
+_PROJECT_CONFIG_FIELDS = frozenset(
+    {
+        "name",
+        "state_repository",
+        "project_truth_scope",
+        "default_run_truth_scope",
+        "default_auto_research_invocation_ceiling",
+    }
+)
 
 
 def _canonical_json(value: object) -> str:
@@ -63,8 +73,36 @@ def project_provisioning_review_digest(record: ProjectProvisioningRequestRecord)
         "target_space_id": record.target_space_id,
         "authorized_by": record.authorized_by.model_dump(mode="json"),
         "proposed_project_id": record.proposed_project_id,
+        "name": record.name,
+        "state_repository": record.state_repository,
+        "project_truth_scope": record.project_truth_scope,
+        "default_run_truth_scope": record.default_run_truth_scope,
+        "default_auto_research_invocation_ceiling": (
+            record.default_auto_research_invocation_ceiling
+        ),
         "machines": [machine.model_dump(mode="json") for machine in record.machines],
         "repositories": [repository.model_dump(mode="json") for repository in record.repositories],
+        "provider_checks": [check.model_dump(mode="json") for check in record.provider_checks],
+    }
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _legacy_project_provisioning_review_digest(
+    record: ProjectProvisioningRequestRecord,
+) -> str:
+    """Reproduce the pre-P4 digest for an already reviewable persisted request."""
+
+    payload = {
+        "request_id": record.request_id,
+        "kind": record.kind,
+        "target_space_id": record.target_space_id,
+        "authorized_by": record.authorized_by.model_dump(mode="json"),
+        "proposed_project_id": record.proposed_project_id,
+        "machines": [machine.model_dump(mode="json") for machine in record.machines],
+        "repositories": [
+            repository.model_dump(mode="json", exclude={"checkout_disposition"})
+            for repository in record.repositories
+        ],
         "provider_checks": [check.model_dump(mode="json") for check in record.provider_checks],
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
@@ -73,11 +111,16 @@ def project_provisioning_review_digest(record: ProjectProvisioningRequestRecord)
 def _verify_project_provisioning_review_digest(
     record: ProjectProvisioningRequestRecord,
 ) -> ProjectProvisioningRequestRecord:
-    if record.status in {
-        "ready_for_review",
-        "completed",
-    } and record.final_review_digest != project_provisioning_review_digest(record):
-        raise ValueError("project provisioning final-review digest does not match its payload")
+    if record.status in {"ready_for_review", "completed"}:
+        current_digest = project_provisioning_review_digest(record)
+        legacy_digest = (
+            _legacy_project_provisioning_review_digest(record)
+            if not record.configuration_complete
+            and all(repository.checkout_disposition is None for repository in record.repositories)
+            else None
+        )
+        if record.final_review_digest not in {current_digest, legacy_digest}:
+            raise ValueError("project provisioning final-review digest does not match its payload")
     return record
 
 
@@ -93,6 +136,11 @@ class ProjectProvisioningStoreMixin:
         repositories: list[ProjectProvisioningRepositoryIntent],
         provider_checks: list[ProjectProvisioningProviderIntent],
         source_project_id: str | None = None,
+        name: str | None = None,
+        state_repository: str | None = None,
+        project_truth_scope: list[str] | None = None,
+        default_run_truth_scope: list[str] | None = None,
+        default_auto_research_invocation_ceiling: int = (DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING),
     ) -> ProjectProvisioningRequestRecord:
         """Reserve one project namespace without creating project authority."""
 
@@ -140,11 +188,15 @@ class ProjectProvisioningStoreMixin:
             machine = machine_map.get(repository.machine_alias)
             if machine is None:
                 raise ValueError("provisioning repository names an unknown machine")
-            intended_path = str(
-                PurePosixPath(machine.central_root)
-                / proposed_project_id
-                / "repositories"
-                / repository.alias
+            intended_path = (
+                None
+                if machine.central_root is None
+                else str(
+                    PurePosixPath(machine.central_root)
+                    / proposed_project_id
+                    / "repositories"
+                    / repository.alias
+                )
             )
             repository_records.append(
                 ProjectProvisioningRepositoryRecord(
@@ -164,6 +216,11 @@ class ProjectProvisioningStoreMixin:
             target_space_id=target_space_id,
             authorized_by=authorizer,
             proposed_project_id=proposed_project_id,
+            name=name,
+            state_repository=state_repository,
+            project_truth_scope=list(project_truth_scope or []),
+            default_run_truth_scope=list(default_run_truth_scope or []),
+            default_auto_research_invocation_ceiling=(default_auto_research_invocation_ceiling),
             machines=machine_records,
             repositories=repository_records,
             provider_checks=provider_records,
@@ -522,12 +579,12 @@ class ProjectProvisioningStoreMixin:
             """
             INSERT INTO project_provisioning_requests (
                 request_id, kind, status, target_space_id, authorized_by_json,
-                proposed_project_id, machines_json, repositories_json,
+                proposed_project_id, project_config_json, machines_json, repositories_json,
                 provider_checks_json, retryable_diagnostic, operator_action_json,
                 final_review_digest, cancellation_disposition, revision,
                 created_at, updated_at, setup_started_at, ready_at,
                 completed_at, cancelled_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.request_id,
@@ -536,6 +593,21 @@ class ProjectProvisioningStoreMixin:
                 record.target_space_id,
                 _canonical_json(record.authorized_by.model_dump(mode="json")),
                 record.proposed_project_id,
+                (
+                    _canonical_json(
+                        {
+                            "name": record.name,
+                            "state_repository": record.state_repository,
+                            "project_truth_scope": record.project_truth_scope,
+                            "default_run_truth_scope": record.default_run_truth_scope,
+                            "default_auto_research_invocation_ceiling": (
+                                record.default_auto_research_invocation_ceiling
+                            ),
+                        }
+                    )
+                    if record.configuration_complete
+                    else None
+                ),
                 _canonical_json([item.model_dump(mode="json") for item in record.machines]),
                 _canonical_json([item.model_dump(mode="json") for item in record.repositories]),
                 _canonical_json([item.model_dump(mode="json") for item in record.provider_checks]),
@@ -556,6 +628,12 @@ class ProjectProvisioningStoreMixin:
     @staticmethod
     def _project_provisioning_record(row: sqlite3.Row) -> ProjectProvisioningRequestRecord:
         try:
+            project_config_json = row["project_config_json"]
+            project_config = {} if project_config_json is None else json.loads(project_config_json)
+            if not isinstance(project_config, dict) or (
+                project_config_json is not None and set(project_config) != _PROJECT_CONFIG_FIELDS
+            ):
+                raise ValueError("stored project provisioning configuration is invalid")
             return _verify_project_provisioning_review_digest(
                 ProjectProvisioningRequestRecord.model_validate_json(
                     _canonical_json(
@@ -566,6 +644,7 @@ class ProjectProvisioningStoreMixin:
                             "target_space_id": row["target_space_id"],
                             "authorized_by": json.loads(row["authorized_by_json"]),
                             "proposed_project_id": row["proposed_project_id"],
+                            **project_config,
                             "machines": json.loads(row["machines_json"]),
                             "repositories": json.loads(row["repositories_json"]),
                             "provider_checks": json.loads(row["provider_checks_json"]),

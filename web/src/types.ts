@@ -108,6 +108,11 @@ export interface ProjectProvisioningProviderRequest {
 }
 
 export interface ProjectProvisioningCreateRequest {
+  name: string;
+  state_repository: string;
+  project_truth_scope: string[];
+  default_run_truth_scope: string[];
+  default_auto_research_invocation_ceiling: number;
   machines: ProjectProvisioningMachineRequest[];
   repositories: ProjectProvisioningRepositoryRequest[];
   provider_checks: ProjectProvisioningProviderRequest[];
@@ -166,7 +171,7 @@ export interface ProjectProvisioningMachineProjection {
   location: "local" | "ssh";
   host: string;
   os_account: string;
-  intended_central_root: string;
+  intended_central_root: string | null;
   resolved_central_root: string | null;
   ready: boolean;
   status_label: string;
@@ -183,8 +188,9 @@ export interface ProjectProvisioningRepositoryProjection {
   ssh_clone_url: string;
   settings_url: string;
   machine_alias: string;
-  intended_path: string;
+  intended_path: string | null;
   resolved_path: string | null;
+  checkout_disposition: "request_created" | "reused_existing" | null;
   status: ProjectProvisioningCheckStatus;
   status_label: string;
   ready: boolean;
@@ -248,6 +254,11 @@ export interface ProjectProvisioningResponse {
   can_cancel: boolean;
   target_space_id: string;
   proposed_project_id: string;
+  name: string | null;
+  state_repository: string | null;
+  project_truth_scope: string[];
+  default_run_truth_scope: string[];
+  default_auto_research_invocation_ceiling: number;
   authorized_by: AuthorizedHuman;
   machines: ProjectProvisioningMachineProjection[];
   repositories: ProjectProvisioningRepositoryProjection[];

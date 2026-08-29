@@ -20,7 +20,7 @@ from pydantic import (
 )
 
 from rcp.artifacts import validate_artifact_bytes
-from rcp.config import AgentExecutionProfile
+from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING, AgentExecutionProfile
 from rcp.core.authority import (
     AgentDispatchAuthority,
 )
@@ -209,6 +209,10 @@ ProjectProvisioningCancellationDisposition = Literal[
     "prepared_state_preserved",
     "operator_cleanup_confirmed",
 ]
+ProjectProvisioningCheckoutDisposition = Literal[
+    "request_created",
+    "reused_existing",
+]
 
 _PROVISIONING_ALIAS = re.compile(r"[a-z][a-z0-9-]{0,47}")
 _PROVISIONING_HOST = re.compile(r"[A-Za-z0-9_.@:-]{1,255}")
@@ -263,7 +267,7 @@ class ProjectProvisioningMachineIntent(_StrictProvisioningModel):
     location: Literal["local", "ssh"]
     host: str = ""
     os_account: str
-    central_root: str
+    central_root: str | None = None
 
     @field_validator("alias")
     @classmethod
@@ -290,7 +294,9 @@ class ProjectProvisioningMachineIntent(_StrictProvisioningModel):
 
     @field_validator("central_root")
     @classmethod
-    def validate_central_root(cls, value: str) -> str:
+    def validate_central_root(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return _provisioning_absolute_path(value, label="provisioning central root")
 
     @model_validator(mode="after")
@@ -320,7 +326,8 @@ class ProjectProvisioningMachineRecord(ProjectProvisioningMachineIntent):
     @model_validator(mode="after")
     def resolved_root_matches_intent(self) -> ProjectProvisioningMachineRecord:
         if (
-            self.resolved_central_root is not None
+            self.central_root is not None
+            and self.resolved_central_root is not None
             and self.resolved_central_root != self.central_root
         ):
             raise ValueError("resolved provisioning root must match the reviewed central root")
@@ -397,8 +404,9 @@ class ProjectProvisioningRepositoryIntent(_StrictProvisioningModel):
 
 
 class ProjectProvisioningRepositoryRecord(ProjectProvisioningRepositoryIntent):
-    intended_path: str
+    intended_path: str | None
     resolved_path: str | None = None
+    checkout_disposition: ProjectProvisioningCheckoutDisposition | None = None
     git_check: ProjectProvisioningGitCheckRecord = Field(
         default_factory=ProjectProvisioningGitCheckRecord
     )
@@ -518,6 +526,14 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
     target_space_id: str
     authorized_by: AuthorizedHuman
     proposed_project_id: str
+    name: str | None = Field(default=None, max_length=120)
+    state_repository: str | None = None
+    project_truth_scope: list[str] = Field(default_factory=list, max_length=64)
+    default_run_truth_scope: list[str] = Field(default_factory=list, max_length=64)
+    default_auto_research_invocation_ceiling: int = Field(
+        default=DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
+        ge=1,
+    )
     machines: list[ProjectProvisioningMachineRecord] = Field(min_length=1, max_length=32)
     repositories: list[ProjectProvisioningRepositoryRecord] = Field(min_length=1, max_length=64)
     provider_checks: list[ProjectProvisioningProviderCheckRecord] = Field(
@@ -550,6 +566,45 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
             raise ValueError("provisioning final-review digest must be lowercase SHA-256")
         return value
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized or any(
+            ord(character) < 32 or ord(character) == 127 for character in normalized
+        ):
+            raise ValueError("provisioning project name must be one nonempty safe line")
+        if redact_server_text(normalized) != normalized:
+            raise ValueError("provisioning project name cannot contain credential-shaped text")
+        return normalized
+
+    @field_validator("state_repository")
+    @classmethod
+    def validate_state_repository(cls, value: str | None) -> str | None:
+        if value is not None and _PROVISIONING_ALIAS.fullmatch(value) is None:
+            raise ValueError("provisioning state repository alias is invalid")
+        return value
+
+    @field_validator("project_truth_scope", "default_run_truth_scope")
+    @classmethod
+    def validate_scope(cls, value: list[str], info: ValidationInfo) -> list[str]:
+        if any(_PROVISIONING_ALIAS.fullmatch(alias) is None for alias in value):
+            raise ValueError(f"provisioning {info.field_name} contains an invalid alias")
+        if len(value) != len(set(value)):
+            raise ValueError(f"provisioning {info.field_name} must not repeat an alias")
+        return value
+
+    @property
+    def configuration_complete(self) -> bool:
+        return bool(
+            self.name is not None
+            and self.state_repository is not None
+            and self.project_truth_scope
+            and self.default_run_truth_scope
+        )
+
     @model_validator(mode="after")
     def validate_request(self) -> ProjectProvisioningRequestRecord:
         if self.target_space_id != self.authorized_by.space_id:
@@ -563,20 +618,48 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
         repository_identities = [repository.repository.identity for repository in self.repositories]
         if len(set(repository_identities)) != len(repository_identities):
             raise ValueError("one GitHub repository cannot appear twice in a provisioning request")
+        has_any_configuration = bool(
+            self.name is not None
+            or self.state_repository is not None
+            or self.project_truth_scope
+            or self.default_run_truth_scope
+            or self.default_auto_research_invocation_ceiling
+            != DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING
+        )
+        if has_any_configuration and not self.configuration_complete:
+            raise ValueError("provisioning project configuration must be complete")
+        if self.configuration_complete:
+            repository_set = set(repository_aliases)
+            assert self.state_repository is not None
+            if self.state_repository not in repository_set:
+                raise ValueError("provisioning state repository must name a declared repository")
+            if not set(self.project_truth_scope).issubset(repository_set):
+                raise ValueError("provisioning project truth scope names an unknown repository")
+            if self.state_repository not in self.project_truth_scope:
+                raise ValueError("provisioning state repository must remain in project truth scope")
+            if not set(self.default_run_truth_scope).issubset(set(self.project_truth_scope)):
+                raise ValueError("provisioning default run truth scope must be a project subset")
         for repository in self.repositories:
             machine = machine_map.get(repository.machine_alias)
             if machine is None:
                 raise ValueError("provisioning repository names an unknown machine")
-            intended = (
-                PurePosixPath(machine.central_root)
-                / self.proposed_project_id
-                / "repositories"
-                / repository.alias
-            )
-            if repository.intended_path != str(intended):
-                raise ValueError("provisioning repository intended path is not derived")
+            if machine.central_root is None:
+                if repository.intended_path is not None:
+                    raise ValueError("default remote repository path cannot be guessed")
+            else:
+                intended = (
+                    PurePosixPath(machine.central_root)
+                    / self.proposed_project_id
+                    / "repositories"
+                    / repository.alias
+                )
+                if repository.intended_path != str(intended):
+                    raise ValueError("provisioning repository intended path is not derived")
             if machine.resolved_central_root is None:
-                if repository.resolved_path is not None:
+                if (
+                    repository.resolved_path is not None
+                    or repository.checkout_disposition is not None
+                ):
                     raise ValueError("repository path cannot resolve before its central root")
             else:
                 resolved = (
@@ -587,6 +670,8 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
                 )
                 if repository.resolved_path != str(resolved):
                     raise ValueError("provisioning repository resolved path is not derived")
+                if self.configuration_complete and repository.checkout_disposition is None:
+                    raise ValueError("resolved repository path requires its checkout disposition")
             expected_key_label = (
                 f"rcp:{self.target_space_id}:{self.proposed_project_id}:{repository.alias}"
             )
@@ -644,6 +729,11 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
                 raise ValueError("reviewable provisioning requires a digest and ready time")
             if any(machine.resolved_central_root is None for machine in self.machines):
                 raise ValueError("reviewable provisioning requires every central root")
+            if self.configuration_complete and any(
+                repository.resolved_path is None or repository.checkout_disposition is None
+                for repository in self.repositories
+            ):
+                raise ValueError("reviewable provisioning requires every central checkout")
             if any(repository.git_check.status != "ready" for repository in self.repositories):
                 raise ValueError("reviewable provisioning requires every Git check")
             if any(check.status != "ready" for check in self.provider_checks):
@@ -2218,6 +2308,7 @@ __all__ = [
     "ProjectInvitationRecord",
     "ProjectMemberRecord",
     "ProjectProvisioningCancellationDisposition",
+    "ProjectProvisioningCheckoutDisposition",
     "ProjectProvisioningCheckStatus",
     "ProjectProvisioningGitCheckRecord",
     "ProjectProvisioningKind",

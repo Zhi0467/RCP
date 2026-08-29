@@ -18,6 +18,11 @@ from .helpers import create_named_app
 
 def _payload(*, source: str = "https://github.com/OpenAI/RCP.git") -> dict[str, object]:
     return {
+        "name": "Shared paper project",
+        "state_repository": "paper",
+        "project_truth_scope": ["paper"],
+        "default_run_truth_scope": ["paper"],
+        "default_auto_research_invocation_ceiling": 10,
         "machines": [
             {
                 "alias": "server",
@@ -100,6 +105,11 @@ def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_p
     assert created["can_run_setup"] is True
     assert created["can_review"] is False
     assert created["can_cancel"] is True
+    assert created["name"] == "Shared paper project"
+    assert created["state_repository"] == "paper"
+    assert created["project_truth_scope"] == ["paper"]
+    assert created["default_run_truth_scope"] == ["paper"]
+    assert created["default_auto_research_invocation_ceiling"] == 10
     assert created["authorized_by"] == {
         "space_id": app.state.space_id,
         "user_id": alice.user_id,
@@ -128,6 +138,7 @@ def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_p
         / "repositories"
         / "paper"
     )
+    assert repository["checkout_disposition"] is None
     assert created["readiness"] == {
         "machines_ready": 0,
         "machines_total": 1,
@@ -183,6 +194,35 @@ def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_p
     assert cancelled.json()["cancellation_disposition"] == "nothing_to_remove"
     assert restarted.state.background_tasks.store.project(created["proposed_project_id"]) is None
     assert restarted.state.catalog.cards() == []
+
+
+def test_ssh_machine_can_defer_its_default_root_to_exact_account_resolution(tmp_path) -> None:
+    _data_dir, (_alice,), _selected, app = _team_app(tmp_path, "Alice")
+    payload = _payload()
+    payload["machines"] = [
+        {
+            "alias": "gpu",
+            "location": "ssh",
+            "host": "alice@gpu-lab",
+            "os_account": "alice",
+        }
+    ]
+    repositories = payload["repositories"]
+    providers = payload["provider_checks"]
+    assert isinstance(repositories, list) and isinstance(repositories[0], dict)
+    assert isinstance(providers, list) and isinstance(providers[0], dict)
+    repositories[0]["machine_alias"] = "gpu"
+    providers[0]["machine_alias"] = "gpu"
+
+    with TestClient(app) as client:
+        response = client.post("/api/project-provisioning/requests", json=payload)
+
+    assert response.status_code == 201
+    created = response.json()
+    assert created["machines"][0]["intended_central_root"] is None
+    assert created["machines"][0]["resolved_central_root"] is None
+    assert created["repositories"][0]["intended_path"] is None
+    assert created["repositories"][0]["resolved_path"] is None
 
 
 def test_invalid_repository_is_rejected_before_persistence(tmp_path, monkeypatch) -> None:
@@ -322,6 +362,7 @@ def test_final_review_projection_contains_only_backend_decisions(tmp_path) -> No
             running.repositories[0].model_copy(
                 update={
                     "resolved_path": running.repositories[0].intended_path,
+                    "checkout_disposition": "request_created",
                     "git_check": ProjectProvisioningGitCheckRecord(
                         status="ready",
                         commit="a" * 40,
@@ -381,6 +422,7 @@ def test_final_review_projection_contains_only_backend_decisions(tmp_path) -> No
     assert projected["readiness"]["all_ready"] is True
     assert projected["machines"][0]["ready"] is True
     assert projected["repositories"][0]["ready"] is True
+    assert projected["repositories"][0]["checkout_disposition"] == "request_created"
     assert projected["provider_checks"][0]["ready"] is True
     assert projected["final_review"] == {
         "digest": ready.final_review_digest,
