@@ -740,6 +740,8 @@ def _drive_live_root_death_during_rollback(
     marker_descriptor, marker_name = tempfile.mkstemp(prefix=f"rcp-live-{phase}-")
     os.close(marker_descriptor)
     marker_path = Path(marker_name)
+    _run_checked(("sudo", "-n", "chown", "rcp:rcp", str(marker_path)))
+    _run_checked(("sudo", "-n", "chmod", "0644", str(marker_path)))
     process = _start_crashing_cutover(
         receipt_path,
         preflight_path,
@@ -857,7 +859,7 @@ def _drive_live_root_death_during_rollback(
             _kill_process_group(process)
             with contextlib.suppress(subprocess.TimeoutExpired):
                 process.communicate(timeout=10)
-        marker_path.unlink(missing_ok=True)
+        _run(("sudo", "-n", "rm", "-f", "--", str(marker_path)))
 
 
 def _build_failing_candidate(workspace: Path, research: Path) -> tuple[str, Path]:
