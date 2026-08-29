@@ -3,13 +3,18 @@ id: S104-backups-never-pause-work
 status: pending
 tier: live
 driver: pytest + ssh
-covered_by: none
+covered_by:
+  - tests/test_backup_manifest.py
 invariants: [1, 2, 7]
 ---
 
 # A backup interrupts nothing and claims nothing it did not capture
 
-This scenario is human-confirmed and pending implementation. Its boundary is in
+This scenario is human-confirmed and pending its live drive. The strict archive
+schema, closed app-data/research-root classifications, nonsecret checkout
+recovery descriptor, and lock-free retained-history inventory are covered
+hermetically; online snapshot/copy, encryption, status, and restore are not yet
+implemented. Its boundary is in
 [Server and machine operations](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
 
 An earlier design had the server delay dispatch and delay applying results for

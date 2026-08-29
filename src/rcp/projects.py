@@ -12,13 +12,15 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import Future
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+import tomlkit
 from pydantic import BaseModel, TypeAdapter
 
 from rcp.agents import AgentLauncher
@@ -39,6 +41,12 @@ from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, ProviderId, configured_runtime
 from rcp.runs.task_policy import task_graph_capable
+from rcp.server_ops.backup_models import (
+    BackupCheckoutRecoveryDescriptor,
+    BackupManifestConfiguration,
+    BackupRecoveryMachine,
+    BackupRecoveryRepository,
+)
 from rcp.service import ProjectService, ProjectSettingsRequest, _ProjectSnapshotDraft
 from rcp.sources import project_cache_roots
 from rcp.storage import (
@@ -47,6 +55,7 @@ from rcp.storage import (
     EpisodeRecord,
     ExperimentEpisodeProjectionSnapshot,
     ExperimentLoopRuntime,
+    ProjectProvisioningRequestRecord,
     ProjectRecord,
     ProjectStageRecord,
 )
@@ -96,6 +105,148 @@ _DISPLAY_SNAPSHOT_FIELDS = {
 }
 
 ProjectSnapshot = dict[str, object] | _ProjectSnapshotDraft
+
+
+class BackupProjectUnavailable(ValueError):
+    """A registered project cannot support an honest backup claim."""
+
+
+@dataclass(frozen=True)
+class BackupProjectRegistration:
+    """Read-only live locator plus its validated checkout reconstruction proof."""
+
+    record: ProjectRecord
+    manifest: Manifest
+    workspace: StateWorkspace
+    recovery: BackupCheckoutRecoveryDescriptor
+
+
+def inspect_backup_project_registration(
+    record: ProjectRecord,
+    *,
+    data_dir: Path,
+    provisioning_requests: Iterable[ProjectProvisioningRequestRecord],
+) -> BackupProjectRegistration:
+    """Bind one catalog row to its completed provisioning record and manifest.
+
+    The caller supplies records from the database snapshot it intends to archive.
+    This helper reads configuration and constructs a workspace but never refreshes,
+    opens canonical history, or mutates the catalog.
+    """
+
+    if record.home_space_id is None:
+        raise BackupProjectUnavailable("The project has no durable home-space identity.")
+    matches = [
+        request
+        for request in provisioning_requests
+        if request.status == "completed"
+        and request.proposed_project_id == record.project_id
+        and request.target_space_id == record.home_space_id
+    ]
+    if len(matches) != 1:
+        raise BackupProjectUnavailable(
+            "The project does not have exactly one completed provisioning record."
+        )
+    request = matches[0]
+    if request.completed_at is None or request.final_review_digest is None:
+        raise BackupProjectUnavailable("The completed provisioning proof is incomplete.")
+    from rcp.storage.provisioning import project_provisioning_review_digest
+
+    if project_provisioning_review_digest(request) != request.final_review_digest:
+        raise BackupProjectUnavailable("The completed provisioning review digest is stale.")
+
+    try:
+        manifest = load_manifest(record.locator)
+    except (OSError, ValueError) as exc:
+        raise BackupProjectUnavailable("The registered project manifest is unavailable.") from exc
+    if manifest.name != record.name or str(manifest.path) != record.locator:
+        raise BackupProjectUnavailable("The project catalog and registered manifest disagree.")
+
+    # The P6b renderer is the concrete owner of the reviewed team manifest. Reuse
+    # it here so backup cannot grow a second interpretation of that configuration.
+    from rcp.setup import render_prepared_team_manifest
+
+    try:
+        actual_document = tomlkit.parse(Path(record.locator).read_text(encoding="utf-8")).unwrap()
+        recorded_manifest = Manifest.model_validate(actual_document)
+        expected_document = tomlkit.parse(render_prepared_team_manifest(request)).unwrap()
+        expected_manifest = Manifest.model_validate(expected_document)
+    except (OSError, ValueError, tomlkit.exceptions.ParseError) as exc:
+        raise BackupProjectUnavailable(
+            "The completed provisioning record cannot reproduce its reviewed manifest."
+        ) from exc
+    if recorded_manifest.model_dump(mode="json") != expected_manifest.model_dump(mode="json"):
+        raise BackupProjectUnavailable(
+            "The canonical manifest changed after the completed provisioning proof."
+        )
+
+    state_repository = manifest.repository_map[manifest.state.repository]
+    state_machine = manifest.machine_map[state_repository.machine]
+    expected_state_location = (
+        f"{state_machine.host}:{state_repository.path}/.research"
+        if state_machine.host
+        else str(manifest.research_dir)
+    )
+    if record.state_location != expected_state_location or record.state_remote is not bool(
+        state_machine.host
+    ):
+        raise BackupProjectUnavailable("The project catalog and canonical state location disagree.")
+
+    configuration = BackupManifestConfiguration.from_manifest(recorded_manifest)
+    try:
+        completed_at = datetime.fromisoformat(request.completed_at)
+        recovery = BackupCheckoutRecoveryDescriptor(
+            request_id=request.request_id,
+            project_id=record.project_id,
+            home_space_id=record.home_space_id,
+            completed_at=completed_at,
+            final_review_digest=request.final_review_digest,
+            configuration=configuration,
+            configuration_sha256=configuration.sha256,
+            machines=tuple(
+                BackupRecoveryMachine(
+                    alias=machine.alias,
+                    location=machine.location,
+                    host=machine.host,
+                    os_account=machine.os_account,
+                    resolved_central_root=machine.resolved_central_root,
+                )
+                for machine in request.machines
+                if machine.resolved_central_root is not None
+            ),
+            repositories=tuple(
+                BackupRecoveryRepository(
+                    alias=repository.alias,
+                    repository=repository.repository,
+                    machine_alias=repository.machine_alias,
+                    resolved_path=repository.resolved_path,
+                    git_commit=repository.git_check.commit,
+                    deploy_key_label=repository.git_check.deploy_key_label,
+                    public_key_fingerprint=repository.git_check.public_key_fingerprint,
+                )
+                for repository in request.repositories
+                if repository.resolved_path is not None
+                and repository.git_check.commit is not None
+                and repository.git_check.deploy_key_label is not None
+                and repository.git_check.public_key_fingerprint is not None
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise BackupProjectUnavailable(
+            "The completed provisioning record cannot reconstruct every checkout."
+        ) from exc
+    if len(recovery.machines) != len(request.machines) or len(recovery.repositories) != len(
+        request.repositories
+    ):
+        raise BackupProjectUnavailable(
+            "The completed provisioning record is missing a checkout recovery field."
+        )
+    return BackupProjectRegistration(
+        record=record,
+        manifest=manifest,
+        workspace=state_workspace_for_probe(manifest, data_dir),
+        recovery=recovery,
+    )
 
 
 def _snapshot_payload(snapshot: ProjectSnapshot) -> dict[str, object]:

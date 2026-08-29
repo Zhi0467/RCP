@@ -1206,7 +1206,13 @@ restore.
 The fixed service-account layout, source installation, nonsecret desktop
 connection registry, durable provisioning-request boundary, disabled backup
 configuration, repository-scoped deploy-key primitive, exact central-checkout
-owner, exact-account provider check, and final human project creation now exist.
+owner, exact-account provider check, final human project creation, and strict
+backup-manifest/read-only inventory boundary now exist. The backup boundary
+classifies every direct app-data and `.research` root, rejects materialized or
+credential-bearing archive entries, binds a captured project to its unchanged
+completed provisioning proof, and can record a project as uncaptured without
+refreshing remote state or taking a canonical writer lock. It does not yet
+snapshot or copy bytes.
 The private installed-service control socket exposes probe, provider plan/check,
 and project-provision plan/step operations. `rcp server project provision
 <request-id>` publishes one complete plan, advances one
@@ -1220,9 +1226,9 @@ Machine orchestration, final creation, and the team deletion guard are
 hermetically covered, but provisioning has not yet passed S128's complete
 source-built team-service/GitHub/SSH/browser/desktop live drive. Cancellation
 after machine preparation, the unified wizard and desktop operator bridge,
-backup capture/restore, member removal, and transfer remain active acceptance
-work. Current RCP must not simulate those unfinished journeys or describe
-**ready for review** as an existing project.
+online backup capture/encryption/restore, member removal, and transfer remain
+active acceptance work. Current RCP must not simulate those unfinished journeys
+or describe **ready for review** as an existing project.
 
 ## Deletion
 

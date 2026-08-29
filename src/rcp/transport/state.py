@@ -25,7 +25,9 @@ from typing import Literal
 from pydantic import BaseModel
 
 from rcp.config import Manifest, load_manifest
+from rcp.core.models import GraphBranchMetadata
 from rcp.limits import (
+    BACKUP_INVENTORY_MAX_ENTRIES,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS,
     REMOTE_STATE_HEAD_PROBE_TIMEOUT_SECONDS,
@@ -33,6 +35,14 @@ from rcp.limits import (
     STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS,
     STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS,
     STATE_LOCK_POLL_INTERVAL_SECONDS,
+)
+from rcp.server_ops.backup_models import (
+    BACKUP_RESEARCH_CANONICAL_ROOTS,
+    BACKUP_RESEARCH_DELEGATED_ROOTS,
+    BACKUP_RESEARCH_EXCLUSIONS,
+    BackupBranchSourcePlan,
+    BackupCanonicalSourceFile,
+    BackupCanonicalSourcePlan,
 )
 from rcp.transport.remote_read_kept_view import MISSING as _REMOTE_VIEW_MISSING
 from rcp.transport.remote_read_kept_view import TOO_LARGE as _REMOTE_VIEW_TOO_LARGE
@@ -273,7 +283,11 @@ def _archive_research_directory(root: Path, timestamp: str) -> Path:
     raise StateUnavailable(f"Could not choose a unique archive name beside {root}.")
 
 
-def _retained_history_paths(root: Path) -> list[Path]:
+def _retained_history_paths(
+    root: Path,
+    *,
+    skip_quarantine: bool = False,
+) -> list[Path]:
     try:
         root_mode = root.lstat().st_mode
     except OSError as exc:
@@ -326,6 +340,8 @@ def _retained_history_paths(root: Path) -> list[Path]:
                     if re.fullmatch(r"[0-9]{6}\.json", patch.name):
                         require_regular(patch, "retained patch")
                         paths.append(patch)
+            elif child.name.startswith((".batch-", ".unconfirmed-")):
+                continue
 
     branches = root / "branches"
     if os.path.lexists(branches):
@@ -346,6 +362,8 @@ def _retained_history_paths(root: Path) -> list[Path]:
                 f"Could not enumerate retained graph branches at {branches}: {exc}"
             ) from exc
         for branch in branch_entries:
+            if skip_quarantine and branch.name.startswith(".unconfirmed-"):
+                continue
             try:
                 branch_id = uuid.UUID(branch.name)
             except ValueError as exc:
@@ -412,6 +430,12 @@ def _retained_history_paths(root: Path) -> list[Path]:
                 try:
                     children = directory.iterdir()
                     for child in children:
+                        if (
+                            skip_quarantine
+                            and directory_name == "patches"
+                            and child.name.startswith(".unconfirmed-")
+                        ):
+                            continue
                         if pattern.fullmatch(child.name) is None:
                             raise StateUnavailable(
                                 f"{label.capitalize()} has a malformed canonical name: {child}"
@@ -425,6 +449,199 @@ def _retained_history_paths(root: Path) -> list[Path]:
                         f"Could not enumerate {label} path at {directory}: {exc}"
                     ) from exc
     return sorted(paths, key=lambda path: path.relative_to(root).as_posix())
+
+
+def _backup_canonical_file_kind(relative: Path) -> str:
+    parts = relative.parts
+    if relative == Path("manifest.toml"):
+        return "manifest"
+    if relative == Path("scope-base.json"):
+        return "scope_base"
+    if parts[0] == "patches":
+        return "main_patch"
+    if len(parts) == 3 and parts[0] == "branches" and parts[2] == "branch.json":
+        return "branch_metadata"
+    if len(parts) == 4 and parts[0] == "branches" and parts[2] == "patches":
+        return "branch_patch"
+    if len(parts) == 4 and parts[0] == "branches" and parts[2] == "merges":
+        return "branch_merge_receipt"
+    raise StateUnavailable(f"Retained research contains an unclassified canonical file: {relative}")
+
+
+def _backup_source_file(root: Path, path: Path) -> BackupCanonicalSourceFile:
+    relative = path.relative_to(root)
+    try:
+        mode = path.lstat().st_mode
+        size = path.stat(follow_symlinks=False).st_size
+    except OSError as exc:
+        raise StateUnavailable(f"Could not inspect retained history at {path}: {exc}") from exc
+    if not stat.S_ISREG(mode):
+        raise StateUnavailable(f"Retained history is not a safe regular file: {path}")
+    return BackupCanonicalSourceFile(
+        relative_path=relative.as_posix(),
+        kind=_backup_canonical_file_kind(relative),
+        observed_size_bytes=size,
+    )
+
+
+def _canonical_backup_source_plan(root: Path) -> BackupCanonicalSourcePlan:
+    """Observe retained inputs and direct-root policy without taking a writer lock."""
+
+    try:
+        root_mode = root.lstat().st_mode
+    except OSError as exc:
+        raise StateUnavailable(f"Could not inspect canonical research at {root}: {exc}") from exc
+    if not stat.S_ISDIR(root_mode):
+        raise StateUnavailable(f"Canonical research is not a regular directory: {root}")
+    try:
+        direct_entries = sorted(root.iterdir(), key=lambda path: path.name)
+    except OSError as exc:
+        raise StateUnavailable(f"Could not enumerate canonical research at {root}: {exc}") from exc
+    if len(direct_entries) > BACKUP_INVENTORY_MAX_ENTRIES:
+        raise StateUnavailable("Canonical research direct-root inventory exceeds its entry bound.")
+
+    delegated: list[str] = []
+    excluded: list[str] = []
+    unclassified: list[str] = []
+    excluded_canonical_paths: list[str] = []
+    for entry in direct_entries:
+        name = entry.name
+        if name in BACKUP_RESEARCH_DELEGATED_ROOTS:
+            try:
+                mode = entry.lstat().st_mode
+            except OSError as exc:
+                raise StateUnavailable(
+                    f"Could not inspect delegated research root at {entry}: {exc}"
+                ) from exc
+            if not stat.S_ISDIR(mode):
+                raise StateUnavailable(
+                    f"Delegated research root is not a safe regular directory: {entry}"
+                )
+            delegated.append(name)
+        elif name in BACKUP_RESEARCH_EXCLUSIONS:
+            excluded.append(name)
+        elif name not in BACKUP_RESEARCH_CANONICAL_ROOTS:
+            unclassified.append(name)
+
+    retained_paths = _retained_history_paths(root, skip_quarantine=True)
+    if len(retained_paths) > BACKUP_INVENTORY_MAX_ENTRIES:
+        raise StateUnavailable("Canonical backup inventory exceeds its entry bound.")
+
+    patches = root / "patches"
+    if os.path.lexists(patches):
+        try:
+            patch_entries = sorted(patches.iterdir(), key=lambda path: path.name)
+        except OSError as exc:
+            raise StateUnavailable(
+                f"Could not enumerate canonical Patches at {patches}: {exc}"
+            ) from exc
+        for entry in patch_entries:
+            if entry.name.startswith((".batch-", ".unconfirmed-")):
+                excluded_canonical_paths.append(entry.relative_to(root).as_posix())
+
+    branches_root = root / "branches"
+    if os.path.lexists(branches_root):
+        try:
+            branch_entries = sorted(branches_root.iterdir(), key=lambda path: path.name)
+        except OSError as exc:
+            raise StateUnavailable(
+                f"Could not enumerate canonical graph branches at {branches_root}: {exc}"
+            ) from exc
+        for entry in branch_entries:
+            if entry.name.startswith(".unconfirmed-"):
+                excluded_canonical_paths.append(entry.relative_to(root).as_posix())
+                continue
+            try:
+                entry_mode = entry.lstat().st_mode
+            except OSError as exc:
+                raise StateUnavailable(
+                    f"Could not inspect canonical graph branch at {entry}: {exc}"
+                ) from exc
+            if not stat.S_ISDIR(entry_mode):
+                continue
+            branch_patches = entry / "patches"
+            if not os.path.lexists(branch_patches):
+                continue
+            try:
+                children = branch_patches.iterdir()
+                for child in children:
+                    if child.name.startswith(".unconfirmed-"):
+                        excluded_canonical_paths.append(child.relative_to(root).as_posix())
+            except OSError as exc:
+                raise StateUnavailable(
+                    f"Could not enumerate graph branch Patches at {branch_patches}: {exc}"
+                ) from exc
+
+    files = tuple(_backup_source_file(root, path) for path in retained_paths)
+    main_files = tuple(item for item in files if not item.relative_path.startswith("branches/"))
+    main_revisions = [
+        int(PurePosixPath(item.relative_path).stem)
+        for item in main_files
+        if item.kind == "main_patch"
+    ]
+    if len(main_revisions) != len(set(main_revisions)):
+        raise StateUnavailable("Canonical main history repeats a Patch revision.")
+
+    branch_files: dict[str, list[BackupCanonicalSourceFile]] = {}
+    for item in files:
+        parts = PurePosixPath(item.relative_path).parts
+        if parts[0] == "branches":
+            branch_files.setdefault(parts[1], []).append(item)
+    branches: list[BackupBranchSourcePlan] = []
+    for branch_id in sorted(branch_files):
+        metadata_path = root / "branches" / branch_id / "branch.json"
+        try:
+            metadata = GraphBranchMetadata.model_validate_json(
+                metadata_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as exc:
+            raise StateUnavailable(
+                f"Could not validate retained graph branch metadata at {metadata_path}."
+            ) from exc
+        if metadata.branch_id != branch_id:
+            raise StateUnavailable(
+                f"Retained graph branch metadata names another branch at {metadata_path}."
+            )
+        revisions = [
+            int(PurePosixPath(item.relative_path).stem)
+            for item in branch_files[branch_id]
+            if item.kind == "branch_patch"
+        ]
+        if len(revisions) != len(set(revisions)):
+            raise StateUnavailable(f"Graph branch {branch_id} repeats a Patch revision.")
+        observed_revision = max(revisions, default=metadata.base_head.revision)
+        if observed_revision != metadata.head.revision:
+            raise StateUnavailable(
+                f"Graph branch {branch_id} metadata and retained Patch head disagree."
+            )
+        ordered_files = tuple(
+            sorted(
+                branch_files[branch_id],
+                key=lambda item: (
+                    item.kind != "branch_metadata",
+                    item.relative_path,
+                ),
+            )
+        )
+        branches.append(
+            BackupBranchSourcePlan(
+                branch_id=branch_id,
+                head=metadata.head,
+                files=ordered_files,
+            )
+        )
+
+    observed_bytes = sum(item.observed_size_bytes for item in files)
+    return BackupCanonicalSourcePlan(
+        main_observed_revision=max(main_revisions, default=0),
+        main_files=main_files,
+        branches=tuple(branches),
+        delegated_roots=tuple(delegated),
+        excluded_roots=tuple(excluded),
+        excluded_canonical_paths=tuple(sorted(excluded_canonical_paths)),
+        unclassified_roots=tuple(unclassified),
+        observed_canonical_bytes=observed_bytes,
+    )
 
 
 def _retained_history_fingerprint(root: Path) -> str:
@@ -568,6 +785,15 @@ class StateWorkspace:
 
         with self.snapshot_lock:
             return _retained_history_fingerprint(self.root)
+
+    def backup_canonical_source_plan(self) -> BackupCanonicalSourcePlan:
+        """Observe backup inputs without refreshing or taking a publication lock.
+
+        A remote workspace's root is only its local mirror. O2b must run this same
+        inventory against its retained remote export before claiming a remote head.
+        """
+
+        return _canonical_backup_source_plan(self.root)
 
     def archive_research(self, *, expected_history_fingerprint: str | None = None) -> str:
         """Atomically move the complete canonical ``.research`` directory aside."""

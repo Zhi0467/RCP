@@ -1249,6 +1249,49 @@ gate are deliberately future work and do not block this plan.
   P6a has since supplied the durable P3-P5 sequence, and P6b now owns final
   creation.
 
+#### 2026-08-29 — O1 backup manifest and read-only capture plan complete
+
+- Backup format v1 is now one strict, frozen schema. It records the team space,
+  exact RCP source and database-schema digests, capture time, SQLite snapshot
+  entry, public-recipient fingerprint, installation/source-key revocation
+  pointers, exact per-file hashes and sizes, per-project main and branch heads,
+  canonical/chat/Paper/fact/kept-file groups, and either one complete nonsecret
+  checkout recovery descriptor or an unavailable reason and time. Validation
+  rejects unknown fields and newer schemas, materialized graph outputs, source
+  Git or stage paths, duplicate paths/heads/projects, inconsistent totals,
+  cross-space projects, and a false complete/partial claim.
+- `inspect_backup_project_registration` is a read-only bridge for O2. It accepts
+  explicit project and provisioning records rather than reading a later live
+  catalog, requires exactly one completed matching request and current review
+  digest, compares the raw canonical manifest with P6b's concrete renderer,
+  rechecks catalog state placement, and emits only repository identities,
+  aliases, route/account/path references, public deploy-key fingerprints, and
+  canonical configuration. It does not refresh remote state, read a provider
+  home, or retain private key/authentication material.
+- The canonical inventory reuses the existing retained-history walker. It
+  observes main Patch revision, typed graph-branch metadata/head, immutable
+  branch Patches and merge receipts, and exact observed sizes without taking a
+  publication/append/refresh lock. Chats, Paper, and facts remain delegated to
+  their O2b owners. Materializations, locks, `.publish`, interrupted batches,
+  and local unconfirmed-Patch/branch quarantine are named exclusions; an
+  unknown direct `.research` root makes the plan incomplete.
+- The app-data inventory is likewise closed: the live database is only an O2a
+  online-snapshot input; known runtime, cache, locator, attachment, stage, and
+  transfer roots are explicit exclusions; `project-sources/` is explicitly
+  deferred to T3e; every other direct child makes capture partial. Unsafe
+  database symlinks or special files are refused rather than followed.
+- Ten new O1 regressions plus the affected transport, remote-script, and
+  graph-branch suites pass (151 tests total). Focused Ruff and formatting pass.
+  Review caught that
+  `load_manifest` expands local provider-history roots, so the recovery proof
+  now binds the raw canonical TOML meaning; it also caught that existing
+  unconfirmed branch/Patch quarantine needed an explicit exclusion before the
+  retained walker could safely serve backup.
+- Not done: O1 creates no SQLite snapshot, stable file copy, archive,
+  encryption, retention, timer activation, status projection, or restore
+  effect. O2a/O2b, O3b, and O4 retain those responsibilities, and S104 remains
+  pending its live no-pause/partial-capture/restore drive.
+
 ## What remains
 
 The remaining implementation work is:
@@ -1262,8 +1305,9 @@ The remaining implementation work is:
    enrollment/readback, navigation, cached team groups, and optional operator
    bridge (the strict metadata and token-write/remove substrate is complete);
 4. app-visible project setup driven by the backend and prepared by the CLI;
-5. encrypted online backup capture, safe timer enablement, retention, restore,
-   and server status (strict configuration and disabled units are complete);
+5. online SQLite/project-file capture, encrypted archive readback, safe timer
+   enablement, retention, restore, and server status (the strict manifest,
+   read-only inventories, configuration, and disabled units are complete);
 6. console member removal;
 7. append-only personal-to-team home transfer and recovery; and
 8. a live one-lab acceptance drill and operator documentation.
@@ -2932,6 +2976,12 @@ show a half-built transfer state or create a separate future transfer wizard.
 ## Operations packets
 
 ### O1 — Versioned backup manifest and capture plan
+
+Status: complete hermetically on 2026-08-29. The strict format, exact closed
+root classifications, nonsecret reconstruction proof, and lock-free retained
+history/head plan have focused coverage. No archive bytes are copied or called
+protected by this packet; S104's concurrent capture and live restore remain with
+O2-O4.
 
 Own:
 
