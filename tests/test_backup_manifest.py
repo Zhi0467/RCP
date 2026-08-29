@@ -446,7 +446,7 @@ def test_archive_manifest_round_trips_and_calculates_complete_or_partial(
 
     uncaptured = BackupProjectCapture(
         project_id=str(uuid.uuid4()),
-        home_space_id=SPACE_ID,
+        home_space_id=str(uuid.uuid4()),
         locator="/tmp/unavailable/manifest.toml",
         status="uncaptured",
         unavailable_reason="The canonical host was unreachable.",

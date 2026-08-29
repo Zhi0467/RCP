@@ -172,6 +172,27 @@ class ResultViewStoreMixin:
         records = [self._result_view_record(row) for row in rows]
         return [record for record in records if _result_view_is_visible(record, as_of=as_of)]
 
+    def kept_result_views(self, project_id: str) -> list[ResultViewRecord]:
+        """Return every typed kept view for durable project capture."""
+
+        try:
+            canonical_project_id = _canonical_uuid4(
+                project_id,
+                label="project identity",
+            )
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM result_views
+                WHERE project_id = ? AND kept_filename IS NOT NULL
+                ORDER BY kept_filename, view_id
+                """,
+                (canonical_project_id,),
+            ).fetchall()
+        return [self._result_view_record(row) for row in rows]
+
     def result_view_bytes(
         self,
         view_id: str,

@@ -996,6 +996,36 @@ class AgentTaskStoreMixin:
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
+    def all_project_agent_tasks(self, project_id: str) -> list[AgentTaskRecord]:
+        """Return the complete typed task set for durable project capture."""
+
+        try:
+            canonical_project_id = _canonical_uuid4(
+                project_id,
+                label="project identity",
+            )
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT graph_runs.*,
+                       EXISTS (
+                           SELECT 1 FROM graph_run_receipts AS receipt
+                           WHERE receipt.operation_id = graph_runs.operation_id
+                             AND receipt.category IN (
+                                 'experiment_recovery_abandoned',
+                                 'auto_research_recovery_abandoned'
+                             )
+                       ) AS recovery_abandoned
+                FROM graph_runs
+                WHERE project_id = ?
+                ORDER BY created_at, operation_id
+                """,
+                (canonical_project_id,),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
     def graph_target_tasks(
         self,
         project_id: str,

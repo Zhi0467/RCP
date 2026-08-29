@@ -3,7 +3,8 @@
 Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
-F2, F3a, F3b, F4, F5, F6a, P1, P2, P3, P4, P5, P6b, P6c, D1, and O3a are complete. D2
+F2, F3a, F3b, F4, F5, F6a, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
+and O3a are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; it is not complete and still gates D3-D5. The live
 Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
@@ -20,8 +21,9 @@ service and stops at **ready for review** without creating a project; the
 packet's complete team-service/GitHub live qualification remains open. P6b now
 owns the exact final human confirmation, reserved identity append, registration,
 and crash recovery without rerunning machine preparation. F6b remains blocked
-on O2a/O2b's one capture primitive. P6c now publishes and independently enforces
-the ordinary team-project deletion guard through the card, Web, API, and catalog.
+on O2b's project-file capture primitive. P6c now publishes and independently
+enforces the ordinary team-project deletion guard through the card, Web, API,
+and catalog.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -103,9 +105,10 @@ slice, not the pending server or desktop journeys.
 The remaining seams are also concrete:
 
 - the strict `rcp server` shell, Linux layout, source installer, private control
-  socket, installed doctor, source-update candidate builder, and inert backup
-  configuration now exist; copied-state update rehearsal, cutover/rollback,
-  encrypted capture/restore, and member removal do not;
+  socket, installed doctor, source-update candidate builder, inert backup
+  configuration, and online SQLite capture now exist; project-file capture,
+  copied-state update rehearsal, cutover/rollback, encrypted archive/restore,
+  and member removal do not;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
 - the Web UI still says “Team connections are not implemented in this build”;
@@ -1292,6 +1295,47 @@ gate are deliberately future work and do not block this plan.
   effect. O2a/O2b, O3b, and O4 retain those responsibilities, and S104 remains
   pending its live no-pause/partial-capture/restore drive.
 
+#### 2026-08-29 — O2a online SQLite capture and typed inventory complete
+
+- The installed team service now owns one private control operation that uses
+  SQLite's online backup API against the live database. It creates an exclusive
+  service-account-only capture directory, copies in bounded page steps without
+  taking an RCP project or application-wide lock, runs `quick_check`, changes
+  the completed snapshot to mode `0400`, and opens only that copy through an
+  immutable read-only `AppStore` with no migrations or write authority.
+- All project inventory comes from that copied database. New storage-owner
+  queries expose the complete project task set, completed provisioning proofs,
+  and kept result-view rows. The capture validates task artifact descriptors,
+  records only typed kept artifact/view filenames, and requires their operation
+  ids to belong to the same captured project task set. It binds the unchanged
+  completed provisioning proof through O1's exact manifest inspection rather
+  than consulting a later live project list.
+- One malformed artifact, cross-project kept-view reference, wrong project home,
+  or invalid recovery proof makes only that project **uncaptured**. The receipt
+  remains useful for healthy projects and reports `partial`; a project added
+  after the SQLite copy is absent. The O1 final manifest can now preserve the
+  observed home/locator of an uncaptured row without weakening the requirements
+  for a captured project or recovery descriptor.
+- The service publishes a strict frozen `sqlite-capture.json` receipt plus its
+  digest and small typed control result. The receipt binds the source commit,
+  database schema digest, snapshot hash/size/path, app-data classification, and
+  sorted per-project inventory to one capture id. The reader rechecks size,
+  inode/mtime stability, digest, schema, and exact capture-directory identity;
+  the app-data roots are reinspected before publication so a changed database
+  boundary cannot be claimed.
+- The capture intentionally leaves failed private staging directories for later
+  diagnosis and cleanup; nothing in O2a enables `backup run` or the systemd
+  timer. It does not open a project checkout, copy canonical/chat/Paper/fact or
+  kept-file bytes, build or encrypt an archive, apply retention, publish backup
+  status, or restore anything. O2b, O3b, and O4 still own those effects.
+- Focused backup, control, storage, provisioning, and result-view regressions
+  pass (157 tests), including a concurrent writer that commits through the
+  snapshot, a late project excluded from the copied database, per-project
+  malformed/cross-home isolation, immutable readback/tamper checks, and a real
+  TestClient service plus Unix control-socket call. S104 remains pending its
+  full live dispatch/Apply, remote partial-capture, encryption, and restore
+  drive.
+
 ## What remains
 
 The remaining implementation work is:
@@ -1305,9 +1349,10 @@ The remaining implementation work is:
    enrollment/readback, navigation, cached team groups, and optional operator
    bridge (the strict metadata and token-write/remove substrate is complete);
 4. app-visible project setup driven by the backend and prepared by the CLI;
-5. online SQLite/project-file capture, encrypted archive readback, safe timer
+5. optimistic project-file capture, encrypted archive readback, safe timer
    enablement, retention, restore, and server status (the strict manifest,
-   read-only inventories, configuration, and disabled units are complete);
+   online SQLite snapshot/typed inventory, configuration, and disabled units
+   are complete);
 6. console member removal;
 7. append-only personal-to-team home transfer and recovery; and
 8. a live one-lab acceptance drill and operator documentation.
@@ -3049,6 +3094,11 @@ called protected; no implementation may load an entire project archive into
 memory.
 
 ### O2a — Online SQLite snapshot and typed project inventory
+
+Status: complete hermetically on 2026-08-29. The installed-service online
+snapshot, copied-database-only inventory, per-project failure isolation, and
+immutable handoff receipt have focused coverage. It neither captures project
+files nor activates a backup workflow; those boundaries remain with O2b/O3b.
 
 Own:
 

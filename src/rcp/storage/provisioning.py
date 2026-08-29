@@ -307,6 +307,30 @@ class ProjectProvisioningStoreMixin:
                 ).fetchall()
         return [self._project_provisioning_record(row) for row in rows]
 
+    def completed_project_provisioning_requests(
+        self,
+        project_id: str,
+    ) -> list[ProjectProvisioningRequestRecord]:
+        """Return completed reconstruction proofs for one exact project identity."""
+
+        try:
+            canonical_project_id = _canonical_uuid4(
+                project_id,
+                label="project identity",
+            )
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM project_provisioning_requests
+                WHERE proposed_project_id = ? AND status = 'completed'
+                ORDER BY created_at, request_id
+                """,
+                (canonical_project_id,),
+            ).fetchall()
+        return [self._project_provisioning_record(row) for row in rows]
+
     def transition_project_provisioning_request(
         self,
         request_id: str,

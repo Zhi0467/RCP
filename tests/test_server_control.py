@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from rcp.api import create_app
 from rcp.limits import (
+    SERVER_CONTROL_BACKUP_CAPTURE_TIMEOUT_SECONDS,
     SERVER_CONTROL_IO_TIMEOUT_SECONDS,
     SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS,
     SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
@@ -188,6 +189,8 @@ def test_provider_check_uses_its_bounded_operation_timeout(
     with pytest.raises(RuntimeError, match="stop after observing"):
         client.probe()
     with pytest.raises(RuntimeError, match="stop after observing"):
+        client.capture_backup_sqlite()
+    with pytest.raises(RuntimeError, match="stop after observing"):
         client.check_provider_readiness(
             selector_kind="request",
             selector_id=str(uuid.uuid4()),
@@ -203,6 +206,7 @@ def test_provider_check_uses_its_bounded_operation_timeout(
 
     assert observed == [
         SERVER_CONTROL_IO_TIMEOUT_SECONDS,
+        SERVER_CONTROL_BACKUP_CAPTURE_TIMEOUT_SECONDS,
         SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
         SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS,
     ]

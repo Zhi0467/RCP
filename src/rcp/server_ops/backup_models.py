@@ -851,8 +851,8 @@ class BackupCheckoutRecoveryDescriptor(_StrictBackupModel):
 
 class BackupProjectCapture(_StrictBackupModel):
     project_id: str
-    home_space_id: str
-    locator: str
+    home_space_id: str | None
+    locator: str | None
     status: Literal["captured", "uncaptured"]
     main_head: GraphHeadRef | None = None
     branch_heads: tuple[GraphHeadRef, ...] = ()
@@ -862,15 +862,20 @@ class BackupProjectCapture(_StrictBackupModel):
     unavailable_at: datetime | None = None
     total_bytes: int = Field(ge=0)
 
-    @field_validator("project_id", "home_space_id")
+    @field_validator("project_id")
     @classmethod
     def validate_id(cls, value: str, info) -> str:
         return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
 
+    @field_validator("home_space_id")
+    @classmethod
+    def validate_home_space_id(cls, value: str | None) -> str | None:
+        return None if value is None else _canonical_uuid4(value, label="home space identity")
+
     @field_validator("locator")
     @classmethod
-    def validate_locator(cls, value: str) -> str:
-        return _absolute_path(value, label="project locator")
+    def validate_locator(cls, value: str | None) -> str | None:
+        return None if value is None else _absolute_path(value, label="project locator")
 
     @field_validator("unavailable_reason")
     @classmethod
@@ -893,12 +898,15 @@ class BackupProjectCapture(_StrictBackupModel):
         if self.status == "captured":
             if (
                 self.main_head is None
+                or self.locator is None
+                or self.home_space_id is None
                 or self.main_head.target.kind != "main"
                 or self.recovery is None
                 or self.unavailable_reason is not None
                 or self.unavailable_at is not None
             ):
                 raise ValueError("a captured project requires heads and recovery without failure")
+            _absolute_path(self.locator, label="project locator")
             if (
                 self.recovery.project_id != self.project_id
                 or self.recovery.home_space_id != self.home_space_id
@@ -1066,7 +1074,10 @@ class BackupArchiveManifest(_StrictBackupModel):
         project_ids = [project.project_id for project in self.projects]
         if len(project_ids) != len(set(project_ids)):
             raise ValueError("backup manifest cannot repeat a project")
-        if any(project.home_space_id != self.space_id for project in self.projects):
+        if any(
+            project.status == "captured" and project.home_space_id != self.space_id
+            for project in self.projects
+        ):
             raise ValueError("backup manifest cannot capture a project from another space")
         partial = bool(
             self.uncaptured_app_data_entries

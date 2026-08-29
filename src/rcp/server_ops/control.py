@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.limits import (
     SERVER_CONTROL_ACCEPT_POLL_INTERVAL_SECONDS,
+    SERVER_CONTROL_BACKUP_CAPTURE_TIMEOUT_SECONDS,
     SERVER_CONTROL_IO_TIMEOUT_SECONDS,
     SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS,
     SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
@@ -29,7 +30,7 @@ from rcp.limits import (
 from rcp.server_ops.models import SERVER_CLI_MAX_STEPS, ServerStep, redact_server_text
 from rcp.server_runtime import ServerMetadata, read_server_metadata
 
-SERVER_CONTROL_PROTOCOL_VERSION = 3
+SERVER_CONTROL_PROTOCOL_VERSION = 4
 SERVER_CONTROL_MAX_REQUEST_BYTES = 64 * 1024
 SERVER_CONTROL_MAX_RESPONSE_BYTES = 256 * 1024
 SERVER_CONTROL_SOCKET_MODE = 0o600
@@ -45,6 +46,7 @@ ServerControlOperation = Literal[
     "provider_readiness_check",
     "project_provision_plan",
     "project_provision_step",
+    "backup_sqlite_capture",
 ]
 SERVER_CONTROL_OPERATIONS: tuple[ServerControlOperation, ...] = (
     "probe",
@@ -52,6 +54,7 @@ SERVER_CONTROL_OPERATIONS: tuple[ServerControlOperation, ...] = (
     "provider_readiness_check",
     "project_provision_plan",
     "project_provision_step",
+    "backup_sqlite_capture",
 )
 ServerControlProjectStatus = Literal[
     "waiting_for_server_setup",
@@ -103,7 +106,7 @@ class ServerControlRequest(_StrictModel):
         _canonical_uuid4(self.instance_id, label="control instance id")
         if self.selector_id is not None:
             _canonical_uuid4(self.selector_id, label="control selector id")
-        if self.operation == "probe":
+        if self.operation in {"probe", "backup_sqlite_capture"}:
             if any(
                 value is not None
                 for value in (
@@ -113,7 +116,7 @@ class ServerControlRequest(_StrictModel):
                     self.target_id,
                 )
             ):
-                raise ValueError("control probe cannot carry provider selector fields")
+                raise ValueError("selector-free control operations cannot carry selector fields")
         elif self.operation in {"provider_readiness_plan", "project_provision_plan"}:
             if self.selector_kind is None or self.selector_id is None:
                 raise ValueError("control plan requires one selector")
@@ -339,6 +342,50 @@ class ServerControlProjectStepResult(_StrictModel):
         return self
 
 
+class ServerControlBackupCaptureResult(_StrictModel):
+    instance_id: str
+    pid: int = Field(gt=0)
+    data_dir_id: str
+    space_id: str
+    space_kind: Literal["team"] = "team"
+    capture_id: str
+    receipt_path: str
+    receipt_sha256: str
+    snapshot_sha256: str
+    status: Literal["complete", "partial"]
+    project_count: int = Field(ge=0)
+    uncaptured_project_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_capture(self) -> ServerControlBackupCaptureResult:
+        for value, label in (
+            (self.instance_id, "control instance id"),
+            (self.space_id, "space id"),
+            (self.capture_id, "backup capture id"),
+        ):
+            _canonical_uuid4(value, label=label)
+        for value, label in (
+            (self.data_dir_id, "data directory identity"),
+            (self.receipt_sha256, "backup receipt digest"),
+            (self.snapshot_sha256, "SQLite snapshot digest"),
+        ):
+            if len(value) != 64 or any(character not in _HEX_DIGEST for character in value):
+                raise ValueError(f"{label} must be a lowercase SHA-256 digest")
+        path = Path(self.receipt_path)
+        if (
+            not path.is_absolute()
+            or ".." in path.parts
+            or path.name != "sqlite-capture.json"
+            or path.parent.name != f"backup-{self.capture_id}"
+        ):
+            raise ValueError("backup receipt path is not bound to its capture identity")
+        if self.uncaptured_project_count > self.project_count:
+            raise ValueError("uncaptured project count exceeds the captured project inventory")
+        if self.status == "complete" and self.uncaptured_project_count:
+            raise ValueError("a complete backup capture cannot report uncaptured projects")
+        return self
+
+
 def _validate_provider_result_identity(
     instance_id: str,
     space_id: str,
@@ -386,6 +433,7 @@ class ServerControlResponse(_StrictModel):
         | ServerControlProviderCheckResult
         | ServerControlProjectPlanResult
         | ServerControlProjectStepResult
+        | ServerControlBackupCaptureResult
         | None
     ) = None
     error: ServerControlFailure | None = None
@@ -427,7 +475,8 @@ ServerControlHandler = Callable[
     | ServerControlProviderPlanResult
     | ServerControlProviderCheckResult
     | ServerControlProjectPlanResult
-    | ServerControlProjectStepResult,
+    | ServerControlProjectStepResult
+    | ServerControlBackupCaptureResult,
 ]
 PeerResolver = Callable[[socket.socket], ServerControlPeer]
 
@@ -590,6 +639,20 @@ class ServerControlClient:
             )
         return result
 
+    def capture_backup_sqlite(self) -> ServerControlBackupCaptureResult:
+        request = ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=self.metadata.instance_id,
+            operation="backup_sqlite_capture",
+        )
+        result = self._exchange(request)
+        if not isinstance(result, ServerControlBackupCaptureResult):
+            raise ServerControlError(
+                "invalid_response",
+                "The running RCP process returned the wrong backup capture result.",
+            )
+        return result
+
     def _exchange(
         self,
         request: ServerControlRequest,
@@ -599,10 +662,13 @@ class ServerControlClient:
         | ServerControlProviderCheckResult
         | ServerControlProjectPlanResult
         | ServerControlProjectStepResult
+        | ServerControlBackupCaptureResult
     ):
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         timeout = SERVER_CONTROL_IO_TIMEOUT_SECONDS
-        if request.operation == "provider_readiness_check":
+        if request.operation == "backup_sqlite_capture":
+            timeout = SERVER_CONTROL_BACKUP_CAPTURE_TIMEOUT_SECONDS
+        elif request.operation == "provider_readiness_check":
             timeout = SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS
         elif request.operation == "project_provision_step":
             timeout = SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS
@@ -935,13 +1001,15 @@ def _validated_control_result(
     | ServerControlProviderPlanResult
     | ServerControlProviderCheckResult
     | ServerControlProjectPlanResult
-    | ServerControlProjectStepResult,
+    | ServerControlProjectStepResult
+    | ServerControlBackupCaptureResult,
 ) -> (
     ServerControlProbeResult
     | ServerControlProviderPlanResult
     | ServerControlProviderCheckResult
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
+    | ServerControlBackupCaptureResult
 ):
     if request.operation == "probe":
         if not isinstance(result, ServerControlProbeResult):
@@ -976,6 +1044,10 @@ def _validated_control_result(
         if validated_plan.request_id != request.selector_id:
             raise ValueError("project provisioning plan returned another request")
         return validated_plan
+    if request.operation == "backup_sqlite_capture":
+        if not isinstance(result, ServerControlBackupCaptureResult):
+            raise ValueError("backup SQLite capture returned another operation's result")
+        return ServerControlBackupCaptureResult.model_validate(result)
     if not isinstance(result, ServerControlProjectStepResult):
         raise ValueError("project provisioning step returned another operation's result")
     validated_step = ServerControlProjectStepResult.model_validate(result)
@@ -1087,6 +1159,7 @@ __all__ = [
     "SERVER_CONTROL_RUNTIME_MODE",
     "SERVER_CONTROL_SOCKET_MODE",
     "ServerControlClient",
+    "ServerControlBackupCaptureResult",
     "ServerControlError",
     "ServerControlHandler",
     "ServerControlPeer",

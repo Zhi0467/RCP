@@ -5,6 +5,7 @@ tier: live
 driver: pytest + ssh
 covered_by:
   - tests/test_backup_manifest.py
+  - tests/test_backup_sqlite_capture.py
 invariants: [1, 2, 7]
 ---
 
@@ -13,7 +14,9 @@ invariants: [1, 2, 7]
 This scenario is human-confirmed and pending its live drive. The strict archive
 schema, closed app-data/research-root classifications, nonsecret checkout
 recovery descriptor, and lock-free retained-history inventory are covered
-hermetically; online snapshot/copy, encryption, status, and restore are not yet
+hermetically. The online SQLite snapshot and copied-database-only typed project
+inventory are also covered with concurrent writers; project-file copy,
+encryption, status, restore, and the full live no-pause drive are not yet
 implemented. Its boundary is in
 [Server and machine operations](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
 

@@ -1207,15 +1207,18 @@ The fixed service-account layout, source installation, nonsecret desktop
 connection registry, durable provisioning-request boundary, disabled backup
 configuration, repository-scoped deploy-key primitive, exact central-checkout
 owner, exact-account provider check, final human project creation, and strict
-backup-manifest/read-only inventory boundary now exist. The backup boundary
-classifies every direct app-data and `.research` root, rejects materialized or
-credential-bearing archive entries, binds a captured project to its unchanged
-completed provisioning proof, and can record a project as uncaptured without
-refreshing remote state or taking a canonical writer lock. It does not yet
-snapshot or copy bytes.
+backup-manifest/read-only inventory boundary now exist. The installed service
+also creates a private immutable online SQLite snapshot and derives typed
+project, provisioning, task, and kept-file inventory only from that copy. The
+backup boundary classifies every direct app-data and `.research` root, rejects
+materialized or credential-bearing archive entries, binds a captured project to
+its unchanged completed provisioning proof, and can record a project as
+uncaptured without refreshing remote state or taking a canonical writer lock.
+It does not yet copy project files, build or encrypt an archive, enable the
+timer, or restore bytes.
 The private installed-service control socket exposes probe, provider plan/check,
-and project-provision plan/step operations. `rcp server project provision
-<request-id>` publishes one complete plan, advances one
+project-provision plan/step, and online SQLite-capture operations. `rcp server
+project provision <request-id>` publishes one complete plan, advances one
 stale-boundary-checked durable step at a time, and stops with a structured human
 action when Git, checkout, transport, or provider readiness needs repair. It
 exits successfully only after reading back the same request as **ready for
@@ -1226,9 +1229,9 @@ Machine orchestration, final creation, and the team deletion guard are
 hermetically covered, but provisioning has not yet passed S128's complete
 source-built team-service/GitHub/SSH/browser/desktop live drive. Cancellation
 after machine preparation, the unified wizard and desktop operator bridge,
-online backup capture/encryption/restore, member removal, and transfer remain
-active acceptance work. Current RCP must not simulate those unfinished journeys
-or describe **ready for review** as an existing project.
+project-file backup capture, encryption/restore, member removal, and transfer
+remain active acceptance work. Current RCP must not simulate those unfinished
+journeys or describe **ready for review** as an existing project.
 
 ## Deletion
 

@@ -119,8 +119,10 @@ from rcp.runs.tasks.graph import stream_graph_run
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
 from rcp.runs.watcher_admission import start_watcher_notification
+from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.control import (
     SERVER_CONTROL_OPERATIONS,
+    ServerControlBackupCaptureResult,
     ServerControlPeer,
     ServerControlProbeResult,
     ServerControlProjectPlanResult,
@@ -260,6 +262,7 @@ def create_app(
     control_server: ServerControlServer | None = None
     provider_readiness_coordinator: ProviderReadinessCoordinator | None = None
     project_provision_coordinator: ProjectProvisionCoordinator | None = None
+    backup_capture_coordinator: BackupCaptureCoordinator | None = None
     if identity.control_socket is not None:
         if space_kind != "team" or identity.owner_kind != "cli":
             raise ValueError(
@@ -275,6 +278,7 @@ def create_app(
             | ServerControlProviderCheckResult
             | ServerControlProjectPlanResult
             | ServerControlProjectStepResult
+            | ServerControlBackupCaptureResult
         ):
             match request.operation:
                 case "probe":
@@ -315,6 +319,25 @@ def create_app(
                         boundary_sha256=request.boundary_sha256,
                         target_id=request.target_id,
                     )
+                case "backup_sqlite_capture":
+                    assert backup_capture_coordinator is not None
+                    publication = backup_capture_coordinator.capture_sqlite()
+                    receipt = publication.receipt
+                    return ServerControlBackupCaptureResult(
+                        instance_id=identity.instance_id,
+                        pid=identity.pid,
+                        data_dir_id=identity.data_dir_id,
+                        space_id=space_id,
+                        capture_id=receipt.capture_id,
+                        receipt_path=str(publication.receipt_path),
+                        receipt_sha256=publication.receipt_sha256,
+                        snapshot_sha256=receipt.sqlite_snapshot.sha256,
+                        status=receipt.status,
+                        project_count=len(receipt.projects),
+                        uncaptured_project_count=sum(
+                            project.status == "uncaptured" for project in receipt.projects
+                        ),
+                    )
             raise AssertionError(f"Unhandled server control operation {request.operation!r}")
 
         control_server = ServerControlServer(
@@ -344,6 +367,7 @@ def create_app(
             identity,
             provider_readiness_coordinator,
         )
+        backup_capture_coordinator = BackupCaptureCoordinator(store, app_data, identity)
     agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
     provider_skills = ProviderSkillInventoryManager(store)
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)

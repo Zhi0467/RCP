@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import stat
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rcp.limits import BACKUP_SQLITE_BUSY_SLEEP_SECONDS, BACKUP_SQLITE_PAGES_PER_STEP
 from rcp.providers import PROVIDER_IDS, legacy_runtime_id
 from rcp.storage.auto_research import migrate_legacy_auto_research
 from rcp.storage.episodes import migrate_legacy_episodes
@@ -89,6 +92,7 @@ class AppStoreBase:
         if space_kind is not None and space_kind not in ("personal", "team"):
             raise ValueError("space kind must be 'personal' or 'team'")
         self.path = path
+        self._read_only_snapshot = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize(space_kind)
 
@@ -96,6 +100,7 @@ class AppStoreBase:
     def initialize_team_space(cls, path: Path, name: str) -> tuple[AppStore, str]:
         store = cls.__new__(cls)
         store.path = path
+        store._read_only_snapshot = False
         store.path.parent.mkdir(parents=True, exist_ok=True)
         initial_space_id = str(uuid.uuid4())
         try:
@@ -113,15 +118,106 @@ class AppStoreBase:
             raise RuntimeError("RCP team bootstrap code was not created.")
         return store, bootstrap_code
 
+    @classmethod
+    def open_read_only_snapshot(cls, path: Path) -> AppStore:
+        """Open one completed SQLite snapshot without migrations or write authority."""
+
+        if not isinstance(path, Path) or not path.is_absolute() or ".." in path.parts:
+            raise ValueError("the SQLite snapshot path must be absolute and normalized")
+        try:
+            mode = path.lstat().st_mode
+        except OSError as exc:
+            raise ValueError("the SQLite snapshot is unavailable") from exc
+        if not stat.S_ISREG(mode):
+            raise ValueError("the SQLite snapshot must be a safe regular file")
+        store = cls.__new__(cls)
+        store.path = path
+        store._read_only_snapshot = True
+        try:
+            with store.connection() as connection:
+                result = [row[0] for row in connection.execute("PRAGMA quick_check").fetchall()]
+        except sqlite3.Error as exc:
+            raise ValueError("the SQLite snapshot could not be validated") from exc
+        if result != ["ok"]:
+            raise ValueError("the SQLite snapshot failed its integrity check")
+        return store
+
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=30.0)
+        if getattr(self, "_read_only_snapshot", False):
+            uri = f"{self.path.resolve(strict=True).as_uri()}?mode=ro&immutable=1"
+            connection = sqlite3.connect(uri, timeout=30.0, uri=True)
+        else:
+            connection = sqlite3.connect(self.path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         try:
             yield connection
             connection.commit()
         finally:
             connection.close()
+
+    def online_snapshot(self, destination: Path) -> None:
+        """Copy this live store with SQLite's online backup API and no app-wide lock."""
+
+        if getattr(self, "_read_only_snapshot", False):
+            raise ValueError("a read-only SQLite snapshot cannot create another snapshot")
+        if (
+            not isinstance(destination, Path)
+            or not destination.is_absolute()
+            or ".." in destination.parts
+        ):
+            raise ValueError("the SQLite snapshot destination must be absolute and normalized")
+        try:
+            parent = destination.parent.lstat()
+        except OSError as exc:
+            raise ValueError("the SQLite snapshot directory is unavailable") from exc
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != os.geteuid()
+            or stat.S_IMODE(parent.st_mode) & 0o077
+        ):
+            raise ValueError("the SQLite snapshot directory must be private to this account")
+
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(destination, flags, 0o600)
+        created = os.fstat(descriptor)
+        os.close(descriptor)
+        try:
+            target = sqlite3.connect(destination, timeout=30.0)
+            try:
+                with self.connection() as source:
+                    source.backup(
+                        target,
+                        pages=BACKUP_SQLITE_PAGES_PER_STEP,
+                        sleep=BACKUP_SQLITE_BUSY_SLEEP_SECONDS,
+                    )
+                target.commit()
+                result = [row[0] for row in target.execute("PRAGMA quick_check").fetchall()]
+                if result != ["ok"]:
+                    raise RuntimeError("the online SQLite snapshot failed its integrity check")
+            finally:
+                target.close()
+            current = destination.lstat()
+            if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (
+                created.st_dev,
+                created.st_ino,
+            ):
+                raise RuntimeError("the online SQLite snapshot changed during capture")
+            read_descriptor = os.open(
+                destination,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                os.fchmod(read_descriptor, 0o400)
+                os.fsync(read_descriptor)
+            finally:
+                os.close(read_descriptor)
+        except Exception:
+            with suppress(FileNotFoundError):
+                current = destination.lstat()
+                if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                    destination.unlink()
+            raise
 
     def _initialize(
         self,
