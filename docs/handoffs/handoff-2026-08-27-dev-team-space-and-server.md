@@ -27,7 +27,10 @@ required origin-security decision. Real Keychain round-trip, SSH, enrollment,
 navigation, and UI
 remain D3 through D5 after D2 is resolved. Every concrete provisioning
 operation, member/API projection, finalizer, and the unified wizard remain later
-packets.
+packets. O3a now implements strict backup machine configuration and installs the
+matching backup service/timer units in a proven disabled state; encrypted
+capture, integrity readback, retention, and safe timer enablement remain O1,
+O2a, O2b, and O3b.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -359,13 +362,16 @@ gate are deliberately future work and do not block this plan.
   project ids and one safe alias component. Remote repository credentials derive
   only from the explicit absolute home reported by that execution account, not
   `/home/<name>` or a shell environment value.
-- `/etc/rcp/server.toml` has one closed version-1 TOML model. It records a random
-  immutable installation UUID, the fixed account/unit/path contract, and one
-  GitHub `main` source using either HTTPS with no credential or SSH with the
-  dedicated deploy-key public fingerprint. Unknown fields, path drift,
-  cross-wired transport/authentication, malformed fingerprints, and an explicit
-  empty identity fail closed. There is still no private key, provider login,
-  backup identity, or member credential in this machine file.
+- `/etc/rcp/server.toml` began with one closed version-1 TOML model. O3a's
+  current version-2 reader upgrades that exact first shape in memory and adds an
+  optional strict backup section; a version-1 document carrying that future
+  section is rejected. The file still records the immutable installation UUID,
+  fixed account/unit/path contract, and one GitHub `main` source using either
+  HTTPS with no credential or SSH with the dedicated deploy-key public
+  fingerprint. Unknown fields, path drift, cross-wired transport/authentication,
+  malformed fingerprints, and an explicit empty identity fail closed. No
+  private key, provider login, recovery identity, or member credential enters
+  this machine file.
 - The config writer resolves the actual root UID and `rcp` primary GID rather
   than accepting caller-selected ownership. It rejects symlinked ancestry and
   an existing file with the wrong owner, group, or exact `0640` mode, writes a
@@ -628,6 +634,48 @@ gate are deliberately future work and do not block this plan.
   choose a larger native transport design. D3 through D5 remain dependent on
   that decision; unrelated server and provisioning lanes remain available.
 
+#### 2026-08-28 — O3a backup configuration and inert timer implemented
+
+- `sudo rcp server backup configure` now requires one absolute destination, one
+  checksum-valid native X25519 `age1...` public recipient, explicit `--confirm`,
+  and configurable daily server-local time/archive count with defaults of
+  `02:00` and 30. The strict request rejects relative/root/non-normalized paths,
+  malformed recipients, private age identities, invalid times, nonpositive
+  retention, partial requests, and configuration fields on other commands.
+- The destination must already exist. A bounded, empty-environment helper runs
+  through `runuser` as the exact installed `rcp` account, opens the directory
+  without following its final component, creates one mode-0600 exclusive probe,
+  fsyncs and removes only that probe, and returns no path or subprocess output.
+  RCP does not classify or warn about local versus mounted storage.
+- `/etc/rcp/server.toml` is now schema version 2 with one optional strict backup
+  table. The reader upgrades the exact unconfigured version-1 shape in memory;
+  it does not let a version-1 document smuggle in backup fields. Atomic
+  publication retains installation id, source, and fixed paths and stores only
+  destination, schedule, retention, and the public recipient.
+- The source assets install one `rcp-backup.service` that invokes the future
+  service-account `backup run` command and one timer rendered from the stored
+  schedule. One root-owned `0600` advisory lock serializes configuration with
+  installer convergence. Both paths fence a previously loaded timer before
+  touching its units and prove it inactive and disabled after reload. A
+  root-owned pending config makes an interrupted timer/config publication
+  recover its exact intended policy before any later operation continues; only
+  exact config, timer-text, and systemd-state readback clears that marker. There
+  is no code path in O3a that enables the timer.
+- The one independent O3a audit found four issues, all fixed without a second
+  audit: early failures could precede the first timer fence; config and timer
+  publication lacked serialization/recovery; `PrivateTmp=true` hid otherwise
+  valid `/tmp` destinations from the future service; and the destination bound
+  exceeded the CLI event bound. Focused O3a, shared CLI, installed-config,
+  installer, and documentation verification now passes 150 tests. The internal
+  destination helper, configured-file atomic round-trip, concurrent-lock
+  refusal, and injected publication recovery were exercised against real
+  temporary files. Focused Ruff and formatting checks pass.
+- Not done: no archive is captured, encrypted, integrity-read, retained, or
+  deleted; `backup run` remains unavailable and the timer remains disabled.
+  No real root-owned `/etc` file or systemd manager was changed on this Mac, and
+  no Ubuntu live drive was claimed. O3b and the later live milestone own those
+  checks.
+
 ## What remains
 
 Everything after the existing auth/membership foundation remains implementation
@@ -644,7 +692,8 @@ work:
    enrollment/readback, navigation, cached team groups, and optional operator
    bridge (the strict metadata and token-write/remove substrate is complete);
 7. app-visible project setup driven by the backend and prepared by the CLI;
-8. encrypted online backup, scheduling, restore, and server status;
+8. encrypted online backup capture, safe timer enablement, retention, restore,
+   and server status (strict configuration and disabled units are complete);
 9. console member removal;
 10. append-only personal-to-team home transfer and recovery; and
 11. a live one-lab acceptance drill and operator documentation.
@@ -2356,6 +2405,10 @@ arbitrary symlink targets.
 
 ### O3a — Backup configuration and systemd timer
 
+Status: implemented in the working tree on 2026-08-28; focused verification and
+the one independent audit are complete. O3b still owns every archive side
+effect and the only transition that may enable the timer.
+
 Own:
 
 - new `src/rcp/server_ops/backup_config.py`;
@@ -2366,7 +2419,7 @@ Own:
   `src/rcp/server_ops/cli.py` and `src/rcp/server_ops/install.py`; and
 - `tests/test_backup_configuration.py`.
 
-`backup configure` interactively records an explicit destination, schedule,
+`backup configure` explicitly records a destination, schedule,
 retention, and `age` public recipient. It never accepts or stores the private
 identity.
 
@@ -2377,6 +2430,13 @@ newest complete archive when it is older than that window. Require explicit
 confirmation or edited values before enabling the systemd timer. Render and
 read back the timer from the same resolved schedule so configuration cannot
 drift from execution.
+
+Serialize install and configuration through one stable root-owned lock. Fence
+an existing loaded timer before unit mutation and again after reload. Journal
+the complete intended public config before mutation, recover that exact record
+after interruption, and clear it only after exact config/timer/systemd
+readback. The service must see every accepted destination, including `/tmp` and
+`/var/tmp`; do not add a private temporary namespace that changes path meaning.
 
 Until O3b's concrete `backup run` owner is present, installation may render the
 unit and persist validated configuration but must leave the timer disabled and

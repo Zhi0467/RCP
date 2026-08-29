@@ -15,6 +15,14 @@ from typing import BinaryIO, TextIO
 
 from pydantic import ValidationError
 
+from rcp.server_ops.config import (
+    DEFAULT_BACKUP_RETENTION,
+    DEFAULT_BACKUP_SCHEDULE,
+    validate_age_recipient,
+    validate_backup_destination,
+    validate_backup_retention,
+    validate_backup_schedule,
+)
 from rcp.server_ops.models import (
     SERVER_CLI_MAX_EXECUTION_BYTES,
     MachineTarget,
@@ -144,7 +152,41 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
     backup_configure = _leaf(
         backup_commands,
         "configure",
-        "Interactively configure destination, encryption, schedule, and retention",
+        "Explicitly configure destination, encryption, schedule, and retention",
+    )
+    backup_configure.add_argument(
+        "--destination",
+        required=True,
+        type=_backup_destination,
+        help="Explicit absolute local or mounted directory writable by the rcp account",
+    )
+    backup_configure.add_argument(
+        "--recipient",
+        dest="backup_age_recipient",
+        required=True,
+        type=_backup_age_recipient,
+        help="Native X25519 age1 public recipient; never provide the private identity",
+    )
+    backup_configure.add_argument(
+        "--schedule",
+        dest="backup_schedule",
+        default=DEFAULT_BACKUP_SCHEDULE,
+        type=_backup_schedule,
+        help="Daily server-local time in HH:MM form (default: 02:00)",
+    )
+    backup_configure.add_argument(
+        "--retention",
+        dest="backup_retention",
+        default=DEFAULT_BACKUP_RETENTION,
+        type=_backup_retention,
+        help="Number of newest integrity-readback archives to retain (default: 30)",
+    )
+    backup_configure.add_argument(
+        "--confirm",
+        dest="backup_confirmed",
+        action="store_true",
+        required=True,
+        help="Confirm the destination, recipient, schedule, and retention supplied here",
     )
     backup_configure.set_defaults(server_operation="server backup configure")
     backup_run = _leaf(backup_commands, "run", "Capture and verify one configured backup")
@@ -238,6 +280,35 @@ def _identity_file(value: str) -> str:
     return _absolute_path(value, "recovery identity file")
 
 
+def _validated_argument(value: object, validator) -> object:
+    try:
+        return validator(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _backup_destination(value: str) -> str:
+    return str(_validated_argument(value, validate_backup_destination))
+
+
+def _backup_age_recipient(value: str) -> str:
+    return str(_validated_argument(value, validate_age_recipient))
+
+
+def _backup_schedule(value: str) -> str:
+    return str(_validated_argument(value, validate_backup_schedule))
+
+
+def _backup_retention(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "backup retention must be a positive archive count"
+        ) from exc
+    return int(_validated_argument(parsed, validate_backup_retention))
+
+
 def request_from_namespace(args: argparse.Namespace) -> ServerCommandRequest:
     try:
         return ServerCommandRequest(
@@ -248,6 +319,11 @@ def request_from_namespace(args: argparse.Namespace) -> ServerCommandRequest:
             member_id=getattr(args, "member_id", None),
             archive_path=getattr(args, "archive_path", None),
             recovery_identity_file=getattr(args, "recovery_identity_file", None),
+            backup_destination=getattr(args, "destination", None),
+            backup_schedule=getattr(args, "backup_schedule", None),
+            backup_retention=getattr(args, "backup_retention", None),
+            backup_age_recipient=getattr(args, "backup_age_recipient", None),
+            backup_confirmed=getattr(args, "backup_confirmed", None),
         )
     except (AttributeError, ValidationError) as exc:  # pragma: no cover - parser owns public input
         raise RuntimeError("argparse produced an invalid server command") from exc
@@ -340,7 +416,9 @@ def _dispatch_server_command(
         case "server project transfer-import":
             return _unavailable_command(request, identity)
         case "server backup configure":
-            return _unavailable_command(request, identity)
+            from rcp.server_ops.backup_config import prepare_backup_configure_command
+
+            return prepare_backup_configure_command(request, identity)
         case "server backup run":
             return _unavailable_command(request, identity)
         case "server restore":

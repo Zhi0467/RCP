@@ -1075,13 +1075,33 @@ class LinuxInstallMachine:
             server_service_unit_text(),
             mode=_UNIT_MODE,
         )
-        _converge_current_release(self.layout, release)
-        _require_command(
-            ("systemctl", "daemon-reload"),
-            "systemd could not reload the installed unit. Run systemctl daemon-reload, inspect "
-            "the unit, and rerun install.",
-            timeout=SERVER_INSTALL_SERVICE_TIMEOUT_SECONDS,
+        from rcp.server_ops.backup_config import (
+            backup_configuration_lock,
+            backup_service_unit_text,
+            recover_pending_backup_configuration,
+            render_backup_timer_unit,
         )
+
+        with backup_configuration_lock(self.layout):
+            recover_pending_backup_configuration(self.layout)
+            installed_config = load_installed_server_config(self.layout.config_path)
+            backup_schedule = (
+                installed_config.backup.schedule if installed_config.backup is not None else None
+            )
+            fence_backup_timer_before_unit_change()
+            install_backup_unit_files(
+                service_content=backup_service_unit_text(),
+                timer_content=render_backup_timer_unit(backup_schedule),
+                layout=self.layout,
+            )
+            _converge_current_release(self.layout, release)
+            _require_command(
+                ("systemctl", "daemon-reload"),
+                "systemd could not reload the installed unit. Run systemctl daemon-reload, "
+                "inspect the unit, and rerun install.",
+                timeout=SERVER_INSTALL_SERVICE_TIMEOUT_SECONDS,
+            )
+            _fence_service_stopped_disabled("rcp-backup.timer")
         data_state = self._data_state()
         if data_state == "fresh":
             _fence_service_stopped_disabled(self.layout.service_unit_name)
@@ -1772,7 +1792,13 @@ def _wrapper_text(layout: ServerLayout) -> str:
     )
 
 
-def _install_root_file(path: Path, content: str, *, mode: int) -> None:
+def _install_root_file(
+    path: Path,
+    content: str,
+    *,
+    mode: int,
+    replace_existing: bool = False,
+) -> None:
     _reject_symlink_ancestry(path.parent)
     if path.is_symlink():
         raise InstallRefused(f"Root-managed file {path} is a symlink; install will not replace it.")
@@ -1783,16 +1809,18 @@ def _install_root_file(path: Path, content: str, *, mode: int) -> None:
         if (info.st_uid, info.st_gid) != (0, 0):
             raise InstallRefused(f"Root-managed file {path} has unexpected ownership.")
         encoded_size = len(content.encode("utf-8"))
-        if (
+        differs = (
             stat.S_IMODE(info.st_mode) != mode
             or info.st_size != encoded_size
             or path.read_text(encoding="utf-8") != content
-        ):
+        )
+        if not differs:
+            return
+        if not replace_existing:
             raise InstallRefused(
                 f"Root-managed file {path} differs from this release. Use server update or "
                 "restore the known file; install will not overwrite it."
             )
-        return
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
@@ -1813,6 +1841,49 @@ def _install_root_file(path: Path, content: str, *, mode: int) -> None:
         if descriptor >= 0:
             os.close(descriptor)
         temporary.unlink(missing_ok=True)
+
+
+def install_backup_unit_files(
+    *,
+    service_content: str,
+    timer_content: str,
+    layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
+) -> None:
+    unit_root = layout.systemd_unit.parent
+    _install_root_file(
+        unit_root / "rcp-backup.service",
+        service_content,
+        mode=_UNIT_MODE,
+    )
+    _install_root_file(
+        unit_root / "rcp-backup.timer",
+        timer_content,
+        mode=_UNIT_MODE,
+        replace_existing=True,
+    )
+
+
+def fence_backup_timer_before_unit_change() -> None:
+    load_state = _read_systemd_property("rcp-backup.timer", "LoadState")
+    if load_state == "not-found":
+        return
+    _fence_service_stopped_disabled("rcp-backup.timer")
+
+
+def reload_and_disable_backup_timer() -> None:
+    _require_command(
+        ("systemctl", "daemon-reload"),
+        "systemd could not reload the backup units. Run systemctl daemon-reload, inspect "
+        "rcp-backup.service and rcp-backup.timer, then rerun backup configure.",
+        timeout=SERVER_INSTALL_SERVICE_TIMEOUT_SECONDS,
+    )
+    _fence_service_stopped_disabled("rcp-backup.timer")
+
+
+def read_systemd_unit_state(unit: str) -> tuple[str, str]:
+    return _read_systemd_property(unit, "ActiveState"), _read_systemd_property(
+        unit, "UnitFileState"
+    )
 
 
 def _converge_current_release(layout: ServerLayout, release: Path) -> None:
@@ -1892,6 +1963,10 @@ __all__ = [
     "ServiceInstallState",
     "SourceAccess",
     "discover_bootstrap_repository",
+    "fence_backup_timer_before_unit_change",
+    "install_backup_unit_files",
     "normalize_github_repository",
     "prepare_install_command",
+    "read_systemd_unit_state",
+    "reload_and_disable_backup_timer",
 ]

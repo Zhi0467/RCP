@@ -15,13 +15,20 @@ import tomlkit
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
+from rcp.server_ops.models import SERVER_CLI_MAX_FIELD_CHARS
 
-SERVER_CONFIG_SCHEMA_VERSION = 1
+SERVER_CONFIG_SCHEMA_VERSION = 2
+LEGACY_SERVER_CONFIG_SCHEMA_VERSION = 1
 SERVER_CONFIG_MODE = 0o640
+DEFAULT_BACKUP_SCHEDULE = "02:00"
+DEFAULT_BACKUP_RETENTION = 30
 
 _GITHUB_HTTPS_ORIGIN = re.compile(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?")
 _GITHUB_SSH_ORIGIN = re.compile(r"git@github\.com:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?")
 _SSH_PUBLIC_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{20,64}={0,2}")
+_BACKUP_LOCAL_TIME = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
+_AGE_BECH32_ALPHABET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+_AGE_BECH32_VALUES = {character: index for index, character in enumerate(_AGE_BECH32_ALPHABET)}
 
 
 class _StrictModel(BaseModel):
@@ -93,6 +100,33 @@ class ServerPathsConfig(_StrictModel):
         return cls.model_validate(layout.recorded_paths())
 
 
+class ServerBackupConfig(_StrictModel):
+    destination: str
+    schedule: str = DEFAULT_BACKUP_SCHEDULE
+    retention: int = DEFAULT_BACKUP_RETENTION
+    age_recipient: str
+
+    @field_validator("destination")
+    @classmethod
+    def validate_destination(cls, value: str) -> str:
+        return validate_backup_destination(value)
+
+    @field_validator("schedule")
+    @classmethod
+    def validate_schedule(cls, value: str) -> str:
+        return validate_backup_schedule(value)
+
+    @field_validator("retention")
+    @classmethod
+    def validate_retention(cls, value: int) -> int:
+        return validate_backup_retention(value)
+
+    @field_validator("age_recipient")
+    @classmethod
+    def validate_age_recipient(cls, value: str) -> str:
+        return validate_age_recipient(value)
+
+
 class InstalledServerConfig(_StrictModel):
     schema_version: Literal[SERVER_CONFIG_SCHEMA_VERSION] = SERVER_CONFIG_SCHEMA_VERSION
     installation_id: str
@@ -100,6 +134,7 @@ class InstalledServerConfig(_StrictModel):
     service_unit: Literal["rcp.service"] = "rcp.service"
     source: ServerSourceConfig
     paths: ServerPathsConfig
+    backup: ServerBackupConfig | None = None
 
     @field_validator("installation_id")
     @classmethod
@@ -144,6 +179,14 @@ def render_installed_server_config(config: InstalledServerConfig) -> str:
     for name, value in config.paths.model_dump().items():
         paths.add(name, value)
     document.add("paths", paths)
+
+    if config.backup is not None:
+        backup = tomlkit.table()
+        backup.add("destination", config.backup.destination)
+        backup.add("schedule", config.backup.schedule)
+        backup.add("retention", config.backup.retention)
+        backup.add("age_recipient", config.backup.age_recipient)
+        document.add("backup", backup)
     content = tomlkit.dumps(document)
     if parse_installed_server_config(content) != config:
         raise RuntimeError("rendered installed-server configuration changed meaning")
@@ -153,9 +196,83 @@ def render_installed_server_config(config: InstalledServerConfig) -> str:
 def parse_installed_server_config(content: str) -> InstalledServerConfig:
     try:
         data = tomlkit.parse(content).unwrap()
+        schema_version = data.get("schema_version")
+        if type(schema_version) is int and schema_version == LEGACY_SERVER_CONFIG_SCHEMA_VERSION:
+            if "backup" in data:
+                raise ValueError("legacy installed-server configuration cannot contain backup")
+            data["schema_version"] = SERVER_CONFIG_SCHEMA_VERSION
         return InstalledServerConfig.model_validate(data)
-    except (tomlkit.exceptions.ParseError, ValidationError) as exc:
+    except (tomlkit.exceptions.ParseError, ValidationError, ValueError) as exc:
         raise ValueError(f"invalid installed-server configuration: {exc}") from exc
+
+
+def validate_backup_destination(value: str) -> str:
+    if (
+        not isinstance(value, str)
+        or value != value.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError("backup destination must be one trimmed line")
+    if len(value) > SERVER_CLI_MAX_FIELD_CHARS or len(value.encode("utf-8")) > 4096:
+        raise ValueError(
+            "backup destination cannot exceed "
+            f"{SERVER_CLI_MAX_FIELD_CHARS} characters or 4096 UTF-8 bytes"
+        )
+    path = Path(value)
+    if not path.is_absolute() or path == Path("/") or ".." in path.parts or str(path) != value:
+        raise ValueError("backup destination must be an absolute normalized non-root path")
+    return value
+
+
+def validate_backup_schedule(value: str) -> str:
+    if not isinstance(value, str) or _BACKUP_LOCAL_TIME.fullmatch(value) is None:
+        raise ValueError("backup schedule must be server-local 24-hour time in HH:MM form")
+    return value
+
+
+def validate_backup_retention(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("backup retention must be a positive archive count")
+    return value
+
+
+def validate_age_recipient(value: str) -> str:
+    if not isinstance(value, str) or value != value.strip() or value != value.lower():
+        raise ValueError("age recipient must be one lowercase native X25519 recipient")
+    if len(value) != 62 or not value.startswith("age1"):
+        raise ValueError("age recipient must be one native X25519 age1 recipient")
+    try:
+        encoded = [_AGE_BECH32_VALUES[character] for character in value[4:]]
+    except KeyError as exc:
+        raise ValueError("age recipient contains an invalid bech32 character") from exc
+    payload = encoded[:-6]
+    if (
+        len(payload) != 52
+        or payload[-1] & 0x0F
+        or _bech32_polymod((*_bech32_hrp_expand("age"), *encoded)) != 1
+    ):
+        raise ValueError("age recipient has an invalid native X25519 checksum")
+    return value
+
+
+def _bech32_hrp_expand(value: str) -> tuple[int, ...]:
+    return (
+        tuple(ord(character) >> 5 for character in value)
+        + (0,)
+        + tuple(ord(character) & 31 for character in value)
+    )
+
+
+def _bech32_polymod(values: tuple[int, ...]) -> int:
+    generators = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
+    checksum = 1
+    for value in values:
+        top = checksum >> 25
+        checksum = ((checksum & 0x1FFFFFF) << 5) ^ value
+        for index, generator in enumerate(generators):
+            if (top >> index) & 1:
+                checksum ^= generator
+    return checksum
 
 
 def load_installed_server_config(
@@ -247,14 +364,22 @@ def _fsync_directory(path: Path) -> None:
 
 
 __all__ = [
+    "DEFAULT_BACKUP_RETENTION",
+    "DEFAULT_BACKUP_SCHEDULE",
+    "LEGACY_SERVER_CONFIG_SCHEMA_VERSION",
     "SERVER_CONFIG_MODE",
     "SERVER_CONFIG_SCHEMA_VERSION",
     "InstalledServerConfig",
+    "ServerBackupConfig",
     "ServerPathsConfig",
     "ServerSourceConfig",
     "create_installed_server_config",
     "load_installed_server_config",
     "parse_installed_server_config",
     "render_installed_server_config",
+    "validate_age_recipient",
+    "validate_backup_destination",
+    "validate_backup_retention",
+    "validate_backup_schedule",
     "write_installed_server_config",
 ]

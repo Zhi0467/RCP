@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from contextlib import nullcontext
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.__main__ import build_parser
+from rcp.server_ops import backup_config as backup_owner
 from rcp.server_ops import install as server_install
 from rcp.server_ops.cli import (
     SERVER_CLI_EXIT_FAILED,
@@ -964,9 +966,32 @@ def test_service_install_keeps_fresh_data_stopped_and_disabled(
     current = []
     commands = []
     monkeypatch.setattr(
+        backup_owner,
+        "backup_configuration_lock",
+        lambda _layout: nullcontext(),
+    )
+    monkeypatch.setattr(
+        backup_owner,
+        "recover_pending_backup_configuration",
+        lambda _layout: None,
+    )
+    monkeypatch.setattr(
         server_install,
         "_install_root_file",
-        lambda path, content, *, mode: files.append((path, content, mode)),
+        lambda path, content, *, mode, replace_existing=False: files.append(
+            (path, content, mode, replace_existing)
+        ),
+    )
+    monkeypatch.setattr(
+        server_install,
+        "load_installed_server_config",
+        lambda _path: create_installed_server_config(
+            source=ServerSourceConfig(
+                origin="https://github.com/Zhi0467/RCP.git",
+                authentication="public",
+            ),
+            installation_id=INSTALLATION_ID,
+        ),
     )
     monkeypatch.setattr(
         server_install,
@@ -984,6 +1009,8 @@ def test_service_install_keeps_fresh_data_stopped_and_disabled(
                 if "--property=ActiveState" in argv
                 else "disabled\n"
                 if "--property=UnitFileState" in argv
+                else "not-found\n"
+                if "--property=LoadState" in argv
                 else ""
             ),
             "",
@@ -1007,9 +1034,41 @@ def test_service_install_keeps_fresh_data_stopped_and_disabled(
         data_state="fresh",
         service_state="stopped_disabled",
     )
-    assert [item[0] for item in files] == [layout.cli_wrapper, layout.systemd_unit]
+    assert [item[0] for item in files] == [
+        layout.cli_wrapper,
+        layout.systemd_unit,
+        layout.systemd_unit.parent / "rcp-backup.service",
+        layout.systemd_unit.parent / "rcp-backup.timer",
+    ]
+    assert files[-1][3] is True
     assert current == [(layout, release)]
     assert ("systemctl", "disable", "--now", "rcp.service") in commands
+    assert ("systemctl", "disable", "--now", "rcp-backup.timer") in commands
+
+
+def test_backup_timer_is_fenced_before_loaded_unit_changes(monkeypatch) -> None:
+    fences: list[str] = []
+    monkeypatch.setattr(
+        server_install,
+        "_fence_service_stopped_disabled",
+        lambda unit: fences.append(unit),
+    )
+    monkeypatch.setattr(
+        server_install,
+        "_read_systemd_property",
+        lambda _unit, _property: "not-found",
+    )
+
+    server_install.fence_backup_timer_before_unit_change()
+    assert fences == []
+
+    monkeypatch.setattr(
+        server_install,
+        "_read_systemd_property",
+        lambda _unit, _property: "loaded",
+    )
+    server_install.fence_backup_timer_before_unit_change()
+    assert fences == ["rcp-backup.timer"]
 
 
 def test_activation_reads_team_health_and_stops_a_wrong_space(monkeypatch) -> None:

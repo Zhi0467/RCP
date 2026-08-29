@@ -24,6 +24,7 @@ SERVER_CLI_MAX_STEPS = 64
 SERVER_CLI_MAX_EVENTS = 1 + (SERVER_CLI_MAX_STEPS * 4)
 SERVER_CLI_MAX_ACTIONS = 16
 SERVER_CLI_MAX_FIELDS = 32
+SERVER_CLI_MAX_FIELD_CHARS = 2048
 SERVER_CLI_MAX_ARGV = 64
 SERVER_CLI_MAX_ARG_CHARS = 4096
 SERVER_CLI_MAX_EXECUTION_BYTES = 1024 * 1024
@@ -170,6 +171,11 @@ class ServerCommandRequest(_StrictModel):
     member_id: str | None = None
     archive_path: str | None = None
     recovery_identity_file: str | None = None
+    backup_destination: str | None = None
+    backup_schedule: str | None = None
+    backup_retention: int | None = None
+    backup_age_recipient: str | None = None
+    backup_confirmed: bool | None = None
 
     @field_validator("request_id", "project_id", "member_id")
     @classmethod
@@ -185,6 +191,42 @@ class ServerCommandRequest(_StrictModel):
             return None
         return absolute_path(value, label=info.field_name.replace("_", " "))
 
+    @field_validator("backup_destination")
+    @classmethod
+    def validate_backup_destination(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from rcp.server_ops.config import validate_backup_destination
+
+        return validate_backup_destination(value)
+
+    @field_validator("backup_schedule")
+    @classmethod
+    def validate_backup_schedule(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from rcp.server_ops.config import validate_backup_schedule
+
+        return validate_backup_schedule(value)
+
+    @field_validator("backup_retention")
+    @classmethod
+    def validate_backup_retention(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        from rcp.server_ops.config import validate_backup_retention
+
+        return validate_backup_retention(value)
+
+    @field_validator("backup_age_recipient")
+    @classmethod
+    def validate_backup_age_recipient(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from rcp.server_ops.config import validate_age_recipient
+
+        return validate_age_recipient(value)
+
     @model_validator(mode="after")
     def fields_match_command(self) -> ServerCommandRequest:
         supplied = {
@@ -194,6 +236,11 @@ class ServerCommandRequest(_StrictModel):
             "member_id": self.member_id,
             "archive_path": self.archive_path,
             "recovery_identity_file": self.recovery_identity_file,
+            "backup_destination": self.backup_destination,
+            "backup_schedule": self.backup_schedule,
+            "backup_retention": self.backup_retention,
+            "backup_age_recipient": self.backup_age_recipient,
+            "backup_confirmed": self.backup_confirmed,
         }
         expected: set[str]
         if self.command == "server install":
@@ -211,6 +258,16 @@ class ServerCommandRequest(_StrictModel):
             expected = {"member_id"}
         elif self.command == "server restore":
             expected = {"archive_path", "recovery_identity_file"}
+        elif self.command == "server backup configure":
+            expected = {
+                "backup_destination",
+                "backup_schedule",
+                "backup_retention",
+                "backup_age_recipient",
+                "backup_confirmed",
+            }
+            if self.backup_confirmed is not True:
+                raise ValueError("backup configure requires explicit confirmation")
         else:
             expected = set()
         missing = sorted(name for name in expected if supplied[name] is None)
@@ -326,8 +383,10 @@ class NonsecretField(_StrictModel):
         if isinstance(value, str):
             if not value.strip():
                 raise ValueError("nonsecret string fields cannot be empty")
-            if len(value) > 2048:
-                raise ValueError("nonsecret string fields cannot exceed 2048 characters")
+            if len(value) > SERVER_CLI_MAX_FIELD_CHARS:
+                raise ValueError(
+                    f"nonsecret string fields cannot exceed {SERVER_CLI_MAX_FIELD_CHARS} characters"
+                )
             return _safe_text(value)
         return value
 
@@ -525,6 +584,7 @@ __all__ = [
     "SERVER_CLI_MAX_ARGV",
     "SERVER_CLI_MAX_EVENTS",
     "SERVER_CLI_MAX_EXECUTION_BYTES",
+    "SERVER_CLI_MAX_FIELD_CHARS",
     "SERVER_CLI_MAX_FIELDS",
     "SERVER_CLI_MAX_STEPS",
     "SERVER_CLI_PROTOCOL_VERSION",

@@ -972,11 +972,31 @@ Backup destination, `age` public recipient, schedule, and retention are strict
 versioned machine configuration in the installed server config file, not team
 SQLite state. The root-owned file is readable by `rcp`, contains no private
 recovery identity, and is replaced atomically only through
-`rcp server backup configure`. The same resolved schedule renders the systemd
-timer; there is no second editable timer value. Configuration proposes a daily
-02:00 server-local run and retention of the newest 30 integrity-readback
-archives. The operator explicitly confirms or changes both values. Retention
-also preserves the newest complete archive if it has fallen outside those 30.
+the following explicit operation:
+
+```bash
+sudo rcp server backup configure \
+  --destination <absolute-directory> \
+  --recipient <age1-public-recipient> \
+  --schedule <HH:MM> \
+  --retention <count> \
+  --confirm
+```
+
+The schedule and retention flags default to `02:00` server-local
+time and 30 newest integrity-readback archives, but the destination, native
+X25519 public recipient, and explicit confirmation are always required. The
+private `AGE-SECRET-KEY-...` identity is never accepted. The same resolved
+schedule renders the systemd timer; there is no second editable timer value.
+Retention also preserves the newest complete archive if it has fallen outside
+the configured count.
+One stable root-owned operation lock serializes install and configuration. RCP
+fences an already loaded timer before changing either unit and proves it
+inactive and disabled after daemon reload. Before the first unit mutation it
+atomically records the complete intended public configuration in a pending
+file; an interrupted operation must finish and read back that exact pending
+configuration under the same lock before a later install or configuration may
+continue. Only an exact config/timer/systemd readback clears the pending file.
 Backup outcomes and archive manifests remain project-visible operational status,
 but restoring SQLite never silently reconfigures this machine or its timer.
 

@@ -43,6 +43,17 @@ REQUEST_ID = "123e4567-e89b-42d3-a456-426614174000"
 PROJECT_ID = "123e4567-e89b-42d3-b456-426614174001"
 MEMBER_ID = "123e4567-e89b-42d3-8456-426614174002"
 NOW = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
+AGE_RECIPIENT = "age1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusqmwn7f2"
+BACKUP_CONFIGURE_ARGV = (
+    "server",
+    "backup",
+    "configure",
+    "--destination",
+    "/srv/rcp-backups",
+    "--recipient",
+    AGE_RECIPIENT,
+    "--confirm",
+)
 
 
 def _parse(*argv: str):
@@ -166,7 +177,17 @@ def _operator_execution() -> ServerCommandExecution:
             "server project transfer-import",
             {"request_id": REQUEST_ID},
         ),
-        (("server", "backup", "configure"), "server backup configure", {}),
+        (
+            BACKUP_CONFIGURE_ARGV,
+            "server backup configure",
+            {
+                "backup_destination": "/srv/rcp-backups",
+                "backup_schedule": "02:00",
+                "backup_retention": 30,
+                "backup_age_recipient": AGE_RECIPIENT,
+                "backup_confirmed": True,
+            },
+        ),
         (("server", "backup", "run"), "server backup run", {}),
         (
             ("server", "restore", "/backups/lab.age", "--identity-file", "/safe/age.key"),
@@ -603,7 +624,7 @@ def test_preparer_exception_becomes_a_secret_safe_terminal_event() -> None:
     ("argv", "required_account"),
     [
         (("server", "install", "--team-name", "Upgrade Fixture Lab"), "root"),
-        (("server", "backup", "configure"), "root"),
+        (BACKUP_CONFIGURE_ARGV, "root"),
         (
             ("server", "restore", "/backups/lab.age", "--identity-file", "/safe/age.key"),
             "root",
