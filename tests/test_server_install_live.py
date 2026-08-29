@@ -2004,8 +2004,12 @@ def _assert_narrow_operator_rule() -> None:
             ),
             timeout=30,
         )
-        assert allowed.returncode == 69
-        assert json.loads(allowed.stdout.splitlines()[-1])["step"]["state"] == "unavailable"
+        assert allowed.returncode == 1
+        allowed_events = [json.loads(line) for line in allowed.stdout.splitlines()]
+        assert [event["event"] for event in allowed_events] == ["plan", "step"]
+        assert allowed_events[-1]["step"]["phase"] == "operation_prepare"
+        assert allowed_events[-1]["step"]["state"] == "failed"
+        assert allowed.stderr == ""
         denied = _run(
             (
                 "sudo",
