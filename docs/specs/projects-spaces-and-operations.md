@@ -410,6 +410,9 @@ The wrapper resolves the installed `RCP_DATA_DIR`. The operator receives the
 one-time code in that terminal; the resumed root CLI then enables/starts and
 reads back the service itself. Re-running install against an already initialized
 owned team space may converge the service to running.
+Before showing that one-time code, team initialization restricts `rcp.sqlite3`
+to owner-only mode; recovery of an interrupted unclaimed initialization repeats
+that restriction, and resumed installation refuses a wider database mode.
 
 When the service is running, a server command that needs durable RCP state uses a
 private machine-local control socket owned by `rcp`; it never opens SQLite beside

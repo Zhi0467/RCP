@@ -11,13 +11,10 @@ complete and its findings are fixed. Commit `638c19e` is the immutable first
 installable boundary, and its chained `source-server-install-v7-638c19e` fixture
 is pinned in the upgrade registry. F3a is therefore complete. F3b now has the
 operator guide, guarded live drive, and fixed 22.04/24.04 manual Actions matrix;
-its one independent audit is complete and every finding is fixed. Live
-qualification is in progress with the protected repository-admin test
-credential: both real disposable-host jobs now clear account and sudo-policy
-validation, managed-Python installation, and source-grant creation, but the
-latest two-release drive reached active team-service health and then exposed a
-live-verifier race by reading health immediately after restart. Its bounded
-readiness wait is fixed; a rerun is pending before F3b is complete. P1 now
+its one independent audit is complete and every finding is fixed. F3b is complete:
+manual run 33234365749 passed the full drive on Ubuntu 22.04 and 24.04 at exact
+commit `92117ccfc1190a1db2e5f4e870fa31fe708d3ba9`, every cleanup step passed,
+and repository readback found no remaining temporary deploy key. P1 now
 provides the durable, strictly guarded project-provisioning state machine; its
 one independent audit is complete, every finding is fixed, and its exact schema
 boundary is retained in the chained upgrade registry. P1 is complete. D1 now
@@ -117,9 +114,8 @@ slice, not the pending server or desktop journeys.
 The remaining seams are also concrete:
 
 - the strict `rcp server` command/event shell, Linux layout, and source installer
-  now exist, but F3b's corrected two-release Ubuntu rerun is still pending and doctor,
-  control-socket, update, backup, restore, and member-removal owners do not yet
-  exist;
+  now exist and are live-qualified on both supported Ubuntu releases, but doctor,
+  control-socket, update, backup, restore, and member-removal owners do not yet exist;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
 - the Web UI still says “Team connections are not implemented in this build”;
@@ -398,11 +394,10 @@ gate are deliberately future work and do not block this plan.
   `rcp/skills/episode-report/SKILL.md` twice. This slice intentionally does not
   repair or depend on wheel packaging: the accepted team-server path is a clean
   source checkout plus `uv sync --frozen`. Source resource loading of the unit
-  is covered. F3b still owns proof from the installed source environment.
-- Not done: no account, directory, config, wrapper, symlink, or systemd state was
-  changed on a real Linux host. F3a owns those effects and F3b owns Ubuntu 22.04
-  and 24.04 installation/readback. No concrete CLI operation or wizard flow is
-  exposed by F2 alone.
+  is covered, and F3b supplies proof from the installed source environment.
+- F2 alone changed no real Linux state; F3a/F3b now provide and live-qualify the
+  account, directory, config, wrapper, symlink, systemd, and Ubuntu readback
+  effects. No wizard flow is exposed by F2 alone.
 
 #### 2026-08-28 — F3a source-server installer implemented and audited
 
@@ -474,14 +469,14 @@ gate are deliberately future work and do not block this plan.
   credential-free Git, direct loopback HTTP, fail-closed service fencing,
   wrong-space shutdown, and unsafe data refusal.
   Focused Ruff/format and diff checks pass. The concrete Linux branches have
-  60% statement coverage here; the intentionally separate F3b disposable-host
-  drive remains the proof of real NSS, filesystem ownership, systemd, SSH, and
-  Ubuntu tool behavior.
-- Not done in F3a: no Ubuntu host or desktop was driven. F3b owns the disposable
-  Ubuntu 22.04/24.04 installation/readback and operator guide; those facts are
-  explicit rather than inferred from the unit suite.
+  60% statement coverage here; F3b's intentionally separate successful
+  disposable-host drive is the proof of real NSS, filesystem ownership, systemd,
+  SSH, and Ubuntu tool behavior.
+- F3a itself did not drive Ubuntu or desktop state. F3b now supplies the Ubuntu
+  22.04/24.04 installation/readback and operator guide; those facts are explicit
+  rather than inferred from the unit suite.
 
-#### 2026-08-28 — F3b guide and live-drive implementation in progress
+#### 2026-08-28 — F3b guide and live drive implemented, audited, and qualified
 
 - `docs/server.md` is now the exhaustive terminal guide. It separates Ubuntu
   22.04 and 24.04 prerequisites, pins the qualified Node.js and uv downloads,
@@ -528,13 +523,12 @@ gate are deliberately future work and do not block this plan.
   subprocess output; repairs the exact decision command; and pins checkout to
   the reviewed v7.0.0 commit. No second audit was run, per the one-audit packet
   rule.
-- Live qualification is now using the protected
+- Live qualification uses the protected
   `RCP_LIVE_GITHUB_ADMIN_TOKEN` secret on disposable GitHub-hosted runners.
-  Temporary deploy-key creation remains inside the guarded live test and every
-  failed attempt so far stopped before a source grant was required; workflow
-  cleanup completed on both releases. F3b remains incomplete until one exact
-  commit passes the entire install/remove/readback drive on both Ubuntu
-  releases and the repository has no leftover temporary deploy key. Because
+  Temporary deploy-key creation remains inside the guarded live test. Exact
+  commit `92117ccfc1190a1db2e5f4e870fa31fe708d3ba9` passed the entire
+  install/remove/readback drive and cleanup on both supported releases, and a
+  separate repository API readback found no leftover `rcp-source:` key. Because
   install deliberately consumes
   `origin/main`, this workflow is a post-push qualification rather than a
   pre-merge PR gate; the current human-approved direct-main development boundary
@@ -558,8 +552,8 @@ gate are deliberately future work and do not block this plan.
   removes only that exact disposable-runner npm directory before extracting the
   pinned archive and explicitly requires `npm --version` to succeed in the
   prerequisite step. The secret and live installer were not reached, so no
-  deploy key or RCP-owned host state was created; another corrected rerun
-  remains required.
+  deploy key or RCP-owned host state was created. At that point, another
+  corrected rerun was required.
 - Corrected run
   [33231425876](https://github.com/Zhi0467/RCP/actions/runs/33231425876)
   passed prerequisite installation and the complete bootstrap build on both
@@ -569,7 +563,7 @@ gate are deliberately future work and do not block this plan.
   symlink identity, with focused tests for a present object, broken symlink,
   absence, and an indeterminate probe. The test failed before reading the
   protected token or creating a deploy key, and workflow cleanup completed on
-  both runners; another corrected rerun remains required.
+  both runners. At that point, another corrected rerun was required.
 - Corrected run
   [33231556482](https://github.com/Zhi0467/RCP/actions/runs/33231556482)
   passed all clean-host gates and reached the first real root installer call on
@@ -675,8 +669,8 @@ gate are deliberately future work and do not block this plan.
   answer could occur. The runner now uses a real controlling PTY, and a focused
   regression opens `/dev/tty`, emits the fixed published fingerprint prompt,
   and proves that the guarded `yes` answer reaches it. Both temporary read-only
-  deploy keys were revoked and workflow cleanup completed. A corrected
-  two-release rerun remains required.
+  deploy keys were revoked and workflow cleanup completed. At that point, a
+  corrected two-release rerun was required.
 - Corrected run
   [33233599317](https://github.com/Zhi0467/RCP/actions/runs/33233599317)
   ran exact commit `84ba2d89b53264295960b7e248c679e633aa9ff3`. The real
@@ -689,8 +683,8 @@ gate are deliberately future work and do not block this plan.
   restricts the database to mode `0600` before revealing its one-time bootstrap
   code; an interrupted unclaimed initialization is restricted on recovery too.
   Focused tests prove fresh and recovery modes. Both temporary read-only deploy
-  keys were revoked and workflow cleanup completed. A corrected two-release
-  rerun remains required.
+  keys were revoked and workflow cleanup completed. At that point, a corrected
+  two-release rerun was required.
 - Corrected run
   [33233864357](https://github.com/Zhi0467/RCP/actions/runs/33233864357)
   ran exact commit `8df884d71deef21f7ee8cfc8eafa41df5c95b926`. The mode fix
@@ -702,7 +696,7 @@ gate are deliberately future work and do not block this plan.
   removal assertions now use bounded `sudo -n stat`, `readlink`, or the existing
   exact existence probe; a focused parser test pins the GNU stat invocation and
   result. Both temporary read-only deploy keys were revoked and workflow cleanup
-  completed. A corrected two-release rerun remains required.
+  completed. At that point, a corrected two-release rerun was required.
 - Corrected run
   [33234155051](https://github.com/Zhi0467/RCP/actions/runs/33234155051)
   ran exact commit `26314cf29989971d8855beec3ec6c0224c9cfecd`. Both releases
@@ -713,7 +707,19 @@ gate are deliberately future work and do not block this plan.
   status 7 during startup. The post-restart proof now uses curl's bounded
   connection-refused retry window and still requires the exact team-health JSON.
   Both temporary read-only deploy keys were revoked and workflow cleanup
-  completed. A corrected two-release rerun remains required.
+  completed. At that point, a corrected two-release rerun was required.
+- Successful qualification run
+  [33234365749](https://github.com/Zhi0467/RCP/actions/runs/33234365749)
+  ran exact commit `92117ccfc1190a1db2e5f4e870fa31fe708d3ba9`. Ubuntu 22.04
+  job 99052620389 and Ubuntu 24.04 job 99052620232 both passed every prerequisite,
+  source build, protected-token materialization, full install/readback drive,
+  deploy-key revocation, credential/receipt cleanup, temporary access cleanup,
+  and checkout cleanup step. The full drive includes private-source first trust,
+  source clone/build, bootstrap removal, interactive initialization, activation,
+  health, exact owners and modes, loopback bind, password refusal, explicit
+  public-key login, narrow named-operator sudo admission and denial, journal
+  exclusion, source-key revocation, restart, and continued health. A separate
+  repository API query returned no `rcp-source:` deploy key. F3b is complete.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 
@@ -862,25 +868,23 @@ gate are deliberately future work and do not block this plan.
 
 ## What remains
 
-Everything after the existing auth/membership foundation remains implementation
-work:
+The remaining implementation work is:
 
-1. F3b's real two-Ubuntu install qualification, then server health/doctor and
+1. private machine-local CLI-to-server control, then server health/doctor and
    source update;
-2. private machine-local CLI-to-server control;
-3. project-provisioning API projections and concrete machine orchestration;
-4. central Git checkout and write-deploy-key setup;
-5. local/remote provider readiness against authentication already present on
+2. project-provisioning API projections and concrete machine orchestration;
+3. central Git checkout and write-deploy-key setup;
+4. local/remote provider readiness against authentication already present on
    each execution account;
-6. source-built desktop distinct origins, tunnels, live Keychain
+5. source-built desktop distinct origins, tunnels, live Keychain
    enrollment/readback, navigation, cached team groups, and optional operator
    bridge (the strict metadata and token-write/remove substrate is complete);
-7. app-visible project setup driven by the backend and prepared by the CLI;
-8. encrypted online backup capture, safe timer enablement, retention, restore,
+6. app-visible project setup driven by the backend and prepared by the CLI;
+7. encrypted online backup capture, safe timer enablement, retention, restore,
    and server status (strict configuration and disabled units are complete);
-9. console member removal;
-10. append-only personal-to-team home transfer and recovery; and
-11. a live one-lab acceptance drill and operator documentation.
+8. console member removal;
+9. append-only personal-to-team home transfer and recovery; and
+10. a live one-lab acceptance drill and operator documentation.
 
 No item in that list is implemented merely because its design is now confirmed.
 
@@ -1543,7 +1547,7 @@ action without making the desktop parse prose or invent a missing command.
 
 Status: complete in the working tree on 2026-08-28. The fixed layout, strict
 machine config, systemd asset, and focused regressions are implemented; F3a and
-F3b remain the concrete installer and two-Ubuntu live proof.
+F3b provide the concrete installer and successful two-Ubuntu live proof.
 
 Own:
 
@@ -1624,8 +1628,8 @@ privileged group membership.
 
 Status: complete. The audited installer is commit `638c19e`; the immutable
 chained fixture `source-server-install-v7-638c19e` names that exact commit and is
-pinned by the G2 registry. F3b owns live Ubuntu qualification, not another
-installer implementation.
+pinned by the G2 registry. F3b supplies the successful live Ubuntu qualification,
+not another installer implementation.
 
 Own:
 
@@ -1683,6 +1687,10 @@ affect doctor, update, service restart, or team-space operation. No install or
 initialization path opens SQLite beside a running service.
 
 ### F3b — Ubuntu operator guide and live install proof
+
+Status: complete. Run 33234365749 passed the full drive and cleanup on Ubuntu
+22.04 and 24.04 at exact commit `92117ccfc1190a1db2e5f4e870fa31fe708d3ba9`;
+repository readback found no remaining temporary deploy key.
 
 Own:
 
