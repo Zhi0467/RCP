@@ -249,6 +249,19 @@ def _assert_provisioning_rows(store: AppStore, metadata: dict[str, object]) -> N
     assert request.proposed_project_id == proposed_project_id
     assert request.status == "setup_in_progress"
     assert request.revision == 1
+    expected_configuration = metadata.get("provisioning_configuration_complete")
+    if expected_configuration is not None:
+        assert isinstance(expected_configuration, bool)
+        assert request.configuration_complete is expected_configuration
+    legacy_request_id = _metadata_optional_string(
+        metadata,
+        "legacy_provisioning_request_id",
+    )
+    if legacy_request_id is not None:
+        legacy = store.project_provisioning_request(legacy_request_id)
+        assert legacy is not None
+        assert legacy.status == "setup_in_progress"
+        assert legacy.configuration_complete is False
     assert store.project(proposed_project_id) is None
     receipts = store.project_provisioning_step_receipts(request_id)
     assert [receipt.receipt_id for receipt in receipts] == ["fixture-setup-started"]

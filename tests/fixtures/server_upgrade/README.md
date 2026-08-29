@@ -37,3 +37,7 @@ Git credentials are absent; only nonsecret hashes/identifiers needed to prove
 credential survival remain. Project and manifest paths are relative to the
 fixture root; the provisioning row additionally carries the product's fixed
 server central root. The test always operates on a temporary copy.
+`central-checkout-v9-a499be3` retains that migrated pre-configuration request and
+adds one in-progress request with P4's complete project configuration and
+nullable schema boundary. It proves a later candidate can still read the old
+row while retaining the new manifest inputs needed for final creation.

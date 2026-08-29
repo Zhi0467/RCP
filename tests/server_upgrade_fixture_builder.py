@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import inspect
 import json
 import shutil
 import sqlite3
@@ -91,6 +92,10 @@ def build_fixture(output: Path, *, boundary: str, commit: str) -> None:
         store,
         authorized_by=authorized_by,
     )
+    provisioning_configuration_complete = _provisioning_configuration_complete(
+        store,
+        provisioning_request_id,
+    )
 
     operation_id = str(uuid.uuid4())
     now = store.now()
@@ -140,6 +145,7 @@ def build_fixture(output: Path, *, boundary: str, commit: str) -> None:
         "experiment_operation_id": experiment_operation_id,
         "provisioning_request_id": provisioning_request_id,
         "provisioning_project_id": provisioning_project_id,
+        "provisioning_configuration_complete": provisioning_configuration_complete,
         "expected_repair": expected_repair,
         "expected_revision": materialized.revision,
         "files": _file_hashes(output),
@@ -211,6 +217,7 @@ def upgrade_fixture(
         member = store.space_user(user_id)
         if member is None:
             raise RuntimeError("fixture upgrade lost its member")
+        prior_provisioning_request_id = metadata.get("provisioning_request_id")
         store, provisioning_request_id, provisioning_project_id = _provisioning_fixture(
             store,
             authorized_by=AuthorizedHuman(
@@ -220,6 +227,16 @@ def upgrade_fixture(
             ),
             existing_request_id=metadata.get("provisioning_request_id"),
             existing_project_id=metadata.get("provisioning_project_id"),
+        )
+        legacy_provisioning_request_id = metadata.get("legacy_provisioning_request_id")
+        if (
+            isinstance(prior_provisioning_request_id, str)
+            and prior_provisioning_request_id != provisioning_request_id
+        ):
+            legacy_provisioning_request_id = prior_provisioning_request_id
+        provisioning_configuration_complete = _provisioning_configuration_complete(
+            store,
+            provisioning_request_id,
         )
     _settle_fixture_files(store.path, output / "project" / ".research")
     _compress_database(store.path)
@@ -231,6 +248,8 @@ def upgrade_fixture(
             "expected_repair": expected_repair,
             "provisioning_request_id": provisioning_request_id,
             "provisioning_project_id": provisioning_project_id,
+            "legacy_provisioning_request_id": legacy_provisioning_request_id,
+            "provisioning_configuration_complete": provisioning_configuration_complete,
             "files": _file_hashes(output),
         }
     )
@@ -354,16 +373,27 @@ def _provisioning_fixture(
             raise RuntimeError("fixture provisioning state is unsupported by this boundary")
         return store, None, None
 
-    if existing_request_id is None and existing_project_id is None:
-        from rcp.server_ops.github import parse_github_repository_ref
-        from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
-        from rcp.storage import (
-            ProjectProvisioningMachineIntent,
-            ProjectProvisioningProviderIntent,
-            ProjectProvisioningRepositoryIntent,
-        )
+    from rcp.server_ops.github import parse_github_repository_ref
+    from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
+    from rcp.storage import (
+        ProjectProvisioningMachineIntent,
+        ProjectProvisioningProviderIntent,
+        ProjectProvisioningRepositoryIntent,
+    )
 
-        request = create(
+    configuration = (
+        {
+            "name": "Upgrade Fixture Prepared Project",
+            "state_repository": "repo",
+            "project_truth_scope": ["repo"],
+            "default_run_truth_scope": ["repo"],
+        }
+        if "name" in inspect.signature(create).parameters
+        else {}
+    )
+
+    def create_started_request():
+        created = create(
             kind="create_team_project",
             authorized_by=authorized_by,
             machines=[
@@ -391,24 +421,30 @@ def _provisioning_fixture(
                     machine_alias="server",
                 )
             ],
+            **configuration,
         )
-        request = store.transition_project_provisioning_request(
-            request.request_id,
+        return store.transition_project_provisioning_request(
+            created.request_id,
             receipt_id="fixture-setup-started",
             phase="setup_start",
             expected_revision=0,
             expected_status="waiting_for_server_setup",
             to_status="setup_in_progress",
-            machines=request.machines,
-            repositories=request.repositories,
-            provider_checks=request.provider_checks,
+            machines=created.machines,
+            repositories=created.repositories,
+            provider_checks=created.provider_checks,
         )
+
+    if existing_request_id is None and existing_project_id is None:
+        request = create_started_request()
     else:
         if not isinstance(existing_request_id, str) or not isinstance(existing_project_id, str):
             raise ValueError("fixture provisioning metadata is incomplete")
         request = read(existing_request_id)
         if request is None or request.proposed_project_id != existing_project_id:
             raise RuntimeError("fixture upgrade lost its provisioning request")
+        if configuration and not getattr(request, "configuration_complete", False):
+            request = create_started_request()
 
     reopened = AppStore(store.path)
     reopened_read = reopened.project_provisioning_request
@@ -422,6 +458,18 @@ def _provisioning_fixture(
     if reopened.project(persisted.proposed_project_id) is not None:
         raise RuntimeError("fixture preparation created project authority")
     return reopened, persisted.request_id, persisted.proposed_project_id
+
+
+def _provisioning_configuration_complete(
+    store: AppStore,
+    request_id: str | None,
+) -> bool | None:
+    if request_id is None:
+        return None
+    request = store.project_provisioning_request(request_id)
+    if request is None:
+        raise RuntimeError("fixture provisioning request disappeared")
+    return bool(getattr(request, "configuration_complete", False))
 
 
 def _expected_experiment_repair(store: AppStore, episode_id: str | None) -> str | None:
