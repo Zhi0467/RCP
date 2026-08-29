@@ -118,6 +118,12 @@ from rcp.runs.tasks.graph import stream_graph_run
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
 from rcp.runs.watcher_admission import start_watcher_notification
+from rcp.server_ops.control import (
+    ServerControlPeer,
+    ServerControlProbeResult,
+    ServerControlRequest,
+    ServerControlServer,
+)
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
 from rcp.service import (
     CoachRequest,
@@ -243,6 +249,34 @@ def create_app(
     store = AppStore(app_data / "rcp.sqlite3")
     space_id = store.space_id
     space_kind = store.space_kind
+    control_server: ServerControlServer | None = None
+    if identity.control_socket is not None:
+        if space_kind != "team" or identity.owner_kind != "cli":
+            raise ValueError(
+                "A private control socket is available only to an installed CLI-owned team service."
+            )
+
+        def dispatch_server_control(
+            request: ServerControlRequest,
+            _peer: ServerControlPeer,
+        ) -> ServerControlProbeResult:
+            match request.operation:
+                case "probe":
+                    return ServerControlProbeResult(
+                        instance_id=identity.instance_id,
+                        pid=identity.pid,
+                        data_dir_id=identity.data_dir_id,
+                        space_id=space_id,
+                    )
+            raise AssertionError(f"Unhandled server control operation {request.operation!r}")
+
+        control_server = ServerControlServer(
+            Path(identity.control_socket),
+            instance_id=identity.instance_id,
+            owner_uid=os.geteuid(),
+            owner_gid=os.getegid(),
+            handler=dispatch_server_control,
+        )
     identity_access = IdentityAccess(
         store,
         space_id=space_id,
@@ -869,6 +903,7 @@ def create_app(
         # failure here fails startup without running the shutdown path.
         background_tasks.recover_at_startup()
         startup_maintenance: list[asyncio.Task[None]] = []
+        control_started = False
         try:
             background_tasks.accept_watcher_notifications()
             store.prune_operational_storage()
@@ -957,8 +992,13 @@ def create_app(
             await asyncio.to_thread(sweep_graph_conditions_at_startup)
             graph_watcher_retry_worker.start()
             watcher_poller.start()
+            if control_server is not None:
+                control_server.start()
+                control_started = True
             yield
         finally:
+            if control_started and control_server is not None:
+                control_server.stop()
             for task in startup_maintenance:
                 task.cancel()
             for task in list(project_display_cache.reconciliation_tasks.values()):
@@ -992,6 +1032,7 @@ def create_app(
     app.state.watcher_poller = watcher_poller
     app.state.graph_watcher_retry_worker = graph_watcher_retry_worker
     app.state.instance_metadata = identity
+    app.state.server_control = control_server
     app.state.space_id = space_id
     app.state.space_kind = space_kind
     app.state.launcher = launcher

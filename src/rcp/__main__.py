@@ -37,6 +37,7 @@ from rcp.server_runtime import (
     ServerMetadata,
     ServerMetadataError,
     data_dir_identity,
+    installed_control_socket_path,
     published_server_metadata,
     read_server_metadata,
 )
@@ -317,6 +318,7 @@ def _serve_as_owner(args: argparse.Namespace, data_dir: Path) -> None:
         host=args.host,
         port=args.port,
         owner_kind=getattr(args, "owner", "cli"),
+        control_socket=installed_control_socket_path(data_dir),
     )
     try:
         with (

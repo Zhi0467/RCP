@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pwd
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -12,7 +13,7 @@ from typing import Literal
 
 from rcp import __version__
 
-SERVER_METADATA_SCHEMA_VERSION = 1
+SERVER_METADATA_SCHEMA_VERSION = 2
 SERVER_METADATA_FILENAME = "rcp-server.json"
 ServerOwnerKind = Literal["cli", "desktop", "embedded"]
 
@@ -31,6 +32,7 @@ class ServerMetadata:
     app_version: str
     data_dir_id: str
     owner_kind: ServerOwnerKind
+    control_socket: str | None
 
     @classmethod
     def create(
@@ -40,6 +42,7 @@ class ServerMetadata:
         host: str,
         port: int,
         owner_kind: ServerOwnerKind,
+        control_socket: Path | None = None,
     ) -> ServerMetadata:
         return cls(
             schema_version=SERVER_METADATA_SCHEMA_VERSION,
@@ -50,6 +53,7 @@ class ServerMetadata:
             app_version=__version__,
             data_dir_id=data_dir_identity(data_dir),
             owner_kind=owner_kind,
+            control_socket=str(control_socket) if control_socket is not None else None,
         )
 
     @classmethod
@@ -65,6 +69,7 @@ class ServerMetadata:
             "app_version",
             "data_dir_id",
             "owner_kind",
+            "control_socket",
         }
         if set(raw) != expected:
             raise ServerMetadataError("server metadata has an unsupported shape")
@@ -92,6 +97,7 @@ class ServerMetadata:
             or len(metadata.data_dir_id) != 64
             or not isinstance(metadata.owner_kind, str)
             or metadata.owner_kind not in {"cli", "desktop", "embedded"}
+            or not _valid_control_socket(metadata.control_socket)
         ):
             raise ServerMetadataError("server metadata contains invalid values")
         return metadata
@@ -112,6 +118,42 @@ def data_dir_identity(data_dir: Path) -> str:
 
 def metadata_path(data_dir: Path) -> Path:
     return data_dir / SERVER_METADATA_FILENAME
+
+
+def installed_control_socket_path(data_dir: Path) -> Path | None:
+    """Return the fixed socket only for the configured installed service account."""
+
+    from rcp.server_ops.config import load_installed_server_config
+    from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
+
+    config_path = DEFAULT_SERVER_LAYOUT.config_path
+    if not os.path.lexists(config_path):
+        return None
+    try:
+        config = load_installed_server_config(config_path)
+        service = pwd.getpwnam(config.service_account)
+    except (KeyError, OSError, ValueError) as exc:
+        raise ServerMetadataError("installed server configuration is invalid") from exc
+    if Path(config.paths.data_dir).resolve() != data_dir.expanduser().resolve():
+        return None
+    if os.geteuid() != service.pw_uid or os.getegid() != service.pw_gid:
+        raise ServerMetadataError(
+            "the installed team service must run as its configured service account"
+        )
+    return Path(config.paths.control_socket)
+
+
+def _valid_control_socket(value: object) -> bool:
+    if value is None:
+        return True
+    if (
+        not isinstance(value, str)
+        or not value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        return False
+    path = Path(value)
+    return path.is_absolute() and ".." not in path.parts and str(path) == value
 
 
 def read_server_metadata(data_dir: Path) -> ServerMetadata:

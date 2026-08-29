@@ -17,6 +17,7 @@ import select
 import selectors
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -126,6 +127,8 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
 
         _assert_installed_ownership_and_modes()
         _assert_service_process_and_listener()
+        first_control = _probe_private_control_socket()
+        assert first_control["space_id"] == health["space_id"]
         _assert_password_refused_and_public_key_accepted()
         _assert_narrow_operator_rule()
 
@@ -162,6 +165,9 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
         )
         assert restarted["status"] == "ok"
         assert restarted["space_kind"] == "team"
+        restarted_control = _probe_private_control_socket()
+        assert restarted_control["space_id"] == first_control["space_id"]
+        assert restarted_control["instance_id"] != first_control["instance_id"]
     finally:
         if deploy_key_id is not None:
             _delete_deploy_key(token, deploy_key_id)
@@ -639,6 +645,20 @@ def _assert_installed_ownership_and_modes() -> None:
         mode=0o644,
         kind="file",
     )
+    _assert_path(
+        Path("/run/rcp"),
+        uid=account.pw_uid,
+        gid=account.pw_gid,
+        mode=0o700,
+        kind="directory",
+    )
+    _assert_path(
+        Path("/run/rcp/control.sock"),
+        uid=account.pw_uid,
+        gid=account.pw_gid,
+        mode=0o600,
+        kind="socket",
+    )
     current = Path("/etc/rcp/current")
     current_uid, current_gid, _current_mode, current_raw_mode = _root_stat(current)
     assert stat.S_ISLNK(current_raw_mode)
@@ -660,9 +680,65 @@ def _assert_path(path: Path, *, uid: int, gid: int, mode: int, kind: str) -> Non
     assert actual_mode == mode
     if kind == "directory":
         assert stat.S_ISDIR(raw_mode)
-    else:
-        assert kind == "file"
+    elif kind == "file":
         assert stat.S_ISREG(raw_mode)
+    else:
+        assert kind == "socket"
+        assert stat.S_ISSOCK(raw_mode)
+
+
+def _probe_private_control_socket() -> dict[str, object]:
+    unauthorized = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        with pytest.raises(PermissionError):
+            unauthorized.connect("/run/rcp/control.sock")
+    finally:
+        unauthorized.close()
+
+    script = (
+        "import pwd\n"
+        "from pathlib import Path\n"
+        "from rcp.server_ops.control import ServerControlClient\n"
+        "uid = pwd.getpwnam('rcp').pw_uid\n"
+        "result = ServerControlClient.from_data_dir(\n"
+        "    Path('/home/rcp/rcp-server/data'), expected_server_uid=uid\n"
+        ").probe()\n"
+        "print(result.model_dump_json())\n"
+    )
+    output = _run_checked(
+        (
+            "sudo",
+            "-n",
+            "-u",
+            "rcp",
+            "-H",
+            "/etc/rcp/current/.venv/bin/python",
+            "-c",
+            script,
+        ),
+        timeout=_PTY_TIMEOUT_SECONDS,
+    ).stdout
+    try:
+        result = json.loads(output)
+    except json.JSONDecodeError:
+        pytest.fail("the installed control probe returned invalid JSON")
+    if set(result) != {"instance_id", "pid", "data_dir_id", "space_id", "space_kind"}:
+        pytest.fail("the installed control probe returned an unsupported shape")
+    assert result["space_kind"] == "team"
+    assert result["pid"] == int(
+        _run_checked(
+            (
+                "sudo",
+                "-n",
+                "systemctl",
+                "show",
+                "--property=MainPID",
+                "--value",
+                "rcp.service",
+            )
+        ).stdout
+    )
+    return result
 
 
 def _root_stat(path: Path) -> tuple[int, int, int, int]:
