@@ -140,7 +140,25 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
         _clear_deploy_key_receipt()
         _run_checked(("sudo", "-n", "systemctl", "restart", "rcp.service"))
         restarted = json.loads(
-            _run_checked(("curl", "--fail", "--silent", "http://127.0.0.1:8421/api/health")).stdout
+            _run_checked(
+                (
+                    "curl",
+                    "--fail",
+                    "--silent",
+                    "--show-error",
+                    "--retry",
+                    "30",
+                    "--retry-connrefused",
+                    "--retry-delay",
+                    "1",
+                    "--retry-max-time",
+                    "15",
+                    "--max-time",
+                    "20",
+                    "http://127.0.0.1:8421/api/health",
+                ),
+                timeout=30,
+            ).stdout
         )
         assert restarted["status"] == "ok"
         assert restarted["space_kind"] == "team"

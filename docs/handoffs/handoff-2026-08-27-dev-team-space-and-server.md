@@ -16,12 +16,12 @@ qualification is in progress with the protected repository-admin test
 credential: both real disposable-host jobs now clear account and sudo-policy
 validation, managed-Python installation, and source-grant creation, but the
 latest two-release drive reached active team-service health and then exposed a
-live-verifier privilege error while inspecting the intentionally private service
-home. Its root inspection boundary is fixed; a rerun is pending before F3b is
-complete. P1 now provides the
-durable, strictly guarded project-provisioning state machine; its one independent
-audit is complete, every finding is fixed, and its exact schema boundary is
-retained in the chained upgrade registry. P1 is complete. D1 now provides the strict
+live-verifier race by reading health immediately after restart. Its bounded
+readiness wait is fixed; a rerun is pending before F3b is complete. P1 now
+provides the durable, strictly guarded project-provisioning state machine; its
+one independent audit is complete, every finding is fixed, and its exact schema
+boundary is retained in the chained upgrade registry. P1 is complete. D1 now
+provides the strict
 nonsecret desktop team-connection registry and the macOS Keychain write/removal
 boundary; its one independent audit is complete and its in-scope findings are
 fixed. D2's real WKWebView spike has reached its prescribed stop condition:
@@ -702,6 +702,17 @@ gate are deliberately future work and do not block this plan.
   removal assertions now use bounded `sudo -n stat`, `readlink`, or the existing
   exact existence probe; a focused parser test pins the GNU stat invocation and
   result. Both temporary read-only deploy keys were revoked and workflow cleanup
+  completed. A corrected two-release rerun remains required.
+- Corrected run
+  [33234155051](https://github.com/Zhi0467/RCP/actions/runs/33234155051)
+  ran exact commit `26314cf29989971d8855beec3ec6c0224c9cfecd`. Both releases
+  cleared every ownership/mode assertion, loopback-only listener proof, password
+  refusal and public-key login, narrow named-operator sudo rule, and bootstrap
+  journal exclusion. The test then revoked its deploy key, restarted the healthy
+  service, and issued one immediate `curl`; both returned connection-refused
+  status 7 during startup. The post-restart proof now uses curl's bounded
+  connection-refused retry window and still requires the exact team-health JSON.
+  Both temporary read-only deploy keys were revoked and workflow cleanup
   completed. A corrected two-release rerun remains required.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
