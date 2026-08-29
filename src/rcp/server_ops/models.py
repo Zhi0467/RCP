@@ -75,6 +75,7 @@ _SENSITIVE_ARG_FLAG = re.compile(
 )
 _FIELD_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _PHASE_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
 def redact_server_text(value: str) -> str:
@@ -176,6 +177,7 @@ class ServerCommandRequest(_StrictModel):
     backup_retention: int | None = None
     backup_age_recipient: str | None = None
     backup_confirmed: bool | None = None
+    update_confirmed_commit: str | None = None
 
     @field_validator("request_id", "project_id", "member_id")
     @classmethod
@@ -190,6 +192,13 @@ class ServerCommandRequest(_StrictModel):
         if value is None:
             return None
         return absolute_path(value, label=info.field_name.replace("_", " "))
+
+    @field_validator("update_confirmed_commit")
+    @classmethod
+    def validate_update_commit(cls, value: str | None) -> str | None:
+        if value is not None and _FULL_GIT_COMMIT.fullmatch(value) is None:
+            raise ValueError("update confirmed commit must be a full lowercase Git object id")
+        return value
 
     @field_validator("backup_destination")
     @classmethod
@@ -241,6 +250,7 @@ class ServerCommandRequest(_StrictModel):
             "backup_retention": self.backup_retention,
             "backup_age_recipient": self.backup_age_recipient,
             "backup_confirmed": self.backup_confirmed,
+            "update_confirmed_commit": self.update_confirmed_commit,
         }
         expected: set[str]
         if self.command == "server install":
@@ -268,6 +278,10 @@ class ServerCommandRequest(_StrictModel):
             }
             if self.backup_confirmed is not True:
                 raise ValueError("backup configure requires explicit confirmation")
+        elif self.command == "server update":
+            expected = (
+                {"update_confirmed_commit"} if self.update_confirmed_commit is not None else set()
+            )
         else:
             expected = set()
         missing = sorted(name for name in expected if supplied[name] is None)

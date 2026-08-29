@@ -42,8 +42,11 @@ secret-safe installed-server doctor. Its one independent audit is complete;
 accepted findings are fixed, and the built-candidate distinction is explicitly
 left to its F6a receipt owner. Manual run 33238829032 passed the full installed
 doctor/start/restart boundary on Ubuntu 22.04 and 24.04 at exact commit
-`b63eda636ec6c3769638d476549f38cec69269e5`. F5 is complete; F6a source
-update and candidate build is the next server packet.
+`b63eda636ec6c3769638d476549f38cec69269e5`. F5 is complete. F6a source
+update and candidate build is now implemented and verified in the working tree,
+including its exact-target confirmation, immutable receipt, and unchanged
+live-service boundary. F6b candidate rehearsal against copied real state is the
+next server packet.
 The previously planned G1 pull-request transition was rejected by the human for this
 private, single-developer pre-team-server implementation; it no longer gates any
 packet.
@@ -993,12 +996,72 @@ gate are deliberately future work and do not block this plan.
   F6e own update; P5 and O3b later extend doctor only through their concrete
   owner state.
 
+#### 2026-08-29 — F6a source update and immutable candidate build complete
+
+- `sudo rcp server update` now emits its complete seven-step source/build plan
+  before resolving the service account or taking an update lock. It admits only
+  the installed configured source, refuses unfinished restore or unknown update
+  maintenance, and serializes preparation with one nonblocking root-owned lock.
+  It never opens SQLite or any live project state.
+- The first invocation performs a credential-isolated fetch, prints the exact
+  fetched 40-character `origin/main` commit, and stops with the exact
+  `--confirm-target <commit>` resume command. A confirmed invocation fetches
+  again and refuses if the target changed; an explicit stale confirmation is
+  also refused when the newly fetched target already matches the running
+  release. A public source uses no credential, and a private source uses only
+  the installed read-only source key and pinned known-hosts file. Git hooks,
+  ambient helpers, prompts, askpass, and operator credentials remain disabled.
+- After confirmation, the updater requires the configured `main` branch, exact
+  configured origin, a clean source tree, and a fast-forward relationship. It
+  advances the managed checkout with `git merge --ff-only`, creates or validates
+  one detached per-commit worktree from that managed repository, and runs the
+  fixed `npm ci`, production Web build, and frozen Python sync as `rcp`.
+  Existing candidates are reused only after their Git commit, detached state,
+  cleanliness, executable Python 3.12 environment, and bounded symlink-free Web
+  bytes are revalidated.
+- A successful build publishes one private, service-owned, non-overwritten
+  built-candidate receipt. It binds the installation and configured source; the
+  exact base current/running commits, process instance and PID; the candidate
+  commit and release path; and the deterministic Web-bundle hash. Publication
+  re-reads all identities and the built bytes. Any difference fails loudly and
+  preserves the old `current` pointer and process.
+- Failure reporting reads the actual post-failure managed, candidate, current,
+  and running identities even when doctor itself blocks further update. The
+  updater never resets, cleans, stashes, force-pulls, switches `current`, calls
+  systemd, or substitutes a package path. Machine construction and every
+  possible effect occur only after the structured plan is visible.
+- The packet's one independent read-only audit raised four points. The valid
+  attached-worktree gap is fixed with an explicit detached-HEAD proof. Receipt
+  Web-byte binding was already present and now has a race regression. The claim
+  that uv's normal symlinked `.venv/bin/python` was rejected was a misread—the
+  code intentionally validates the entry point and executes the interpreter
+  symlink—and a real-worktree regression now proves that behavior. The remaining
+  concern was that source/build execution as `rcp` can read the service account's
+  provider and repository credentials. That is the settled source-update trust
+  boundary, not a same-UID hostile-code sandbox: `origin/main` is trusted host
+  code, and the later rehearsal fence prevents accidental application effects,
+  not a malicious or compromised source commit. This boundary is now explicit
+  in the spec; public sharing still requires protected human-reviewed `main`.
+  No second audit was run.
+- Focused CLI/update tests include a real local bare origin, clean
+  fast-forward, detached worktree, ordinary symlinked Python runtime, build
+  ordering, credential isolation, concurrent admission, stale confirmation,
+  exact failure identities, immutable receipt modes, and changed-Web refusal.
+- Final verification passes: the focused update/CLI suite, all 2,619 backend
+  tests with the two expected skips, Ruff across `src` and `tests`, all 434 Web
+  tests, the production Web build, and repository-wide pre-commit over the
+  complete staged packet.
+- Not done in F6a: no copied-state rehearsal, migration/replay proof, external-
+  effect fence, rollback checkpoint, `current` switch, systemd restart, post-
+  switch verification, or rollback exists. F6b through F6d own those boundaries;
+  F6e owns their installed-host update drive.
+
 ## What remains
 
 The remaining implementation work is:
 
-1. source update, candidate rehearsal, cutover, rollback, and recovery, using
-   the completed doctor and private CLI-to-server control transport;
+1. candidate rehearsal, cutover, rollback, and recovery, consuming the completed
+   source update/build receipt plus doctor and private CLI-to-server transport;
 2. project-provisioning API projections and concrete machine orchestration;
 3. central Git checkout and write-deploy-key setup;
 4. local/remote provider readiness against authentication already present on
@@ -1051,6 +1114,12 @@ No item in that list is implemented merely because its design is now confirmed.
 - The RCP source checkout has separate fetch access: no credential for a public
   origin or a dedicated read-only source deploy key for a private origin. It
   never uses an operator's personal SSH key or a project's write deploy key.
+- The configured `origin/main` commit is trusted host code. Build steps run as
+  `rcp` and therefore are not isolated from other state owned by that account.
+  Candidate rehearsal is a functional and accidental-effect fence, not a
+  defense against a malicious or compromised source commit. Before wider
+  sharing, protected human-reviewed `main` is therefore part of this trust
+  boundary.
 - Dirty, divergent, detached, non-`main`, inconsistent-release, failed-build, or
   failed-readiness state fails loudly. Candidate failure does not touch the
   running release. Candidate rehearsal uses a consistent copy of actual server
@@ -1902,6 +1971,11 @@ Distinguish “checkout updated but old process still running” from corruption
 Doctor is read-only and works interactively and as one structured document.
 
 ### F6a — Update source and candidate build
+
+Status: complete in the working tree on 2026-08-29. Its one independent audit
+is closed: the detached-worktree and receipt-race concerns have regressions, the
+Python-symlink report was disproven by a real-worktree regression, and the
+trusted-`origin/main`/same-UID build boundary is explicit. F6b is next.
 
 Own:
 

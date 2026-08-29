@@ -207,13 +207,19 @@ Later source updates are owned by:
 sudo rcp server update
 ```
 
-That command accepts only a clean fast-forward of the managed `main` checkout,
-builds the target in a separate clean per-commit source directory as `rcp`, and
-leaves the running release untouched until preflight passes. Its narrow root
-portion briefly pauses new changes, checkpoints RCP state, switches the service's
-`current` release, restarts systemd behind the same external-effect fence used
-for rehearsal, and verifies the running commit before reopening work. A failed
-post-switch verification loudly restores and verifies the previous state and
-release. `rcp server doctor` reports the managed-main,
-candidate, current, and running commits. The `rcp` account receives no general
-sudo or systemd-control permission.
+The first call credential-isolates and fetches the configured `origin/main`, then
+prints the exact command to confirm that immutable target, for example:
+
+```bash
+sudo rcp server update --confirm-target <full-40-character-commit>
+```
+
+At the current source-preparation boundary, the confirmed command accepts only a
+clean fast-forward of managed `main`, builds one detached per-commit candidate as
+`rcp`, publishes its private immutable receipt, and deliberately leaves the
+running release and `current` pointer untouched. Copied-state rehearsal,
+checkpoint, cutover, restart, verification, and loud rollback are the remaining
+update packets; until they land, an operator should read a successful update as
+“candidate built,” not “server switched.” `rcp server doctor` reports the
+managed-main, candidate, current, and running commits. The `rcp` account receives
+no general sudo or systemd-control permission.

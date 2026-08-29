@@ -42,6 +42,7 @@ from rcp.server_ops.models import (
 REQUEST_ID = "123e4567-e89b-42d3-a456-426614174000"
 PROJECT_ID = "123e4567-e89b-42d3-b456-426614174001"
 MEMBER_ID = "123e4567-e89b-42d3-8456-426614174002"
+UPDATE_COMMIT = "a" * 40
 NOW = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
 AGE_RECIPIENT = "age1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusqmwn7f2"
 BACKUP_CONFIGURE_ARGV = (
@@ -200,6 +201,11 @@ def _operator_execution() -> ServerCommandExecution:
             {"member_id": MEMBER_ID},
         ),
         (("server", "update"), "server update", {}),
+        (
+            ("server", "update", "--confirm-target", UPDATE_COMMIT),
+            "server update",
+            {"update_confirmed_commit": UPDATE_COMMIT},
+        ),
     ],
 )
 def test_server_command_tree_builds_one_strict_request(argv, command, fields) -> None:
@@ -242,6 +248,8 @@ def test_machine_readable_is_a_renderer_choice_before_or_after_the_leaf() -> Non
         ("server", "restore", "relative.age", "--identity-file", "/safe/age.key"),
         ("server", "restore", "/backups/lab.age", "--identity-file", "relative.key"),
         ("server", "restore", "/backups/lab.age", "--identity", "AGE-SECRET-KEY-1ABC"),
+        ("server", "update", "--confirm-target", "abc123"),
+        ("server", "update", "--confirm-target", "A" * 40),
     ],
 )
 def test_server_parser_rejects_ambiguous_ids_overrides_and_raw_restore_identity(argv) -> None:

@@ -1399,28 +1399,7 @@ class LinuxInstallMachine:
         return public_key
 
     def _source_environment(self, source: ServerSourceConfig | None) -> dict[str, str]:
-        environment = {
-            "GIT_ASKPASS": "/bin/false",
-            "GIT_CONFIG_COUNT": "2",
-            "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_CONFIG_KEY_0": "credential.helper",
-            "GIT_CONFIG_KEY_1": "core.askPass",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_VALUE_0": "",
-            "GIT_CONFIG_VALUE_1": "/bin/false",
-            "GIT_TERMINAL_PROMPT": "0",
-            "SSH_ASKPASS": "/bin/false",
-        }
-        if source is None or source.authentication == "public":
-            return environment
-        private = self.layout.credentials_root / _SOURCE_PRIVATE_KEY
-        command = (
-            f"ssh -F /dev/null -i {private} -o IdentitiesOnly=yes -o BatchMode=yes "
-            f"-o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null "
-            f"-o UserKnownHostsFile="
-            f"{self.layout.ssh_state_root / 'known_hosts'}"
-        )
-        return {**environment, "GIT_SSH_COMMAND": command}
+        return source_git_environment(source, self.layout)
 
     def _run_as_service(
         self,
@@ -1578,6 +1557,35 @@ class LinuxInstallMachine:
         self._require_service_identity()
         assert self._service_gid is not None
         return self._service_gid
+
+
+def source_git_environment(
+    source: ServerSourceConfig | None,
+    layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
+) -> dict[str, str]:
+    """Return the one credential-isolated Git environment shared by install and update."""
+
+    environment = {
+        "GIT_ASKPASS": "/bin/false",
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_KEY_0": "credential.helper",
+        "GIT_CONFIG_KEY_1": "core.askPass",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_VALUE_0": "",
+        "GIT_CONFIG_VALUE_1": "/bin/false",
+        "GIT_TERMINAL_PROMPT": "0",
+        "SSH_ASKPASS": "/bin/false",
+    }
+    if source is None or source.authentication == "public":
+        return environment
+    private = layout.credentials_root / _SOURCE_PRIVATE_KEY
+    command = (
+        f"ssh -F /dev/null -i {private} -o IdentitiesOnly=yes -o BatchMode=yes "
+        f"-o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null "
+        f"-o UserKnownHostsFile={layout.ssh_state_root / 'known_hosts'}"
+    )
+    return {**environment, "GIT_SSH_COMMAND": command}
 
 
 def _read_os_release(path: Path) -> dict[str, str]:
@@ -1986,4 +1994,5 @@ __all__ = [
     "prepare_install_command",
     "read_systemd_unit_state",
     "reload_and_disable_backup_timer",
+    "source_git_environment",
 ]

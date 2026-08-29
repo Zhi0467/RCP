@@ -473,12 +473,24 @@ means the clean managed-checkout target that differs from the running process,
 not a claim that its immutable release has already been built.
 
 An authorized machine operator invokes `sudo rcp server update`. Its coordinator
-fetches and fast-forwards the
-managed checkout to `origin/main`, creates a separate clean release directory
-for that exact commit, and runs `npm --prefix web ci`,
-`npm --prefix web run build`, `uv sync --frozen`, and migration/readiness
-preflight there as `rcp`. Candidate preparation never
-changes the current release or its environment.
+first acquires one update-admission lock and refuses unfinished restore or
+unknown update maintenance. It fetches with only the configured source identity,
+shows the exact current and fetched 40-character commits, and stops with an exact
+`--confirm-target <commit>` resume command. A confirmed invocation fetches again
+and refuses a changed or stale target. It then fast-forwards the managed checkout
+to `origin/main`, creates or validates a separate clean detached per-commit
+worktree, and runs `npm --prefix web ci`, `npm --prefix web run build`, and `uv
+sync --frozen` there as `rcp`. Candidate preparation never opens live app data,
+changes the current release or its environment, or calls systemd.
+
+Successful source preparation publishes one immutable private built-candidate
+receipt for the later rehearsal owner. It binds the installation and configured
+source; the exact base current/running commits, process instance and PID; the
+candidate commit and detached release path; and the deterministic built-Web
+identity. The updater revalidates those identities and bytes before publishing,
+never overwrites a different receipt, and reports exact managed, candidate,
+current, and running identities after a failure. This receipt proves only source
+and build readiness; it is not migration, replay, rehearsal, or cutover proof.
 
 Preflight includes a candidate rehearsal against a consistent copy of actual
 server state while the old release keeps serving. Rehearsal may migrate, replay,
@@ -541,6 +553,14 @@ The source checkout has its own fetch identity, separate from every project. A
 public RCP origin needs no secret; a private origin uses a dedicated read-only
 source deploy key installed for `rcp`. Update never pushes RCP source, copies an
 operator's personal SSH key, or borrows a project's write deploy key.
+
+The configured `origin/main` commit is trusted host code. Git, npm, Web, and
+Python build steps intentionally run as `rcp`, so they share that account's
+access to provider-native state and server repository credentials. The rehearsal
+effect fence protects live application state from accidental startup behavior;
+it is not a sandbox against a malicious or compromised source commit executing
+as the same Linux user. Before external sharing, protected human-reviewed
+`main` is therefore required as part of this trust boundary.
 
 `origin/main` is the single server update channel. During the private,
 single-developer implementation of this first slice, work remains directly on

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import pwd
+import re
 import shlex
 import socket
 import sys
@@ -43,6 +44,7 @@ SERVER_CLI_EXIT_OPERATOR_ACTION = 3
 SERVER_CLI_EXIT_UNAVAILABLE = 69
 SERVER_CLI_EXIT_WRONG_IDENTITY = 77
 SERVER_CLI_TERMINAL_RESERVE_BYTES = 64 * 1024
+_FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 
 _ROOT_COMMANDS: frozenset[ServerCommandName] = frozenset(
     {
@@ -213,7 +215,13 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
     member_remove.add_argument("member_id", type=_member_id)
     member_remove.set_defaults(server_operation="server member remove")
 
-    update = _leaf(server_commands, "update", "Build and switch to GitHub origin/main")
+    update = _leaf(server_commands, "update", "Prepare a source-built origin/main candidate")
+    update.add_argument(
+        "--confirm-target",
+        dest="update_confirmed_commit",
+        type=_git_commit,
+        help="Confirm exactly the fetched 40-character origin/main commit shown by RCP",
+    )
     update.set_defaults(server_operation="server update")
     return server
 
@@ -263,6 +271,14 @@ def _team_name(value: str) -> str:
             "team name must be one nonempty line of at most 120 characters"
         )
     return normalized
+
+
+def _git_commit(value: str) -> str:
+    if _FULL_GIT_COMMIT.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError(
+            "confirmed update target must be a full lowercase 40-character Git object id"
+        )
+    return value
 
 
 def _absolute_path(value: str, label: str) -> str:
@@ -324,6 +340,7 @@ def request_from_namespace(args: argparse.Namespace) -> ServerCommandRequest:
             backup_retention=getattr(args, "backup_retention", None),
             backup_age_recipient=getattr(args, "backup_age_recipient", None),
             backup_confirmed=getattr(args, "backup_confirmed", None),
+            update_confirmed_commit=getattr(args, "update_confirmed_commit", None),
         )
     except (AttributeError, ValidationError) as exc:  # pragma: no cover - parser owns public input
         raise RuntimeError("argparse produced an invalid server command") from exc
@@ -428,7 +445,9 @@ def _dispatch_server_command(
         case "server member remove":
             return _unavailable_command(request, identity)
         case "server update":
-            return _unavailable_command(request, identity)
+            from rcp.server_ops.update import prepare_update_command
+
+            return prepare_update_command(request, identity)
     raise AssertionError(f"Unhandled server command {request.command!r}")
 
 
