@@ -6,7 +6,9 @@ complete, and implementation is proceeding directly on `main`. G0, G2, F1,
 F2, F3a, F3b, F4, F5, F6a, F6b, F6c, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
 O2b, O3a, and O3b are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
-decision; it is not complete and still gates D3-D5. The live
+decision; a 2026-08-29 local-HTTPS spike then proved that candidate mechanism on
+one host, so D3-D5 are unblocked in principle while D2 itself remains
+incomplete. The live
 Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
 pushed at `fff75c3` with exact-target confirmation, an immutable built-candidate
 receipt, and an unchanged live-service boundary. P2 now provides the
@@ -3107,6 +3109,25 @@ HTTP; the extra-address path could not reach WKWebView because stock macOS could
 not bind those addresses without privileged network mutation. See
 [Q11](../open-questions.md#q11--how-should-the-desktop-provide-isolated-secure-local-origins).
 Do not implement a production origin allocator until that question is decided.
+
+**Local HTTPS spike, 2026-08-29:** the mechanism Q11 named as its leading
+candidate now has live evidence. A second probe under the same directories
+(`local_https_origin_probe.rs`, `https_trust.m`,
+`run-local-https-origin-probe.py`, behind the `https-trust-probe` Cargo feature)
+serves two local HTTPS origins with a self-generated certificate and pins one
+DER SHA-256 in a server-trust challenge added to the live navigation delegate.
+Both phases pass: the `Secure`/`HttpOnly`/`__Host-` cookie survives the redirect
+that HTTP lost, the two spaces never see each other's cookie, the session
+survives an application restart, JavaScript cannot read it, and an allowlisted
+third origin carrying a different certificate is refused at the TLS layer. Each
+run first asserts the host does not already trust the certificate, so nothing
+system-wide is installed or implied. Two mechanics belong to D3-D5: WKWebView
+caches which delegate methods exist at assignment time, so an added handler
+needs the delegate reattached; and wry's delegate class name is
+version-qualified, so the hook reads it off the live `WKWebView`. Unproven: a
+second host and macOS version, a signed bundled app, TLS through a real SSH
+tunnel, and the certificate lifecycle. D2 is still not complete and no
+production allocator, navigation rule, or capability changed.
 
 ### D3 — SSH tunnel lifecycle
 

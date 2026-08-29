@@ -470,13 +470,55 @@ first gate therefore failed before cross-space isolation, restart
 persistence, or arbitrary-origin rejection could be claimed. No production
 origin allocator, navigation rule, or capability was changed.
 
+### The local-HTTPS spike answered the gating question
+
+Raised 2026-08-29. The spike the decision waited on is implemented and passes on
+this host. `web/src-tauri/examples/local_https_origin_probe.rs`,
+`web/src-tauri/src/https_trust.m`, and
+`web/src-tauri/scripts/run-local-https-origin-probe.py` drive a real Tauri
+WKWebView against two local HTTPS origins whose certificate the probe generates
+for itself. Trust is granted by pinning one DER SHA-256 in a server-trust
+challenge handler added to the live navigation delegate. Nothing is written to a
+keychain or system trust store; the Objective-C reads certificates only.
+
+Both phases pass:
+
+- the `Secure`, `HttpOnly`, `__Host-` cookie is set and returned across the
+  redirect that plain HTTP lost;
+- the second space never receives the first space's cookie, in either
+  direction, so two simultaneous spaces stay isolated;
+- the session survives a full application restart against a persistent data
+  store;
+- JavaScript cannot read the session cookie; and
+- a third origin inside the navigation allowlist, presenting a different
+  certificate, is refused at the TLS layer with `NSURLErrorDomain` -999, so the
+  refusal proves the pin rather than the allowlist.
+
+Each run first asserts that `curl` without the probe's certificate authority
+still fails, so an accepted connection cannot be confused with pre-existing
+system trust.
+
+Two implementation facts belong to whoever builds D3-D5. WKWebView caches which
+methods a navigation delegate answers when it is assigned, so a handler added
+afterwards is consulted only once the delegate is reattached. wry's delegate
+class name is version-qualified, so the hook reads the delegate off the live
+`WKWebView` rather than looking the name up.
+
+### What the spike does not settle
+
+- One host, one macOS version. The result needs confirming on a second machine.
+- The probe runs unbundled, so a signed bundled app's App Transport Security
+  configuration and data-store container are untested.
+- TLS terminates in the probe's own Python server, not through an SSH tunnel to
+  a real RCP backend.
+- Certificate generation, storage, private-key protection, and rotation are
+  undesigned.
+
 ### Decision required
 
-The leading candidate is a desktop-owned local HTTPS endpoint for each saved
-space, forwarding through that space's SSH tunnel. Before accepting it, a live
-spike must prove that WKWebView can trust only the app's generated local
-certificate without installing a broad system-wide certificate authority, and
-that arbitrary local origins remain rejected.
+The leading candidate remains a desktop-owned local HTTPS endpoint for each
+saved space, forwarding through that space's SSH tunnel, and its gating
+uncertainty is now resolved in its favour on one host.
 
 A native custom-protocol or request-bridge design is a larger alternative, but
 it would need a fresh security and server-served-UI contract. Weakening the

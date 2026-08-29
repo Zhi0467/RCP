@@ -61,6 +61,36 @@ errors. The desktop scenarios in [`docs/acceptance/`](acceptance/README.md) are 
 of truth for native window, Quit, artifact, packaged-environment, update, and text-scale
 behavior.
 
+## WebView origin probes
+
+Two probes drive a real WKWebView to answer questions browser tests cannot. Both
+are examples, never part of a shipped build, and neither changes production
+navigation, capability, or cookie policy.
+
+`run-loopback-origin-probe.py` is the original HTTP drive. It records that a
+`Secure` session cookie is lost on plain loopback origins, including exact
+`localhost`:
+
+```bash
+python3 web/src-tauri/scripts/run-loopback-origin-probe.py --mode aliases --phase login
+```
+
+`run-local-https-origin-probe.py` repeats that drive over local HTTPS with a
+certificate the probe generates for itself, pinned in the WebView's own
+server-trust challenge. It needs the `https-trust-probe` Cargo feature, which
+compiles `src/https_trust.m` and is off in every ordinary build. `--cert-dir`
+reuses one certificate across runs so the restart phase measures cookie
+persistence rather than a changed certificate:
+
+```bash
+python3 web/src-tauri/scripts/run-local-https-origin-probe.py --phase login --cert-dir /tmp/rcp-probe-certs
+```
+
+Run `--phase resume` afterwards against the same directory to check that the
+session survives an application restart. Each run first asserts that the host
+does not already trust the probe certificate, so a success cannot be confused
+with pre-existing system trust.
+
 ## Build and test a release candidate
 
 Before packaging, verify that the intended revision is checked out, the version is

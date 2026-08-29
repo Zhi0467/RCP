@@ -143,8 +143,12 @@ use only an origin mechanism proven against the real WKWebView; navigation
 admits only origins derived from its saved connection registry, and a live drive
 must prove that cookies stay separated between two simultaneous team spaces.
 The HTTP loopback-alias and exact-host control failed the `Secure`-cookie gate,
-while the extra-address path could not reach WKWebView on stock macOS. The
-mechanism therefore remains open in
+while the extra-address path could not reach WKWebView on stock macOS. A local
+HTTPS origin whose app-generated certificate is pinned in the WebView's own
+server-trust challenge passed that gate on one host, keeping two spaces
+separate across a restart while refusing an unpinned certificate and installing
+no system-wide trust. That mechanism is proven, not implemented; the remaining
+confirmation and the certificate lifecycle stay in
 [Q11](../open-questions.md#q11--how-should-the-desktop-provide-isolated-secure-local-origins)
 without weakening this security boundary.
 

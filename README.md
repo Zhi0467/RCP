@@ -115,12 +115,13 @@ verification commands are in [docs/desktop.md](docs/desktop.md).
 
 ## Install the team server from source
 
-> **Installer implemented; live qualification pending:** `rcp server install`
-> and the shared interactive/machine-readable progress contract are concrete.
-> The remaining provision, backup, restore, update, doctor, and maintenance
-> owners still stop with an explicit unavailable result. The exhaustive Ubuntu
-> prerequisite guide and disposable 22.04/24.04 live proof remain the next
-> installer packet.
+> **Install is live-qualified; restore and member removal are not implemented.**
+> `rcp server install`, `doctor`, `provider check`, `project provision`,
+> `backup configure`, `backup run`, and `update` are concrete and share one
+> interactive/machine-readable progress contract. Install is proven on
+> disposable Ubuntu 22.04 and 24.04 hosts. `restore`, `member remove`, and
+> `project transfer-import` still stop with an explicit unavailable result.
+> Every command below is terminal-only; no desktop wizard drives them yet.
 
 The first supported team deployment is one Ubuntu 22.04 or 24.04 LTS x86-64
 server running systemd and one team space. The server build uses Node.js 24 and
@@ -130,8 +131,9 @@ system-wide `uv`; the operator does not prepare a runtime inside the service
 account first. The final
 backup target uses the upstream `age` CLI `>=1.0.0,<2.0.0` with a native
 X25519 `age1...` recipient. Exact prerequisite commands for both Ubuntu
-releases are in [docs/server.md](docs/server.md), with live qualification still
-pending; the RCP installer validates
+releases are in [docs/server.md](docs/server.md), and a guarded GitHub Actions
+workflow drives this install on disposable 22.04 and 24.04 hosts; the RCP
+installer validates
 these tools but does not modify apt repositories or install general system
 software. The service binds to loopback and members connect with source-built
 desktop apps over SSH.
@@ -214,12 +216,13 @@ prints the exact command to confirm that immutable target, for example:
 sudo rcp server update --confirm-target <full-40-character-commit>
 ```
 
-At the current source-preparation boundary, the confirmed command accepts only a
-clean fast-forward of managed `main`, builds one detached per-commit candidate as
-`rcp`, publishes its private immutable receipt, and deliberately leaves the
-running release and `current` pointer untouched. Copied-state rehearsal,
-checkpoint, cutover, restart, verification, and loud rollback are the remaining
-update packets; until they land, an operator should read a successful update as
-“candidate built,” not “server switched.” `rcp server doctor` reports the
-managed-main, candidate, current, and running commits. The `rcp` account receives
-no general sudo or systemd-control permission.
+At the current boundary, the confirmed command accepts only a clean
+fast-forward of managed `main`, builds one detached per-commit candidate as
+`rcp`, publishes its private immutable receipt, and then rehearses that
+candidate against a copy of real state behind a closed startup-effect fence. It
+leaves the running release and `current` pointer untouched. Cutover, restart,
+post-switch verification, and loud rollback are the remaining update packets;
+until they land, an operator should read a successful update as “candidate
+built and rehearsed,” not “server switched.” `rcp server doctor` reports the
+managed-main, candidate, current, and running commits. The `rcp` account
+receives no general sudo or systemd-control permission.
