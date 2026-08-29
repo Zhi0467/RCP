@@ -11,9 +11,11 @@ complete and its findings are fixed. Commit `638c19e` is the immutable first
 installable boundary, and its chained `source-server-install-v7-638c19e` fixture
 is pinned in the upgrade registry. F3a is therefore complete. F3b now has the
 operator guide, guarded live drive, and fixed 22.04/24.04 manual Actions matrix;
-its one independent audit is complete and every finding is fixed. However,
-the two real disposable-host runs remain pending because no repository-admin
-test credential has been configured or invoked. P1 now provides the durable,
+its one independent audit is complete and every finding is fixed. Live
+qualification is in progress with the protected repository-admin test
+credential: both real disposable-host jobs now reach the installed host path,
+but the account-policy probe still needs a corrected rerun before F3b is
+complete. P1 now provides the durable,
 strictly guarded project-provisioning state machine; its one independent audit
 is complete, every finding is fixed, and its exact schema boundary is retained
 in the chained upgrade registry. P1 is complete. D1 now provides the strict
@@ -523,10 +525,14 @@ gate are deliberately future work and do not block this plan.
   subprocess output; repairs the exact decision command; and pins checkout to
   the reviewed v7.0.0 commit. No second audit was run, per the one-audit packet
   rule.
-- Not done yet: no secret was created, no workflow was dispatched, no GitHub
-  deploy key was changed, and no Linux host was mutated from this macOS session.
-  Consequently F3b is not complete and the two-release support claim is not yet
-  live-qualified. Because install deliberately consumes
+- Live qualification is now using the protected
+  `RCP_LIVE_GITHUB_ADMIN_TOKEN` secret on disposable GitHub-hosted runners.
+  Temporary deploy-key creation remains inside the guarded live test and every
+  failed attempt so far stopped before a source grant was required; workflow
+  cleanup completed on both releases. F3b remains incomplete until one exact
+  commit passes the entire install/remove/readback drive on both Ubuntu
+  releases and the repository has no leftover temporary deploy key. Because
+  install deliberately consumes
   `origin/main`, this workflow is a post-push qualification rather than a
   pre-merge PR gate; the current human-approved direct-main development boundary
   makes that explicit instead of pretending otherwise.
@@ -590,15 +596,26 @@ gate are deliberately future work and do not block this plan.
 - Corrected run
   [33231993855](https://github.com/Zhi0467/RCP/actions/runs/33231993855)
   proved account creation completes beyond the old probe cutoff on both
-  releases, then exposed a real caller-identity bug. Because the installer is
-  launched through sudo, its root process inherited `SUDO_USER=runner`; the
-  nested `sudo -U rcp -l` audit therefore evaluated the privileged CI runner
-  identity and falsely reported that the new `rcp` account had sudo authority.
-  Root-owned installer subprocesses now drop only `SUDO_COMMAND`, `SUDO_GID`,
-  `SUDO_UID`, and `SUDO_USER` while preserving unrelated environment. A focused
-  regression pins that boundary. No source grant or deploy key was reached,
-  and workflow cleanup completed on both runners; another corrected rerun is
-  required.
+  releases, then falsely reported that the new `rcp` account had sudo
+  authority. The first diagnosis attributed this to the root process's
+  inherited `SUDO_USER=runner`; root-owned installer subprocesses consequently
+  drop only the four inherited `SUDO_*` caller-identity variables while
+  preserving unrelated environment. Run 33232185202 below disproved that as the
+  complete cause. No source grant or deploy key was reached, and workflow
+  cleanup completed on both runners.
+- Corrected run
+  [33232185202](https://github.com/Zhi0467/RCP/actions/runs/33232185202)
+  ran exact commit `e445246c2c4936823712c1fe56a14974e6de40fd` and again reached
+  account validation on both Ubuntu 22.04 and 24.04 after caller-identity
+  variables were removed. The remaining defect is the probe itself: a root
+  process used `sudo -U rcp -l` and interpreted the query's zero exit status as
+  proof that `rcp` could use sudo. The installer now executes `sudo -n -l`
+  directly as the `rcp` account through the existing clean `runuser` boundary,
+  so the process being evaluated is the account under test; success means an
+  actual noninteractive grant, the exact C-locale “not allowed” result means no
+  grant, and every other result still fails closed. No source grant or deploy
+  key was reached, and cleanup completed on both runners. Another corrected
+  rerun is required.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 

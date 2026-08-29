@@ -706,31 +706,45 @@ def test_existing_service_account_must_be_unprivileged_and_have_no_sudo_policy(
         machine._converge_account()
 
     current = account()
-    monkeypatch.setattr(
-        server_install,
-        "_run_process",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(
+    sudo_calls: list[tuple[object, tuple[str, ...], dict[str, object]]] = []
+
+    def privileged_policy(account, argv, **kwargs):
+        sudo_calls.append((account, argv, kwargs))
+        return subprocess.CompletedProcess(
             argv,
             0,
             "User rcp may run /bin/bash on lab.\n",
             "",
-        ),
-    )
+        )
+
+    monkeypatch.setattr(server_install, "_run_as_account", privileged_policy)
     with pytest.raises(InstallRefused, match="has sudo authority"):
         machine._converge_account()
+    assert sudo_calls == [
+        (
+            current,
+            ("sudo", "-n", "-l"),
+            {
+                "environment": {"LANG": "C", "LC_ALL": "C"},
+                "timeout": server_install.SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
+            },
+        )
+    ]
 
     monkeypatch.setattr(
         server_install,
-        "_run_process",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 1, "", "sudo policy error"),
+        "_run_as_account",
+        lambda _account, argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 1, "", "sudo policy error"
+        ),
     )
     with pytest.raises(InstallRefused, match="could not prove"):
         machine._converge_account()
 
     monkeypatch.setattr(
         server_install,
-        "_run_process",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(
+        "_run_as_account",
+        lambda _account, argv, **_kwargs: subprocess.CompletedProcess(
             argv,
             1,
             "",
