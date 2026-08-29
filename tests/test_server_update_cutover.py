@@ -10,9 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
+import rcp.server_ops.rehearsal as rehearsal_module
 from rcp.background import StartupEffectFence
 from rcp.server_ops.install import InstalledSystemServiceController
 from rcp.server_ops.layout import ServerLayout
+from rcp.server_ops.rehearsal import CandidateProjectVerification, StartupRecoveryReadModel
 from rcp.server_ops.update_cutover import (
     RuntimeAdmissionGate,
     UpdateAdmissionClosed,
@@ -20,6 +22,7 @@ from rcp.server_ops.update_cutover import (
     UpdateCutoverCoordinator,
     UpdateCutoverRefused,
     UpdateServiceCoordinator,
+    _live_read_model_digest,
     active_update_operation,
     advance_update_operation,
     new_update_operation,
@@ -36,6 +39,69 @@ CAPTURE_ID = "123e4567-e89b-42d3-b456-426614174003"
 BASE = "a" * 40
 CANDIDATE = "b" * 40
 REPAIRED_INSTANCE_ID = "123e4567-e89b-42d3-b456-426614174004"
+
+
+def test_live_verification_rebuilds_a_never_opened_project_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = str(uuid.uuid4())
+    graph = {"revision": 0, "nodes": {}, "edges": []}
+    startup = StartupRecoveryReadModel(
+        active_operation_ids=(),
+        stopping_experiment_operation_ids=(),
+        report_episode_ids=(),
+        auto_research_recovery_operation_ids=(),
+        active_watcher_ids=(),
+    )
+    final_path = tmp_path / "verified-candidate.json"
+    _private_file(final_path, b"final rehearsal receipt\n")
+    final = SimpleNamespace(
+        startup_recovery=startup,
+        projects=(
+            CandidateProjectVerification(
+                project_id=project_id,
+                status="verified",
+                revision=0,
+                projection_sha256=rehearsal_module._canonical_sha256(graph),
+            ),
+        ),
+        reads=("/api/health", f"/api/projects/{project_id}"),
+    )
+    monkeypatch.setattr(
+        rehearsal_module,
+        "read_verified_candidate_receipt",
+        lambda _path, *, expected_uid: final,
+    )
+    opened: list[str] = []
+    catalog = SimpleNamespace(
+        cards=lambda: [{"id": project_id}],
+        cached_snapshot_status=lambda _project_id: ("missing", None),
+        open_snapshot=lambda observed_id: (
+            opened.append(observed_id),
+            {"graph": graph},
+        ),
+    )
+    operational_reads: list[tuple[str, str]] = []
+    store = SimpleNamespace(
+        agent_tasks=lambda observed_id: operational_reads.append(("tasks", observed_id)),
+        watchers=lambda observed_id: operational_reads.append(("watchers", observed_id)),
+    )
+
+    digest = _live_read_model_digest(
+        SimpleNamespace(
+            final_receipt_path=str(final_path),
+            final_receipt_sha256=_sha256(final_path),
+        ),
+        SimpleNamespace(plan_startup_recovery=lambda: SimpleNamespace(as_dict=startup.model_dump)),
+        catalog,
+        store,
+        os.geteuid(),
+    )
+
+    assert len(digest) == 64
+    assert opened == [project_id]
+    assert operational_reads == [("tasks", project_id), ("watchers", project_id)]
 
 
 def test_runtime_admission_waits_for_entered_mutation_and_reopens() -> None:

@@ -609,7 +609,9 @@ their concrete owners. Rebuildable caches and materialized snapshots remain
 excluded, except that the update-local rollback checkpoint retains the exact
 pre-switch project display snapshots required to verify the restored release's
 fenced read model. Those snapshots remain derived output and never become graph
-authority.
+authority. A registered project that never had a display snapshot is projected
+from its restored canonical state while the old release remains fenced, then
+compared with the final rehearsal digest before admission reopens.
 A failed pre-switch candidate never changes `current`. If post-switch
 verification fails, the updater automatically stops the candidate, restores the
 checkpoint and previous pointer, starts and verifies the previous release, and

@@ -1796,6 +1796,15 @@ def _live_read_model_digest(receipt, background, catalog, store, expected_uid: i
             status, snapshot = catalog.cached_snapshot_status(expected.project_id)
             graph = snapshot.get("graph") if status == "valid" and snapshot is not None else None
             if not isinstance(graph, dict):
+                try:
+                    _service, rebuilt = catalog.open_snapshot(expected.project_id)
+                    graph = rebuilt["graph"]
+                except (FileNotFoundError, KeyError, OSError, RuntimeError, ValueError) as exc:
+                    raise UpdateCutoverRefused(
+                        "The switched release could not reconstruct project projection "
+                        f"{expected.project_id}."
+                    ) from exc
+            if not isinstance(graph, dict):
                 raise UpdateCutoverRefused(
                     f"The switched release has no valid project projection for {expected.project_id}."
                 )
