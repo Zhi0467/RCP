@@ -587,6 +587,18 @@ gate are deliberately future work and do not block this plan.
   reached, and workflow cleanup completed on both runners. A corrected rerun is
   still required to prove whether hosted `useradd --create-home` completes
   within that stateful boundary.
+- Corrected run
+  [33231993855](https://github.com/Zhi0467/RCP/actions/runs/33231993855)
+  proved account creation completes beyond the old probe cutoff on both
+  releases, then exposed a real caller-identity bug. Because the installer is
+  launched through sudo, its root process inherited `SUDO_USER=runner`; the
+  nested `sudo -U rcp -l` audit therefore evaluated the privileged CI runner
+  identity and falsely reported that the new `rcp` account had sudo authority.
+  Root-owned installer subprocesses now drop only `SUDO_COMMAND`, `SUDO_GID`,
+  `SUDO_UID`, and `SUDO_USER` while preserving unrelated environment. A focused
+  regression pins that boundary. No source grant or deploy key was reached,
+  and workflow cleanup completed on both runners; another corrected rerun is
+  required.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 

@@ -1622,6 +1622,8 @@ def _run_process(
     capture_output: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     merged_environment = os.environ.copy()
+    for name in ("SUDO_COMMAND", "SUDO_GID", "SUDO_UID", "SUDO_USER"):
+        merged_environment.pop(name, None)
     if environment:
         merged_environment.update(environment)
     try:

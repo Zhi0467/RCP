@@ -782,6 +782,34 @@ def test_new_service_account_uses_stateful_timeout_and_reports_expiry(
     ]
 
 
+def test_root_process_drops_inherited_sudo_identity(monkeypatch) -> None:
+    captured_environment: dict[str, str] = {}
+
+    def fake_run(argv, **kwargs):
+        captured_environment.update(kwargs["env"])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setenv("SUDO_COMMAND", "/usr/bin/env rcp server install")
+    monkeypatch.setenv("SUDO_GID", "123")
+    monkeypatch.setenv("SUDO_UID", "1001")
+    monkeypatch.setenv("SUDO_USER", "runner")
+    monkeypatch.setenv("RCP_ENVIRONMENT_SENTINEL", "preserved")
+    monkeypatch.setattr(server_install.subprocess, "run", fake_run)
+
+    server_install._run_process(("true",), timeout=1)
+
+    assert captured_environment["RCP_ENVIRONMENT_SENTINEL"] == "preserved"
+    assert (
+        not {
+            "SUDO_COMMAND",
+            "SUDO_GID",
+            "SUDO_UID",
+            "SUDO_USER",
+        }
+        & captured_environment.keys()
+    )
+
+
 def test_service_tooling_installs_and_rechecks_managed_python_for_fresh_account(
     monkeypatch,
 ) -> None:
