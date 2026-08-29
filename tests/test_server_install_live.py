@@ -299,7 +299,6 @@ def _create_live_update_project(member_id: str) -> dict[str, str]:
 import json
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from rcp.api import create_app
@@ -307,9 +306,7 @@ from rcp.config import AGENT_EXECUTION_PROFILES
 from rcp.core.models import AuthorizedHuman
 from rcp.providers import configured_runtime_id
 from rcp.projects import inspect_backup_project_registration
-from rcp.server_ops.backup_capture import BackupSnapshotProjectInventory
 from rcp.server_ops.backup_checkout import verify_checkout_identities
-from rcp.server_ops.backup_project_files import BackupProjectFileCaptureCoordinator
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.storage import (
@@ -492,29 +489,6 @@ verify_checkout_identities(registration.recovery)
 canonical_plan = registration.workspace.backup_canonical_source_plan()
 if not canonical_plan.complete:
     raise RuntimeError("live project canonical backup plan is incomplete")
-with tempfile.TemporaryDirectory(
-    prefix="live-project-capture-",
-    dir=DEFAULT_SERVER_LAYOUT.update_checkpoints_root,
-) as capture_name:
-    capture_root = Path(capture_name)
-    capture_root.chmod(0o700)
-    projects_root = capture_root / "projects"
-    projects_root.mkdir(mode=0o700)
-    project_root = projects_root / completed.proposed_project_id
-    project_root.mkdir(mode=0o700)
-    inventory = BackupSnapshotProjectInventory(
-        project_id=completed.proposed_project_id,
-        home_space_id=record.home_space_id,
-        locator=record.locator,
-        status="capturable",
-        recovery=registration.recovery,
-    )
-    BackupProjectFileCaptureCoordinator(DEFAULT_SERVER_LAYOUT.data_dir)._capture_project(
-        capture_root,
-        project_root,
-        inventory,
-        operation_projects={},
-    )
 print(json.dumps({
     "project_id": completed.proposed_project_id,
     "repository": str(repository),

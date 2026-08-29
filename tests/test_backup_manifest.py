@@ -27,6 +27,7 @@ from rcp.server_ops.backup_models import (
     BackupCanonicalSourceFile,
     BackupCanonicalSourcePlan,
     BackupFileEntry,
+    BackupManifestConfiguration,
     BackupProjectCapture,
     inspect_app_data_capture_plan,
 )
@@ -370,6 +371,9 @@ def test_completed_provisioning_builds_one_secret_free_recovery_descriptor(
 
     assert registration.record == record
     assert registration.recovery.project_id == PROJECT_ID
+    assert registration.recovery.configuration == BackupManifestConfiguration.from_manifest(
+        load_manifest(record.locator)
+    )
     assert registration.recovery.configuration.state_repository == "paper"
     assert registration.recovery.repositories[0].repository.identity == "openai/rcp"
     assert registration.recovery.repositories[0].deploy_key_label == (

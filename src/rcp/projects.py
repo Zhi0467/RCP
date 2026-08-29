@@ -192,7 +192,7 @@ def inspect_backup_project_registration(
     ):
         raise BackupProjectUnavailable("The project catalog and canonical state location disagree.")
 
-    configuration = BackupManifestConfiguration.from_manifest(recorded_manifest)
+    configuration = BackupManifestConfiguration.from_manifest(manifest)
     try:
         completed_at = datetime.fromisoformat(request.completed_at)
         recovery = BackupCheckoutRecoveryDescriptor(
