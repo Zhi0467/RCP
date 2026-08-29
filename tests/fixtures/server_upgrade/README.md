@@ -41,3 +41,7 @@ server central root. The test always operates on a temporary copy.
 adds one in-progress request with P4's complete project configuration and
 nullable schema boundary. It proves a later candidate can still read the old
 row while retaining the new manifest inputs needed for final creation.
+`update-cutover-v10-db3173b` records the last database shape before terminal
+tasks gain a durable history-only fence. It includes the source-update cutover,
+backup, and rollback-era migrations that the next candidate must preserve while
+adding that marker.

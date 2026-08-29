@@ -51,6 +51,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "a499be3f80618ffe495d7a1a565a33683998502b",
         "cb5afc65b24bd7693c3396816cf03114ce9d430aa06500a2dee6083ca47d53d8",
     ),
+    "update-cutover-v10-db3173b": (
+        "db3173b4ba31c89cd5370463bb180c007e013368",
+        "c9cce4a77d79f30d79cf603215469a379735fa6ed13d1c49d7e9f2238d128ea7",
+    ),
 }
 
 

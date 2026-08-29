@@ -424,13 +424,10 @@ export function NodeChat({
       if (!payload || payload.project_id !== project.id || payload.chat_id !== chatId) return;
       const source = relatedTasks.find((task) => task.operation_id === payload.operation_id);
       const sourceKind = payload.source ?? "task";
-      if (
-        !source ||
-        (sourceKind === "task" &&
-          !source.result?.artifacts?.some(
-            (artifact) => artifact.artifact_id === payload.artifact_id,
-          ))
-      )
+      const sourceArtifact = source?.result?.artifacts?.find(
+        (artifact) => artifact.artifact_id === payload.artifact_id,
+      );
+      if (!source || (sourceKind === "task" && (!sourceArtifact || !sourceArtifact.can_revise)))
         return;
       const signature = JSON.stringify(payload);
       if (lastArtifactContextRef.current === signature) return;
@@ -891,18 +888,8 @@ export function NodeChat({
     });
   };
 
-  const checkArtifact = async (
-    taskId: string,
-    artifact: AgentArtifactDescriptor,
-    action: "content" | "download",
-  ) => {
-    const url = artifactUrl(project.id, taskId, artifact.artifact_id, action);
-    if (!(await artifactIsAvailable(url))) {
-      markArtifactUnavailable(taskId, artifact.artifact_id);
-    }
-  };
-
   const openArtifact = async (taskId: string, artifact: AgentArtifactDescriptor) => {
+    if (!artifact.can_open) return;
     if (desktop) {
       const key = `${taskId}:${artifact.artifact_id}`;
       setArtifactShellErrors((current) => withoutMapKey(current, key));
@@ -929,12 +916,6 @@ export function NodeChat({
       return;
     }
     target.opener = null;
-    const url = artifactUrl(project.id, taskId, artifact.artifact_id, "viewer");
-    if (!(await artifactIsAvailable(url))) {
-      target.close();
-      markArtifactUnavailable(taskId, artifact.artifact_id);
-      return;
-    }
     try {
       target.location.replace(artifactUrl(project.id, taskId, artifact.artifact_id, "viewer"));
     } catch {
@@ -944,6 +925,7 @@ export function NodeChat({
   };
 
   const downloadArtifact = async (taskId: string, artifact: AgentArtifactDescriptor) => {
+    if (!artifact.can_download) return;
     const key = `${taskId}:${artifact.artifact_id}`;
     setArtifactShellErrors((current) => withoutMapKey(current, key));
     try {
@@ -997,7 +979,7 @@ export function NodeChat({
     }
     preview.opener = null;
     const url = repositoryFilePreviewUrl(project.id, target);
-    if (!(await artifactIsAvailable(url))) {
+    if (!(await resourceIsAvailable(url))) {
       preview.close();
       setRepositoryFileErrors((current) =>
         withMapValue(current, messageId, "Repository file preview is unavailable."),
@@ -1205,9 +1187,13 @@ export function NodeChat({
                 <span className="node-chat-text">{line.text}</span>
               )}
               {line.artifacts?.map((artifact) => {
-                const unavailable = unavailableArtifacts.has(
+                const runtimeUnavailable = unavailableArtifacts.has(
                   `${line.taskId}:${artifact.artifact_id}`,
                 );
+                const unavailable = !artifact.available || runtimeUnavailable;
+                const unavailableReason =
+                  (!artifact.available && artifact.unavailable_reason) ||
+                  (runtimeUnavailable ? "Preview unavailable" : null);
                 const shellError = artifactShellErrors.get(
                   `${line.taskId}:${artifact.artifact_id}`,
                 );
@@ -1219,6 +1205,7 @@ export function NodeChat({
                     {artifact.media_type !== "text/html" &&
                       artifact.size_bytes != null &&
                       artifact.size_bytes <= INLINE_ARTIFACT_MAX_BYTES &&
+                      artifact.can_open &&
                       !unavailable && (
                         <button
                           className="chat-artifact-inline"
@@ -1246,36 +1233,38 @@ export function NodeChat({
                       {artifact.kept_filename && <em>Kept</em>}
                     </span>
                     {unavailable ? (
-                      <strong>Preview unavailable</strong>
+                      <strong>{unavailableReason ?? "Preview unavailable"}</strong>
                     ) : (
                       <div className="chat-artifact-actions">
-                        <button
-                          type="button"
-                          onClick={() => void openArtifact(line.taskId, artifact)}
-                        >
-                          <ExternalLink size={12} /> Open
-                        </button>
-                        {desktop ? (
+                        {artifact.can_open && (
                           <button
                             type="button"
-                            onClick={() => void downloadArtifact(line.taskId, artifact)}
+                            onClick={() => void openArtifact(line.taskId, artifact)}
                           >
-                            <Download size={12} /> Download
+                            <ExternalLink size={12} /> Open
                           </button>
-                        ) : (
-                          <a
-                            href={artifactUrl(
-                              project.id,
-                              line.taskId,
-                              artifact.artifact_id,
-                              "download",
-                            )}
-                            download={artifact.name}
-                            onClick={() => void checkArtifact(line.taskId, artifact, "download")}
-                          >
-                            <Download size={12} /> Download
-                          </a>
                         )}
+                        {artifact.can_download &&
+                          (desktop ? (
+                            <button
+                              type="button"
+                              onClick={() => void downloadArtifact(line.taskId, artifact)}
+                            >
+                              <Download size={12} /> Download
+                            </button>
+                          ) : (
+                            <a
+                              href={artifactUrl(
+                                project.id,
+                                line.taskId,
+                                artifact.artifact_id,
+                                "download",
+                              )}
+                              download={artifact.name}
+                            >
+                              <Download size={12} /> Download
+                            </a>
+                          ))}
                       </div>
                     )}
                     {shellError && (
@@ -1756,7 +1745,7 @@ function withoutMapKey(map: Map<string, string>, key: string): Map<string, strin
   return next;
 }
 
-async function artifactIsAvailable(url: string): Promise<boolean> {
+async function resourceIsAvailable(url: string): Promise<boolean> {
   try {
     const response = await fetch(url, { method: "HEAD" });
     return response.ok;

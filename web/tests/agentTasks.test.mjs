@@ -42,6 +42,21 @@ function task(overrides) {
   });
 }
 
+function artifact(overrides = {}) {
+  return {
+    artifact_id: "a".repeat(24),
+    name: "chart.html",
+    media_type: "text/html",
+    available: true,
+    unavailable_reason: null,
+    can_open: true,
+    can_download: true,
+    can_keep: true,
+    can_revise: true,
+    ...overrides,
+  };
+}
+
 test("branch merge tasks keep a human-readable activity label", () => {
   assert.equal(taskKindLabel("branch_merge"), "Branch merge");
 });
@@ -316,7 +331,7 @@ test("failed chat tasks render a preserved answer before the error", () => {
 });
 
 test("artifacts stay attached to the answer when a later task error is present", () => {
-  const artifacts = [{ artifact_id: "a".repeat(24), name: "chart.html", media_type: "text/html" }];
+  const artifacts = [artifact()];
   const failed = task({
     operation_id: "artifact-change-rejected",
     status: "failed",
@@ -338,9 +353,7 @@ test("artifacts stay attached to the answer when a later task error is present",
 });
 
 test("persisted chat reconciliation keeps task artifacts on the assistant answer", () => {
-  const artifacts = [
-    { artifact_id: "b".repeat(24), name: "preview.html", media_type: "text/html" },
-  ];
+  const artifacts = [artifact({ artifact_id: "b".repeat(24), name: "preview.html" })];
   const completed = task({
     operation_id: "artifact-turn",
     request: { chat_id: "chat", message: "Build a preview" },
@@ -373,6 +386,42 @@ test("persisted chat reconciliation keeps task artifacts on the assistant answer
 
   assert.deepEqual(chatTasksMissingFromHistory([completed], messages), []);
   assert.deepEqual(reconcileChatHistoryArtifacts(messages, [completed])[1].artifacts, artifacts);
+});
+
+test("historical artifact decisions survive transcript reconciliation without UI inference", () => {
+  const unavailable = artifact({
+    artifact_id: "c".repeat(24),
+    name: "expired.html",
+    available: false,
+    unavailable_reason: "Artifact bytes were not retained with this task history.",
+    can_open: false,
+    can_download: false,
+    can_keep: false,
+    can_revise: false,
+  });
+  const completed = task({
+    operation_id: "historical-artifact",
+    history_only: true,
+    native_session_id: null,
+    result: { messages: ["Historical result."], artifacts: [unavailable] },
+  });
+
+  assert.deepEqual(reconstructTaskTranscript([completed])[0].artifacts, [unavailable]);
+  assert.equal(latestNativeSessionId([completed]), null);
+});
+
+test("artifact metadata without backend decisions is not rendered", () => {
+  const incomplete = {
+    artifact_id: "d".repeat(24),
+    name: "legacy.html",
+    media_type: "text/html",
+  };
+  const completed = task({
+    operation_id: "incomplete-artifact",
+    result: { messages: ["Legacy result."], artifacts: [incomplete] },
+  });
+
+  assert.equal(reconstructTaskTranscript([completed])[0].artifacts, undefined);
 });
 
 test("conversation reconstruction preserves immutable mode and graph receipt metadata", () => {

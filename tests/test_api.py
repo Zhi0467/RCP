@@ -3241,7 +3241,17 @@ def test_failed_chat_task_retains_artifacts_emitted_before_the_error(manifest, t
     assert failed["status"] == "failed"
     assert failed["result"] == {
         "messages": ["The reply stands."],
-        "artifacts": [descriptor.model_dump(mode="json")],
+        "artifacts": [
+            {
+                **descriptor.model_dump(mode="json"),
+                "available": False,
+                "unavailable_reason": "Artifact bytes are no longer available.",
+                "can_open": False,
+                "can_download": False,
+                "can_keep": False,
+                "can_revise": False,
+            }
+        ],
     }
 
 
@@ -3481,13 +3491,13 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     viewer_url = f"{base}/{by_name['preview.html']['artifact_id']}/viewer"
     viewer = client.get(viewer_url)
     assert viewer.status_code == 200
-    assert "rcp-artifact-context" in viewer.text
-    assert "Added to the originating chat draft." in viewer.text
+    assert "rcp-artifact-context" not in viewer.text
+    assert 'id="keep"' in viewer.text
 
     legacy_preview_url = f"{base}/{by_name['preview.html']['artifact_id']}/preview"
     legacy_preview = client.get(legacy_preview_url)
     assert legacy_preview.status_code == 200
-    assert "rcp-artifact-context" in legacy_preview.text
+    assert "rcp-artifact-context" not in legacy_preview.text
     assert html_url in legacy_preview.text
     assert client.head(legacy_preview_url).content == b""
 
@@ -3508,6 +3518,9 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     store.checkpoint_agent_task(completed["operation_id"], native_session_id="artifact-session")
     origin = store.agent_task(completed["operation_id"])
     assert origin is not None and origin.native_session_id
+    revisable_viewer = client.get(viewer_url)
+    assert "rcp-artifact-context" in revisable_viewer.text
+    assert "Added to the originating chat draft." in revisable_viewer.text
     admitted_requests: list[RunRequest] = []
 
     def capture_artifact_question(

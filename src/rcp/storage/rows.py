@@ -211,10 +211,15 @@ class RowMappingMixin:
         active = status in ACTIVE_AGENT_TASK_STATUSES
         stage_ready = not data.get("stage_host") or bool(data.get("stage_root"))
         visible = bool(data.get("visible", True))
+        history_only = bool(data.get("history_only", False))
         data["visible"] = visible
-        data["can_pause"] = visible and status in AGENT_TASK_TRANSITIONS["pausing"]
+        data["history_only"] = history_only
+        data["can_pause"] = (
+            visible and not history_only and status in AGENT_TASK_TRANSITIONS["pausing"]
+        )
         data["can_resume"] = (
             visible
+            and not history_only
             and status in {"paused", "interrupted"}
             and bool(data.get("native_session_id"))
             and stage_ready
@@ -222,12 +227,13 @@ class RowMappingMixin:
         )
         data["can_retry"] = (
             visible
+            and not history_only
             and status in {"paused", "interrupted", "failed"}
             and not active
             and not recovery_abandoned
         )
         data["active"] = active
-        data["awaiting_human"] = status in AWAITING_HUMAN_AGENT_TASK_STATUSES
+        data["awaiting_human"] = not history_only and status in AWAITING_HUMAN_AGENT_TASK_STATUSES
         data["queued"] = status == "queued"
         data["pausing"] = status == "pausing"
         data["paused"] = status == "paused"
@@ -235,6 +241,8 @@ class RowMappingMixin:
         data["failed"] = status == "failed"
         data["settled"] = status == "succeeded"
         data["status_label"] = _agent_task_status_label(status, data.get("applied_revision"))
+        if history_only:
+            data["native_session_id"] = None
         if data.get("kind") == "branch_merge":
             # A merge retry is a new human dispatch against the then-current
             # main head, never recovery of an old native session or stage.

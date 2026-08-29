@@ -47,7 +47,7 @@ from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _resolved_coach_request
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
-from rcp.storage import AgentTaskKind, AppStore
+from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore
 from rcp.transport import RemoteRunStage, StateUnavailable
 from rcp.transport.state import StateWorkspace
 
@@ -73,6 +73,84 @@ class RetryAgentTaskRequest(BaseModel):
     model: str | None = None
     reasoning: str | None = None
     run_on: str | None = None
+
+
+class AgentArtifactResponse(AgentArtifactDescriptor):
+    """One stored descriptor plus backend-owned availability decisions."""
+
+    available: bool
+    unavailable_reason: str | None
+    can_open: bool
+    can_download: bool
+    can_keep: bool
+    can_revise: bool
+
+
+def _agent_artifact_response(
+    record: AgentTaskRecord,
+    descriptor: AgentArtifactDescriptor,
+) -> AgentArtifactResponse:
+    kept = descriptor.kept_filename is not None
+    retained_stage = bool(record.stage_root) and not record.history_only
+    available = kept or retained_stage
+    unavailable_reason = (
+        None
+        if available
+        else "Artifact bytes were not retained with this task history."
+        if record.history_only
+        else "Artifact bytes are no longer available."
+    )
+    return AgentArtifactResponse(
+        **descriptor.model_dump(mode="python"),
+        available=available,
+        unavailable_reason=unavailable_reason,
+        can_open=available,
+        can_download=available,
+        can_keep=available and not kept and not record.history_only,
+        can_revise=(
+            available
+            and not record.history_only
+            and bool(record.native_session_id)
+            and bool(record.stage_root)
+        ),
+    )
+
+
+def _agent_task_response(record: AgentTaskRecord) -> dict[str, object]:
+    response = record.model_dump(mode="json")
+    result = response.get("result")
+    stored_artifacts = record.result.get("artifacts") if record.result else None
+    if not isinstance(result, dict):
+        return response
+    if record.history_only:
+        graph_update = result.get("graph_update")
+        if isinstance(graph_update, dict):
+            graph_update["repairable"] = False
+        graph_updates = result.get("graph_updates")
+        if isinstance(graph_updates, list):
+            for update in graph_updates:
+                if isinstance(update, dict):
+                    update["repairable"] = False
+    if not isinstance(stored_artifacts, list):
+        return response
+    projected: list[object] = []
+    for raw in stored_artifacts:
+        try:
+            descriptor = AgentArtifactDescriptor.model_validate(raw)
+        except (TypeError, ValueError):
+            projected.append(raw)
+            continue
+        projected.append(_agent_artifact_response(record, descriptor).model_dump(mode="json"))
+    result["artifacts"] = projected
+    return response
+
+
+def _reject_history_only_control(record: AgentTaskRecord) -> None:
+    if record.history_only:
+        raise HTTPException(
+            status_code=409,
+            detail="This task is retained as history and cannot be controlled or continued.",
+        )
 
 
 @router.post("/api/projects/{project_id}/tasks/{kind}", status_code=202)
@@ -198,7 +276,7 @@ def agent_tasks(
     store: StoreDependency,
 ) -> list[dict[str, object]]:
     require_registered_project(catalog, project_id)
-    return [record.model_dump(mode="json") for record in store.agent_tasks(project_id)]
+    return [_agent_task_response(record) for record in store.agent_tasks(project_id)]
 
 
 @router.get("/api/projects/{project_id}/tasks/{operation_id}")
@@ -213,7 +291,7 @@ def agent_task(
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
-    detail = record.model_dump(mode="json")
+    detail = _agent_task_response(record)
     detail["events"] = [
         event.model_dump(mode="json") for event in store.agent_task_events(operation_id)
     ]
@@ -245,6 +323,7 @@ async def content_agent_artifact(
         project_id,
         operation_id,
         artifact_id,
+        "open",
     )
     headers = {
         "Cache-Control": "no-store",
@@ -326,6 +405,7 @@ async def download_agent_artifact(
         project_id,
         operation_id,
         artifact_id,
+        "download",
     )
     suffix = Path(descriptor.name).suffix.casefold()
     fallback = f"artifact{suffix}" if suffix in ARTIFACT_MEDIA_TYPES else "artifact"
@@ -379,6 +459,7 @@ async def _artifact_viewer_response(
         project_id,
         operation_id,
         artifact_id,
+        "open",
     )
     record = store.agent_task(operation_id)
     chat_id = record.request.get("chat_id") if record is not None else None
@@ -391,12 +472,14 @@ async def _artifact_viewer_response(
     keep_url = (
         f"/api/projects/{quote(project_id, safe='')}/tasks/{quote(operation_id, safe='')}"
         f"/artifacts/{quote(artifact_id, safe='')}/keep"
+        if descriptor.can_keep
+        else None
     )
     document, csp = artifact_viewer_document(
         preview_url=content_url,
         keep_url=keep_url,
         project_id=project_id,
-        chat_id=chat_id,
+        chat_id=chat_id if descriptor.can_revise else None,
         operation_id=operation_id,
         descriptor=descriptor,
     )
@@ -428,9 +511,8 @@ async def keep_agent_artifact(
         project_id,
         operation_id,
         artifact_id,
+        "keep",
     )
-    if descriptor.kept_filename is not None:
-        return descriptor.model_dump(mode="json")
     project_name = catalog.card(project_id)["name"]
     if not isinstance(project_name, str):
         raise HTTPException(status_code=503, detail="Artifact Keep unavailable")
@@ -451,7 +533,9 @@ async def keep_agent_artifact(
         raise HTTPException(status_code=503, detail="Artifact Keep unavailable") from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Artifact not found") from exc
-    return kept.model_dump(mode="json")
+    updated = store.agent_task(operation_id)
+    assert updated is not None
+    return _agent_artifact_response(updated, kept).model_dump(mode="json")
 
 
 @router.post("/api/projects/{project_id}/tasks/{operation_id}/pause", status_code=202)
@@ -467,6 +551,7 @@ def pause_agent_task(
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
+    _reject_history_only_control(record)
     try:
         return background_tasks.pause(operation_id).model_dump(mode="json")
     except ValueError as exc:
@@ -489,6 +574,7 @@ def resume_agent_task(
     previous = store.agent_task(operation_id)
     if previous is None or previous.project_id != project_id or not previous.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
+    _reject_history_only_control(previous)
     if previous.kind == "branch_merge":
         raise HTTPException(
             status_code=409,
@@ -547,6 +633,7 @@ def repair_agent_task_graph_update(
     previous = store.agent_task(operation_id)
     if previous is None or previous.project_id != project_id or not previous.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
+    _reject_history_only_control(previous)
     if previous.kind == "branch_merge":
         raise HTTPException(
             status_code=409,
@@ -587,6 +674,7 @@ def retry_agent_task(
     previous = store.agent_task(operation_id)
     if previous is None or previous.project_id != project_id or not previous.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
+    _reject_history_only_control(previous)
     if previous.kind == "branch_merge":
         raise HTTPException(
             status_code=409,
@@ -660,7 +748,8 @@ def _load_agent_artifact(
     project_id: str,
     operation_id: str,
     artifact_id: str,
-) -> tuple[AgentArtifactDescriptor, bytes]:
+    action: Literal["open", "download", "keep"],
+) -> tuple[AgentArtifactResponse, bytes]:
     """Resolve an attachment only through its persisted task descriptor and stage."""
     record = store.agent_task(operation_id)
     if (
@@ -669,19 +758,18 @@ def _load_agent_artifact(
         or record.kind not in {"node_chat", "project_chat"}
     ):
         raise HTTPException(status_code=404, detail="Agent task not found")
-    artifacts = record.result.get("artifacts") if record.result else None
-    descriptor: AgentArtifactDescriptor | None = None
-    if isinstance(artifacts, list):
-        for raw in artifacts:
-            try:
-                candidate = AgentArtifactDescriptor.model_validate(raw)
-            except (TypeError, ValueError):
-                continue
-            if candidate.artifact_id == artifact_id:
-                descriptor = candidate
-                break
-    if descriptor is None:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    descriptor = _agent_artifact_descriptor(record, artifact_id)
+    projected = _agent_artifact_response(record, descriptor)
+    allowed = {
+        "open": projected.can_open,
+        "download": projected.can_download,
+        "keep": projected.can_keep,
+    }[action]
+    if not allowed:
+        raise HTTPException(
+            status_code=410 if action in {"open", "download"} else 409,
+            detail=projected.unavailable_reason or f"Artifact {action} unavailable",
+        )
     try:
         scope_id = _logical_chat_turn_operation_id(store, record.operation_id)
         expected_descriptor = descriptor_for(scope_id, descriptor.name)
@@ -721,7 +809,23 @@ def _load_agent_artifact(
         raise HTTPException(status_code=503, detail="Preview unavailable") from exc
     except ValueError as exc:
         raise HTTPException(status_code=410, detail="Preview unavailable") from exc
-    return descriptor, data
+    return projected, data
+
+
+def _agent_artifact_descriptor(
+    record: AgentTaskRecord,
+    artifact_id: str,
+) -> AgentArtifactDescriptor:
+    artifacts = record.result.get("artifacts") if record.result else None
+    if isinstance(artifacts, list):
+        for raw in artifacts:
+            try:
+                descriptor = AgentArtifactDescriptor.model_validate(raw)
+            except (TypeError, ValueError):
+                continue
+            if descriptor.artifact_id == artifact_id:
+                return descriptor
+    raise HTTPException(status_code=404, detail="Artifact not found")
 
 
 def _admit_result_view_request(
@@ -827,6 +931,15 @@ def _admit_artifact_context_request(
                 break
     if context.source == "task" and descriptor is None:
         raise ValueError("The artifact is unavailable.")
+    if context.source == "task":
+        assert descriptor is not None
+        artifact = _agent_artifact_response(origin, descriptor)
+        if not artifact.can_revise:
+            raise ValueError(
+                artifact.unavailable_reason
+                or "The artifact's native session is unavailable. Start a fresh session "
+                "explicitly before asking about it."
+            )
     pinned_values = {
         "provider": origin.request.get("provider"),
         "model": origin.request.get("model"),

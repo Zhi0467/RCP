@@ -949,6 +949,7 @@ class AgentTaskRecord(BaseModel):
     #: what actually ran never maps a durable id back to the registry itself.
     runtime_label: str = ""
     native_session_id: str | None = None
+    history_only: bool = False
     stage_host: str | None = None
     stage_root: str | None = None
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)

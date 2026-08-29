@@ -74,7 +74,10 @@ def _exercise_candidate_upgrade(fixture: Path) -> None:
         assert store.space_user(user_id) is not None
         assert {member.user_id for member in store.project_members(project_id)} == {user_id}
         _assert_member_auth_rows(store, metadata)
-        assert store.agent_task(operation_id).status == "running"
+        upgraded_task = store.agent_task(operation_id)
+        assert upgraded_task is not None
+        assert upgraded_task.status == "running"
+        assert upgraded_task.history_only is False
         _assert_provisioning_rows(store, metadata)
         if experiment_episode_id is not None:
             assert store.experiment_episode(experiment_episode_id) is not None

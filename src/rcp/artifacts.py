@@ -516,6 +516,42 @@ def artifact_viewer_document(
         else f'<img id="previewImage" src={js(preview_url)} alt={js(descriptor.name)}>'
         '<div id="boxLayer" aria-hidden="true"></div>'
     )
+    if chat_id is None and source == "task":
+        readonly_preview = (
+            f'<iframe id="preview" sandbox="allow-scripts" src={js(preview_url)} '
+            f"title={js(descriptor.name)}></iframe>"
+            if descriptor.media_type == "text/html"
+            else f'<img id="previewImage" src={js(preview_url)} alt={js(descriptor.name)}>'
+        )
+        readonly_keep = (
+            '<button id="keep" type="button">Keep</button>'
+            if keep_url and descriptor.kept_filename is None
+            else ""
+        )
+        readonly_script = (
+            f"""<script>(()=>{{const keep=document.getElementById('keep');keep?.addEventListener('click',async()=>{{keep.disabled=true;try{{const response=await fetch({js(keep_url)},{{method:'POST',credentials:'same-origin'}});if(!response.ok)throw new Error('Keep failed');document.getElementById('state').textContent='kept';keep.remove();}}catch{{keep.disabled=false;}}}});}})();</script>"""
+            if readonly_keep
+            else ""
+        )
+        document = f"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html.escape(descriptor.name)}</title>
+<style>
+:root{{--paper:#f4f1e8;--ink:#211f1a;--muted:#736f65;--rule:#c9c3b5;--panel:#fbfaf5}}
+*{{box-sizing:border-box}}html,body{{margin:0;height:100%;background:var(--paper);color:var(--ink);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}}
+body{{display:grid;grid-template-rows:48px minmax(0,1fr)}}header{{display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--rule);background:var(--panel)}}
+header strong{{font-family:Georgia,serif;font-size:16px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}header .state{{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}}header button{{margin-left:auto;border:1px solid var(--rule);background:transparent;color:var(--ink);padding:6px 10px;font:inherit;cursor:pointer}}
+main{{min-height:0;background:white}}iframe{{display:block;border:0;width:100%;height:100%}}main>img{{display:block;width:100%;height:100%;object-fit:contain}}
+</style></head><body>
+<header><strong>{html.escape(descriptor.name)}</strong><span id="state" class="state">{"kept" if descriptor.kept_filename else "temporary"}</span>{readonly_keep}</header>
+<main>{readonly_preview}</main>{readonly_script}</body></html>"""
+        csp = (
+            "default-src 'none'; "
+            + ("script-src 'unsafe-inline'; connect-src 'self'; " if readonly_keep else "")
+            + "style-src 'unsafe-inline'; frame-src 'self'; img-src 'self' data: blob:; "
+            "base-uri 'none'; form-action 'none'; object-src 'none'"
+        )
+        return document, csp
     document = f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(descriptor.name)}</title>

@@ -521,7 +521,9 @@ class ProjectCatalog:
                 self.launcher,
                 data_dir=self.data_dir,
                 provider_skills=self.provider_skills,
+                project_id=project_id,
                 repository_inventory=self.repository_ownership_inventory,
+                task_continuation_session=self.store.agent_task_continuation_session_id,
             )
             snapshot = _snapshot_payload(service.project_snapshot(state=materialization.state))
             self._stamp_snapshot_identity(snapshot, project_id)
@@ -1483,7 +1485,9 @@ class ProjectCatalog:
             self.launcher,
             data_dir=self.data_dir,
             provider_skills=self.provider_skills,
+            project_id=project_id,
             repository_inventory=self.repository_ownership_inventory,
+            task_continuation_session=self.store.agent_task_continuation_session_id,
         )
         return service, initialized_state
 

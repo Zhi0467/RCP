@@ -4,7 +4,7 @@ Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
 F2, F3a, F3b, F4, F5, F6a, F6b, F6c, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
-O2b, O3a, and O3b are complete. D2
+O2b, O3a, O3b, O3c, and O3c-ui are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; a 2026-08-29 local-HTTPS spike then proved that candidate mechanism on
 one host, so D3-D5 are unblocked in principle while D2 itself remains
@@ -3604,6 +3604,15 @@ an archive.
 
 ### O3c — History-only task and native-session fence
 
+Status: complete hermetically on 2026-08-29. Terminal task rows now have one
+durable history-only marker, one transaction removes their executable
+continuation indexes without rewriting historical task or chat evidence, and
+backend projection and admission agree that no Pause, Resume, Retry, graph
+repair, or native-session continuation remains. The pre-change `db3173b`
+database shape is pinned as an immutable G2 upgrade fixture. Applying this fence
+to a restored or imported population remains with O3d-a and T3b-export; this
+packet does not itself perform restore or transfer.
+
 Own:
 
 - the durable `history_only` task marker and migration in
@@ -3648,6 +3657,23 @@ orchestration. Its schema change owns the corresponding G2 upgrade fixture
 before it lands.
 
 ### O3c-ui — Render backend-owned historical artifact decisions
+
+Status: complete hermetically on 2026-08-29. Every projected task artifact now
+carries backend-owned availability and action decisions. The Web renders those
+answers without constructing or preflighting a forbidden route, while a route
+that becomes unavailable after projection still fails visibly. Kept historical
+artifacts retain read/download access through canonical storage; unkept stage
+artifacts are visibly unavailable; neither case can revise through a detached
+native session. The existing interactive Experiment-report viewer remains
+unchanged because it is not a detached task artifact.
+
+Verification passed the complete Python suite, all 440 Web tests, the production
+Web build, Ruff, documentation tests, every immutable server-upgrade boundary,
+and all-file pre-commit. A disposable served-app browser drive opened the real
+Chats surface: the historical chat offered a fresh session, the kept artifact
+showed only Open and Download, the unkept artifact showed the backend-owned
+unavailable reason with no actions, and the browser console remained clean. No
+human data directory or Q11 file was used or changed by that drive.
 
 Own:
 

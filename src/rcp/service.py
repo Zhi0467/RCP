@@ -858,6 +858,7 @@ class ProjectService:
         provider_skills: ProviderSkillInventoryManager | None = None,
         project_id: str | None = None,
         repository_inventory: Callable[[], list[RegisteredRepositoryRoot]] | None = None,
+        task_continuation_session: Callable[[str, str], str | None] | None = None,
     ) -> None:
         self.history = history
         self.paper = paper
@@ -866,6 +867,7 @@ class ProjectService:
         self._data_dir = data_dir
         self._project_id = project_id or history.project_id
         self._repository_inventory = repository_inventory
+        self._task_continuation_session = task_continuation_session
         state_repository = manifest.repository_map[manifest.state.repository]
         state_machine = manifest.machine_map[state_repository.machine]
         app_chat_origin = AppChatOrigin(
@@ -931,6 +933,7 @@ class ProjectService:
             provider_skills=self.provider_skills,
             project_id=self._project_id,
             repository_inventory=self._repository_inventory,
+            task_continuation_session=self._task_continuation_session,
         )
 
     def chat_path(
@@ -1099,26 +1102,34 @@ class ProjectService:
         else:
             kind = "project_chat"
 
-        messages = [
-            ChatMessage(
-                message_id=record.uuid,
-                operation_id=record.operation_id,
-                role=record.role,
-                text=record.text,
-                timestamp=record.timestamp,
-                native_session_id=record.native_session_id,
-                provider=record.provider,
-                model=record.model,
-                reasoning=record.reasoning,
-                execution_machine=record.execution_machine,
-                applied_revision=record.applied_revision,
-                mode=record.mode,
-                graph_update=record.graph_update,
-                trigger=record.trigger,
-                attachments=record.attachments,
+        messages: list[ChatMessage] = []
+        for record in records:
+            native_session_id = record.native_session_id
+            if self._task_continuation_session is not None:
+                native_session_id = (
+                    self._task_continuation_session(self._project_id, record.operation_id)
+                    if record.operation_id is not None
+                    else None
+                )
+            messages.append(
+                ChatMessage(
+                    message_id=record.uuid,
+                    operation_id=record.operation_id,
+                    role=record.role,
+                    text=record.text,
+                    timestamp=record.timestamp,
+                    native_session_id=native_session_id,
+                    provider=record.provider,
+                    model=record.model,
+                    reasoning=record.reasoning,
+                    execution_machine=record.execution_machine,
+                    applied_revision=record.applied_revision,
+                    mode=record.mode,
+                    graph_update=record.graph_update,
+                    trigger=record.trigger,
+                    attachments=record.attachments,
+                )
             )
-            for record in records
-        ]
         first_user = next((message.text for message in messages if message.role == "user"), "")
         title = " ".join(first_user.split())[:CHAT_TITLE_MAX_CHARS]
         if not title:

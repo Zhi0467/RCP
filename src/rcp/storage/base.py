@@ -700,6 +700,7 @@ class AppStoreBase:
                     parent_operation_id TEXT,
                     runtime_id TEXT NOT NULL DEFAULT '',
                     native_session_id TEXT,
+                    history_only INTEGER NOT NULL DEFAULT 0,
                     stage_host TEXT,
                     stage_root TEXT,
                     graph_target_json TEXT NOT NULL DEFAULT '{"kind":"main","branch_id":null}',
@@ -1248,6 +1249,12 @@ class AppStoreBase:
                     (legacy_runtime_id(supported), supported),
                 )
             self._ensure_column(connection, "graph_runs", "native_session_id", "TEXT")
+            self._ensure_column(
+                connection,
+                "graph_runs",
+                "history_only",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
             self._ensure_column(connection, "graph_runs", "stage_host", "TEXT")
             self._ensure_column(connection, "graph_runs", "stage_root", "TEXT")
             self._ensure_column(

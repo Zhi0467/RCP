@@ -363,6 +363,12 @@ function taskArtifacts(task: AgentTask): AgentArtifactDescriptor[] {
       item !== null &&
       typeof item.artifact_id === "string" &&
       typeof item.name === "string" &&
-      typeof item.media_type === "string",
+      typeof item.media_type === "string" &&
+      typeof item.available === "boolean" &&
+      (item.unavailable_reason === null || typeof item.unavailable_reason === "string") &&
+      typeof item.can_open === "boolean" &&
+      typeof item.can_download === "boolean" &&
+      typeof item.can_keep === "boolean" &&
+      typeof item.can_revise === "boolean",
   );
 }

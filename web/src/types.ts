@@ -1382,6 +1382,12 @@ export interface AgentArtifactDescriptor {
   size_bytes?: number | null;
   kept_filename?: string | null;
   kept_at?: string | null;
+  available: boolean;
+  unavailable_reason: string | null;
+  can_open: boolean;
+  can_download: boolean;
+  can_keep: boolean;
+  can_revise: boolean;
 }
 
 export type ArtifactSelection =
@@ -1427,6 +1433,7 @@ export interface AgentTask {
   runtime_id: string;
   runtime_label: string;
   native_session_id?: string | null;
+  history_only: boolean;
   stage_host?: string | null;
   stage_root?: string | null;
   graph_target: GraphTargetRef;

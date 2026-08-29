@@ -973,11 +973,14 @@ terminal history, but `writing_sessions` and `chat_session_contexts` do not
 transfer because they are executable native-session/prompt checkpoints rather
 than durable human content.
 Every imported terminal task has a durable history-only marker. Backend task
-projection and control admission both force Pause, Resume, and Retry unavailable
-and expose no native-session id as an executable continuation, without changing
-the task's honest terminal status or answer. A later target task is a new
-ordinary task under target configuration; imported failure is not
-relabeled as success or as an abandoned target recovery.
+projection and control admission force Pause, Resume, Retry, and graph repair
+unavailable, remove the task from the human-action queue, and expose no
+native-session id as an executable continuation, without changing the task's
+honest terminal status or answer. The stored task and canonical chat retain
+their historical native-session evidence, but native-chat-origin proof and chat
+responses export a continuation only for a non-history-only task binding. A
+later target task is a new ordinary task under target configuration; imported
+failure is not relabeled as success or as an abandoned target recovery.
 
 Safe artifact metadata remains part of that terminal history even when its
 disposable stage bytes do not. A referenced kept artifact remains openable

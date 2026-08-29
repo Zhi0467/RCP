@@ -287,11 +287,11 @@ class AgentTaskStoreMixin:
                 created_at, updated_at, started_at, finished_at,
                 status_message, error, applied_revision, result_json, attempt,
                 parent_operation_id, runtime_id, native_session_id, stage_host,
-                stage_root, graph_target_json, write_scope_fingerprint,
+                history_only, stage_root, graph_target_json, write_scope_fingerprint,
                 estimate_seconds, estimate_samples, phase,
                 last_activity_at, dispatch_authority_json, authorized_space_id,
                 authorized_user_id, authorized_display_name, visible
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.operation_id,
@@ -313,6 +313,7 @@ class AgentTaskStoreMixin:
                 record.runtime_id,
                 record.native_session_id,
                 record.stage_host,
+                int(record.history_only),
                 record.stage_root,
                 record.graph_target.model_dump_json(),
                 record.write_scope_fingerprint,
@@ -724,6 +725,125 @@ class AgentTaskStoreMixin:
             ).fetchone()
         return self._agent_task_record(row) if row else None
 
+    def agent_task_continuation_session_id(
+        self,
+        project_id: str,
+        operation_id: str,
+    ) -> str | None:
+        """Return the executable session binding for one non-historical task."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT native_session_id
+                FROM graph_runs
+                WHERE project_id = ? AND operation_id = ?
+                  AND history_only = 0
+                """,
+                (project_id, operation_id),
+            ).fetchone()
+        if row is None or not row["native_session_id"]:
+            return None
+        return str(row["native_session_id"])
+
+    @staticmethod
+    def detach_agent_tasks_for_history(
+        connection: sqlite3.Connection,
+        operation_ids: list[str] | tuple[str, ...],
+    ) -> int:
+        """Fence selected terminal tasks and delete their continuation indexes.
+
+        The caller owns the surrounding transaction so restore and import can
+        combine this with their other concrete lifecycle owners atomically.
+        Durable task rows keep their raw session ids as historical evidence;
+        projection is what stops exporting them as executable continuations.
+        """
+
+        if not connection.in_transaction:
+            raise ValueError("history-only task detachment requires an active transaction")
+        selected = tuple(dict.fromkeys(operation_ids))
+        if not selected:
+            return 0
+        if any(not isinstance(operation_id, str) or not operation_id for operation_id in selected):
+            raise ValueError("history-only task identities must be non-empty strings")
+        selected_json = json.dumps(selected, separators=(",", ":"))
+        rows = connection.execute(
+            """
+            SELECT operation_id, status, native_session_id
+            FROM graph_runs
+            WHERE operation_id IN (SELECT value FROM json_each(?))
+            """,
+            (selected_json,),
+        ).fetchall()
+        found = {str(row["operation_id"]) for row in rows}
+        missing = sorted(set(selected) - found)
+        if missing:
+            raise KeyError(missing[0])
+        nonterminal = sorted(
+            str(row["operation_id"])
+            for row in rows
+            if row["status"] not in {"succeeded", "failed", "interrupted"}
+        )
+        if nonterminal:
+            raise ValueError(
+                "Only terminal tasks can become history-only: " + ", ".join(nonterminal)
+            )
+
+        shared = connection.execute(
+            """
+            SELECT operation_id
+            FROM graph_runs
+            WHERE history_only = 0
+              AND operation_id NOT IN (SELECT value FROM json_each(?))
+              AND native_session_id IN (
+                  SELECT native_session_id
+                  FROM graph_runs
+                  WHERE operation_id IN (SELECT value FROM json_each(?))
+                    AND native_session_id IS NOT NULL
+              )
+            LIMIT 1
+            """,
+            (selected_json, selected_json),
+        ).fetchone()
+        if shared is not None:
+            raise ValueError(
+                "A selected task shares its native session with a task that remains live."
+            )
+
+        changed = connection.execute(
+            """
+            UPDATE graph_runs
+            SET history_only = 1
+            WHERE history_only = 0
+              AND operation_id IN (SELECT value FROM json_each(?))
+            """,
+            (selected_json,),
+        ).rowcount
+        for table in ("writing_sessions", "chat_session_contexts"):
+            connection.execute(
+                f"""
+                DELETE FROM {table}
+                WHERE native_session_id IN (
+                    SELECT native_session_id
+                    FROM graph_runs
+                    WHERE operation_id IN (SELECT value FROM json_each(?))
+                      AND native_session_id IS NOT NULL
+                )
+                """,
+                (selected_json,),
+            )
+        return changed
+
+    def mark_agent_tasks_history_only(
+        self,
+        operation_ids: list[str] | tuple[str, ...],
+    ) -> int:
+        """Apply the history-only fence in one immediate transaction."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return self.detach_agent_tasks_for_history(connection, operation_ids)
+
     def mark_agent_artifact_kept(
         self,
         operation_id: str,
@@ -869,6 +989,7 @@ class AgentTaskStoreMixin:
         graph_update = result.get("graph_update") if isinstance(result, dict) else None
         eligible = (
             data["status"] == "succeeded"
+            and not bool(data.get("history_only"))
             and data["kind"] in {"node_chat", "project_chat"}
             and isinstance(request, dict)
             and request.get("mode") == "work"
@@ -1130,6 +1251,7 @@ class AgentTaskStoreMixin:
                   AND json_extract(request_json, '$.provider') = ?
                   AND json_extract(request_json, '$.run_on') = ?
                   AND native_session_id = ?
+                  AND history_only = 0
                 LIMIT 1
                 """,
                 (
@@ -1519,6 +1641,7 @@ class AgentTaskStoreMixin:
                 WHERE paused.project_id = ?
                     AND paused.kind = ?
                     AND paused.status = 'paused'
+                    AND paused.history_only = 0
                     AND paused.native_session_id IS NOT NULL
                     AND (paused.stage_host IS NULL OR paused.stage_host = ''
                          OR paused.stage_root IS NOT NULL)

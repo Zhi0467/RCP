@@ -109,3 +109,17 @@ test("Experiment run conversations no longer receive special result-view props",
   assert.match(nodeChatSource, /artifact\.artifact_id, "viewer"/);
   assert.match(nodeChatSource, /artifact\.media_type !== "text\/html"/);
 });
+
+test("artifact cards consume backend decisions and do not preflight disabled routes", () => {
+  const artifactActions = nodeChatSource.slice(
+    nodeChatSource.indexOf("const openArtifact = async"),
+    nodeChatSource.indexOf("const openRepositoryFile = async"),
+  );
+  assert.match(artifactActions, /if \(!artifact\.can_open\) return/);
+  assert.match(artifactActions, /if \(!artifact\.can_download\) return/);
+  assert.doesNotMatch(artifactActions, /method: "HEAD"|resourceIsAvailable/);
+  assert.match(nodeChatSource, /!artifact\.available && artifact\.unavailable_reason/);
+  assert.match(nodeChatSource, /artifact\.can_open &&/);
+  assert.match(nodeChatSource, /artifact\.can_download &&/);
+  assert.match(nodeChatSource, /!sourceArtifact\.can_revise/);
+});
