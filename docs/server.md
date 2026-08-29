@@ -88,7 +88,8 @@ sudo install --owner=root --group=root --mode=0755 "uv-x86_64-unknown-linux-gnu/
 uv --version
 ```
 
-Success is `uv 0.12.7`. RCP later invokes this binary as `rcp` to install that
+Success is output beginning with `uv 0.12.7`; the upstream binary appends its
+build hash and date. RCP later invokes this binary as `rcp` to install that
 account's application-owned Python 3.12. Do not create `/home/rcp` or install a
 Python there yourself.
 

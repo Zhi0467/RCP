@@ -58,7 +58,9 @@ jobs:
 
           export PATH="/usr/local/bin:$PATH"
           test "$(node --version)" = "$RCP_NODE_VERSION"
-          test "$(uv --version)" = "uv $RCP_UV_VERSION"
+          read -r RCP_UV_COMMAND RCP_UV_ACTUAL_VERSION _ <<< "$(uv --version)"
+          test "$RCP_UV_COMMAND" = "uv"
+          test "$RCP_UV_ACTUAL_VERSION" = "$RCP_UV_VERSION"
           echo "/usr/local/bin" >> "$GITHUB_PATH"
 
       - name: Build the qualification checkout

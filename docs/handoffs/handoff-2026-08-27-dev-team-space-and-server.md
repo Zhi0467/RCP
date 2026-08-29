@@ -530,6 +530,16 @@ gate are deliberately future work and do not block this plan.
   `origin/main`, this workflow is a post-push qualification rather than a
   pre-merge PR gate; the current human-approved direct-main development boundary
   makes that explicit instead of pretending otherwise.
+- Live qualification run
+  [33225665846](https://github.com/Zhi0467/RCP/actions/runs/33225665846)
+  reached both Ubuntu 22.04 and 24.04 runners but stopped in prerequisite
+  verification before building or invoking RCP. The downloaded Node.js and uv
+  archives both passed their pinned checksums; the workflow then incorrectly
+  required the complete `uv --version` line to equal `uv 0.12.7`, although the
+  upstream binary appends a build hash and date. The workflow now validates the
+  command name and semantic version fields separately. No deploy key was
+  created and no installer-owned host state was reached in this failed attempt;
+  a rerun on the corrected commit remains required.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 
