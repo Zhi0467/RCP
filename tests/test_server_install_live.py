@@ -326,6 +326,7 @@ authorized = AuthorizedHuman(
     user_id=member.user_id,
     display_name=member.display_name,
 )
+repository_ref = parse_github_repository_ref("git@github.com:Zhi0467/RCP.git")
 request = store.create_project_provisioning_request(
     kind="create_team_project",
     authorized_by=authorized,
@@ -344,7 +345,7 @@ request = store.create_project_provisioning_request(
     repositories=[
         ProjectProvisioningRepositoryIntent(
             alias="paper",
-            repository=parse_github_repository_ref("git@github.com:Zhi0467/RCP.git"),
+            repository=repository_ref,
             machine_alias="server",
         )
     ],
@@ -387,7 +388,7 @@ subprocess.run(
         "remote",
         "add",
         "origin",
-        "git@github.com:Zhi0467/RCP.git",
+        repository_ref.ssh_clone_url,
     ),
     check=True,
 )
