@@ -740,6 +740,48 @@ def test_existing_service_account_must_be_unprivileged_and_have_no_sudo_policy(
     assert machine._converge_account() == current
 
 
+def test_new_service_account_uses_stateful_timeout_and_reports_expiry(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], float]] = []
+
+    def missing_account(_name: str):
+        raise KeyError
+
+    def timed_out_useradd(
+        argv: tuple[str, ...],
+        *,
+        timeout: float,
+        **_kwargs,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, timeout))
+        return subprocess.CompletedProcess(argv, 126, "", "command timed out")
+
+    monkeypatch.setattr(server_install.pwd, "getpwnam", missing_account)
+    monkeypatch.setattr(server_install, "_run_process", timed_out_useradd)
+
+    with pytest.raises(InstallRefused, match="did not finish within two minutes"):
+        server_install.LinuxInstallMachine()._converge_account()
+
+    assert calls == [
+        (
+            (
+                "useradd",
+                "--create-home",
+                "--home-dir",
+                "/home/rcp",
+                "--shell",
+                "/bin/bash",
+                "--user-group",
+                "--password",
+                "*NP*",
+                "rcp",
+            ),
+            server_install.SERVER_INSTALL_ACCOUNT_TIMEOUT_SECONDS,
+        )
+    ]
+
+
 def test_service_tooling_installs_and_rechecks_managed_python_for_fresh_account(
     monkeypatch,
 ) -> None:

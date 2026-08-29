@@ -25,6 +25,7 @@ from typing import BinaryIO, Literal, Protocol, TypeVar
 
 from rcp.limits import (
     SERVER_HEALTH_REQUEST_TIMEOUT_SECONDS,
+    SERVER_INSTALL_ACCOUNT_TIMEOUT_SECONDS,
     SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
     SERVER_INSTALL_HEALTH_POLL_INTERVAL_SECONDS,
     SERVER_INSTALL_HEALTH_RESPONSE_MAX_BYTES,
@@ -1148,7 +1149,7 @@ class LinuxInstallMachine:
         try:
             account = pwd.getpwnam(self.layout.service_account)
         except KeyError:
-            _require_command(
+            account_creation = _run_process(
                 (
                     "useradd",
                     "--create-home",
@@ -1161,8 +1162,17 @@ class LinuxInstallMachine:
                     "*NP*",
                     self.layout.service_account,
                 ),
-                "Creating the dedicated rcp account failed. Inspect useradd policy and rerun.",
+                timeout=SERVER_INSTALL_ACCOUNT_TIMEOUT_SECONDS,
             )
+            if account_creation.returncode != 0:
+                if account_creation.stderr == "command timed out":
+                    raise InstallRefused(
+                        "Creating the dedicated rcp account did not finish within two minutes. "
+                        "Inspect useradd, NSS, and home-directory policy, then rerun."
+                    ) from None
+                raise InstallRefused(
+                    "Creating the dedicated rcp account failed. Inspect useradd policy and rerun."
+                ) from None
             try:
                 account = pwd.getpwnam(self.layout.service_account)
             except KeyError as exc:  # pragma: no cover - broken NSS after successful useradd

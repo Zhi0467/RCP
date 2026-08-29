@@ -575,6 +575,18 @@ gate are deliberately future work and do not block this plan.
   on both runners and no deploy-key receipt was present; the next run must both
   prove ownership-safe cleanup and expose or clear the underlying installer
   exit.
+- Corrected run
+  [33231763674](https://github.com/Zhi0467/RCP/actions/runs/33231763674)
+  proved that the bootstrap stays ordinary-user removable and exposed the
+  underlying product failure on both releases: account creation consumed the
+  full generic 30-second read-only probe limit, then returned the generic
+  `useradd` failure event. Account creation is a stateful one-time operation,
+  so it now owns a separate bounded two-minute limit while all ordinary probes
+  remain at 30 seconds; an actual expiry is reported as such with the exact
+  operator inspections. No source-grant pause or deploy-key receipt was
+  reached, and workflow cleanup completed on both runners. A corrected rerun is
+  still required to prove whether hosted `useradd --create-home` completes
+  within that stateful boundary.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 
