@@ -44,6 +44,10 @@ jobs:
           curl --fail --show-error --location --remote-name "https://nodejs.org/dist/${RCP_NODE_VERSION}/${RCP_NODE_ARCHIVE}"
           curl --fail --show-error --location --remote-name "https://nodejs.org/dist/${RCP_NODE_VERSION}/SHASUMS256.txt"
           grep " ${RCP_NODE_ARCHIVE}$" SHASUMS256.txt | sha256sum --check --strict
+          # Hosted runners already contain a mutable global npm tree. Remove
+          # only that disposable-runner copy so this pinned archive is tested
+          # as the clean install documented for a new server.
+          sudo rm -rf -- /usr/local/lib/node_modules/npm
           sudo tar --extract --xz --file "$RCP_NODE_ARCHIVE" --directory /usr/local --strip-components=1 --no-same-owner
 
           RCP_UV_VERSION="0.12.7"
@@ -58,6 +62,7 @@ jobs:
 
           export PATH="/usr/local/bin:$PATH"
           test "$(node --version)" = "$RCP_NODE_VERSION"
+          test -n "$(npm --version)"
           read -r RCP_UV_COMMAND RCP_UV_ACTUAL_VERSION _ <<< "$(uv --version)"
           test "$RCP_UV_COMMAND" = "uv"
           test "$RCP_UV_ACTUAL_VERSION" = "$RCP_UV_VERSION"

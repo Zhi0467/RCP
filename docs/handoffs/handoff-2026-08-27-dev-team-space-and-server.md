@@ -540,6 +540,17 @@ gate are deliberately future work and do not block this plan.
   command name and semantic version fields separately. No deploy key was
   created and no installer-owned host state was reached in this failed attempt;
   a rerun on the corrected commit remains required.
+- Corrected run
+  [33230398233](https://github.com/Zhi0467/RCP/actions/runs/33230398233)
+  passed the Node.js and uv version checks on both releases, then exposed a
+  hosted-runner impurity before RCP was built: extracting the pinned Node.js
+  archive over GitHub's preinstalled `/usr/local/lib/node_modules/npm` retained
+  stale nested packages and made every npm command crash. The workflow now
+  removes only that exact disposable-runner npm directory before extracting the
+  pinned archive and explicitly requires `npm --version` to succeed in the
+  prerequisite step. The secret and live installer were not reached, so no
+  deploy key or RCP-owned host state was created; another corrected rerun
+  remains required.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 
