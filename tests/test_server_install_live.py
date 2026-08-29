@@ -305,6 +305,8 @@ from rcp.api import create_app
 from rcp.config import AGENT_EXECUTION_PROFILES
 from rcp.core.models import AuthorizedHuman
 from rcp.providers import configured_runtime_id
+from rcp.projects import inspect_backup_project_registration
+from rcp.server_ops.backup_checkout import verify_checkout_identities
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.storage import (
@@ -473,6 +475,17 @@ completed = store.transition_project_provisioning_request(
 )
 if card["id"] != completed.proposed_project_id:
     raise RuntimeError("live project finalization changed its reserved identity")
+registration = inspect_backup_project_registration(
+    store.project(completed.proposed_project_id),
+    data_dir=DEFAULT_SERVER_LAYOUT.data_dir,
+    provisioning_requests=store.completed_project_provisioning_requests(
+        completed.proposed_project_id
+    ),
+)
+verify_checkout_identities(registration.recovery)
+canonical_plan = registration.workspace.backup_canonical_source_plan()
+if not canonical_plan.complete:
+    raise RuntimeError("live project canonical backup plan is incomplete")
 print(json.dumps({
     "project_id": completed.proposed_project_id,
     "repository": str(repository),
