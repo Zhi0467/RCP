@@ -579,38 +579,96 @@ def _assert_installed_ownership_and_modes() -> None:
         Path("/home/rcp/rcp-server/credentials"),
         Path("/home/rcp/.ssh"),
     ):
-        _assert_path(path, uid=account.pw_uid, gid=account.pw_gid, mode=0o700)
+        _assert_path(
+            path,
+            uid=account.pw_uid,
+            gid=account.pw_gid,
+            mode=0o700,
+            kind="directory",
+        )
     _assert_path(
         Path("/home/rcp/rcp-server/credentials/source_ed25519"),
         uid=account.pw_uid,
         gid=account.pw_gid,
         mode=0o600,
+        kind="file",
     )
     _assert_path(
         Path("/home/rcp/rcp-server/credentials/source_ed25519.pub"),
         uid=account.pw_uid,
         gid=account.pw_gid,
         mode=0o644,
+        kind="file",
     )
-    _assert_path(Path("/etc/rcp/server.toml"), uid=0, gid=account.pw_gid, mode=0o640)
-    _assert_path(Path("/usr/local/bin/rcp"), uid=0, gid=0, mode=0o755)
-    _assert_path(Path("/etc/systemd/system/rcp.service"), uid=0, gid=0, mode=0o644)
+    _assert_path(
+        Path("/etc/rcp/server.toml"),
+        uid=0,
+        gid=account.pw_gid,
+        mode=0o640,
+        kind="file",
+    )
+    _assert_path(
+        Path("/usr/local/bin/rcp"),
+        uid=0,
+        gid=0,
+        mode=0o755,
+        kind="file",
+    )
+    _assert_path(
+        Path("/etc/systemd/system/rcp.service"),
+        uid=0,
+        gid=0,
+        mode=0o644,
+        kind="file",
+    )
     current = Path("/etc/rcp/current")
-    info = current.lstat()
-    assert stat.S_ISLNK(info.st_mode)
-    assert (info.st_uid, info.st_gid) == (0, 0)
-    target = Path(os.readlink(current))
+    current_uid, current_gid, _current_mode, current_raw_mode = _root_stat(current)
+    assert stat.S_ISLNK(current_raw_mode)
+    assert (current_uid, current_gid) == (0, 0)
+    target_text = _run_checked(("sudo", "-n", "readlink", "--", str(current))).stdout.strip()
+    assert target_text and "\n" not in target_text
+    target = Path(target_text)
     assert target.is_absolute()
     assert target.parent == Path("/home/rcp/rcp-server/releases")
     assert re.fullmatch(r"[0-9a-f]{40}", target.name)
-    assert target.is_dir()
-    assert target.stat().st_uid == account.pw_uid
+    target_uid, _target_gid, _target_mode, target_raw_mode = _root_stat(target)
+    assert stat.S_ISDIR(target_raw_mode)
+    assert target_uid == account.pw_uid
 
 
-def _assert_path(path: Path, *, uid: int, gid: int, mode: int) -> None:
-    info = path.stat()
-    assert (info.st_uid, info.st_gid) == (uid, gid)
-    assert stat.S_IMODE(info.st_mode) == mode
+def _assert_path(path: Path, *, uid: int, gid: int, mode: int, kind: str) -> None:
+    actual_uid, actual_gid, actual_mode, raw_mode = _root_stat(path)
+    assert (actual_uid, actual_gid) == (uid, gid)
+    assert actual_mode == mode
+    if kind == "directory":
+        assert stat.S_ISDIR(raw_mode)
+    else:
+        assert kind == "file"
+        assert stat.S_ISREG(raw_mode)
+
+
+def _root_stat(path: Path) -> tuple[int, int, int, int]:
+    output = _run_checked(
+        (
+            "sudo",
+            "-n",
+            "stat",
+            "--format=%u:%g:%a:%f",
+            "--",
+            str(path),
+        ),
+        timeout=_PTY_TIMEOUT_SECONDS,
+    ).stdout.strip()
+    fields = output.split(":")
+    if len(fields) != 4 or "\n" in output:
+        pytest.fail(f"root stat returned an invalid result for {path}")
+    try:
+        uid, gid = (int(value) for value in fields[:2])
+        mode = int(fields[2], 8)
+        raw_mode = int(fields[3], 16)
+    except ValueError:
+        pytest.fail(f"root stat returned an invalid result for {path}")
+    return uid, gid, mode, raw_mode
 
 
 def _assert_service_process_and_listener() -> None:
@@ -703,7 +761,7 @@ def _assert_password_refused_and_public_key_accepted() -> None:
     finally:
         _run_checked(("sudo", "-n", "rm", "-f", "--", "/home/rcp/.ssh/authorized_keys"))
         shutil.rmtree(key_root)
-    assert not Path("/home/rcp/.ssh/authorized_keys").exists()
+    assert not _root_path_exists_or_is_symlink(Path("/home/rcp/.ssh/authorized_keys"))
 
 
 def _assert_narrow_operator_rule() -> None:
@@ -791,7 +849,7 @@ def _assert_narrow_operator_rule() -> None:
         if operator_created:
             _run_checked(("sudo", "-n", "userdel", "--remove", operator))
         rule_source.unlink(missing_ok=True)
-    assert not target.exists()
+    assert not _root_path_exists_or_is_symlink(target)
     with pytest.raises(KeyError):
         pwd.getpwnam(operator)
 
@@ -916,6 +974,38 @@ def test_pty_runner_supplies_controlling_terminal_for_host_confirmation() -> Non
 
     assert return_code == 0, output
     assert "answer=yes" in output
+
+
+def test_root_stat_uses_noninteractive_sudo_and_parses_gnu_stat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run_checked(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path | None = None,
+        environment: dict[str, str] | None = None,
+        timeout: float = _COMMAND_TIMEOUT_SECONDS,
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, environment, timeout
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "123:456:700:41c0\n", "")
+
+    monkeypatch.setattr(sys.modules[__name__], "_run_checked", fake_run_checked)
+    path = Path("/home/rcp/rcp-server")
+
+    assert _root_stat(path) == (123, 456, 0o700, 0o40700)
+    assert calls == [
+        (
+            "sudo",
+            "-n",
+            "stat",
+            "--format=%u:%g:%a:%f",
+            "--",
+            str(path),
+        )
+    ]
 
 
 def _os_release() -> dict[str, str]:

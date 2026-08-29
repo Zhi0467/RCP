@@ -15,9 +15,10 @@ its one independent audit is complete and every finding is fixed. Live
 qualification is in progress with the protected repository-admin test
 credential: both real disposable-host jobs now clear account and sudo-policy
 validation, managed-Python installation, and source-grant creation, but the
-latest two-release drive exposed that team initialization did not itself seal
-the SQLite file to mode `0600`. The initialization owner and its recovery path
-are fixed; a rerun is pending before F3b is complete. P1 now provides the
+latest two-release drive reached active team-service health and then exposed a
+live-verifier privilege error while inspecting the intentionally private service
+home. Its root inspection boundary is fixed; a rerun is pending before F3b is
+complete. P1 now provides the
 durable, strictly guarded project-provisioning state machine; its one independent
 audit is complete, every finding is fixed, and its exact schema boundary is
 retained in the chained upgrade registry. P1 is complete. D1 now provides the strict
@@ -690,6 +691,18 @@ gate are deliberately future work and do not block this plan.
   Focused tests prove fresh and recovery modes. Both temporary read-only deploy
   keys were revoked and workflow cleanup completed. A corrected two-release
   rerun remains required.
+- Corrected run
+  [33233864357](https://github.com/Zhi0467/RCP/actions/runs/33233864357)
+  ran exact commit `8df884d71deef21f7ee8cfc8eafa41df5c95b926`. The mode fix
+  cleared initialization on both releases; each resumed install enabled the
+  team service and returned the expected loopback health. The live verifier
+  then tried to inspect `/home/rcp/rcp-server` with ordinary-runner
+  `Path.stat()`. Permission denial is the correct result because `/home/rcp` is
+  mode `0700`. All remaining private/root ownership, mode, symlink-target, and
+  removal assertions now use bounded `sudo -n stat`, `readlink`, or the existing
+  exact existence probe; a focused parser test pins the GNU stat invocation and
+  result. Both temporary read-only deploy keys were revoked and workflow cleanup
+  completed. A corrected two-release rerun remains required.
 
 #### 2026-08-28 — P1 durable provisioning boundary implemented and audited
 
