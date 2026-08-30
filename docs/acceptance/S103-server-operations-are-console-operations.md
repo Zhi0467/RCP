@@ -17,6 +17,7 @@ covered_by:
   - tests/test_team_project_provisioning.py
   - tests/test_server_member_removal_storage.py
   - tests/test_server_member_removal.py
+  - tests/test_server_restore_activation.py
 invariants: [1, 8]
 last_checked: >-
   2026-08-29 — install, update preparation, copied-state candidate rehearsal,
@@ -29,9 +30,12 @@ last_checked: >-
   steps because GitHub rejected hosted runners for the account's payment or
   spending-limit state. Member removal now has hermetic exact-preview,
   access-fence, graceful-drain, crash-reentry, and installed-service startup
-  reconciliation coverage. A passing 22.04/24.04 rerun, restore activation, the
-  live member-removal drive, the complete remote drive, and the full scenario
-  remain pending.
+  reconciliation coverage. A passing 22.04/24.04 update rerun, the live restore
+  and member-removal drives, the complete remote drive, and the full scenario
+  remain pending. Restore activation is now hermetically implemented: exact
+  authority/member confirmation, offline stale-member removal, closed startup,
+  root-only private activation, and durable readback pass focused integration
+  coverage. Its fresh-host live drive remains pending.
 ---
 
 # Dangerous operations need the machine, not a login

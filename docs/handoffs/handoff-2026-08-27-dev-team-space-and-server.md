@@ -4,8 +4,9 @@ Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
 F2, F3a, F3b, F4, F5, F6a, F6b, F6c, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
-O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c, O5a, and O5b are
-complete. D2
+O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c, O4d, O5a, and O5b
+are complete hermetically. O4d's fresh-host Ubuntu restore drive remains part of
+the live acceptance work. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; a 2026-08-29 local-HTTPS spike then proved that candidate mechanism on
 one host, so D3-D5 are unblocked in principle while D2 itself remains
@@ -125,7 +126,10 @@ The remaining seams are also concrete:
   restore now validates and installs one stopped, detached SQLite candidate,
   creates fresh per-repository keys, reconstructs exact local or SSH checkouts,
   rebinds the stopped catalog, and publishes/replay-verifies protected project
-  state, but does not yet review replacement authority or activate the service.
+  state, requires digest-bound old-authority and retained-member reviews, and
+  activates only through a root-only private handshake behind closed HTTP,
+  background, and startup-effect gates. Its fresh-host Ubuntu drive remains
+  open.
   Member removal now provides an exact confirmed inventory, one atomic access
   fence, graceful task/episode draining, durable tombstones, and startup/CLI
   reconciliation;
@@ -3757,8 +3761,8 @@ lifespan that leaves all operational rows unchanged. The complete backend suite,
 the focused lifecycle-owner suites, 440 Web tests, the Web build, Ruff, and
 documentation checks are green. O4a owns archive validation and the
 stopped-service SQLite candidate, and O4b now owns fresh-key checkout
-reconstruction and stopped catalog rebinding. O4c-O4d still own publication,
-authority review, and activation.
+reconstruction and stopped catalog rebinding. O4c-O4d now supply publication,
+authority review, and fenced activation.
 
 Own:
 
@@ -3819,8 +3823,8 @@ claims; they return to a structured explicit CLI re-entry action. Backup and
 update operations are machine-local state excluded from the backup archive, so
 there is no archived mid-step lease to detach. O4a instead records that those
 operations were not restored, serializes against any live owner before
-journaling, and blocks either operation after the journal exists. O4c-O4d remain
-required before the restored server can become usable or serve any project.
+journaling, and blocks either operation after the journal exists. O4c-O4d now
+complete those remaining boundaries before the restored server can serve.
 
 Own:
 
@@ -3960,8 +3964,8 @@ or its journal receipt safely re-enters the same exact writes and replay.
 Explicitly uncaptured projects remain cataloged with their archive diagnostic
 and do not block protected projects. Source checkouts, derived archive outputs,
 attachments, stages, provider/SSH homes or credentials, and caches are never
-selected for extraction. The command still leaves systemd stopped; O4d is the
-next restore packet and owns old-authority/member review, activation, final live
+selected for extraction. This publication phase still leaves systemd stopped;
+O4d now owns the subsequent old-authority/member review, activation, final live
 readback, and journal completion.
 
 Focused verification covers main and branch replay, chat, Paper, nested facts,
@@ -4005,6 +4009,44 @@ does not activate the server.
 
 ### O4d — Old-authority review and replacement activation
 
+**Status (2026-08-29): implemented and verified hermetically; fresh-host live
+drive pending.** Restore now extends the existing archive-bound journal through
+`authority_reviewed`, `member_roster_reviewed`, `activation_ready`, and
+`complete`. The console renders the archive time, protected journal path,
+credential/route counts, the exact authority digest, and separate commands for
+a destroyed old machine or a fully fenced/revoked one. It then renders the exact
+active-member/permanent-token-id roster in bounded chunks. A known-stale member
+is removed only through O5's existing atomic fence and completion transition
+while the service remains stopped; the last-member/project guards still apply,
+and removal always forces a new roster digest and confirmation.
+
+Activation first persists the reviewed boundary and proves systemd stopped and
+disabled. The replacement starts while the unit remains disabled, with HTTP and
+background admission closed and the shared startup-effect fence active. Only
+the root-authenticated private control operation can verify the exact journal
+digest, space, running commit, captured project reachability/revisions,
+explicitly unavailable projects, and an empty startup-recovery plan. It durably
+writes the activation readback before opening deferred runtime and HTTP
+admission, and only then enables the
+already-running unit. If the root coordinator disappears before that commit, a
+bounded startup timer exits cleanly; the disabled `Restart=on-failure` unit stays
+stopped for exact re-entry. Any failed handshake stops and disables systemd; an
+overlapping update journal refuses startup. Completed restore state is no longer
+an unfinished-operation blocker, while the exact journal/readback remains
+available for idempotent CLI re-entry and audit.
+
+Focused coverage is in `tests/test_server_restore_activation.py`, alongside the
+existing CLI, control, restore-state, checkout, publication, member-removal, and
+update-cutover suites. The integration tests start a real app lifespan behind
+closed HTTP, traverse the actual Unix control socket as root, prove systemd is
+started before and enabled only after the durable private commit, and only then
+receive healthy HTTP. They also prove an uncommitted replacement requests clean
+termination at the bounded timeout. The same file proves changed authority
+confirmation fails and stale-member removal produces a new exact roster. A real
+source-built Ubuntu restore remains required by S104. The complete backend
+suite, 440 Web tests, Web production build, repository Ruff check, and full
+pre-commit baseline are green on this packet and the current Q11 groundwork.
+
 Own:
 
 - final review, activation, and readback orchestration in
@@ -4013,7 +4055,8 @@ Own:
   `src/rcp/server_ops/cli.py`;
 - stopped-to-running service coordination through
   `src/rcp/server_ops/control.py`; and
-- `tests/test_server_restore.py` plus the fresh-host live restore drill.
+- `tests/test_server_restore_activation.py` plus the fresh-host live restore
+  drill.
 
 Before serving, render and require confirmation of the concrete old-authority
 checklist: destroy or fence the old server data; revoke the old source and
@@ -4052,9 +4095,10 @@ provider-native authentication is absent. In that case backend readiness keeps
 dispatch and chat continuation unavailable with the exact provider-native login
 action; RCP neither performs that login nor treats it as failed data restore.
 Only after every O4a-O4c check and both explicit reviews pass may this packet
-start the replacement service, verify its space/commit/project readback, and
-open admission. That readback is the only transition that completes the restore
-journal. A crash before it leaves the service stopped and the same operation
+start the disabled replacement service, verify its space/commit/project
+readback, open admission, and enable the unit. That readback is the only
+transition that completes the restore journal. A crash before it leaves the
+service stopped after the bounded startup timeout and the same operation
 resumable; a retry cannot skip either review, duplicate publication, or create a
 second space.
 

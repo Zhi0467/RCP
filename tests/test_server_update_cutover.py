@@ -750,6 +750,37 @@ def test_system_service_seam_proves_restore_stop_and_disable(tmp_path: Path) -> 
     assert state == {"active": "inactive", "pid": "0", "enabled": "disabled"}
 
 
+def test_system_service_enables_an_already_running_restore_without_restart(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    state = {"active": "active", "pid": "41", "enabled": "disabled"}
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if argv[1] == "enable":
+            state["enabled"] = "enabled"
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if "ActiveState" in argv[2]:
+            value = state["active"]
+        elif "MainPID" in argv[2]:
+            value = state["pid"]
+        else:
+            value = state["enabled"]
+        return subprocess.CompletedProcess(argv, 0, value + "\n", "")
+
+    controller = InstalledSystemServiceController(
+        layout,
+        runner=runner,
+        root_identity=(os.geteuid(), os.getegid()),
+    )
+
+    assert controller.enable() == 41
+    assert calls[0] == ("systemctl", "enable", layout.service_unit_name)
+    assert all("--now" not in call for call in calls)
+
+
 class _CutoverActions:
     def __init__(
         self,

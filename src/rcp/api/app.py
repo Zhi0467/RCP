@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
+import signal
 import sys
 import threading
 import time
 from collections.abc import AsyncIterator
 from contextlib import aclosing, asynccontextmanager, suppress
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Literal
@@ -136,6 +140,7 @@ from rcp.server_ops.control import (
     ServerControlProviderCheckResult,
     ServerControlProviderPlanResult,
     ServerControlRequest,
+    ServerControlRestoreResult,
     ServerControlServer,
     ServerControlUpdateResult,
 )
@@ -183,6 +188,12 @@ from rcp.watchers import (
 from rcp.web_assets import web_dist_path
 
 logger = logging.getLogger(__name__)
+
+
+def _terminate_uncommitted_restore_process() -> None:
+    """Exit cleanly so Restart=on-failure leaves the disabled unit stopped."""
+
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 def _installed_rollback_journals(update_root: Path) -> tuple[Path, ...]:
@@ -292,6 +303,7 @@ def create_app(
     if identity.data_dir_id != data_dir_identity(app_data):
         raise ValueError("Server metadata does not identify this RCP data directory.")
     update_runtime_boundary: UpdateRuntimeBoundary | None = None
+    restore_runtime_boundary = None
     installed_update_layout = app_data == server_layout.data_dir.resolve(strict=False)
     if installed_update_layout and server_layout.restore_operations_root.exists():
         from rcp.server_ops.restore import RestoreRefused, unfinished_restore_operation
@@ -307,9 +319,11 @@ def create_app(
                 "server restore."
             ) from exc
         if pending_restore is not None:
-            raise RuntimeError(
-                "Installed replacement restore is incomplete; run sudo rcp server restore."
-            )
+            if pending_restore.phase != "activation_ready":
+                raise RuntimeError(
+                    "Installed replacement restore is incomplete; run sudo rcp server restore."
+                )
+            restore_runtime_boundary = pending_restore
     if installed_update_layout and server_layout.update_checkpoints_root.exists():
         pending_rollback_journals = _installed_rollback_journals(
             server_layout.update_checkpoints_root
@@ -330,13 +344,26 @@ def create_app(
             layout=server_layout,
             expected_uid=os.geteuid(),
         )
-        if update_runtime_boundary is not None:
-            runtime_admission_gate = RuntimeAdmissionGate(closed=True)
-            background_admission_gate = RuntimeAdmissionGate(closed=True)
+        if update_runtime_boundary is not None and restore_runtime_boundary is not None:
+            raise RuntimeError(
+                "Installed update and restore activation boundaries overlap; keep the service "
+                "stopped and inspect both journals."
+            )
+        if update_runtime_boundary is not None or restore_runtime_boundary is not None:
+            admission_reason = (
+                "Server restore activation"
+                if restore_runtime_boundary is not None
+                else "Server update maintenance"
+            )
+            runtime_admission_gate = RuntimeAdmissionGate(closed=True, reason=admission_reason)
+            background_admission_gate = RuntimeAdmissionGate(closed=True, reason=admission_reason)
             if startup_effect_fence is None:
-                startup_effect_fence = StartupEffectFence(
-                    f"server update {update_runtime_boundary.receipt.operation_id}"
+                reason = (
+                    f"server restore {restore_runtime_boundary.operation_id}"
+                    if restore_runtime_boundary is not None
+                    else f"server update {update_runtime_boundary.receipt.operation_id}"
                 )
+                startup_effect_fence = StartupEffectFence(reason)
     store = AppStore(app_data / "rcp.sqlite3")
     space_id = store.space_id
     space_kind = store.space_kind
@@ -348,6 +375,7 @@ def create_app(
     update_service_coordinator: UpdateServiceCoordinator | None = None
     startup_effect_runtime_event = threading.Event()
     startup_effect_release_error: list[str | None] = [None]
+    restore_activation_committed = threading.Event()
 
     def capture_sqlite_for_control() -> ServerControlBackupCaptureResult:
         assert backup_capture_coordinator is not None
@@ -394,6 +422,147 @@ def create_app(
             verification_sha256=verification_sha256,
         )
 
+    def commit_restore_activation(
+        *,
+        operation_id: str,
+        boundary_sha256: str,
+    ) -> ServerControlRestoreResult:
+        from rcp.server_ops.restore import (
+            RestoreActivationProjectReadback,
+            RestoreActivationReadback,
+            RestoreRefused,
+            read_restore_journal,
+            restore_activation_boundary,
+            write_restore_journal,
+        )
+
+        if restore_runtime_boundary is None or startup_effect_fence is None:
+            raise ServerControlError(
+                "operation_refused",
+                "This process does not own a replacement restore activation boundary.",
+            )
+        try:
+            current = read_restore_journal(server_layout, expected_uid=os.geteuid())
+        except (OSError, RestoreRefused) as exc:
+            raise ServerControlError(
+                "operation_refused", "The replacement restore journal is unavailable."
+            ) from exc
+        if current.operation_id != operation_id or current.phase != "activation_ready":
+            raise ServerControlError(
+                "operation_refused", "The replacement restore operation or phase changed."
+            )
+        if restore_activation_boundary(current) != boundary_sha256:
+            raise ServerControlError(
+                "operation_refused", "The replacement activation boundary changed."
+            )
+        if not startup_effect_fence.active or startup_effect_fence.attempted_effects:
+            raise ServerControlError(
+                "operation_refused",
+                "The replacement process crossed its startup-effect fence before verification.",
+            )
+        if not runtime_admission_gate.closed or not background_admission_gate.closed:
+            raise ServerControlError(
+                "operation_refused", "Replacement admission opened before verification."
+            )
+        startup = background_tasks.plan_startup_recovery().as_dict()
+        if any(startup.values()):
+            raise ServerControlError(
+                "operation_refused",
+                "Detached work still appears recoverable on the replacement server.",
+            )
+        projects: list[RestoreActivationProjectReadback] = []
+        publications = {item.project_id: item for item in current.project_publications}
+        for capture in sorted(current.manifest.projects, key=lambda item: item.project_id):
+            record = store.project(capture.project_id)
+            if record is None:
+                raise ServerControlError(
+                    "operation_refused", "A restored project disappeared before activation."
+                )
+            if capture.status == "uncaptured":
+                if record.reachable:
+                    raise ServerControlError(
+                        "operation_refused",
+                        "An explicitly uncaptured project became reachable before activation.",
+                    )
+                continue
+            publication = publications.get(capture.project_id)
+            if publication is None or not record.reachable:
+                raise ServerControlError(
+                    "operation_refused", "A captured project failed final activation readback."
+                )
+            projects.append(
+                RestoreActivationProjectReadback(
+                    project_id=capture.project_id,
+                    main_revision=publication.main_revision,
+                    reachable=True,
+                )
+            )
+        if identity.running_commit is None:
+            raise ServerControlError(
+                "operation_refused", "The installed replacement has no running source commit."
+            )
+        startup_sha256 = hashlib.sha256(
+            json.dumps(
+                startup,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        readback = RestoreActivationReadback(
+            instance_id=identity.instance_id,
+            pid=identity.pid,
+            data_dir_id=identity.data_dir_id,
+            space_id=space_id,
+            running_commit=identity.running_commit,
+            startup_recovery_sha256=startup_sha256,
+            projects=tuple(projects),
+            activated_at=datetime.now(UTC),
+        )
+        completed = current.model_copy(
+            update={
+                "phase": "complete",
+                "activation_readback": readback,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        write_restore_journal(
+            completed,
+            server_layout,
+            uid=os.geteuid(),
+            gid=os.getegid(),
+        )
+        try:
+            background_admission_gate.reopen()
+            startup_effect_fence.release()
+            if not startup_effect_runtime_event.wait(SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS):
+                raise RuntimeError("deferred replacement startup did not complete")
+            if startup_effect_release_error[0]:
+                raise RuntimeError(startup_effect_release_error[0])
+            runtime_admission_gate.reopen()
+            restore_activation_committed.set()
+        except BaseException as exc:
+            write_restore_journal(
+                current.model_copy(update={"updated_at": datetime.now(UTC)}),
+                server_layout,
+                uid=os.geteuid(),
+                gid=os.getegid(),
+            )
+            raise ServerControlError(
+                "operation_refused",
+                "The verified replacement could not start its deferred runtime.",
+            ) from exc
+        return ServerControlRestoreResult(
+            instance_id=identity.instance_id,
+            pid=identity.pid,
+            data_dir_id=identity.data_dir_id,
+            space_id=space_id,
+            operation_id=operation_id,
+            boundary_sha256=boundary_sha256,
+            readback=readback,
+        )
+
     if identity.control_socket is not None:
         if space_kind != "team" or identity.owner_kind != "cli":
             raise ValueError(
@@ -413,6 +582,7 @@ def create_app(
             | ServerControlProjectStepResult
             | ServerControlBackupCaptureResult
             | ServerControlUpdateResult
+            | ServerControlRestoreResult
         ):
             update_operations = {
                 "update_maintenance_enter",
@@ -420,7 +590,8 @@ def create_app(
                 "update_fence_release",
                 "update_maintenance_abort",
             }
-            if request.operation not in {"probe", *update_operations}:
+            root_operations = {*update_operations, "restore_activation_commit"}
+            if request.operation not in {"probe", *root_operations}:
                 try:
                     background_admission_gate.require_open(
                         f"server-control operation {request.operation}"
@@ -430,13 +601,13 @@ def create_app(
             if (
                 startup_effect_fence is not None
                 and startup_effect_fence.active
-                and request.operation not in {"probe", *update_operations}
+                and request.operation not in {"probe", *root_operations}
             ):
                 startup_effect_fence.require_open(f"server-control operation {request.operation}")
-            if request.operation in update_operations and _peer.uid != 0:
+            if request.operation in root_operations and _peer.uid != 0:
                 raise ServerControlError(
                     "operation_refused",
-                    "Update maintenance requires the root server coordinator.",
+                    "This maintenance operation requires the root server coordinator.",
                 )
             if request.operation in update_operations and update_service_coordinator is None:
                 raise ServerControlError(
@@ -501,6 +672,13 @@ def create_app(
                     )
                 case "backup_sqlite_capture":
                     return capture_sqlite_for_control()
+                case "restore_activation_commit":
+                    assert request.selector_id is not None
+                    assert request.boundary_sha256 is not None
+                    return commit_restore_activation(
+                        operation_id=request.selector_id,
+                        boundary_sha256=request.boundary_sha256,
+                    )
                 case "update_maintenance_enter":
                     assert update_service_coordinator is not None
                     assert request.selector_id is not None
@@ -1382,6 +1560,7 @@ def create_app(
                 startup_effect_runtime_event.set()
 
         release_task: asyncio.Task[None] | None = None
+        restore_timeout_task: asyncio.Task[None] | None = None
         fenced_startup = startup_effect_fence is not None and startup_effect_fence.active
         # Preserve ordinary startup's fail-fast boundary: if recovery fails, do
         # not run the shutdown path over state that never completed startup.
@@ -1413,8 +1592,29 @@ def create_app(
 
                 release_task = asyncio.create_task(resume_after_release())
                 app.state.startup_effect_release_task = release_task
+                if restore_runtime_boundary is not None:
+
+                    async def stop_uncommitted_restore_after_timeout() -> None:
+                        await asyncio.sleep(SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS)
+                        if restore_activation_committed.is_set():
+                            return
+                        logger.error(
+                            "Restore activation %s was not committed before its bounded startup "
+                            "timeout; stopping the disabled replacement process.",
+                            restore_runtime_boundary.operation_id,
+                        )
+                        _terminate_uncommitted_restore_process()
+
+                    restore_timeout_task = asyncio.create_task(
+                        stop_uncommitted_restore_after_timeout()
+                    )
+                    app.state.restore_activation_timeout_task = restore_timeout_task
             yield
         finally:
+            if restore_timeout_task is not None and not restore_timeout_task.done():
+                restore_timeout_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await restore_timeout_task
             if release_task is not None and not release_task.done():
                 release_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -1466,6 +1666,7 @@ def create_app(
     app.state.startup_effect_runtime_event = startup_effect_runtime_event
     app.state.startup_effect_release_task = None
     app.state.startup_effect_release_error = None
+    app.state.restore_activation_timeout_task = None
     app.state.update_runtime_boundary = update_runtime_boundary
     app.state.runtime_admission_gate = runtime_admission_gate
     app.state.background_admission_gate = background_admission_gate
@@ -1489,7 +1690,11 @@ def create_app(
                 status_code=503,
                 content={
                     "detail": {
-                        "code": "server_update_maintenance",
+                        "code": (
+                            "server_restore_activation"
+                            if restore_runtime_boundary is not None
+                            else "server_update_maintenance"
+                        ),
                         "message": str(exc),
                     }
                 },

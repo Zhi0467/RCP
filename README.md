@@ -115,20 +115,22 @@ verification commands are in [docs/desktop.md](docs/desktop.md).
 
 ## Install the team server from source
 
-> **Install is live-qualified; final restore activation is not yet implemented.**
+> **Install is live-qualified; restore is hermetically complete and awaits its
+> fresh-host live drive.**
 > `rcp server install`, `doctor`, `provider check`, `project provision`,
 > `backup configure`, `backup run`, `member remove`, and `update` are concrete
 > and share one
 > interactive/machine-readable progress contract. Install is proven on
-> disposable Ubuntu 22.04 and 24.04 hosts. `restore` currently validates an
+> disposable Ubuntu 22.04 and 24.04 hosts. `restore` validates an
 > encrypted archive, installs a stopped detached SQLite candidate, creates fresh
 > repository deploy keys, reconstructs local or SSH central checkouts from Git,
 > rebinds the stopped project catalog, and publishes/replay-verifies captured
 > histories, chats, Paper, facts, and referenced kept files before making each
-> protected project readable. It pauses with exact GitHub grant
-> instructions when the new key needs repository-admin approval. It cannot yet
-> review replacement authority/member credentials, activate the service, or
-> complete the restore journal.
+> protected project readable. It pauses with exact GitHub grant instructions
+> when the new key needs repository-admin approval, then requires explicit old
+> server-authority and retained-member/token review. It activates behind closed
+> admission through a root-only private readback and completes the journal
+> before serving.
 > `project transfer-import` still stops with an explicit unavailable result.
 > Every command below is terminal-only; no desktop wizard drives them yet.
 
@@ -229,6 +231,30 @@ crash or still-settling provider turn leaves an explicit removal-in-progress
 record; rerunning the same command and `rcp server doctor` show and reconcile
 the exact work still live. Historical attribution remains under an inactive
 member tombstone.
+
+Restore one verified backup only onto the installed server's fresh, empty data
+directory. Keep the native `age` recovery identity in a root-protected file and
+start with:
+
+```bash
+sudo rcp server restore /absolute/path/lab.tar.age \
+  --identity-file /absolute/protected/path/age-identity.txt
+```
+
+The command first prints the installed data directory and an exact
+`--confirm-data-dir` resume command. Later pauses print the GitHub deploy-key
+grant work, the archived server-authority checklist, and the exact surviving
+member/permanent-token-id roster. Choose the printed old-machine disposition
+only after destroying the old server or fencing it and revoking every listed
+Git/SSH/provider authority. If a captured member credential is known stale, use
+the printed `--remove-stale-member <member-id>` command; RCP applies the ordinary
+last-member and project guards offline and then requires a new roster digest.
+The final command starts the still-disabled replacement behind closed admission,
+verifies no captured task, episode, watcher, report, or child can recover,
+records exact space/commit/project readback, and only then serves HTTP and
+enables the unit. If the root command disappears first, the fenced process exits
+cleanly after its bounded timeout and stays stopped. Any other failed activation
+stops and disables systemd for the same journaled retry.
 
 Later source updates are owned by:
 

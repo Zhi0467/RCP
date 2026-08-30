@@ -11,6 +11,10 @@ covered_by:
   - tests/test_backup_encryption.py
   - tests/test_backup_retention.py
   - tests/test_server_doctor.py
+  - tests/test_server_restore_state.py
+  - tests/test_server_restore_checkouts.py
+  - tests/test_server_restore_projects.py
+  - tests/test_server_restore_activation.py
 invariants: [1, 2, 7]
 ---
 
@@ -27,8 +31,11 @@ remote export, and per-project failure isolation. Deterministic `age` 1.x
 encryption, atomic publication, ciphertext readback, immutable receipts, durable
 status, proven retention, doctor projection, and first-run timer activation are
 also covered hermetically, including one real upstream `age` 1.3.1
-encrypt/decrypt drive. Restore and the full live Linux/SSH/systemd no-pause drive
-are not yet implemented. Its boundary is in
+encrypt/decrypt drive. Replacement restore is also complete hermetically through
+archive verification, lifecycle detachment, fresh checkout reconstruction,
+canonical publication/replay, exact authority/member review, offline stale-member
+removal, and fenced durable activation. The full live Linux/SSH/systemd no-pause
+and fresh-host restore drives remain pending. Its boundary is in
 [Server and machine operations](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
 
 An earlier design had the server delay dispatch and delay applying results for

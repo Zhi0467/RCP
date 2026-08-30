@@ -2099,6 +2099,48 @@ class InstalledSystemServiceController:
             )
         return pid
 
+    def enable_and_start(self) -> int:
+        self._command(("systemctl", "enable", "--now", self.layout.service_unit_name))
+        if self._property("UnitFileState") != "enabled":
+            raise InstalledServiceControlRefused(
+                "systemd did not prove the RCP service enabled for replacement activation."
+            )
+        active = self._property("ActiveState")
+        main_pid = self._property("MainPID")
+        try:
+            pid = int(main_pid)
+        except ValueError as exc:
+            raise InstalledServiceControlRefused(
+                "systemd returned an invalid RCP replacement process identity."
+            ) from exc
+        if active != "active" or pid <= 0:
+            raise InstalledServiceControlRefused(
+                "systemd did not prove the RCP replacement service active."
+            )
+        return pid
+
+    def enable(self) -> int:
+        """Enable an already-running replacement without restarting it."""
+
+        self._command(("systemctl", "enable", self.layout.service_unit_name))
+        if self._property("UnitFileState") != "enabled":
+            raise InstalledServiceControlRefused(
+                "systemd did not prove the active RCP replacement enabled."
+            )
+        active = self._property("ActiveState")
+        main_pid = self._property("MainPID")
+        try:
+            pid = int(main_pid)
+        except ValueError as exc:
+            raise InstalledServiceControlRefused(
+                "systemd returned an invalid active RCP process identity."
+            ) from exc
+        if active != "active" or pid <= 0:
+            raise InstalledServiceControlRefused(
+                "systemd did not prove the enabled RCP replacement remained active."
+            )
+        return pid
+
     def switch_current(self, *, expected: Path, target: Path) -> None:
         expected = expected.resolve(strict=False)
         target = target.resolve(strict=False)

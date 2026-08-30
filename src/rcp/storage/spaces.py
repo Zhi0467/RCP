@@ -60,6 +60,7 @@ from rcp.storage.models import (  # noqa: F401
     StoredWatcherRecord,
     TeamAuthenticationError,
     TeamInvitationRecord,
+    TeamMemberAuthorityRecord,
     WatcherClaimConflict,
     WatcherContinuation,
     WatcherDeliveryRecord,
@@ -139,6 +140,44 @@ class SpaceStoreMixin:
                 "SELECT * FROM space_users WHERE user_id = ?", (user_id,)
             ).fetchone()
         return self._space_user_record(row) if row is not None else None
+
+    def active_team_member_authority(self) -> tuple[TeamMemberAuthorityRecord, ...]:
+        """Return every active member and permanent token id in one read boundary."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            rows = connection.execute(
+                """
+                SELECT user.user_id, user.display_name, token.token_id
+                FROM space_users AS user
+                JOIN team_member_tokens AS token ON token.user_id = user.user_id
+                WHERE user.identity_kind = 'team_member'
+                  AND user.removal_started_at IS NULL
+                  AND user.removed_at IS NULL
+                  AND token.revoked_at IS NULL
+                ORDER BY user.user_id, token.token_id
+                """
+            ).fetchall()
+        members: dict[str, dict[str, object]] = {}
+        for row in rows:
+            member_id = str(row["user_id"])
+            member = members.setdefault(
+                member_id,
+                {"display_name": row["display_name"], "active_token_ids": []},
+            )
+            token_ids = member["active_token_ids"]
+            assert isinstance(token_ids, list)
+            token_ids.append(str(row["token_id"]))
+        return tuple(
+            TeamMemberAuthorityRecord(
+                member_id=member_id,
+                display_name=(
+                    str(values["display_name"]) if values["display_name"] is not None else None
+                ),
+                active_token_ids=tuple(values["active_token_ids"]),
+            )
+            for member_id, values in members.items()
+        )
 
     def member_removal_preview(self, user_id: str) -> MemberRemovalPreviewRecord:
         """Read one complete consequence set without changing member authority."""

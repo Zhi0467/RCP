@@ -14,6 +14,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, suppress
@@ -27,6 +28,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from rcp.limits import (
     BACKUP_COPY_BUFFER_BYTES,
     BACKUP_RECEIPT_MAX_BYTES,
+    MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
+    SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     SERVER_RESTORE_DECRYPT_TIMEOUT_SECONDS,
 )
 from rcp.server_ops.backup import BACKUP_ARCHIVE_FORMAT, require_age_1x
@@ -303,6 +306,142 @@ class RestoreProjectPublication(_StrictModel):
         return _digest(value, label="published project capture digest")
 
 
+RestoreOldAuthorityDisposition = Literal[
+    "old-machine-destroyed", "old-machine-fenced-and-credentials-revoked"
+]
+
+
+class RestoreOldAuthorityReview(_StrictModel):
+    boundary_sha256: str
+    disposition: RestoreOldAuthorityDisposition
+    reviewed_by: str = Field(min_length=1, max_length=400)
+    reviewed_at: datetime
+
+    @field_validator("boundary_sha256")
+    @classmethod
+    def validate_boundary(cls, value: str) -> str:
+        return _digest(value, label="old-authority review boundary")
+
+    @field_validator("reviewed_at")
+    @classmethod
+    def validate_time(cls, value: datetime) -> datetime:
+        if value.utcoffset() is None:
+            raise ValueError("old-authority review time requires a UTC offset")
+        return value
+
+
+class RestoreMemberRosterEntry(_StrictModel):
+    member_id: str
+    display_name: str | None = Field(default=None, max_length=240)
+    active_token_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+
+    @field_validator("member_id")
+    @classmethod
+    def validate_member_id(cls, value: str) -> str:
+        parsed = uuid.UUID(value)
+        if parsed.version != 4 or str(parsed) != value:
+            raise ValueError("restore member id must be a canonical UUID4")
+        return value
+
+    @field_validator("active_token_ids")
+    @classmethod
+    def validate_token_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value or value != tuple(sorted(set(value))):
+            raise ValueError("restore member authority requires sorted active token ids")
+        for token_id in value:
+            parsed = uuid.UUID(token_id)
+            if parsed.version != 4 or str(parsed) != token_id:
+                raise ValueError("restore token id must be a canonical UUID4")
+        return value
+
+
+class RestoreMemberRosterReview(_StrictModel):
+    boundary_sha256: str
+    members: tuple[RestoreMemberRosterEntry, ...] = Field(
+        max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS
+    )
+    reviewed_by: str = Field(min_length=1, max_length=400)
+    reviewed_at: datetime
+
+    @field_validator("boundary_sha256")
+    @classmethod
+    def validate_boundary(cls, value: str) -> str:
+        return _digest(value, label="member-roster review boundary")
+
+    @field_validator("reviewed_at")
+    @classmethod
+    def validate_time(cls, value: datetime) -> datetime:
+        if value.utcoffset() is None:
+            raise ValueError("member-roster review time requires a UTC offset")
+        return value
+
+    @model_validator(mode="after")
+    def validate_members(self) -> RestoreMemberRosterReview:
+        ids = tuple(item.member_id for item in self.members)
+        if not ids or ids != tuple(sorted(set(ids))):
+            raise ValueError("restore member roster must be nonempty, sorted, and unique")
+        return self
+
+
+class RestoreActivationProjectReadback(_StrictModel):
+    project_id: str
+    main_revision: int = Field(ge=0)
+    reachable: bool
+
+    @field_validator("project_id")
+    @classmethod
+    def validate_project_id(cls, value: str) -> str:
+        parsed = uuid.UUID(value)
+        if parsed.version != 4 or str(parsed) != value:
+            raise ValueError("restore activation project id must be a canonical UUID4")
+        return value
+
+
+class RestoreActivationReadback(_StrictModel):
+    instance_id: str
+    pid: int = Field(gt=0)
+    data_dir_id: str
+    space_id: str
+    running_commit: str
+    startup_recovery_sha256: str
+    projects: tuple[RestoreActivationProjectReadback, ...]
+    activated_at: datetime
+
+    @field_validator("instance_id", "space_id")
+    @classmethod
+    def validate_id(cls, value: str, info) -> str:
+        parsed = uuid.UUID(value)
+        if parsed.version != 4 or str(parsed) != value:
+            raise ValueError(f"restore activation {info.field_name} must be a canonical UUID4")
+        return value
+
+    @field_validator("data_dir_id", "startup_recovery_sha256")
+    @classmethod
+    def validate_sha256(cls, value: str, info) -> str:
+        return _digest(value, label=f"restore activation {info.field_name}")
+
+    @field_validator("running_commit")
+    @classmethod
+    def validate_commit(cls, value: str) -> str:
+        if len(value) != 40 or any(character not in _FULL_COMMIT for character in value):
+            raise ValueError("restore activation commit must be a full lowercase Git object id")
+        return value
+
+    @field_validator("activated_at")
+    @classmethod
+    def validate_time(cls, value: datetime) -> datetime:
+        if value.utcoffset() is None:
+            raise ValueError("restore activation time requires a UTC offset")
+        return value
+
+    @model_validator(mode="after")
+    def validate_projects(self) -> RestoreActivationReadback:
+        ids = tuple(item.project_id for item in self.projects)
+        if ids != tuple(sorted(set(ids))):
+            raise ValueError("restore activation projects must be sorted and unique")
+        return self
+
+
 class RestoreOperationJournal(_StrictModel):
     schema_version: Literal[RESTORE_JOURNAL_SCHEMA_VERSION] = RESTORE_JOURNAL_SCHEMA_VERSION
     operation_id: str
@@ -328,12 +467,19 @@ class RestoreOperationJournal(_StrictModel):
         "checkouts_reconstructed",
         "projects_publishing",
         "projects_published",
+        "authority_reviewed",
+        "member_roster_reviewed",
+        "activation_ready",
+        "complete",
     ]
     detached_at: datetime
     restored_sqlite_sha256: str | None = None
     repository_recoveries: tuple[RestoreRepositoryRecovery, ...] = ()
     project_rebinds: tuple[RestoreProjectRebind, ...] = ()
     project_publications: tuple[RestoreProjectPublication, ...] = ()
+    old_authority_review: RestoreOldAuthorityReview | None = None
+    member_roster_review: RestoreMemberRosterReview | None = None
+    activation_readback: RestoreActivationReadback | None = None
     updated_at: datetime
 
     @field_validator("operation_id")
@@ -376,6 +522,12 @@ class RestoreOperationJournal(_StrictModel):
 
     @model_validator(mode="after")
     def validate_boundary(self) -> RestoreOperationJournal:
+        post_publication_phases = {
+            "authority_reviewed",
+            "member_roster_reviewed",
+            "activation_ready",
+            "complete",
+        }
         root = Path(self.candidate_root)
         candidate = Path(self.candidate_sqlite_path)
         if root.parent.name != "restore-operations" or root not in candidate.parents:
@@ -393,6 +545,9 @@ class RestoreOperationJournal(_StrictModel):
             or self.repository_recoveries
             or self.project_rebinds
             or self.project_publications
+            or self.old_authority_review is not None
+            or self.member_roster_review is not None
+            or self.activation_readback is not None
         ):
             raise ValueError("an uninstalled restore journal cannot name later effects")
         if installed and (
@@ -434,6 +589,7 @@ class RestoreOperationJournal(_StrictModel):
             "checkouts_reconstructed",
             "projects_publishing",
             "projects_published",
+            *post_publication_phases,
         } and (
             set(repository_keys) != expected_repositories
             or any(item.state != "checkout_ready" for item in self.repository_recoveries)
@@ -443,6 +599,7 @@ class RestoreOperationJournal(_StrictModel):
             "checkouts_reconstructed",
             "projects_publishing",
             "projects_published",
+            *post_publication_phases,
         } and set(project_ids) != set(captured):
             raise ValueError("reconstructed restore phase requires every captured project rebind")
         if self.project_rebinds and self.phase not in {
@@ -450,6 +607,7 @@ class RestoreOperationJournal(_StrictModel):
             "checkouts_reconstructed",
             "projects_publishing",
             "projects_published",
+            *post_publication_phases,
         }:
             raise ValueError("project rebind receipts require the catalog-rebinding phase")
         if not set(publication_ids).issubset(captured):
@@ -457,10 +615,41 @@ class RestoreOperationJournal(_StrictModel):
         if self.project_publications and self.phase not in {
             "projects_publishing",
             "projects_published",
+            *post_publication_phases,
         }:
             raise ValueError("project publication receipts require the publication phase")
-        if self.phase == "projects_published" and set(publication_ids) != set(captured):
+        if self.phase in {"projects_published", *post_publication_phases} and set(
+            publication_ids
+        ) != set(captured):
             raise ValueError("published restore phase requires every captured project receipt")
+        if self.phase in post_publication_phases and self.old_authority_review is None:
+            raise ValueError("post-publication restore phase requires old-authority review")
+        if self.old_authority_review is not None:
+            if self.phase not in post_publication_phases:
+                raise ValueError("old-authority review requires its durable restore phase")
+            expected = restore_old_authority_boundary(self.manifest)
+            if self.old_authority_review.boundary_sha256 != expected:
+                raise ValueError("old-authority review does not bind the archived inventory")
+        if (
+            self.phase in {"member_roster_reviewed", "activation_ready", "complete"}
+            and self.member_roster_review is None
+        ):
+            raise ValueError("restore activation requires a reviewed member roster")
+        if self.member_roster_review is not None:
+            if self.phase not in {"member_roster_reviewed", "activation_ready", "complete"}:
+                raise ValueError("member-roster review requires its durable restore phase")
+            expected = restore_member_roster_boundary(
+                self.manifest.captured_at,
+                self.member_roster_review.members,
+            )
+            if self.member_roster_review.boundary_sha256 != expected:
+                raise ValueError("member-roster review does not bind its exact authority")
+        if self.phase == "complete" and self.activation_readback is None:
+            raise ValueError("completed restore requires its activation readback")
+        if self.activation_readback is not None and (
+            self.phase != "complete" or self.activation_readback.space_id != self.manifest.space_id
+        ):
+            raise ValueError("restore activation readback is outside the completed space")
         return self
 
 
@@ -479,6 +668,12 @@ class RestoreCandidate:
 
 @dataclass(frozen=True)
 class RestoreCheckoutRecoveryOutcome:
+    journal: RestoreOperationJournal
+    operator_action: ServerStep | None = None
+
+
+@dataclass(frozen=True)
+class RestoreReviewOutcome:
     journal: RestoreOperationJournal
     operator_action: ServerStep | None = None
 
@@ -529,6 +724,32 @@ class RestoreMachine(Protocol):
         self,
         journal: RestoreOperationJournal,
     ) -> RestoreOperationJournal: ...
+
+    def review_old_authority(
+        self,
+        journal: RestoreOperationJournal,
+        *,
+        disposition: RestoreOldAuthorityDisposition | None,
+        confirmed_boundary: str | None,
+        confirmed_by: str,
+        resume_argv: tuple[str, ...],
+        step: ServerStep,
+    ) -> RestoreReviewOutcome: ...
+
+    def review_member_roster(
+        self,
+        journal: RestoreOperationJournal,
+        *,
+        confirmed_boundary: str | None,
+        stale_member_id: str | None,
+        confirmed_by: str,
+        resume_argv: tuple[str, ...],
+        step: ServerStep,
+    ) -> RestoreReviewOutcome: ...
+
+    def prepare_activation(self, journal: RestoreOperationJournal) -> RestoreOperationJournal: ...
+
+    def activate_replacement(self, journal: RestoreOperationJournal): ...
 
 
 def prepare_restore_command(
@@ -700,6 +921,50 @@ def _restore_plan(identity: CallerIdentity, data_dir: Path) -> tuple[ServerStep,
                 "projects remain visible but unavailable."
             ),
             message="RCP will not start the service or restore excluded machine state.",
+        ),
+        ServerStep(
+            number=9,
+            title="Exclude the archived server authority",
+            purpose=(
+                "Confirm that the old machine and every archived source, repository, remote-SSH, "
+                "and provider identity can no longer act as this team server."
+            ),
+            performed_by="human",
+            target=root,
+            phase="restore_old_authority_review",
+            state="pending",
+            expected_success="One digest-bound disposition excludes every archived authority.",
+            message="RCP will display the archive-bound revocation checklist.",
+        ),
+        ServerStep(
+            number=10,
+            title="Review retained member authority",
+            purpose=(
+                "Show the archive capture time and every active member and permanent token id; "
+                "remove known-stale members offline before confirming the exact roster."
+            ),
+            performed_by="human",
+            target=root,
+            phase="restore_member_roster_review",
+            state="pending",
+            expected_success="The exact retained member authority is reviewed and digest-bound.",
+            message="RCP will not activate an unreviewed member roster.",
+        ),
+        ServerStep(
+            number=11,
+            title="Activate and verify the replacement",
+            purpose=(
+                "Start behind a closed startup-effect fence, prove no detached work can recover, "
+                "commit exact project readback, then open admission."
+            ),
+            performed_by="system",
+            target=root,
+            phase="restore_replacement_activation",
+            state="pending",
+            expected_success=(
+                "The replacement is enabled, healthy, and serving only after durable readback."
+            ),
+            message="RCP will keep the service fenced until the private activation handshake passes.",
         ),
     )
 
@@ -890,6 +1155,98 @@ def _execute_restore(
                 NonsecretField(name="published_projects", value=len(value.project_publications)),
             ),
         )
+        emitter.emit_step(
+            steps[8].model_copy(
+                update={"state": "running", "message": "Reading the archived authority inventory."}
+            )
+        )
+        try:
+            authority = machine.review_old_authority(
+                journal,
+                disposition=request.restore_old_authority_disposition,
+                confirmed_boundary=request.restore_confirmed_old_authority,
+                confirmed_by=confirmer,
+                resume_argv=resume,
+                step=steps[8],
+            )
+        except RestoreRefused as exc:
+            emitter.emit_step(steps[8].model_copy(update={"state": "failed", "message": str(exc)}))
+            raise _ReportedRestoreFailure from exc
+        if authority.operator_action is not None:
+            emitter.emit_step(authority.operator_action)
+            return
+        journal = authority.journal
+        assert journal.old_authority_review is not None
+        emitter.emit_step(
+            steps[8].model_copy(
+                update={
+                    "state": "succeeded",
+                    "message": "The archived server authority is durably excluded.",
+                    "fields": (
+                        NonsecretField(
+                            name="old_authority_boundary",
+                            value=journal.old_authority_review.boundary_sha256,
+                        ),
+                        NonsecretField(
+                            name="old_authority_disposition",
+                            value=journal.old_authority_review.disposition,
+                        ),
+                    ),
+                }
+            )
+        )
+        emitter.emit_step(
+            steps[9].model_copy(
+                update={"state": "running", "message": "Reading retained member authority."}
+            )
+        )
+        try:
+            roster = machine.review_member_roster(
+                journal,
+                confirmed_boundary=request.restore_confirmed_member_roster,
+                stale_member_id=request.restore_stale_member_id,
+                confirmed_by=confirmer,
+                resume_argv=_restore_authority_resume_argv(request, resume),
+                step=steps[9],
+            )
+        except RestoreRefused as exc:
+            emitter.emit_step(steps[9].model_copy(update={"state": "failed", "message": str(exc)}))
+            raise _ReportedRestoreFailure from exc
+        if roster.operator_action is not None:
+            emitter.emit_step(roster.operator_action)
+            return
+        journal = roster.journal
+        assert journal.member_roster_review is not None
+        emitter.emit_step(
+            steps[9].model_copy(
+                update={
+                    "state": "succeeded",
+                    "message": "The exact retained member authority is durably reviewed.",
+                    "fields": (
+                        NonsecretField(
+                            name="member_roster_boundary",
+                            value=journal.member_roster_review.boundary_sha256,
+                        ),
+                        NonsecretField(
+                            name="active_member_count",
+                            value=len(journal.member_roster_review.members),
+                        ),
+                    ),
+                }
+            )
+        )
+        journal = _run_restore_step(
+            emitter,
+            steps[10],
+            running="Starting the replacement behind its closed activation fence.",
+            operation=lambda: machine.activate_replacement(machine.prepare_activation(journal)),
+            succeeded="The replacement is enabled and its fenced activation readback is durable.",
+            fields=lambda value: (
+                NonsecretField(name="restore_phase", value=value.phase),
+                NonsecretField(name="operation_id", value=value.operation_id),
+                NonsecretField(name="service_state", value="enabled_active"),
+            ),
+        )
     except _ReportedRestoreFailure:
         return
 
@@ -912,6 +1269,117 @@ def _restore_resume_argv(
         request.recovery_identity_file,
         "--confirm-data-dir",
         str(data_dir),
+    )
+
+
+def _restore_authority_resume_argv(
+    request: ServerCommandRequest,
+    base: tuple[str, ...],
+) -> tuple[str, ...]:
+    if (
+        request.restore_old_authority_disposition is None
+        or request.restore_confirmed_old_authority is None
+    ):
+        return base
+    return (
+        *base,
+        "--old-authority-disposition",
+        request.restore_old_authority_disposition,
+        "--confirm-old-authority",
+        request.restore_confirmed_old_authority,
+    )
+
+
+def _canonical_sha256(value: object) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def restore_old_authority_boundary(manifest: BackupArchiveManifest) -> str:
+    repositories = []
+    routes = []
+    for project in sorted(manifest.projects, key=lambda item: item.project_id):
+        if project.status != "captured" or project.recovery is None:
+            continue
+        repositories.extend(
+            {
+                "project_id": project.project_id,
+                "alias": repository.alias,
+                "deploy_key_label": repository.deploy_key_label,
+                "public_key_fingerprint": repository.public_key_fingerprint,
+            }
+            for repository in sorted(project.recovery.repositories, key=lambda item: item.alias)
+        )
+        routes.extend(
+            {
+                "project_id": project.project_id,
+                "alias": machine.alias,
+                "host": machine.host,
+                "os_account": machine.os_account,
+            }
+            for machine in sorted(project.recovery.machines, key=lambda item: item.alias)
+        )
+    return _canonical_sha256(
+        {
+            "captured_at": manifest.captured_at.isoformat(),
+            "installation_id": manifest.installation_id,
+            "source_deploy_key_label": manifest.source_deploy_key_label,
+            "source_public_key_fingerprint": manifest.source_public_key_fingerprint,
+            "repositories": repositories,
+            "remote_routes": routes,
+        }
+    )
+
+
+def restore_member_roster_boundary(
+    captured_at: datetime,
+    members: tuple[RestoreMemberRosterEntry, ...],
+) -> str:
+    return _canonical_sha256(
+        {
+            "archive_captured_at": captured_at.isoformat(),
+            "members": [item.model_dump(mode="json") for item in members],
+        }
+    )
+
+
+def restore_activation_boundary(journal: RestoreOperationJournal) -> str:
+    if (
+        journal.phase not in {"activation_ready", "complete"}
+        or journal.old_authority_review is None
+        or journal.member_roster_review is None
+    ):
+        raise RestoreRefused("The restore journal has no complete activation boundary.")
+    return _canonical_sha256(
+        {
+            "operation_id": journal.operation_id,
+            "archive_sha256": journal.archive_sha256,
+            "manifest_sha256": journal.manifest_sha256,
+            "space_id": journal.manifest.space_id,
+            "source_commit": journal.manifest.rcp_source_commit,
+            "old_authority_review": journal.old_authority_review.model_dump(mode="json"),
+            "member_roster_review": journal.member_roster_review.model_dump(mode="json"),
+            "project_publications": [
+                item.model_dump(mode="json") for item in journal.project_publications
+            ],
+        }
+    )
+
+
+def _chunked_nonsecret_fields(prefix: str, value: str) -> tuple[NonsecretField, ...]:
+    chunks = tuple(value[index : index + 1900] for index in range(0, len(value), 1900))
+    if len(chunks) > 45:
+        raise RestoreRefused("The retained member roster exceeds the bounded CLI review surface.")
+    width = max(2, len(str(len(chunks))))
+    return tuple(
+        NonsecretField(name=f"{prefix}_{index:0{width}d}", value=chunk)
+        for index, chunk in enumerate(chunks, start=1)
     )
 
 
@@ -1337,6 +1805,10 @@ class LinuxRestoreMachine:
                 "checkouts_reconstructed",
                 "projects_publishing",
                 "projects_published",
+                "authority_reviewed",
+                "member_roster_reviewed",
+                "activation_ready",
+                "complete",
             }:
                 return RestoreCheckoutRecoveryOutcome(journal=current)
             if current.phase == "sqlite_restored":
@@ -1527,6 +1999,10 @@ class LinuxRestoreMachine:
                 "checkouts_reconstructed",
                 "projects_publishing",
                 "projects_published",
+                "authority_reviewed",
+                "member_roster_reviewed",
+                "activation_ready",
+                "complete",
             }:
                 return current
             if current.phase == "checkouts_ready":
@@ -1589,7 +2065,13 @@ class LinuxRestoreMachine:
 
         with self.admission():
             current = self._current_restore(journal)
-            if current.phase == "projects_published":
+            if current.phase in {
+                "projects_published",
+                "authority_reviewed",
+                "member_roster_reviewed",
+                "activation_ready",
+                "complete",
+            }:
                 return current
             if current.phase == "checkouts_reconstructed":
                 current = self._write_restore_phase(current, "projects_publishing")
@@ -1723,6 +2205,321 @@ class LinuxRestoreMachine:
                     publications[capture.project_id] = receipt
             return self._write_restore_phase(current, "projects_published")
 
+    def review_old_authority(
+        self,
+        journal: RestoreOperationJournal,
+        *,
+        disposition: RestoreOldAuthorityDisposition | None,
+        confirmed_boundary: str | None,
+        confirmed_by: str,
+        resume_argv: tuple[str, ...],
+        step: ServerStep,
+    ) -> RestoreReviewOutcome:
+        with self.admission():
+            current = self._current_restore(journal)
+            if current.old_authority_review is not None:
+                return RestoreReviewOutcome(current)
+            if current.phase != "projects_published":
+                raise RestoreRefused("The restore has not reached old-authority review.")
+            boundary = restore_old_authority_boundary(current.manifest)
+            if disposition is None or confirmed_boundary is None:
+                source_count = int(current.manifest.source_deploy_key_label is not None)
+                repositories = tuple(
+                    repository
+                    for project in current.manifest.projects
+                    if project.status == "captured" and project.recovery is not None
+                    for repository in project.recovery.repositories
+                )
+                machine_routes = {
+                    (machine.host, machine.os_account)
+                    for project in current.manifest.projects
+                    if project.status == "captured" and project.recovery is not None
+                    for machine in project.recovery.machines
+                }
+                destroyed = (
+                    *resume_argv,
+                    "--old-authority-disposition",
+                    "old-machine-destroyed",
+                    "--confirm-old-authority",
+                    boundary,
+                )
+                revoked = (
+                    *resume_argv,
+                    "--old-authority-disposition",
+                    "old-machine-fenced-and-credentials-revoked",
+                    "--confirm-old-authority",
+                    boundary,
+                )
+                return RestoreReviewOutcome(
+                    current,
+                    step.model_copy(
+                        update={
+                            "performed_by": "human",
+                            "state": "operator_action_needed",
+                            "message": (
+                                "Either destroy the archived server, or fence it and revoke every "
+                                "source/repository deploy key, server-to-remote SSH grant, and "
+                                "provider-native login named by the protected restore journal."
+                            ),
+                            "actions": (
+                                ExternalAction(
+                                    instruction=(
+                                        "Inspect restore.json and complete its exact archived "
+                                        "authority inventory. Use the destroyed command only if the "
+                                        "old machine is permanently destroyed; otherwise revoke or "
+                                        "fence every listed credential before using the revoked command."
+                                    )
+                                ),
+                                CommandAction(argv=destroyed),
+                                CommandAction(argv=revoked),
+                            ),
+                            "fields": (
+                                NonsecretField(
+                                    name="archive_captured_at",
+                                    value=current.manifest.captured_at.isoformat(),
+                                ),
+                                NonsecretField(name="old_authority_boundary", value=boundary),
+                                NonsecretField(name="source_deploy_key_count", value=source_count),
+                                NonsecretField(
+                                    name="repository_deploy_key_count", value=len(repositories)
+                                ),
+                                NonsecretField(
+                                    name="server_remote_route_count", value=len(machine_routes)
+                                ),
+                                NonsecretField(
+                                    name="restore_journal",
+                                    value=str(restore_journal_path(self.layout)),
+                                ),
+                            ),
+                            "resume_argv": revoked,
+                        }
+                    ),
+                )
+            if confirmed_boundary != boundary:
+                raise RestoreRefused(
+                    "The archived authority inventory changed after confirmation; inspect it again."
+                )
+            updated = current.model_copy(
+                update={
+                    "phase": "authority_reviewed",
+                    "old_authority_review": RestoreOldAuthorityReview(
+                        boundary_sha256=boundary,
+                        disposition=disposition,
+                        reviewed_by=confirmed_by,
+                        reviewed_at=self.clock(),
+                    ),
+                    "updated_at": self.clock(),
+                }
+            )
+            write_restore_journal(updated, self.layout, uid=self.service_uid, gid=self.service_gid)
+            return RestoreReviewOutcome(
+                read_restore_journal(self.layout, expected_uid=self.service_uid)
+            )
+
+    def review_member_roster(
+        self,
+        journal: RestoreOperationJournal,
+        *,
+        confirmed_boundary: str | None,
+        stale_member_id: str | None,
+        confirmed_by: str,
+        resume_argv: tuple[str, ...],
+        step: ServerStep,
+    ) -> RestoreReviewOutcome:
+        with self.admission():
+            current = self._current_restore(journal)
+            if current.member_roster_review is not None:
+                return RestoreReviewOutcome(current)
+            if current.phase != "authority_reviewed":
+                raise RestoreRefused("The restore has not reached member-authority review.")
+            store = AppStore(self.layout.data_dir / "rcp.sqlite3")
+            if stale_member_id is not None:
+                try:
+                    preview = store.member_removal_preview(stale_member_id)
+                    store.begin_member_removal(
+                        stale_member_id,
+                        expected_boundary_sha256=preview.boundary_sha256,
+                    )
+                    store.complete_member_removal(stale_member_id)
+                except (KeyError, RuntimeError, ValueError) as exc:
+                    raise RestoreRefused(
+                        "The known-stale member could not be removed safely while offline."
+                    ) from exc
+            members = tuple(
+                RestoreMemberRosterEntry(
+                    member_id=item.member_id,
+                    display_name=item.display_name,
+                    active_token_ids=item.active_token_ids,
+                )
+                for item in store.active_team_member_authority()
+            )
+            if not members:
+                raise RestoreRefused(
+                    "The restored team has no active authenticating member; activation is refused."
+                )
+            boundary = restore_member_roster_boundary(current.manifest.captured_at, members)
+            if stale_member_id is not None or confirmed_boundary is None:
+                confirm = (*resume_argv, "--confirm-member-roster", boundary)
+                authority_text = json.dumps(
+                    [item.model_dump(mode="json") for item in members],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                fields = [
+                    NonsecretField(
+                        name="archive_captured_at", value=current.manifest.captured_at.isoformat()
+                    ),
+                    NonsecretField(name="member_roster_boundary", value=boundary),
+                    NonsecretField(name="active_member_count", value=len(members)),
+                    *_chunked_nonsecret_fields("member_authority", authority_text),
+                ]
+                actions: list[ExternalAction | CommandAction] = [
+                    ExternalAction(
+                        instruction=(
+                            "Review every displayed member and permanent token id. If one is "
+                            "known stale, rerun with --remove-stale-member MEMBER_ID; otherwise "
+                            "run the roster-confirmation command."
+                        )
+                    ),
+                    CommandAction(argv=confirm),
+                ]
+                for member in members[:14]:
+                    actions.append(
+                        CommandAction(
+                            argv=(*resume_argv, "--remove-stale-member", member.member_id)
+                        )
+                    )
+                return RestoreReviewOutcome(
+                    current,
+                    step.model_copy(
+                        update={
+                            "performed_by": "human",
+                            "state": "operator_action_needed",
+                            "message": (
+                                "Confirm the exact retained authority only after removing any "
+                                "known-stale member. Provider login absence does not block history."
+                            ),
+                            "actions": tuple(actions),
+                            "fields": tuple(fields),
+                            "resume_argv": confirm,
+                        }
+                    ),
+                )
+            if confirmed_boundary != boundary:
+                raise RestoreRefused(
+                    "The retained member authority changed after confirmation; inspect it again."
+                )
+            updated = current.model_copy(
+                update={
+                    "phase": "member_roster_reviewed",
+                    "member_roster_review": RestoreMemberRosterReview(
+                        boundary_sha256=boundary,
+                        members=members,
+                        reviewed_by=confirmed_by,
+                        reviewed_at=self.clock(),
+                    ),
+                    "updated_at": self.clock(),
+                }
+            )
+            write_restore_journal(updated, self.layout, uid=self.service_uid, gid=self.service_gid)
+            return RestoreReviewOutcome(
+                read_restore_journal(self.layout, expected_uid=self.service_uid)
+            )
+
+    def prepare_activation(self, journal: RestoreOperationJournal) -> RestoreOperationJournal:
+        with self.admission():
+            current = self._current_restore(journal)
+            if current.phase in {"activation_ready", "complete"}:
+                return current
+            if current.phase != "member_roster_reviewed" or current.member_roster_review is None:
+                raise RestoreRefused("The retained member authority has not been reviewed.")
+            store = AppStore(self.layout.data_dir / "rcp.sqlite3")
+            members = tuple(
+                RestoreMemberRosterEntry(
+                    member_id=item.member_id,
+                    display_name=item.display_name,
+                    active_token_ids=item.active_token_ids,
+                )
+                for item in store.active_team_member_authority()
+            )
+            if restore_member_roster_boundary(current.manifest.captured_at, members) != (
+                current.member_roster_review.boundary_sha256
+            ):
+                raise RestoreRefused("Member authority changed after its final restore review.")
+            try:
+                self.service_control.fence_stopped_disabled()
+            except InstalledServiceControlRefused as exc:
+                raise RestoreRefused(
+                    "The replacement service could not be fenced before activation."
+                ) from exc
+            return self._write_restore_phase(current, "activation_ready")
+
+    def activate_replacement(self, journal: RestoreOperationJournal) -> RestoreOperationJournal:
+        current = self._current_restore(journal)
+        if current.phase == "complete":
+            try:
+                self.service_control.enable_and_start()
+            except InstalledServiceControlRefused as exc:
+                raise RestoreRefused(
+                    "The completed replacement could not be re-enabled and started."
+                ) from exc
+            return current
+        if current.phase != "activation_ready":
+            raise RestoreRefused("The replacement restore is not ready for activation.")
+        try:
+            # Keep the replacement disabled until its private activation commit
+            # succeeds. If the root coordinator disappears before then, the
+            # replacement's bounded startup timer exits cleanly and systemd does
+            # not restart this disabled unit.
+            self.service_control.start()
+            from rcp.server_ops.control import ServerControlClient, ServerControlError
+
+            deadline = time.monotonic() + SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS
+            client = None
+            while time.monotonic() < deadline:
+                try:
+                    candidate = ServerControlClient.from_data_dir(
+                        self.layout.data_dir,
+                        expected_server_uid=self.service_uid,
+                    )
+                    probe = candidate.probe()
+                    if (
+                        probe.space_id == current.manifest.space_id
+                        and "restore_activation_commit" in probe.operations
+                        and candidate.metadata.running_commit == self._current_release().name
+                    ):
+                        client = candidate
+                        break
+                except (OSError, ServerControlError, ValueError):
+                    pass
+                time.sleep(0.1)
+            if client is None:
+                raise RestoreRefused(
+                    "The replacement service did not publish its private activation endpoint."
+                )
+            result = client.activate_restore(
+                operation_id=current.operation_id,
+                boundary_sha256=restore_activation_boundary(current),
+            )
+            if result.operation_id != current.operation_id or result.restore_phase != "complete":
+                raise RestoreRefused("The replacement returned another activation result.")
+            completed = read_restore_journal(self.layout, expected_uid=self.service_uid)
+            if completed.activation_readback != result.readback:
+                raise RestoreRefused(
+                    "The durable activation readback differs from its private control result."
+                )
+            self.service_control.enable()
+            return completed
+        except BaseException as exc:
+            with suppress(InstalledServiceControlRefused):
+                self.service_control.fence_stopped_disabled()
+            if isinstance(exc, RestoreRefused):
+                raise
+            raise RestoreRefused(
+                "Replacement activation failed; RCP stopped and disabled the service."
+            ) from exc
+
     def _current_restore(
         self,
         journal: RestoreOperationJournal,
@@ -1742,6 +2539,7 @@ class LinuxRestoreMachine:
             "checkouts_reconstructed",
             "projects_publishing",
             "projects_published",
+            "activation_ready",
         ],
     ) -> RestoreOperationJournal:
         updated = journal.model_copy(update={"phase": phase, "updated_at": self.clock()})
@@ -2236,7 +3034,7 @@ def unfinished_restore_operation(
         gid=Path(journal.candidate_root).stat().st_gid,
         label="restore candidate root",
     )
-    return journal
+    return None if journal.phase == "complete" else journal
 
 
 def _extract_verified_archive(

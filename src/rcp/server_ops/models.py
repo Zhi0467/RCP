@@ -176,6 +176,12 @@ class ServerCommandRequest(_StrictModel):
     archive_path: str | None = None
     recovery_identity_file: str | None = None
     restore_confirmed_data_dir: str | None = None
+    restore_old_authority_disposition: (
+        Literal["old-machine-destroyed", "old-machine-fenced-and-credentials-revoked"] | None
+    ) = None
+    restore_confirmed_old_authority: str | None = None
+    restore_confirmed_member_roster: str | None = None
+    restore_stale_member_id: str | None = None
     backup_destination: str | None = None
     backup_schedule: str | None = None
     backup_retention: int | None = None
@@ -183,7 +189,7 @@ class ServerCommandRequest(_StrictModel):
     backup_confirmed: bool | None = None
     update_confirmed_commit: str | None = None
 
-    @field_validator("request_id", "project_id", "member_id")
+    @field_validator("request_id", "project_id", "member_id", "restore_stale_member_id")
     @classmethod
     def validate_identifier(cls, value: str | None, info) -> str | None:
         if value is None:
@@ -204,7 +210,11 @@ class ServerCommandRequest(_StrictModel):
             raise ValueError("update confirmed commit must be a full lowercase Git object id")
         return value
 
-    @field_validator("member_confirmed_boundary")
+    @field_validator(
+        "member_confirmed_boundary",
+        "restore_confirmed_old_authority",
+        "restore_confirmed_member_roster",
+    )
     @classmethod
     def validate_member_boundary(cls, value: str | None) -> str | None:
         if value is not None and (
@@ -260,6 +270,10 @@ class ServerCommandRequest(_StrictModel):
             "archive_path": self.archive_path,
             "recovery_identity_file": self.recovery_identity_file,
             "restore_confirmed_data_dir": self.restore_confirmed_data_dir,
+            "restore_old_authority_disposition": self.restore_old_authority_disposition,
+            "restore_confirmed_old_authority": self.restore_confirmed_old_authority,
+            "restore_confirmed_member_roster": self.restore_confirmed_member_roster,
+            "restore_stale_member_id": self.restore_stale_member_id,
             "backup_destination": self.backup_destination,
             "backup_schedule": self.backup_schedule,
             "backup_retention": self.backup_retention,
@@ -287,6 +301,34 @@ class ServerCommandRequest(_StrictModel):
             expected = {"archive_path", "recovery_identity_file"}
             if self.restore_confirmed_data_dir is not None:
                 expected.add("restore_confirmed_data_dir")
+            optional_restore_fields = {
+                "restore_old_authority_disposition": self.restore_old_authority_disposition,
+                "restore_confirmed_old_authority": self.restore_confirmed_old_authority,
+                "restore_confirmed_member_roster": self.restore_confirmed_member_roster,
+                "restore_stale_member_id": self.restore_stale_member_id,
+            }
+            expected.update(
+                name for name, value in optional_restore_fields.items() if value is not None
+            )
+            if self.restore_confirmed_data_dir is None and any(
+                value is not None for value in optional_restore_fields.values()
+            ):
+                raise ValueError(
+                    "restore authority review requires the exact confirmed data directory"
+                )
+            if (self.restore_old_authority_disposition is None) != (
+                self.restore_confirmed_old_authority is None
+            ):
+                raise ValueError(
+                    "restore old-authority disposition and confirmation must be supplied together"
+                )
+            if (
+                self.restore_stale_member_id is not None
+                and self.restore_confirmed_member_roster is not None
+            ):
+                raise ValueError(
+                    "restore cannot remove a stale member and confirm the pre-removal roster"
+                )
         elif self.command == "server backup configure":
             expected = {
                 "backup_destination",

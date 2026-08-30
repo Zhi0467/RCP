@@ -141,6 +141,25 @@ class MemberRemovalPreviewRecord(BaseModel):
         return self
 
 
+class TeamMemberAuthorityRecord(BaseModel):
+    """Nonsecret, exact authority retained by one active team member."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    member_id: str
+    display_name: str | None
+    active_token_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+
+    @model_validator(mode="after")
+    def authority_is_canonical(self) -> TeamMemberAuthorityRecord:
+        _canonical_uuid4(self.member_id, label="member identity")
+        if self.active_token_ids != tuple(sorted(set(self.active_token_ids))):
+            raise ValueError("active team token identities must be sorted and unique")
+        for token_id in self.active_token_ids:
+            _canonical_uuid4(token_id, label="team token identity")
+        return self
+
+
 class TeamInvitationRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -2359,6 +2378,7 @@ __all__ = [
     "GraphCondition",
     "GraphWatcherRecord",
     "MemberRemovalPreviewRecord",
+    "TeamMemberAuthorityRecord",
     "NodeStatusGraphCondition",
     "ProjectInvitationRecord",
     "ProjectMemberRecord",

@@ -209,6 +209,30 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
         type=lambda value: _absolute_path(value, "confirmed restore data directory"),
         help="Confirm the exact installed RCP_DATA_DIR displayed by the first restore call",
     )
+    restore.add_argument(
+        "--old-authority-disposition",
+        dest="restore_old_authority_disposition",
+        choices=("old-machine-destroyed", "old-machine-fenced-and-credentials-revoked"),
+        help="Record how the archived server authority was permanently excluded",
+    )
+    restore.add_argument(
+        "--confirm-old-authority",
+        dest="restore_confirmed_old_authority",
+        type=_member_boundary,
+        help="Confirm the exact SHA-256 archived-authority inventory displayed by RCP",
+    )
+    restore.add_argument(
+        "--confirm-member-roster",
+        dest="restore_confirmed_member_roster",
+        type=_member_boundary,
+        help="Confirm the exact active member and permanent-token roster displayed by RCP",
+    )
+    restore.add_argument(
+        "--remove-stale-member",
+        dest="restore_stale_member_id",
+        type=_member_id,
+        help="Remove one known-stale member offline, then display the changed roster again",
+    )
     restore.set_defaults(server_operation="server restore")
 
     member = server_commands.add_parser("member", help="Remove a member under a durable fence")
@@ -357,6 +381,12 @@ def request_from_namespace(args: argparse.Namespace) -> ServerCommandRequest:
             archive_path=getattr(args, "archive_path", None),
             recovery_identity_file=getattr(args, "recovery_identity_file", None),
             restore_confirmed_data_dir=getattr(args, "restore_confirmed_data_dir", None),
+            restore_old_authority_disposition=getattr(
+                args, "restore_old_authority_disposition", None
+            ),
+            restore_confirmed_old_authority=getattr(args, "restore_confirmed_old_authority", None),
+            restore_confirmed_member_roster=getattr(args, "restore_confirmed_member_roster", None),
+            restore_stale_member_id=getattr(args, "restore_stale_member_id", None),
             backup_destination=getattr(args, "destination", None),
             backup_schedule=getattr(args, "backup_schedule", None),
             backup_retention=getattr(args, "backup_retention", None),

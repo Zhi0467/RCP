@@ -586,8 +586,16 @@ def load_update_runtime_boundary(
 class RuntimeAdmissionGate:
     """Close new mutations while allowing already-entered calls to finish."""
 
-    def __init__(self, *, closed: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        closed: bool = False,
+        reason: str = "Server update maintenance",
+    ) -> None:
+        if not reason or reason != reason.strip():
+            raise ValueError("admission reason must be one nonempty line")
         self._closed = closed
+        self._reason = reason
         self._active = 0
         self._condition = threading.Condition()
 
@@ -602,7 +610,7 @@ class RuntimeAdmissionGate:
         with self._condition:
             if not self._closed:
                 return
-        raise UpdateAdmissionClosed(f"Server update maintenance blocks {effect}.")
+        raise UpdateAdmissionClosed(f"{self._reason} blocks {effect}.")
 
     @contextmanager
     def mutation(self, effect: str) -> Iterator[None]:
@@ -610,7 +618,7 @@ class RuntimeAdmissionGate:
             raise ValueError("mutation effect must be one nonempty line")
         with self._condition:
             if self._closed:
-                raise UpdateAdmissionClosed(f"Server update maintenance blocks {effect}.")
+                raise UpdateAdmissionClosed(f"{self._reason} blocks {effect}.")
             self._active += 1
         try:
             yield

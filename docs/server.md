@@ -222,11 +222,10 @@ sudo -u alice -H sudo -n -u rcp -H /usr/local/bin/rcp server project provision 0
 sudo -u alice -H sudo -n -u rcp -H /usr/bin/id
 ```
 
-The first command must say the file parsed successfully. Until project
-provisioning lands, the fixed RCP probe reaches the CLI and reports
-`unavailable`; later it runs the named request. The unlisted `/usr/bin/id`
-command must be refused. The UUID parser and fixed desktop argv keep this rule
-from becoming a general command surface.
+The first command must say the file parsed successfully. The fixed RCP command
+runs only the named provisioning request. The unlisted `/usr/bin/id` command
+must be refused. The UUID parser and fixed desktop argv keep this rule from
+becoming a general command surface.
 
 ### Development alternative: direct key-only rcp SSH
 
@@ -272,6 +271,37 @@ sudo systemctl start rcp.service
 The listener is intentionally loopback-only. Team desktops reach it through an
 SSH tunnel; opening port 8421 publicly is not a supported deployment.
 
+## 11. Restore a protected archive
+
+Restore requires a fresh installed server whose configured data directory is
+empty. Keep the native `age` recovery identity off-server until the restore and
+copy it only into a root-protected file for this run:
+
+```bash
+sudo /usr/local/bin/rcp server restore /absolute/path/lab.tar.age \
+  --identity-file /absolute/protected/path/age-identity.txt
+```
+
+Run the exact resume commands RCP prints. They bind the configured data
+directory, fresh GitHub deploy-key grants, old server-authority disposition, and
+the surviving member/permanent-token-id roster. Do not select the destroyed-old
+machine disposition unless that machine is permanently gone. Otherwise first
+fence its data and revoke every source/project deploy key, server-to-remote SSH
+grant, and provider-native login named by the protected restore journal. RCP
+does not collect or perform those external revocations.
+
+For a member credential known to have been revoked after the archive was
+captured, use the printed `--remove-stale-member <member-id>` command. This is
+the ordinary member-removal transaction running offline: another active member
+must remain, no project may be orphaned, and the changed roster must be reviewed
+again. The root-only final activation starts the still-disabled systemd unit
+behind closed admission, proves detached work cannot recover, persists exact
+space/commit/project readback, and only then opens HTTP and enables the unit. If
+the root command disappears first, the fenced process exits cleanly after its
+bounded timeout and stays stopped. Any other failure stops and disables the
+service; rerun the same archive-bound operation rather than editing SQLite or
+systemd.
+
 ## Maintainer live qualification
 
 The guarded **Team server install qualification** GitHub Actions workflow drives
@@ -299,8 +329,9 @@ real lab server.
 
 ## Current implementation boundary
 
-`rcp server install` is concrete. The source-built update, doctor, backup,
-restore, provider-check, project-provision, member-removal, and unified-wizard
-packets are still being implemented and currently return an explicit
-`unavailable` event. Do not substitute manual Git pulls, service-file edits, or
-direct database access for those owners.
+The terminal owners for install, doctor, provider readiness, project
+provisioning, backup, restore, update, and member removal are concrete. Their
+live qualification status is tracked in the active team-server handoff and
+acceptance scenarios. The unified desktop wizard/operator bridge and transfer
+import remain incomplete and must say so explicitly. Do not substitute manual
+Git pulls, service-file edits, or direct database access for any owner.

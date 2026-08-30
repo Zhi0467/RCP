@@ -1317,8 +1317,9 @@ immutable receipt, records durable protected/partial/failure status, deletes
 only revalidated proven retention targets, and enables the systemd timer only
 after a successful first run.
 
-Replacement restore currently implements its database, checkout-recovery, and
-stopped project-publication boundaries. `rcp server restore` requires the
+Replacement restore implements its database, checkout-recovery, stopped
+project-publication, authority-review, and fenced-activation boundaries. `rcp
+server restore` requires the
 installed server's exact fresh/empty data directory and a protected off-server
 `age` identity, verifies the canonical
 manifest, every archived byte, the recorded database schema, and the source
@@ -1351,14 +1352,33 @@ extracted from the archive.
 The publication journal records one capture-bound receipt per protected project,
 so a crash before or after any exact write, replay, visibility transaction, or
 receipt can re-enter the same operation without overwriting a conflict or
-duplicating history. The unfinished journal blocks direct installed startup, install,
-update, and protected backup; doctor reports the same fence. Lost candidate
-bytes can be rebuilt only by re-entering restore with the same archive and
-identity. Replacement-authority/member review, service activation, final live
-readback, and journal completion remain unimplemented, so this is not yet a
-usable restored team server.
+duplicating history. The unfinished journal blocks direct installed startup,
+install, update, and protected backup; doctor reports the same fence. Lost
+candidate bytes can be rebuilt only by re-entering restore with the same archive
+and identity. After publication, the journal requires an exact digest-bound
+disposition for the old machine/source/repository/SSH/provider authority and an
+exact archive-time active-member/permanent-token-id roster. Restore may remove
+one known-stale member offline only through the ordinary member-removal
+transaction and its last-member/project guards, then requires confirmation of
+the changed roster.
+
+Only the resulting `activation_ready` phase may start the installed service.
+Systemd starts it while the unit is still disabled, with HTTP/background
+admission closed and the shared startup-effect fence active. If the root
+coordinator disappears before the private activation commit, the replacement
+exits cleanly after one bounded timeout; `Restart=on-failure` does not restart
+it, so the same operation remains stopped and resumable. A root-authenticated
+private control operation must match the journal boundary, installed space and
+running commit, read back every captured project revision/reachability decision,
+and prove the complete startup-recovery inventory empty. It durably records
+`complete` and the exact activation readback before opening deferred runtime and
+HTTP admission; only then does the root coordinator enable the already-running
+unit. Failed activation stops and disables systemd; overlapping update and
+restore journals refuse startup. Provider-native login is not part of this gate
+and may remain absent while restored history serves read-only.
 The private installed-service control socket exposes probe, provider plan/check,
-project-provision plan/step, and online SQLite-capture operations. `rcp server
+project-provision plan/step, online SQLite capture, member-removal, update, and
+root-only restore-activation operations. `rcp server
 project provision <request-id>` publishes one complete plan, advances one
 stale-boundary-checked durable step at a time, and stops with a structured human
 action when Git, checkout, transport, or provider readiness needs repair. It
@@ -1366,13 +1386,13 @@ exits successfully only after reading back the same request as **ready for
 review**, and it has no project-creation route; only the authenticated final
 review route can append the reserved identity and complete the request.
 
-Machine orchestration, final creation, the team deletion guard, and console
-member removal are
+Machine orchestration, final creation, the team deletion guard, console member
+removal, and replacement activation are
 hermetically covered, but provisioning has not yet passed S128's complete
 source-built team-service/GitHub/SSH/browser/desktop live drive. Cancellation
-after machine preparation, the unified wizard and desktop operator bridge,
-restore activation, the live member-removal drive, and transfer remain active
-acceptance work. Protected
+after machine preparation, the unified wizard and desktop operator bridge, the
+live restore/member-removal drives, and transfer remain active acceptance work.
+Protected
 backup is hermetically complete but still awaits S104's full live Linux/SSH
 no-pause and systemd drive. Current RCP must not simulate the other unfinished
 journeys or describe **ready for review** as an existing project.
