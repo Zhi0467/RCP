@@ -28,7 +28,7 @@ Linux package or a packaged cross-platform release.
 
 ## Setup
 
-An RCP Dev desktop build with a personal space holding at least one project, two
+A source-built RCP desktop app with a personal space holding at least one project, two
 team-space invitations, and SSH access to two team spaces — one reachable, one
 whose server can be stopped.
 

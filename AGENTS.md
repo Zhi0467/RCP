@@ -212,8 +212,9 @@ These identifiers are cited from source and tests. Never renumber them.
 - Never trust a piped test command's exit status unless `pipefail` is set.
 - Use shared test wait helpers rather than copied short polling loops.
 - Literal expiry dates are test time bombs; derive them from the test clock.
-- `RCP Dev.app` is retained. Routine browser work does not require rebuilding
-  Tauri; rebuild when native files change.
+- Two entrances are managed: the browser from `rcp serve`, and the source-built
+  desktop app. Everyone builds from source, so the frozen release bundle is not
+  a maintained target. Rebuild Tauri only when native files change.
 
 ## Maintaining this file
 

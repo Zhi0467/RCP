@@ -9,7 +9,7 @@ if [ -z "$uv_executable" ]; then
   uv_executable=$(command -v uv || true)
 fi
 if [ -z "$uv_executable" ] || [ ! -x "$uv_executable" ]; then
-  echo "RCP Dev.app requires uv; set RCP_DEV_UV to its absolute executable path." >&2
+  echo "RCP.app requires uv; set RCP_DEV_UV to its absolute executable path." >&2
   exit 1
 fi
 

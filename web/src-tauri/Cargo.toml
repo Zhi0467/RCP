@@ -18,6 +18,12 @@ path = "src/main.rs"
 # origin probe. Off by default so no shipped build contains it.
 https-trust-probe = []
 
+[[example]]
+name = "local_https_origin_probe"
+# Links the static library that `https-trust-probe` builds from `src/https_trust.m`,
+# so an ordinary `cargo test` must skip it rather than fail to link.
+required-features = ["https-trust-probe"]
+
 [build-dependencies]
 cc = "1"
 tauri-build = { version = "2", features = [] }
@@ -46,7 +52,7 @@ security-framework = "3.7"
 security-framework-sys = "2.17"
 
 [profile.dev]
-# `tauri build --debug` keeps debug_assertions, which RCP Dev.app needs to launch
+# `tauri build --debug` keeps debug_assertions, which RCP.app needs to launch
 # the backend from the checkout. The debug symbols are separable, and dropping
 # them keeps target/debug from growing several GB per dev bundle.
 debug = 0

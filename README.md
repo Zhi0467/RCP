@@ -106,12 +106,13 @@ npm --prefix web run desktop:build-dev
 The bundle is written to:
 
 ```text
-web/src-tauri/target/debug/bundle/macos/RCP Dev.app
+web/src-tauri/target/debug/bundle/macos/RCP.app
 ```
 
 Open that bundle through Finder for real desktop testing. Closing the red window
-hides RCP; **Quit RCP** ends the desktop-owned backend. More native build and
-verification commands are in [docs/desktop.md](docs/desktop.md).
+hides RCP; **Quit RCP** in the menu, or Cmd+Q, ends the desktop-owned backend. Other
+quit gestures leave that backend running. More native build and verification commands,
+and that quit boundary, are in [docs/desktop.md](docs/desktop.md).
 
 ## Install the team server from source
 

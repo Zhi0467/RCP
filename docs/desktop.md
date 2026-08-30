@@ -49,11 +49,34 @@ npm --prefix web run desktop:build-dev
 The bundle is written to:
 
 ```text
-web/src-tauri/target/debug/bundle/macos/RCP Dev.app
+web/src-tauri/target/debug/bundle/macos/RCP.app
 ```
 
-`RCP Dev.app` records the checkout and absolute `uv` executable in its `Info.plist` and
+`RCP.app` records the checkout and absolute `uv` executable in its `Info.plist` and
 launches the backend from source. Rebuild it after Rust or Tauri configuration changes.
+
+### Only the menu Quit stops the backend
+
+`Quit RCP` in the application menu, and its Cmd+Q accelerator, are one custom
+`MenuItem` routed through `on_menu_event` to `request_app_quit`. That path runs the
+shutdown and stops the backend the app owns.
+
+Every other quit gesture leaves that backend running: the Dock icon's Quit,
+`osascript -e 'quit app "RCP"'`, and logout or restart. macOS terminates the process
+without Tauri emitting `RunEvent::ExitRequested`, so the handler in `src/lib.rs` never
+runs. Measured on 2026-08-29 by logging every `ExitRequested` and observing none, while
+the shell exited and its backend kept serving.
+
+This matters because a leaked backend still holds 8421, so the next launch adopts it
+through `--reuse-existing` and source edits do not take effect. Stop it explicitly:
+
+```bash
+pkill -f "rcp serve"
+```
+
+A fix belongs in the macOS `applicationShouldTerminate:` delegate, not in a wider match
+arm. The handler's `code: None` guard is deliberate: the shutdown's own `app.exit(code)`
+re-enters that event with `Some(code)`, so matching every code would re-enter quit.
 
 A successful build is not the desktop test. Open the relevant bundle through Finder,
 exercise the affected workflow, inspect the visible result, and check the backend log for

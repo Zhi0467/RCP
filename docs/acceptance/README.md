@@ -72,7 +72,6 @@ This index is checked against frontmatter by `tests/test_documentation.py`.
 | [S30](S30-desktop-window-is-not-the-app.md) | Closing the desktop window never cancels agent work | implemented | desktop |
 | [S31](S31-quit-stops-what-it-started.md) | Quit stops what it started, and nothing else | implemented | desktop |
 | [S32](S32-artifacts-in-the-desktop-window.md) | A preview opens and a download lands, with stronger desktop isolation | pending | desktop |
-| [S34](S34-packaged-app-needs-no-toolchain.md) | Dev shell loads the checkout; release app needs no toolchain | implemented | desktop |
 | [S35](S35-packaged-environment-parity.md) | RCP exposes and can correct its tool environment | blocked-external | desktop |
 | [S36](S36-updating-never-interrupts-work.md) | Updating waits for idle and never interrupts silently | blocked-external | desktop |
 | [S40](S40-discuss-and-work.md) | Change one conversation from discussion into work | implemented | pytest + browser |

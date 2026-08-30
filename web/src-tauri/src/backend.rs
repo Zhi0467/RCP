@@ -889,15 +889,15 @@ struct DevBundleSettings {
     uv: PathBuf,
 }
 
-/// A bundled `RCP Dev.app` serves its frontend from the backend it launches, the
-/// same way the release app does; only `tauri dev` has a Vite server to load.
+/// A bundled source-built `RCP.app` serves its frontend from the backend it
+/// launches; only `tauri dev` has a Vite server to load.
 pub fn is_bundled_dev_app() -> bool {
     matches!(dev_bundle_settings(), Ok(Some(_)))
 }
 
 fn dev_bundle_settings() -> Result<Option<DevBundleSettings>, String> {
-    let executable = env::current_exe()
-        .map_err(|error| format!("cannot locate the RCP Dev executable: {error}"))?;
+    let executable =
+        env::current_exe().map_err(|error| format!("cannot locate the RCP executable: {error}"))?;
     let Some(contents) = executable.parent().and_then(Path::parent) else {
         return Ok(None);
     };
@@ -906,10 +906,10 @@ fn dev_bundle_settings() -> Result<Option<DevBundleSettings>, String> {
         return Ok(None);
     }
     let value = plist::Value::from_file(&info_plist)
-        .map_err(|error| format!("cannot read RCP Dev Info.plist: {error}"))?;
+        .map_err(|error| format!("cannot read the RCP Info.plist: {error}"))?;
     let dictionary = value
         .as_dictionary()
-        .ok_or_else(|| "RCP Dev Info.plist is not a dictionary".to_string())?;
+        .ok_or_else(|| "The RCP Info.plist is not a dictionary".to_string())?;
     let checkout = dictionary
         .get("RCPDevCheckout")
         .and_then(plist::Value::as_string);
@@ -923,7 +923,7 @@ fn dev_bundle_settings() -> Result<Option<DevBundleSettings>, String> {
         })),
         (None, None) => Ok(None),
         _ => {
-            Err("RCP Dev Info.plist must record both RCPDevCheckout and RCPDevUvExecutable".into())
+            Err("The RCP Info.plist must record both RCPDevCheckout and RCPDevUvExecutable".into())
         }
     }
 }
@@ -955,7 +955,7 @@ fn dev_uv() -> Result<PathBuf, String> {
             return canonical_file(&candidate, "uv in ~/.local/bin");
         }
     }
-    Err("RCP Dev.app cannot find uv; set RCP_DEV_UV to its absolute path".into())
+    Err("RCP.app cannot find uv; set RCP_DEV_UV to its absolute path".into())
 }
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
