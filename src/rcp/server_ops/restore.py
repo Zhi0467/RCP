@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import shutil
 import sqlite3
 import stat
@@ -14,8 +15,8 @@ import subprocess
 import tarfile
 import tempfile
 import uuid
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -36,6 +37,13 @@ from rcp.server_ops.config import (
     load_installed_server_config,
     validate_age_recipient,
 )
+from rcp.server_ops.git_credentials import (
+    DeployKeyMaterial,
+    GitCredentialManager,
+    GitCredentialRefused,
+    GitWriteProbe,
+    restore_deploy_key_operator_step,
+)
 from rcp.server_ops.install import (
     InstalledServiceControlRefused,
     InstalledSystemServiceController,
@@ -43,13 +51,19 @@ from rcp.server_ops.install import (
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import (
     CommandAction,
+    ExternalAction,
+    ExternalServiceTarget,
     MachineTarget,
     NonsecretField,
     ServerCommandRequest,
     ServerPlanEvent,
     ServerStep,
 )
-from rcp.storage import AppStore
+from rcp.server_ops.project_checkout import (
+    ProjectCheckoutManager,
+    ProjectCheckoutRefused,
+)
+from rcp.storage import AppStore, ProjectProvisioningMachineIntent
 
 RESTORE_JOURNAL_SCHEMA_VERSION = 1
 RESTORE_JOURNAL_NAME = "restore.json"
@@ -75,6 +89,8 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
 
 _SHA256 = frozenset("0123456789abcdef")
 _FULL_COMMIT = frozenset("0123456789abcdef")
+_RESTORE_ALIAS = re.compile(r"[a-z][a-z0-9-]{0,47}")
+_OPENSSH_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
 
 
 class RestoreRefused(RuntimeError):
@@ -128,6 +144,138 @@ class RestoreConfirmation(_StrictModel):
         return value
 
 
+class RestoreRepositoryRecovery(_StrictModel):
+    project_id: str
+    repository_alias: str
+    machine_alias: str
+    state: Literal["key_started", "key_ready", "checkout_ready"]
+    deploy_key_label: str | None = None
+    deploy_public_key: str | None = None
+    public_key_fingerprint: str | None = None
+    probed_commit: str | None = None
+    central_root: str | None = None
+    repository_path: str | None = None
+    checkout_disposition: Literal["request_created", "reused_existing"] | None = None
+    checkout_commit: str | None = None
+
+    @field_validator("project_id")
+    @classmethod
+    def validate_project_id(cls, value: str) -> str:
+        try:
+            parsed = uuid.UUID(value)
+        except (AttributeError, ValueError) as exc:
+            raise ValueError("restore repository project id must be a canonical UUID4") from exc
+        if parsed.version != 4 or str(parsed) != value:
+            raise ValueError("restore repository project id must be a canonical UUID4")
+        return value
+
+    @field_validator("repository_alias", "machine_alias")
+    @classmethod
+    def validate_alias(cls, value: str) -> str:
+        if _RESTORE_ALIAS.fullmatch(value) is None:
+            raise ValueError("restore repository alias is invalid")
+        return value
+
+    @field_validator("deploy_key_label", "deploy_public_key")
+    @classmethod
+    def validate_key_text(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        if (
+            not value
+            or len(value) > 16 * 1024
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        ):
+            raise ValueError(f"restore {info.field_name.replace('_', ' ')} is invalid")
+        return value
+
+    @field_validator("public_key_fingerprint")
+    @classmethod
+    def validate_fingerprint(cls, value: str | None) -> str | None:
+        if value is not None and _OPENSSH_FINGERPRINT.fullmatch(value) is None:
+            raise ValueError("restore public-key fingerprint is invalid")
+        return value
+
+    @field_validator("probed_commit", "checkout_commit")
+    @classmethod
+    def validate_commit(cls, value: str | None, info) -> str | None:
+        if value is not None and (
+            len(value) != 40 or any(character not in _FULL_COMMIT for character in value)
+        ):
+            raise ValueError(f"restore {info.field_name.replace('_', ' ')} is invalid")
+        return value
+
+    @field_validator("central_root", "repository_path")
+    @classmethod
+    def validate_optional_path(cls, value: str | None, info) -> str | None:
+        return (
+            None
+            if value is None
+            else _absolute(value, label=f"restore {info.field_name.replace('_', ' ')}")
+        )
+
+    @model_validator(mode="after")
+    def validate_progress(self) -> RestoreRepositoryRecovery:
+        key_fields = (
+            self.deploy_key_label,
+            self.deploy_public_key,
+            self.public_key_fingerprint,
+        )
+        checkout_fields = (
+            self.central_root,
+            self.repository_path,
+            self.checkout_disposition,
+            self.checkout_commit,
+        )
+        if self.state == "key_started" and any((*key_fields, self.probed_commit, *checkout_fields)):
+            raise ValueError("a restore key-start receipt cannot claim later effects")
+        if self.state in {"key_ready", "checkout_ready"} and not all(key_fields):
+            raise ValueError("a restore key-ready receipt requires its complete public proof")
+        if self.state == "key_ready" and any(checkout_fields):
+            raise ValueError("a restore key-ready receipt cannot claim a checkout")
+        if self.state == "checkout_ready" and (
+            self.probed_commit is None or not all(checkout_fields)
+        ):
+            raise ValueError("a restore checkout receipt requires every checkout proof")
+        if self.checkout_commit is not None and self.checkout_commit != self.probed_commit:
+            raise ValueError("restore checkout and write-probe commits differ")
+        return self
+
+
+class RestoreProjectRebind(_StrictModel):
+    project_id: str
+    locator: str
+    state_location: str
+    state_remote: bool
+
+    @field_validator("project_id")
+    @classmethod
+    def validate_project_id(cls, value: str) -> str:
+        try:
+            parsed = uuid.UUID(value)
+        except (AttributeError, ValueError) as exc:
+            raise ValueError("restored project id must be a canonical UUID4") from exc
+        if parsed.version != 4 or str(parsed) != value:
+            raise ValueError("restored project id must be a canonical UUID4")
+        return value
+
+    @field_validator("locator")
+    @classmethod
+    def validate_locator(cls, value: str) -> str:
+        return _absolute(value, label="restored project locator")
+
+    @field_validator("state_location")
+    @classmethod
+    def validate_state_location(cls, value: str) -> str:
+        if (
+            not value
+            or len(value) > 8192
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        ):
+            raise ValueError("restored project state location is invalid")
+        return value
+
+
 class RestoreOperationJournal(_StrictModel):
     schema_version: Literal[RESTORE_JOURNAL_SCHEMA_VERSION] = RESTORE_JOURNAL_SCHEMA_VERSION
     operation_id: str
@@ -144,9 +292,18 @@ class RestoreOperationJournal(_StrictModel):
     confirmation: RestoreConfirmation
     replacement_restore: Literal[True] = True
     machine_local_operations: Literal["not_restored"] = "not_restored"
-    phase: Literal["archive_verified", "sqlite_restored"]
+    phase: Literal[
+        "archive_verified",
+        "sqlite_restored",
+        "checkouts_recovering",
+        "checkouts_ready",
+        "projects_rebinding",
+        "checkouts_reconstructed",
+    ]
     detached_at: datetime
     restored_sqlite_sha256: str | None = None
+    repository_recoveries: tuple[RestoreRepositoryRecovery, ...] = ()
+    project_rebinds: tuple[RestoreProjectRebind, ...] = ()
     updated_at: datetime
 
     @field_validator("operation_id")
@@ -200,13 +357,59 @@ class RestoreOperationJournal(_StrictModel):
             raise ValueError("restore destination differs from its human confirmation")
         if self.manifest.database_schema_sha256 not in SUPPORTED_RESTORE_DATABASE_SCHEMAS:
             raise ValueError("restore journal names an unsupported persistence boundary")
-        if self.phase == "archive_verified" and self.restored_sqlite_sha256 is not None:
-            raise ValueError("an uninstalled restore journal cannot name target bytes")
-        if self.phase == "sqlite_restored" and (
+        installed = self.phase != "archive_verified"
+        if not installed and (
+            self.restored_sqlite_sha256 is not None
+            or self.repository_recoveries
+            or self.project_rebinds
+        ):
+            raise ValueError("an uninstalled restore journal cannot name later effects")
+        if installed and (
             self.restored_sqlite_sha256 is None
             or self.restored_sqlite_sha256 != self.candidate_sqlite_sha256
         ):
             raise ValueError("a restored journal must bind the installed candidate bytes")
+        repository_keys = [
+            (item.project_id, item.repository_alias) for item in self.repository_recoveries
+        ]
+        project_ids = [item.project_id for item in self.project_rebinds]
+        if repository_keys != sorted(set(repository_keys)):
+            raise ValueError("restore repository recovery receipts must be sorted and unique")
+        if project_ids != sorted(set(project_ids)):
+            raise ValueError("restore project rebind receipts must be sorted and unique")
+        captured = {
+            project.project_id: project
+            for project in self.manifest.projects
+            if project.status == "captured"
+        }
+        expected_repositories: set[tuple[str, str]] = set()
+        for project in captured.values():
+            if project.recovery is None:
+                raise ValueError("captured restore project is missing its recovery descriptor")
+            expected_repositories.update(
+                (project.project_id, repository.alias)
+                for repository in project.recovery.repositories
+            )
+        if not set(repository_keys).issubset(expected_repositories):
+            raise ValueError("restore repository receipt is outside captured recovery inventory")
+        if not set(project_ids).issubset(captured):
+            raise ValueError("restore project rebind is outside captured project inventory")
+        if self.phase in {
+            "checkouts_ready",
+            "projects_rebinding",
+            "checkouts_reconstructed",
+        } and (
+            set(repository_keys) != expected_repositories
+            or any(item.state != "checkout_ready" for item in self.repository_recoveries)
+        ):
+            raise ValueError("checkout-ready restore phase requires every repository receipt")
+        if self.phase == "checkouts_reconstructed" and set(project_ids) != set(captured):
+            raise ValueError("reconstructed restore phase requires every captured project rebind")
+        if self.project_rebinds and self.phase not in {
+            "projects_rebinding",
+            "checkouts_reconstructed",
+        }:
+            raise ValueError("project rebind receipts require the catalog-rebinding phase")
         return self
 
 
@@ -223,7 +426,15 @@ class RestoreCandidate:
     detached_at: datetime
 
 
+@dataclass(frozen=True)
+class RestoreCheckoutRecoveryOutcome:
+    journal: RestoreOperationJournal
+    operator_action: ServerStep | None = None
+
+
 class RestoreMachine(Protocol):
+    def admission(self) -> AbstractContextManager[None]: ...
+
     def configured_data_dir(self) -> Path: ...
 
     def stage_candidate(
@@ -246,6 +457,19 @@ class RestoreMachine(Protocol):
     ) -> RestoreOperationJournal: ...
 
     def verify_offline_candidate(
+        self,
+        journal: RestoreOperationJournal,
+    ) -> RestoreOperationJournal: ...
+
+    def recover_checkouts(
+        self,
+        journal: RestoreOperationJournal,
+        *,
+        resume_argv: tuple[str, ...],
+        step_number: int,
+    ) -> RestoreCheckoutRecoveryOutcome: ...
+
+    def rebind_checkouts(
         self,
         journal: RestoreOperationJournal,
     ) -> RestoreOperationJournal: ...
@@ -273,14 +497,32 @@ def prepare_restore_command(
     )
 
     def execute(emitter: ServerEventEmitter, _input_stream: BinaryIO) -> None:
-        _execute_restore(
-            request,
-            identity,
-            emitter,
-            resolved_machine,
-            data_dir=data_dir,
-            resume_executable=resume_executable,
-        )
+        if request.restore_confirmed_data_dir != str(data_dir):
+            _execute_restore(
+                request,
+                identity,
+                emitter,
+                resolved_machine,
+                data_dir=data_dir,
+                resume_executable=resume_executable,
+            )
+            return
+        try:
+            with resolved_machine.admission():
+                _execute_restore(
+                    request,
+                    identity,
+                    emitter,
+                    resolved_machine,
+                    data_dir=data_dir,
+                    resume_executable=resume_executable,
+                )
+        except RestoreRefused as exc:
+            planned = emitter.events[0]
+            assert isinstance(planned, ServerPlanEvent)
+            emitter.emit_step(
+                planned.steps[2].model_copy(update={"state": "failed", "message": str(exc)})
+            )
 
     return PreparedServerCommand(plan=plan, execute=execute)
 
@@ -356,7 +598,35 @@ def _restore_plan(identity: CallerIdentity, data_dir: Path) -> tuple[ServerStep,
             phase="restore_offline_readback",
             state="pending",
             expected_success="The exact replacement database is durable and systemd remains stopped.",
-            message="RCP will verify the offline candidate and stop here.",
+            message="RCP will verify the offline candidate before checkout recovery begins.",
+        ),
+        ServerStep(
+            number=6,
+            title="Reconstruct central checkouts with fresh keys",
+            purpose=(
+                "Generate replacement repository identities, prove GitHub write access, clone "
+                "the exact local or SSH checkouts, and reject conflicting retained research."
+            ),
+            performed_by="system",
+            target=root,
+            phase="restore_checkouts",
+            state="pending",
+            expected_success="Every captured repository has one verified replacement checkout.",
+            message="RCP will recover each checkout without publishing archived project state.",
+        ),
+        ServerStep(
+            number=7,
+            title="Rebind the stopped project catalog",
+            purpose=(
+                "Regenerate local locator state and point restored rows only at the verified "
+                "replacement checkouts."
+            ),
+            performed_by="system",
+            target=root,
+            phase="restore_catalog_rebind",
+            state="pending",
+            expected_success="Every captured project names only its replacement checkout set.",
+            message="RCP will keep every rebound project unavailable until publication passes.",
         ),
     )
 
@@ -374,18 +644,12 @@ def _execute_restore(
     assert isinstance(planned, ServerPlanEvent)
     steps = planned.steps
     confirmed = request.restore_confirmed_data_dir
+    resume = _restore_resume_argv(
+        request,
+        resume_executable=resume_executable,
+        data_dir=data_dir,
+    )
     if confirmed is None:
-        resume = (
-            "sudo",
-            str(resume_executable),
-            "server",
-            "restore",
-            request.archive_path,
-            "--identity-file",
-            request.recovery_identity_file,
-            "--confirm-data-dir",
-            str(data_dir),
-        )
         emitter.emit_step(
             steps[0].model_copy(
                 update={
@@ -470,23 +734,139 @@ def _execute_restore(
                 NonsecretField(name="sqlite_sha256", value=value.candidate_sqlite_sha256),
             ),
         )
-        _run_restore_step(
+        journal = _run_restore_step(
             emitter,
             steps[4],
             running="Reading back the journal, SQLite integrity, target inventory, and stopped service.",
             operation=lambda: machine.verify_offline_candidate(journal),
-            succeeded=(
-                "The offline restored-state candidate is valid; checkout reconstruction, "
-                "publication, authority review, and activation remain intentionally pending."
-            ),
+            succeeded="The offline restored-state candidate is valid and remains unserved.",
             fields=lambda value: (
                 NonsecretField(name="restore_phase", value=value.phase),
                 NonsecretField(name="service_state", value="stopped_disabled"),
                 NonsecretField(name="replacement_restore", value=True),
             ),
         )
+        emitter.emit_step(
+            steps[5].model_copy(
+                update={
+                    "state": "running",
+                    "message": (
+                        "Creating fresh deploy keys and reconstructing exact replacement checkouts."
+                    ),
+                }
+            )
+        )
+        try:
+            outcome = machine.recover_checkouts(
+                journal,
+                resume_argv=resume,
+                step_number=steps[5].number,
+            )
+        except RestoreRefused as exc:
+            emitter.emit_step(steps[5].model_copy(update={"state": "failed", "message": str(exc)}))
+            return
+        if outcome.operator_action is not None:
+            emitter.emit_step(outcome.operator_action)
+            return
+        journal = outcome.journal
+        emitter.emit_step(
+            steps[5].model_copy(
+                update={
+                    "state": "succeeded",
+                    "message": (
+                        "Every captured repository has a fresh key and one verified replacement "
+                        "checkout. Archived project state is still unpublished."
+                    ),
+                    "fields": (
+                        NonsecretField(
+                            name="recovered_repositories",
+                            value=len(journal.repository_recoveries),
+                        ),
+                    ),
+                }
+            )
+        )
+        journal = _run_restore_step(
+            emitter,
+            steps[6],
+            running="Regenerating locators and rebinding stopped catalog rows.",
+            operation=lambda: machine.rebind_checkouts(journal),
+            succeeded=(
+                "Every captured project is rebound but remains unavailable until publication, "
+                "replay, authority review, and activation pass."
+            ),
+            fields=lambda value: (
+                NonsecretField(name="restore_phase", value=value.phase),
+                NonsecretField(name="rebound_projects", value=len(value.project_rebinds)),
+            ),
+        )
     except _ReportedRestoreFailure:
         return
+
+
+def _restore_resume_argv(
+    request: ServerCommandRequest,
+    *,
+    resume_executable: Path,
+    data_dir: Path,
+) -> tuple[str, ...]:
+    assert request.archive_path is not None
+    assert request.recovery_identity_file is not None
+    return (
+        "sudo",
+        str(resume_executable),
+        "server",
+        "restore",
+        request.archive_path,
+        "--identity-file",
+        request.recovery_identity_file,
+        "--confirm-data-dir",
+        str(data_dir),
+    )
+
+
+def _restore_probe_cleanup_step(
+    material: DeployKeyMaterial,
+    probe: GitWriteProbe,
+    *,
+    number: int,
+    resume_argv: tuple[str, ...],
+) -> ServerStep:
+    temporary_ref = probe.temporary_ref or "the request-scoped restore probe ref"
+    return ServerStep(
+        number=number,
+        title="Inspect the restore write-probe ref",
+        purpose=(
+            "Resolve one ambiguous request-owned GitHub ref without deleting unrelated history."
+        ),
+        performed_by="human",
+        target=ExternalServiceTarget(
+            service="github.com",
+            resource=material.repository.identity,
+            destination_url=material.repository.settings_url,
+            required_authority_role="repository administrator",
+        ),
+        phase="restore_github_probe_cleanup",
+        state="operator_action_needed",
+        expected_success=(
+            "The exact request-scoped ref is absent and the same restore can repeat its proof."
+        ),
+        message=probe.diagnostic,
+        actions=(
+            ExternalAction(
+                instruction=(
+                    f"Inspect {temporary_ref!r} in {material.repository.identity}. Remove it only "
+                    "if it is the restore-owned probe ref described above; otherwise preserve it "
+                    "and investigate the ownership conflict."
+                )
+            ),
+        ),
+        fields=(
+            NonsecretField(name="repository", value=material.repository.identity),
+            NonsecretField(name="temporary_ref", value=temporary_ref),
+        ),
+        resume_argv=resume_argv,
+    )
 
 
 def _run_restore_step(
@@ -528,6 +908,8 @@ class LinuxRestoreMachine:
         decryptor: Callable[[Path, Path, Path], str | None] | None = None,
         commit_compatible: Callable[[str, str, Path], bool] | None = None,
         detach_worker: Callable[[Path, str, datetime], None] | None = None,
+        credential_manager: GitCredentialManager | None = None,
+        checkout_manager: ProjectCheckoutManager | None = None,
     ) -> None:
         self.layout = layout
         self.config_loader = config_loader
@@ -545,6 +927,47 @@ class LinuxRestoreMachine:
         self.decryptor = decryptor or self._decrypt_archive
         self.commit_compatible = commit_compatible or _git_commit_is_supported
         self.detach_worker = detach_worker or self._detach_candidate
+        self.credential_manager = credential_manager or GitCredentialManager(layout)
+        self.checkout_manager = checkout_manager or ProjectCheckoutManager(
+            layout,
+            credential_manager=self.credential_manager,
+        )
+        self._admission_active = False
+
+    @contextmanager
+    def admission(self) -> Iterator[None]:
+        """Serialize the complete machine-changing restore command."""
+
+        if self._admission_active:
+            yield
+            return
+        from rcp.server_ops.backup import BackupRunRefused, backup_run_coordination_lock
+        from rcp.server_ops.update import UpdateRefused, server_update_operation_lock
+
+        try:
+            with (
+                server_update_operation_lock(
+                    self.layout,
+                    root_uid=self.root_uid,
+                    root_gid=self.root_gid,
+                    service_gid=self.service_gid,
+                ),
+                backup_run_coordination_lock(
+                    self.layout,
+                    expected_uid=self.service_uid,
+                    expected_gid=self.service_gid,
+                ),
+            ):
+                self._admission_active = True
+                try:
+                    yield
+                finally:
+                    self._admission_active = False
+        except (BackupRunRefused, UpdateRefused) as exc:
+            raise RestoreRefused(
+                "Another source update or protected backup owns the server machine boundary. "
+                "Wait for it to finish, then rerun restore."
+            ) from exc
 
     def configured_data_dir(self) -> Path:
         try:
@@ -688,32 +1111,8 @@ class LinuxRestoreMachine:
         candidate: RestoreCandidate,
         confirmation: RestoreConfirmation,
     ) -> RestoreOperationJournal:
-        from rcp.server_ops.backup import BackupRunRefused, backup_run_coordination_lock
-        from rcp.server_ops.update import (
-            UpdateRefused,
-            server_update_operation_lock,
-        )
-
-        try:
-            with (
-                server_update_operation_lock(
-                    self.layout,
-                    root_uid=self.root_uid,
-                    root_gid=self.root_gid,
-                    service_gid=self.service_gid,
-                ),
-                backup_run_coordination_lock(
-                    self.layout,
-                    expected_uid=self.service_uid,
-                    expected_gid=self.service_gid,
-                ),
-            ):
-                return self._journal_candidate_locked(candidate, confirmation)
-        except (BackupRunRefused, UpdateRefused) as exc:
-            raise RestoreRefused(
-                "Another source update or protected backup owns the server machine boundary. "
-                "Wait for it to finish, then rerun restore."
-            ) from exc
+        with self.admission():
+            return self._journal_candidate_locked(candidate, confirmation)
 
     def _journal_candidate_locked(
         self,
@@ -775,7 +1174,7 @@ class LinuxRestoreMachine:
         if current.operation_id != journal.operation_id:
             raise RestoreRefused("The durable restore operation changed before database install.")
         target = self.layout.data_dir / "rcp.sqlite3"
-        if current.phase == "sqlite_restored":
+        if current.phase != "archive_verified":
             _require_restored_target(current, target, uid=self.service_uid, gid=self.service_gid)
             return current
         candidate = Path(current.candidate_sqlite_path)
@@ -820,7 +1219,7 @@ class LinuxRestoreMachine:
         journal: RestoreOperationJournal,
     ) -> RestoreOperationJournal:
         current = read_restore_journal(self.layout, expected_uid=self.service_uid)
-        if current.operation_id != journal.operation_id or current.phase != "sqlite_restored":
+        if current.operation_id != journal.operation_id or current.phase == "archive_verified":
             raise RestoreRefused("The restore journal has not reached the offline SQLite boundary.")
         target = self.layout.data_dir / "rcp.sqlite3"
         _require_restored_target(current, target, uid=self.service_uid, gid=self.service_gid)
@@ -832,6 +1231,420 @@ class LinuxRestoreMachine:
                 "The candidate is restored, but RCP could not prove systemd remains stopped."
             ) from exc
         return current
+
+    def recover_checkouts(
+        self,
+        journal: RestoreOperationJournal,
+        *,
+        resume_argv: tuple[str, ...],
+        step_number: int,
+    ) -> RestoreCheckoutRecoveryOutcome:
+        """Reconstruct every captured checkout, pausing only for explicit GitHub work."""
+
+        with self.admission():
+            current = self._current_restore(journal)
+            if current.phase == "checkouts_reconstructed":
+                return RestoreCheckoutRecoveryOutcome(journal=current)
+            if current.phase == "sqlite_restored":
+                current = self._write_restore_phase(current, "checkouts_recovering")
+            if current.phase not in {
+                "checkouts_recovering",
+                "checkouts_ready",
+                "projects_rebinding",
+            }:
+                raise RestoreRefused("The restore journal is outside checkout recovery.")
+
+            for capture in self._captured_projects(current):
+                assert capture.recovery is not None
+                machines = {item.alias: item for item in capture.recovery.machines}
+                for repository in capture.recovery.repositories:
+                    machine = self._recovery_machine(machines[repository.machine_alias])
+                    progress = self._repository_progress(
+                        current,
+                        project_id=capture.project_id,
+                        repository_alias=repository.alias,
+                    )
+                    if progress is None:
+                        try:
+                            self.credential_manager.preflight_recovery_key(
+                                machine,
+                                space_id=current.manifest.space_id,
+                                project_id=capture.project_id,
+                                repository_alias=repository.alias,
+                            )
+                        except GitCredentialRefused as exc:
+                            raise RestoreRefused(str(exc)) from exc
+                        progress = RestoreRepositoryRecovery(
+                            project_id=capture.project_id,
+                            repository_alias=repository.alias,
+                            machine_alias=repository.machine_alias,
+                            state="key_started",
+                        )
+                        current = self._write_repository_progress(current, progress)
+                    try:
+                        material = self.credential_manager.prepare_recovery_key(
+                            machine,
+                            repository.repository,
+                            space_id=current.manifest.space_id,
+                            project_id=capture.project_id,
+                            repository_alias=repository.alias,
+                        )
+                    except GitCredentialRefused as exc:
+                        raise RestoreRefused(
+                            "The fresh restore deploy key could not be created or read back."
+                        ) from exc
+                    if material.public_key_fingerprint == repository.public_key_fingerprint:
+                        raise RestoreRefused(
+                            "The replacement checkout reused the archived deploy-key identity. "
+                            "Preserve that key and repair the deterministic credential path."
+                        )
+                    if progress.state == "key_started":
+                        progress = progress.model_copy(
+                            update={
+                                "state": "key_ready",
+                                "deploy_key_label": material.label,
+                                "deploy_public_key": material.public_key,
+                                "public_key_fingerprint": material.public_key_fingerprint,
+                            }
+                        )
+                        current = self._write_repository_progress(current, progress)
+                    else:
+                        self._require_same_key(progress, material)
+                    if progress.state == "checkout_ready":
+                        try:
+                            result = self.checkout_manager.prepare_recovery(
+                                machine,
+                                material,
+                                project_id=capture.project_id,
+                                repository_alias=repository.alias,
+                                state_repository=(
+                                    repository.alias
+                                    == capture.recovery.configuration.state_repository
+                                ),
+                                expected_head=progress.probed_commit,
+                                retained_provisioning_commit=repository.git_commit,
+                                archived_research=self._archived_research(
+                                    capture,
+                                    repository_alias=repository.alias,
+                                ),
+                            )
+                        except ProjectCheckoutRefused as exc:
+                            raise RestoreRefused(str(exc)) from exc
+                        self._require_same_checkout(
+                            progress,
+                            result,
+                            expected_root=machines[repository.machine_alias].resolved_central_root,
+                        )
+                        continue
+
+                    try:
+                        probe = self.credential_manager.probe_write(
+                            machine,
+                            material,
+                            request_id=current.operation_id,
+                        )
+                    except GitCredentialRefused as exc:
+                        raise RestoreRefused("The fresh restore Git write proof failed.") from exc
+                    if not probe.ready:
+                        if probe.status in {
+                            "github_host_trust_needed",
+                            "github_grant_needed",
+                        }:
+                            return RestoreCheckoutRecoveryOutcome(
+                                journal=current,
+                                operator_action=restore_deploy_key_operator_step(
+                                    self.credential_manager,
+                                    machine,
+                                    material,
+                                    number=step_number,
+                                    resume_argv=resume_argv,
+                                ),
+                            )
+                        if probe.status in {"cleanup_failed", "temporary_ref_conflict"}:
+                            return RestoreCheckoutRecoveryOutcome(
+                                journal=current,
+                                operator_action=_restore_probe_cleanup_step(
+                                    material,
+                                    probe,
+                                    number=step_number,
+                                    resume_argv=resume_argv,
+                                ),
+                            )
+                        if probe.status == "empty_repository":
+                            raise RestoreRefused(
+                                "The captured GitHub repository no longer has any commit. "
+                                "Restore cannot reconstruct its archived checkout anchor."
+                            )
+                        raise RestoreRefused(probe.diagnostic)
+                    assert probe.commit is not None
+                    progress = progress.model_copy(update={"probed_commit": probe.commit})
+                    current = self._write_repository_progress(current, progress)
+                    try:
+                        result = self.checkout_manager.prepare_recovery(
+                            machine,
+                            material,
+                            project_id=capture.project_id,
+                            repository_alias=repository.alias,
+                            state_repository=(
+                                repository.alias == capture.recovery.configuration.state_repository
+                            ),
+                            expected_head=probe.commit,
+                            retained_provisioning_commit=repository.git_commit,
+                            archived_research=self._archived_research(
+                                capture,
+                                repository_alias=repository.alias,
+                            ),
+                        )
+                    except ProjectCheckoutRefused as exc:
+                        raise RestoreRefused(str(exc)) from exc
+                    if (
+                        result.machine_alias != repository.machine_alias
+                        or result.repository_path != repository.resolved_path
+                        or result.central_root
+                        != machines[repository.machine_alias].resolved_central_root
+                        or result.commit != probe.commit
+                    ):
+                        raise RestoreRefused(
+                            "The reconstructed checkout receipt differs from the archived target."
+                        )
+                    progress = progress.model_copy(
+                        update={
+                            "state": "checkout_ready",
+                            "central_root": result.central_root,
+                            "repository_path": result.repository_path,
+                            "checkout_disposition": result.checkout_disposition,
+                            "checkout_commit": result.commit,
+                        }
+                    )
+                    current = self._write_repository_progress(current, progress)
+            if current.phase == "checkouts_recovering":
+                current = self._write_restore_phase(current, "checkouts_ready")
+            return RestoreCheckoutRecoveryOutcome(journal=current)
+
+    def rebind_checkouts(
+        self,
+        journal: RestoreOperationJournal,
+    ) -> RestoreOperationJournal:
+        """Regenerate locators and atomically rebind stopped restored catalog rows."""
+
+        with self.admission():
+            current = self._current_restore(journal)
+            if current.phase == "checkouts_reconstructed":
+                return current
+            if current.phase == "checkouts_ready":
+                current = self._write_restore_phase(current, "projects_rebinding")
+            if current.phase != "projects_rebinding":
+                raise RestoreRefused("The restore journal has not completed checkout recovery.")
+            from rcp.projects import (
+                RestoredProjectRebindRefused,
+                rebind_restored_project_registration,
+            )
+
+            store = AppStore(self.layout.data_dir / "rcp.sqlite3")
+            rebound = {item.project_id for item in current.project_rebinds}
+            for capture in self._captured_projects(current):
+                paths = {
+                    item.repository_alias: item.repository_path
+                    for item in current.repository_recoveries
+                    if item.project_id == capture.project_id
+                    and item.state == "checkout_ready"
+                    and item.repository_path is not None
+                }
+                try:
+                    record = rebind_restored_project_registration(
+                        store,
+                        capture,
+                        repository_paths=paths,
+                        data_dir=self.layout.data_dir,
+                        uid=self.service_uid,
+                        gid=self.service_gid,
+                    )
+                except RestoredProjectRebindRefused as exc:
+                    raise RestoreRefused(str(exc)) from exc
+                receipt = RestoreProjectRebind(
+                    project_id=capture.project_id,
+                    locator=record.locator,
+                    state_location=record.state_location,
+                    state_remote=record.state_remote,
+                )
+                if capture.project_id not in rebound:
+                    current = self._write_project_rebind(current, receipt)
+                    rebound.add(capture.project_id)
+                elif (
+                    next(
+                        item
+                        for item in current.project_rebinds
+                        if item.project_id == capture.project_id
+                    )
+                    != receipt
+                ):
+                    raise RestoreRefused(
+                        "The restored project binding changed after its durable receipt."
+                    )
+            return self._write_restore_phase(current, "checkouts_reconstructed")
+
+    def _current_restore(
+        self,
+        journal: RestoreOperationJournal,
+    ) -> RestoreOperationJournal:
+        current = read_restore_journal(self.layout, expected_uid=self.service_uid)
+        if current.operation_id != journal.operation_id:
+            raise RestoreRefused("The durable restore operation changed during recovery.")
+        return current
+
+    def _write_restore_phase(
+        self,
+        journal: RestoreOperationJournal,
+        phase: Literal[
+            "checkouts_recovering",
+            "checkouts_ready",
+            "projects_rebinding",
+            "checkouts_reconstructed",
+        ],
+    ) -> RestoreOperationJournal:
+        updated = journal.model_copy(update={"phase": phase, "updated_at": self.clock()})
+        write_restore_journal(
+            updated,
+            self.layout,
+            uid=self.service_uid,
+            gid=self.service_gid,
+        )
+        return read_restore_journal(self.layout, expected_uid=self.service_uid)
+
+    def _write_repository_progress(
+        self,
+        journal: RestoreOperationJournal,
+        progress: RestoreRepositoryRecovery,
+    ) -> RestoreOperationJournal:
+        items = {
+            (item.project_id, item.repository_alias): item for item in journal.repository_recoveries
+        }
+        items[(progress.project_id, progress.repository_alias)] = progress
+        updated = journal.model_copy(
+            update={
+                "repository_recoveries": tuple(items[key] for key in sorted(items)),
+                "updated_at": self.clock(),
+            }
+        )
+        write_restore_journal(
+            updated,
+            self.layout,
+            uid=self.service_uid,
+            gid=self.service_gid,
+        )
+        return read_restore_journal(self.layout, expected_uid=self.service_uid)
+
+    def _write_project_rebind(
+        self,
+        journal: RestoreOperationJournal,
+        receipt: RestoreProjectRebind,
+    ) -> RestoreOperationJournal:
+        items = {item.project_id: item for item in journal.project_rebinds}
+        items[receipt.project_id] = receipt
+        updated = journal.model_copy(
+            update={
+                "project_rebinds": tuple(items[key] for key in sorted(items)),
+                "updated_at": self.clock(),
+            }
+        )
+        write_restore_journal(
+            updated,
+            self.layout,
+            uid=self.service_uid,
+            gid=self.service_gid,
+        )
+        return read_restore_journal(self.layout, expected_uid=self.service_uid)
+
+    @staticmethod
+    def _captured_projects(
+        journal: RestoreOperationJournal,
+    ) -> tuple:
+        return tuple(
+            sorted(
+                (item for item in journal.manifest.projects if item.status == "captured"),
+                key=lambda item: item.project_id,
+            )
+        )
+
+    @staticmethod
+    def _repository_progress(
+        journal: RestoreOperationJournal,
+        *,
+        project_id: str,
+        repository_alias: str,
+    ) -> RestoreRepositoryRecovery | None:
+        return next(
+            (
+                item
+                for item in journal.repository_recoveries
+                if item.project_id == project_id and item.repository_alias == repository_alias
+            ),
+            None,
+        )
+
+    def _recovery_machine(self, archived) -> ProjectProvisioningMachineIntent:
+        if archived.location == "local":
+            if (
+                archived.os_account != self.layout.service_account
+                or archived.resolved_central_root != str(self.layout.projects_root)
+            ):
+                raise RestoreRefused(
+                    "The archived local checkout target differs from this installation."
+                )
+            # The production layout is fixed; model_construct keeps injected test
+            # layouts usable after the exact archived/install comparison above.
+            return ProjectProvisioningMachineIntent.model_construct(
+                alias=archived.alias,
+                location="local",
+                host="",
+                os_account=archived.os_account,
+                central_root=archived.resolved_central_root,
+            )
+        return ProjectProvisioningMachineIntent(
+            alias=archived.alias,
+            location="ssh",
+            host=archived.host,
+            os_account=archived.os_account,
+            central_root=archived.resolved_central_root,
+        )
+
+    @staticmethod
+    def _require_same_key(
+        progress: RestoreRepositoryRecovery,
+        material: DeployKeyMaterial,
+    ) -> None:
+        if (
+            progress.deploy_key_label != material.label
+            or progress.deploy_public_key != material.public_key
+            or progress.public_key_fingerprint != material.public_key_fingerprint
+        ):
+            raise RestoreRefused("The fresh restore deploy key changed after its durable receipt.")
+
+    @staticmethod
+    def _archived_research(capture, *, repository_alias: str) -> dict[str, tuple[str, int]]:
+        assert capture.recovery is not None
+        if repository_alias != capture.recovery.configuration.state_repository:
+            return {}
+        return {
+            item.source_relative_path: (item.sha256, item.size_bytes)
+            for item in capture.files
+            if item.source_relative_path.startswith(".research/")
+        }
+
+    @staticmethod
+    def _require_same_checkout(progress, result, *, expected_root: str) -> None:
+        if (
+            result.machine_alias != progress.machine_alias
+            or result.repository_alias != progress.repository_alias
+            or result.repository_path != progress.repository_path
+            or result.central_root != expected_root
+            or result.central_root != progress.central_root
+            or result.commit != progress.checkout_commit
+            or result.checkout_disposition != progress.checkout_disposition
+        ):
+            raise RestoreRefused(
+                "The reconstructed checkout changed after its durable recovery receipt."
+            )
 
     def _current_release(self) -> Path:
         try:

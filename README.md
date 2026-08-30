@@ -120,8 +120,12 @@ verification commands are in [docs/desktop.md](docs/desktop.md).
 > `backup configure`, `backup run`, and `update` are concrete and share one
 > interactive/machine-readable progress contract. Install is proven on
 > disposable Ubuntu 22.04 and 24.04 hosts. `restore` currently validates an
-> encrypted archive and installs only a stopped, detached SQLite candidate; it
-> cannot yet reconstruct/publish project checkouts or activate the service.
+> encrypted archive, installs a stopped detached SQLite candidate, creates fresh
+> repository deploy keys, reconstructs local or SSH central checkouts from Git,
+> and rebinds the stopped project catalog. It pauses with exact GitHub grant
+> instructions when the new key needs repository-admin approval. It cannot yet
+> publish archived project state, review replacement authority, or activate the
+> service.
 > `member remove` and `project transfer-import` still stop with an explicit
 > unavailable result.
 > Every command below is terminal-only; no desktop wizard drives them yet.

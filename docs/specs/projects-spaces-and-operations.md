@@ -1317,20 +1317,30 @@ immutable receipt, records durable protected/partial/failure status, deletes
 only revalidated proven retention targets, and enables the systemd timer only
 after a successful first run.
 
-Replacement restore currently implements its first offline boundary. `rcp
-server restore` requires the installed server's exact fresh/empty data
+Replacement restore currently implements its database and checkout-recovery
+boundaries. `rcp server restore` requires the installed server's exact fresh/empty data
 directory and a protected off-server `age` identity, verifies the canonical
 manifest, every archived byte, the recorded database schema, and the source
 commit boundary before target mutation, and constructs a service-owned SQLite
 candidate with every captured runnable lifecycle detached. It stops and disables
 the service, journals the exact archive, candidate, and confirmation outside
 the data directory, installs only the detached SQLite file atomically, and
-verifies it without serving. The unfinished journal blocks direct installed startup,
-install, update, and protected backup; doctor reports the same fence. Lost
-candidate bytes can be rebuilt only by re-entering restore with the same archive
-and identity. Checkout reconstruction, canonical publication, replacement
-authority/member review, service activation, and journal completion remain
-unimplemented, so this boundary is not yet a usable restored team server.
+verifies it without serving. It then records key generation before creating
+each fresh repository-scoped key on the exact local or SSH checkout account,
+pauses for the repository administrator's GitHub write grant when necessary,
+proves read/write access with the request-scoped ref check, and reconstructs the
+checkout at current GitHub HEAD while separately proving the archived
+provisioning commit still exists. Retained `.research` input is accepted only
+when every observed durable file is byte-identical to the validated archive;
+unknown, newer, unsafe, or unclassified input is left intact and stops restore.
+After all checkouts pass, restore regenerates any required local bootstrap
+manifest and atomically rebinds every captured catalog row while keeping it
+unavailable. The unfinished journal blocks direct installed startup, install,
+update, and protected backup; doctor reports the same fence. Lost candidate
+bytes can be rebuilt only by re-entering restore with the same archive and
+identity. Canonical publication and replay, replacement-authority/member review,
+service activation, and journal completion remain unimplemented, so this is not
+yet a usable restored team server.
 The private installed-service control socket exposes probe, provider plan/check,
 project-provision plan/step, and online SQLite-capture operations. `rcp server
 project provision <request-id>` publishes one complete plan, advances one

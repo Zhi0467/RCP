@@ -8,6 +8,7 @@ nonsecret JSON. Git and durable-state changes remain with the caller.
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import pwd
@@ -23,6 +24,8 @@ DIRECTORY_MODE = 0o700
 MAX_RESEARCH_ENTRIES = 4096
 MAX_PATCH_BYTES = 1024 * 1024
 MAX_GIT_CONFIG_BYTES = 1024 * 1024
+MAX_RECOVERY_FILES = 100_000
+HASH_CHUNK_BYTES = 1024 * 1024
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
@@ -343,6 +346,199 @@ def _git_directory(
     return {"repository_path": str(path), "safe": True}
 
 
+def _recovery_research(
+    expected_account: str,
+    expected_home: str,
+    repository_path: str,
+    raw_policy: str,
+) -> dict[str, object]:
+    try:
+        policy = json.loads(raw_policy)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("recovery research policy is invalid") from exc
+    if not isinstance(policy, dict) or set(policy) != {
+        "durable_roots",
+        "excluded_direct",
+        "excluded_names",
+        "excluded_prefixes",
+        "offset",
+        "page_size",
+    }:
+        raise ValueError("recovery research policy is invalid")
+    for name in (
+        "durable_roots",
+        "excluded_direct",
+        "excluded_names",
+        "excluded_prefixes",
+    ):
+        values = policy[name]
+        if (
+            not isinstance(values, list)
+            or not all(isinstance(value, str) and value for value in values)
+            or values != sorted(set(values))
+        ):
+            raise ValueError("recovery research policy is invalid")
+    offset = policy["offset"]
+    page_size = policy["page_size"]
+    if (
+        not isinstance(offset, int)
+        or isinstance(offset, bool)
+        or offset < 0
+        or not isinstance(page_size, int)
+        or isinstance(page_size, bool)
+        or page_size < 1
+        or page_size > 16
+    ):
+        raise ValueError("recovery research page is invalid")
+    durable = set(policy["durable_roots"])
+    excluded_direct = set(policy["excluded_direct"])
+    excluded_names = set(policy["excluded_names"])
+    excluded_prefixes = tuple(policy["excluded_prefixes"])
+    if durable & excluded_direct:
+        raise ValueError("recovery research policy overlaps")
+    account, _home = _account(expected_account, expected_home)
+    repository = _absolute_path(repository_path, "repository checkout path")
+    with _opened_absolute_directory(
+        repository,
+        uid=account.pw_uid,
+        require_owner=True,
+    ) as repository_descriptor:
+        try:
+            research_descriptor = os.open(
+                ".research",
+                _DIRECTORY_FLAGS,
+                dir_fd=repository_descriptor,
+            )
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                research_descriptor = None
+            else:
+                raise ValueError("retained research cannot be inspected") from exc
+    if research_descriptor is None:
+        return {
+            "research_present": False,
+            "inventory_sha256": hashlib.sha256(b"[]").hexdigest(),
+            "total_files": 0,
+            "next_offset": None,
+            "files": [],
+        }
+    inventory: list[dict[str, object]] = []
+
+    def require_owned(info: os.stat_result, *, kind: str) -> None:
+        if info.st_uid != account.pw_uid or stat.S_IMODE(info.st_mode) & 0o022:
+            raise ValueError(f"retained research {kind} has unsafe ownership or mode")
+
+    def hash_file(parent: int, name: str) -> tuple[str, int]:
+        try:
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+        except OSError as exc:
+            raise ValueError("retained research file cannot be opened safely") from exc
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("retained research contains an unsafe entry")
+            require_owned(info, kind="file")
+            digest = hashlib.sha256()
+            while chunk := os.read(descriptor, HASH_CHUNK_BYTES):
+                digest.update(chunk)
+            return digest.hexdigest(), info.st_size
+        finally:
+            os.close(descriptor)
+
+    def add_tree(parent: int, prefix: str) -> None:
+        try:
+            names = sorted(os.listdir(parent))
+        except OSError as exc:
+            raise ValueError("retained research cannot be enumerated") from exc
+        for name in names:
+            if name in excluded_names or name.startswith(excluded_prefixes):
+                continue
+            try:
+                info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            except OSError as exc:
+                raise ValueError("retained research entry cannot be inspected") from exc
+            relative = f"{prefix}/{name}"
+            if stat.S_ISDIR(info.st_mode):
+                require_owned(info, kind="directory")
+                try:
+                    child = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent)
+                except OSError as exc:
+                    raise ValueError("retained research directory is unsafe") from exc
+                try:
+                    require_owned(os.fstat(child), kind="directory")
+                    add_tree(child, relative)
+                finally:
+                    os.close(child)
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("retained research contains an unsafe entry")
+            digest, size = hash_file(parent, name)
+            inventory.append(
+                {
+                    "path": relative,
+                    "sha256": digest,
+                    "size_bytes": size,
+                }
+            )
+            if len(inventory) > MAX_RECOVERY_FILES:
+                raise ValueError("retained research inventory exceeds its bound")
+
+    with _Directory(research_descriptor) as opened_research:
+        research_info = os.fstat(opened_research)
+        require_owned(research_info, kind="directory")
+        try:
+            direct_names = sorted(os.listdir(opened_research))
+        except OSError as exc:
+            raise ValueError("retained research cannot be enumerated") from exc
+        for name in direct_names:
+            if name in excluded_direct:
+                continue
+            if name not in durable:
+                raise ValueError("retained research contains an unclassified durable root")
+            try:
+                info = os.stat(name, dir_fd=opened_research, follow_symlinks=False)
+            except OSError as exc:
+                raise ValueError("retained research entry cannot be inspected") from exc
+            relative = f".research/{name}"
+            if stat.S_ISDIR(info.st_mode):
+                require_owned(info, kind="directory")
+                try:
+                    child = os.open(name, _DIRECTORY_FLAGS, dir_fd=opened_research)
+                except OSError as exc:
+                    raise ValueError("retained research directory is unsafe") from exc
+                try:
+                    require_owned(os.fstat(child), kind="directory")
+                    add_tree(child, relative)
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(info.st_mode):
+                digest, size = hash_file(opened_research, name)
+                inventory.append(
+                    {
+                        "path": relative,
+                        "sha256": digest,
+                        "size_bytes": size,
+                    }
+                )
+                if len(inventory) > MAX_RECOVERY_FILES:
+                    raise ValueError("retained research inventory exceeds its bound")
+            else:
+                raise ValueError("retained research contains an unsafe durable root")
+    inventory.sort(key=lambda item: str(item["path"]))
+    encoded = json.dumps(inventory, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    total = len(inventory)
+    if offset > total:
+        raise ValueError("retained research page is outside its inventory")
+    end = min(total, offset + page_size)
+    return {
+        "research_present": True,
+        "inventory_sha256": hashlib.sha256(encoded).hexdigest(),
+        "total_files": total,
+        "next_offset": end if end < total else None,
+        "files": inventory[offset:end],
+    }
+
+
 def _read_patch_identity(patches_descriptor: int, name: str) -> tuple[str | None, str | None]:
     parent = patches_descriptor
     opened_batch: _Directory | None = None
@@ -479,6 +675,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = _git_directory(*arguments)
         elif operation == "retained" and len(arguments) == 3:
             payload = _retained(*arguments)
+        elif operation == "recovery-research" and len(arguments) == 4:
+            payload = _recovery_research(*arguments)
         else:
             raise ValueError("checkout helper operation is invalid")
         print(json.dumps(payload, sort_keys=True, separators=(",", ":")))

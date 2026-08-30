@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pwd
@@ -699,3 +700,120 @@ def test_reused_personal_research_is_refused_before_git_config_changes(tmp_path:
     assert error.value.checkout_disposition == "reused_existing"
     assert hooks.returncode == 1
     assert hooks.stdout == ""
+
+
+def test_recovery_accepts_only_byte_identical_archived_research(tmp_path: Path) -> None:
+    origin, commit = _origin(tmp_path, retained=True)
+    manager, _layout_value, machine, material, _runner = _manager(tmp_path, origin)
+    retained = json.dumps(
+        {
+            "kind": "identity",
+            "project_identity": {
+                "project_id": "651f8a95-c12d-46ef-9ac2-df13e9c96ee2",
+                "home_space_id": "2f8dfa3b-d91e-4d5e-a622-6e35395bdfe7",
+            },
+        }
+    ).encode()
+    archived = {
+        ".research/patches/000001.json": (
+            hashlib.sha256(retained).hexdigest(),
+            len(retained),
+        )
+    }
+
+    recovered = manager.prepare_recovery(
+        machine,
+        material,
+        project_id=PROJECT_ID,
+        repository_alias=ALIAS,
+        state_repository=True,
+        expected_head=commit,
+        retained_provisioning_commit=commit,
+        archived_research=archived,
+    )
+
+    assert recovered.commit == commit
+    with pytest.raises(ProjectCheckoutRefused, match="newer, unknown, or different"):
+        manager.prepare_recovery(
+            machine,
+            material,
+            project_id=PROJECT_ID,
+            repository_alias=ALIAS,
+            state_repository=True,
+            expected_head=commit,
+            retained_provisioning_commit=commit,
+            archived_research={".research/patches/000001.json": ("f" * 64, len(retained))},
+        )
+
+
+def test_recovery_research_helper_refuses_unclassified_or_symlinked_input(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    research = repository / ".research"
+    research.mkdir(parents=True)
+    account = pwd.getpwuid(os.getuid())
+    policy = json.dumps(
+        {
+            "durable_roots": [
+                "branches",
+                "chat",
+                "facts",
+                "manifest.toml",
+                "paper",
+                "patches",
+                "scope-base.json",
+            ],
+            "excluded_direct": [
+                ".agent-run.lock",
+                ".append.lock",
+                ".chat.lock",
+                ".publish",
+                ".refresh.lock",
+                "coverage.json",
+                "cursors.json",
+                "glossary.json",
+                "graph.json",
+                "proposals.json",
+                "research.md",
+            ],
+            "excluded_names": [
+                "coverage.json",
+                "cursors.json",
+                "glossary.json",
+                "graph.json",
+                "proposals.json",
+                "research.md",
+            ],
+            "excluded_prefixes": [".batch-", ".unconfirmed-"],
+            "offset": 0,
+            "page_size": 8,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    (research / "future-state").mkdir()
+
+    refused = _helper(
+        "recovery-research",
+        account.pw_name,
+        account.pw_dir,
+        str(repository),
+        policy,
+    )
+
+    assert refused.returncode == 2
+    (research / "future-state").rmdir()
+    outside = tmp_path / "outside"
+    outside.write_text("do not read", encoding="utf-8")
+    (research / "manifest.toml").symlink_to(outside)
+
+    symlinked = _helper(
+        "recovery-research",
+        account.pw_name,
+        account.pw_dir,
+        str(repository),
+        policy,
+    )
+
+    assert symlinked.returncode == 2

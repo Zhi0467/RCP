@@ -380,6 +380,37 @@ def _prepare_or_inspect(
     return result
 
 
+def _recovery_preflight(
+    expected_account: str,
+    location: str,
+    configured_root: str,
+    central_root: str,
+    space_id: str,
+    project_id: str,
+    alias: str,
+) -> dict[str, object]:
+    """Prove the deterministic replacement-key target is empty before journaling it."""
+
+    _uuid4(space_id, "space id")
+    account, home = _account(expected_account)
+    root = _credentials_root(account, home, location, configured_root)
+    resolved_central_root = _central_root(location, home, central_root)
+    private, public = _key_locations(
+        root,
+        resolved_central_root,
+        project_id=project_id,
+        alias=alias,
+    )
+    return {
+        "account": account.pw_name,
+        "home": str(home),
+        "credentials_root": str(root),
+        "private_key_path": str(private),
+        "label": f"rcp:{space_id}:{project_id}:{alias}",
+        "absent": not os.path.lexists(private) and not os.path.lexists(public),
+    }
+
+
 def _remove(
     expected_account: str,
     location: str,
@@ -478,6 +509,8 @@ def main() -> None:
         operation = sys.argv[1]
         if operation in {"prepare", "inspect"} and len(sys.argv) == 9:
             result = _prepare_or_inspect(operation, *sys.argv[2:])
+        elif operation == "recovery-preflight" and len(sys.argv) == 9:
+            result = _recovery_preflight(*sys.argv[2:])
         elif operation == "remove" and len(sys.argv) == 10:
             result = _remove(*sys.argv[2:])
         elif operation == "probe-prepare" and len(sys.argv) == 4:

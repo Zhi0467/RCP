@@ -631,6 +631,58 @@ class ProjectStoreMixin:
         assert stored is not None
         return stored
 
+    def rebind_project_registration_for_restore(
+        self,
+        project_id: str,
+        *,
+        home_space_id: str,
+        name: str,
+        locator: str,
+        state_location: str,
+        state_remote: bool,
+    ) -> ProjectRecord:
+        """Move one stopped restored catalog row to its replacement checkout."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise KeyError(project_id)
+            current = self._project_record(row)
+            if current.home_space_id != home_space_id or current.name != name:
+                connection.rollback()
+                raise ValueError("restored project identity changed before checkout rebinding")
+            try:
+                connection.execute(
+                    """
+                    UPDATE projects
+                    SET locator = ?, state_location = ?, state_remote = ?,
+                        reachable = 0, error = ?
+                    WHERE project_id = ?
+                    """,
+                    (
+                        locator,
+                        state_location,
+                        int(state_remote),
+                        "Replacement restore publication is pending.",
+                        project_id,
+                    ),
+                )
+                updated = connection.execute(
+                    "SELECT * FROM projects WHERE project_id = ?",
+                    (project_id,),
+                ).fetchone()
+                if updated is None:
+                    raise RuntimeError("restored project disappeared during checkout rebinding")
+                return self._project_record(updated)
+            except Exception:
+                connection.rollback()
+                raise
+
     def update_project_summary(
         self,
         project_id: str,

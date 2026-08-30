@@ -4,7 +4,7 @@ Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
 F2, F3a, F3b, F4, F5, F6a, F6b, F6c, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
-O2b, O3a, O3b, O3c, O3c-ui, O3d-a, and O3d-b are complete. D2
+O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, and O4b are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; a 2026-08-29 local-HTTPS spike then proved that candidate mechanism on
 one host, so D3-D5 are unblocked in principle while D2 itself remains
@@ -121,9 +121,11 @@ The remaining seams are also concrete:
   project-file capture, copied-state update rehearsal, and the coherent local
   update rollback checkpoint now exist; cutover/post-switch rollback
   coordination and recovery are implemented pending their live Ubuntu drive;
-  restore now validates and installs one stopped, detached SQLite candidate but
-  does not yet reconstruct checkouts, publish project state, review replacement
-  authority, or activate the service; member removal remains unimplemented;
+  restore now validates and installs one stopped, detached SQLite candidate,
+  creates fresh per-repository keys, reconstructs exact local or SSH checkouts,
+  and rebinds the stopped catalog, but does not yet publish project state,
+  review replacement authority, or activate the service; member removal remains
+  unimplemented;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
 - the Web UI still says “Team connections are not implemented in this build”;
@@ -3750,9 +3752,10 @@ fixture proves owner-transaction requirements, whole-transaction rollback,
 exact idempotence, empty startup-recovery projections, and a real ordinary app
 lifespan that leaves all operational rows unchanged. The complete backend suite,
 the focused lifecycle-owner suites, 440 Web tests, the Web build, Ruff, and
-documentation checks are green. O4a now owns archive validation and the
-stopped-service SQLite candidate; O4b-O4d still own checkout reconstruction,
-publication, authority review, and activation.
+documentation checks are green. O4a owns archive validation and the
+stopped-service SQLite candidate, and O4b now owns fresh-key checkout
+reconstruction and stopped catalog rebinding. O4c-O4d still own publication,
+authority review, and activation.
 
 Own:
 
@@ -3813,7 +3816,7 @@ claims; they return to a structured explicit CLI re-entry action. Backup and
 update operations are machine-local state excluded from the backup archive, so
 there is no archived mid-step lease to detach. O4a instead records that those
 operations were not restored, serializes against any live owner before
-journaling, and blocks either operation after the journal exists. O4b-O4d remain
+journaling, and blocks either operation after the journal exists. O4c-O4d remain
 required before the restored server can become usable or serve any project.
 
 Own:
@@ -3872,6 +3875,35 @@ It cannot create repository credentials, reconstruct checkouts, publish project
 files, make a project visible, or activate the service.
 
 ### O4b — Fresh keys and central-checkout reconstruction
+
+**Status (2026-08-29): implemented and verified.** Restore now extends its
+durable journal through per-repository `key_started`, `key_ready`, and
+`checkout_ready` receipts, then through catalog rebinding. It proves the
+deterministic key path absent before generation, refuses reuse of the archived
+fingerprint, renders the fresh public key and exact GitHub write-grant action,
+and resumes the same operation without regenerating the key. Local and SSH
+targets share the existing P3/P4 exact-account helpers. The Git write proof
+selects current GitHub HEAD for reconstruction, while the archived provisioning
+commit remains a separate retained-object anchor that must still resolve.
+
+The shipped checkout helper now inventories retained `.research` through
+no-follow directory descriptors, exact ownership/modes, a closed durable-root
+policy, bounded pagination, and streamed hashes. Recovery accepts only observed
+files whose digest and size match the validated archive; extra, changed,
+symlinked, or unclassified durable input fails without reset or deletion. Once
+every checkout is revalidated, `src/rcp/projects.py` reproduces the archived
+manifest configuration, regenerates a protected local bootstrap locator when
+the state checkout is remote, and `src/rcp/storage/projects.py` transactionally
+rebinds the restored row as unavailable. Crash re-entry reuses journaled key,
+checkout, and project receipts and revalidates checkout bytes before rebinding.
+
+Focused verification covers the fresh-key preflight, grant pause/resume, exact
+retained-state comparison, local and SSH reconstruction, idempotent rebind, and
+conflict refusal. The complete restore/credential/checkout focused suite and the
+broader backup, restore-detachment, install, doctor, and update integration suite
+pass. O4c remains the next restore packet: no archived `.research`, chats, Paper,
+facts, or kept files are published here; no project is made visible and systemd
+remains stopped.
 
 Own:
 

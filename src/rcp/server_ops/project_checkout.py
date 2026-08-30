@@ -6,12 +6,19 @@ import importlib.resources
 import json
 import re
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Literal, cast
 
 from rcp.limits import SERVER_PROJECT_CHECKOUT_TIMEOUT_SECONDS
+from rcp.server_ops.backup_models import (
+    BACKUP_MATERIALIZED_NAMES,
+    BACKUP_RESEARCH_CANONICAL_ROOTS,
+    BACKUP_RESEARCH_DELEGATED_ROOTS,
+    BACKUP_RESEARCH_EXCLUSIONS,
+)
 from rcp.server_ops.git_credentials import (
     CommandRunner,
     DeployKeyMaterial,
@@ -199,6 +206,195 @@ class ProjectCheckoutManager:
             checkout_disposition=receipt.checkout_disposition,
             commit=commit,
             retained_research=retained,
+        )
+
+    def prepare_recovery(
+        self,
+        machine: ProjectProvisioningMachineIntent,
+        material: DeployKeyMaterial,
+        *,
+        project_id: str,
+        repository_alias: str,
+        state_repository: bool,
+        expected_head: str,
+        retained_provisioning_commit: str,
+        archived_research: Mapping[str, tuple[str, int]],
+    ) -> ProjectCheckoutResult:
+        """Reconstruct one replacement checkout without adopting newer research input."""
+
+        if _FULL_COMMIT.fullmatch(retained_provisioning_commit) is None:
+            raise ValueError("retained provisioning commit must be one full Git object id")
+        result = self.prepare(
+            machine,
+            material,
+            request_kind="incoming_transfer",
+            project_id=project_id,
+            repository_alias=repository_alias,
+            state_repository=state_repository,
+            expected_commit=expected_head,
+        )
+        retained = self._git_at(
+            machine,
+            material,
+            result.repository_path,
+            ("rev-parse", "--verify", f"{retained_provisioning_commit}^{{commit}}"),
+        )
+        if retained.returncode != 0 or retained.stdout.strip() != retained_provisioning_commit:
+            raise ProjectCheckoutRefused(
+                "git_access",
+                "The reconstructed checkout no longer contains its captured provisioning commit.",
+                central_root=result.central_root,
+                repository_path=result.repository_path,
+                checkout_disposition=result.checkout_disposition,
+            )
+        self._verify_recovery_research(
+            machine,
+            material,
+            result.repository_path,
+            archived_research=archived_research,
+        )
+        return result
+
+    def _verify_recovery_research(
+        self,
+        machine: ProjectProvisioningMachineIntent,
+        material: DeployKeyMaterial,
+        repository_path: str,
+        *,
+        archived_research: Mapping[str, tuple[str, int]],
+    ) -> None:
+        for path, proof in archived_research.items():
+            parsed = PurePosixPath(path) if isinstance(path, str) else None
+            if (
+                not isinstance(path, str)
+                or not path.startswith(".research/")
+                or parsed is None
+                or parsed.is_absolute()
+                or ".." in parsed.parts
+                or parsed.as_posix() != path
+                or not isinstance(proof, tuple)
+                or len(proof) != 2
+                or not isinstance(proof[0], str)
+                or re.fullmatch(r"[0-9a-f]{64}", proof[0]) is None
+                or not isinstance(proof[1], int)
+                or isinstance(proof[1], bool)
+                or proof[1] < 0
+            ):
+                raise ValueError("archived recovery research proof is invalid")
+        observed: dict[str, tuple[str, int]] = {}
+        stable: tuple[bool, str, int] | None = None
+        offset = 0
+        while True:
+            policy = json.dumps(
+                {
+                    "durable_roots": sorted(
+                        BACKUP_RESEARCH_CANONICAL_ROOTS | BACKUP_RESEARCH_DELEGATED_ROOTS
+                    ),
+                    "excluded_direct": sorted(BACKUP_RESEARCH_EXCLUSIONS),
+                    "excluded_names": sorted(BACKUP_MATERIALIZED_NAMES),
+                    "excluded_prefixes": [".batch-", ".unconfirmed-"],
+                    "offset": offset,
+                    "page_size": 8,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            try:
+                payload = self._helper(
+                    machine,
+                    (
+                        "recovery-research",
+                        machine.os_account,
+                        material.account_home,
+                        repository_path,
+                        policy,
+                    ),
+                )
+            except ProjectCheckoutRefused as exc:
+                raise ProjectCheckoutRefused(
+                    "retained_research",
+                    "The reconstructed checkout contains unsafe or unclassified .research input.",
+                    central_root=material.central_root,
+                    repository_path=repository_path,
+                ) from exc
+            if set(payload) != {
+                "files",
+                "inventory_sha256",
+                "next_offset",
+                "research_present",
+                "total_files",
+            }:
+                raise self._recovery_inventory_refused(material, repository_path)
+            files = payload["files"]
+            next_offset = payload["next_offset"]
+            signature = (
+                payload["research_present"],
+                payload["inventory_sha256"],
+                payload["total_files"],
+            )
+            if (
+                not isinstance(signature[0], bool)
+                or not isinstance(signature[1], str)
+                or re.fullmatch(r"[0-9a-f]{64}", signature[1]) is None
+                or not isinstance(signature[2], int)
+                or isinstance(signature[2], bool)
+                or signature[2] < 0
+                or not isinstance(files, list)
+                or not (next_offset is None or isinstance(next_offset, int))
+                or isinstance(next_offset, bool)
+                or stable not in {None, signature}
+            ):
+                raise self._recovery_inventory_refused(material, repository_path)
+            stable = signature
+            for item in files:
+                item_path = item.get("path") if isinstance(item, dict) else None
+                item_sha256 = item.get("sha256") if isinstance(item, dict) else None
+                item_size = item.get("size_bytes") if isinstance(item, dict) else None
+                if (
+                    not isinstance(item, dict)
+                    or set(item) != {"path", "sha256", "size_bytes"}
+                    or not isinstance(item_path, str)
+                    or not item_path.startswith(".research/")
+                    or PurePosixPath(item_path).is_absolute()
+                    or ".." in PurePosixPath(item_path).parts
+                    or PurePosixPath(item_path).as_posix() != item_path
+                    or not isinstance(item_sha256, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", item_sha256) is None
+                    or not isinstance(item_size, int)
+                    or isinstance(item_size, bool)
+                    or item_size < 0
+                    or item_path in observed
+                ):
+                    raise self._recovery_inventory_refused(material, repository_path)
+                observed[item_path] = (item_sha256, item_size)
+            if next_offset is None:
+                if len(observed) != signature[2]:
+                    raise self._recovery_inventory_refused(material, repository_path)
+                break
+            if next_offset != offset + len(files) or next_offset <= offset:
+                raise self._recovery_inventory_refused(material, repository_path)
+            offset = next_offset
+        if any(archived_research.get(path) != proof for path, proof in observed.items()):
+            raise ProjectCheckoutRefused(
+                "retained_research",
+                (
+                    "The reconstructed checkout contains retained .research input that is newer, "
+                    "unknown, or different from the validated archive. RCP left it intact."
+                ),
+                central_root=material.central_root,
+                repository_path=repository_path,
+            )
+
+    @staticmethod
+    def _recovery_inventory_refused(
+        material: DeployKeyMaterial,
+        repository_path: str,
+    ) -> ProjectCheckoutRefused:
+        return ProjectCheckoutRefused(
+            "retained_research",
+            "The reconstructed checkout returned an invalid retained-research inventory.",
+            central_root=material.central_root,
+            repository_path=repository_path,
         )
 
     def _prepare_path(

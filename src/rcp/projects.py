@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import tempfile
 import threading
@@ -26,7 +27,12 @@ from pydantic import BaseModel, TypeAdapter
 from rcp.agents import AgentLauncher
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentStore
-from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING, Manifest, load_manifest
+from rcp.config import (
+    AGENT_EXECUTION_PROFILES,
+    DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
+    Manifest,
+    load_manifest,
+)
 from rcp.core.attention import project_graph_attention
 from rcp.core.materialize import MaterializationResult
 from rcp.core.models import Experiment, GraphState
@@ -44,6 +50,7 @@ from rcp.runs.task_policy import task_graph_capable
 from rcp.server_ops.backup_models import (
     BackupCheckoutRecoveryDescriptor,
     BackupManifestConfiguration,
+    BackupProjectCapture,
     BackupRecoveryMachine,
     BackupRecoveryRepository,
 )
@@ -109,6 +116,10 @@ ProjectSnapshot = dict[str, object] | _ProjectSnapshotDraft
 
 class BackupProjectUnavailable(ValueError):
     """A registered project cannot support an honest backup claim."""
+
+
+class RestoredProjectRebindRefused(RuntimeError):
+    """A stopped restored catalog row could not bind to replacement checkouts."""
 
 
 @dataclass(frozen=True)
@@ -247,6 +258,252 @@ def inspect_backup_project_registration(
         workspace=state_workspace_for_probe(manifest, data_dir),
         recovery=recovery,
     )
+
+
+def rebind_restored_project_registration(
+    store: AppStore,
+    capture: BackupProjectCapture,
+    *,
+    repository_paths: dict[str, str],
+    data_dir: Path,
+    uid: int,
+    gid: int,
+) -> ProjectRecord:
+    """Atomically point one stopped restored row at its verified replacement checkout."""
+
+    recovery = capture.recovery
+    if capture.status != "captured" or recovery is None:
+        raise RestoredProjectRebindRefused("Only one captured project can be rebound.")
+    record = store.project(capture.project_id)
+    if (
+        record is None
+        or record.home_space_id != capture.home_space_id
+        or recovery.project_id != capture.project_id
+        or recovery.home_space_id != capture.home_space_id
+        or record.name != recovery.configuration.name
+    ):
+        raise RestoredProjectRebindRefused(
+            "The restored catalog identity differs from its recovery descriptor."
+        )
+    configured_aliases = {item.alias for item in recovery.configuration.repositories}
+    recovered = {item.alias: item for item in recovery.repositories}
+    if set(repository_paths) != configured_aliases or set(recovered) != configured_aliases:
+        raise RestoredProjectRebindRefused(
+            "The replacement checkout set differs from the recovery descriptor."
+        )
+    if any(repository_paths[alias] != recovered[alias].resolved_path for alias in recovered):
+        raise RestoredProjectRebindRefused(
+            "A replacement checkout path differs from its reviewed recovery path."
+        )
+    content = _render_restored_manifest(recovery.configuration, repository_paths)
+    repositories = {item.alias: item for item in recovery.configuration.repositories}
+    machines = {item.alias: item for item in recovery.configuration.machines}
+    state_repository = repositories[recovery.configuration.state_repository]
+    state_machine = machines[state_repository.machine]
+    state_path = repository_paths[state_repository.alias]
+    state_remote = bool(state_machine.host)
+    if state_remote:
+        locator = _write_restored_bootstrap_manifest(
+            data_dir,
+            host=state_machine.host,
+            repository_path=state_path,
+            content=content,
+            uid=uid,
+            gid=gid,
+        )
+        state_location = f"{state_machine.host}:{state_path}/.research"
+    else:
+        locator = Path(state_path) / ".research" / "manifest.toml"
+        state_location = str(Path(state_path) / ".research")
+    try:
+        stored = store.rebind_project_registration_for_restore(
+            record.project_id,
+            home_space_id=recovery.home_space_id,
+            name=recovery.configuration.name,
+            locator=str(locator),
+            state_location=state_location,
+            state_remote=state_remote,
+        )
+    except (KeyError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        raise RestoredProjectRebindRefused(
+            "The restored catalog rejected its replacement checkout binding."
+        ) from exc
+    if (
+        stored.locator != str(locator)
+        or stored.state_location != state_location
+        or stored.state_remote is not state_remote
+        or stored.reachable is not False
+    ):
+        raise RestoredProjectRebindRefused(
+            "The restored catalog did not read back its replacement checkout binding."
+        )
+    return stored
+
+
+def _render_restored_manifest(
+    configuration: BackupManifestConfiguration,
+    repository_paths: dict[str, str],
+) -> str:
+    document = tomlkit.document()
+    document.add("name", configuration.name)
+    machines = tomlkit.aot()
+    for item in configuration.machines:
+        machine = tomlkit.table()
+        machine.add("alias", item.alias)
+        machine.add("host", item.host)
+        machine.add("os_account", item.os_account)
+        if item.provider_paths:
+            paths = tomlkit.inline_table()
+            for provider in PROVIDER_IDS:
+                if provider in item.provider_paths:
+                    paths.append(provider, item.provider_paths[provider])
+            machine.add("provider_paths", paths)
+        machines.append(machine)
+    document.add("machines", machines)
+    repositories = tomlkit.aot()
+    for item in configuration.repositories:
+        repository = tomlkit.table()
+        repository.add("alias", item.alias)
+        repository.add("machine", item.machine)
+        repository.add("path", repository_paths[item.alias])
+        repositories.append(repository)
+    document.add("repositories", repositories)
+    project = tomlkit.table()
+    project.add("truth_scope", list(configuration.project_truth_scope))
+    document.add("project", project)
+    state = tomlkit.table()
+    state.add("repository", configuration.state_repository)
+    document.add("state", state)
+    agent = tomlkit.table()
+    agent.add("default_run_truth_scope", list(configuration.default_run_truth_scope))
+    agent.add(
+        "default_auto_research_invocation_ceiling",
+        configuration.default_auto_research_invocation_ceiling,
+    )
+    defaults = tomlkit.table()
+    defaults.add("workflow_ids", list(configuration.skill_defaults.workflow_ids))
+    defaults.add("skill_ids", list(configuration.skill_defaults.skill_ids))
+    agent.add("skill_defaults", defaults)
+    profiles = {item.profile: item for item in configuration.agent_profiles}
+    for surface in AGENT_EXECUTION_PROFILES:
+        item = profiles[surface]
+        profile = tomlkit.table()
+        profile.add("provider", item.provider)
+        profile.add("runtime", item.runtime)
+        profile.add("model", item.model)
+        profile.add("reasoning", item.reasoning)
+        profile.add("run_on", item.run_on)
+        permissions = tomlkit.table()
+        for key, value in item.permissions.model_dump(mode="json").items():
+            permissions.add(key, value)
+        profile.add("permissions", permissions)
+        agent.add(surface, profile)
+    document.add("agent", agent)
+    sources = tomlkit.table()
+    for name in (
+        "claude_roots",
+        "codex_roots",
+        "remote_claude_roots",
+        "remote_codex_roots",
+    ):
+        sources.add(name, list(getattr(configuration.sources, name)))
+    document.add("sources", sources)
+    content = tomlkit.dumps(document)
+    manifest = Manifest.model_validate(tomlkit.parse(content).unwrap())
+    if BackupManifestConfiguration.from_manifest(manifest) != configuration:
+        raise RestoredProjectRebindRefused(
+            "The recovery descriptor did not reproduce its exact project manifest."
+        )
+    return content
+
+
+def _write_restored_bootstrap_manifest(
+    data_dir: Path,
+    *,
+    host: str,
+    repository_path: str,
+    content: str,
+    uid: int,
+    gid: int,
+) -> Path:
+    root = data_dir / "bootstrap-manifests"
+    if not root.exists():
+        root.mkdir(mode=0o700)
+        os.chown(root, uid, gid)
+        _fsync_directory(root.parent)
+    info = root.lstat()
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or (info.st_uid, info.st_gid) != (uid, gid)
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise RestoredProjectRebindRefused(
+            "The restored bootstrap-manifest root has unsafe ownership or mode."
+        )
+    digest = hashlib.sha256(f"{host}\0{repository_path}".encode()).hexdigest()[:16]
+    path = root / f"{digest}.toml"
+    payload = content.encode("utf-8")
+    if path.exists() or path.is_symlink():
+        if not _restored_bootstrap_matches(path, payload, uid=uid, gid=gid):
+            raise RestoredProjectRebindRefused(
+                "The restored bootstrap manifest conflicts with existing machine state."
+            )
+        return path
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=root)
+    temporary = Path(temporary_name)
+    try:
+        os.fchown(descriptor, uid, gid)
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path, follow_symlinks=False)
+        _fsync_directory(root)
+    except FileExistsError:
+        if not _restored_bootstrap_matches(path, payload, uid=uid, gid=gid):
+            raise RestoredProjectRebindRefused(
+                "The restored bootstrap manifest raced with conflicting machine state."
+            ) from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def _restored_bootstrap_matches(
+    path: Path,
+    payload: bytes,
+    *,
+    uid: int,
+    gid: int,
+) -> bool:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return False
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or (info.st_uid, info.st_gid) != (uid, gid)
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size != len(payload)
+        ):
+            return False
+        chunks: list[bytes] = []
+        remaining = len(payload) + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks) == payload
+    finally:
+        os.close(descriptor)
 
 
 def _snapshot_payload(snapshot: ProjectSnapshot) -> dict[str, object]:

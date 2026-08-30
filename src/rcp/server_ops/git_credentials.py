@@ -173,6 +173,85 @@ class GitCredentialManager:
             repository_alias=repository_alias,
         )
 
+    def preflight_recovery_key(
+        self,
+        machine: ProjectProvisioningMachineIntent,
+        *,
+        space_id: str,
+        project_id: str,
+        repository_alias: str,
+    ) -> None:
+        """Prove a replacement restore will not adopt an old deterministic key."""
+
+        payload = self._helper(
+            machine,
+            (
+                "recovery-preflight",
+                machine.os_account,
+                machine.location,
+                str(self.layout.credentials_root) if machine.location == "local" else "-",
+                machine.central_root or "-",
+                space_id,
+                project_id,
+                repository_alias,
+            ),
+        )
+        expected_keys = {
+            "account",
+            "home",
+            "credentials_root",
+            "private_key_path",
+            "label",
+            "absent",
+        }
+        if set(payload) != expected_keys or not isinstance(payload["absent"], bool):
+            raise GitCredentialRefused(
+                "The recovery deploy-key preflight returned an invalid receipt."
+            )
+        if not all(isinstance(payload[name], str) for name in expected_keys if name != "absent"):
+            raise GitCredentialRefused("The recovery deploy-key preflight returned invalid fields.")
+        home = str(payload["home"])
+        expected_root, expected_private = self._expected_key_paths(
+            machine,
+            home=home,
+            project_id=project_id,
+            repository_alias=repository_alias,
+        )
+        label = f"rcp:{space_id}:{project_id}:{repository_alias}"
+        if (
+            payload["account"] != machine.os_account
+            or payload["credentials_root"] != expected_root
+            or payload["private_key_path"] != expected_private
+            or payload["label"] != label
+        ):
+            raise GitCredentialRefused(
+                "The recovery deploy-key preflight names another execution target."
+            )
+        if not payload["absent"]:
+            raise GitCredentialRefused(
+                "A deterministic deploy-key path already exists before this restore recorded "
+                "key generation. Preserve and inspect it; RCP will not adopt it as a fresh key."
+            )
+
+    def prepare_recovery_key(
+        self,
+        machine: ProjectProvisioningMachineIntent,
+        repository: GitHubRepositoryRef,
+        *,
+        space_id: str,
+        project_id: str,
+        repository_alias: str,
+    ) -> DeployKeyMaterial:
+        """Create or re-read the key after restore recorded key generation."""
+
+        return self.prepare_key(
+            machine,
+            repository,
+            space_id=space_id,
+            project_id=project_id,
+            repository_alias=repository_alias,
+        )
+
     def inspect_key(
         self,
         machine: ProjectProvisioningMachineIntent,
@@ -725,20 +804,12 @@ class GitCredentialManager:
             raise GitCredentialRefused("The deploy-key helper receipt has invalid field types.")
         label = f"rcp:{space_id}:{project_id}:{repository_alias}"
         home = str(payload["home"])
-        if machine.location == "local":
-            if home != str(self.layout.service_home):
-                raise GitCredentialRefused(
-                    "The deploy-key helper receipt names the wrong local service home."
-                )
-            expected_root = str(self.layout.credentials_root)
-            expected_private = str(
-                self.layout.project_deploy_key_path(project_id, repository_alias)
-            )
-        else:
-            expected_private = str(
-                remote_project_deploy_key_path(home, project_id, repository_alias)
-            )
-            expected_root = str(Path(expected_private).parents[3])
+        expected_root, expected_private = self._expected_key_paths(
+            machine,
+            home=home,
+            project_id=project_id,
+            repository_alias=repository_alias,
+        )
         public_key = str(payload["public_key"])
         fingerprint = str(payload["public_key_fingerprint"])
         if (
@@ -775,6 +846,26 @@ class GitCredentialManager:
             public_key_fingerprint=fingerprint,
             created=bool(payload["created"]),
         )
+
+    def _expected_key_paths(
+        self,
+        machine: ProjectProvisioningMachineIntent,
+        *,
+        home: str,
+        project_id: str,
+        repository_alias: str,
+    ) -> tuple[str, str]:
+        if machine.location == "local":
+            if home != str(self.layout.service_home):
+                raise GitCredentialRefused(
+                    "The deploy-key helper receipt names the wrong local service home."
+                )
+            return (
+                str(self.layout.credentials_root),
+                str(self.layout.project_deploy_key_path(project_id, repository_alias)),
+            )
+        private = str(remote_project_deploy_key_path(home, project_id, repository_alias))
+        return str(Path(private).parents[3]), private
 
     @staticmethod
     def _require_material_target(
@@ -829,6 +920,66 @@ def deploy_key_operator_step(
         message=(
             "GitHub has not yet proven read and write access for this repository-scoped deploy "
             "key. Complete the displayed grant and host-trust steps, then resume."
+        ),
+        actions=(
+            ExternalAction(instruction=instruction),
+            CommandAction(argv=manager.github_trust_argv(machine, material)),
+            ExternalAction(
+                instruction=(
+                    "Before accepting GitHub's host key, compare its fingerprint with "
+                    f"{_GITHUB_FINGERPRINTS_URL}. A successful no-shell authentication may exit "
+                    "with status 1."
+                )
+            ),
+        ),
+        fields=(
+            NonsecretField(name="deploy_key_label", value=material.label),
+            NonsecretField(name="deploy_public_key", value=material.public_key),
+            NonsecretField(
+                name="public_key_fingerprint",
+                value=material.public_key_fingerprint,
+            ),
+        ),
+        resume_argv=resume_argv,
+    )
+
+
+def restore_deploy_key_operator_step(
+    manager: GitCredentialManager,
+    machine: ProjectProvisioningMachineIntent,
+    material: DeployKeyMaterial,
+    *,
+    number: int,
+    resume_argv: tuple[str, ...],
+) -> ServerStep:
+    """Render the fresh-key grant required by replacement restore."""
+
+    _require_restore_resume(resume_argv)
+    instruction = (
+        f"Open {material.repository.settings_url}; replace any stale RCP deploy key for "
+        f"{material.label!r} with the displayed fresh public key, and enable Allow write access."
+    )
+    return ServerStep(
+        number=number,
+        title="Grant the fresh restore deploy key",
+        purpose=(
+            "Give the reconstructed central checkout a new repository-scoped GitHub identity."
+        ),
+        performed_by="human",
+        target=ExternalServiceTarget(
+            service="github.com",
+            resource=material.repository.identity,
+            destination_url=material.repository.settings_url,
+            required_authority_role="repository administrator",
+        ),
+        phase="restore_github_grant",
+        state="operator_action_needed",
+        expected_success=(
+            "The restore-owned Git push is read back exactly and its temporary ref is removed."
+        ),
+        message=(
+            "GitHub has not yet proven read and write access for this fresh replacement key. "
+            "Complete the displayed grant and host-trust steps, then resume restore."
         ),
         actions=(
             ExternalAction(instruction=instruction),
@@ -957,6 +1108,21 @@ def _require_resume_request(resume_argv: tuple[str, ...], request_id: str) -> No
     meaningful = resume_argv[:-1] if resume_argv[-1:] == ("--machine-readable",) else resume_argv
     if meaningful[-4:] != ("server", "project", "provision", request_id):
         raise ValueError("resume argv must name this exact provisioning request")
+
+
+def _require_restore_resume(resume_argv: tuple[str, ...]) -> None:
+    try:
+        marker = resume_argv.index("restore")
+    except ValueError as exc:
+        raise ValueError("restore resume argv must name server restore") from exc
+    if (
+        marker == 0
+        or resume_argv[marker - 1] != "server"
+        or marker + 1 >= len(resume_argv)
+        or "--identity-file" not in resume_argv[marker + 1 :]
+        or "--confirm-data-dir" not in resume_argv[marker + 1 :]
+    ):
+        raise ValueError("restore resume argv must carry its archive, identity file, and target")
 
 
 def _runuser_argv(layout: ServerLayout, command: tuple[str, ...]) -> tuple[str, ...]:
@@ -1208,6 +1374,7 @@ __all__ = [
     "deploy_key_ssh_command",
     "deploy_key_operator_step",
     "empty_repository_operator_step",
+    "restore_deploy_key_operator_step",
     "run_bounded_process",
     "target_account_argv",
 ]

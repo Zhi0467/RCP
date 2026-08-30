@@ -253,6 +253,33 @@ def test_shipped_helper_creates_reuses_and_removes_only_one_exact_key(
     assert json.loads(repeated_remove.stdout) == {"removed": False}
 
 
+def test_recovery_preflight_proves_fresh_key_path_before_generation(tmp_path: Path) -> None:
+    root = tmp_path / "credentials"
+    root.mkdir(mode=0o700)
+    account = pwd.getpwuid(os.getuid()).pw_name
+    arguments = (
+        account,
+        "local",
+        str(root),
+        str(root.parent / "projects"),
+        SPACE_ID,
+        PROJECT_ID,
+        ALIAS,
+    )
+
+    absent = _helper("recovery-preflight", *arguments)
+
+    assert absent.returncode == 0, absent.stderr
+    assert json.loads(absent.stdout)["absent"] is True
+
+    created = _helper_prepare(root)
+    assert created.returncode == 0, created.stderr
+    present = _helper("recovery-preflight", *arguments)
+
+    assert present.returncode == 0, present.stderr
+    assert json.loads(present.stdout)["absent"] is False
+
+
 def test_shipped_helper_refuses_unsafe_root_mode_and_incomplete_pair(tmp_path: Path) -> None:
     root = tmp_path / "credentials"
     root.mkdir(mode=0o700)
