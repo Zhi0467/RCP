@@ -283,6 +283,8 @@ export interface SpaceUser {
   identity_kind: "local_owner" | "team_member";
   created_at: string;
   updated_at: string;
+  removal_started_at: string | null;
+  removed_at: string | null;
 }
 
 export interface IdentityResponse {
@@ -306,6 +308,7 @@ export interface TeamInvitation {
   consumed_by: string | null;
   failed_attempts: number;
   locked_at: string | null;
+  revoked_at: string | null;
 }
 
 export interface TeamInvitationIssue {

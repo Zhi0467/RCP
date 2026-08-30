@@ -30,6 +30,10 @@ TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES = 4 * 1024
 TEAM_ENROLLMENT_CODE_MAX_LENGTH = 128
 TEAM_MEMBER_TOKEN_MAX_LENGTH = 64
 TEAM_SESSION_TOKEN_MAX_LENGTH = 80
+# Exact inventories are rendered into the bounded server CLI contract. Thirty-two
+# identifiers fit in one nonsecret field; larger consequence sets must be reduced
+# before an operator can confirm them safely.
+MEMBER_REMOVAL_PREVIEW_MAX_ITEMS = 32
 
 # Durable canonical chat history queries and summary labels.
 CHAT_PAGE_DEFAULT_LIMIT = 50

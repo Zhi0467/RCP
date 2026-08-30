@@ -225,6 +225,7 @@ def test_credential_mutations_atomically_revalidate_the_presenting_session(
     tmp_path, operations
 ) -> None:
     store, _bootstrap, member, token = _claimed_team(tmp_path)
+    _enroll_invited_member(store, member.user_id, "Other member")
     session, _resolved = store.create_team_session(token)
     barrier = threading.Barrier(2)
 
@@ -314,6 +315,23 @@ def test_rotation_and_revocation_are_member_scoped_and_preserve_authorized_work(
     with pytest.raises(TeamAuthenticationError):
         store.create_team_session(replacement)
     assert store.agent_task(operation_id) == before
+
+
+def test_self_service_revoke_refuses_to_strand_the_last_enrolled_member(tmp_path) -> None:
+    store, _bootstrap, member, token = _claimed_team(tmp_path)
+    app = create_app(data_dir=tmp_path)
+    client = TestClient(app, base_url="https://team.test")
+    assert client.post("/api/team/session/exchange", json={"token": token}).status_code == 200
+
+    refused = client.post("/api/team/credential/revoke", json={})
+
+    assert refused.status_code == 409
+    assert "last enrolled member" in refused.json()["detail"]
+    assert client.get("/api/identity").json()["user"]["user_id"] == member.user_id
+    rotated = client.post("/api/team/credential/rotate", json={})
+    assert rotated.status_code == 200
+    assert rotated.json()["token"].startswith("rcp_")
+    assert store.space_user(member.user_id) is not None
 
 
 def test_raw_credentials_never_enter_sqlite_or_task_and_patch_fixtures(tmp_path) -> None:

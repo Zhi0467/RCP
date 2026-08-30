@@ -172,6 +172,7 @@ class ServerCommandRequest(_StrictModel):
     request_id: str | None = None
     project_id: str | None = None
     member_id: str | None = None
+    member_confirmed_boundary: str | None = None
     archive_path: str | None = None
     recovery_identity_file: str | None = None
     restore_confirmed_data_dir: str | None = None
@@ -201,6 +202,15 @@ class ServerCommandRequest(_StrictModel):
     def validate_update_commit(cls, value: str | None) -> str | None:
         if value is not None and _FULL_GIT_COMMIT.fullmatch(value) is None:
             raise ValueError("update confirmed commit must be a full lowercase Git object id")
+        return value
+
+    @field_validator("member_confirmed_boundary")
+    @classmethod
+    def validate_member_boundary(cls, value: str | None) -> str | None:
+        if value is not None and (
+            len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise ValueError("member confirmed boundary must be a lowercase SHA-256 digest")
         return value
 
     @field_validator("backup_destination")
@@ -246,6 +256,7 @@ class ServerCommandRequest(_StrictModel):
             "request_id": self.request_id,
             "project_id": self.project_id,
             "member_id": self.member_id,
+            "member_confirmed_boundary": self.member_confirmed_boundary,
             "archive_path": self.archive_path,
             "recovery_identity_file": self.recovery_identity_file,
             "restore_confirmed_data_dir": self.restore_confirmed_data_dir,
@@ -270,6 +281,8 @@ class ServerCommandRequest(_StrictModel):
             expected = {"request_id"}
         elif self.command == "server member remove":
             expected = {"member_id"}
+            if self.member_confirmed_boundary is not None:
+                expected.add("member_confirmed_boundary")
         elif self.command == "server restore":
             expected = {"archive_path", "recovery_identity_file"}
             if self.restore_confirmed_data_dir is not None:

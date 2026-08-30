@@ -4,7 +4,8 @@ Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
 F2, F3a, F3b, F4, F5, F6a, F6b, F6c, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
-O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, and O4c are complete. D2
+O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c, O5a, and O5b are
+complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; a 2026-08-29 local-HTTPS spike then proved that candidate mechanism on
 one host, so D3-D5 are unblocked in principle while D2 itself remains
@@ -123,9 +124,11 @@ The remaining seams are also concrete:
   coordination and recovery are implemented pending their live Ubuntu drive;
   restore now validates and installs one stopped, detached SQLite candidate,
   creates fresh per-repository keys, reconstructs exact local or SSH checkouts,
-  and rebinds the stopped catalog, but does not yet publish project state,
-  review replacement authority, or activate the service; member removal remains
-  unimplemented;
+  rebinds the stopped catalog, and publishes/replay-verifies protected project
+  state, but does not yet review replacement authority or activate the service.
+  Member removal now provides an exact confirmed inventory, one atomic access
+  fence, graceful task/episode draining, durable tombstones, and startup/CLI
+  reconciliation;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
 - the Web UI still says “Team connections are not implemented in this build”;
@@ -4055,27 +4058,33 @@ journal. A crash before it leaves the service stopped and the same operation
 resumable; a retry cannot skip either review, duplicate publication, or create a
 second space.
 
-### O5a — Durable member-removal fence and identity tombstone
+### O5a — Durable member-removal fence and identity tombstone — complete
+
+Implemented on 2026-08-29. The exact consequence boundary is hashed from the
+coherent member, project, live-work, permanent-access, browser-session, and
+invitation inventory. Confirmation re-reads that boundary under one immediate
+transaction before fencing access. The additive migration is covered by
+`pre-member-removal-v11-27c9682`, generated with the exact `27c9682` source and
+registered immutably in the G2 chain. The current and prior database schema
+digests remain accepted by restore.
 
 Own:
 
 - the additive `removal_started_at` and `removed_at` member fields,
   bootstrap/space-invite `revoked_at`, and project-invite `revoked` response
-  migration in
-  `src/rcp/storage/base.py`, `src/rcp/storage/models.py`, and
-  `src/rcp/storage/rows.py`;
+  migration in `src/rcp/storage/base.py` and `src/rcp/storage/models.py`;
 - member-removal transaction and active-member queries in
   `src/rcp/storage/spaces.py`;
 - the existing self-service credential endpoint in `src/rcp/api/team.py` only
   for the last-credential and sole-project-member guards;
-- pending project-invitation invalidation through its concrete owner in
-  `src/rcp/storage/projects.py`; and
+- pending project-invitation invalidation inside the same concrete
+  `src/rcp/storage/spaces.py` transaction; and
 - `tests/test_server_member_removal_storage.py`, focused cases in
   `tests/test_team_authentication.py`, and the corresponding G2 schema-boundary
   fixture.
 
 Preview the exact member, active tasks plus Auto-research and Experiment
-episodes, project memberships, member token, browser sessions, and unconsumed
+episodes, project memberships, permanent-access records, browser sessions, and unconsumed
 space/project invitations before confirmation. A row with no issued member
 credential is preprovisioned, not an enrolled replacement. Refuse before
 mutation if removing the target would leave no other active member who has
@@ -4108,7 +4117,17 @@ member's active work has reached its required stop boundary. A crash between
 those states leaves an explicit removal-in-progress row that startup and CLI
 re-entry can reconcile; it never silently restores access.
 
-### O5b — Member work stop and crash-safe reconciliation
+### O5b — Member work stop and crash-safe reconciliation — complete
+
+Implemented on 2026-08-29. `rcp server member remove <member-id>` first emits a
+non-mutating exact inventory and a boundary-pinned resume command. The running
+service owns confirmation through control protocol v6. It fences new identity
+and project access, asks the existing task and episode owners to stop, never
+kills an in-flight provider turn, and tombstones only after no authorized work
+remains live. Startup and command re-entry reconcile a crash after the fence;
+`server doctor` names every still-live task and episode. Focused storage, CLI,
+control, installed-service startup, crash, and no-provider-kill regressions plus
+the complete Web build and 440 Web tests passed before packet integration.
 
 Own:
 

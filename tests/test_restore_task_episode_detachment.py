@@ -420,21 +420,23 @@ def test_restore_space_auth_detachment_preserves_permanent_member_tokens(tmp_pat
         store.detach_space_authentication_for_restore(connection, now=now)
 
     assert store.resolve_team_session(browser_session) is None
-    with pytest.raises(TeamAuthenticationError) as locked:
+    with pytest.raises(TeamAuthenticationError) as revoked:
         store.enroll_team_member(invitation_code, "Bob")
-    assert locked.value.code == "enrollment_code_locked"
+    assert revoked.value.code == "enrollment_code_invalid"
     with store.connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM team_sessions").fetchone()[0] == 0
         invitation_row = connection.execute(
-            "SELECT consumed_at, locked_at FROM team_invitations WHERE invitation_id = ?",
+            "SELECT consumed_at, locked_at, revoked_at FROM team_invitations "
+            "WHERE invitation_id = ?",
             (invitation.invitation_id,),
         ).fetchone()
-        assert tuple(invitation_row) == (None, now)
+        assert tuple(invitation_row) == (None, None, now)
         bootstrap_row = connection.execute(
-            "SELECT consumed_at, locked_at FROM team_bootstrap_codes"
+            "SELECT consumed_at, locked_at, revoked_at FROM team_bootstrap_codes"
         ).fetchone()
         assert bootstrap_row["consumed_at"] is not None
         assert bootstrap_row["locked_at"] is None
+        assert bootstrap_row["revoked_at"] is None
         assert (
             connection.execute("SELECT * FROM team_member_tokens ORDER BY token_id").fetchall()
             == token_rows_before
@@ -442,24 +444,25 @@ def test_restore_space_auth_detachment_preserves_permanent_member_tokens(tmp_pat
         connection.execute("BEGIN IMMEDIATE")
         store.detach_space_authentication_for_restore(connection, now=store.now())
         invitation_row_again = connection.execute(
-            "SELECT consumed_at, locked_at FROM team_invitations WHERE invitation_id = ?",
+            "SELECT consumed_at, locked_at, revoked_at FROM team_invitations "
+            "WHERE invitation_id = ?",
             (invitation.invitation_id,),
         ).fetchone()
-        assert tuple(invitation_row_again) == (None, now)
+        assert tuple(invitation_row_again) == (None, None, now)
 
 
-def test_restore_locks_an_unconsumed_bootstrap_code(tmp_path) -> None:
+def test_restore_revokes_an_unconsumed_bootstrap_code(tmp_path) -> None:
     store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
     now = store.now()
     with store.connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         store.detach_space_authentication_for_restore(connection, now=now)
 
-    with pytest.raises(TeamAuthenticationError) as locked:
+    with pytest.raises(TeamAuthenticationError) as revoked:
         store.enroll_team_member(bootstrap, "Alice")
-    assert locked.value.code == "enrollment_code_locked"
+    assert revoked.value.code == "enrollment_code_invalid"
     with store.connection() as connection:
         row = connection.execute(
-            "SELECT consumed_at, locked_at FROM team_bootstrap_codes"
+            "SELECT consumed_at, locked_at, revoked_at FROM team_bootstrap_codes"
         ).fetchone()
-    assert tuple(row) == (None, now)
+    assert tuple(row) == (None, None, now)

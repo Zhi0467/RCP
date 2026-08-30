@@ -115,9 +115,10 @@ verification commands are in [docs/desktop.md](docs/desktop.md).
 
 ## Install the team server from source
 
-> **Install is live-qualified; full restore and member removal are not yet implemented.**
+> **Install is live-qualified; final restore activation is not yet implemented.**
 > `rcp server install`, `doctor`, `provider check`, `project provision`,
-> `backup configure`, `backup run`, and `update` are concrete and share one
+> `backup configure`, `backup run`, `member remove`, and `update` are concrete
+> and share one
 > interactive/machine-readable progress contract. Install is proven on
 > disposable Ubuntu 22.04 and 24.04 hosts. `restore` currently validates an
 > encrypted archive, installs a stopped detached SQLite candidate, creates fresh
@@ -128,8 +129,7 @@ verification commands are in [docs/desktop.md](docs/desktop.md).
 > instructions when the new key needs repository-admin approval. It cannot yet
 > review replacement authority/member credentials, activate the service, or
 > complete the restore journal.
-> `member remove` and `project transfer-import` still stop with an explicit
-> unavailable result.
+> `project transfer-import` still stops with an explicit unavailable result.
 > Every command below is terminal-only; no desktop wizard drives them yet.
 
 The first supported team deployment is one Ubuntu 22.04 or 24.04 LTS x86-64
@@ -212,6 +212,24 @@ and uses that native authentication; it never logs in or stores provider
 credentials. Root-owned integration is limited to `/etc/rcp`, `/run/rcp`, the stable
 `/usr/local/bin/rcp` wrapper, systemd, and journald.
 
+Removing a member is a two-call, exact-inventory console operation against the
+running service. The first call changes nothing and prints the member's project
+memberships, permanent-access records, browser logins, pending invitations, and
+live task/episode IDs:
+
+```bash
+sudo -u rcp -H /usr/local/bin/rcp server member remove <member-id>
+```
+
+After reviewing that inventory, run the exact command RCP prints, including its
+`--confirm-boundary <sha256>` value. RCP rechecks the inventory, refuses to
+strand the team space or any project without another enrolled member, fences
+future access atomically, and gracefully drains already-authorized work. A
+crash or still-settling provider turn leaves an explicit removal-in-progress
+record; rerunning the same command and `rcp server doctor` show and reconcile
+the exact work still live. Historical attribution remains under an inactive
+member tombstone.
+
 Later source updates are owned by:
 
 ```bash
@@ -225,13 +243,13 @@ prints the exact command to confirm that immutable target, for example:
 sudo rcp server update --confirm-target <full-40-character-commit>
 ```
 
-At the current boundary, the confirmed command accepts only a clean
-fast-forward of managed `main`, builds one detached per-commit candidate as
-`rcp`, publishes its private immutable receipt, and then rehearses that
-candidate against a copy of real state behind a closed startup-effect fence. It
-leaves the running release and `current` pointer untouched. Cutover, restart,
-post-switch verification, and loud rollback are the remaining update packets;
-until they land, an operator should read a successful update as “candidate
-built and rehearsed,” not “server switched.” `rcp server doctor` reports the
-managed-main, candidate, current, and running commits. The `rcp` account
-receives no general sudo or systemd-control permission.
+The confirmed command accepts only a clean fast-forward of managed `main`,
+builds one detached per-commit candidate as `rcp`, rehearses it against copied
+real state behind a closed startup-effect fence, and enters a bounded systemd
+cutover. It verifies the new process before committing the `current` pointer;
+startup failure loudly restores and verifies the prior release, and a crash can
+re-enter the durable cutover or rollback journal. `rcp server doctor` reports
+the managed-main, candidate, current, and running commits. The cutover path has
+hermetic death-boundary coverage but still awaits a clean live Ubuntu
+22.04/24.04 workflow rerun. The `rcp` account receives no general sudo or
+systemd-control permission.

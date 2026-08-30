@@ -20,6 +20,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.limits import (
+    MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
     SERVER_CONTROL_ACCEPT_POLL_INTERVAL_SECONDS,
     SERVER_CONTROL_BACKUP_CAPTURE_TIMEOUT_SECONDS,
     SERVER_CONTROL_IO_TIMEOUT_SECONDS,
@@ -33,7 +34,7 @@ from rcp.server_ops.models import SERVER_CLI_MAX_STEPS, ServerStep, redact_serve
 from rcp.server_ops.update_cutover import TERMINAL_UPDATE_STATES, UpdateOperationState
 from rcp.server_runtime import ServerMetadata, read_server_metadata
 
-SERVER_CONTROL_PROTOCOL_VERSION = 5
+SERVER_CONTROL_PROTOCOL_VERSION = 6
 SERVER_CONTROL_MAX_REQUEST_BYTES = 64 * 1024
 SERVER_CONTROL_MAX_RESPONSE_BYTES = 256 * 1024
 SERVER_CONTROL_SOCKET_MODE = 0o600
@@ -49,6 +50,8 @@ ServerControlOperation = Literal[
     "provider_readiness_check",
     "project_provision_plan",
     "project_provision_step",
+    "member_removal_plan",
+    "member_removal_advance",
     "backup_sqlite_capture",
     "update_maintenance_enter",
     "update_candidate_verify",
@@ -61,6 +64,8 @@ SERVER_CONTROL_OPERATIONS: tuple[ServerControlOperation, ...] = (
     "provider_readiness_check",
     "project_provision_plan",
     "project_provision_step",
+    "member_removal_plan",
+    "member_removal_advance",
     "backup_sqlite_capture",
     "update_maintenance_enter",
     "update_candidate_verify",
@@ -106,7 +111,7 @@ class ServerControlRequest(_StrictModel):
     request_id: str
     instance_id: str
     operation: ServerControlOperation
-    selector_kind: Literal["request", "project"] | None = None
+    selector_kind: Literal["request", "project", "member"] | None = None
     selector_id: str | None = None
     boundary_sha256: str | None = None
     target_id: str | None = None
@@ -143,13 +148,27 @@ class ServerControlRequest(_StrictModel):
                 raise ValueError(
                     "update control operations require one receipt-bound operation identity"
                 )
-        elif self.operation in {"provider_readiness_plan", "project_provision_plan"}:
+        elif self.operation in {
+            "provider_readiness_plan",
+            "project_provision_plan",
+            "member_removal_plan",
+        }:
             if self.selector_kind is None or self.selector_id is None:
                 raise ValueError("control plan requires one selector")
             if self.operation == "project_provision_plan" and self.selector_kind != "request":
                 raise ValueError("project provisioning plan requires one request selector")
+            if self.operation == "member_removal_plan" and self.selector_kind != "member":
+                raise ValueError("member-removal plan requires one member selector")
             if self.boundary_sha256 is not None or self.target_id is not None:
                 raise ValueError("control plan cannot carry a step boundary")
+        elif self.operation == "member_removal_advance":
+            if (
+                self.selector_kind != "member"
+                or self.selector_id is None
+                or self.boundary_sha256 is None
+                or self.target_id is not None
+            ):
+                raise ValueError("member-removal advance requires one confirmed member boundary")
         elif any(
             value is None
             for value in (
@@ -173,6 +192,68 @@ class ServerControlRequest(_StrictModel):
         return self
 
 
+class ServerControlMemberSnapshot(_StrictModel):
+    member_id: str
+    member_display_name: str | None = Field(default=None, max_length=240)
+    removal_started_at: str | None
+    removed_at: str | None
+    last_authenticating_member: bool
+    project_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    orphaned_project_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    orphaned_project_labels: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    active_task_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    active_episode_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    active_token_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    browser_session_count: int = Field(ge=0)
+    space_invitation_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    project_invitation_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    boundary_sha256: str
+
+    @model_validator(mode="after")
+    def validate_snapshot(self) -> ServerControlMemberSnapshot:
+        _canonical_uuid4(self.member_id, label="member id")
+        for value in (
+            self.member_display_name,
+            self.removal_started_at,
+            self.removed_at,
+            *self.project_ids,
+            *self.orphaned_project_ids,
+            *self.orphaned_project_labels,
+            *self.active_task_ids,
+            *self.active_episode_ids,
+            *self.active_token_ids,
+            *self.space_invitation_ids,
+            *self.project_invitation_ids,
+        ):
+            if value is not None and (
+                not value
+                or len(value) > 2048
+                or any(ord(character) < 32 or ord(character) == 127 for character in value)
+                or redact_server_text(value) != value
+            ):
+                raise ValueError("member-removal snapshots require bounded nonsecret text")
+        for values in (
+            self.project_ids,
+            self.orphaned_project_ids,
+            self.active_task_ids,
+            self.active_episode_ids,
+            self.active_token_ids,
+            self.space_invitation_ids,
+            self.project_invitation_ids,
+        ):
+            if values != tuple(sorted(set(values))):
+                raise ValueError("member-removal inventories must be sorted and unique")
+        if not set(self.orphaned_project_ids).issubset(self.project_ids):
+            raise ValueError("member-removal orphaned projects must belong to the target")
+        if len(self.orphaned_project_labels) != len(self.orphaned_project_ids):
+            raise ValueError("member-removal orphan labels must match their project ids")
+        if len(self.boundary_sha256) != 64 or any(
+            character not in _HEX_DIGEST for character in self.boundary_sha256
+        ):
+            raise ValueError("member-removal boundary must be a lowercase SHA-256 digest")
+        return self
+
+
 class ServerControlProbeResult(_StrictModel):
     instance_id: str
     pid: int = Field(gt=0)
@@ -180,6 +261,9 @@ class ServerControlProbeResult(_StrictModel):
     space_id: str
     space_kind: Literal["team"] = "team"
     operations: tuple[ServerControlOperation, ...]
+    pending_member_removals: tuple[ServerControlMemberSnapshot, ...] = Field(
+        default=(), max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS
+    )
 
     @model_validator(mode="after")
     def validate_identity(self) -> ServerControlProbeResult:
@@ -198,6 +282,58 @@ class ServerControlProbeResult(_StrictModel):
             or self.operations != expected_order
         ):
             raise ValueError("control probe operations must be unique and in registry order")
+        return self
+
+
+class ServerControlMemberPlanResult(_StrictModel):
+    instance_id: str
+    pid: int = Field(gt=0)
+    data_dir_id: str
+    space_id: str
+    space_kind: Literal["team"] = "team"
+    snapshot: ServerControlMemberSnapshot
+    step: ServerStep
+
+    @model_validator(mode="after")
+    def validate_plan(self) -> ServerControlMemberPlanResult:
+        _validate_provider_result_identity(
+            self.instance_id,
+            self.space_id,
+            self.data_dir_id,
+            self.snapshot.member_id,
+            self.snapshot.boundary_sha256,
+        )
+        if self.step.state != "pending":
+            raise ValueError("member-removal plans require one pending step")
+        return self
+
+
+class ServerControlMemberAdvanceResult(_StrictModel):
+    instance_id: str
+    pid: int = Field(gt=0)
+    data_dir_id: str
+    space_id: str
+    space_kind: Literal["team"] = "team"
+    confirmed_boundary_sha256: str
+    snapshot: ServerControlMemberSnapshot
+    step: ServerStep
+
+    @model_validator(mode="after")
+    def validate_advance(self) -> ServerControlMemberAdvanceResult:
+        _validate_provider_result_identity(
+            self.instance_id,
+            self.space_id,
+            self.data_dir_id,
+            self.snapshot.member_id,
+            self.confirmed_boundary_sha256,
+        )
+        if self.step.state not in {
+            "succeeded",
+            "failed",
+            "operator_action_needed",
+            "unavailable",
+        }:
+            raise ValueError("member-removal advance requires one terminal CLI step")
         return self
 
 
@@ -510,6 +646,8 @@ class ServerControlResponse(_StrictModel):
     ok: bool
     result: (
         ServerControlProbeResult
+        | ServerControlMemberPlanResult
+        | ServerControlMemberAdvanceResult
         | ServerControlProviderPlanResult
         | ServerControlProviderCheckResult
         | ServerControlProjectPlanResult
@@ -554,6 +692,8 @@ class ServerControlPeer:
 ServerControlHandler = Callable[
     [ServerControlRequest, ServerControlPeer],
     ServerControlProbeResult
+    | ServerControlMemberPlanResult
+    | ServerControlMemberAdvanceResult
     | ServerControlProviderPlanResult
     | ServerControlProviderCheckResult
     | ServerControlProjectPlanResult
@@ -629,6 +769,44 @@ class ServerControlClient:
             raise ServerControlError(
                 "invalid_response",
                 "The running RCP process returned the wrong control result.",
+            )
+        return result
+
+    def member_removal_plan(self, member_id: str) -> ServerControlMemberPlanResult:
+        request = ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=self.metadata.instance_id,
+            operation="member_removal_plan",
+            selector_kind="member",
+            selector_id=member_id,
+        )
+        result = self._exchange(request)
+        if not isinstance(result, ServerControlMemberPlanResult):
+            raise ServerControlError(
+                "invalid_response",
+                "The running RCP process returned the wrong member-removal plan.",
+            )
+        return result
+
+    def advance_member_removal(
+        self,
+        member_id: str,
+        *,
+        boundary_sha256: str,
+    ) -> ServerControlMemberAdvanceResult:
+        request = ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=self.metadata.instance_id,
+            operation="member_removal_advance",
+            selector_kind="member",
+            selector_id=member_id,
+            boundary_sha256=boundary_sha256,
+        )
+        result = self._exchange(request)
+        if not isinstance(result, ServerControlMemberAdvanceResult):
+            raise ServerControlError(
+                "invalid_response",
+                "The running RCP process returned the wrong member-removal result.",
             )
         return result
 
@@ -816,6 +994,8 @@ class ServerControlClient:
         request: ServerControlRequest,
     ) -> (
         ServerControlProbeResult
+        | ServerControlMemberPlanResult
+        | ServerControlMemberAdvanceResult
         | ServerControlProviderPlanResult
         | ServerControlProviderCheckResult
         | ServerControlProjectPlanResult
@@ -1165,6 +1345,8 @@ class ServerControlServer:
 def _validated_control_result(
     request: ServerControlRequest,
     result: ServerControlProbeResult
+    | ServerControlMemberPlanResult
+    | ServerControlMemberAdvanceResult
     | ServerControlProviderPlanResult
     | ServerControlProviderCheckResult
     | ServerControlProjectPlanResult
@@ -1173,6 +1355,8 @@ def _validated_control_result(
     | ServerControlUpdateResult,
 ) -> (
     ServerControlProbeResult
+    | ServerControlMemberPlanResult
+    | ServerControlMemberAdvanceResult
     | ServerControlProviderPlanResult
     | ServerControlProviderCheckResult
     | ServerControlProjectPlanResult
@@ -1194,6 +1378,23 @@ def _validated_control_result(
         ):
             raise ValueError("provider readiness plan returned another selector")
         return validated
+    if request.operation == "member_removal_plan":
+        if not isinstance(result, ServerControlMemberPlanResult):
+            raise ValueError("member-removal plan returned another operation's result")
+        validated_member_plan = ServerControlMemberPlanResult.model_validate(result)
+        if validated_member_plan.snapshot.member_id != request.selector_id:
+            raise ValueError("member-removal plan returned another member")
+        return validated_member_plan
+    if request.operation == "member_removal_advance":
+        if not isinstance(result, ServerControlMemberAdvanceResult):
+            raise ValueError("member-removal advance returned another operation's result")
+        validated_member_advance = ServerControlMemberAdvanceResult.model_validate(result)
+        if (
+            validated_member_advance.snapshot.member_id != request.selector_id
+            or validated_member_advance.confirmed_boundary_sha256 != request.boundary_sha256
+        ):
+            raise ValueError("member-removal advance returned another confirmed boundary")
+        return validated_member_advance
     if request.operation == "provider_readiness_check":
         if not isinstance(result, ServerControlProviderCheckResult):
             raise ValueError("provider readiness check returned another operation's result")
@@ -1343,6 +1544,9 @@ __all__ = [
     "ServerControlBackupCaptureResult",
     "ServerControlError",
     "ServerControlHandler",
+    "ServerControlMemberAdvanceResult",
+    "ServerControlMemberPlanResult",
+    "ServerControlMemberSnapshot",
     "ServerControlPeer",
     "ServerControlProbeResult",
     "ServerControlProjectPlanResult",

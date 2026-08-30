@@ -85,7 +85,12 @@ class IdentityAccess:
                 )
             member = self._store.space_user(user_id)
 
-        if member is None or member.identity_kind != "team_member":
+        if (
+            member is None
+            or member.identity_kind != "team_member"
+            or member.removal_started_at is not None
+            or member.removed_at is not None
+        ):
             raise HTTPException(
                 status_code=403,
                 detail={

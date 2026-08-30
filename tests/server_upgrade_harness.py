@@ -55,6 +55,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "db3173b4ba31c89cd5370463bb180c007e013368",
         "c9cce4a77d79f30d79cf603215469a379735fa6ed13d1c49d7e9f2238d128ea7",
     ),
+    "pre-member-removal-v11-27c9682": (
+        "27c9682ed3679ff0063a96995b14ae184dbaff12",
+        "5efeb8cde52d346dcbaa8af20f8cc35bd6b2ddabe0572c1c1c4c1c388bb30cb2",
+    ),
 }
 
 

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 FENCE_DIAGNOSTIC = "The authorizing member left this project."
+REMOVAL_FENCE_DIAGNOSTIC = "The authorizing member was removed from this team space."
 
 
 def fence_episodes_for_departed_member(
@@ -29,6 +30,8 @@ def fence_episodes_for_departed_member(
     background_tasks: BackgroundAgentTasks,
     project_id: str,
     user_id: str,
+    *,
+    diagnostic: str = FENCE_DIAGNOSTIC,
 ) -> list[str]:
     """Stop every live episode in ``project_id`` authorized by ``user_id``.
 
@@ -43,10 +46,10 @@ def fence_episodes_for_departed_member(
         authorizer = episode.authorized_by
         if authorizer is None or authorizer.user_id != user_id:
             continue
-        if episode.status not in {"queued", "running"}:
+        if episode.status not in {"queued", "running", "stopping"}:
             continue
         try:
-            _fence_one(store, background_tasks, project_id, episode)
+            _fence_one(store, background_tasks, project_id, episode, diagnostic=diagnostic)
         except (EpisodeNotRunning, KeyError, ValueError) as exc:
             # An episode that settled between the read and the press is already
             # fenced, which is the outcome this wanted.
@@ -56,16 +59,46 @@ def fence_episodes_for_departed_member(
     return fenced
 
 
+def fence_episodes_for_removed_member(
+    store: AppStore,
+    background_tasks: BackgroundAgentTasks,
+    user_id: str,
+) -> list[str]:
+    """Press the same per-project Stop owner after space-wide member removal."""
+
+    fenced: list[str] = []
+    preview = store.member_removal_preview(user_id)
+    for episode_id in preview.active_episode_ids:
+        episode = store.episode(episode_id)
+        if episode is None:
+            continue
+        try:
+            _fence_one(
+                store,
+                background_tasks,
+                episode.project_id,
+                episode,
+                diagnostic=REMOVAL_FENCE_DIAGNOSTIC,
+            )
+        except (EpisodeNotRunning, KeyError, ValueError) as exc:
+            logger.info("Episode %s needed no removal fence: %s", episode_id, exc)
+            continue
+        fenced.append(episode_id)
+    return fenced
+
+
 def _fence_one(
     store: AppStore,
     background_tasks: BackgroundAgentTasks,
     project_id: str,
     episode: EpisodeRecord,
+    *,
+    diagnostic: str,
 ) -> None:
     episode_id = episode.episode_id
     if episode.mode == "auto_research":
         stop_auto_research(background_tasks, episode_id)
-        settle_auto_research_stop(store, episode_id, diagnostic=FENCE_DIAGNOSTIC)
+        settle_auto_research_stop(store, episode_id, diagnostic=diagnostic)
         return
     node_id = _experiment_control_node(store, project_id, episode_id)
     if node_id is None:

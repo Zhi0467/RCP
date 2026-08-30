@@ -141,6 +141,7 @@ def test_team_lifespan_publishes_private_socket_without_opening_a_second_store(
             "space_id",
             "space_kind",
             "operations",
+            "pending_member_removals",
         }
 
     assert not os.path.lexists(socket_path)
@@ -447,7 +448,8 @@ def test_root_machine_peer_reaches_probe_without_becoming_a_member(control_root:
         result = ServerControlClient(metadata, expected_server_uid=os.geteuid()).probe()
         assert result.space_kind == "team"
         assert observed == [ServerControlPeer(pid=os.getpid(), uid=0, gid=0)]
-        assert "member" not in json.dumps(result.model_dump())
+        assert result.pending_member_removals == ()
+        assert "member_id" not in json.dumps(result.model_dump())
         assert "user" not in json.dumps(result.model_dump())
     finally:
         server.stop()

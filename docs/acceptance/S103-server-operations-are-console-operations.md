@@ -6,6 +6,7 @@ driver: pytest + api + ssh
 covered_by:
   - tests/test_server_cli.py
   - tests/test_server_control.py
+  - tests/test_server_doctor.py
   - tests/test_server_install.py
   - tests/test_server_provider_readiness.py
   - tests/test_server_update_prepare.py
@@ -14,6 +15,8 @@ covered_by:
   - tests/test_server_update_cutover.py
   - tests/test_server_install_live.py
   - tests/test_team_project_provisioning.py
+  - tests/test_server_member_removal_storage.py
+  - tests/test_server_member_removal.py
 invariants: [1, 8]
 last_checked: >-
   2026-08-29 — install, update preparation, copied-state candidate rehearsal,
@@ -24,8 +27,11 @@ last_checked: >-
   ordinary forced rollback, exposing a harness-only mixed-account process-group
   cleanup defect now fixed at 75fcafc. Exact-head run 33278678760 started no
   steps because GitHub rejected hosted runners for the account's payment or
-  spending-limit state. A passing 22.04/24.04 rerun, restore, member removal,
-  the complete remote drive, and the full scenario remain pending.
+  spending-limit state. Member removal now has hermetic exact-preview,
+  access-fence, graceful-drain, crash-reentry, and installed-service startup
+  reconciliation coverage. A passing 22.04/24.04 rerun, restore activation, the
+  live member-removal drive, the complete remote drive, and the full scenario
+  remain pending.
 ---
 
 # Dangerous operations need the machine, not a login

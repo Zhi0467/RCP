@@ -1366,11 +1366,13 @@ exits successfully only after reading back the same request as **ready for
 review**, and it has no project-creation route; only the authenticated final
 review route can append the reserved identity and complete the request.
 
-Machine orchestration, final creation, and the team deletion guard are
+Machine orchestration, final creation, the team deletion guard, and console
+member removal are
 hermetically covered, but provisioning has not yet passed S128's complete
 source-built team-service/GitHub/SSH/browser/desktop live drive. Cancellation
 after machine preparation, the unified wizard and desktop operator bridge,
-restore, member removal, and transfer remain active acceptance work. Protected
+restore activation, the live member-removal drive, and transfer remain active
+acceptance work. Protected
 backup is hermetically complete but still awaits S104's full live Linux/SSH
 no-pause and systemd drive. Current RCP must not simulate the other unfinished
 journeys or describe **ready for review** as an existing project.

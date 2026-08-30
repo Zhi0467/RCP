@@ -188,10 +188,13 @@ def revoke_team_credential(
 ) -> dict[str, bool]:
     identity_access.require_team_space()
     member = identity_access.acting_user(request)
-    store.revoke_team_token(
-        member.user_id,
-        authenticating_session=identity_access.authenticating_team_session(request),
-    )
+    try:
+        store.revoke_team_token(
+            member.user_id,
+            authenticating_session=identity_access.authenticating_team_session(request),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     identity_access.clear_team_session_cookie(response)
     return {"ok": True}
 

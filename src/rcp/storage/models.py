@@ -32,6 +32,7 @@ from rcp.core.models import (
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
+    MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
     WATCHER_ERROR_BACKOFF_SECONDS,
     WATCHER_HEALTHY_INTERVAL_SECONDS,
@@ -78,6 +79,8 @@ class SpaceUserRecord(BaseModel):
     display_name: str | None = Field(default=None, max_length=DISPLAY_NAME_MAX_LENGTH)
     created_at: str
     updated_at: str
+    removal_started_at: str | None = None
+    removed_at: str | None = None
 
     @field_validator("user_id")
     @classmethod
@@ -94,6 +97,49 @@ class SpaceUserRecord(BaseModel):
             return None
         return normalize_display_name(value)
 
+    @model_validator(mode="after")
+    def removal_is_ordered(self) -> SpaceUserRecord:
+        if self.removed_at is not None and self.removal_started_at is None:
+            raise ValueError("a removed member requires its durable access fence")
+        return self
+
+
+class MemberRemovalPreviewRecord(BaseModel):
+    """One exact, digest-bound preview of a member-removal consequence set."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    member: SpaceUserRecord
+    last_authenticating_member: bool
+    project_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    orphaned_project_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    active_task_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    active_episode_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    active_token_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    browser_session_count: int = Field(ge=0)
+    space_invitation_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    project_invitation_ids: tuple[str, ...] = Field(max_length=MEMBER_REMOVAL_PREVIEW_MAX_ITEMS)
+    boundary_sha256: str
+
+    @model_validator(mode="after")
+    def inventory_is_canonical(self) -> MemberRemovalPreviewRecord:
+        for values in (
+            self.project_ids,
+            self.orphaned_project_ids,
+            self.active_task_ids,
+            self.active_episode_ids,
+            self.active_token_ids,
+            self.space_invitation_ids,
+            self.project_invitation_ids,
+        ):
+            if values != tuple(sorted(set(values))):
+                raise ValueError("member-removal preview inventories must be sorted and unique")
+        if not set(self.orphaned_project_ids).issubset(self.project_ids):
+            raise ValueError("member-removal orphaned projects must belong to the target")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.boundary_sha256):
+            raise ValueError("member-removal preview boundary must be lowercase SHA-256")
+        return self
+
 
 class TeamInvitationRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -106,6 +152,7 @@ class TeamInvitationRecord(BaseModel):
     consumed_by: str | None = None
     failed_attempts: int
     locked_at: str | None = None
+    revoked_at: str | None = None
 
 
 class ProjectMemberRecord(BaseModel):
@@ -146,7 +193,7 @@ class ProjectInvitationRecord(BaseModel):
     invited_user_id: str
     invited_by: str
     created_at: str
-    response: Literal["accepted", "declined"] | None = None
+    response: Literal["accepted", "declined", "revoked"] | None = None
     responded_at: str | None = None
 
 
@@ -2311,6 +2358,7 @@ __all__ = [
     "ExperimentWatcherResourceRecord",
     "GraphCondition",
     "GraphWatcherRecord",
+    "MemberRemovalPreviewRecord",
     "NodeStatusGraphCondition",
     "ProjectInvitationRecord",
     "ProjectMemberRecord",

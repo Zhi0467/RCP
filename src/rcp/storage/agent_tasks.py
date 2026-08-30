@@ -2748,7 +2748,10 @@ class AgentTaskStoreMixin:
             )
 
     def request_agent_task_pause(
-        self, operation_id: str, *, requested_by: Literal["human", "shutdown"] = "human"
+        self,
+        operation_id: str,
+        *,
+        requested_by: Literal["human", "shutdown", "member_removal"] = "human",
     ) -> AgentTaskRecord:
         now = self.now()
         with self.connection() as connection:
@@ -2768,11 +2771,13 @@ class AgentTaskStoreMixin:
             self._insert_agent_task_event(
                 connection,
                 operation_id,
-                (
-                    "Pause requested by the human."
-                    if requested_by == "human"
-                    else "Paused for RCP shutdown or reload."
-                ),
+                {
+                    "human": "Pause requested by the human.",
+                    "shutdown": "Paused for RCP shutdown or reload.",
+                    "member_removal": (
+                        "Pause requested because the authorizing member is being removed."
+                    ),
+                }[requested_by],
                 level="info",
                 created_at=now,
             )

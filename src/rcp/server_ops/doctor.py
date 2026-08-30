@@ -21,6 +21,7 @@ from rcp.server_ops.config import InstalledServerConfig, load_installed_server_c
 from rcp.server_ops.control import (
     ServerControlClient,
     ServerControlError,
+    ServerControlMemberSnapshot,
     ServerControlProbeResult,
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout, server_service_unit_text
@@ -489,6 +490,16 @@ class LinuxServerDoctorMachine:
         )
         if control_status == "healthy" and provider_check_status == "unavailable":
             add_problem("private control socket does not offer provider readiness")
+        if control_status == "healthy" and (
+            probe is None
+            or "member_removal_plan" not in probe.operations
+            or "member_removal_advance" not in probe.operations
+        ):
+            add_problem("private control socket does not offer member removal")
+        if probe is not None:
+            for pending in getattr(probe, "pending_member_removals", ()):
+                for problem in _member_removal_problems(pending):
+                    add_problem(problem)
         overall_state = _overall_state(
             problems,
             release_state=release_state,
@@ -1257,6 +1268,22 @@ class LinuxServerDoctorMachine:
         if not lines or len(lines[-1]) > 240:
             return None
         return lines[-1]
+
+
+def _member_removal_problems(
+    snapshot: ServerControlMemberSnapshot,
+) -> tuple[str, ...]:
+    return (
+        f"member removal remains in progress: {snapshot.member_id}",
+        *(
+            f"member removal has a live task: {operation_id}"
+            for operation_id in snapshot.active_task_ids
+        ),
+        *(
+            f"member removal has a live episode: {episode_id}"
+            for episode_id in snapshot.active_episode_ids
+        ),
+    )
 
 
 def release_relationship(

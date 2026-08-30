@@ -219,6 +219,12 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
         "Preview and resume removal of one canonical team member",
     )
     member_remove.add_argument("member_id", type=_member_id)
+    member_remove.add_argument(
+        "--confirm-boundary",
+        dest="member_confirmed_boundary",
+        type=_member_boundary,
+        help="Confirm the exact SHA-256 consequence boundary displayed by the preview",
+    )
     member_remove.set_defaults(server_operation="server member remove")
 
     update = _leaf(server_commands, "update", "Prepare a source-built origin/main candidate")
@@ -264,6 +270,14 @@ def _project_id(value: str) -> str:
 
 def _member_id(value: str) -> str:
     return _canonical_identifier(value, "member id")
+
+
+def _member_boundary(value: str) -> str:
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise argparse.ArgumentTypeError(
+            "confirmed member boundary must be a lowercase 64-character SHA-256 digest"
+        )
+    return value
 
 
 def _team_name(value: str) -> str:
@@ -339,6 +353,7 @@ def request_from_namespace(args: argparse.Namespace) -> ServerCommandRequest:
             request_id=getattr(args, "request_id", None),
             project_id=getattr(args, "project_id", None),
             member_id=getattr(args, "member_id", None),
+            member_confirmed_boundary=getattr(args, "member_confirmed_boundary", None),
             archive_path=getattr(args, "archive_path", None),
             recovery_identity_file=getattr(args, "recovery_identity_file", None),
             restore_confirmed_data_dir=getattr(args, "restore_confirmed_data_dir", None),
@@ -458,7 +473,9 @@ def _dispatch_server_command(
 
             return prepare_restore_command(request, identity)
         case "server member remove":
-            return _unavailable_command(request, identity)
+            from rcp.server_ops.members import prepare_member_remove_command
+
+            return prepare_member_remove_command(request, identity)
         case "server update":
             from rcp.server_ops.update import prepare_update_command
 

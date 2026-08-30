@@ -217,6 +217,18 @@ def _operator_execution() -> ServerCommandExecution:
             "server member remove",
             {"member_id": MEMBER_ID},
         ),
+        (
+            (
+                "server",
+                "member",
+                "remove",
+                MEMBER_ID,
+                "--confirm-boundary",
+                "d" * 64,
+            ),
+            "server member remove",
+            {"member_id": MEMBER_ID, "member_confirmed_boundary": "d" * 64},
+        ),
         (("server", "update"), "server update", {}),
         (
             ("server", "update", "--confirm-target", UPDATE_COMMIT),
@@ -258,6 +270,7 @@ def test_machine_readable_is_a_renderer_choice_before_or_after_the_leaf() -> Non
             PROJECT_ID,
         ),
         ("server", "project", "provision", REQUEST_ID.upper()),
+        ("server", "member", "remove", MEMBER_ID, "--confirm-boundary", "not-a-digest"),
         ("server", "project", "transfer-import", REQUEST_ID, "/tmp/archive"),
         ("server", "project", "provision", REQUEST_ID, "--host", "other.example"),
         ("server", "provider", "check", "--request", REQUEST_ID, "--account", "alice"),

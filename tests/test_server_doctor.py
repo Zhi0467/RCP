@@ -22,10 +22,11 @@ from rcp.server_ops import doctor as server_doctor
 from rcp.server_ops.backup import BackupArchiveReceipt, BackupRunOutcome
 from rcp.server_ops.cli import CallerIdentity, run_server_command
 from rcp.server_ops.config import ServerBackupConfig, ServerSourceConfig
-from rcp.server_ops.control import SERVER_CONTROL_OPERATIONS
+from rcp.server_ops.control import SERVER_CONTROL_OPERATIONS, ServerControlMemberSnapshot
 from rcp.server_ops.doctor import (
     LinuxServerDoctorMachine,
     ServerDoctorReport,
+    _member_removal_problems,
     prepare_doctor_command,
     release_relationship,
 )
@@ -470,6 +471,35 @@ def test_doctor_does_not_probe_a_metadata_selected_control_socket(tmp_path: Path
     assert status == "identity_mismatch"
     assert probe_calls == 0
     assert problems == ["running process metadata names a different control socket"]
+
+
+def test_doctor_names_each_live_operation_during_member_removal() -> None:
+    member_id = str(uuid.uuid4())
+    task_id = str(uuid.uuid4())
+    episode_id = str(uuid.uuid4())
+    snapshot = ServerControlMemberSnapshot(
+        member_id=member_id,
+        member_display_name="Alice",
+        removal_started_at=datetime.now(UTC).isoformat(),
+        removed_at=None,
+        last_authenticating_member=False,
+        project_ids=(),
+        orphaned_project_ids=(),
+        orphaned_project_labels=(),
+        active_task_ids=(task_id,),
+        active_episode_ids=(episode_id,),
+        active_token_ids=(),
+        browser_session_count=0,
+        space_invitation_ids=(),
+        project_invitation_ids=(),
+        boundary_sha256="a" * 64,
+    )
+
+    assert _member_removal_problems(snapshot) == (
+        f"member removal remains in progress: {member_id}",
+        f"member removal has a live task: {task_id}",
+        f"member removal has a live episode: {episode_id}",
+    )
 
 
 def test_doctor_rejects_systemd_drop_ins(tmp_path: Path) -> None:

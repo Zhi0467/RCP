@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timedelta
 from typing import Literal
 
 from rcp.limits import (
+    MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
     TEAM_CODE_FAILED_ATTEMPT_LIMIT,
     TEAM_INVITATION_TTL_DAYS,
     TEAM_MEMBER_TOKEN_MAX_LENGTH,
@@ -14,6 +17,7 @@ from rcp.limits import (
     TEAM_SESSION_TOKEN_MAX_LENGTH,
     WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
 )
+from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.storage.models import (  # noqa: F401
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
     _EXPERIMENT_EPISODE_PINNED_FIELDS,
@@ -40,6 +44,7 @@ from rcp.storage.models import (  # noqa: F401
     ExperimentWatcherResourceRecord,
     GraphCondition,
     GraphWatcherRecord,
+    MemberRemovalPreviewRecord,
     NodeStatusGraphCondition,
     ProjectInvitationRecord,
     ProjectMemberRecord,
@@ -81,6 +86,13 @@ from rcp.storage.models import (  # noqa: F401
     normalize_space_name,
     watcher_next_check_at,
 )
+
+
+def _bounded_removal_values(rows, column: str, *, label: str) -> tuple[str, ...]:
+    values = tuple(sorted({str(row[column]) for row in rows}))
+    if len(values) > MEMBER_REMOVAL_PREVIEW_MAX_ITEMS:
+        raise RuntimeError(f"The member-removal {label} exceeds its safe preview bound.")
+    return values
 
 
 class SpaceStoreMixin:
@@ -128,6 +140,115 @@ class SpaceStoreMixin:
             ).fetchone()
         return self._space_user_record(row) if row is not None else None
 
+    def member_removal_preview(self, user_id: str) -> MemberRemovalPreviewRecord:
+        """Read one complete consequence set without changing member authority."""
+
+        _canonical_uuid4(user_id, label="user identity")
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            return self._member_removal_preview_from_connection(connection, user_id)
+
+    def begin_member_removal(
+        self,
+        user_id: str,
+        *,
+        expected_boundary_sha256: str,
+    ) -> MemberRemovalPreviewRecord:
+        """Atomically fence access and revoke every member-owned live capability."""
+
+        _canonical_uuid4(user_id, label="user identity")
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            preview = self._member_removal_preview_from_connection(connection, user_id)
+            if preview.member.removal_started_at is not None:
+                return preview
+            if preview.boundary_sha256 != expected_boundary_sha256:
+                raise ValueError(
+                    "The member-removal consequences changed after preview; rerun the command."
+                )
+            if preview.last_authenticating_member:
+                raise ValueError(
+                    "Removing this member would leave no other enrolled member who can "
+                    "authenticate. Enroll another member first."
+                )
+            if preview.orphaned_project_ids:
+                projects = self._project_labels(connection, preview.orphaned_project_ids)
+                raise ValueError(
+                    "Removing this member would leave these projects without an authenticating "
+                    f"member: {', '.join(projects)}. Add another member first."
+                )
+            changed = connection.execute(
+                """
+                UPDATE space_users
+                SET removal_started_at = ?, updated_at = ?
+                WHERE user_id = ? AND removal_started_at IS NULL
+                """,
+                (now, now, user_id),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("The member-removal access fence did not commit exactly once.")
+            connection.execute(
+                "UPDATE team_member_tokens SET revoked_at = ? "
+                "WHERE user_id = ? AND revoked_at IS NULL",
+                (now, user_id),
+            )
+            connection.execute("DELETE FROM team_sessions WHERE user_id = ?", (user_id,))
+            connection.execute(
+                """
+                UPDATE team_invitations
+                SET revoked_at = ?
+                WHERE created_by = ? AND consumed_at IS NULL AND revoked_at IS NULL
+                """,
+                (now, user_id),
+            )
+            connection.execute(
+                """
+                UPDATE project_invitations
+                SET response = 'revoked', responded_at = ?
+                WHERE response IS NULL AND (invited_by = ? OR invited_user_id = ?)
+                """,
+                (now, user_id, user_id),
+            )
+            connection.execute("DELETE FROM project_members WHERE user_id = ?", (user_id,))
+            return self._member_removal_preview_from_connection(connection, user_id)
+
+    def members_pending_removal(self) -> list[SpaceUserRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM space_users
+                WHERE removal_started_at IS NOT NULL AND removed_at IS NULL
+                ORDER BY removal_started_at, user_id
+                """
+            ).fetchall()
+        return [self._space_user_record(row) for row in rows]
+
+    def complete_member_removal(self, user_id: str) -> SpaceUserRecord:
+        """Finish one tombstone only after every authorized work owner is terminal."""
+
+        _canonical_uuid4(user_id, label="user identity")
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            member = self._space_user_from_connection(connection, user_id)
+            if member is None or member.identity_kind != "team_member":
+                raise KeyError(f"Unknown RCP team member {user_id}.")
+            if member.removal_started_at is None:
+                raise ValueError("Member removal has not committed its access fence.")
+            if member.removed_at is not None:
+                return member
+            preview = self._member_removal_preview_from_connection(connection, user_id)
+            if preview.active_task_ids or preview.active_episode_ids:
+                raise RuntimeError("Member removal still has live authorized work.")
+            connection.execute(
+                "UPDATE space_users SET removed_at = ?, updated_at = ? WHERE user_id = ?",
+                (now, now, user_id),
+            )
+            completed = self._space_user_from_connection(connection, user_id)
+            assert completed is not None
+            return completed
+
     @property
     def local_owner(self) -> SpaceUserRecord | None:
         if self.space_kind != "personal":
@@ -154,13 +275,7 @@ class SpaceStoreMixin:
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            if (
-                connection.execute(
-                    "SELECT 1 FROM space_users WHERE user_id = ?", (user_id,)
-                ).fetchone()
-                is None
-            ):
-                raise KeyError(f"Unknown RCP space user {user_id}.")
+            self._require_active_space_user_from_connection(connection, user_id)
             connection.execute(
                 """
                 INSERT OR IGNORE INTO project_members (project_id, user_id, seated_at, seated_by)
@@ -224,13 +339,10 @@ class SpaceStoreMixin:
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             for user_id, label in ((invited_by, "inviter"), (invited_user_id, "invitee")):
-                if (
-                    connection.execute(
-                        "SELECT 1 FROM space_users WHERE user_id = ?", (user_id,)
-                    ).fetchone()
-                    is None
-                ):
-                    raise KeyError(f"The {label} is not a member of this RCP space.")
+                try:
+                    self._require_team_member_from_connection(connection, user_id)
+                except KeyError:
+                    raise KeyError(f"The {label} is not a member of this RCP space.") from None
             if (
                 connection.execute(
                     "SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?",
@@ -290,6 +402,7 @@ class SpaceStoreMixin:
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._require_team_member_from_connection(connection, invited_user_id)
             row = connection.execute(
                 "SELECT * FROM project_invitations WHERE invitation_id = ?",
                 (invitation_id,),
@@ -392,6 +505,10 @@ class SpaceStoreMixin:
             elif row["consumed_at"] is not None:
                 error = TeamAuthenticationError(
                     "enrollment_code_consumed", "The enrollment code has already been used."
+                )
+            elif row["revoked_at"] is not None:
+                error = TeamAuthenticationError(
+                    "enrollment_code_invalid", "The enrollment code is invalid."
                 )
             elif row["locked_at"] is not None:
                 error = TeamAuthenticationError(
@@ -522,7 +639,7 @@ class SpaceStoreMixin:
             rows = connection.execute(
                 """
                 SELECT invitation_id, created_by, created_at, expires_at,
-                       consumed_at, consumed_by, failed_attempts, locked_at
+                       consumed_at, consumed_by, failed_attempts, locked_at, revoked_at
                 FROM team_invitations
                 WHERE created_by = ?
                 ORDER BY created_at DESC, invitation_id
@@ -600,7 +717,12 @@ class SpaceStoreMixin:
                 )
                 return None
             member = self._space_user_from_connection(connection, row["user_id"])
-            if member is None or member.identity_kind != "team_member":
+            if (
+                member is None
+                or member.identity_kind != "team_member"
+                or member.removal_started_at is not None
+                or member.removed_at is not None
+            ):
                 connection.execute(
                     "DELETE FROM team_sessions WHERE session_hash = ?", (session_hash,)
                 )
@@ -637,16 +759,16 @@ class SpaceStoreMixin:
         connection.execute(
             """
             UPDATE team_bootstrap_codes
-            SET locked_at = COALESCE(locked_at, ?)
-            WHERE consumed_at IS NULL
+            SET revoked_at = COALESCE(revoked_at, ?)
+            WHERE consumed_at IS NULL AND revoked_at IS NULL
             """,
             (now,),
         )
         connection.execute(
             """
             UPDATE team_invitations
-            SET locked_at = COALESCE(locked_at, ?)
-            WHERE consumed_at IS NULL
+            SET revoked_at = COALESCE(revoked_at, ?)
+            WHERE consumed_at IS NULL AND revoked_at IS NULL
             """,
             (now,),
         )
@@ -726,6 +848,7 @@ class SpaceStoreMixin:
                 self._require_authenticating_team_session(
                     connection, authenticating_session, user_id, now
                 )
+            self._require_token_revocation_safe(connection, user_id)
             connection.execute(
                 "UPDATE team_member_tokens SET revoked_at = ? "
                 "WHERE user_id = ? AND revoked_at IS NULL",
@@ -776,6 +899,8 @@ class SpaceStoreMixin:
             if row is None:
                 raise KeyError(f"Unknown RCP space user {user_id}.")
             current = self._space_user_record(row)
+            if current.removal_started_at is not None or current.removed_at is not None:
+                raise KeyError(f"Unknown active RCP space user {user_id}.")
             updated = SpaceUserRecord.model_validate(
                 {
                     **current.model_dump(),
@@ -792,6 +917,211 @@ class SpaceStoreMixin:
                 (updated.display_name, updated.updated_at, user_id),
             )
         return updated
+
+    @classmethod
+    def _member_removal_preview_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        user_id: str,
+    ) -> MemberRemovalPreviewRecord:
+        member = cls._space_user_from_connection(connection, user_id)
+        if member is None or member.identity_kind != "team_member":
+            raise KeyError(f"Unknown RCP team member {user_id}.")
+        projects = _bounded_removal_values(
+            connection.execute(
+                "SELECT project_id FROM project_members WHERE user_id = ? ORDER BY project_id",
+                (user_id,),
+            ).fetchall(),
+            "project_id",
+            label="project inventory",
+        )
+        active_tasks = _bounded_removal_values(
+            connection.execute(
+                """
+                SELECT operation_id FROM graph_runs
+                WHERE authorized_user_id = ? AND status IN ('queued', 'running', 'pausing')
+                ORDER BY operation_id
+                """,
+                (user_id,),
+            ).fetchall(),
+            "operation_id",
+            label="task inventory",
+        )
+        episode_placeholders = ", ".join("?" for _ in _LIVE_EPISODE_STATUSES)
+        active_episodes = _bounded_removal_values(
+            connection.execute(
+                f"""
+                SELECT episode_id FROM episodes
+                WHERE authorized_user_id = ? AND status IN ({episode_placeholders})
+                ORDER BY episode_id
+                """,  # noqa: S608 - placeholders come from the closed episode vocabulary
+                (user_id, *_LIVE_EPISODE_STATUSES),
+            ).fetchall(),
+            "episode_id",
+            label="episode inventory",
+        )
+        active_tokens = _bounded_removal_values(
+            connection.execute(
+                """
+                SELECT token_id FROM team_member_tokens
+                WHERE user_id = ? AND revoked_at IS NULL
+                ORDER BY token_id
+                """,
+                (user_id,),
+            ).fetchall(),
+            "token_id",
+            label="token inventory",
+        )
+        session_hashes = tuple(
+            str(row["session_hash"])
+            for row in connection.execute(
+                "SELECT session_hash FROM team_sessions WHERE user_id = ? ORDER BY session_hash",
+                (user_id,),
+            ).fetchall()
+        )
+        space_invitations = _bounded_removal_values(
+            connection.execute(
+                """
+                SELECT invitation_id FROM team_invitations
+                WHERE created_by = ? AND consumed_at IS NULL AND revoked_at IS NULL
+                ORDER BY invitation_id
+                """,
+                (user_id,),
+            ).fetchall(),
+            "invitation_id",
+            label="space-invitation inventory",
+        )
+        project_invitations = _bounded_removal_values(
+            connection.execute(
+                """
+                SELECT invitation_id FROM project_invitations
+                WHERE response IS NULL AND (invited_by = ? OR invited_user_id = ?)
+                ORDER BY invitation_id
+                """,
+                (user_id, user_id),
+            ).fetchall(),
+            "invitation_id",
+            label="project-invitation inventory",
+        )
+        active_members = cls._active_enrolled_member_ids(connection)
+        orphaned_projects = tuple(
+            project_id
+            for project_id in projects
+            if not cls._active_project_member_ids(connection, project_id) - {user_id}
+        )
+        payload = {
+            "member": member.model_dump(mode="json"),
+            "last_authenticating_member": bool(active_tokens and not (active_members - {user_id})),
+            "project_ids": projects,
+            "orphaned_project_ids": orphaned_projects,
+            "active_task_ids": active_tasks,
+            "active_episode_ids": active_episodes,
+            "active_token_ids": active_tokens,
+            "browser_session_hashes": session_hashes,
+            "space_invitation_ids": space_invitations,
+            "project_invitation_ids": project_invitations,
+            "active_enrolled_member_ids": tuple(sorted(active_members)),
+        }
+        boundary = hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        return MemberRemovalPreviewRecord(
+            member=member,
+            last_authenticating_member=bool(active_tokens and not (active_members - {user_id})),
+            project_ids=projects,
+            orphaned_project_ids=orphaned_projects,
+            active_task_ids=active_tasks,
+            active_episode_ids=active_episodes,
+            active_token_ids=active_tokens,
+            browser_session_count=len(session_hashes),
+            space_invitation_ids=space_invitations,
+            project_invitation_ids=project_invitations,
+            boundary_sha256=boundary,
+        )
+
+    @staticmethod
+    def _active_enrolled_member_ids(connection: sqlite3.Connection) -> set[str]:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT user.user_id
+            FROM space_users AS user
+            JOIN team_member_tokens AS token ON token.user_id = user.user_id
+            WHERE user.identity_kind = 'team_member'
+              AND user.removal_started_at IS NULL
+              AND user.removed_at IS NULL
+              AND token.revoked_at IS NULL
+            """
+        ).fetchall()
+        return {str(row["user_id"]) for row in rows}
+
+    @classmethod
+    def _active_project_member_ids(
+        cls,
+        connection: sqlite3.Connection,
+        project_id: str,
+    ) -> set[str]:
+        active_members = cls._active_enrolled_member_ids(connection)
+        rows = connection.execute(
+            "SELECT user_id FROM project_members WHERE project_id = ?",
+            (project_id,),
+        ).fetchall()
+        return {str(row["user_id"]) for row in rows}.intersection(active_members)
+
+    @staticmethod
+    def _project_labels(
+        connection: sqlite3.Connection,
+        project_ids: tuple[str, ...],
+    ) -> list[str]:
+        labels: list[str] = []
+        for project_id in project_ids:
+            row = connection.execute(
+                "SELECT name FROM projects WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            name = str(row["name"]) if row is not None else "Unknown project"
+            labels.append(f"{name} ({project_id})")
+        return labels
+
+    @classmethod
+    def _require_token_revocation_safe(
+        cls,
+        connection: sqlite3.Connection,
+        user_id: str,
+    ) -> None:
+        active_tokens = connection.execute(
+            "SELECT 1 FROM team_member_tokens WHERE user_id = ? AND revoked_at IS NULL LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        if active_tokens is None:
+            return
+        if not (cls._active_enrolled_member_ids(connection) - {user_id}):
+            raise ValueError(
+                "You are the last enrolled member who can authenticate. Rotate this credential "
+                "or enroll another member instead of revoking it."
+            )
+        projects = tuple(
+            sorted(
+                str(row["project_id"])
+                for row in connection.execute(
+                    "SELECT project_id FROM project_members WHERE user_id = ?",
+                    (user_id,),
+                ).fetchall()
+                if not cls._active_project_member_ids(connection, str(row["project_id"]))
+                - {user_id}
+            )
+        )
+        if projects:
+            raise ValueError(
+                "Revoking this credential would leave these projects without an authenticating "
+                f"member: {', '.join(cls._project_labels(connection, projects))}. Add another "
+                "member first."
+            )
 
     @staticmethod
     def _space_kind_from_connection(connection: sqlite3.Connection) -> SpaceKind:
@@ -832,9 +1162,25 @@ class SpaceStoreMixin:
         if cls._space_kind_from_connection(connection) != "team":
             raise ValueError("Only a team space has team members.")
         member = cls._space_user_from_connection(connection, user_id)
-        if member is None or member.identity_kind != "team_member":
+        if (
+            member is None
+            or member.identity_kind != "team_member"
+            or member.removal_started_at is not None
+            or member.removed_at is not None
+        ):
             raise KeyError(f"Unknown RCP team member {user_id}.")
         return member
+
+    @classmethod
+    def _require_active_space_user_from_connection(
+        cls,
+        connection: sqlite3.Connection,
+        user_id: str,
+    ) -> SpaceUserRecord:
+        user = cls._space_user_from_connection(connection, user_id)
+        if user is None or user.removal_started_at is not None or user.removed_at is not None:
+            raise KeyError(f"Unknown active RCP space user {user_id}.")
+        return user
 
     @staticmethod
     def _ready_group_members(

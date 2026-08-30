@@ -71,7 +71,10 @@ def _exercise_candidate_upgrade(fixture: Path) -> None:
         operation_id = _metadata_string(metadata, "active_operation_id")
         assert store.space_id == space_id
         assert store.space_kind == "team"
-        assert store.space_user(user_id) is not None
+        member = store.space_user(user_id)
+        assert member is not None
+        assert member.removal_started_at is None
+        assert member.removed_at is None
         assert {member.user_id for member in store.project_members(project_id)} == {user_id}
         _assert_member_auth_rows(store, metadata)
         upgraded_task = store.agent_task(operation_id)

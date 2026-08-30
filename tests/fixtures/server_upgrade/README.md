@@ -45,3 +45,6 @@ row while retaining the new manifest inputs needed for final creation.
 tasks gain a durable history-only fence. It includes the source-update cutover,
 backup, and rollback-era migrations that the next candidate must preserve while
 adding that marker.
+`pre-member-removal-v11-27c9682` records the resulting last database shape before
+team members gain durable removal fences and tombstones, and before team and
+project invitations gain explicit revocation state.

@@ -419,6 +419,9 @@ def test_revoking_a_token_does_not_fence_running_work(manifest, tmp_path) -> Non
     project_id = _create_project(client, tmp_path / "repo")
 
     alice = store.space_users()[0]
+    _invitation, bob_code = store.create_team_invitation(alice.user_id)
+    bob, _bob_token = store.enroll_team_member(bob_code, "Bob")
+    store.seat_project_member(project_id, bob.user_id, seated_by=alice.user_id)
     episode = _running_auto_research_episode(
         store,
         project_id,
@@ -492,6 +495,9 @@ def test_revoking_a_token_mid_run_refuses_nothing_and_fences_nothing(manifest, t
     client.post("/api/team/session/exchange", json={"token": token})
     project_id = _create_project(client, tmp_path / "repo")
     alice = store.space_users()[0]
+    _invitation, bob_code = store.create_team_invitation(alice.user_id)
+    bob, _bob_token = store.enroll_team_member(bob_code, "Bob")
+    store.seat_project_member(project_id, bob.user_id, seated_by=alice.user_id)
 
     assert client.post("/api/team/credential/revoke", json={}).status_code in {200, 204}
 

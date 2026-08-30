@@ -127,6 +127,8 @@ from rcp.server_ops.control import (
     SERVER_CONTROL_OPERATIONS,
     ServerControlBackupCaptureResult,
     ServerControlError,
+    ServerControlMemberAdvanceResult,
+    ServerControlMemberPlanResult,
     ServerControlPeer,
     ServerControlProbeResult,
     ServerControlProjectPlanResult,
@@ -138,6 +140,7 @@ from rcp.server_ops.control import (
     ServerControlUpdateResult,
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
+from rcp.server_ops.members import MemberRemovalCoordinator
 from rcp.server_ops.project_provision import ProjectProvisionCoordinator
 from rcp.server_ops.provider_readiness import ProviderReadinessCoordinator
 from rcp.server_ops.update_cutover import (
@@ -341,6 +344,7 @@ def create_app(
     provider_readiness_coordinator: ProviderReadinessCoordinator | None = None
     project_provision_coordinator: ProjectProvisionCoordinator | None = None
     backup_capture_coordinator: BackupCaptureCoordinator | None = None
+    member_removal_coordinator: MemberRemovalCoordinator | None = None
     update_service_coordinator: UpdateServiceCoordinator | None = None
     startup_effect_runtime_event = threading.Event()
     startup_effect_release_error: list[str | None] = [None]
@@ -401,6 +405,8 @@ def create_app(
             _peer: ServerControlPeer,
         ) -> (
             ServerControlProbeResult
+            | ServerControlMemberPlanResult
+            | ServerControlMemberAdvanceResult
             | ServerControlProviderPlanResult
             | ServerControlProviderCheckResult
             | ServerControlProjectPlanResult
@@ -445,6 +451,23 @@ def create_app(
                         data_dir_id=identity.data_dir_id,
                         space_id=space_id,
                         operations=SERVER_CONTROL_OPERATIONS,
+                        pending_member_removals=(
+                            member_removal_coordinator.pending_snapshots()
+                            if member_removal_coordinator is not None
+                            else ()
+                        ),
+                    )
+                case "member_removal_plan":
+                    assert member_removal_coordinator is not None
+                    assert request.selector_id is not None
+                    return member_removal_coordinator.plan(request.selector_id)
+                case "member_removal_advance":
+                    assert member_removal_coordinator is not None
+                    assert request.selector_id is not None
+                    assert request.boundary_sha256 is not None
+                    return member_removal_coordinator.advance(
+                        request.selector_id,
+                        boundary_sha256=request.boundary_sha256,
                     )
                 case "provider_readiness_plan":
                     assert provider_readiness_coordinator is not None
@@ -869,6 +892,12 @@ def create_app(
         startup_effect_fence=startup_effect_fence,
         runtime_admission_gate=background_admission_gate,
     )
+    if control_server is not None:
+        member_removal_coordinator = MemberRemovalCoordinator(
+            store,
+            background_tasks,
+            identity,
+        )
     auto_research_experiment_coordinator = AutoResearchExperimentCoordinator(
         store,
         background_tasks,
@@ -1045,8 +1074,12 @@ def create_app(
                         episode_id=episode.episode_id,
                     )
         finally:
-            if isinstance(request, AutoResearchRunRequest):
-                episode_reconciler.settle_auto_research_task(request, execution)
+            try:
+                if isinstance(request, AutoResearchRunRequest):
+                    episode_reconciler.settle_auto_research_task(request, execution)
+            finally:
+                if member_removal_coordinator is not None:
+                    member_removal_coordinator.reconcile_pending()
 
     background_tasks.on_task_settled = after_task_settled
     background_tasks.on_auto_research_admission_exhausted = lambda episode: (
@@ -1249,6 +1282,8 @@ def create_app(
                 # it immediately; a cutover candidate calls it after the shared
                 # effect fence opens. Recovery must precede every other owner.
                 background_tasks.recover_at_startup()
+                if member_removal_coordinator is not None:
+                    member_removal_coordinator.reconcile_pending()
                 background_tasks.accept_watcher_notifications()
                 store.prune_operational_storage()
                 await asyncio.to_thread(
@@ -1314,6 +1349,8 @@ def create_app(
                                 source="startup",
                             )
                 await asyncio.to_thread(reconcile_auto_research_recovery_pass)
+                if member_removal_coordinator is not None:
+                    await asyncio.to_thread(member_removal_coordinator.reconcile_pending)
                 _sweep_stale_stages(app_data / "run-stage", now=time.time())
                 attachment_store.sweep()
                 cache_roots = [

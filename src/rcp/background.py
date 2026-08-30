@@ -737,6 +737,31 @@ class BackgroundAgentTasks:
         self._signal_agent_task_pause(operation_id)
         return record
 
+    def request_member_removal_pause(self, operation_id: str) -> AgentTaskRecord:
+        """Fence a task without terminating an already-running provider turn."""
+
+        current = self._require_operation(operation_id)
+        if not current.active:
+            return current
+        record = self.store.request_agent_task_pause(
+            operation_id,
+            requested_by="member_removal",
+        )
+        # A durably queued row normally owns a worker that will observe
+        # ``pausing`` before provider dispatch. A crash fixture or recovered
+        # admission may have no worker; terminalize only that unowned row.
+        with self._controls_lock:
+            worker = self._workers.get(operation_id)
+        if worker is None or not worker.is_alive():
+            self.store.pause_agent_task(
+                operation_id,
+                detail="Paused because the authorizing member was removed.",
+            )
+            settled = self.store.agent_task(operation_id)
+            assert settled is not None
+            return settled
+        return record
+
     def _signal_agent_task_pause(self, operation_id: str) -> None:
         """Best-effort re-signal of a pause whose durable intent already exists."""
 

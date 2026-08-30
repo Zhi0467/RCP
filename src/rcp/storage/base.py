@@ -371,7 +371,10 @@ class AppStoreBase:
                         CHECK(identity_kind IN ('local_owner', 'team_member')),
                     display_name TEXT,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    removal_started_at TEXT,
+                    removed_at TEXT,
+                    CHECK(removed_at IS NULL OR removal_started_at IS NOT NULL)
                 )
                 """
             )
@@ -384,7 +387,8 @@ class AppStoreBase:
                     consumed_at TEXT,
                     consumed_by TEXT,
                     failed_attempts INTEGER NOT NULL DEFAULT 0,
-                    locked_at TEXT
+                    locked_at TEXT,
+                    revoked_at TEXT
                 )
                 """
             )
@@ -399,7 +403,8 @@ class AppStoreBase:
                     consumed_at TEXT,
                     consumed_by TEXT,
                     failed_attempts INTEGER NOT NULL DEFAULT 0,
-                    locked_at TEXT
+                    locked_at TEXT,
+                    revoked_at TEXT
                 )
                 """
             )
@@ -458,7 +463,7 @@ class AppStoreBase:
                     invited_user_id TEXT NOT NULL,
                     invited_by TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    response TEXT CHECK(response IN ('accepted', 'declined')),
+                    response TEXT CHECK(response IN ('accepted', 'declined', 'revoked')),
                     responded_at TEXT
                 )
                 """
@@ -1199,6 +1204,11 @@ class AppStoreBase:
                 "TEXT",
             )
             self._ensure_column(connection, "space_identity", "space_name", "TEXT")
+            self._ensure_column(connection, "space_users", "removal_started_at", "TEXT")
+            self._ensure_column(connection, "space_users", "removed_at", "TEXT")
+            self._ensure_column(connection, "team_bootstrap_codes", "revoked_at", "TEXT")
+            self._ensure_column(connection, "team_invitations", "revoked_at", "TEXT")
+            self._migrate_project_invitation_revocation(connection)
             self._ensure_column(connection, "paper_drafts", "ancestor_content", "TEXT")
             self._ensure_column(
                 connection,
@@ -1765,6 +1775,44 @@ class AppStoreBase:
                 columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
                 if name not in columns:
                     raise
+
+    @staticmethod
+    def _migrate_project_invitation_revocation(connection: sqlite3.Connection) -> None:
+        """Extend the closed invitation response vocabulary without losing history."""
+
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'project_invitations'"
+        ).fetchone()
+        if row is None or "'revoked'" in str(row[0]):
+            return
+        connection.execute(
+            """
+            CREATE TABLE project_invitations_with_revocation (
+                invitation_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                invited_user_id TEXT NOT NULL,
+                invited_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                response TEXT CHECK(response IN ('accepted', 'declined', 'revoked')),
+                responded_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO project_invitations_with_revocation (
+                invitation_id, project_id, invited_user_id, invited_by,
+                created_at, response, responded_at
+            )
+            SELECT invitation_id, project_id, invited_user_id, invited_by,
+                   created_at, response, responded_at
+            FROM project_invitations
+            """
+        )
+        connection.execute("DROP TABLE project_invitations")
+        connection.execute(
+            "ALTER TABLE project_invitations_with_revocation RENAME TO project_invitations"
+        )
 
     @staticmethod
     def _relax_episode_wrapup_ending(connection: sqlite3.Connection) -> None:
