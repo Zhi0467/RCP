@@ -50,4 +50,9 @@ class RestoreDetachmentStoreMixin:
                 confirmed_by=confirmer,
                 now=now,
             )
+            self.detach_project_provisioning_for_restore(
+                connection,
+                diagnostic=recorded_detail,
+                now=now,
+            )
             self.detach_space_authentication_for_restore(connection, now=now)

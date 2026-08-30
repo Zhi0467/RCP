@@ -174,6 +174,7 @@ class ServerCommandRequest(_StrictModel):
     member_id: str | None = None
     archive_path: str | None = None
     recovery_identity_file: str | None = None
+    restore_confirmed_data_dir: str | None = None
     backup_destination: str | None = None
     backup_schedule: str | None = None
     backup_retention: int | None = None
@@ -188,7 +189,7 @@ class ServerCommandRequest(_StrictModel):
             return None
         return canonical_uuid4(value, label=info.field_name.replace("_", " "))
 
-    @field_validator("archive_path", "recovery_identity_file")
+    @field_validator("archive_path", "recovery_identity_file", "restore_confirmed_data_dir")
     @classmethod
     def validate_path(cls, value: str | None, info) -> str | None:
         if value is None:
@@ -247,6 +248,7 @@ class ServerCommandRequest(_StrictModel):
             "member_id": self.member_id,
             "archive_path": self.archive_path,
             "recovery_identity_file": self.recovery_identity_file,
+            "restore_confirmed_data_dir": self.restore_confirmed_data_dir,
             "backup_destination": self.backup_destination,
             "backup_schedule": self.backup_schedule,
             "backup_retention": self.backup_retention,
@@ -270,6 +272,8 @@ class ServerCommandRequest(_StrictModel):
             expected = {"member_id"}
         elif self.command == "server restore":
             expected = {"archive_path", "recovery_identity_file"}
+            if self.restore_confirmed_data_dir is not None:
+                expected.add("restore_confirmed_data_dir")
         elif self.command == "server backup configure":
             expected = {
                 "backup_destination",

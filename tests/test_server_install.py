@@ -962,6 +962,7 @@ def test_managed_checkout_fetches_clean_main_but_refuses_install_owned_version_c
     layout.source_checkout.mkdir(parents=True)
     (layout.source_checkout / ".git").mkdir()
     layout.restore_operations_root.mkdir(parents=True)
+    layout.restore_operations_root.chmod(0o700)
     layout.update_checkpoints_root.mkdir(parents=True, mode=0o700)
     machine = server_install.LinuxInstallMachine(layout)
     machine._service_uid = os.getuid()
@@ -1021,6 +1022,7 @@ def test_install_routes_an_unfinished_update_before_touching_source(
 ) -> None:
     layout = _temporary_layout(tmp_path)
     layout.restore_operations_root.mkdir(parents=True)
+    layout.restore_operations_root.chmod(0o700)
     layout.update_checkpoints_root.mkdir(parents=True, mode=0o700)
     built = layout.update_checkpoints_root / f"built-candidate-{'b' * 40}.json"
     preflight = layout.update_checkpoints_root / "preflight.json"
@@ -1115,6 +1117,7 @@ def test_service_install_keeps_fresh_data_stopped_and_disabled(
     layout = _temporary_layout(tmp_path)
     release = layout.release_dir(COMMIT)
     layout.restore_operations_root.mkdir(parents=True)
+    layout.restore_operations_root.chmod(0o700)
     layout.update_checkpoints_root.mkdir(parents=True)
     machine = server_install.LinuxInstallMachine(layout)
     machine._service_uid = os.getuid()
@@ -1231,6 +1234,7 @@ def test_backup_timer_is_fenced_before_loaded_unit_changes(monkeypatch) -> None:
 def test_activation_reads_team_health_and_stops_a_wrong_space(monkeypatch) -> None:
     machine = server_install.LinuxInstallMachine()
     monkeypatch.setattr(machine, "_require_no_unfinished_update", lambda: None)
+    monkeypatch.setattr(machine, "_require_no_unfinished_restore", lambda: None)
     commands = []
     fenced = False
 

@@ -428,6 +428,12 @@ class LinuxServerDoctorMachine:
             add_problem=add_problem,
         )
         active_state, unit_file_state, main_pid, reload_mode = self._inspect_service(add_problem)
+        restore_pending = self._inspect_restore(
+            service_uid=service_uid,
+            add_problem=add_problem,
+        )
+        if restore_pending and (active_state != "inactive" or main_pid not in {None, 0}):
+            add_problem("unfinished replacement restore requires rcp.service to remain stopped")
         (
             metadata,
             probe,
@@ -540,6 +546,27 @@ class LinuxServerDoctorMachine:
             update_failure=update.failure,
             problems=tuple(problems),
         )
+
+    def _inspect_restore(
+        self,
+        *,
+        service_uid: int,
+        add_problem: Callable[[str], None],
+    ) -> bool:
+        from rcp.server_ops.restore import RestoreRefused, unfinished_restore_operation
+
+        try:
+            operation = unfinished_restore_operation(
+                self.layout,
+                expected_uid=service_uid,
+            )
+        except (OSError, RestoreRefused):
+            add_problem("restore operation state is unsafe; preserve it and rerun server restore")
+            return True
+        if operation is None:
+            return False
+        add_problem("unfinished replacement restore requires sudo rcp server restore re-entry")
+        return True
 
     def _inspect_update(
         self,

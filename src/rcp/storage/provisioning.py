@@ -12,9 +12,11 @@ from pydantic import TypeAdapter
 
 from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING
 from rcp.core.models import AuthorizedHuman
-from rcp.server_ops.models import MessageText, ServerStep
+from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
+from rcp.server_ops.models import CommandAction, MachineTarget, MessageText, ServerStep
 from rcp.storage.models import (
     ProjectProvisioningCancellationDisposition,
+    ProjectProvisioningGitCheckRecord,
     ProjectProvisioningKind,
     ProjectProvisioningMachineIntent,
     ProjectProvisioningMachineRecord,
@@ -126,6 +128,118 @@ def _verify_project_provisioning_review_digest(
 
 class ProjectProvisioningStoreMixin:
     """One transactional state machine for every team-project preparation."""
+
+    def detach_project_provisioning_for_restore(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        diagnostic: str,
+        now: str,
+    ) -> None:
+        """Invalidate captured machine progress while preserving completed receipts."""
+
+        if not connection.in_transaction:
+            raise RuntimeError("restore provisioning detachment requires one active transaction")
+        normalized = _MESSAGE_TEXT_ADAPTER.validate_python(diagnostic)
+        rows = connection.execute(
+            """
+            SELECT * FROM project_provisioning_requests
+            WHERE status NOT IN ('completed', 'cancelled')
+            ORDER BY request_id
+            """
+        ).fetchall()
+        for row in rows:
+            current = self._project_provisioning_record(row)
+            if (
+                current.status == "operator_action_needed"
+                and current.retryable_diagnostic == normalized
+                and current.operator_action is not None
+                and current.operator_action.phase == "restore_reentry"
+            ):
+                continue
+            machines = [
+                machine.model_copy(update={"resolved_central_root": None})
+                for machine in current.machines
+            ]
+            repositories = [
+                repository.model_copy(
+                    update={
+                        "resolved_path": None,
+                        "checkout_disposition": None,
+                        "git_check": ProjectProvisioningGitCheckRecord(),
+                    }
+                )
+                for repository in current.repositories
+            ]
+            provider_checks = [
+                ProjectProvisioningProviderCheckRecord(
+                    **check.model_dump(
+                        include={
+                            "profile",
+                            "provider",
+                            "runtime_id",
+                            "model",
+                            "reasoning",
+                            "machine_alias",
+                        }
+                    )
+                )
+                for check in current.provider_checks
+            ]
+            resume = (
+                str(DEFAULT_SERVER_LAYOUT.cli_wrapper),
+                "server",
+                "project",
+                "provision",
+                current.request_id,
+            )
+            action = ServerStep(
+                number=1,
+                title="Resume restored project setup",
+                purpose=(
+                    "Recheck replacement-machine paths, repository keys, checkouts, and provider "
+                    "readiness before this unfinished request can continue."
+                ),
+                performed_by="human",
+                target=MachineTarget(
+                    host=(
+                        machines[0].host if machines[0].location == "ssh" else "replacement-server"
+                    ),
+                    os_account=machines[0].os_account,
+                ),
+                phase="restore_reentry",
+                state="operator_action_needed",
+                expected_success=(
+                    "The replacement machine publishes fresh setup receipts for this request."
+                ),
+                message=(
+                    "The archived request lost every old machine claim during replacement restore."
+                ),
+                actions=(CommandAction(argv=resume),),
+                resume_argv=resume,
+            )
+            connection.execute(
+                """
+                UPDATE project_provisioning_requests
+                SET status = 'operator_action_needed', machines_json = ?,
+                    repositories_json = ?, provider_checks_json = ?,
+                    retryable_diagnostic = ?, operator_action_json = ?,
+                    final_review_digest = NULL, revision = revision + 1,
+                    updated_at = ?, setup_started_at = COALESCE(setup_started_at, ?),
+                    ready_at = NULL
+                WHERE request_id = ?
+                """,
+                (
+                    _canonical_json([item.model_dump(mode="json") for item in machines]),
+                    _canonical_json([item.model_dump(mode="json") for item in repositories]),
+                    _canonical_json([item.model_dump(mode="json") for item in provider_checks]),
+                    normalized,
+                    _canonical_json(action.model_dump(mode="json")),
+                    now,
+                    now,
+                    current.request_id,
+                ),
+            )
 
     def create_project_provisioning_request(
         self,

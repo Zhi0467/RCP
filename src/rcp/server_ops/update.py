@@ -952,6 +952,68 @@ def _failure_status_fields(
     )
 
 
+@contextmanager
+def server_update_operation_lock(
+    layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
+    *,
+    root_uid: int,
+    root_gid: int,
+    service_gid: int,
+) -> Iterator[None]:
+    """Serialize root restore/update ownership on the existing stable inode."""
+
+    lock_path = layout.config_path.parent / _UPDATE_LOCK_NAME
+    descriptor = -1
+    try:
+        _require_owned_directory(
+            lock_path.parent,
+            uid=root_uid,
+            gid=service_gid,
+            mode=_CONFIG_DIRECTORY_MODE,
+            label="server configuration directory",
+        )
+        flags = os.O_RDWR | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(lock_path, flags | os.O_CREAT | os.O_EXCL, _LOCK_MODE)
+            os.fchown(descriptor, root_uid, root_gid)
+            os.fchmod(descriptor, _LOCK_MODE)
+            os.fsync(descriptor)
+            _fsync_directory(lock_path.parent)
+        except FileExistsError:
+            descriptor = os.open(lock_path, flags)
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or (info.st_uid, info.st_gid) != (root_uid, root_gid)
+            or stat.S_IMODE(info.st_mode) != _LOCK_MODE
+        ):
+            raise UpdateRefused(
+                "The update lock has unexpected type, ownership, or mode. Inspect /etc/rcp "
+                "and rerun the same command."
+            )
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise UpdateRefused(
+                "Another server update is running. Wait for it to finish, then rerun the same "
+                "command."
+            ) from exc
+        yield
+    except UpdateRefused:
+        raise
+    except OSError as exc:
+        raise UpdateRefused(
+            "RCP could not acquire the root-owned update lock or inspect maintenance state. "
+            "Inspect the fixed server paths and rerun."
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            with suppress(OSError):
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            with suppress(OSError):
+                os.close(descriptor)
+
+
 class LinuxUpdateMachine:
     """Root coordinator with every Git/build subprocess fixed to the rcp account."""
 
@@ -1000,57 +1062,29 @@ class LinuxUpdateMachine:
     def admission(self) -> Iterator[None]:
         from rcp.server_ops.backup import BackupRunRefused, backup_run_coordination_lock
 
-        lock_path = self.layout.config_path.parent / _UPDATE_LOCK_NAME
-        descriptor = -1
         try:
-            _require_owned_directory(
-                lock_path.parent,
-                uid=self._root_uid,
-                gid=self._service_gid,
-                mode=_CONFIG_DIRECTORY_MODE,
-                label="server configuration directory",
-            )
-            flags = os.O_RDWR | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
-            try:
-                descriptor = os.open(lock_path, flags | os.O_CREAT | os.O_EXCL, _LOCK_MODE)
-                os.fchown(descriptor, self._root_uid, self._root_gid)
-                os.fchmod(descriptor, _LOCK_MODE)
-                os.fsync(descriptor)
-                _fsync_directory(lock_path.parent)
-            except FileExistsError:
-                descriptor = os.open(lock_path, flags)
-            info = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or (info.st_uid, info.st_gid) != (self._root_uid, self._root_gid)
-                or stat.S_IMODE(info.st_mode) != _LOCK_MODE
-            ):
-                raise UpdateRefused(
-                    "The update lock has unexpected type, ownership, or mode. Inspect /etc/rcp "
-                    "and rerun the same command."
-                )
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise UpdateRefused(
-                    "Another server update is running. Wait for it to finish, then rerun the "
-                    "same command."
-                ) from exc
-            try:
-                with backup_run_coordination_lock(
+            with (
+                server_update_operation_lock(
+                    self.layout,
+                    root_uid=self._root_uid,
+                    root_gid=self._root_gid,
+                    service_gid=self._service_gid,
+                ),
+                backup_run_coordination_lock(
                     self.layout,
                     expected_uid=self._service_uid,
                     expected_gid=self._service_gid,
                     timeout=SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
-                ):
-                    self._recover_unfinished_update()
-                    self._inspect_maintenance_roots()
-                    yield
-            except BackupRunRefused as exc:
-                raise UpdateRefused(
-                    "A protected backup did not reach its durable boundary before update "
-                    "maintenance timed out."
-                ) from exc
+                ),
+            ):
+                self._recover_unfinished_update()
+                self._inspect_maintenance_roots()
+                yield
+        except BackupRunRefused as exc:
+            raise UpdateRefused(
+                "A protected backup did not reach its durable boundary before update "
+                "maintenance timed out."
+            ) from exc
         except UpdateRefused:
             raise
         except OSError as exc:
@@ -1058,12 +1092,6 @@ class LinuxUpdateMachine:
                 "RCP could not acquire the root-owned update lock or inspect maintenance state. "
                 "Inspect the fixed server paths and rerun."
             ) from exc
-        finally:
-            if descriptor >= 0:
-                with suppress(OSError):
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)
-                with suppress(OSError):
-                    os.close(descriptor)
 
     def inspect(self) -> UpdateInspection:
         inspection, report = self._read_status()
@@ -1724,9 +1752,26 @@ class LinuxUpdateMachine:
             label="update checkpoints root",
         )
         try:
-            if any(self.layout.restore_operations_root.iterdir()):
+            from rcp.server_ops.restore import RestoreRefused, unfinished_restore_operation
+
+            try:
+                restore = unfinished_restore_operation(
+                    self.layout,
+                    expected_uid=self._service_uid,
+                )
+            except (OSError, RestoreRefused) as exc:
+                with suppress(InstalledServiceControlRefused):
+                    self._system_service.fence_stopped_disabled()
                 raise UpdateRefused(
-                    "An unfinished restore operation blocks source update. Resume server restore first."
+                    "The unfinished restore recovery state is unsafe. RCP kept the service "
+                    "stopped; preserve it and resume server restore before source update."
+                ) from exc
+            if restore is not None:
+                with suppress(InstalledServiceControlRefused):
+                    self._system_service.fence_stopped_disabled()
+                raise UpdateRefused(
+                    "An unfinished restore operation blocks source update. RCP kept the service "
+                    "stopped; resume server restore first."
                 )
             for entry in self.layout.update_checkpoints_root.iterdir():
                 if _RECEIPT_NAME.fullmatch(entry.name) is not None:
@@ -2468,4 +2513,5 @@ __all__ = [
     "UpdateTarget",
     "built_candidate_receipt_path",
     "prepare_update_command",
+    "server_update_operation_lock",
 ]

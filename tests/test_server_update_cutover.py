@@ -723,6 +723,33 @@ def test_system_service_seam_proves_stop_pointer_switch_and_start(tmp_path: Path
     assert calls[-3] == ("systemctl", "start", layout.service_unit_name)
 
 
+def test_system_service_seam_proves_restore_stop_and_disable(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    state = {"active": "active", "pid": "41", "enabled": "enabled"}
+
+    def runner(argv: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+        if argv[1:3] == ("disable", "--now"):
+            state.update(active="inactive", pid="0", enabled="disabled")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if "ActiveState" in argv[2]:
+            value = state["active"]
+        elif "MainPID" in argv[2]:
+            value = state["pid"]
+        else:
+            value = state["enabled"]
+        return subprocess.CompletedProcess(argv, 0, value + "\n", "")
+
+    controller = InstalledSystemServiceController(
+        layout,
+        runner=runner,
+        root_identity=(os.geteuid(), os.getegid()),
+    )
+
+    controller.fence_stopped_disabled()
+
+    assert state == {"active": "inactive", "pid": "0", "enabled": "disabled"}
+
+
 class _CutoverActions:
     def __init__(
         self,

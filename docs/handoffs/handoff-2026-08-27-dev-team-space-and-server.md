@@ -120,8 +120,10 @@ The remaining seams are also concrete:
   run/configuration/status/retention path, online SQLite capture, optimistic
   project-file capture, copied-state update rehearsal, and the coherent local
   update rollback checkpoint now exist; cutover/post-switch rollback
-  coordination and recovery are implemented pending their live Ubuntu drive,
-  while restore and member removal do not;
+  coordination and recovery are implemented pending their live Ubuntu drive;
+  restore now validates and installs one stopped, detached SQLite candidate but
+  does not yet reconstruct checkouts, publish project state, review replacement
+  authority, or activate the service; member removal remains unimplemented;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
 - the Web UI still says “Team connections are not implemented in this build”;
@@ -3748,9 +3750,9 @@ fixture proves owner-transaction requirements, whole-transaction rollback,
 exact idempotence, empty startup-recovery projections, and a real ordinary app
 lifespan that leaves all operational rows unchanged. The complete backend suite,
 the focused lifecycle-owner suites, 440 Web tests, the Web build, Ruff, and
-documentation checks are green. O4a-O4d still own archive validation,
-stopped-service restore orchestration, checkout reconstruction, publication,
-authority review, and activation.
+documentation checks are green. O4a now owns archive validation and the
+stopped-service SQLite candidate; O4b-O4d still own checkout reconstruction,
+publication, authority review, and activation.
 
 Own:
 
@@ -3787,12 +3789,38 @@ authority review, and service activation.
 
 ### O4a — Archive validation and offline restored-state candidate
 
+**Status (2026-08-29): implemented and verified.** `rcp server restore` now uses
+a two-call exact-data-directory confirmation, decrypts
+through upstream `age` without persisting the recovery
+identity, verifies the canonical archive manifest and every declared byte,
+rejects unsupported schema/source boundaries before target mutation, and runs
+O3d's lifecycle detachment on a protected service-owned SQLite candidate. It
+then takes the existing update and backup machine locks, proves the configured
+data directory fresh and empty, stops and disables systemd, fsyncs an
+archive-bound journal outside the target, atomically installs only
+`rcp.sqlite3`, and verifies SQLite integrity while leaving the service stopped.
+
+The journal is also an admission fence: direct installed-app startup, install,
+update, protected backup, and doctor all detect pending or unsafe restore state.
+A lost protected candidate is reproducibly rebuilt only from the journal's same
+archive, identity, original detachment time, and confirmer. Crash tests cover
+the boundary after target publication but before the phase update, so re-entry
+reads back the exact bytes instead of replacing or duplicating them.
+
+Restored nonterminal provisioning requests retain their intent and completed
+receipts but lose path, checkout, Git-key, provider-check, and final-review
+claims; they return to a structured explicit CLI re-entry action. Backup and
+update operations are machine-local state excluded from the backup archive, so
+there is no archived mid-step lease to detach. O4a instead records that those
+operations were not restored, serializes against any live owner before
+journaling, and blocks either operation after the journal exists. O4b-O4d remain
+required before the restored server can become usable or serve any project.
+
 Own:
 
 - new `src/rcp/server_ops/restore.py`;
 - root-entry and stopped-service integration in `src/rcp/server_ops/cli.py` and
-  `src/rcp/server_ops/install.py`, with running-service coordination through
-  `src/rcp/server_ops/control.py`;
+  the installed systemd controller in `src/rcp/server_ops/install.py`;
 - unfinished-restore detection in `src/rcp/server_ops/doctor.py` and
   `src/rcp/server_ops/update.py`;
 - restored machine-step invalidation in
@@ -3804,13 +3832,13 @@ Require an explicit archive, an off-server `age` identity supplied for this run
 through a protected file/descriptor rather than raw argv or environment text,
 and the installed server's configured `RCP_DATA_DIR` in fresh/empty state.
 Display and confirm that destination; this first contract does not redirect
-systemd to an arbitrary alternate data root. Record that this is a replacement restore,
-but leave the concrete old-authority and member-roster confirmations to O4d
-before serving. Decrypt to a protected temporary directory and verify every
-hash/schema before changing the target. Restore the SQLite candidate and apply O3d-b's
-complete task/episode/watcher/recovery detachment, including O3c's history-only
-session fence, but do not publish project files into an empty future checkout
-path or start the service.
+systemd to an arbitrary alternate data root. Record that this is a replacement
+restore, but leave the concrete old-authority and member-roster confirmations to
+O4d before serving. Decrypt to a protected temporary directory and verify every
+hash/schema before changing the target. Restore the SQLite candidate and apply
+O3d-b's complete task/episode/watcher/recovery detachment, including O3c's
+history-only session fence, but do not publish project files into an empty
+future checkout path or start the service.
 
 The running restore release must explicitly support the archive format and
 recorded persistence boundary. An archive from unknown newer code fails before
@@ -3822,18 +3850,22 @@ under F2's `restore-operations/` root, outside every target named by the restore
 Bind the exact archive digest, configured target, candidate hashes,
 checkout/publication inventory, durable human-confirmation receipts, and current
 phase; never persist the recovery identity. Every O4a-O4d step is idempotent.
-`install`, `update`, and `doctor` detect an unfinished journal and keep systemd
-stopped; only re-entering `restore` may advance it. If a protected temporary
-candidate disappeared, require the same archive and identity again, reverify it,
-and resume the recorded phase. Crash after every journal transition and prove no
-partial project or database becomes serveable.
+Installed startup, `install`, `update`, and protected backup reject an unfinished
+journal; the mutating server commands also fence systemd stopped and disabled,
+while read-only `doctor` reports the same requirement. Only re-entering `restore`
+may advance it. If a protected temporary candidate disappeared, require the same
+archive and identity again, reverify it, and resume the recorded phase. Crash
+after every journal transition and prove no partial project or database becomes
+serveable.
 
-Invalidate every snapshotted in-progress provisioning or server-operation lease
-before startup. Preserve completed receipts as history, but move unfinished P1
+Invalidate every snapshotted in-progress provisioning lease before startup.
+Preserve completed receipts as history, but move unfinished P1
 requests to **operator action needed**, clear their old machine-step claims, and
 require explicit CLI re-entry against the replacement paths and keys. An update
-or backup operation captured mid-step is recorded interrupted; it never resumes
-automatically or treats an old process receipt as replacement-machine authority.
+or backup run is not part of the archive's durable boundary: serialize against
+any live machine owner before the journal, record that machine-local operations
+were not restored, and block new update or backup admission while the restore
+journal remains unfinished.
 
 This packet produces one stopped-service, validated restored-state candidate.
 It cannot create repository credentials, reconstruct checkouts, publish project

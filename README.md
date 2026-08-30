@@ -115,12 +115,15 @@ verification commands are in [docs/desktop.md](docs/desktop.md).
 
 ## Install the team server from source
 
-> **Install is live-qualified; restore and member removal are not implemented.**
+> **Install is live-qualified; full restore and member removal are not yet implemented.**
 > `rcp server install`, `doctor`, `provider check`, `project provision`,
 > `backup configure`, `backup run`, and `update` are concrete and share one
 > interactive/machine-readable progress contract. Install is proven on
-> disposable Ubuntu 22.04 and 24.04 hosts. `restore`, `member remove`, and
-> `project transfer-import` still stop with an explicit unavailable result.
+> disposable Ubuntu 22.04 and 24.04 hosts. `restore` currently validates an
+> encrypted archive and installs only a stopped, detached SQLite candidate; it
+> cannot yet reconstruct/publish project checkouts or activate the service.
+> `member remove` and `project transfer-import` still stop with an explicit
+> unavailable result.
 > Every command below is terminal-only; no desktop wizard drives them yet.
 
 The first supported team deployment is one Ubuntu 22.04 or 24.04 LTS x86-64

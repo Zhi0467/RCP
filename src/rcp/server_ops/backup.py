@@ -403,6 +403,23 @@ class LinuxBackupRunMachine:
         self.clock = clock or (lambda: datetime.now(UTC))
 
     def run(self) -> BackupRunOutcome:
+        from rcp.server_ops.restore import RestoreRefused, unfinished_restore_operation
+
+        try:
+            restore = unfinished_restore_operation(
+                self.layout,
+                expected_uid=os.geteuid(),
+            )
+        except (OSError, RestoreRefused) as exc:
+            raise BackupRunRefused(
+                "Restore machine state is unsafe. Keep the service stopped and resume server "
+                "restore before another protected backup."
+            ) from exc
+        if restore is not None:
+            raise BackupRunRefused(
+                "An unfinished replacement restore blocks protected backup until its final "
+                "service readback completes."
+            )
         started_at = self.clock()
         operation_id = str(uuid.uuid4())
         config = _load_backup_configuration(self.layout)

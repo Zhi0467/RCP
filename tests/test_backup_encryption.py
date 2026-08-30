@@ -352,7 +352,14 @@ def test_backup_run_composes_capture_protection_retention_and_stage_cleanup(
             CAPTURED_AT + timedelta(minutes=2),
         )
     )
-    layout = SimpleNamespace(data_dir=data_dir, server_root=server_root)
+    restore_operations_root = server_root / "restore-operations"
+    restore_operations_root.mkdir()
+    restore_operations_root.chmod(0o700)
+    layout = SimpleNamespace(
+        data_dir=data_dir,
+        server_root=server_root,
+        restore_operations_root=restore_operations_root,
+    )
 
     outcome = LinuxBackupRunMachine(
         layout,
@@ -377,7 +384,14 @@ def test_backup_run_publishes_a_durable_failure_outcome(
     server_root.mkdir()
     destination.mkdir()
     installed = _installed(destination)
-    layout = SimpleNamespace(data_dir=tmp_path / "data", server_root=server_root)
+    restore_operations_root = server_root / "restore-operations"
+    restore_operations_root.mkdir()
+    restore_operations_root.chmod(0o700)
+    layout = SimpleNamespace(
+        data_dir=tmp_path / "data",
+        server_root=server_root,
+        restore_operations_root=restore_operations_root,
+    )
     monkeypatch.setattr(backup_owner, "_load_backup_configuration", lambda _layout: installed)
     monkeypatch.setattr(
         backup_owner,

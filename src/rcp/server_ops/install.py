@@ -909,11 +909,7 @@ class LinuxInstallMachine:
     def converge_source_checkout(self, access: SourceAccess) -> ManagedCheckout:
         self._require_service_identity()
         self._require_no_unfinished_update()
-        if any(self.layout.restore_operations_root.iterdir()):
-            raise InstallRefused(
-                "An unfinished restore operation blocks install. Resume server restore before "
-                "changing the managed source or current release."
-            )
+        self._require_no_unfinished_restore()
         source = self.layout.source_checkout
         environment = self._source_environment(access.config.source)
         if not source.exists():
@@ -1064,11 +1060,7 @@ class LinuxInstallMachine:
     ) -> ServiceInstallState:
         self._require_service_identity()
         self._require_no_unfinished_update()
-        if any(self.layout.restore_operations_root.iterdir()):
-            raise InstallRefused(
-                "An unfinished restore operation appeared before activation. Resume server "
-                "restore before installing the current release or service."
-            )
+        self._require_no_unfinished_restore()
         if release != self.layout.release_dir(checkout.commit):
             raise InstallRefused("The built release path does not match its exact commit.")
         _install_root_file(
@@ -1153,8 +1145,35 @@ class LinuxInstallMachine:
             "stopped; run sudo rcp server update to resume it."
         )
 
+    def _require_no_unfinished_restore(self) -> None:
+        from rcp.server_ops.restore import RestoreRefused, unfinished_restore_operation
+
+        self._require_service_identity()
+        assert self._service_uid is not None
+        try:
+            pending = unfinished_restore_operation(
+                self.layout,
+                expected_uid=self._service_uid,
+            )
+        except (OSError, RestoreRefused) as exc:
+            with suppress(InstalledServiceControlRefused):
+                InstalledSystemServiceController(self.layout).fence_stopped_disabled()
+            raise InstallRefused(
+                "Restore recovery state is unsafe. RCP kept the service stopped; preserve the "
+                "restore operations root and rerun sudo rcp server restore."
+            ) from exc
+        if pending is None:
+            return
+        with suppress(InstalledServiceControlRefused):
+            InstalledSystemServiceController(self.layout).fence_stopped_disabled()
+        raise InstallRefused(
+            "An unfinished replacement restore blocks install. RCP kept the service stopped; "
+            "re-enter sudo rcp server restore with its exact archive and identity."
+        )
+
     def activate_and_verify(self) -> ServiceHealth:
         self._require_no_unfinished_update()
+        self._require_no_unfinished_restore()
         _require_command(
             ("systemctl", "enable", "--now", self.layout.service_unit_name),
             "systemd could not enable and start rcp.service. Run systemctl status --no-pager "
@@ -2051,6 +2070,17 @@ class InstalledSystemServiceController:
         if self._property("ActiveState") != "inactive" or self._property("MainPID") != "0":
             raise InstalledServiceControlRefused(
                 "systemd did not prove the RCP service stopped with no main process."
+            )
+
+    def fence_stopped_disabled(self) -> None:
+        self._command(("systemctl", "disable", "--now", self.layout.service_unit_name))
+        if (
+            self._property("ActiveState") != "inactive"
+            or self._property("MainPID") != "0"
+            or self._property("UnitFileState") != "disabled"
+        ):
+            raise InstalledServiceControlRefused(
+                "systemd did not prove the RCP service stopped and disabled with no main process."
             )
 
     def start(self) -> int:

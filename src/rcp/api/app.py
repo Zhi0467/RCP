@@ -290,6 +290,23 @@ def create_app(
         raise ValueError("Server metadata does not identify this RCP data directory.")
     update_runtime_boundary: UpdateRuntimeBoundary | None = None
     installed_update_layout = app_data == server_layout.data_dir.resolve(strict=False)
+    if installed_update_layout and server_layout.restore_operations_root.exists():
+        from rcp.server_ops.restore import RestoreRefused, unfinished_restore_operation
+
+        try:
+            pending_restore = unfinished_restore_operation(
+                server_layout,
+                expected_uid=os.geteuid(),
+            )
+        except (OSError, RestoreRefused) as exc:
+            raise RuntimeError(
+                "Installed restore state is unsafe; keep the service stopped and run sudo rcp "
+                "server restore."
+            ) from exc
+        if pending_restore is not None:
+            raise RuntimeError(
+                "Installed replacement restore is incomplete; run sudo rcp server restore."
+            )
     if installed_update_layout and server_layout.update_checkpoints_root.exists():
         pending_rollback_journals = _installed_rollback_journals(
             server_layout.update_checkpoints_root
