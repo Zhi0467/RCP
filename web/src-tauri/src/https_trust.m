@@ -16,6 +16,7 @@
 
 typedef void (^RcpChallengeCompletion)(NSURLSessionAuthChallengeDisposition disposition,
                                        NSURLCredential *_Nullable credential);
+typedef void (*RcpCookieCompletion)(void *context, int code);
 
 static NSString *gPinnedFingerprint = nil;
 static int gAccepted = 0;
@@ -144,6 +145,49 @@ int rcp_https_trust_install_pin(const char *fingerprint_hex, void *webview) {
   fprintf(stderr, "[https-trust] website data store persistent=%s\n",
           view.configuration.websiteDataStore.isPersistent ? "yes" : "no");
 
+  return 0;
+}
+
+// Parse one server-issued __Host- session cookie with Foundation, validate the
+// browser security attributes again, then place it directly in this WebView's
+// persistent cookie store. The completion callback is invoked exactly once
+// after WKWebView confirms the write. No raw session value is returned.
+int rcp_https_trust_set_team_cookie(void *webview, const char *origin,
+                                    const char *set_cookie,
+                                    RcpCookieCompletion completion,
+                                    void *context) {
+  if (webview == NULL || origin == NULL || set_cookie == NULL || completion == NULL ||
+      context == NULL) {
+    return 4;
+  }
+  WKWebView *view = (__bridge WKWebView *)webview;
+  NSURL *url = [NSURL URLWithString:[NSString stringWithUTF8String:origin]];
+  NSString *header = [NSString stringWithUTF8String:set_cookie];
+  if (url == nil || header == nil || ![url.scheme isEqualToString:@"https"] ||
+      url.host.length == 0) {
+    return 6;
+  }
+  NSArray<NSHTTPCookie *> *cookies =
+      [NSHTTPCookie cookiesWithResponseHeaderFields:@{ @"Set-Cookie" : header }
+                                             forURL:url];
+  if (cookies.count != 1) {
+    return 7;
+  }
+  NSHTTPCookie *cookie = cookies.firstObject;
+  NSString *domain = cookie.domain;
+  if ([domain hasPrefix:@"."]) {
+    domain = [domain substringFromIndex:1];
+  }
+  if (![cookie.name isEqualToString:@"__Host-rcp_session"] || !cookie.isSecure ||
+      !cookie.isHTTPOnly || ![cookie.path isEqualToString:@"/"] ||
+      [domain caseInsensitiveCompare:url.host] != NSOrderedSame) {
+    return 8;
+  }
+  [view.configuration.websiteDataStore.httpCookieStore
+      setCookie:cookie
+      completionHandler:^{
+        completion(context, 0);
+      }];
   return 0;
 }
 

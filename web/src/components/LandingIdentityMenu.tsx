@@ -1,13 +1,4 @@
-import {
-  Check,
-  ChevronDown,
-  Copy,
-  Link2,
-  MailPlus,
-  Pencil,
-  UserPlus,
-  UserRound,
-} from "lucide-react";
+import { Check, ChevronDown, Copy, Link2, Pencil, UserPlus, UserRound } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { createTeamInvitation, loadTeamInvitations } from "../api";
 import type { IdentityResponse, TeamInvitation, TeamInvitationIssue } from "../types";
@@ -16,6 +7,7 @@ interface Props {
   identity: IdentityResponse | null;
   identityError: string | null;
   onRequestName: () => Promise<boolean> | void;
+  onAddTeamSpace?: () => void;
 }
 
 interface IdentityProvenanceSlipProps {
@@ -26,6 +18,7 @@ interface IdentityProvenanceSlipProps {
   onCopy: () => void;
   onEdit: () => void;
   teamPanelActive?: boolean;
+  onAddTeamSpace?: () => void;
 }
 
 export async function copyIdentityId(
@@ -46,6 +39,7 @@ export function IdentityProvenanceSlip({
   onCopy,
   onEdit,
   teamPanelActive = true,
+  onAddTeamSpace,
 }: IdentityProvenanceSlipProps) {
   const displayName = identity.user.display_name ?? "";
   const spaceLabel = identity.space_kind === "personal" ? "Personal space" : "Team space";
@@ -118,36 +112,33 @@ export function IdentityProvenanceSlip({
       {identity.space_kind === "team" ? (
         <TeamInvitationPanel identity={identity} active={teamPanelActive} />
       ) : (
-        <PersonalTeamSeam noticeId={teamNoticeId} />
+        <PersonalTeamSeam noticeId={teamNoticeId} onAddTeamSpace={onAddTeamSpace} />
       )}
     </>
   );
 }
 
-export function PersonalTeamSeam({ noticeId }: { noticeId: string }) {
+export function PersonalTeamSeam({
+  noticeId,
+  onAddTeamSpace,
+}: {
+  noticeId: string;
+  onAddTeamSpace?: () => void;
+}) {
   return (
     <section
       className="landing-team-seam"
       aria-labelledby={`${noticeId}-title`}
-      data-team-space-seam="unimplemented"
+      data-team-space-seam="available"
     >
       <header>
         <span id={`${noticeId}-title`}>Team spaces</span>
-        <span>Coming later</span>
+        <span>Desktop</span>
       </header>
-      <p id={noticeId}>Team connections are not implemented in this build.</p>
       <div className="landing-team-seam-actions">
-        <button type="button" disabled aria-describedby={noticeId}>
+        <button type="button" onClick={onAddTeamSpace} disabled={!onAddTeamSpace}>
           <Link2 size={13} aria-hidden="true" />
-          Join team space
-        </button>
-        <button type="button" disabled aria-describedby={noticeId}>
-          <MailPlus size={13} aria-hidden="true" />
-          Accept invitation
-        </button>
-        <button type="button" disabled aria-describedby={noticeId}>
-          <UserPlus size={13} aria-hidden="true" />
-          Invite member
+          Add team space
         </button>
       </div>
     </section>
@@ -326,7 +317,12 @@ function formatInvitationTime(value: string): string {
   }).format(date);
 }
 
-export function LandingIdentityMenu({ identity, identityError, onRequestName }: Props) {
+export function LandingIdentityMenu({
+  identity,
+  identityError,
+  onRequestName,
+  onAddTeamSpace,
+}: Props) {
   const [open, setOpen] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const rootRef = useRef<HTMLDivElement>(null);
@@ -428,6 +424,7 @@ export function LandingIdentityMenu({ identity, identityError, onRequestName }: 
             onCopy={() => void copyUserId()}
             onEdit={requestName}
             teamPanelActive={open}
+            onAddTeamSpace={onAddTeamSpace}
           />
         </section>
       )}

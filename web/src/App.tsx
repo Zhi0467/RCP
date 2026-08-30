@@ -49,6 +49,7 @@ import {
   setDesktopWebviewZoom,
   isDesktopRuntime,
   listenDesktopEvent,
+  returnDesktopToPersonal,
   type DesktopUpdate,
 } from "./desktopRuntime";
 import { graphMutationsDisabled, replayFailureLabel, taskMayMutateGraph } from "./graphAuthority";
@@ -2855,6 +2856,12 @@ export default function App() {
   };
   const returnToProjects = () => {
     rememberProjectState(projectId);
+    if (desktop && verifiedHealth?.space_kind === "team") {
+      void returnDesktopToPersonal().catch((error) => {
+        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      });
+      return;
+    }
     returnToProjectIndex();
   };
 

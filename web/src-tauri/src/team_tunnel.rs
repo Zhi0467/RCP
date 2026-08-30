@@ -25,7 +25,10 @@ use url::Url;
 use crate::{
     backend::BackendState,
     local_https::LocalHttpsIdentity,
-    team_connections::{RemovalResult, TeamConnectionMetadata, TeamConnectionState},
+    team_connections::{
+        allocate_local_origin, validate_ssh_target, RemovalResult, TeamConnectionMetadata,
+        TeamConnectionState,
+    },
 };
 
 const SYSTEM_SSH: &str = "/usr/bin/ssh";
@@ -133,6 +136,76 @@ impl TeamTunnelState {
             .await
     }
 
+    pub(crate) async fn connect_candidate(
+        &self,
+        lifecycle: &BackendState,
+        connection_id: &str,
+        ssh_target: &str,
+        remote_loopback_port: u16,
+    ) -> Result<TeamTunnelReady, String> {
+        validate_ssh_target(ssh_target)?;
+        if remote_loopback_port == 0 {
+            return Err("remote team server port must be a positive integer".into());
+        }
+        let mut runtime = self.runtime.lock().await;
+        if !runtime.accepting || lifecycle.is_terminal() {
+            return Err("RCP cannot connect a team space while quitting or updating".into());
+        }
+        if runtime.retired.contains(connection_id) || runtime.active.contains_key(connection_id) {
+            return Err("the pending team connection identity is already in use".into());
+        }
+        let listeners = bind_local_https(0)?;
+        let port = listeners[0]
+            .local_addr()
+            .map_err(|error| format!("could not inspect the pending team origin: {error}"))?
+            .port();
+        let route = TunnelRoute {
+            local_origin: allocate_local_origin(connection_id, port)?,
+            ssh_target: ssh_target.to_string(),
+            remote_loopback_port,
+        };
+        match self
+            .start_tunnel(connection_id, &route, Some(listeners))
+            .await
+        {
+            Ok(active) => {
+                let ready = active.ready.clone();
+                runtime.active.insert(connection_id.to_string(), active);
+                if lifecycle.is_terminal() {
+                    let active = runtime
+                        .active
+                        .get_mut(connection_id)
+                        .expect("pending team tunnel disappeared before lifecycle fencing");
+                    let stopped = active.stop().await;
+                    if stopped.is_ok() {
+                        runtime.active.remove(connection_id);
+                    }
+                    return Err(stopped.err().unwrap_or_else(|| {
+                        "RCP began quitting or updating while the team tunnel connected".into()
+                    }));
+                }
+                Ok(ready)
+            }
+            Err(error) => {
+                let StartTunnelFailure { message, retained } = *error;
+                if let Some(active) = retained {
+                    runtime.active.insert(connection_id.to_string(), active);
+                }
+                Err(message)
+            }
+        }
+    }
+
+    pub(crate) async fn stop_candidate(&self, connection_id: &str) -> Result<(), String> {
+        let mut runtime = self.runtime.lock().await;
+        runtime.retry_after.remove(connection_id);
+        if let Some(active) = runtime.active.get_mut(connection_id) {
+            active.stop().await?;
+            runtime.active.remove(connection_id);
+        }
+        Ok(())
+    }
+
     async fn connect_locked(
         &self,
         runtime: &mut TunnelRuntime,
@@ -160,7 +233,10 @@ impl TeamTunnelState {
         }
         runtime.retry_after.remove(&connection.connection_id);
 
-        match self.start_tunnel(&connection).await {
+        match self
+            .start_tunnel(&connection.connection_id, &route, None)
+            .await
+        {
             Ok(active) => {
                 let ready = active.ready.clone();
                 runtime
@@ -236,24 +312,34 @@ impl TeamTunnelState {
 
     async fn start_tunnel(
         &self,
-        connection: &TeamConnectionMetadata,
+        connection_id: &str,
+        route: &TunnelRoute,
+        listeners: Option<Vec<TcpListener>>,
     ) -> Result<ActiveTunnel, Box<StartTunnelFailure>> {
-        let local_https_port = local_https_port(&connection.local_origin)
-            .map_err(|error| Box::new(StartTunnelFailure::from(error)))?;
-        let listeners = bind_local_https(local_https_port)
-            .map_err(|error| Box::new(StartTunnelFailure::from(error)))?;
+        let listeners = match listeners {
+            Some(listeners) => listeners,
+            None => {
+                let local_https_port = local_https_port(&route.local_origin)
+                    .map_err(|error| Box::new(StartTunnelFailure::from(error)))?;
+                bind_local_https(local_https_port)
+                    .map_err(|error| Box::new(StartTunnelFailure::from(error)))?
+            }
+        };
         let forward_port =
             reserve_forward_port().map_err(|error| Box::new(StartTunnelFailure::from(error)))?;
-        let arguments = ssh_arguments(connection, forward_port);
+        let arguments = ssh_arguments(route, forward_port);
         let mut child = spawn_owned_child(&self.ssh_program, &arguments)
             .map_err(|error| Box::new(StartTunnelFailure::from(error)))?;
         if let Err(error) = wait_for_forward(forward_port, &mut child.child_exited).await {
-            return Err(Box::new(failed_start(connection, child, error).await));
+            return Err(Box::new(
+                failed_start(connection_id, route, child, error).await,
+            ));
         }
         if *child.child_exited.borrow() {
             return Err(Box::new(
                 failed_start(
-                    connection,
+                    connection_id,
+                    route,
                     child,
                     "the SSH tunnel ended before its local HTTPS proxy started".into(),
                 )
@@ -268,11 +354,11 @@ impl TeamTunnelState {
         );
         Ok(ActiveTunnel {
             ready: TeamTunnelReady {
-                connection_id: connection.connection_id.clone(),
-                local_origin: connection.local_origin.clone(),
+                connection_id: connection_id.to_string(),
+                local_origin: route.local_origin.clone(),
                 reused: false,
             },
-            route: TunnelRoute::from(connection),
+            route: route.clone(),
             child,
             proxy_tasks,
         })
@@ -289,7 +375,8 @@ impl From<String> for StartTunnelFailure {
 }
 
 async fn failed_start(
-    connection: &TeamConnectionMetadata,
+    connection_id: &str,
+    route: &TunnelRoute,
     mut child: OwnedChild,
     start_error: String,
 ) -> StartTunnelFailure {
@@ -302,11 +389,11 @@ async fn failed_start(
             message: format!("{start_error}; {cleanup_error}"),
             retained: Some(ActiveTunnel {
                 ready: TeamTunnelReady {
-                    connection_id: connection.connection_id.clone(),
-                    local_origin: connection.local_origin.clone(),
+                    connection_id: connection_id.to_string(),
+                    local_origin: route.local_origin.clone(),
                     reused: false,
                 },
-                route: TunnelRoute::from(connection),
+                route: route.clone(),
                 child,
                 proxy_tasks: Vec::new(),
             }),
@@ -399,7 +486,7 @@ impl OwnedChild {
     }
 }
 
-fn ssh_arguments(connection: &TeamConnectionMetadata, forward_port: u16) -> Vec<String> {
+fn ssh_arguments(route: &TunnelRoute, forward_port: u16) -> Vec<String> {
     vec![
         "-N".into(),
         "-T".into(),
@@ -424,9 +511,9 @@ fn ssh_arguments(connection: &TeamConnectionMetadata, forward_port: u16) -> Vec<
         "-L".into(),
         format!(
             "127.0.0.1:{forward_port}:127.0.0.1:{}",
-            connection.remote_loopback_port
+            route.remote_loopback_port
         ),
-        connection.ssh_target.clone(),
+        route.ssh_target.clone(),
     ]
 }
 
@@ -698,8 +785,9 @@ mod tests {
 
     #[test]
     fn ssh_argv_uses_one_explicit_owned_forward_and_no_shell() {
+        let route = TunnelRoute::from(&connection());
         assert_eq!(
-            ssh_arguments(&connection(), 19421),
+            ssh_arguments(&route, 19421),
             vec![
                 "-N",
                 "-T",
@@ -777,8 +865,10 @@ mod tests {
             let tunnels =
                 TeamTunnelState::with_ssh_program(&identity, PathBuf::from(SYSTEM_SSH)).unwrap();
             let (_exit_tx, child_exited) = watch::channel(false);
+            let route = TunnelRoute::from(&connection());
             let failed_start = failed_start(
-                &connection(),
+                CONNECTION_ID,
+                &route,
                 OwnedChild {
                     pid: 1,
                     child_exited,

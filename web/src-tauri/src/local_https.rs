@@ -1,6 +1,9 @@
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "macos")]
+const COOKIE_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 const IDENTITY_VERSION: u8 = 1;
 const IDENTITY_HEADER: &[u8] = b"RCP-LOCAL-HTTPS\0";
 const MAX_CERTIFICATE_BYTES: usize = 32 * 1024;
@@ -213,12 +216,89 @@ pub fn install_webview_trust(
     }
 }
 
+#[cfg(target_os = "macos")]
+pub async fn install_team_session_cookie(
+    window: &tauri::WebviewWindow,
+    origin: &str,
+    set_cookie: Zeroizing<String>,
+) -> Result<(), String> {
+    use std::{
+        ffi::{c_void, CString},
+        os::raw::{c_char, c_int},
+    };
+
+    type CookieCompletion = extern "C" fn(*mut c_void, c_int);
+
+    #[link(name = "rcp_https_trust", kind = "static")]
+    extern "C" {
+        fn rcp_https_trust_set_team_cookie(
+            webview: *mut c_void,
+            origin: *const c_char,
+            set_cookie: *const c_char,
+            completion: CookieCompletion,
+            context: *mut c_void,
+        ) -> c_int;
+    }
+
+    extern "C" fn cookie_installed(context: *mut c_void, code: c_int) {
+        let sender =
+            unsafe { Box::from_raw(context.cast::<tokio::sync::oneshot::Sender<c_int>>()) };
+        let _ = sender.send(code);
+    }
+
+    let origin =
+        CString::new(origin).map_err(|_| "the team origin contains an invalid byte".to_string())?;
+    if set_cookie.as_bytes().contains(&0) {
+        return Err("the team session cookie contains an invalid byte".into());
+    }
+    let mut cookie_bytes = Zeroizing::new(set_cookie.as_bytes().to_vec());
+    cookie_bytes.push(0);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let access = window.with_webview(move |platform| {
+        let context = Box::into_raw(Box::new(sender)).cast::<c_void>();
+        let code = unsafe {
+            rcp_https_trust_set_team_cookie(
+                platform.inner(),
+                origin.as_ptr(),
+                cookie_bytes.as_ptr().cast(),
+                cookie_installed,
+                context,
+            )
+        };
+        if code != 0 {
+            cookie_installed(context, code);
+        }
+    });
+    if let Err(error) = access {
+        return Err(format!(
+            "could not access the RCP WebView for its team session: {error}"
+        ));
+    }
+    match tokio::time::timeout(COOKIE_INSTALL_TIMEOUT, receiver).await {
+        Ok(Ok(0)) => Ok(()),
+        Ok(Ok(callback_code)) => Err(format!(
+            "could not install the team browser session (completion code {callback_code})"
+        )),
+        Ok(Err(_)) => Err("the team browser session installer stopped unexpectedly".into()),
+        Err(_) => Err("timed out installing the team browser session".into()),
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn install_webview_trust(
     _window: &tauri::WebviewWindow,
     _identity: &LocalHttpsIdentity,
 ) -> Result<(), String> {
     Err("app-scoped local HTTPS trust is supported only by the macOS desktop app".into())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub async fn install_team_session_cookie(
+    _window: &tauri::WebviewWindow,
+    _origin: &str,
+    _set_cookie: Zeroizing<String>,
+) -> Result<(), String> {
+    Err("team browser sessions are supported only by the macOS desktop app".into())
 }
 
 #[cfg(test)]

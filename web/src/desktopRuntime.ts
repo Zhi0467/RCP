@@ -1,4 +1,4 @@
-import type { Health } from "./types";
+import type { Health, IdentityResponse } from "./types";
 
 export const BACKEND_IDENTITY_EVENT = "rcp:backend-identity";
 export const DESKTOP_FOLDER_ACCESS_ACK_KEY = "rcp:desktop-folder-access-acknowledgement";
@@ -13,6 +13,43 @@ export interface DesktopStatus {
   owner_kind: string;
   active_agent_tasks: number;
   owned: boolean;
+}
+
+export interface CachedTeamProjectCard {
+  id: string;
+  name: string;
+  primary_question: string | null;
+  attention_count: number;
+}
+
+export interface TeamConnectionMetadata {
+  connection_id: string;
+  display_name: string;
+  ssh_target: string;
+  remote_loopback_port: number;
+  expected_space_id: string;
+  local_origin: string;
+  minimum_shell_version: string;
+  last_known_cards: CachedTeamProjectCard[];
+}
+
+export interface EstablishedTeamSession {
+  connection: TeamConnectionMetadata;
+  identity: IdentityResponse;
+  status: DesktopStatus;
+}
+
+export interface EnrollTeamConnectionRequest {
+  ssh_target: string;
+  remote_loopback_port: number;
+  enrollment_code: string;
+  member_display_name: string;
+}
+
+export interface ExistingTeamConnectionRequest {
+  ssh_target: string;
+  remote_loopback_port: number;
+  member_token: string;
 }
 
 export interface DesktopUpdate {
@@ -120,6 +157,53 @@ export async function desktopReconnectBackend(): Promise<DesktopStatus> {
   if (!isDesktopRuntime())
     throw new Error("Desktop backend recovery is unavailable in this browser.");
   return invokeDesktop<DesktopStatus>("desktop_reconnect_backend");
+}
+
+export async function listDesktopTeamConnections(): Promise<TeamConnectionMetadata[]> {
+  if (!isDesktopRuntime()) return [];
+  return invokeDesktop<TeamConnectionMetadata[]>("desktop_list_team_connections");
+}
+
+export async function enrollDesktopTeamConnection(
+  request: EnrollTeamConnectionRequest,
+): Promise<EstablishedTeamSession> {
+  if (!isDesktopRuntime())
+    throw new Error("Team spaces are available in the source-built desktop app.");
+  return invokeDesktop<EstablishedTeamSession>("desktop_enroll_team_connection", { request });
+}
+
+export async function addExistingDesktopTeamConnection(
+  request: ExistingTeamConnectionRequest,
+): Promise<EstablishedTeamSession> {
+  if (!isDesktopRuntime())
+    throw new Error("Team spaces are available in the source-built desktop app.");
+  return invokeDesktop<EstablishedTeamSession>("desktop_add_existing_team_connection", {
+    request,
+  });
+}
+
+export async function establishDesktopTeamSession(
+  connectionId: string,
+): Promise<EstablishedTeamSession> {
+  if (!isDesktopRuntime())
+    throw new Error("Team spaces are available in the source-built desktop app.");
+  return invokeDesktop<EstablishedTeamSession>("desktop_establish_team_session", {
+    connectionId,
+  });
+}
+
+export async function navigateDesktopToTeam(
+  connectionId: string,
+  projectId: string | null = null,
+): Promise<void> {
+  if (!isDesktopRuntime())
+    throw new Error("Team spaces are available in the source-built desktop app.");
+  await invokeDesktop("desktop_navigate_team", { connectionId, projectId });
+}
+
+export async function returnDesktopToPersonal(): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  await invokeDesktop("desktop_return_to_personal");
 }
 
 export function backendReconnectLabel(desktop: boolean): string {

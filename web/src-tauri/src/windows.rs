@@ -220,6 +220,40 @@ pub fn navigation_target(base_url: &str) -> Option<Url> {
     }
 }
 
+pub fn personal_root(base_url: &str) -> Result<Url, String> {
+    if uses_vite_dev_server() {
+        return INITIAL_URL
+            .get()
+            .cloned()
+            .or_else(|| Url::parse("http://127.0.0.1:5173").ok())
+            .ok_or_else(|| "the personal development frontend URL is invalid".to_string());
+    }
+    let mut target = Url::parse(base_url)
+        .map_err(|error| format!("the personal RCP URL is invalid: {error}"))?;
+    target.set_path("/");
+    target.set_query(None);
+    target.set_fragment(None);
+    Ok(target)
+}
+
+pub fn navigate_main(window: &WebviewWindow, origin: &str) -> Result<(), String> {
+    navigate_main_route(window, origin, None)
+}
+
+pub fn navigate_main_route(
+    window: &WebviewWindow,
+    origin: &str,
+    fragment: Option<&str>,
+) -> Result<(), String> {
+    let mut target = Url::parse(origin).map_err(|_| "the RCP navigation origin is invalid")?;
+    target.set_path("/");
+    target.set_query(None);
+    target.set_fragment(fragment);
+    window
+        .navigate(target)
+        .map_err(|error| format!("could not navigate the RCP window: {error}"))
+}
+
 pub fn show_when_handshake_does_not_arrive(app: &AppHandle) {
     let _ = arm_handshake_fallback(app);
 }

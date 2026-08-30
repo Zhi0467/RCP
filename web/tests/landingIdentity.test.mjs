@@ -152,7 +152,7 @@ test("the identity slip delegates Edit and Copy without changing identity state"
   assert.equal(identity.user.user_id, userId);
 });
 
-test("team controls are an explicit disabled seam and collect no connection material", () => {
+test("the personal identity panel opens the desktop Add team space flow", () => {
   const html = renderToStaticMarkup(
     React.createElement(IdentityProvenanceSlip, {
       identity,
@@ -161,14 +161,13 @@ test("team controls are an explicit disabled seam and collect no connection mate
       copyStatus: "idle",
       onCopy() {},
       onEdit() {},
+      onAddTeamSpace() {},
     }),
   );
 
-  assert.match(html, /data-team-space-seam="unimplemented"/);
-  assert.match(html, /Team connections are not implemented in this build/);
-  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Join team space/s);
-  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Accept invitation/s);
-  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Invite member/s);
+  assert.match(html, /data-team-space-seam="available"/);
+  assert.match(html, /<button[^>]*>.*Add team space/s);
+  assert.doesNotMatch(html, /not implemented|coming later/i);
   assert.doesNotMatch(html, /<(form|input|textarea|select)\b/i);
   assert.doesNotMatch(html, /password|access token|private key/i);
 });

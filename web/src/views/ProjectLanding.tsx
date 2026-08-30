@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { ExperimentBoard } from "../components/ExperimentBoard";
 import { LandingIdentityMenu } from "../components/LandingIdentityMenu";
 import { ProjectDock } from "../components/ProjectDock";
+import { TeamSpaceGroups } from "../components/TeamSpaceGroups";
 import type { ProjectTab } from "../projectTabs";
 import type {
   ExperimentLoopIndexEntry,
@@ -120,6 +121,7 @@ export function ProjectLanding({
   const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [addTeamOpen, setAddTeamOpen] = useState(false);
 
   useEffect(() => {
     try {
@@ -197,10 +199,14 @@ export function ProjectLanding({
           identity={identity}
           identityError={identityError}
           onRequestName={onRequestIdentityName}
+          onAddTeamSpace={() => setAddTeamOpen(true)}
         />
       </header>
 
       <main className="landing-main">
+        {identity?.space_kind === "personal" && (
+          <h1 className="space-group-title">Personal space</h1>
+        )}
         <section className="project-shelf" aria-label="RCP projects">
           {invitations.map((invitation) => (
             <ProjectInvitationCard
@@ -278,6 +284,14 @@ export function ProjectLanding({
             </span>
           </button>
         </section>
+
+        {identity?.space_kind === "personal" && (
+          <TeamSpaceGroups
+            addOpen={addTeamOpen}
+            onOpenAdd={() => setAddTeamOpen(true)}
+            onCloseAdd={() => setAddTeamOpen(false)}
+          />
+        )}
 
         <ExperimentBoard entries={experimentLoops} onOpen={onOpenExperiment} />
       </main>

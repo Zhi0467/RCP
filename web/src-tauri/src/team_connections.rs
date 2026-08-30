@@ -177,6 +177,30 @@ impl TeamConnectionState {
         store_keychain_password(&reference, token.as_bytes())
     }
 
+    pub(crate) fn load_member_token(
+        &self,
+        connection_id: &str,
+    ) -> Result<Zeroizing<String>, String> {
+        let reference = credential_reference(connection_id)?;
+        let _guard = self.acquire()?;
+        if !self
+            .read_registry()?
+            .connections
+            .iter()
+            .any(|connection| connection.connection_id == connection_id)
+        {
+            return Err("team connection metadata must exist before reading its credential".into());
+        }
+        let bytes = load_keychain_password(&reference)?
+            .ok_or_else(|| "this team connection has no saved member credential".to_string())?;
+        let token = Zeroizing::new(
+            String::from_utf8(bytes.to_vec())
+                .map_err(|_| "the saved team member credential is invalid".to_string())?,
+        );
+        validate_member_token(&token)?;
+        Ok(token)
+    }
+
     pub fn remove_member_token(&self, connection_id: &str) -> Result<RemovalResult, String> {
         let reference = credential_reference(connection_id)?;
         let _guard = self.acquire()?;
@@ -375,7 +399,7 @@ fn validate_text(
     Ok(())
 }
 
-fn validate_ssh_target(value: &str) -> Result<(), String> {
+pub(crate) fn validate_ssh_target(value: &str) -> Result<(), String> {
     validate_text(value, "SSH target", MAX_SSH_TARGET_BYTES, false)?;
     if !value.is_ascii()
         || value.starts_with('-')
@@ -543,8 +567,29 @@ fn store_keychain_password(reference: &CredentialReference, token: &[u8]) -> Res
     .map_err(|error| format!("could not store the team member credential in Keychain: {error}"))
 }
 
+#[cfg(target_os = "macos")]
+fn load_keychain_password(
+    reference: &CredentialReference,
+) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+    match security_framework::passwords::get_generic_password(reference.service, &reference.account)
+    {
+        Ok(bytes) => Ok(Some(Zeroizing::new(bytes))),
+        Err(error) if error.code() == security_framework_sys::base::errSecItemNotFound => Ok(None),
+        Err(error) => Err(format!(
+            "could not read the team member credential from Keychain: {error}"
+        )),
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn store_keychain_password(_reference: &CredentialReference, _token: &[u8]) -> Result<(), String> {
+    Err("team member credential storage is supported only by the macOS desktop app".into())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn load_keychain_password(
+    _reference: &CredentialReference,
+) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     Err("team member credential storage is supported only by the macOS desktop app".into())
 }
 

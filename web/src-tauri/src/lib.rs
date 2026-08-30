@@ -5,6 +5,7 @@ mod lifecycle;
 mod local_https;
 mod navigation;
 mod team_connections;
+mod team_session;
 mod team_tunnel;
 mod updates;
 mod windows;
@@ -66,9 +67,13 @@ pub fn run() {
             commands::desktop_show_ready,
             commands::desktop_list_team_connections,
             commands::desktop_remove_team_connection_metadata,
-            commands::desktop_store_team_member_token,
             commands::desktop_remove_team_member_token,
             commands::desktop_connect_team_tunnel,
+            commands::desktop_enroll_team_connection,
+            commands::desktop_add_existing_team_connection,
+            commands::desktop_establish_team_session,
+            commands::desktop_navigate_team,
+            commands::desktop_return_to_personal,
             commands::choose_repository_folder,
             commands::desktop_start_dictation,
             commands::desktop_stop_dictation,
@@ -97,6 +102,13 @@ pub fn run() {
             if !app.manage(team_tunnels) {
                 return Err(std::io::Error::other(
                     "RCP desktop team tunnel state was already registered",
+                )
+                .into());
+            }
+            let team_sessions = team_session::TeamSessionState::new(&local_https);
+            if !app.manage(team_sessions) {
+                return Err(std::io::Error::other(
+                    "RCP desktop team session state was already registered",
                 )
                 .into());
             }

@@ -16,6 +16,10 @@ use crate::{
     lifecycle::DesktopStatus,
     navigation,
     team_connections::{RemovalResult, TeamConnectionMetadata, TeamConnectionState},
+    team_session::{
+        EnrollTeamConnectionRequest, EstablishedTeamSession, ExistingTeamConnectionRequest,
+        TeamSessionState,
+    },
     team_tunnel::{TeamTunnelReady, TeamTunnelState},
     updates, windows,
 };
@@ -64,13 +68,154 @@ pub fn desktop_list_team_connections(
 
 #[tauri::command]
 pub async fn desktop_remove_team_connection_metadata(
+    window: WebviewWindow,
     state: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
     tunnels: State<'_, TeamTunnelState>,
+    lifecycle: State<'_, BackendState>,
     connection_id: String,
 ) -> Result<RemovalResult, String> {
-    tunnels
+    let saved = state.list()?;
+    authorize_connection_repair_origin(
+        &window
+            .url()
+            .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?,
+        &lifecycle.status()?.base_url,
+        &saved,
+        &connection_id,
+        cfg!(debug_assertions),
+    )?;
+    let result = tunnels
         .remove_saved_connection(&state, &connection_id)
+        .await?;
+    sessions.forget(&connection_id)?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn desktop_remove_team_member_token(
+    window: WebviewWindow,
+    state: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    lifecycle: State<'_, BackendState>,
+    connection_id: String,
+) -> Result<RemovalResult, String> {
+    let saved = state.list()?;
+    authorize_connection_repair_origin(
+        &window
+            .url()
+            .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?,
+        &lifecycle.status()?.base_url,
+        &saved,
+        &connection_id,
+        cfg!(debug_assertions),
+    )?;
+    let result = state.remove_member_token(&connection_id)?;
+    sessions.forget(&connection_id)?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn desktop_enroll_team_connection(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    tunnels: State<'_, TeamTunnelState>,
+    lifecycle: State<'_, BackendState>,
+    request: EnrollTeamConnectionRequest,
+) -> Result<EstablishedTeamSession, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    sessions
+        .enroll(&window, &connections, &tunnels, &lifecycle, request)
         .await
+}
+
+#[tauri::command]
+pub async fn desktop_add_existing_team_connection(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    tunnels: State<'_, TeamTunnelState>,
+    lifecycle: State<'_, BackendState>,
+    request: ExistingTeamConnectionRequest,
+) -> Result<EstablishedTeamSession, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    sessions
+        .add_existing(&window, &connections, &tunnels, &lifecycle, request)
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_establish_team_session(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    tunnels: State<'_, TeamTunnelState>,
+    lifecycle: State<'_, BackendState>,
+    connection_id: String,
+) -> Result<EstablishedTeamSession, String> {
+    let saved = connections.list()?;
+    authorize_team_tunnel_origin(
+        &window
+            .url()
+            .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?,
+        &lifecycle.status()?.base_url,
+        &saved,
+        &connection_id,
+        cfg!(debug_assertions),
+    )?;
+    sessions
+        .reconnect(&window, &connections, &tunnels, &lifecycle, &connection_id)
+        .await
+}
+
+#[tauri::command]
+pub fn desktop_navigate_team(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    lifecycle: State<'_, BackendState>,
+    connection_id: String,
+    project_id: Option<String>,
+) -> Result<(), String> {
+    let saved = connections.list()?;
+    authorize_team_tunnel_origin(
+        &window
+            .url()
+            .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?,
+        &lifecycle.status()?.base_url,
+        &saved,
+        &connection_id,
+        cfg!(debug_assertions),
+    )?;
+    let established = sessions.established(&connection_id)?;
+    if let Some(project_id) = &project_id {
+        if !established
+            .connection
+            .last_known_cards
+            .iter()
+            .any(|card| card.id == *project_id)
+        {
+            return Err("the selected project is not in this verified team connection".into());
+        }
+    }
+    let fragment = project_id
+        .as_deref()
+        .map(|project_id| format!("/projects/{project_id}"));
+    windows::navigate_main_route(
+        &window,
+        &established.connection.local_origin,
+        fragment.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn desktop_return_to_personal(
+    window: WebviewWindow,
+    lifecycle: State<'_, BackendState>,
+) -> Result<(), String> {
+    let target = windows::personal_root(&lifecycle.status()?.base_url)?;
+    windows::navigate_main(&window, target.as_str())
 }
 
 #[tauri::command]
@@ -133,27 +278,71 @@ fn authorize_team_tunnel_origin(
     }
 }
 
+fn authorize_connection_repair_origin(
+    caller: &Url,
+    personal_base_url: &str,
+    connections: &[TeamConnectionMetadata],
+    requested_connection_id: &str,
+    allow_dev: bool,
+) -> Result<(), String> {
+    if is_personal_origin(caller, personal_base_url, allow_dev)? {
+        return Ok(());
+    }
+    if connections.iter().any(|connection| {
+        connection.connection_id == requested_connection_id
+            && Url::parse(&connection.local_origin).is_ok_and(|origin| same_origin(caller, &origin))
+    }) {
+        Ok(())
+    } else {
+        Err("this desktop origin cannot repair the requested team connection".into())
+    }
+}
+
+fn is_personal_origin(
+    caller: &Url,
+    personal_base_url: &str,
+    allow_dev: bool,
+) -> Result<bool, String> {
+    let personal = Url::parse(personal_base_url)
+        .map_err(|_| "the personal RCP origin is invalid".to_string())?;
+    Ok(same_origin(caller, &personal)
+        || (allow_dev
+            && caller.scheme() == "http"
+            && caller.host_str() == Some("127.0.0.1")
+            && caller.port_or_known_default() == Some(5173)))
+}
+
+fn saved_connection_for_origin<'a>(
+    caller: &Url,
+    connections: &'a [TeamConnectionMetadata],
+) -> Option<&'a TeamConnectionMetadata> {
+    connections.iter().find(|connection| {
+        Url::parse(&connection.local_origin).is_ok_and(|origin| same_origin(caller, &origin))
+    })
+}
+
 fn same_origin(left: &Url, right: &Url) -> bool {
     left.scheme() == right.scheme()
         && left.host_str() == right.host_str()
         && left.port_or_known_default() == right.port_or_known_default()
 }
 
-#[tauri::command]
-pub fn desktop_store_team_member_token(
-    state: State<'_, TeamConnectionState>,
-    connection_id: String,
-    token: String,
+fn authorize_personal_origin(
+    window: &WebviewWindow,
+    lifecycle: &BackendState,
 ) -> Result<(), String> {
-    state.store_member_token(&connection_id, token)
-}
-
-#[tauri::command]
-pub fn desktop_remove_team_member_token(
-    state: State<'_, TeamConnectionState>,
-    connection_id: String,
-) -> Result<RemovalResult, String> {
-    state.remove_member_token(&connection_id)
+    let caller = window
+        .url()
+        .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?;
+    if is_personal_origin(
+        &caller,
+        &lifecycle.status()?.base_url,
+        cfg!(debug_assertions),
+    )? {
+        Ok(())
+    } else {
+        Err("team spaces can be added only from the personal RCP index".into())
+    }
 }
 
 #[tauri::command]
@@ -167,8 +356,27 @@ pub fn desktop_stop_dictation(session_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn desktop_status(state: State<'_, BackendState>) -> Result<DesktopStatus, String> {
+pub async fn desktop_status(
+    window: WebviewWindow,
+    state: State<'_, BackendState>,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+) -> Result<DesktopStatus, String> {
+    let current = window
+        .url()
+        .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?;
     let mut status = state.status()?;
+    if !is_personal_origin(&current, &status.base_url, cfg!(debug_assertions))? {
+        if let Some(team_status) = sessions.status_for_origin(&current)? {
+            return Ok(team_status);
+        }
+        let saved = connections.list()?;
+        return if saved_connection_for_origin(&current, &saved).is_some() {
+            Err("the displayed team space has no verified browser session".into())
+        } else {
+            Err("the displayed desktop origin is not a saved RCP space".into())
+        };
+    }
     if let Ok(health) = backend::health(&status).await {
         if status.matches_health(&health) {
             state.update_health(&health);
@@ -182,9 +390,33 @@ pub async fn desktop_status(state: State<'_, BackendState>) -> Result<DesktopSta
 #[tauri::command]
 pub async fn desktop_reconnect_backend(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, BackendState>,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    tunnels: State<'_, TeamTunnelState>,
 ) -> Result<DesktopStatus, String> {
-    backend::connect(&app, &state, "Leave it running").await
+    let current = window
+        .url()
+        .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?;
+    let personal_status = state.status()?;
+    if is_personal_origin(&current, &personal_status.base_url, cfg!(debug_assertions))? {
+        return backend::connect(&app, &state, "Leave it running").await;
+    }
+    let saved = connections.list()?;
+    if let Some(connection) = saved_connection_for_origin(&current, &saved) {
+        return Ok(sessions
+            .reconnect(
+                &window,
+                &connections,
+                &tunnels,
+                &state,
+                &connection.connection_id,
+            )
+            .await?
+            .status);
+    }
+    Err("the displayed desktop origin is not a saved RCP space".into())
 }
 
 #[tauri::command]
@@ -583,6 +815,38 @@ mod tests {
             "http://127.0.0.1:8421",
             &saved,
             &first.connection_id,
+            false,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn connection_repair_is_idempotent_from_personal_and_space_bound_from_team() {
+        let first = saved_connection("11111111-1111-4111-8111-111111111111", 18421);
+        let second = saved_connection("22222222-2222-4222-8222-222222222222", 19421);
+        let saved = vec![first.clone(), second.clone()];
+
+        assert!(authorize_connection_repair_origin(
+            &Url::parse("http://127.0.0.1:8421").unwrap(),
+            "http://127.0.0.1:8421",
+            &[],
+            "33333333-3333-4333-8333-333333333333",
+            false,
+        )
+        .is_ok());
+        assert!(authorize_connection_repair_origin(
+            &Url::parse(&first.local_origin).unwrap(),
+            "http://127.0.0.1:8421",
+            &saved,
+            &first.connection_id,
+            false,
+        )
+        .is_ok());
+        assert!(authorize_connection_repair_origin(
+            &Url::parse(&first.local_origin).unwrap(),
+            "http://127.0.0.1:8421",
+            &saved,
+            &second.connection_id,
             false,
         )
         .is_err());
