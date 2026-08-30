@@ -14,14 +14,13 @@ name = "rcp-desktop"
 path = "src/main.rs"
 
 [features]
-# Q11 experiment: compiles the app-scoped TLS trust hook for the local-HTTPS
-# origin probe. Off by default so no shipped build contains it.
+# Retains the standalone Q11 probe target. The app-scoped TLS trust hook itself
+# is now part of every macOS desktop build.
 https-trust-probe = []
 
 [[example]]
 name = "local_https_origin_probe"
-# Links the static library that `https-trust-probe` builds from `src/https_trust.m`,
-# so an ordinary `cargo test` must skip it rather than fail to link.
+# Keeps an ordinary `cargo test` from trying to build the GUI-only probe.
 required-features = ["https-trust-probe"]
 
 [build-dependencies]
@@ -29,12 +28,15 @@ cc = "1"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 libc = "0.2"
 plist = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"

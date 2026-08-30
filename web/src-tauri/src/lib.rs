@@ -2,6 +2,7 @@ mod backend;
 mod commands;
 mod dictation;
 mod lifecycle;
+mod local_https;
 mod navigation;
 mod team_connections;
 mod updates;
@@ -79,6 +80,8 @@ pub fn run() {
             commands::apply_update,
         ])
         .setup(|app| {
+            let local_https =
+                local_https::LocalHttpsIdentity::load_or_create().map_err(std::io::Error::other)?;
             let team_connections = team_connections::TeamConnectionState::for_app(app.handle())
                 .map_err(std::io::Error::other)?;
             if !app.manage(team_connections) {
@@ -87,7 +90,13 @@ pub fn run() {
                 )
                 .into());
             }
-            windows::create_main(app.handle())?;
+            windows::create_main(app.handle(), &local_https)?;
+            if !app.manage(local_https) {
+                return Err(std::io::Error::other(
+                    "RCP desktop local HTTPS identity was already registered",
+                )
+                .into());
+            }
             start_backend(app.handle().clone());
             Ok(())
         })

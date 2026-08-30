@@ -13,7 +13,7 @@ use url::{Host, Url};
 use uuid::{Uuid, Version as UuidVersion};
 use zeroize::Zeroizing;
 
-const REGISTRY_VERSION: u32 = 1;
+const REGISTRY_VERSION: u32 = 2;
 const REGISTRY_FILENAME: &str = "team-connections.json";
 const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
 const MAX_CONNECTIONS: usize = 64;
@@ -307,7 +307,7 @@ impl TeamConnectionMetadata {
             return Err("remote team server port must be a positive integer".into());
         }
         validate_uuid4(&self.expected_space_id, "expected team space identity")?;
-        validate_local_origin(&self.local_origin)?;
+        validate_local_origin(&self.local_origin, &self.connection_id)?;
         validate_shell_version(&self.minimum_shell_version)?;
         if self.last_known_cards.len() > MAX_CACHED_CARDS {
             return Err(format!(
@@ -388,10 +388,21 @@ fn validate_ssh_target(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_local_origin(value: &str) -> Result<(), String> {
+pub(crate) fn allocate_local_origin(connection_id: &str, port: u16) -> Result<String, String> {
+    validate_uuid4(connection_id, "team connection identity")?;
+    if port == 0 || port == 443 {
+        return Err("local team HTTPS port must be positive and non-default".into());
+    }
+    Ok(format!(
+        "https://rcp-{}.localhost:{port}",
+        connection_id.replace('-', "")
+    ))
+}
+
+fn validate_local_origin(value: &str, connection_id: &str) -> Result<(), String> {
     validate_text(value, "local team origin", 255, false)?;
     let url = Url::parse(value).map_err(|_| "local team origin must be a URL".to_string())?;
-    if !matches!(url.scheme(), "http" | "https")
+    if url.scheme() != "https"
         || !url.username().is_empty()
         || url.password().is_some()
         || url.port().is_none()
@@ -400,20 +411,16 @@ fn validate_local_origin(value: &str) -> Result<(), String> {
         || url.fragment().is_some()
     {
         return Err(
-            "local team origin must be a canonical HTTP loopback origin with an explicit port"
-                .into(),
+            "local team origin must be the connection's canonical HTTPS localhost origin".into(),
         );
     }
-    let loopback = match url.host() {
-        Some(Host::Domain(host)) => host == "localhost",
-        Some(Host::Ipv4(address)) => address.is_loopback(),
-        Some(Host::Ipv6(address)) => address.is_loopback(),
-        None => false,
-    };
-    if !loopback || url.origin().ascii_serialization() != value {
+    let expected = allocate_local_origin(connection_id, url.port().unwrap())?;
+    if !matches!(url.host(), Some(Host::Domain(_)))
+        || url.origin().ascii_serialization() != value
+        || value != expected
+    {
         return Err(
-            "local team origin must be a canonical HTTP loopback origin with an explicit port"
-                .into(),
+            "local team origin must be the connection's canonical HTTPS localhost origin".into(),
         );
     }
     Ok(())
@@ -577,7 +584,7 @@ mod tests {
             ssh_target: "rcp@lab-server".into(),
             remote_loopback_port: 8421,
             expected_space_id: SPACE_ID.into(),
-            local_origin: "http://127.0.0.2:18421".into(),
+            local_origin: allocate_local_origin(CONNECTION_ID, 18421).unwrap(),
             minimum_shell_version: "0.3.2".into(),
             last_known_cards: vec![CachedTeamProjectCard {
                 id: PROJECT_ID.into(),
@@ -632,7 +639,7 @@ mod tests {
         changed_space.expected_space_id = OTHER_SPACE_ID.into();
         assert!(state.save_metadata(changed_space).is_err());
         let mut changed_origin = original;
-        changed_origin.local_origin = "http://127.0.0.3:18421".into();
+        changed_origin.local_origin = allocate_local_origin(CONNECTION_ID, 19421).unwrap();
         assert!(state.save_metadata(changed_origin).is_err());
 
         #[cfg(unix)]
@@ -651,7 +658,7 @@ mod tests {
         let first = sample_connection();
         let mut duplicate_space = first.clone();
         duplicate_space.connection_id = OTHER_CONNECTION_ID.into();
-        duplicate_space.local_origin = "http://127.0.0.3:18421".into();
+        duplicate_space.local_origin = allocate_local_origin(OTHER_CONNECTION_ID, 19421).unwrap();
         let registry = TeamConnectionRegistry {
             version: REGISTRY_VERSION,
             connections: vec![first.clone(), duplicate_space],
@@ -733,23 +740,20 @@ mod tests {
     }
 
     #[test]
-    fn local_origin_is_loopback_canonical_and_uses_an_explicit_nondefault_port() {
-        for accepted in [
-            "http://localhost:18421",
-            "http://127.0.0.2:18421",
-            "https://[::1]:18421",
-        ] {
-            validate_local_origin(accepted).unwrap();
-        }
+    fn local_origin_is_connection_bound_https_and_uses_an_explicit_port() {
+        let expected = allocate_local_origin(CONNECTION_ID, 18421).unwrap();
+        validate_local_origin(&expected, CONNECTION_ID).unwrap();
+        assert!(allocate_local_origin(CONNECTION_ID, 0).is_err());
+        assert!(allocate_local_origin(CONNECTION_ID, 443).is_err());
         for rejected in [
-            "http://127.0.0.2:18421/",
-            "http://127.0.0.2",
-            "http://example.com:18421",
-            "http://user@127.0.0.2:18421",
-            "http://127.0.0.2:18421/path",
+            "http://rcp-11111111111141118111111111111111.localhost:18421",
+            "https://localhost:18421",
+            "https://rcp-11111111111141118111111111111111.localhost",
+            "https://rcp-22222222222242228222222222222222.localhost:18421",
+            "https://rcp-11111111111141118111111111111111.localhost:18421/path",
         ] {
             assert!(
-                validate_local_origin(rejected).is_err(),
+                validate_local_origin(rejected, CONNECTION_ID).is_err(),
                 "accepted {rejected}"
             );
         }

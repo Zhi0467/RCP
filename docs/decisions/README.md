@@ -22,6 +22,9 @@
 - [Every server-era schema remains directly upgradeable](2026-08-27-server-schema-compatibility.md)
   records permanent one-step upgrade support and one immutable fixture bundle
   per distinct persistence boundary.
+- [Team spaces use desktop-owned pinned local HTTPS origins](2026-08-30-desktop-local-https-origins.md)
+  records the deterministic per-connection host, one Keychain identity,
+  app-scoped certificate pin, and independent navigation and capability fences.
 
 Decision records explain rationale that remains materially useful for an active
 migration, live tradeoff, or easy-to-regress architectural boundary. They link to

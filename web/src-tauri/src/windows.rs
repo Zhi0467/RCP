@@ -14,7 +14,12 @@ use tauri_plugin_opener::OpenerExt;
 use url::Url;
 
 use crate::backend::BackendState;
-use crate::{lifecycle::DesktopStatus, navigation};
+use crate::{
+    lifecycle::DesktopStatus,
+    local_https::{self, LocalHttpsIdentity},
+    navigation,
+    team_connections::TeamConnectionState,
+};
 
 static PREVIEW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static SHOW_REQUEST_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -47,7 +52,10 @@ struct PendingRecovery {
     reason: String,
 }
 
-pub fn create_main(app: &AppHandle) -> Result<(), String> {
+pub fn create_main(
+    app: &AppHandle,
+    local_https_identity: &LocalHttpsIdentity,
+) -> Result<(), String> {
     let configured_url = std::env::var(FRONTEND_URL_VARIABLE).ok();
     let initial_navigation = initial_navigation(uses_vite_dev_server(), configured_url.as_deref())?;
     let start_url = match initial_navigation {
@@ -63,7 +71,7 @@ pub fn create_main(app: &AppHandle) -> Result<(), String> {
     };
     let app_for_navigation = app.clone();
     let app_for_popup = app.clone();
-    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(start_url))
+    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(start_url))
         .title("RCP")
         .inner_size(1320.0, 860.0)
         .min_inner_size(880.0, 600.0)
@@ -81,7 +89,24 @@ pub fn create_main(app: &AppHandle) -> Result<(), String> {
                 .status()
                 .ok()
                 .map(|status| status.base_url);
-            if navigation::is_main_window_url(url, current_base.as_deref(), uses_vite_dev_server())
+            let team_origins = match app_for_navigation.state::<TeamConnectionState>().list() {
+                Ok(connections) => connections
+                    .into_iter()
+                    .map(|connection| connection.local_origin)
+                    .collect::<Vec<_>>(),
+                Err(error) => {
+                    eprintln!(
+                        "[rcp] rejecting team navigation because saved connections are unreadable: {error}"
+                    );
+                    Vec::new()
+                }
+            };
+            if navigation::is_main_window_url(
+                url,
+                current_base.as_deref(),
+                &team_origins,
+                uses_vite_dev_server(),
+            )
             {
                 true
             } else {
@@ -99,6 +124,7 @@ pub fn create_main(app: &AppHandle) -> Result<(), String> {
         })
         .build()
         .map_err(|error| format!("could not create the RCP window: {error}"))?;
+    local_https::install_webview_trust(&window, local_https_identity)?;
     Ok(())
 }
 

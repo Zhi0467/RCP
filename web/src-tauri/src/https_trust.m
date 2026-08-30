@@ -1,13 +1,12 @@
-// Experimental app-scoped TLS trust for the local-HTTPS origin probe.
+// App-scoped TLS trust for RCP's desktop-owned local HTTPS origins.
 //
-// Q11 asks whether WKWebView can trust exactly one certificate that the app
-// generated for itself, without installing anything into a system-wide trust
-// store. wry's `WryNavigationDelegate` does not implement the server-trust
-// challenge at all, so this file adds that one method to the existing class at
-// runtime and pins a single DER SHA-256. Every other certificate is refused.
+// WKWebView trusts exactly one certificate that the app generated for itself,
+// without installing anything into a system-wide trust store. wry's
+// `WryNavigationDelegate` does not implement the server-trust challenge, so
+// this file adds that one method to the existing class at runtime and pins a
+// single DER SHA-256. Every other certificate is refused.
 //
-// This file is compiled only under the `https-trust-probe` Cargo feature and is
-// never part of a shipped desktop binary.
+// The same pinning primitive is used by the retained local-HTTPS probe.
 
 #import <CommonCrypto/CommonDigest.h>
 #import <Foundation/Foundation.h>
@@ -90,13 +89,13 @@ static void RcpReportFailure(id self, SEL _cmd, id webView, id navigation, NSErr
           error.localizedDescription.UTF8String ?: "<none>");
 }
 
-// Returns 0 on success, 1 when the delegate is absent, 2 when its class already
-// answers the selector, 3 when the runtime refused the method, and 4 on bad
-// arguments. `webview` is the WKWebView pointer from Tauri's PlatformWebview:
-// asking the live object for its delegate avoids guessing wry's class name.
-int rcp_https_trust_install(const char *fingerprint_hex, void *webview,
-                           const char *start_url, int reset_cookies) {
-  if (fingerprint_hex == NULL || webview == NULL || start_url == NULL) {
+// Returns 0 on success, 1 when the delegate is absent, 2 when another
+// implementation owns the selector, 3 when the runtime refused the method,
+// and 4 on bad arguments. `webview` is the WKWebView pointer from Tauri's
+// PlatformWebview: asking the live object for its delegate avoids guessing
+// wry's class name.
+int rcp_https_trust_install_pin(const char *fingerprint_hex, void *webview) {
+  if (fingerprint_hex == NULL || webview == NULL) {
     return 4;
   }
   gPinnedFingerprint = [NSString stringWithUTF8String:fingerprint_hex];
@@ -110,11 +109,15 @@ int rcp_https_trust_install(const char *fingerprint_hex, void *webview,
   Class delegate = object_getClass(delegate_object);
   fprintf(stderr, "[https-trust] navigation delegate class is %s\n", class_getName(delegate));
   SEL selector = @selector(webView:didReceiveAuthenticationChallenge:completionHandler:);
-  if (class_getInstanceMethod(delegate, selector) != NULL) {
-    return 2;
-  }
-  if (!class_addMethod(delegate, selector, (IMP)RcpHandleChallenge, "v@:@@@?")) {
-    return 3;
+  Method existing = class_getInstanceMethod(delegate, selector);
+  if (existing != NULL) {
+    if (method_getImplementation(existing) != (IMP)RcpHandleChallenge) {
+      return 2;
+    }
+  } else {
+    if (!class_addMethod(delegate, selector, (IMP)RcpHandleChallenge, "v@:@@@?")) {
+      return 3;
+    }
   }
   if (![delegate_object respondsToSelector:selector]) {
     return 5;
@@ -141,12 +144,27 @@ int rcp_https_trust_install(const char *fingerprint_hex, void *webview,
   fprintf(stderr, "[https-trust] website data store persistent=%s\n",
           view.configuration.websiteDataStore.isPersistent ? "yes" : "no");
 
+  return 0;
+}
+
+int rcp_https_trust_install(const char *fingerprint_hex, void *webview,
+                           const char *start_url, int reset_cookies) {
+  if (start_url == NULL) {
+    return 4;
+  }
+  int installed = rcp_https_trust_install_pin(fingerprint_hex, webview);
+  if (installed != 0) {
+    return installed;
+  }
+
   // Start the first HTTPS load here so nothing can request the origin before
   // the pin is in place.
+  WKWebView *view = (__bridge WKWebView *)webview;
   NSURL *destination = [NSURL URLWithString:[NSString stringWithUTF8String:start_url]];
   if (destination == nil) {
     return 6;
   }
+  NSString *destination_text = destination.absoluteString;
   NSURLRequest *request = [NSURLRequest requestWithURL:destination];
   if (reset_cookies) {
     // The login phase must begin with no stored session, or a cookie left by an
@@ -158,12 +176,14 @@ int rcp_https_trust_install(const char *fingerprint_hex, void *webview,
         completionHandler:^{
           fprintf(stderr, "[https-trust] cleared stored cookies before the drive\n");
           [view loadRequest:request];
-          fprintf(stderr, "[https-trust] started load of %s\n", start_url);
+          fprintf(stderr, "[https-trust] started load of %s\n",
+                  destination_text.UTF8String ?: "<unknown>");
         }];
     return 0;
   }
   [view loadRequest:request];
-  fprintf(stderr, "[https-trust] started load of %s\n", start_url);
+  fprintf(stderr, "[https-trust] started load of %s\n",
+          destination_text.UTF8String ?: "<unknown>");
   return 0;
 }
 

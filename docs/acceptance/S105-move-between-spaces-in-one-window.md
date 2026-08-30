@@ -109,3 +109,14 @@ logs, and inspected credential/connection stores.
 
 The connection handshake is an API projection contract; this scenario asserts
 only what the window does with it.
+
+## Implemented substrate
+
+D2 is complete as of 2026-08-30. The production desktop allocates a stable
+connection-bound HTTPS localhost alias, stores one bounded identity in Keychain,
+installs its exact certificate pin on the live main WKWebView, and rejects
+navigation outside the validated saved-origin set. The retained two-origin
+WKWebView drive passes login and restart phases, including cookie isolation and
+an unpinned-certificate refusal. This scenario remains pending because the real
+SSH tunnel, team enrollment/session exchange, project navigation, and
+unavailable-space paths belong to D3-D5 and have not been driven.

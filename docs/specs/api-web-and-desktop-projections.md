@@ -138,19 +138,16 @@ cards as unavailable. Returning to the local index reloads the local backend.
 
 Every saved space receives a stable, distinct loopback origin. Different ports
 on the same `127.0.0.1` host are not isolation because cookies ignore ports; such
-tunnels would collide on the shared `__Host-` session-cookie name. The shell may
-use only an origin mechanism proven against the real WKWebView; navigation
-admits only origins derived from its saved connection registry, and a live drive
-must prove that cookies stay separated between two simultaneous team spaces.
-The HTTP loopback-alias and exact-host control failed the `Secure`-cookie gate,
-while the extra-address path could not reach WKWebView on stock macOS. A local
-HTTPS origin whose app-generated certificate is pinned in the WebView's own
-server-trust challenge passed that gate on one host, keeping two spaces
-separate across a restart while refusing an unpinned certificate and installing
-no system-wide trust. That mechanism is proven, not implemented; the remaining
-confirmation and the certificate lifecycle stay in
-[Q11](../open-questions.md#q11--how-should-the-desktop-provide-isolated-secure-local-origins)
-without weakening this security boundary.
+tunnels would collide on the shared `__Host-` session-cookie name. The shell
+uses `https://rcp-<connection-id-without-hyphens>.localhost:<local-port>`.
+Navigation admits only exact origins derived from its validated saved-connection
+registry. The desktop stores one versioned certificate/private-key record in
+Keychain, pins that certificate in the live WKWebView navigation delegate, and
+never installs system-wide trust. A malformed identity fails startup rather
+than being silently replaced. The Tauri capability covers the bounded hostname
+family, but the saved-origin navigation check and certificate pin remain
+independent fences. The production boundary and its real-WKWebView evidence are
+recorded in the [local HTTPS decision](../decisions/2026-08-30-desktop-local-https-origins.md).
 
 The ordinary browser can use the team server UI when transport already exists,
 but it cannot own multi-space routing, credential storage, SSH tunnels, or

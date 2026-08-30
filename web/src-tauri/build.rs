@@ -32,16 +32,13 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=Foundation");
         println!("cargo:rustc-link-lib=framework=Speech");
         println!("cargo:rerun-if-changed=src/dictation.m");
-        // Q11 experiment only. Never compiled into a shipped desktop binary.
-        if std::env::var_os("CARGO_FEATURE_HTTPS_TRUST_PROBE").is_some() {
-            cc::Build::new()
-                .file("src/https_trust.m")
-                .flag("-fobjc-arc")
-                .flag("-fblocks")
-                .compile("rcp_https_trust");
-            println!("cargo:rustc-link-lib=framework=Security");
-            println!("cargo:rerun-if-changed=src/https_trust.m");
-        }
+        cc::Build::new()
+            .file("src/https_trust.m")
+            .flag("-fobjc-arc")
+            .flag("-fblocks")
+            .compile("rcp_https_trust");
+        println!("cargo:rustc-link-lib=framework=Security");
+        println!("cargo:rerun-if-changed=src/https_trust.m");
     }
     tauri_build::try_build(
         tauri_build::Attributes::new()

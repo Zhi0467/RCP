@@ -4,13 +4,13 @@ Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
 F2, F3a, F3b, F4, F5, F6a, F6b, F6c, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
-O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c, O4d, O5a, and O5b
+O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c, O4d, O5a, O5b, and D2
 are complete hermetically. O4d's fresh-host Ubuntu restore drive remains part of
-the live acceptance work. D2
-reached and preserved its required stop condition at Q11's secure local-origin
-decision; a 2026-08-29 local-HTTPS spike then proved that candidate mechanism on
-one host, so D3-D5 are unblocked in principle while D2 itself remains
-incomplete. The live
+the live acceptance work. D2 promotes the proved local-HTTPS mechanism into the
+production source-built desktop: one Keychain identity, canonical
+connection-bound origins, an app-scoped WKWebView pin, and exact saved-origin
+navigation are implemented and live-verified on this host. D3-D5 remain open
+for the SSH proxy, server session, and team-space UI. The live
 Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
 pushed at `fff75c3` with exact-target confirmation, an immutable built-candidate
 receipt, and an unchanged live-service boundary. P2 now provides the
@@ -813,9 +813,9 @@ gate are deliberately future work and do not block this plan.
   login Keychain, and no UI or desktop navigation was driven. The handoff
   assigns the real store/read/replace/delete and missing-item proof to D4a's
   live enrollment/session test, after D2 and D3 provide the verified origin and
-  tunnel. D2-D5 still own origin allocation, cookie isolation, SSH lifetime,
-  token retrieval/enrollment, session establishment, multi-backend navigation,
-  cached-card refresh, and the visible Add-team-space flow.
+  tunnel. D3-D5 still own SSH lifetime, token retrieval/enrollment, session
+  establishment, multi-backend navigation, cached-card refresh, and the visible
+  Add-team-space flow; D2 later completed the origin and cookie boundary.
 
 #### 2026-08-28 — D2 loopback-origin spike stopped at the security boundary
 
@@ -837,11 +837,11 @@ gate are deliberately future work and do not block this plan.
 - The unbundled probe is a real Tauri WKWebView but is not exposed as a named
   macOS application to the accessibility driver. The server request log is the
   live behavioral evidence; no visual interaction claim is made.
-- No production allocator, navigation rule, capability, connection record, or
-  cookie policy was changed. D2 is not complete. Q11 asks whether to prove a
-  desktop-owned per-space HTTPS endpoint with app-scoped certificate trust or
-  choose a larger native transport design. D3 through D5 remain dependent on
-  that decision; unrelated server and provisioning lanes remain available.
+- This spike changed no production allocator, navigation rule, capability,
+  connection record, or cookie policy. It raised Q11 and stopped D2 at the
+  required boundary. The 2026-08-29 HTTPS proof and 2026-08-30 production D2
+  packet later resolved that stop; this paragraph is retained only as the
+  failed-HTTP evidence.
 
 #### 2026-08-28 — O3a backup configuration boundary implemented
 
@@ -1627,6 +1627,43 @@ gate are deliberately future work and do not block this plan.
   live qualification until one exact-head Ubuntu 22.04/24.04 run passes and is
   recorded here.
 
+#### 2026-08-30 — D2 production local HTTPS boundary complete
+
+- The Q11 experiment is accepted as production architecture rather than treated
+  as concurrent work to avoid. Every saved connection now owns the deterministic
+  `https://rcp-<connection-id-without-hyphens>.localhost:<local-port>` origin;
+  registry version 2 validates that exact connection binding and rejects the
+  former HTTP shape.
+- The desktop generates one `localhost`/`*.localhost` certificate and private
+  key, stores both atomically as a bounded versioned Keychain item, and fails
+  loudly on an unreadable, malformed, or mismatched pair. Only the DER SHA-256
+  reaches the live WebView trust hook. The hook detects selector ownership,
+  reattaches wry's live delegate, accepts only the stored pin, and installs no
+  system trust.
+- Main-window navigation admits only the current personal backend, Vite in
+  development, or exact HTTPS origins from the validated registry. Registry
+  read failure is logged and rejects all team navigation. The Tauri capability
+  permits only `rcp-*.localhost`, leaving navigation and TLS as separate fences.
+- Verification: all 64 Rust library tests pass. The retained real-WKWebView login
+  and restart phases pass with isolated `Secure`/`HttpOnly`/`__Host-` cookies
+  and refusal of a third origin with another certificate. The actual
+  source-built `RCP.app` builds and opens against the checkout, and the expected
+  Keychain record exists without reading its secret. That live drive also found
+  and fixed an asynchronous probe diagnostic that retained a borrowed C string.
+- The packet's one independent audit found no Critical or High issue. It caught
+  default HTTPS port normalization, missing certificate/private-key pairing
+  validation, and late private-key zeroization; all three are fixed with focused
+  coverage. Clippy with warnings denied, documentation tests, and full
+  pre-commit pass.
+- Not done: D2 does not open SSH, terminate TLS around a forwarded connection,
+  exchange a team member token, or navigate to a team backend. Those remain
+  D3-D5. The source-built app was checked on this one macOS host; a second Mac
+  and signed packaged app remain later compatibility qualification, not blockers
+  for the accepted source-built client. The app build/open drive preceded the
+  final audit-only port, pair-validation, and zeroization cleanups; those changes
+  compile and pass the native suite, but the bundle was not rebuilt a second
+  time because they do not change the driven startup or WebView path.
+
 ## What remains
 
 The remaining implementation work is:
@@ -1638,9 +1675,10 @@ The remaining implementation work is:
 2. concrete project provisioning, where machine orchestration and final human
    creation are implemented but still need the complete live qualification,
    unified UI/desktop drive and post-setup cancellation;
-3. source-built desktop distinct origins, tunnels, live Keychain
-   enrollment/readback, navigation, cached team groups, and optional operator
-   bridge (the strict metadata and token-write/remove substrate is complete);
+3. source-built desktop SSH tunnels, live Keychain enrollment/readback, team
+   session/navigation, cached team groups, and optional operator bridge (the
+   distinct HTTPS origins, desktop identity/pin, navigation fence, and strict
+   metadata/token-write/remove substrate are complete);
 4. app-visible project setup driven by the backend and prepared by the CLI;
 5. restore and the complete live no-pause/partial-capture qualification (archive
    encryption/readback, durable status, retention, first-run timer activation,
@@ -3194,16 +3232,15 @@ neither verified loopback aliases nor loopback addresses work with WKWebView's
 Secure-cookie rules, stop this packet with evidence and request a design decision
 instead of weakening session security.
 
-**Current result:** stopped at that condition on 2026-08-28. The reproducible
+**Historical spike result:** stopped at that condition on 2026-08-28. The reproducible
 real-WKWebView probe is retained under `web/src-tauri/examples/` and
 `web/src-tauri/scripts/`. Both generated `.localhost` aliases and exact
 `localhost` failed to return the required `Secure` cookie to the server over
 HTTP; the extra-address path could not reach WKWebView because stock macOS could
-not bind those addresses without privileged network mutation. See
-[Q11](../open-questions.md#q11--how-should-the-desktop-provide-isolated-secure-local-origins).
-Do not implement a production origin allocator until that question is decided.
+not bind those addresses without privileged network mutation. That stop was
+resolved by the local-HTTPS evidence below.
 
-**Local HTTPS spike, 2026-08-29:** the mechanism Q11 named as its leading
+**Local HTTPS spike, 2026-08-29:** the mechanism later accepted as the
 candidate now has live evidence. A second probe under the same directories
 (`local_https_origin_probe.rs`, `https_trust.m`,
 `run-local-https-origin-probe.py`, behind the `https-trust-probe` Cargo feature)
@@ -3217,10 +3254,14 @@ run first asserts the host does not already trust the certificate, so nothing
 system-wide is installed or implied. Two mechanics belong to D3-D5: WKWebView
 caches which delegate methods exist at assignment time, so an added handler
 needs the delegate reattached; and wry's delegate class name is
-version-qualified, so the hook reads it off the live `WKWebView`. Unproven: a
-second host and macOS version, a signed bundled app, TLS through a real SSH
-tunnel, and the certificate lifecycle. D2 is still not complete and no
-production allocator, navigation rule, or capability changed.
+version-qualified, so the hook reads it off the live `WKWebView`.
+
+**Production completion, 2026-08-30:** D2 now owns the canonical allocator,
+versioned Keychain identity, production trust-hook linkage, exact registry-backed
+navigation rule, and bounded Tauri capability. The two-phase probe and actual
+source-built app pass on this host. TLS through the real D3 SSH proxy and the D4
+team session remain open; a second Mac and signed packaged app are later
+compatibility qualification.
 
 ### D3 — SSH tunnel lifecycle
 
@@ -3684,7 +3725,7 @@ and all-file pre-commit. A disposable served-app browser drive opened the real
 Chats surface: the historical chat offered a fresh session, the kept artifact
 showed only Open and Download, the unkept artifact showed the backend-owned
 unavailable reason with no actions, and the browser console remained clean. No
-human data directory or Q11 file was used or changed by that drive.
+human data directory or desktop trust state was used or changed by that drive.
 
 Own:
 
@@ -4045,7 +4086,7 @@ termination at the bounded timeout. The same file proves changed authority
 confirmation fails and stale-member removal produces a new exact roster. A real
 source-built Ubuntu restore remains required by S104. The complete backend
 suite, 440 Web tests, Web production build, repository Ruff check, and full
-pre-commit baseline are green on this packet and the current Q11 groundwork.
+pre-commit baseline are green on this packet and the current desktop groundwork.
 
 Own:
 

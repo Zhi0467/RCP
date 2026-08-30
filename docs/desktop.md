@@ -86,9 +86,10 @@ behavior.
 
 ## WebView origin probes
 
-Two probes drive a real WKWebView to answer questions browser tests cannot. Both
-are examples, never part of a shipped build, and neither changes production
-navigation, capability, or cookie policy.
+Two example probes drive a real WKWebView to answer questions browser tests
+cannot. The original HTTP probe remains evidence only. The HTTPS probe exercises
+the same native trust primitive now linked into every macOS desktop build; its
+test servers and automatic navigation remain example-only.
 
 `run-loopback-origin-probe.py` is the original HTTP drive. It records that a
 `Secure` session cookie is lost on plain loopback origins, including exact
@@ -100,10 +101,9 @@ python3 web/src-tauri/scripts/run-loopback-origin-probe.py --mode aliases --phas
 
 `run-local-https-origin-probe.py` repeats that drive over local HTTPS with a
 certificate the probe generates for itself, pinned in the WebView's own
-server-trust challenge. It needs the `https-trust-probe` Cargo feature, which
-compiles `src/https_trust.m` and is off in every ordinary build. `--cert-dir`
-reuses one certificate across runs so the restart phase measures cookie
-persistence rather than a changed certificate:
+server-trust challenge. Its `https-trust-probe` Cargo feature enables only the
+standalone GUI example. `--cert-dir` reuses one certificate across runs so the
+restart phase measures cookie persistence rather than a changed certificate:
 
 ```bash
 python3 web/src-tauri/scripts/run-local-https-origin-probe.py --phase login --cert-dir /tmp/rcp-probe-certs
@@ -113,6 +113,13 @@ Run `--phase resume` afterwards against the same directory to check that the
 session survives an application restart. Each run first asserts that the host
 does not already trust the probe certificate, so a success cannot be confused
 with pre-existing system trust.
+
+Production startup loads or creates one versioned local-HTTPS identity at the
+Keychain service `app.researchcontrolpanel.rcp.local-https`, account
+`desktop-identity/v1`. Never print or export that item's bytes. Saved team
+connections use connection-bound `rcp-<uuid>.localhost` origins; only their
+exact validated origins may enter the main window, and only the stored
+certificate fingerprint is passed to the native trust hook.
 
 ## Build and test a release candidate
 
