@@ -93,6 +93,35 @@ if TYPE_CHECKING:
 class WatcherStoreMixin:
     """External and graph watchers, their claims, and notification delivery."""
 
+    @staticmethod
+    def detach_watchers_for_restore(
+        connection: sqlite3.Connection,
+        *,
+        diagnostic: str,
+        confirmed_by: str,
+        now: str,
+    ) -> None:
+        """Stop every captured watcher that could still check or deliver."""
+
+        if not connection.in_transaction:
+            raise ValueError("restored watcher detachment requires an active transaction")
+        detail = " ".join(diagnostic.split())[:1500]
+        confirmer = " ".join(confirmed_by.split())[:400]
+        if not detail or not confirmer:
+            raise ValueError("restored watcher detachment requires a reason and confirmer")
+        _required_timestamp(now)
+        stop_reason = f"{detail} Restore confirmed by {confirmer}."[:2000]
+        connection.execute(
+            """
+            UPDATE watchers
+            SET status = 'stopped', notified = 1, next_check_at = NULL,
+                stopped_by = 'human', stop_reason = ?, stopped_at = COALESCE(stopped_at, ?)
+            WHERE status IN ('active', 'degraded')
+               OR (status = 'completed' AND notified = 0)
+            """,
+            (stop_reason, now),
+        )
+
     def create_watchers(self, records: list[StoredWatcherRecord]) -> list[StoredWatcherRecord]:
         """Insert one validated watch list atomically."""
 

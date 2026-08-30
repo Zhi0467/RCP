@@ -32,6 +32,7 @@ from rcp.storage.models import (
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
     EpisodeReportConflict,
+    _required_timestamp,
 )
 
 
@@ -2394,3 +2395,45 @@ class AutoResearchChildrenStoreMixin:
         data = dict(row)
         data["result"] = json.loads(data.pop("result_json"))
         return AutoResearchFinishReceiptRecord.model_validate(data)
+
+    @staticmethod
+    def detach_auto_research_children_for_restore(
+        connection: sqlite3.Connection,
+        *,
+        diagnostic: str,
+        confirmed_by: str,
+        now: str,
+    ) -> None:
+        """Cancel captured child admissions/routes and consume pending lifecycle wakes."""
+
+        if not connection.in_transaction:
+            raise ValueError("restored Auto-research child detachment requires a transaction")
+        detail = " ".join(diagnostic.split())[:2000]
+        confirmer = " ".join(confirmed_by.split())[:500]
+        if not detail or not confirmer:
+            raise ValueError("restored child detachment requires a reason and confirmer")
+        _required_timestamp(now)
+        connection.execute(
+            """
+            UPDATE auto_research_child_experiments
+            SET state = 'cancelled', terminal_diagnostic = ?, updated_at = ?
+            WHERE state IN ('pending', 'running')
+            """,
+            (detail, now),
+        )
+        connection.execute(
+            """
+            UPDATE auto_research_child_admissions
+            SET state = 'cancelled', updated_at = ?
+            WHERE state = 'accepted'
+            """,
+            (now,),
+        )
+        connection.execute(
+            """
+            UPDATE auto_research_lifecycle_notices
+            SET state = 'acknowledged', acknowledged_at = ?, acknowledged_by = ?
+            WHERE delivered_at IS NULL AND acknowledged_at IS NULL
+            """,
+            (now, confirmer),
+        )

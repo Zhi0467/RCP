@@ -14,6 +14,7 @@ from rcp.limits import (
     AUTO_RESEARCH_MAIL_MAX_MESSAGES,
     WATCHER_ERROR_BACKOFF_SECONDS,
 )
+from rcp.storage.episodes import compact_episode_receipt
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
     AgentCommandInvocationRecord,
@@ -34,6 +35,9 @@ from rcp.storage.models import (
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
     EpisodeRecord,
+    EpisodeReportConflict,
+    EpisodeWrapupRecord,
+    _required_timestamp,
 )
 
 _LEGACY_AUTO_RESEARCH_TABLES: tuple[tuple[str, str], ...] = (
@@ -1154,6 +1158,105 @@ class AutoResearchStoreMixin:
                 (as_of or self.now(),),
             ).fetchall()
         return [self._auto_research_recovery_record(row) for row in rows]
+
+    def detach_auto_research_for_restore(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        diagnostic: str,
+        now: str,
+    ) -> None:
+        """Block automatic recovery and stop every captured live Auto-research parent."""
+
+        if not connection.in_transaction:
+            raise ValueError("restored Auto-research detachment requires an active transaction")
+        detail = " ".join(diagnostic.split())[:2000]
+        if not detail:
+            raise ValueError("restored Auto-research detachment requires a diagnostic")
+        _required_timestamp(now)
+        connection.execute(
+            """
+            UPDATE auto_research_recoveries
+            SET status = 'blocked', next_attempt_at = NULL, diagnostic = ?, updated_at = ?
+            WHERE status = 'pending'
+            """,
+            (detail, now),
+        )
+        episodes = connection.execute(
+            """
+            SELECT * FROM episodes
+            WHERE mode = 'auto_research'
+              AND status IN ('queued', 'running', 'stopping', 'wrapping_up')
+            ORDER BY episode_id
+            """
+        ).fetchall()
+        for episode in episodes:
+            episode_id = str(episode["episode_id"])
+            receipt_json, receipt_sha256 = compact_episode_receipt(
+                {
+                    "diagnostic": detail,
+                    "ending": "stopped",
+                    "episode_id": episode_id,
+                    "reason": "restore",
+                }
+            )
+            wrapup = connection.execute(
+                "SELECT * FROM episode_wrapups WHERE episode_id = ?",
+                (episode_id,),
+            ).fetchone()
+            if wrapup is None:
+                concluding = connection.execute(
+                    """
+                    SELECT operation_id FROM episode_invocations
+                    WHERE episode_id = ? ORDER BY invocation_number DESC LIMIT 1
+                    """,
+                    (episode_id,),
+                ).fetchone()
+                self._insert_episode_wrapup(
+                    connection,
+                    EpisodeWrapupRecord(
+                        episode_id=episode_id,
+                        ending="stopped",
+                        partial=True,
+                        concluding_operation_id=(
+                            str(concluding["operation_id"]) if concluding is not None else None
+                        ),
+                        receipt_json=receipt_json,
+                        receipt_sha256=receipt_sha256,
+                        state="skipped",
+                        diagnostic=detail,
+                        created_at=now,
+                        updated_at=now,
+                        finished_at=now,
+                    ),
+                )
+            else:
+                if wrapup["state"] not in {"pending", "running"}:
+                    raise EpisodeReportConflict(
+                        "a nonterminal restored Auto-research episode has a terminal report wrap-up"
+                    )
+                connection.execute(
+                    """
+                    UPDATE episode_wrapups
+                    SET ending = 'stopped', partial = 1, native_session_id = NULL,
+                        stage_host = NULL, stage_root = NULL, receipt_json = ?,
+                        receipt_sha256 = ?, state = 'skipped', diagnostic = ?,
+                        updated_at = ?, finished_at = COALESCE(finished_at, ?)
+                    WHERE episode_id = ?
+                    """,
+                    (receipt_json, receipt_sha256, detail, now, now, episode_id),
+                )
+            connection.execute(
+                """
+                UPDATE episodes
+                SET status = 'stopped', stop_requested_at = COALESCE(stop_requested_at, ?),
+                    stop_settled_at = COALESCE(stop_settled_at, ?), ending = 'stopped',
+                    ending_diagnostic = ?, wrapup_state = 'skipped', wrapup_error = NULL,
+                    updated_at = ?, ended_at = COALESCE(ended_at, ?)
+                WHERE episode_id = ?
+                """,
+                (now, now, detail, now, now, episode_id),
+            )
 
     def auto_research_recovery(self, recovery_id: str) -> AutoResearchRecoveryRecord | None:
         with self.connection() as connection:

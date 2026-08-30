@@ -4,7 +4,7 @@ Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
 F2, F3a, F3b, F4, F5, F6a, F6b, F6c, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
-O2b, O3a, O3b, O3c, O3c-ui, and O3d-a are complete. D2
+O2b, O3a, O3b, O3c, O3c-ui, O3d-a, and O3d-b are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; a 2026-08-29 local-HTTPS spike then proved that candidate mechanism on
 one host, so D3-D5 are unblocked in principle while D2 itself remains
@@ -3733,6 +3733,24 @@ credentials. This packet supplies helpers only; O3d-b composes the one offline
 transaction and O4d owns the roster review before serving.
 
 ### O3d-b — Restored Auto-research, watcher, and recovery detachment
+
+Status: complete hermetically on 2026-08-29. `AppStore` now exposes one
+immediate offline transaction that composes every O3d-a helper with the
+Auto-research, child-route, lifecycle-notice, watcher, and recovery owners. It
+records the operator confirmer in restored interruption/ending diagnostics,
+watcher stop reasons, and lifecycle acknowledgements; blocks pending automatic
+recoveries; stops live Auto-research parents with skipped wrap-up receipts;
+cancels pending/running child Experiment routes and accepted admissions; and
+retires every watcher that could still check or deliver. Completed episodes,
+terminal routes, delivered watchers, existing acknowledgements, checks,
+answers, messages, receipts, and attribution remain history. The focused
+fixture proves owner-transaction requirements, whole-transaction rollback,
+exact idempotence, empty startup-recovery projections, and a real ordinary app
+lifespan that leaves all operational rows unchanged. The complete backend suite,
+the focused lifecycle-owner suites, 440 Web tests, the Web build, Ruff, and
+documentation checks are green. O4a-O4d still own archive validation,
+stopped-service restore orchestration, checkout reconstruction, publication,
+authority review, and activation.
 
 Own:
 

@@ -18,6 +18,7 @@ from rcp.storage.models import *  # noqa: F401,F403
 from rcp.storage.models import __all__ as _model_names
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.provisioning import ProjectProvisioningStoreMixin
+from rcp.storage.restore_detachment import RestoreDetachmentStoreMixin
 from rcp.storage.result_views import ResultViewStoreMixin
 from rcp.storage.rows import RowMappingMixin
 from rcp.storage.spaces import SpaceStoreMixin
@@ -25,6 +26,7 @@ from rcp.storage.watchers import WatcherStoreMixin
 
 
 class AppStore(
+    RestoreDetachmentStoreMixin,
     SpaceStoreMixin,
     ProjectProvisioningStoreMixin,
     ProjectStoreMixin,
