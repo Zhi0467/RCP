@@ -1317,9 +1317,10 @@ immutable receipt, records durable protected/partial/failure status, deletes
 only revalidated proven retention targets, and enables the systemd timer only
 after a successful first run.
 
-Replacement restore currently implements its database and checkout-recovery
-boundaries. `rcp server restore` requires the installed server's exact fresh/empty data
-directory and a protected off-server `age` identity, verifies the canonical
+Replacement restore currently implements its database, checkout-recovery, and
+stopped project-publication boundaries. `rcp server restore` requires the
+installed server's exact fresh/empty data directory and a protected off-server
+`age` identity, verifies the canonical
 manifest, every archived byte, the recorded database schema, and the source
 commit boundary before target mutation, and constructs a service-owned SQLite
 candidate with every captured runnable lifecycle detached. It stops and disables
@@ -1335,12 +1336,27 @@ when every observed durable file is byte-identical to the validated archive;
 unknown, newer, unsafe, or unclassified input is left intact and stops restore.
 After all checkouts pass, restore regenerates any required local bootstrap
 manifest and atomically rebinds every captured catalog row while keeping it
-unavailable. The unfinished journal blocks direct installed startup, install,
+unavailable. It then publishes only manifest-listed canonical main/branch inputs,
+typed RCP chats, Paper introduction, facts, and referenced kept artifacts/views
+through their concrete owners. Each local or SSH write accepts an absent path or
+the same archived bytes and refuses a different existing file without replacing
+it. Main and branch replay must reach the captured transition-aware heads, every
+merge receipt must validate against both histories, and every archived project
+byte is read back before the catalog row becomes reachable. An explicitly
+uncaptured row remains in the catalog with its archive diagnostic. Derived graph
+and branch projections are regenerated; source checkouts, provider/SSH state,
+attachments, stages, caches, and unreferenced repository files are never
+extracted from the archive.
+
+The publication journal records one capture-bound receipt per protected project,
+so a crash before or after any exact write, replay, visibility transaction, or
+receipt can re-enter the same operation without overwriting a conflict or
+duplicating history. The unfinished journal blocks direct installed startup, install,
 update, and protected backup; doctor reports the same fence. Lost candidate
 bytes can be rebuilt only by re-entering restore with the same archive and
-identity. Canonical publication and replay, replacement-authority/member review,
-service activation, and journal completion remain unimplemented, so this is not
-yet a usable restored team server.
+identity. Replacement-authority/member review, service activation, final live
+readback, and journal completion remain unimplemented, so this is not yet a
+usable restored team server.
 The private installed-service control socket exposes probe, provider plan/check,
 project-provision plan/step, and online SQLite-capture operations. `rcp server
 project provision <request-id>` publishes one complete plan, advances one

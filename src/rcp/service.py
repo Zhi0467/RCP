@@ -950,6 +950,48 @@ class ProjectService:
             node_id=node_id,
         )
 
+    def restore_canonical_chat(
+        self,
+        source: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+        operation_projects: Mapping[str, str],
+    ) -> Path:
+        """Validate and publish one archived canonical chat without appending to it."""
+
+        try:
+            metadata = source.lstat()
+        except OSError as exc:
+            raise ValueError("The archived canonical chat is unavailable.") from exc
+        if not stat.S_ISREG(metadata.st_mode) or expected_size <= 0:
+            raise ValueError("The archived canonical chat is not a nonempty regular file.")
+        descriptor = CanonicalChatBackupSource(
+            path=source,
+            observed_bytes=expected_size,
+            device=metadata.st_dev,
+            inode=metadata.st_ino,
+        )
+        digest = hashlib.sha256()
+        observed = 0
+        for line in iter_canonical_chat_backup_prefix(
+            descriptor,
+            project_id=self._project_id,
+            operation_projects=operation_projects,
+        ):
+            digest.update(line)
+            observed += len(line)
+        if observed != expected_size or digest.hexdigest() != expected_sha256:
+            raise ValueError("The archived canonical chat differs from its manifest proof.")
+        relative = Path("chat") / source.name
+        self.history.workspace.restore_exact_file(
+            relative,
+            source,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+        )
+        return self.history.workspace.root / relative
+
     def chat_summaries(
         self,
         *,

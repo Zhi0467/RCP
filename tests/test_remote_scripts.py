@@ -8,6 +8,7 @@ with the same argv — and its guards can be driven directly.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -303,6 +304,45 @@ class TestLockHolder:
         response = json.loads(result.stdout.splitlines()[1])
         assert response["ok"] is False
         assert "unsafe relative path" in response["error"]
+
+    def test_exact_restore_is_idempotent_and_refuses_conflicting_remote_bytes(
+        self, tmp_path: Path
+    ) -> None:
+        root = tmp_path / ".research"
+        stage = root / ".publish" / "restore-1-1"
+        stage.mkdir(parents=True)
+        content = b"restored fact\n"
+        (stage / "content.bin").write_bytes(content)
+        lock_path = root / ".refresh.lock"
+        command = {
+            "op": "restore-exact",
+            "root": str(root),
+            "stage": str(stage),
+            "path": "facts/result.txt",
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "size": len(content),
+            "external": False,
+        }
+
+        first = run_script(
+            "remote_lock_holder.py", str(lock_path), stdin=json.dumps(command) + "\n"
+        )
+
+        assert json.loads(first.stdout.splitlines()[1]) == {"ok": True}
+        target = root / "facts" / "result.txt"
+        assert target.read_bytes() == content
+
+        stage.mkdir(parents=True)
+        (stage / "content.bin").write_bytes(content)
+        target.write_text("conflict\n")
+        second = run_script(
+            "remote_lock_holder.py", str(lock_path), stdin=json.dumps(command) + "\n"
+        )
+
+        response = json.loads(second.stdout.splitlines()[1])
+        assert response["ok"] is False
+        assert "conflicts with existing bytes" in response["error"]
+        assert target.read_text() == "conflict\n"
 
     def test_empty_legacy_lock_directory_is_reclaimed(self, tmp_path: Path) -> None:
         root = tmp_path / ".research"

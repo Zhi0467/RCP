@@ -683,6 +683,86 @@ class ProjectStoreMixin:
                 connection.rollback()
                 raise
 
+    def complete_project_publication_for_restore(
+        self,
+        project_id: str,
+        *,
+        expected_locator: str,
+        revision: int,
+    ) -> ProjectRecord:
+        """Expose one stopped restored row only after canonical replay succeeds."""
+
+        if revision < 0:
+            raise ValueError("restored project revision must be non-negative")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise KeyError(project_id)
+            current = self._project_record(row)
+            if current.locator != expected_locator:
+                connection.rollback()
+                raise ValueError("restored project locator changed before publication")
+            if current.reachable is True:
+                if current.revision != revision or current.error is not None:
+                    connection.rollback()
+                    raise RuntimeError("restored project visibility receipt conflicts")
+                return current
+            if current.error != "Replacement restore publication is pending.":
+                connection.rollback()
+                raise RuntimeError("restored project is not awaiting canonical publication")
+            connection.execute(
+                """
+                UPDATE projects
+                SET revision = ?, reachable = 1, error = NULL, last_refresh_at = ?
+                WHERE project_id = ?
+                """,
+                (revision, self.now(), project_id),
+            )
+            updated = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            if updated is None:
+                raise RuntimeError("restored project disappeared during publication")
+            return self._project_record(updated)
+
+    def mark_uncaptured_project_unavailable_for_restore(
+        self,
+        project_id: str,
+        *,
+        diagnostic: str,
+    ) -> ProjectRecord:
+        """Keep one explicitly uncaptured project visible but unavailable."""
+
+        detail = " ".join(diagnostic.split())[:1400]
+        if not detail:
+            raise ValueError("uncaptured restored project requires a diagnostic")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise KeyError(project_id)
+            connection.execute(
+                "UPDATE projects SET reachable = 0, error = ? WHERE project_id = ?",
+                (f"Not captured by the replacement archive: {detail}", project_id),
+            )
+            updated = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            if updated is None:
+                raise RuntimeError("uncaptured restored project disappeared")
+            return self._project_record(updated)
+
     def update_project_summary(
         self,
         project_id: str,

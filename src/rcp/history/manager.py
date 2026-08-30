@@ -3,9 +3,10 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import shutil
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -262,6 +263,111 @@ class HistoryManager:
                 self._synchronize_manifest_from_history(result)
                 self._remember_accepted_revision(result)
                 return result
+
+    def restore_canonical_history(
+        self,
+        sources: Mapping[str, tuple[Path, str, int]],
+        *,
+        expected_main_head: GraphHeadRef,
+        expected_branch_heads: tuple[GraphHeadRef, ...],
+    ) -> MaterializationResult:
+        """Publish an archived append-only history, replay it, and prove every head."""
+
+        if expected_main_head.target.kind != "main" or "manifest.toml" not in sources:
+            raise ValueError("restored history requires one exact main head and manifest")
+        main_revisions: list[int] = []
+        branch_metadata: set[str] = set()
+        branch_revisions: dict[str, list[int]] = {}
+        branch_merges: set[str] = set()
+        ordered: list[tuple[tuple[object, ...], str]] = []
+        for value in sources:
+            relative = Path(value)
+            parts = relative.parts
+            if relative == Path("manifest.toml"):
+                key: tuple[object, ...] = (0, value)
+            elif relative == Path("scope-base.json"):
+                key = (1, value)
+            elif (
+                len(parts) == 2
+                and parts[0] == "patches"
+                and re.fullmatch(r"[0-9]{6}\.json", parts[1]) is not None
+            ) or (
+                len(parts) == 3
+                and parts[0] == "patches"
+                and parts[1].startswith("batch-")
+                and re.fullmatch(r"[0-9]{6}\.json", parts[2]) is not None
+            ):
+                revision = int(relative.stem)
+                main_revisions.append(revision)
+                key = (2, revision, value)
+            elif len(parts) == 3 and parts[0] == "branches" and parts[2] == "branch.json":
+                branch_id = parts[1]
+                parsed_branch = uuid.UUID(branch_id)
+                if str(parsed_branch) != branch_id or parsed_branch.version != 4:
+                    raise ValueError("restored branch identity is not canonical")
+                branch_metadata.add(branch_id)
+                key = (3, branch_id, 0, value)
+            elif (
+                len(parts) == 4
+                and parts[0] == "branches"
+                and parts[2] == "patches"
+                and re.fullmatch(r"[0-9]{6}\.json", parts[3]) is not None
+            ):
+                branch_id = parts[1]
+                revision = int(relative.stem)
+                branch_revisions.setdefault(branch_id, []).append(revision)
+                key = (3, branch_id, 1, revision, value)
+            elif (
+                len(parts) == 4
+                and parts[0] == "branches"
+                and parts[2] == "merges"
+                and re.fullmatch(r"[0-9a-f]{64}\.json", parts[3]) is not None
+            ):
+                branch_merges.add(parts[1])
+                key = (3, parts[1], 2, value)
+            else:
+                raise ValueError(f"restored canonical history path is unsupported: {value}")
+            ordered.append((key, value))
+        if sorted(main_revisions) != list(range(1, expected_main_head.revision + 1)):
+            raise ValueError("restored main Patch inventory does not match its captured head")
+        expected_branches = {
+            head.target.branch_id: head
+            for head in expected_branch_heads
+            if head.target.kind == "branch" and head.target.branch_id is not None
+        }
+        if len(expected_branches) != len(expected_branch_heads) or set(expected_branches) != (
+            branch_metadata
+        ):
+            raise ValueError("restored branch metadata does not match its captured heads")
+        if not set(branch_revisions).union(branch_merges).issubset(branch_metadata):
+            raise ValueError("restored branch history requires its captured metadata")
+        for branch_id, head in expected_branches.items():
+            revisions = branch_revisions.get(branch_id, [])
+            if revisions and max(revisions) != head.revision:
+                raise ValueError("restored branch Patch inventory does not match its captured head")
+
+        for _key, value in sorted(ordered):
+            source, sha256, size = sources[value]
+            self.workspace.restore_exact_file(
+                value,
+                source,
+                expected_sha256=sha256,
+                expected_size=size,
+            )
+        self._reload_manifest()
+        result = self.initialize()
+        if self.head_ref(result) != expected_main_head:
+            raise ValueError("restored main history does not replay to its captured head")
+        for branch_id, expected in sorted(expected_branches.items()):
+            branch = self.branch(
+                branch_id,
+                expected_project_id=self.project_id,
+            )
+            branch_result = branch.initialize()
+            if branch.head_ref(branch_result) != expected:
+                raise ValueError("restored branch history does not replay to its captured head")
+            branch.validated_merge_receipts()
+        return result
 
     def ensure_layout(self) -> None:
         for path in (

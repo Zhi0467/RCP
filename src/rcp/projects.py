@@ -67,6 +67,7 @@ from rcp.storage import (
     ProjectStageRecord,
 )
 from rcp.transport import (
+    LocalStateWorkspace,
     RemoteRunStage,
     StateUnavailable,
     StateWorkspace,
@@ -122,6 +123,10 @@ class RestoredProjectRebindRefused(RuntimeError):
     """A stopped restored catalog row could not bind to replacement checkouts."""
 
 
+class RestoredProjectPublicationRefused(RuntimeError):
+    """A restored project could not be replayed and exposed from its replacement checkout."""
+
+
 @dataclass(frozen=True)
 class BackupProjectRegistration:
     """Read-only live locator plus its validated checkout reconstruction proof."""
@@ -130,6 +135,15 @@ class BackupProjectRegistration:
     manifest: Manifest
     workspace: StateWorkspace
     recovery: BackupCheckoutRecoveryDescriptor
+
+
+@dataclass(frozen=True)
+class RestoredProjectOwners:
+    manifest: Manifest
+    workspace: StateWorkspace
+    history: HistoryManager
+    paper: PaperService
+    service: ProjectService
 
 
 def inspect_backup_project_registration(
@@ -336,6 +350,117 @@ def rebind_restored_project_registration(
     ):
         raise RestoredProjectRebindRefused(
             "The restored catalog did not read back its replacement checkout binding."
+        )
+    return stored
+
+
+def restored_project_owners(
+    store: AppStore,
+    capture: BackupProjectCapture,
+    *,
+    archived_manifest: Path,
+    data_dir: Path,
+) -> RestoredProjectOwners:
+    """Construct the concrete canonical owners before a restored project is visible."""
+
+    recovery = capture.recovery
+    record = store.project(capture.project_id)
+    if capture.status != "captured" or recovery is None or record is None:
+        raise RestoredProjectPublicationRefused("Only one captured restored project can publish.")
+    try:
+        manifest = load_manifest(archived_manifest)
+    except (OSError, ValueError) as exc:
+        raise RestoredProjectPublicationRefused(
+            "The archived canonical manifest is unavailable or invalid."
+        ) from exc
+    if (
+        BackupManifestConfiguration.from_manifest(manifest) != recovery.configuration
+        or record.home_space_id != capture.home_space_id
+        or record.home_space_id != store.space_id
+        or not (
+            (
+                record.reachable is False
+                and record.error == "Replacement restore publication is pending."
+            )
+            or (record.reachable is True and record.error is None)
+        )
+    ):
+        raise RestoredProjectPublicationRefused(
+            "The archived manifest, restored catalog, and recovery descriptor disagree."
+        )
+    if record.state_remote:
+        try:
+            bootstrap = load_manifest(record.locator)
+            workspace = state_workspace_for_probe(bootstrap, data_dir)
+            workspace.refresh()
+        except (OSError, StateUnavailable, ValueError) as exc:
+            raise RestoredProjectPublicationRefused(
+                "The restored remote canonical checkout is unavailable."
+            ) from exc
+    else:
+        workspace = LocalStateWorkspace(Path(record.state_location), record.state_location)
+    history = HistoryManager(
+        manifest,
+        workspace,
+        expected_space_id=store.space_id,
+        project_id=record.project_id,
+        require_attribution=True,
+        agent_authority_resolver=store.agent_task_authority,
+        project_membership_check=store.is_project_member,
+    )
+    paper = PaperService(manifest, store, workspace, project_id=record.project_id)
+    service = ProjectService(
+        manifest,
+        history,
+        paper,
+        data_dir=data_dir,
+        project_id=record.project_id,
+        task_continuation_session=store.agent_task_continuation_session_id,
+    )
+    return RestoredProjectOwners(manifest, workspace, history, paper, service)
+
+
+def complete_restored_project_publication(
+    store: AppStore,
+    capture: BackupProjectCapture,
+    owners: RestoredProjectOwners,
+    materialization: MaterializationResult,
+) -> ProjectRecord:
+    """Make one replay-proven restored project readable in the stopped catalog."""
+
+    if capture.main_head is None or owners.history.head_ref(materialization) != capture.main_head:
+        raise RestoredProjectPublicationRefused(
+            "The restored project cannot be exposed at a different canonical head."
+        )
+    identity = owners.history.project_identity(materialization)
+    if (
+        identity is None
+        or identity.project_id != capture.project_id
+        or identity.home_space_id != store.space_id
+    ):
+        raise RestoredProjectPublicationRefused(
+            "The restored canonical identity differs from its catalog home."
+        )
+    owners.service.chat_summaries(limit=1)
+    owners.paper.snapshot()
+    record = store.project(capture.project_id)
+    if record is None:
+        raise RestoredProjectPublicationRefused(
+            "The restored project disappeared before catalog publication."
+        )
+    try:
+        stored = store.complete_project_publication_for_restore(
+            capture.project_id,
+            expected_locator=record.locator,
+            revision=materialization.state.revision,
+        )
+    except (KeyError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        raise RestoredProjectPublicationRefused(
+            "The restored catalog refused the replay-proven project."
+        ) from exc
+    if stored.reachable is not True or stored.error is not None:
+        raise RestoredProjectPublicationRefused(
+            "The restored project availability did not read back from SQLite."
         )
     return stored
 

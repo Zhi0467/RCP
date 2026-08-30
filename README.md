@@ -122,10 +122,12 @@ verification commands are in [docs/desktop.md](docs/desktop.md).
 > disposable Ubuntu 22.04 and 24.04 hosts. `restore` currently validates an
 > encrypted archive, installs a stopped detached SQLite candidate, creates fresh
 > repository deploy keys, reconstructs local or SSH central checkouts from Git,
-> and rebinds the stopped project catalog. It pauses with exact GitHub grant
+> rebinds the stopped project catalog, and publishes/replay-verifies captured
+> histories, chats, Paper, facts, and referenced kept files before making each
+> protected project readable. It pauses with exact GitHub grant
 > instructions when the new key needs repository-admin approval. It cannot yet
-> publish archived project state, review replacement authority, or activate the
-> service.
+> review replacement authority/member credentials, activate the service, or
+> complete the restore journal.
 > `member remove` and `project transfer-import` still stop with an explicit
 > unavailable result.
 > Every command below is terminal-only; no desktop wizard drives them yet.

@@ -101,12 +101,14 @@ class BranchHistoryManager:
             self.require_writable(result.state)
             self.ensure_layout()
             expected_metadata = self._metadata.model_copy(update={"head": self.head_ref(result)})
-            needs_repair = expected_metadata != self._metadata or not self._outputs_coherent(result)
+            metadata_changed = expected_metadata != self._metadata
+            needs_repair = metadata_changed or not self._outputs_coherent(result)
             self._metadata = expected_metadata
             if needs_repair:
-                self._write_metadata(expected_metadata)
+                if metadata_changed:
+                    self._write_metadata(expected_metadata)
                 self._write_materialized_outputs(result)
-                self.workspace.publish(self._published_paths(include_metadata=True))
+                self.workspace.publish(self._published_paths(include_metadata=metadata_changed))
             return result
 
     def ensure_layout(self) -> None:
@@ -537,6 +539,19 @@ class BranchHistoryManager:
                     )
                 receipts.append(receipt)
             return receipts
+
+    def validated_merge_receipts(self) -> list[BranchMergeReceipt]:
+        """Read every retained receipt and verify it against branch and main replay."""
+
+        with self._process_lock:
+            branch = self.materialize(write_outputs=False)
+            main = self.parent.materialize(write_outputs=False)
+            self.require_writable(branch.state)
+            self.parent.require_writable(main.state)
+            return [
+                self._read_validated_merge_receipt(path, branch, main)
+                for path in self._merge_paths()
+            ]
 
     def write_merge_receipt(self, receipt: BranchMergeReceipt) -> BranchMergeReceipt:
         self._require_receipt_identity(receipt)

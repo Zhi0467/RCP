@@ -4,7 +4,7 @@ Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
 F2, F3a, F3b, F4, F5, F6a, F6b, F6c, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
-O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, and O4b are complete. D2
+O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, and O4c are complete. D2
 reached and preserved its required stop condition at Q11's secure local-origin
 decision; a 2026-08-29 local-HTTPS spike then proved that candidate mechanism on
 one host, so D3-D5 are unblocked in principle while D2 itself remains
@@ -3901,9 +3901,9 @@ Focused verification covers the fresh-key preflight, grant pause/resume, exact
 retained-state comparison, local and SSH reconstruction, idempotent rebind, and
 conflict refusal. The complete restore/credential/checkout focused suite and the
 broader backup, restore-detachment, install, doctor, and update integration suite
-pass. O4c remains the next restore packet: no archived `.research`, chats, Paper,
-facts, or kept files are published here; no project is made visible and systemd
-remains stopped.
+pass. At the O4b boundary no archived `.research`, chats, Paper, facts, or kept
+files are published and no project is made visible. O4c has since completed that
+publication boundary; systemd remains stopped for O4d.
 
 Own:
 
@@ -3933,6 +3933,43 @@ rebound. It does not publish archived `.research` or project-owned files into
 those checkouts, make a project visible, or start the service.
 
 ### O4c — Canonical publication and replay verification
+
+**Status (2026-08-29): implemented and verified.** Restore now advances from
+`checkouts_reconstructed` through `projects_publishing` to
+`projects_published`, with one capture-digest-bound receipt per protected
+project. `src/rcp/transport/state.py` owns conflict-refusing exact-byte
+publication for local and SSH canonical paths plus exact kept artifact/view
+names; its shipped remote lock holder validates the staged digest and size,
+uses no-follow descriptor traversal, accepts only absent or identical targets,
+and never replaces different bytes. `src/rcp/history/manager.py` accepts only
+the closed canonical manifest/scope/main/branch/merge inventory, publishes it in
+replay order, regenerates derived outputs, proves the transition-aware main and
+branch heads, and validates every retained merge receipt against both histories.
+
+Canonical chat restore in `src/rcp/service.py` re-runs the typed JSONL,
+conversation-identity, path, and task-project checks before publication. Paper
+re-runs the UTF-8/NUL validation in its service; facts and referenced kept files
+remain workspace-owned. After a remote refresh, restore hashes every internal
+destination and reads back every external kept file against the archive
+manifest before `src/rcp/projects.py` transactionally changes the stopped row
+from publication-pending to reachable. A crash before either the catalog effect
+or its journal receipt safely re-enters the same exact writes and replay.
+Explicitly uncaptured projects remain cataloged with their archive diagnostic
+and do not block protected projects. Source checkouts, derived archive outputs,
+attachments, stages, provider/SSH homes or credentials, and caches are never
+selected for extraction. The command still leaves systemd stopped; O4d is the
+next restore packet and owns old-authority/member review, activation, final live
+readback, and journal completion.
+
+Focused verification covers main and branch replay, chat, Paper, nested facts,
+kept artifact and legacy-view readback, conflicting-byte refusal, journal
+re-entry, explicitly uncaptured projects, and the shipped remote exact-write
+protocol in `tests/test_server_restore_projects.py` and
+`tests/test_remote_scripts.py`. The broader history, branch, Paper, transport,
+restore-state, checkout, and lifecycle-detachment suite also passes. The full
+backend test suite and Ruff checks pass, all 440 Web tests pass, and the Web
+production build succeeds. The repository-wide pre-commit suite passes after
+its formatting hook normalized the three affected O4c source files.
 
 Own:
 

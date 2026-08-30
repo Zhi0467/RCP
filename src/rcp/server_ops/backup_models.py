@@ -990,6 +990,7 @@ class BackupProjectCapture(_StrictBackupModel):
             if head.target.branch_id is not None
         }
         branch_revisions: dict[str, list[int]] = {}
+        merge_branches: set[str] = set()
         for entry in self.files:
             source = PurePosixPath(entry.source_relative_path)
             if (
@@ -999,8 +1000,17 @@ class BackupProjectCapture(_StrictBackupModel):
                 and source.parts[3] == "patches"
             ):
                 branch_revisions.setdefault(source.parts[2], []).append(int(source.stem))
+            elif (
+                entry.group == "canonical"
+                and len(source.parts) == 5
+                and source.parts[:2] == (".research", "branches")
+                and source.parts[3] == "merges"
+            ):
+                merge_branches.add(source.parts[2])
         if not set(branch_revisions).issubset(metadata_branches):
             raise ValueError("project branch Patches require their captured metadata")
+        if not merge_branches.issubset(metadata_branches):
+            raise ValueError("project branch merge receipts require their captured metadata")
         for branch_id, revisions in branch_revisions.items():
             if len(revisions) != len(set(revisions)):
                 raise ValueError("project branch history repeats a Patch revision")

@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from rcp.config import Manifest, load_manifest
 from rcp.core.models import GraphBranchMetadata
 from rcp.limits import (
+    BACKUP_COPY_BUFFER_BYTES,
     BACKUP_INVENTORY_MAX_ENTRIES,
     BACKUP_REMOTE_EXPORT_TIMEOUT_SECONDS,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
@@ -671,6 +672,165 @@ class StateUnavailable(RuntimeError):
     pass
 
 
+def _restore_file_matches(
+    path: Path,
+    *,
+    expected_sha256: str,
+    expected_size: int,
+) -> bool:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise StateUnavailable(f"Could not inspect restored project file {path}: {exc}") from exc
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != expected_size:
+            return False
+        while True:
+            chunk = os.read(descriptor, BACKUP_COPY_BUFFER_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+    finally:
+        os.close(descriptor)
+    return size == expected_size and digest.hexdigest() == expected_sha256
+
+
+def _require_restore_source(
+    source: Path,
+    *,
+    expected_sha256: str,
+    expected_size: int,
+) -> None:
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256) or expected_size < 0:
+        raise ValueError("restored project file proof is invalid")
+    if not _restore_file_matches(
+        source,
+        expected_sha256=expected_sha256,
+        expected_size=expected_size,
+    ):
+        raise StateUnavailable("An archived project file differs from its manifest proof.")
+
+
+def _safe_restore_parent(root: Path, relative: Path) -> Path:
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        raise ValueError("restored project path must be one safe relative path")
+    try:
+        root_mode = root.lstat().st_mode
+    except FileNotFoundError:
+        parent_mode = root.parent.lstat().st_mode
+        if not stat.S_ISDIR(parent_mode):
+            raise StateUnavailable("The restored project root parent is not a directory.") from None
+        root.mkdir(mode=0o755)
+        root_mode = root.lstat().st_mode
+    if not stat.S_ISDIR(root_mode):
+        raise StateUnavailable("The restored project root is not a safe directory.")
+    current = root
+    for part in relative.parent.parts:
+        current = current / part
+        with suppress(FileExistsError):
+            current.mkdir(mode=0o755)
+        try:
+            mode = current.lstat().st_mode
+        except OSError as exc:
+            raise StateUnavailable("A restored project directory is unavailable.") from exc
+        if not stat.S_ISDIR(mode):
+            raise StateUnavailable("A restored project path has an unsafe parent.")
+    return current
+
+
+def _stage_exact_restore_file(
+    root: Path,
+    relative: Path,
+    source: Path,
+    *,
+    expected_sha256: str,
+    expected_size: int,
+) -> None:
+    parent = _safe_restore_parent(root, relative)
+    destination = root / relative
+    if os.path.lexists(destination):
+        if _restore_file_matches(
+            destination,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+        ):
+            return
+        raise StateUnavailable(f"Restored project file conflicts with existing bytes: {relative}")
+
+    source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    temporary = parent / f".{relative.name}.restore-{uuid.uuid4().hex}"
+    destination_descriptor = -1
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        before = os.fstat(source_descriptor)
+        path_before = source.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino)
+            or before.st_size != expected_size
+        ):
+            raise StateUnavailable("An archived project file changed before publication.")
+        destination_descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o644,
+        )
+        while True:
+            chunk = os.read(source_descriptor, BACKUP_COPY_BUFFER_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+            remaining = memoryview(chunk)
+            while remaining:
+                written = os.write(destination_descriptor, remaining)
+                if written <= 0:
+                    raise OSError("short restored project file write")
+                remaining = remaining[written:]
+        after = os.fstat(source_descriptor)
+        path_after = source.lstat()
+        stable = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if (
+            size != expected_size
+            or digest.hexdigest() != expected_sha256
+            or any(getattr(before, field) != getattr(after, field) for field in stable)
+            or any(getattr(after, field) != getattr(path_after, field) for field in stable)
+        ):
+            raise StateUnavailable("An archived project file changed during publication.")
+        os.fsync(destination_descriptor)
+        os.close(destination_descriptor)
+        destination_descriptor = -1
+        try:
+            os.link(temporary, destination, follow_symlinks=False)
+        except FileExistsError:
+            if not _restore_file_matches(
+                destination,
+                expected_sha256=expected_sha256,
+                expected_size=expected_size,
+            ):
+                raise StateUnavailable(
+                    f"Restored project file raced with conflicting bytes: {relative}"
+                ) from None
+        descriptor = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        if destination_descriptor >= 0:
+            os.close(destination_descriptor)
+        os.close(source_descriptor)
+        with suppress(FileNotFoundError):
+            temporary.unlink()
+
+
 class RunLockCancelled(RuntimeError):
     """Run-lock acquisition stopped because its owning task was cancelled."""
 
@@ -780,6 +940,70 @@ class StateWorkspace:
     def refresh(self) -> bool:
         with self.snapshot_lock:
             return self._refresh_snapshot()
+
+    def restore_exact_file(
+        self,
+        relative_path: Path | str,
+        source: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+    ) -> None:
+        """Publish one archived project file without replacing different bytes."""
+
+        relative = _validated_relative_path(relative_path)
+        with self.transaction():
+            _stage_exact_restore_file(
+                self.root,
+                relative,
+                source,
+                expected_sha256=expected_sha256,
+                expected_size=expected_size,
+            )
+
+    def restore_kept_artifact(
+        self,
+        name: str,
+        source: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+    ) -> None:
+        """Restore one referenced kept artifact under its exact durable name."""
+
+        safe_name = _validated_kept_artifact_name(name)
+        if not 1 <= expected_size <= CHAT_ARTIFACT_MAX_FILE_BYTES:
+            raise ValueError("restored artifact bytes are outside the supported size range")
+        with self.transaction():
+            _stage_exact_restore_file(
+                self.root.parent,
+                Path("artifacts") / safe_name,
+                source,
+                expected_sha256=expected_sha256,
+                expected_size=expected_size,
+            )
+
+    def restore_kept_result_view(
+        self,
+        name: str,
+        source: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+    ) -> None:
+        """Restore one referenced legacy result view under its exact durable name."""
+
+        safe_name = _validated_kept_view_name(name)
+        if not 1 <= expected_size <= CHAT_ARTIFACT_MAX_FILE_BYTES:
+            raise ValueError("restored result-view bytes are outside the supported size range")
+        with self.transaction():
+            _stage_exact_restore_file(
+                self.root.parent,
+                Path("views") / safe_name,
+                source,
+                expected_sha256=expected_sha256,
+                expected_size=expected_size,
+            )
 
     def retained_history_fingerprint(self) -> str:
         """Fingerprint exactly the canonical inputs used to replay retained history."""
@@ -1866,6 +2090,142 @@ class SSHStateWorkspace(StateWorkspace):
     def publish(self, relative_paths: list[Path | str]) -> None:
         with self.snapshot_lock, self._publication_lock() as lease:
             self._publish(relative_paths, lease)
+
+    def restore_exact_file(
+        self,
+        relative_path: Path | str,
+        source: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+    ) -> None:
+        relative = _validated_relative_path(relative_path)
+        with self.snapshot_lock, self._publication_lock() as lease:
+            _stage_exact_restore_file(
+                self.root,
+                relative,
+                source,
+                expected_sha256=expected_sha256,
+                expected_size=expected_size,
+            )
+            self._restore_remote_exact(
+                source=self.root / relative,
+                remote_relative=relative,
+                expected_sha256=expected_sha256,
+                expected_size=expected_size,
+                external=False,
+                lease=lease,
+            )
+
+    def restore_kept_artifact(
+        self,
+        name: str,
+        source: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+    ) -> None:
+        safe_name = _validated_kept_artifact_name(name)
+        if not 1 <= expected_size <= CHAT_ARTIFACT_MAX_FILE_BYTES:
+            raise ValueError("restored artifact bytes are outside the supported size range")
+        self._restore_remote_repository_file(
+            directory="artifacts",
+            name=safe_name,
+            source=source,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+        )
+
+    def restore_kept_result_view(
+        self,
+        name: str,
+        source: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+    ) -> None:
+        safe_name = _validated_kept_view_name(name)
+        if not 1 <= expected_size <= CHAT_ARTIFACT_MAX_FILE_BYTES:
+            raise ValueError("restored result-view bytes are outside the supported size range")
+        self._restore_remote_repository_file(
+            directory="views",
+            name=safe_name,
+            source=source,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+        )
+
+    def _restore_remote_repository_file(
+        self,
+        *,
+        directory: Literal["artifacts", "views"],
+        name: str,
+        source: Path,
+        expected_sha256: str,
+        expected_size: int,
+    ) -> None:
+        _require_restore_source(
+            source,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+        )
+        with self.snapshot_lock, self._publication_lock() as lease:
+            self._restore_remote_exact(
+                source=source,
+                remote_relative=Path(directory) / name,
+                expected_sha256=expected_sha256,
+                expected_size=expected_size,
+                external=True,
+                lease=lease,
+            )
+
+    def _restore_remote_exact(
+        self,
+        *,
+        source: Path,
+        remote_relative: Path,
+        expected_sha256: str,
+        expected_size: int,
+        external: bool,
+        lease: RunLockLease,
+    ) -> None:
+        stage = self.remote_root / ".publish" / f"restore-{os.getpid()}-{time.time_ns()}"
+        prepared = self._ssh(["mkdir", "-p", str(stage)])
+        if prepared.returncode:
+            self._mark_unreachable(prepared.stderr)
+            raise StateUnavailable(self.error or "restored project staging failed")
+        destination = f"{self.host}:{shlex.quote(str(stage))}/content.bin"
+        try:
+            result = subprocess.run(
+                ["rsync", "-a", *rsync_ssh_arguments(), str(source), destination],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self._mark_unreachable(str(exc))
+            raise StateUnavailable(self.error or "restored project staging failed") from exc
+        if result.returncode:
+            self._mark_unreachable(result.stderr)
+            raise StateUnavailable(self.error or "restored project staging failed")
+        response = lease._run_owned_command(
+            {
+                "op": "restore-exact",
+                "root": str(self.remote_root),
+                "stage": str(stage),
+                "path": remote_relative.as_posix(),
+                "sha256": expected_sha256,
+                "size": expected_size,
+                "external": external,
+            }
+        )
+        if not response["ok"]:
+            self._mark_reachable()
+            raise StateUnavailable(
+                str(response.get("error") or "restored project publication failed")
+            )
+        self._mark_reachable(synced=True)
 
     def keep_result_view(
         self,

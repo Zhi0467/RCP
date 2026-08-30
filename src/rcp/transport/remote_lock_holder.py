@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -148,6 +149,160 @@ def apply_staged(command: dict, lock_path: str) -> dict:
         else:
             commit_status = "present" if commit_target.is_file() else "absent"
         return {"ok": False, "commit_status": commit_status, "error": str(exc)[:1000]}
+
+
+def _fd_digest(descriptor: int) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        digest.update(chunk)
+        size += len(chunk)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return digest.hexdigest(), size
+
+
+def restore_exact(command: dict, lock_path: str) -> dict:
+    root = Path(command["root"])
+    stage = Path(command["stage"])
+    path = relative_path(command["path"])
+    expected_sha256 = command["sha256"]
+    expected_size = command["size"]
+    external = bool(command.get("external"))
+    if (
+        Path(lock_path).name != ".refresh.lock"
+        or root != Path(lock_path).parent
+        or not root.is_absolute()
+        or root.name != ".research"
+        or stage.parent != root / ".publish"
+        or re.fullmatch(r"restore-[0-9]+-[0-9]+", stage.name) is None
+        or not isinstance(expected_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+        or not isinstance(expected_size, int)
+        or expected_size < 0
+    ):
+        raise ValueError("invalid exact-restore request")
+    if external:
+        if len(path.parts) != 2 or path.parts[0] not in {"artifacts", "views"}:
+            raise ValueError("invalid external exact-restore path")
+        if path.parts[0] == "artifacts":
+            pattern = r"[a-z0-9](?:[a-z0-9-]{0,220})[.](?:html?|png|jpe?g|gif|webp|svg)"
+        else:
+            pattern = r"[a-z0-9](?:[a-z0-9-]{0,238})[.]html"
+        if re.fullmatch(pattern, path.name) is None or expected_size > 16 * 1024 * 1024:
+            raise ValueError("invalid external exact-restore file")
+    elif ".publish" in path.parts:
+        raise ValueError("invalid canonical exact-restore path")
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError("safe exact-restore file operations are unavailable")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    stage_fd = os.open(stage, directory_flags)
+    try:
+        if os.listdir(stage_fd) != ["content.bin"]:
+            raise ValueError("exact-restore stage does not contain exactly content.bin")
+        source_fd = os.open("content.bin", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=stage_fd)
+        try:
+            source_info = os.fstat(source_fd)
+            digest, size = _fd_digest(source_fd)
+            if (
+                not stat.S_ISREG(source_info.st_mode)
+                or size != expected_size
+                or digest != expected_sha256
+            ):
+                raise ValueError("staged exact-restore bytes differ from their proof")
+            base = root.parent if external else root
+            base_fd = os.open(base, directory_flags)
+            parent_fd = base_fd
+            opened: list[int] = []
+            try:
+                for part in path.parent.parts:
+                    with contextlib.suppress(FileExistsError):
+                        os.mkdir(part, 0o755, dir_fd=parent_fd)
+                    next_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+                    opened.append(next_fd)
+                    parent_fd = next_fd
+                try:
+                    target_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    target_fd = -1
+                if target_fd >= 0:
+                    try:
+                        target_info = os.fstat(target_fd)
+                        target_digest, target_size = _fd_digest(target_fd)
+                        if (
+                            not stat.S_ISREG(target_info.st_mode)
+                            or target_size != expected_size
+                            or target_digest != expected_sha256
+                        ):
+                            raise FileExistsError(
+                                f"restored project file conflicts with existing bytes: {path}"
+                            )
+                        return {"ok": True}
+                    finally:
+                        os.close(target_fd)
+                temporary = f".{path.name}.restore-{uuid.uuid4().hex}"
+                target_fd = os.open(
+                    temporary,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o644,
+                    dir_fd=parent_fd,
+                )
+                try:
+                    while True:
+                        chunk = os.read(source_fd, 1024 * 1024)
+                        if not chunk:
+                            break
+                        remaining = memoryview(chunk)
+                        while remaining:
+                            written = os.write(target_fd, remaining)
+                            if written <= 0:
+                                raise OSError("short exact-restore write")
+                            remaining = remaining[written:]
+                    os.fsync(target_fd)
+                finally:
+                    os.close(target_fd)
+                try:
+                    os.link(
+                        temporary,
+                        path.name,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                        follow_symlinks=False,
+                    )
+                except FileExistsError:
+                    target_fd = os.open(
+                        path.name,
+                        os.O_RDONLY | os.O_NOFOLLOW,
+                        dir_fd=parent_fd,
+                    )
+                    try:
+                        target_digest, target_size = _fd_digest(target_fd)
+                        if target_size != expected_size or target_digest != expected_sha256:
+                            raise FileExistsError(
+                                f"restored project file raced with conflicting bytes: {path}"
+                            ) from None
+                    finally:
+                        os.close(target_fd)
+                finally:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(temporary, dir_fd=parent_fd)
+                os.fsync(parent_fd)
+                return {"ok": True}
+            finally:
+                for descriptor in reversed(opened):
+                    os.close(descriptor)
+                os.close(base_fd)
+        finally:
+            os.close(source_fd)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink("content.bin", dir_fd=stage_fd)
+        os.close(stage_fd)
+        with contextlib.suppress(OSError):
+            os.rmdir(stage)
 
 
 def kept_view_candidate(base_name: str, index: int) -> str:
@@ -406,6 +561,8 @@ def main() -> None:
                 command = json.loads(line)
                 if command.get("op") == "apply":
                     response = apply_staged(command, lock_path)
+                elif command.get("op") == "restore-exact":
+                    response = restore_exact(command, lock_path)
                 elif command.get("op") in {"keep-view", "keep-artifact"}:
                     response = keep_staged_view(command, lock_path)
                 elif command.get("op") == "replace-artifact":

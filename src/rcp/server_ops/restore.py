@@ -276,6 +276,31 @@ class RestoreProjectRebind(_StrictModel):
         return value
 
 
+class RestoreProjectPublication(_StrictModel):
+    project_id: str
+    capture_sha256: str
+    published_files: int = Field(ge=1)
+    published_bytes: int = Field(ge=0)
+    main_revision: int = Field(ge=0)
+    branch_count: int = Field(ge=0)
+
+    @field_validator("project_id")
+    @classmethod
+    def validate_project_id(cls, value: str) -> str:
+        try:
+            parsed = uuid.UUID(value)
+        except (AttributeError, ValueError) as exc:
+            raise ValueError("published project id must be a canonical UUID4") from exc
+        if parsed.version != 4 or str(parsed) != value:
+            raise ValueError("published project id must be a canonical UUID4")
+        return value
+
+    @field_validator("capture_sha256")
+    @classmethod
+    def validate_capture_sha256(cls, value: str) -> str:
+        return _digest(value, label="published project capture digest")
+
+
 class RestoreOperationJournal(_StrictModel):
     schema_version: Literal[RESTORE_JOURNAL_SCHEMA_VERSION] = RESTORE_JOURNAL_SCHEMA_VERSION
     operation_id: str
@@ -299,11 +324,14 @@ class RestoreOperationJournal(_StrictModel):
         "checkouts_ready",
         "projects_rebinding",
         "checkouts_reconstructed",
+        "projects_publishing",
+        "projects_published",
     ]
     detached_at: datetime
     restored_sqlite_sha256: str | None = None
     repository_recoveries: tuple[RestoreRepositoryRecovery, ...] = ()
     project_rebinds: tuple[RestoreProjectRebind, ...] = ()
+    project_publications: tuple[RestoreProjectPublication, ...] = ()
     updated_at: datetime
 
     @field_validator("operation_id")
@@ -362,6 +390,7 @@ class RestoreOperationJournal(_StrictModel):
             self.restored_sqlite_sha256 is not None
             or self.repository_recoveries
             or self.project_rebinds
+            or self.project_publications
         ):
             raise ValueError("an uninstalled restore journal cannot name later effects")
         if installed and (
@@ -373,10 +402,13 @@ class RestoreOperationJournal(_StrictModel):
             (item.project_id, item.repository_alias) for item in self.repository_recoveries
         ]
         project_ids = [item.project_id for item in self.project_rebinds]
+        publication_ids = [item.project_id for item in self.project_publications]
         if repository_keys != sorted(set(repository_keys)):
             raise ValueError("restore repository recovery receipts must be sorted and unique")
         if project_ids != sorted(set(project_ids)):
             raise ValueError("restore project rebind receipts must be sorted and unique")
+        if publication_ids != sorted(set(publication_ids)):
+            raise ValueError("restore project publication receipts must be sorted and unique")
         captured = {
             project.project_id: project
             for project in self.manifest.projects
@@ -398,18 +430,35 @@ class RestoreOperationJournal(_StrictModel):
             "checkouts_ready",
             "projects_rebinding",
             "checkouts_reconstructed",
+            "projects_publishing",
+            "projects_published",
         } and (
             set(repository_keys) != expected_repositories
             or any(item.state != "checkout_ready" for item in self.repository_recoveries)
         ):
             raise ValueError("checkout-ready restore phase requires every repository receipt")
-        if self.phase == "checkouts_reconstructed" and set(project_ids) != set(captured):
+        if self.phase in {
+            "checkouts_reconstructed",
+            "projects_publishing",
+            "projects_published",
+        } and set(project_ids) != set(captured):
             raise ValueError("reconstructed restore phase requires every captured project rebind")
         if self.project_rebinds and self.phase not in {
             "projects_rebinding",
             "checkouts_reconstructed",
+            "projects_publishing",
+            "projects_published",
         }:
             raise ValueError("project rebind receipts require the catalog-rebinding phase")
+        if not set(publication_ids).issubset(captured):
+            raise ValueError("restore project publication is outside captured project inventory")
+        if self.project_publications and self.phase not in {
+            "projects_publishing",
+            "projects_published",
+        }:
+            raise ValueError("project publication receipts require the publication phase")
+        if self.phase == "projects_published" and set(publication_ids) != set(captured):
+            raise ValueError("published restore phase requires every captured project receipt")
         return self
 
 
@@ -470,6 +519,11 @@ class RestoreMachine(Protocol):
     ) -> RestoreCheckoutRecoveryOutcome: ...
 
     def rebind_checkouts(
+        self,
+        journal: RestoreOperationJournal,
+    ) -> RestoreOperationJournal: ...
+
+    def publish_projects(
         self,
         journal: RestoreOperationJournal,
     ) -> RestoreOperationJournal: ...
@@ -627,6 +681,23 @@ def _restore_plan(identity: CallerIdentity, data_dir: Path) -> tuple[ServerStep,
             state="pending",
             expected_success="Every captured project names only its replacement checkout set.",
             message="RCP will keep every rebound project unavailable until publication passes.",
+        ),
+        ServerStep(
+            number=8,
+            title="Publish and replay-verify restored projects",
+            purpose=(
+                "Publish only captured canonical histories, chats, Paper, facts, and referenced "
+                "kept files through their owners, then prove exact replay and byte readback."
+            ),
+            performed_by="system",
+            target=root,
+            phase="restore_project_publication",
+            state="pending",
+            expected_success=(
+                "Every captured project is replay-proven and readable; explicitly uncaptured "
+                "projects remain visible but unavailable."
+            ),
+            message="RCP will not start the service or restore excluded machine state.",
         ),
     )
 
@@ -798,6 +869,23 @@ def _execute_restore(
             fields=lambda value: (
                 NonsecretField(name="restore_phase", value=value.phase),
                 NonsecretField(name="rebound_projects", value=len(value.project_rebinds)),
+            ),
+        )
+        journal = _run_restore_step(
+            emitter,
+            steps[7],
+            running=(
+                "Publishing captured project bytes through their canonical owners and replaying "
+                "every retained graph head."
+            ),
+            operation=lambda: machine.publish_projects(journal),
+            succeeded=(
+                "Every captured project passed canonical replay and exact byte readback. The "
+                "replacement service remains stopped pending authority review."
+            ),
+            fields=lambda value: (
+                NonsecretField(name="restore_phase", value=value.phase),
+                NonsecretField(name="published_projects", value=len(value.project_publications)),
             ),
         )
     except _ReportedRestoreFailure:
@@ -1243,7 +1331,11 @@ class LinuxRestoreMachine:
 
         with self.admission():
             current = self._current_restore(journal)
-            if current.phase == "checkouts_reconstructed":
+            if current.phase in {
+                "checkouts_reconstructed",
+                "projects_publishing",
+                "projects_published",
+            }:
                 return RestoreCheckoutRecoveryOutcome(journal=current)
             if current.phase == "sqlite_restored":
                 current = self._write_restore_phase(current, "checkouts_recovering")
@@ -1429,7 +1521,11 @@ class LinuxRestoreMachine:
 
         with self.admission():
             current = self._current_restore(journal)
-            if current.phase == "checkouts_reconstructed":
+            if current.phase in {
+                "checkouts_reconstructed",
+                "projects_publishing",
+                "projects_published",
+            }:
                 return current
             if current.phase == "checkouts_ready":
                 current = self._write_restore_phase(current, "projects_rebinding")
@@ -1483,6 +1579,148 @@ class LinuxRestoreMachine:
                     )
             return self._write_restore_phase(current, "checkouts_reconstructed")
 
+    def publish_projects(
+        self,
+        journal: RestoreOperationJournal,
+    ) -> RestoreOperationJournal:
+        """Publish only archived project-owned bytes, then replay and expose each project."""
+
+        with self.admission():
+            current = self._current_restore(journal)
+            if current.phase == "projects_published":
+                return current
+            if current.phase == "checkouts_reconstructed":
+                current = self._write_restore_phase(current, "projects_publishing")
+            if current.phase != "projects_publishing":
+                raise RestoreRefused(
+                    "The restore journal has not completed checkout reconstruction."
+                )
+            from rcp.projects import (
+                RestoredProjectPublicationRefused,
+                complete_restored_project_publication,
+                restored_project_owners,
+            )
+
+            store = AppStore(self.layout.data_dir / "rcp.sqlite3")
+            for capture in current.manifest.projects:
+                if capture.status != "uncaptured":
+                    continue
+                try:
+                    store.mark_uncaptured_project_unavailable_for_restore(
+                        capture.project_id,
+                        diagnostic=capture.unavailable_reason or "project capture failed",
+                    )
+                except (KeyError, RuntimeError, ValueError, sqlite3.Error) as exc:
+                    raise RestoreRefused(
+                        "An explicitly uncaptured project could not remain visible as unavailable."
+                    ) from exc
+
+            publications = {item.project_id: item for item in current.project_publications}
+            operation_projects = {
+                task.operation_id: task.project_id
+                for capture in self._captured_projects(current)
+                for task in store.all_project_agent_tasks(capture.project_id)
+            }
+            for capture in self._captured_projects(current):
+                entries = tuple(sorted(capture.files, key=lambda item: item.archive_path))
+                manifests = [
+                    item
+                    for item in entries
+                    if item.group == "canonical"
+                    and item.source_relative_path == ".research/manifest.toml"
+                ]
+                if len(manifests) != 1:
+                    raise RestoreRefused(
+                        "A captured project does not contain exactly one canonical manifest."
+                    )
+                try:
+                    owners = restored_project_owners(
+                        store,
+                        capture,
+                        archived_manifest=self._project_archive_source(current, manifests[0]),
+                        data_dir=self.layout.data_dir,
+                    )
+                    canonical = {
+                        item.source_relative_path.removeprefix(".research/"): (
+                            self._project_archive_source(current, item),
+                            item.sha256,
+                            item.size_bytes,
+                        )
+                        for item in entries
+                        if item.group == "canonical"
+                    }
+                    assert capture.main_head is not None
+                    materialization = owners.history.restore_canonical_history(
+                        canonical,
+                        expected_main_head=capture.main_head,
+                        expected_branch_heads=capture.branch_heads,
+                    )
+                    for entry in entries:
+                        source = self._project_archive_source(current, entry)
+                        if entry.group == "chat":
+                            owners.service.restore_canonical_chat(
+                                source,
+                                expected_sha256=entry.sha256,
+                                expected_size=entry.size_bytes,
+                                operation_projects=operation_projects,
+                            )
+                        elif entry.group == "paper_introduction":
+                            owners.paper.restore_canonical(
+                                source,
+                                expected_sha256=entry.sha256,
+                                expected_size=entry.size_bytes,
+                            )
+                        elif entry.group == "fact":
+                            owners.workspace.restore_exact_file(
+                                entry.source_relative_path.removeprefix(".research/"),
+                                source,
+                                expected_sha256=entry.sha256,
+                                expected_size=entry.size_bytes,
+                            )
+                        elif entry.group == "kept_artifact":
+                            owners.workspace.restore_kept_artifact(
+                                PurePosixPath(entry.source_relative_path).name,
+                                source,
+                                expected_sha256=entry.sha256,
+                                expected_size=entry.size_bytes,
+                            )
+                        elif entry.group == "legacy_kept_result_view":
+                            owners.workspace.restore_kept_result_view(
+                                PurePosixPath(entry.source_relative_path).name,
+                                source,
+                                expected_sha256=entry.sha256,
+                                expected_size=entry.size_bytes,
+                            )
+                    if owners.workspace.remote:
+                        owners.workspace.refresh()
+                    self._verify_project_publication_bytes(owners.workspace, entries)
+                    complete_restored_project_publication(
+                        store,
+                        capture,
+                        owners,
+                        materialization,
+                    )
+                except (
+                    OSError,
+                    RestoredProjectPublicationRefused,
+                    RuntimeError,
+                    ValueError,
+                ) as exc:
+                    raise RestoreRefused(
+                        f"Restored project {capture.project_id} failed canonical publication "
+                        "or replay verification."
+                    ) from exc
+                receipt = self._project_publication_receipt(capture)
+                existing = publications.get(capture.project_id)
+                if existing is not None and existing != receipt:
+                    raise RestoreRefused(
+                        "A restored project publication changed after its durable receipt."
+                    )
+                if existing is None:
+                    current = self._write_project_publication(current, receipt)
+                    publications[capture.project_id] = receipt
+            return self._write_restore_phase(current, "projects_published")
+
     def _current_restore(
         self,
         journal: RestoreOperationJournal,
@@ -1500,9 +1738,32 @@ class LinuxRestoreMachine:
             "checkouts_ready",
             "projects_rebinding",
             "checkouts_reconstructed",
+            "projects_publishing",
+            "projects_published",
         ],
     ) -> RestoreOperationJournal:
         updated = journal.model_copy(update={"phase": phase, "updated_at": self.clock()})
+        write_restore_journal(
+            updated,
+            self.layout,
+            uid=self.service_uid,
+            gid=self.service_gid,
+        )
+        return read_restore_journal(self.layout, expected_uid=self.service_uid)
+
+    def _write_project_publication(
+        self,
+        journal: RestoreOperationJournal,
+        receipt: RestoreProjectPublication,
+    ) -> RestoreOperationJournal:
+        items = {item.project_id: item for item in journal.project_publications}
+        items[receipt.project_id] = receipt
+        updated = journal.model_copy(
+            update={
+                "project_publications": tuple(items[key] for key in sorted(items)),
+                "updated_at": self.clock(),
+            }
+        )
         write_restore_journal(
             updated,
             self.layout,
@@ -1630,6 +1891,65 @@ class LinuxRestoreMachine:
             for item in capture.files
             if item.source_relative_path.startswith(".research/")
         }
+
+    @staticmethod
+    def _project_archive_source(journal: RestoreOperationJournal, entry) -> Path:
+        root = Path(journal.candidate_root) / "payload"
+        source = root.joinpath(*PurePosixPath(entry.archive_path).parts)
+        if not source.is_relative_to(root):
+            raise RestoreRefused("A restored project archive path escaped its candidate root.")
+        try:
+            metadata = source.lstat()
+        except OSError as exc:
+            raise RestoreRefused("A restored project archive file is unavailable.") from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RestoreRefused("A restored project archive entry is not a regular file.")
+        return source
+
+    @staticmethod
+    def _project_publication_receipt(capture) -> RestoreProjectPublication:
+        payload = json.dumps(
+            capture.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        assert capture.main_head is not None
+        return RestoreProjectPublication(
+            project_id=capture.project_id,
+            capture_sha256=hashlib.sha256(payload).hexdigest(),
+            published_files=len(capture.files),
+            published_bytes=capture.total_bytes,
+            main_revision=capture.main_head.revision,
+            branch_count=len(capture.branch_heads),
+        )
+
+    @staticmethod
+    def _verify_project_publication_bytes(workspace, entries) -> None:
+        for entry in entries:
+            relative = PurePosixPath(entry.source_relative_path)
+            if entry.group in {"kept_artifact", "legacy_kept_result_view"}:
+                if entry.group == "kept_artifact":
+                    data = workspace.read_kept_artifact(
+                        relative.name,
+                        max_bytes=max(1, entry.size_bytes),
+                    )
+                else:
+                    data = workspace.read_kept_result_view(
+                        relative.name,
+                        max_bytes=max(1, entry.size_bytes),
+                    )
+                observed = (hashlib.sha256(data).hexdigest(), len(data))
+            else:
+                if relative.parts[0] != ".research":
+                    raise RestoreRefused("A canonical project byte has an invalid restore path.")
+                destination = workspace.root.joinpath(*relative.parts[1:])
+                observed = _hash_regular_file(destination)
+            if observed != (entry.sha256, entry.size_bytes):
+                raise RestoreRefused(
+                    "A restored project file changed before final publication readback."
+                )
 
     @staticmethod
     def _require_same_checkout(progress, result, *, expected_root: str) -> None:

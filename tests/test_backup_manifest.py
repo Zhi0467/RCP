@@ -538,6 +538,22 @@ def test_manifest_refuses_newer_schema_materialized_outputs_and_extra_fields(
                 "main_head": GraphHeadRef(revision=1),
             }
         )
+    orphan_branch = str(uuid.uuid4())
+    orphan_merge = BackupFileEntry(
+        archive_path=f"projects/{PROJECT_ID}/canonical/orphan-merge.json",
+        source_relative_path=(f".research/branches/{orphan_branch}/merges/{'1' * 64}.json"),
+        group="canonical",
+        sha256="1" * 64,
+        size_bytes=1,
+    )
+    with pytest.raises(ValidationError, match="merge receipts require"):
+        BackupProjectCapture.model_validate(
+            {
+                **project.model_dump(mode="python"),
+                "files": (*project.files, orphan_merge),
+                "total_bytes": project.total_bytes + orphan_merge.size_bytes,
+            }
+        )
 
 
 def test_locator_manifest_is_loaded_without_refreshing_remote_state(

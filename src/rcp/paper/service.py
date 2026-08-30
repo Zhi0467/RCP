@@ -194,6 +194,23 @@ class PaperService:
         except StateUnavailable:
             return self.snapshot()
 
+    def restore_canonical(
+        self,
+        source: Path,
+        *,
+        expected_sha256: str,
+        expected_size: int,
+    ) -> None:
+        """Validate and publish the archived introduction without changing its bytes."""
+
+        validate_canonical_introduction_backup(source)
+        self.workspace.restore_exact_file(
+            Path("paper/introduction.md"),
+            source,
+            expected_sha256=expected_sha256,
+            expected_size=expected_size,
+        )
+
     def sessions(self) -> list[WritingSession]:
         with self.store.connection() as connection:
             rows = connection.execute(
