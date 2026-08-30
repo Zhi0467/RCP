@@ -20,6 +20,7 @@
     "allow-desktop-remove-team-connection-metadata",
     "allow-desktop-store-team-member-token",
     "allow-desktop-remove-team-member-token",
+    "allow-desktop-connect-team-tunnel",
     "allow-choose-repository-folder",
     "allow-desktop-start-dictation",
     "allow-desktop-stop-dictation",

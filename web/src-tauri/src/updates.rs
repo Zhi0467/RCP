@@ -6,7 +6,10 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
-use crate::backend::{self, BackendState};
+use crate::{
+    backend::{self, BackendState},
+    team_tunnel::TeamTunnelState,
+};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct UpdateStatus {
@@ -68,6 +71,7 @@ pub async fn check(app: &AppHandle, backend_state: &BackendState) -> Result<Upda
 pub async fn apply(
     app: &AppHandle,
     backend_state: &BackendState,
+    team_tunnels: &TeamTunnelState,
     confirm_active_work: bool,
 ) -> Result<(), String> {
     let active = refresh_active_tasks(backend_state).await?;
@@ -104,11 +108,18 @@ pub async fn apply(
     // the programmatic restart. Returning on any failure drops the guard and
     // makes connect/Quit available again.
     let update_guard = backend_state.begin_update().await?;
+    if let Err(error) = team_tunnels.stop_all_for_lifecycle().await {
+        team_tunnels.resume_after_lifecycle_failure().await;
+        return Err(format!(
+            "update did not stop the desktop's team tunnels: {error}"
+        ));
+    }
     let shutdown = update_guard.stop_backend().await;
     if let Some(message) = shutdown.problem() {
         crate::show_shutdown_problem(app, message);
     }
     if !shutdown.may_exit() {
+        team_tunnels.resume_after_lifecycle_failure().await;
         return Err(shutdown
             .problem()
             .unwrap_or("RCP could not safely stop its backend before updating")
@@ -130,10 +141,13 @@ pub async fn apply(
         // update. Release the update guard before entering that serialized path.
         drop(update_guard);
         return match backend::connect(app, backend_state, "Exit RCP").await {
-            Ok(status) => Err(format!(
-                "{install_error}; RCP recovered by reconnecting to {}",
-                status.base_url
-            )),
+            Ok(status) => {
+                team_tunnels.resume_after_lifecycle_failure().await;
+                Err(format!(
+                    "{install_error}; RCP recovered by reconnecting to {}",
+                    status.base_url
+                ))
+            }
             Err(recovery_error) => {
                 let diagnostic = format!(
                     "{install_error}; backend recovery also failed: {recovery_error}. \

@@ -5,7 +5,7 @@ use std::{
 };
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
@@ -16,6 +16,7 @@ use crate::{
     lifecycle::DesktopStatus,
     navigation,
     team_connections::{RemovalResult, TeamConnectionMetadata, TeamConnectionState},
+    team_tunnel::{TeamTunnelReady, TeamTunnelState},
     updates, windows,
 };
 
@@ -62,11 +63,80 @@ pub fn desktop_list_team_connections(
 }
 
 #[tauri::command]
-pub fn desktop_remove_team_connection_metadata(
+pub async fn desktop_remove_team_connection_metadata(
     state: State<'_, TeamConnectionState>,
+    tunnels: State<'_, TeamTunnelState>,
     connection_id: String,
 ) -> Result<RemovalResult, String> {
-    state.remove_metadata(&connection_id)
+    tunnels
+        .remove_saved_connection(&state, &connection_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn desktop_connect_team_tunnel(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    tunnels: State<'_, TeamTunnelState>,
+    lifecycle: State<'_, BackendState>,
+    connection_id: String,
+) -> Result<TeamTunnelReady, String> {
+    let saved = connections.list()?;
+    let caller = window
+        .url()
+        .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?;
+    let personal_base_url = lifecycle.status()?.base_url;
+    authorize_team_tunnel_origin(
+        &caller,
+        &personal_base_url,
+        &saved,
+        &connection_id,
+        cfg!(debug_assertions),
+    )?;
+    tunnels
+        .connect_saved(&connections, &lifecycle, &connection_id)
+        .await
+}
+
+fn authorize_team_tunnel_origin(
+    caller: &Url,
+    personal_base_url: &str,
+    connections: &[TeamConnectionMetadata],
+    requested_connection_id: &str,
+    allow_dev: bool,
+) -> Result<(), String> {
+    if !connections
+        .iter()
+        .any(|connection| connection.connection_id == requested_connection_id)
+    {
+        return Err("the team connection is not saved on this desktop".into());
+    }
+    let personal = Url::parse(personal_base_url)
+        .map_err(|_| "the personal RCP origin is invalid".to_string())?;
+    if same_origin(caller, &personal)
+        || (allow_dev
+            && caller.scheme() == "http"
+            && caller.host_str() == Some("127.0.0.1")
+            && caller.port_or_known_default() == Some(5173))
+    {
+        return Ok(());
+    }
+    let caller_connection = connections.iter().find(|connection| {
+        Url::parse(&connection.local_origin).is_ok_and(|origin| same_origin(caller, &origin))
+    });
+    if caller_connection
+        .is_some_and(|connection| connection.connection_id == requested_connection_id)
+    {
+        Ok(())
+    } else {
+        Err("this desktop origin cannot connect the requested team space".into())
+    }
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 #[tauri::command]
@@ -337,9 +407,10 @@ pub async fn check_for_update(
 pub async fn apply_update(
     app: AppHandle,
     state: State<'_, BackendState>,
+    tunnels: State<'_, TeamTunnelState>,
     confirm_active_work: bool,
 ) -> Result<ApplyUpdateResult, String> {
-    updates::apply(&app, &state, confirm_active_work).await?;
+    updates::apply(&app, &state, &tunnels, confirm_active_work).await?;
     Ok(ApplyUpdateResult { started: true })
 }
 
@@ -454,6 +525,68 @@ fn safe_filename(suggested: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn saved_connection(connection_id: &str, port: u16) -> TeamConnectionMetadata {
+        TeamConnectionMetadata {
+            connection_id: connection_id.into(),
+            display_name: "Lab".into(),
+            ssh_target: "rcp@lab-server".into(),
+            remote_loopback_port: 8421,
+            expected_space_id: "33333333-3333-4333-8333-333333333333".into(),
+            local_origin: format!(
+                "https://rcp-{}.localhost:{port}",
+                connection_id.replace('-', "")
+            ),
+            minimum_shell_version: "0.3.2".into(),
+            last_known_cards: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn tunnel_command_is_limited_to_personal_or_the_same_team_origin() {
+        let first = saved_connection("11111111-1111-4111-8111-111111111111", 18421);
+        let mut second = saved_connection("22222222-2222-4222-8222-222222222222", 19421);
+        second.expected_space_id = "44444444-4444-4444-8444-444444444444".into();
+        let saved = vec![first.clone(), second.clone()];
+
+        for personal in [
+            "http://127.0.0.1:8421/#/projects/a",
+            "http://127.0.0.1:5173/#/projects/a",
+        ] {
+            assert!(authorize_team_tunnel_origin(
+                &Url::parse(personal).unwrap(),
+                "http://127.0.0.1:8421",
+                &saved,
+                &second.connection_id,
+                true,
+            )
+            .is_ok());
+        }
+        assert!(authorize_team_tunnel_origin(
+            &Url::parse(&format!("{}/#/projects/a", first.local_origin)).unwrap(),
+            "http://127.0.0.1:8421",
+            &saved,
+            &first.connection_id,
+            false,
+        )
+        .is_ok());
+        assert!(authorize_team_tunnel_origin(
+            &Url::parse(&first.local_origin).unwrap(),
+            "http://127.0.0.1:8421",
+            &saved,
+            &second.connection_id,
+            false,
+        )
+        .is_err());
+        assert!(authorize_team_tunnel_origin(
+            &Url::parse("https://example.com").unwrap(),
+            "http://127.0.0.1:8421",
+            &saved,
+            &first.connection_id,
+            false,
+        )
+        .is_err());
+    }
 
     #[test]
     fn folder_selection_result_preserves_cancel_and_path() {

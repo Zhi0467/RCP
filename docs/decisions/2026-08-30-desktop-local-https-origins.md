@@ -55,7 +55,8 @@ team server.
 
 ## Remaining qualification
 
-D3-D5 still have to terminate this HTTPS endpoint over a real SSH tunnel,
-establish a real team session, and drive two saved team spaces in the source-built
-app. A second macOS machine and signed packaged app remain later compatibility
-qualification; they do not reopen this source-built client decision.
+D3 now terminates this HTTPS endpoint over the desktop-owned real SSH tunnel.
+D4-D5 still have to establish a real team session and drive two saved team spaces
+in the source-built app. A second macOS machine and signed packaged app remain
+later compatibility qualification; they do not reopen this source-built client
+decision.

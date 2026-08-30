@@ -95,7 +95,7 @@ impl TeamConnectionState {
         Ok(Self::new(config_dir.join(REGISTRY_FILENAME)))
     }
 
-    fn new(registry_path: PathBuf) -> Self {
+    pub(crate) fn new(registry_path: PathBuf) -> Self {
         Self {
             registry_path,
             lock: Mutex::new(()),

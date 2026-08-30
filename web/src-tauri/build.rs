@@ -8,6 +8,7 @@ const COMMANDS: &[&str] = &[
     "desktop_remove_team_connection_metadata",
     "desktop_store_team_member_token",
     "desktop_remove_team_member_token",
+    "desktop_connect_team_tunnel",
     "choose_repository_folder",
     "desktop_start_dictation",
     "desktop_stop_dictation",

@@ -4,13 +4,14 @@ Date: 2026-08-27
 Status: active; design, grilling, and the final cross-document fact-check are
 complete, and implementation is proceeding directly on `main`. G0, G2, F1,
 F2, F3a, F3b, F4, F5, F6a, F6b, F6c, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
-O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c, O4d, O5a, O5b, and D2
+O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c, O4d, O5a, O5b, D2, and D3
 are complete hermetically. O4d's fresh-host Ubuntu restore drive remains part of
 the live acceptance work. D2 promotes the proved local-HTTPS mechanism into the
 production source-built desktop: one Keychain identity, canonical
 connection-bound origins, an app-scoped WKWebView pin, and exact saved-origin
-navigation are implemented and live-verified on this host. D3-D5 remain open
-for the SSH proxy, server session, and team-space UI. The live
+navigation are implemented and live-verified on this host. D3 adds the real
+system-SSH forward, local TLS proxy, reuse/backoff, and owned-child cleanup.
+D4-D5 remain open for the server session and team-space UI. The live
 Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
 pushed at `fff75c3` with exact-target confirmation, an immutable built-candidate
 receipt, and an unchanged live-service boundary. P2 now provides the
@@ -1655,14 +1656,69 @@ gate are deliberately future work and do not block this plan.
   validation, and late private-key zeroization; all three are fixed with focused
   coverage. Clippy with warnings denied, documentation tests, and full
   pre-commit pass.
-- Not done: D2 does not open SSH, terminate TLS around a forwarded connection,
-  exchange a team member token, or navigate to a team backend. Those remain
-  D3-D5. The source-built app was checked on this one macOS host; a second Mac
-  and signed packaged app remain later compatibility qualification, not blockers
-  for the accepted source-built client. The app build/open drive preceded the
-  final audit-only port, pair-validation, and zeroization cleanups; those changes
-  compile and pass the native suite, but the bundle was not rebuilt a second
-  time because they do not change the driven startup or WebView path.
+- Not done at D2 completion: opening SSH, terminating TLS around a forwarded
+  connection, exchanging a team member token, and navigating to a team backend.
+  D3 has since closed the SSH/TLS portion; D4-D5 retain the session and navigation
+  work. The source-built app was checked on this one macOS host; a second Mac and
+  signed packaged app remain later compatibility qualification, not blockers for
+  the accepted source-built client. The app build/open drive preceded the final
+  audit-only port, pair-validation, and zeroization cleanups; those changes
+  compile and pass the native suite, but the bundle was not rebuilt a second time
+  because they do not change the driven startup or WebView path.
+
+#### 2026-08-30 — D3 SSH tunnel and local TLS proxy complete
+
+- `team_tunnel.rs` owns one direct `/usr/bin/ssh` process group per saved
+  connection. It uses argv rather than a shell, batch authentication through the
+  member's existing SSH config/agent, no remote command or terminal,
+  exit-on-forward-failure, a bounded connect/readiness window, keepalives, and
+  one explicit ephemeral loopback forward to the configured remote RCP port.
+  SSH control sharing, persistence, and post-authentication backgrounding are
+  disabled so the spawned process group necessarily owns that forward.
+- The saved D2 port is bound on both IPv4 and IPv6 before SSH starts. A rustls
+  listener presents the D2 Keychain identity and forwards only to the private
+  SSH listener. A healthy route is reused only while origin, SSH target, and
+  remote port all still match. A dead or changed route waits through the short
+  reconnect backoff before replacement, and a failed start refuses immediate
+  retry instead of hot-looping.
+- Removing connection metadata retires the ID under the same admission lock,
+  stops that connection, and only then removes its row. Quit and update close
+  admission and drain all tunnels before stopping the personal backend; only an
+  explicitly failed lifecycle operation reopens it. Unconfirmed cleanup retains
+  its child supervisor and process record for a retry while the supervisor is
+  live and for diagnostics otherwise. Quit refuses to exit while such a record
+  remains. The manager signals only its exact local process groups and never
+  sends a command or lifecycle signal to the remote RCP service. This
+  coupling stays in `lib.rs` and `updates.rs`; `backend.rs` remains the concrete
+  personal-backend owner rather than absorbing a second process kind.
+- The connect command accepts the personal origin or the exact origin belonging
+  to the requested saved connection; one team origin cannot launch another
+  connection's SSH process. Focused tests prove this caller fence, the exact SSH
+  argv, route-change replacement identity, retained failed-cleanup ownership,
+  admission closure, the forced-SIGKILL descendant process-group path, dual-stack
+  TLS termination, and bidirectional byte forwarding. The ignored live test
+  passed through the production manager using the existing authenticated system
+  SSH route to
+  `tianhaowang-gpu0.ucsd.edu`, reused the tunnel, read the remote loopback SSH
+  banner through local TLS, and cleaned up without starting or stopping anything
+  remotely.
+- Surprise closed: the first live argv used `ClearAllForwardings=yes`, which
+  also erased RCP's own explicit `-L`; SSH stayed alive with no listener until
+  the readiness bound expired. The option was removed, the exact focused test
+  was corrected, and the same live drive then passed. The system SSH config is
+  intentionally still authoritative for host, user, proxy, and key behavior.
+- The packet's one independent read-only audit found four High lifecycle/
+  ownership issues and two Medium coverage/authorization issues. All are closed:
+  saved-row lookup moved inside admission, removal/Quit/update gained fences,
+  unconfirmed children stay retained, reuse covers the complete route,
+  multiplexing/backgrounding are disabled, caller origin is enforced, and the
+  process-group test now includes a stubborn descendant and the forced path. No
+  second audit was run. The final native suite has 71 passing tests and one
+  ignored live test; strict clippy, documentation tests, and full pre-commit pass.
+- Not done: D3 does not verify RCP health/space/protocol identity, retrieve or
+  enroll a member credential, establish a WebView session, or navigate the app.
+  Those remain D4-D5. No full desktop bundle rebuild or Computer Use drive was
+  run for D3; the next meaningful UI milestone is the integrated D4-D5 flow.
 
 ## What remains
 
@@ -1675,10 +1731,10 @@ The remaining implementation work is:
 2. concrete project provisioning, where machine orchestration and final human
    creation are implemented but still need the complete live qualification,
    unified UI/desktop drive and post-setup cancellation;
-3. source-built desktop SSH tunnels, live Keychain enrollment/readback, team
+3. source-built desktop live Keychain enrollment/readback, team
    session/navigation, cached team groups, and optional operator bridge (the
-   distinct HTTPS origins, desktop identity/pin, navigation fence, and strict
-   metadata/token-write/remove substrate are complete);
+   SSH/TLS tunnel, distinct HTTPS origins, desktop identity/pin, navigation
+   fence, and strict metadata/token-write/remove substrate are complete);
 4. app-visible project setup driven by the backend and prepared by the CLI;
 5. restore and the complete live no-pause/partial-capture qualification (archive
    encryption/readback, durable status, retention, first-run timer activation,
@@ -3259,9 +3315,9 @@ version-qualified, so the hook reads it off the live `WKWebView`.
 **Production completion, 2026-08-30:** D2 now owns the canonical allocator,
 versioned Keychain identity, production trust-hook linkage, exact registry-backed
 navigation rule, and bounded Tauri capability. The two-phase probe and actual
-source-built app pass on this host. TLS through the real D3 SSH proxy and the D4
-team session remain open; a second Mac and signed packaged app are later
-compatibility qualification.
+source-built app pass on this host. D3 has since closed TLS through the real SSH
+proxy; the D4 team session remains open. A second Mac and signed packaged app are
+later compatibility qualification.
 
 ### D3 — SSH tunnel lifecycle
 
@@ -3269,7 +3325,7 @@ Own:
 
 - new `web/src-tauri/src/team_tunnel.rs`;
 - lifecycle integration in `web/src-tauri/src/lib.rs` and
-  `web/src-tauri/src/backend.rs`;
+  `web/src-tauri/src/updates.rs`;
 - command and permission integration in `web/src-tauri/src/commands.rs` and
   `web/src-tauri/capabilities/main.json`; and
 - Rust unit plus live SSH tests.
@@ -3279,6 +3335,14 @@ Launch system `ssh` with argv, configured host alias, explicit local bind, remot
 child lifecycle. Reuse one healthy tunnel per connection, reconnect with backoff,
 and stop only desktop-owned tunnels on Quit. Never kill a remote RCP service or
 accept a tunnel that resolves to an unsaved origin.
+
+**Completed 2026-08-30:** the production owner, command permission, saved-row
+lookup, direct system-SSH child, local rustls proxy, reuse/backoff, metadata-
+removal cleanup, Quit/update cleanup, focused tests, and authenticated live
+forward drive all pass. Admission and retirement fence launch against cleanup,
+unconfirmed cleanup retains ownership, route reuse is exact, and system SSH
+cannot multiplex or background the owned forward. D4 consumes this owner; it
+must not introduce another transport path.
 
 ### D4a — Team handshake and WebView session establishment
 

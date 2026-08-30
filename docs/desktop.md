@@ -121,6 +121,17 @@ connections use connection-bound `rcp-<uuid>.localhost` origins; only their
 exact validated origins may enter the main window, and only the stored
 certificate fingerprint is passed to the native trust hook.
 
+The ignored D3 live test uses the same production tunnel owner with an existing
+system SSH login, forwards only the remote host's loopback SSH banner, then
+stops and reaps the local child. It does not start or stop a remote service:
+
+```bash
+RCP_LIVE_SSH_TARGET=<ssh-alias-or-user@host> \
+  cargo test --manifest-path web/src-tauri/Cargo.toml \
+  team_tunnel::tests::live_system_ssh_child_forwards_through_owned_tls_proxy \
+  -- --ignored --nocapture
+```
+
 ## Build and test a release candidate
 
 Before packaging, verify that the intended revision is checked out, the version is

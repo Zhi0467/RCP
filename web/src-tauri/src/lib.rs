@@ -5,6 +5,7 @@ mod lifecycle;
 mod local_https;
 mod navigation;
 mod team_connections;
+mod team_tunnel;
 mod updates;
 mod windows;
 
@@ -67,6 +68,7 @@ pub fn run() {
             commands::desktop_remove_team_connection_metadata,
             commands::desktop_store_team_member_token,
             commands::desktop_remove_team_member_token,
+            commands::desktop_connect_team_tunnel,
             commands::choose_repository_folder,
             commands::desktop_start_dictation,
             commands::desktop_stop_dictation,
@@ -87,6 +89,14 @@ pub fn run() {
             if !app.manage(team_connections) {
                 return Err(std::io::Error::other(
                     "RCP desktop team connection state was already registered",
+                )
+                .into());
+            }
+            let team_tunnels =
+                team_tunnel::TeamTunnelState::new(&local_https).map_err(std::io::Error::other)?;
+            if !app.manage(team_tunnels) {
+                return Err(std::io::Error::other(
+                    "RCP desktop team tunnel state was already registered",
                 )
                 .into());
             }
@@ -227,6 +237,7 @@ fn request_app_quit(app: tauri::AppHandle) -> bool {
 
 fn request_app_quit_with_code(app: tauri::AppHandle, clean_exit_code: i32) -> bool {
     let state = app.state::<BackendState>().inner().clone();
+    let team_tunnels = app.state::<team_tunnel::TeamTunnelState>().inner().clone();
     match state.begin_quit() {
         Ok(QuitRequest::Started) => {}
         Ok(QuitRequest::AlreadyQuitting) => return true,
@@ -248,6 +259,12 @@ fn request_app_quit_with_code(app: tauri::AppHandle, clean_exit_code: i32) -> bo
     }
     dictation::stop_active();
     tauri::async_runtime::spawn(async move {
+        if let Err(error) = team_tunnels.stop_all_for_lifecycle().await {
+            show_shutdown_problem(&app, &format!("Quit did not complete.\n\n{error}"));
+            state.abort_quit().await;
+            team_tunnels.resume_after_lifecycle_failure().await;
+            return;
+        }
         let shutdown = backend::stop_for_quit(&state).await;
         if let Some(message) = shutdown.problem() {
             let message = if shutdown.may_exit() {
@@ -260,6 +277,7 @@ fn request_app_quit_with_code(app: tauri::AppHandle, clean_exit_code: i32) -> bo
         eprintln!("[rcp] desktop shutdown: {shutdown:?}");
         if !shutdown.may_exit() {
             state.abort_quit().await;
+            team_tunnels.resume_after_lifecycle_failure().await;
             return;
         }
         let exit_code = if shutdown.is_clean() {

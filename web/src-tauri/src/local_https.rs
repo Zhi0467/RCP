@@ -30,6 +30,19 @@ impl LocalHttpsIdentity {
     pub fn fingerprint_sha256(&self) -> &str {
         &self.fingerprint_sha256
     }
+
+    pub(crate) fn certificate_der(&self) -> &[u8] {
+        &self.certificate_der
+    }
+
+    pub(crate) fn private_key_der(&self) -> &[u8] {
+        &self.private_key_der
+    }
+
+    #[cfg(test)]
+    pub(crate) fn generated_for_test() -> Self {
+        generate_identity().expect("test local HTTPS identity")
+    }
 }
 
 fn generate_identity() -> Result<LocalHttpsIdentity, String> {

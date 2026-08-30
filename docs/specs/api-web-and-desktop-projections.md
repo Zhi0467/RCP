@@ -136,6 +136,27 @@ WebView before navigating to that server's own application. A changed
 unavailable team connection leaves personal work usable and shows its cached
 cards as unavailable. Returning to the local index reloads the local backend.
 
+For a saved connection, the macOS shell launches `/usr/bin/ssh` directly with
+argument-vector execution, batch authentication, no remote command or terminal,
+exit-on-forward-failure, bounded connect/readiness timers, keepalives, disabled
+control sharing/backgrounding, and one explicit
+`127.0.0.1:<ephemeral>:127.0.0.1:<configured-server-port>` forward. It therefore
+uses the member's existing SSH config and agent for host, key, proxy, and host
+verification without accepting an interactive password prompt inside RCP. A
+desktop-owned dual-stack loopback TLS listener presents the Keychain identity at
+the saved HTTPS origin and forwards plain bytes only to that private SSH
+listener. One healthy connection is reused only while origin, SSH target, and
+remote port still match; an ended, changed, or failed connection observes a
+short backoff before replacement.
+
+Tunnel admission owns saved-row lookup and closes before removal, Quit, or
+desktop update drains children. A failed lifecycle operation explicitly reopens
+admission only when the app returns to service. A cleanup failure keeps the
+unconfirmed child record for retry while its supervisor remains live and for
+diagnostics otherwise, instead of forgetting ownership. The personal origin may
+connect any saved row, while a team origin may reconnect only its own exact row.
+None of these operations signal or restart the remote RCP service.
+
 Every saved space receives a stable, distinct loopback origin. Different ports
 on the same `127.0.0.1` host are not isolation because cookies ignore ports; such
 tunnels would collide on the shared `__Host-` session-cookie name. The shell
