@@ -13,6 +13,7 @@ from rcp.api.dependencies import (
     get_store,
     get_watcher_delivery,
     require_project_membership,
+    require_project_write_admission,
 )
 from rcp.api.identity import IdentityAccess
 from rcp.core.transition_models import GraphTargetRef
@@ -37,7 +38,10 @@ ExperimentOperationLockDependency = Annotated[
 ]
 
 
-@router.post("/api/projects/{project_id}/sync")
+@router.post(
+    "/api/projects/{project_id}/sync",
+    dependencies=[Depends(require_project_write_admission)],
+)
 def sync_graph(
     project_id: str,
     body: GraphSyncRequest,

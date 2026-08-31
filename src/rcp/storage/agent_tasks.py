@@ -177,6 +177,8 @@ class AgentTaskStoreMixin:
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
+                if continuation_cause == "fresh":
+                    self._require_project_accepts_new_work(connection, record.project_id)
                 if self._has_active_chat_overlap(connection, record):
                     raise ValueError("Another task is already active in this conversation.")
                 self._insert_agent_task(
@@ -230,6 +232,7 @@ class AgentTaskStoreMixin:
                     ):
                         raise ValueError("the branch merge task conflicts with its durable id")
                     return stored
+                self._require_project_accepts_new_work(connection, record.project_id)
                 episode = connection.execute(
                     "SELECT * FROM episodes WHERE episode_id = ?",
                     (record.episode_id,),

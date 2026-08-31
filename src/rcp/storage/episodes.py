@@ -35,6 +35,7 @@ class EpisodeStoreMixin:
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
+                self._require_project_accepts_new_work(connection, record.project_id)
                 if self._live_episode_row(connection, record) is not None:
                     raise ValueError("This episode mode already has a live parent.")
                 self._insert_episode(connection, record)
@@ -93,6 +94,7 @@ class EpisodeStoreMixin:
                         "the episode root creation conflicts with its committed pair"
                     )
             else:
+                self._require_project_accepts_new_work(connection, record.project_id)
                 if self._live_episode_row(connection, record) is not None:
                     raise ValueError("This episode mode already has a live parent.")
                 started = record.model_copy(

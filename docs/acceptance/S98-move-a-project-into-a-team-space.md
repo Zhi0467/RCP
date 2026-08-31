@@ -22,6 +22,8 @@ covered_by:
   - tests/test_transfer_project_configuration.py
   - tests/test_transfer_import.py
   - tests/test_transfer_import_storage.py
+  - tests/test_transfer_source.py
+  - tests/test_transfer_source_archive.py
 invariants: [1, 3, 6, 11]
 ---
 
@@ -31,7 +33,8 @@ This live scenario remains pending end-to-end implementation. Its canonical
 home-transfer record, ordered replay boundary, linked cross-space request
 storage, independent human receipts, strict project/repository link receipt,
 and one-time proof lifecycle are implemented and covered by the tests above.
-The authenticated request APIs and native proof exchange are also implemented.
+The authenticated request APIs, pinned source-archive stream, and native proof
+exchange are also implemented.
 Stopped-service restore now freezes every unfinished target request as operator
 action needed while preserving its exact committed transfer phase, receipts,
 archive binding, and protected proof state. The versioned transfer manifest,
@@ -51,8 +54,11 @@ unreadable sources produce bounded best-effort summaries. Target import from a
 previously decoded request stage is now implemented: it validates the exact
 archive tree and reviewed configuration, imports terminal rows in one SQLite
 transaction, publishes through concrete owners, proves readback, and leaves no
-registered project before activation. End-to-end archive assembly, sealed-byte
-relay/decoding, and activation remain open. The target-owned local provider
+registered project before activation. Source release now atomically fences new
+root admissions, waits for terminal history, appends the attributed home Patch,
+seals one deterministic private archive, reuses its exact bytes across crash
+recovery, and retires the source only after the matching target proof. Target
+relay/decoding and activation remain open. The target-owned local provider
 source store atomically publishes validated
 content-addressed histories, keeps them separate from native provider homes,
 and blocks Seed/Refresh on any later corruption. The reviewed target request
@@ -60,7 +66,7 @@ also rebuilds a target-only manifest, validates any retained Git history as an
 exact archive prefix, and replays main plus every branch in an isolated
 workspace before import. Its receipt binds the exact final review and archive
 manifest, not only the resulting target configuration. Machine relay/decoding,
-source/target activation and cleanup orchestration, and the desktop drive remain
+target activation and cleanup-return orchestration, and the desktop drive remain
 open. Remote Seed/Refresh staging is implemented hermetically: it copies only
 the project-owned sealed inventory, preserves the remote account's native
 roots, verifies the immutable task input before launch and Resume, and rejects
@@ -72,9 +78,9 @@ The imported-history lifecycle is complete around that importer:
 encrypted backup and restore preserve exact project-owned bytes, candidate
 rehearsal and update rollback validate them through the same owner, and bounded
 failure cleanup can remove only the exact linked pre-activation request state.
-Ordinary team-project Delete remains unavailable. Source archive sealing,
-machine relay and decode, activation and cleanup receipts, desktop
-orchestration, and the complete live drive still keep this scenario pending.
+Ordinary team-project Delete remains unavailable. Machine relay and decode,
+target activation and cleanup return, desktop orchestration, and the complete
+live drive still keep this scenario pending.
 
 Transfer is personal space → team space, one way. The team server prepares a
 separate central checkout set, with each checkout owned by `rcp` locally or by

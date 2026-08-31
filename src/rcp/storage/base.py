@@ -607,7 +607,9 @@ class AppStoreBase:
                     attention_count INTEGER NOT NULL DEFAULT 0,
                     last_refresh_at TEXT,
                     reachable INTEGER,
-                    error TEXT
+                    error TEXT,
+                    retired_at TEXT,
+                    retired_transfer_request_id TEXT
                 );
                 CREATE INDEX IF NOT EXISTS projects_recent
                     ON projects(last_opened_at DESC, added_at DESC);
@@ -1279,6 +1281,13 @@ class AppStoreBase:
             # Existing v0.2 databases need additive migration before the index
             # can include the new transitional state.
             self._ensure_column(connection, "projects", "home_space_id", "TEXT")
+            self._ensure_column(connection, "projects", "retired_at", "TEXT")
+            self._ensure_column(
+                connection,
+                "projects",
+                "retired_transfer_request_id",
+                "TEXT",
+            )
             self._ensure_column(
                 connection,
                 "project_provisioning_requests",

@@ -231,6 +231,8 @@ class ProjectRecord(BaseModel):
     last_refresh_at: str | None = None
     reachable: bool | None = None
     error: str | None = None
+    retired_at: str | None = None
+    retired_transfer_request_id: str | None = None
 
     @field_validator("home_space_id")
     @classmethod

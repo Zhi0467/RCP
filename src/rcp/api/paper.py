@@ -9,6 +9,7 @@ from rcp.api.dependencies import (
     get_catalog,
     get_project_service,
     require_project_membership,
+    require_project_write_admission,
 )
 from rcp.projects import ProjectCatalog
 
@@ -29,7 +30,10 @@ def get_paper(
     return paper.snapshot().model_dump(mode="json")
 
 
-@router.post("/api/projects/{project_id}/paper/create")
+@router.post(
+    "/api/projects/{project_id}/paper/create",
+    dependencies=[Depends(require_project_write_admission)],
+)
 def create_paper(
     project_id: str,
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
@@ -38,7 +42,10 @@ def create_paper(
     return paper.create().model_dump(mode="json")
 
 
-@router.put("/api/projects/{project_id}/paper")
+@router.put(
+    "/api/projects/{project_id}/paper",
+    dependencies=[Depends(require_project_write_admission)],
+)
 def save_paper(
     project_id: str,
     body: PaperSaveRequest,

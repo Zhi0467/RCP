@@ -25,6 +25,7 @@ from rcp.storage import (
     ProjectTransferRepositorySource,
     ProjectTransferSourceConfiguration,
 )
+from rcp.transfer.source import read_transfer_archive, stage_transfer_archive
 
 from .helpers import create_named_app
 
@@ -468,24 +469,40 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
             )
             assert premature.status_code == 409
 
-        fenced_head = GraphHeadRef(
-            revision=source_head.revision + 1,
-            transition_id="d" * 64,
+        assert source_request["phase"] == "archive_bound"
+        fenced_head = GraphHeadRef.model_validate(source_request["source_fence_head"])
+        archive_path = (
+            f"/api/native/project-transfers/source-requests/{source_request['request_id']}/archive"
         )
-        source_store.mark_source_project_transfer_fenced(
-            source_request["request_id"],
-            source_head=fenced_head,
+        assert source_client.get(archive_path).status_code == 409
+        source_instance_id = source_app.state.instance_metadata.instance_id
+        native_source_headers = {"X-RCP-Instance-ID": source_instance_id}
+        downloaded = source_client.get(archive_path, headers=native_source_headers)
+        assert downloaded.status_code == 200
+        assert downloaded.headers["cache-control"] == "no-store"
+        assert downloaded.headers["content-type"] == "application/octet-stream"
+        assert downloaded.headers["x-rcp-archive-sha256"] == source_request["archive_sha256"]
+        assert hashlib.sha256(downloaded.content).hexdigest() == source_request["archive_sha256"]
+        assert len(downloaded.content) == source_request["archive_size_bytes"]
+        repeated_download = source_client.get(archive_path, headers=native_source_headers)
+        assert repeated_download.content == downloaded.content
+        downloaded_path = tmp_path / "downloaded.rcp-transfer"
+        downloaded_path.write_bytes(downloaded.content)
+        downloaded_path.chmod(0o600)
+        readback = read_transfer_archive(downloaded_path)
+        assert (
+            GraphHeadRef.model_validate_json(readback.manifest.main_head.model_dump_json())
+            == fenced_head
         )
-        source_secret = source_store.expose_project_transfer_proof(source_request["request_id"])
-        archive_sha256 = hashlib.sha256(b"sealed transfer archive").hexdigest()
-        source_bound = source_client.post(
-            f"/api/project-transfers/requests/{source_request['request_id']}/archive",
-            json={
-                "archive_sha256": archive_sha256,
-                "archive_size_bytes": 23,
-            },
+        staging_root = tmp_path / "downloaded-stage"
+        stage_transfer_archive(downloaded_path, staging_root)
+        source_secret = (staging_root / "control/source-release-proof.bin").read_bytes()
+        assert (
+            hashlib.sha256(source_secret).hexdigest()
+            == source_request["source_release_proof_sha256"]
         )
-        assert source_bound.status_code == 200
+        archive_sha256 = source_request["archive_sha256"]
+        archive_size_bytes = source_request["archive_size_bytes"]
         with TestClient(team_app, base_url="https://team.test") as bob_client:
             assert (
                 bob_client.post(
@@ -507,7 +524,7 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
             f"/api/project-transfers/requests/{target_request['request_id']}/archive",
             json={
                 "archive_sha256": archive_sha256,
-                "archive_size_bytes": 23,
+                "archive_size_bytes": archive_size_bytes,
                 "source_fence_head": fenced_head.model_dump(mode="json"),
             },
         )
@@ -576,6 +593,17 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
             headers={"Content-Type": "application/octet-stream"},
         )
         assert repeated_verification.json() == acknowledgment
+        owner = source_store.local_owner
+        assert owner is not None
+        retained_members = source_store.project_members(project_id)
+        assert source_store.project(project_id) is None
+        retired = source_store.retired_project(project_id)
+        assert retired is not None
+        assert retired.retired_transfer_request_id == source_request["request_id"]
+        assert source_store.project_members(project_id) == retained_members
+        assert not source_store.is_project_member(project_id, owner.user_id)
+        assert project_id not in source_store.member_project_ids(owner.user_id)
+        assert source_client.get(archive_path, headers=native_source_headers).status_code == 409
         cleanup_path = (
             "/api/native/project-transfers/target-requests/"
             f"{target_request['request_id']}/cleanup-acknowledgment"

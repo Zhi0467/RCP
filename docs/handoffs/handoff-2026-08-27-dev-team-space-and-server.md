@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f | — | T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a | — | T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -234,6 +234,54 @@ gate are deliberately future work and do not block this plan.
 
 ### Implementation log
 
+#### 2026-08-31 — T4a source fence, exact export, and retirement complete
+
+- The human source-release route now holds the same per-project admission lock
+  as new HTTP work, records the release receipt, and advances one source-owned
+  state machine. Fresh root task, episode, Auto-research, direct Experiment,
+  and branch-merge admissions also check the durable fence inside their SQLite
+  write transaction. Existing watcher and episode continuations remain able to
+  settle; transfer export refuses every still-live task, episode, watcher,
+  report, child, or delivery.
+- The source state machine appends exactly one attributed home-transfer Patch,
+  recovers after a stop between that Patch and the SQLite fence receipt, exports
+  the terminal operational projection plus canonical history, transformed
+  project files, provider history, manifest provenance, and the source-release
+  proof, then seals one deterministic private archive at
+  `transfer-exports/<request-id>.rcp-transfer`.
+  Local and SSH canonical/file capture runs under the workspace transaction, so
+  remote export holds the same advisory ownership lease as ordinary canonical
+  publication.
+- Archive publication is no-overwrite and mode 0600. Every retry after final
+  publication reopens and rehashes the same request-derived path; a missing,
+  corrupt, unsafe, or receipt-mismatched archive fails loudly and is never
+  regenerated. The native authenticated GET route requires the exact pinned
+  personal-backend instance and exposes only this bound archive, with no-store
+  headers and bounded streaming chunks.
+- A matching target-activation proof completes source cleanup: it records the
+  acknowledgment, validates the still-present bound archive, consumes the raw
+  proof, retires the source catalog row, drops its loaded runtime, unlinks only
+  that revalidated request archive, and closes the request. Missing or corrupt
+  recovery bytes therefore cannot hide the source. Retries are serialized by
+  the project operation lock and idempotent across retirement, unlink, proof
+  consumption, and completion. Membership and invitation rows remain retained
+  as audit history, while active membership/catalog queries exclude the retired
+  project.
+- Focused coverage exercises final-publication-before-receipt recovery,
+  home-Patch-before-SQLite-fence restart recovery, same-byte retry, corrupt and
+  missing bound archives, transaction-held capture, storage-level fresh-work
+  refusal, authenticated exact download, proof inclusion, proof-triggered
+  retirement, and idempotent cleanup.
+  T4b owns target upload; T4c owns decoding, T3f import invocation, activation,
+  and the return receipt.
+- The packet's one independent read-only audit found four defects: missing or
+  corrupt recovery bytes could retire the source before validation, SSH capture
+  did not hold canonical ownership, and concurrent cleanup retries could race.
+  The single correction round fixed cleanup ordering, added pre-retirement and
+  pre-unlink validation, held the workspace transaction during capture, and
+  serialized the proof route. Focused regressions cover the corrected recovery
+  and lock boundaries; no second audit was run.
+
 #### 2026-08-31 — T3f validated target import and readback complete
 
 - Added one strict target importer for an already decoded, request-scoped
@@ -255,9 +303,10 @@ gate are deliberately future work and do not block this plan.
   keeps the project unregistered and resumes the same digest without duplicate
   history. A post-commit completion exception re-reads the receipt before
   cleanup, preventing removal of files already bound by a complete receipt.
-- The focused T3f/transfer suite passes. Sealed archive creation and decoding,
-  target upload, activation, source retirement, desktop orchestration, SSH, and
-  the live lab drive remain T4a-T5/V1.
+- The focused T3f/transfer suite passes. T4a subsequently completed sealed
+  source archive creation and source retirement. Decoding, target upload,
+  activation, desktop orchestration, SSH, and the live lab drive remain
+  T4b-T5/V1.
 - The one independent read-only audit found no concrete T3f correctness or stale
   documentation defect. No correction round was needed.
 
@@ -5574,8 +5623,9 @@ turns failure cleanup into a team-project deprovision path.
 ### T3f — Validated atomic target import and readback
 
 Status: complete hermetically on 2026-08-31. The importer consumes a previously
-decoded, request-scoped archive staging tree; T4a/T4b/T4c still own sealed archive
-creation, transport, codec decoding, activation, and cross-space retirement.
+decoded, request-scoped archive staging tree. T4a now owns sealed source-archive
+creation and source retirement; T4b/T4c still own target transport, codec
+decoding, import invocation, activation, and the return receipt.
 
 Own:
 
@@ -5629,11 +5679,11 @@ exact Paper/fact/artifact/view/provider bytes, kept-view non-revision, idempoten
 retry, undeclared staging-entry refusal before mutation, SQLite rollback after a
 mid-transaction fault, and same-archive repair after canonical, project-file,
 provider-history, and completion boundary failures. No real archive relay,
-desktop, SSH host, or activation was exercised here; those remain T4a-T5/V1.
+desktop, SSH host, or activation was exercised here; those remain T4b-T5/V1.
 The one independent read-only audit reported no concrete finding, so no audit
 correction round was run.
 
-### T4a — Source fence, exact export, and retirement receipt
+### T4a — Source fence, exact export, and retirement receipt — complete
 
 Own:
 
@@ -5645,37 +5695,33 @@ Own:
   and
 - `tests/test_transfer_source.py` with crash injection at every source boundary.
 
-At source release confirmation, recheck source membership, linked request
-identity, the target's bound human admission confirmation and unchanged reviewed
-preparation revision, both proof commitments, the negotiated schema/codec, the
-source manifest/configuration digest, and the source head. A changed source
-configuration or incompatible target fails before the human release receipt,
-home transition, or write fence and returns to preparation. First persist one idempotent human
-source-release receipt. Then fence new source admission, settle
-already-authorized work, append T1's home transfer with both human actors, and
-export that exact accepted history/head. Publish the resulting head, archive
-digest, and both confirmation identities in a separate idempotent source-fence
-receipt. The export response is available only for that doubly confirmed request
-and bounded archive described by its manifest.
+Implemented as the source-owned state machine in `rcp.transfer.source`. Release
+revalidates the reviewed configuration and head under the project operation
+lock, persists one idempotent human receipt, and makes the durable
+`source_released` phase the database admission fence. Fresh human-root work is
+refused in the same SQLite transaction that would create it; already-authorized
+continuations can settle. Terminal operational export is the quiescence check.
 
-Atomically seal that exact archive as a mode-0600 regular file at the
-request-derived app-data path
-`<RCP_DATA_DIR>/transfer-exports/<request-id>.rcp-transfer` before publishing the
-digest receipt. Include T2a's raw source-release proof only in that sealed
-post-fence control envelope. Once the receipt exists, every browser/native relay retry reads
-and re-hashes this same file; a missing or corrupt sealed export is a loud
-repair state, never permission to regenerate a potentially different provider
-selection under the old digest. A pre-seal temporary file is request-owned and
-may be replaced on idempotent retry only before any digest receipt exists.
+The state machine appends T1's home transfer with both human actors, records the
+post-transfer head, and captures the exact terminal operational records,
+canonical history, project files, provider histories, source manifest
+provenance, and raw source-release proof. It atomically seals a deterministic
+mode-0600 archive at
+`<RCP_DATA_DIR>/transfer-exports/<request-id>.rcp-transfer`, then binds its digest
+and size. A final file left before its receipt is reused; after the receipt,
+every retry reads and rehashes the same file. Missing, corrupt, unsafe, or
+mismatched bytes fail loudly without regeneration. The authenticated native
+source route requires the exact pinned personal-backend instance and streams
+only that exact request archive in bounded chunks.
 
-Keep the retired source catalog row visible as transfer-in-progress until it
-receives the matching durable T4c target-activation receipt, then retire it
-idempotently and unlink only that verified request export. Ordinary project
-Delete remains unavailable while the source fence/export is needed. A crash
-after the home transition may leave no writable home and must resume the same
-request and sealed bytes; never restore source write admission as a fallback.
-This packet can prove its receipt boundary with a fixed target fixture and does
-not own SSH transport or target mutation.
+After the matching T4c target-activation proof arrives, serialized cleanup first
+validates the still-present bound archive and consumes the raw proof. It then
+retires the source project row, removes runtime visibility, revalidates and
+unlinks only that archive, and completes the request. Missing or corrupt bytes
+cannot retire the source. The sequence is idempotent across every step. Retired
+projects disappear from catalog and active membership queries, but membership
+and invitation rows remain retained for audit. T4a performs no target upload,
+decode, import, registration, or SSH transport; those remain T4b-T5.
 
 ### T4b — Protected target upload lease and inbox
 

@@ -13,6 +13,7 @@ from rcp.api.dependencies import (
     get_result_view_keep_locks,
     get_store,
     require_project_membership,
+    require_project_write_admission,
     require_registered_project,
 )
 from rcp.artifacts import ResultViewDescriptor, html_preview_document
@@ -86,6 +87,7 @@ async def preview_result_view(
 @router.post(
     "/api/projects/{project_id}/result-views/{view_id}/keep",
     response_model=ResultViewDescriptor,
+    dependencies=[Depends(require_project_write_admission)],
 )
 def keep_result_view(
     project_id: str,

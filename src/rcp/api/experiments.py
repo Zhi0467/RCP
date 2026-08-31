@@ -13,6 +13,7 @@ from rcp.api.dependencies import (
     get_project_service,
     get_store,
     require_project_membership,
+    require_project_write_admission,
     require_registered_project,
 )
 from rcp.api.episodes import _episode_for_http
@@ -50,6 +51,7 @@ ExperimentOperationLockDependency = Annotated[
 @router.post(
     "/api/projects/{project_id}/experiments/{node_id:path}/run",
     status_code=202,
+    dependencies=[Depends(require_project_write_admission)],
 )
 def run_experiment(
     project_id: str,

@@ -22,6 +22,7 @@ from rcp.api.dependencies import (
     get_result_view_keep_locks,
     get_store,
     require_project_membership,
+    require_project_write_admission,
     require_registered_project,
 )
 from rcp.api.identity import IdentityAccess
@@ -153,7 +154,11 @@ def _reject_history_only_control(record: AgentTaskRecord) -> None:
         )
 
 
-@router.post("/api/projects/{project_id}/tasks/{kind}", status_code=202)
+@router.post(
+    "/api/projects/{project_id}/tasks/{kind}",
+    status_code=202,
+    dependencies=[Depends(require_project_write_admission)],
+)
 def start_agent_task(
     project_id: str,
     kind: AgentTaskKind,
@@ -494,7 +499,10 @@ async def _artifact_viewer_response(
     )
 
 
-@router.post("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/keep")
+@router.post(
+    "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/keep",
+    dependencies=[Depends(require_project_write_admission)],
+)
 async def keep_agent_artifact(
     project_id: str,
     operation_id: str,
@@ -618,6 +626,7 @@ def resume_agent_task(
 @router.post(
     "/api/projects/{project_id}/tasks/{operation_id}/repair-graph-update",
     status_code=202,
+    dependencies=[Depends(require_project_write_admission)],
 )
 def repair_agent_task_graph_update(
     project_id: str,
@@ -657,7 +666,11 @@ def repair_agent_task_graph_update(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post("/api/projects/{project_id}/tasks/{operation_id}/retry", status_code=202)
+@router.post(
+    "/api/projects/{project_id}/tasks/{operation_id}/retry",
+    status_code=202,
+    dependencies=[Depends(require_project_write_admission)],
+)
 def retry_agent_task(
     project_id: str,
     operation_id: str,

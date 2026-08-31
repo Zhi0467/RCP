@@ -13,6 +13,7 @@ from rcp.core.transition_models import GraphHeadRef
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.storage import (
+    AgentTaskRecord,
     AppStore,
     ProjectProvisioningGitCheckRecord,
     ProjectProvisioningMachineIntent,
@@ -254,6 +255,25 @@ def _released_pair(tmp_path: Path):
         receipt=source_request.source_release_receipt,
     )
     return source, target, source_request, target_request
+
+
+def test_source_release_atomically_fences_new_root_task_admission(tmp_path: Path) -> None:
+    source, _target, source_request, _target_request = _released_pair(tmp_path)
+    now = source.now()
+    task = AgentTaskRecord(
+        operation_id=str(uuid.uuid4()),
+        project_id=source_request.project_id,
+        kind="refresh",
+        status="queued",
+        request={},
+        created_at=now,
+        updated_at=now,
+        status_message="Waiting to refresh.",
+    )
+
+    with pytest.raises(ValueError, match="moving to its admitted team space"):
+        source.create_agent_task(task)
+    assert source.agent_task(task.operation_id) is None
 
 
 def test_linked_requests_keep_independent_raw_proofs_out_of_public_state(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from rcp.api.dependencies import (
     get_project_service,
     get_store,
     require_project_membership,
+    require_project_write_admission,
     require_registered_project,
 )
 from rcp.api.identity import IdentityAccess
@@ -254,7 +255,10 @@ def preview_repository_file(
     )
 
 
-@router.put("/api/projects/{project_id}/settings")
+@router.put(
+    "/api/projects/{project_id}/settings",
+    dependencies=[Depends(require_project_write_admission)],
+)
 def update_project_settings(
     project_id: str,
     body: ProjectSettingsRequest,
@@ -270,7 +274,10 @@ def update_project_settings(
     return snapshot
 
 
-@router.post("/api/projects/{project_id}/machines/{machine_alias}/providers/{provider}/resolve")
+@router.post(
+    "/api/projects/{project_id}/machines/{machine_alias}/providers/{provider}/resolve",
+    dependencies=[Depends(require_project_write_admission)],
+)
 def resolve_project_provider_path(
     project_id: str,
     machine_alias: str,

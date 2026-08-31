@@ -183,6 +183,76 @@ def _verify_project_provisioning_review_digest(
 class ProjectProvisioningStoreMixin:
     """One transactional state machine for every team-project preparation."""
 
+    def require_project_accepts_new_work(self, project_id: str) -> None:
+        """Refuse new source-side work after the human release fences the project."""
+
+        canonical_project_id = self._transfer_uuid(project_id, "project identity")
+        with self.connection() as connection:
+            self._require_project_accepts_new_work(connection, canonical_project_id)
+
+    @staticmethod
+    def _require_project_accepts_new_work(
+        connection: sqlite3.Connection,
+        project_id: str,
+    ) -> None:
+        row = connection.execute(
+            """
+            SELECT request_id FROM project_transfer_requests
+            WHERE side = 'source' AND project_id = ?
+              AND phase IN (
+                'source_released', 'source_fenced', 'archive_bound',
+                'cleanup_acknowledged', 'completed'
+              )
+            LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+        if row is not None:
+            raise ValueError(
+                "This project is moving to its admitted team space and cannot accept new work."
+            )
+
+    def retire_source_project_transfer(self, request_id: str) -> ProjectTransferRequestRecord:
+        """Hide one departed source project after its target proof was verified."""
+
+        canonical_request_id = self._transfer_uuid(request_id, "transfer request identity")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._project_transfer_request_from_connection(
+                connection,
+                canonical_request_id,
+            )
+            if (
+                current.side != "source"
+                or current.phase not in {"cleanup_acknowledged", "completed"}
+                or current.proof_state not in {"acknowledged", "consumed"}
+            ):
+                raise ValueError("source transfer is not ready to retire its catalog entry")
+            project = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?",
+                (current.project_id,),
+            ).fetchone()
+            if project is None:
+                raise RuntimeError("source transfer lost its retained catalog receipt")
+            bound_request_id = project["retired_transfer_request_id"]
+            if bound_request_id is not None:
+                if bound_request_id != canonical_request_id or project["retired_at"] is None:
+                    raise ValueError("source project was retired by another operation")
+                return current
+            if project["retired_at"] is not None:
+                raise ValueError("source project has an unbound retirement marker")
+            if project["home_space_id"] != current.source_space_id:
+                raise ValueError("source catalog entry no longer belongs to this transfer")
+            connection.execute(
+                """
+                UPDATE projects
+                SET retired_at = ?, retired_transfer_request_id = ?
+                WHERE project_id = ? AND retired_at IS NULL
+                """,
+                (self.now(), canonical_request_id, current.project_id),
+            )
+        return current
+
     def create_source_project_transfer_request(
         self,
         *,

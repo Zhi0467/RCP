@@ -6,9 +6,16 @@ import json
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from rcp.api.dependencies import get_catalog, get_identity_access, get_setup, get_store
+from rcp.api.dependencies import (
+    get_catalog,
+    get_experiment_operation_lock,
+    get_identity_access,
+    get_setup,
+    get_store,
+)
 from rcp.api.identity import IdentityAccess
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
@@ -19,6 +26,7 @@ from rcp.config import (
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef
 from rcp.history import ProjectIdentityConflict
+from rcp.keyed_locks import KeyedLocks
 from rcp.project_transfer import capture_project_transfer_source
 from rcp.projects import ProjectCatalog
 from rcp.providers import ProviderId
@@ -48,6 +56,13 @@ from rcp.storage import (
     TeamAuthenticationError,
 )
 from rcp.storage.provisioning import project_transfer_source_configuration_sha256
+from rcp.transfer.source import (
+    advance_source_project_transfer,
+    complete_source_project_transfer,
+    read_transfer_archive,
+    source_transfer_export_path,
+    stream_source_transfer_archive,
+)
 from rcp.transport import StateUnavailable
 
 router = APIRouter()
@@ -56,6 +71,7 @@ IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 SetupDependency = Annotated[ProjectSetupManager, Depends(get_setup)]
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
+OperationLockDependency = Annotated[KeyedLocks, Depends(get_experiment_operation_lock)]
 
 ProjectCreationIntent = Literal[
     "use_existing_checkout_personally",
@@ -671,36 +687,42 @@ def release_source_project_transfer_request(
     identity_access: IdentityDependency,
     store: StoreDependency,
     catalog: CatalogDependency,
+    operation_lock: OperationLockDependency,
 ) -> ProjectTransferRequestRecord:
     _require_transfer_space(store, "personal")
     actor = identity_access.require_patch_capable_identity(request)
     try:
         transfer = _transfer_request_or_404(store, request_id)
-        existing_receipt = transfer.source_release_receipt
-        if existing_receipt is None:
-            service = catalog.open(transfer.project_id)
-            configuration, source_head = capture_project_transfer_source(service)
-            if (
-                project_transfer_source_configuration_sha256(configuration)
-                != body.expected_source_configuration_sha256
-                or source_head != body.expected_source_head
-            ):
-                raise ValueError("source configuration or canonical head changed before release")
-        else:
-            if (
-                existing_receipt.source_configuration_sha256
-                != body.expected_source_configuration_sha256
-                or existing_receipt.source_head != body.expected_source_head
-            ):
-                raise ValueError("source release already binds another canonical boundary")
-            configuration = transfer.source_configuration
-            source_head = existing_receipt.source_head
-        return store.record_source_project_transfer_release(
-            request_id,
-            released_by=actor,
-            revalidated_configuration=configuration,
-            source_head=source_head,
-        )
+        with operation_lock(transfer.project_id):
+            transfer = _transfer_request_or_404(store, request_id)
+            existing_receipt = transfer.source_release_receipt
+            if existing_receipt is None:
+                if not store.is_project_member(transfer.project_id, actor.user_id):
+                    raise ValueError("source release requires current project membership")
+                service = catalog.open(transfer.project_id)
+                configuration, source_head = capture_project_transfer_source(service)
+                if (
+                    project_transfer_source_configuration_sha256(configuration)
+                    != body.expected_source_configuration_sha256
+                    or source_head != body.expected_source_head
+                ):
+                    raise ValueError(
+                        "source configuration or canonical head changed before release"
+                    )
+                store.record_source_project_transfer_release(
+                    request_id,
+                    released_by=actor,
+                    revalidated_configuration=configuration,
+                    source_head=source_head,
+                )
+            else:
+                if (
+                    existing_receipt.source_configuration_sha256
+                    != body.expected_source_configuration_sha256
+                    or existing_receipt.source_head != body.expected_source_head
+                ):
+                    raise ValueError("source release already binds another canonical boundary")
+            return advance_source_project_transfer(store, catalog, request_id)
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -743,13 +765,14 @@ def bind_project_transfer_archive(
     actor = identity_access.acting_user(request)
     try:
         transfer = _transfer_request_or_404(store, request_id)
-        if transfer.side == "target":
-            admission = transfer.target_admission_receipt
-            if admission is None or admission.admitted_by.user_id != actor.user_id:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Only the member who admitted this transfer may bind its archive.",
-                )
+        if transfer.side != "target":
+            raise ValueError("source archives are bound only by the source release workflow")
+        admission = transfer.target_admission_receipt
+        if admission is None or admission.admitted_by.user_id != actor.user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Only the member who admitted this transfer may bind its archive.",
+            )
         return store.bind_project_transfer_archive(
             request_id,
             archive_sha256=body.archive_sha256,
@@ -758,6 +781,63 @@ def bind_project_transfer_archive(
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get(
+    "/api/native/project-transfers/source-requests/{request_id}/archive",
+    response_class=StreamingResponse,
+    include_in_schema=False,
+)
+def download_source_project_transfer_archive(
+    request_id: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+) -> StreamingResponse:
+    """Stream only the exact sealed source archive bound to this request."""
+
+    _require_transfer_space(store, "personal")
+    identity_access.require_patch_capable_identity(request)
+    expected_instance_id = request.app.state.instance_metadata.instance_id
+    if request.headers.get("X-RCP-Instance-ID") != expected_instance_id:
+        raise HTTPException(
+            status_code=409,
+            detail="The native transfer relay must pin the current personal backend instance.",
+        )
+    try:
+        transfer = _transfer_request_or_404(store, request_id)
+        if (
+            transfer.side != "source"
+            or transfer.phase != "archive_bound"
+            or transfer.archive_sha256 is None
+            or transfer.archive_size_bytes is None
+        ):
+            raise ValueError("source transfer has no sealed archive to download")
+        archive_path = source_transfer_export_path(catalog.data_dir, request_id)
+        readback = read_transfer_archive(archive_path)
+        if (
+            readback.envelope.archive_sha256 != transfer.archive_sha256
+            or readback.envelope.archive_size_bytes != transfer.archive_size_bytes
+        ):
+            raise ValueError("sealed source archive differs from its durable receipt")
+    except (KeyError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return StreamingResponse(
+        stream_source_transfer_archive(
+            archive_path,
+            expected_sha256=transfer.archive_sha256,
+            expected_size_bytes=transfer.archive_size_bytes,
+        ),
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Length": str(transfer.archive_size_bytes),
+            "Content-Disposition": f'attachment; filename="{request_id}.rcp-transfer"',
+            "X-RCP-Archive-SHA256": transfer.archive_sha256,
+        },
+    )
 
 
 @router.post(
@@ -820,6 +900,8 @@ async def verify_target_activation_proof(
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
+    catalog: CatalogDependency,
+    operation_lock: OperationLockDependency,
 ) -> ProjectTransferCleanupAcknowledgment:
     _require_transfer_space(store, "personal")
     identity_access.require_patch_capable_identity(request)
@@ -834,8 +916,15 @@ async def verify_target_activation_proof(
         chunks.append(chunk)
     proof = b"".join(chunks)
     try:
-        return store.verify_target_project_transfer_activation(request_id, proof=proof)
-    except (KeyError, ValueError) as exc:
+        transfer = _transfer_request_or_404(store, request_id)
+        with operation_lock(transfer.project_id):
+            return complete_source_project_transfer(
+                store,
+                catalog,
+                request_id,
+                target_activation_proof=proof,
+            )
+    except (KeyError, OSError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 

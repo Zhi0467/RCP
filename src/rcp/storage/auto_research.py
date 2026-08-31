@@ -87,6 +87,7 @@ class AutoResearchStoreMixin:
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
+                self._require_project_accepts_new_work(connection, episode.project_id)
                 self._insert_episode(connection, episode)
                 connection.execute(
                     """

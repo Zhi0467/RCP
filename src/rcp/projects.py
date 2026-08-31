@@ -1256,6 +1256,89 @@ class ProjectCatalog:
         service, _ = self._service_or_open(project_id)
         return service
 
+    def open_transfer_source(self, request_id: str) -> ProjectService:
+        """Open the exact source for export, including after its home Patch committed."""
+
+        transfer = self.store.project_transfer_request(request_id)
+        if transfer is None or transfer.side != "source":
+            raise KeyError(request_id)
+        if transfer.phase not in {"source_released", "source_fenced", "archive_bound"}:
+            raise ValueError("source transfer is not at an exportable boundary")
+        loaded = self.loaded_service(transfer.project_id)
+        if loaded is not None:
+            return loaded
+        if transfer.phase == "source_released":
+            try:
+                return self.open(transfer.project_id)
+            except ProjectIdentityConflict:
+                # The home Patch may have committed just before the process
+                # stopped, while the SQLite fence receipt is still one step
+                # behind. Reopen against the already-bound target home below.
+                pass
+
+        record = self.store.project(transfer.project_id)
+        if record is None:
+            raise KeyError(transfer.project_id)
+        bootstrap = load_manifest(record.locator)
+        manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
+        history = HistoryManager(
+            manifest,
+            workspace,
+            expected_space_id=transfer.target_space_id,
+            project_id=transfer.project_id,
+            require_attribution=True,
+            agent_authority_resolver=self.store.agent_task_authority,
+            project_membership_check=self.store.is_project_member,
+        )
+        try:
+            initialized = history.initialize()
+        except ReplayHalted:
+            initialized = history.materialize(write_outputs=False)
+        identity = history.project_identity(initialized)
+        if (
+            identity is None
+            or identity.project_id != transfer.project_id
+            or identity.home_space_id != transfer.target_space_id
+        ):
+            raise ProjectIdentityConflict(
+                "Departed source history does not match its bound team-space transfer."
+            )
+        paper = PaperService(
+            history.manifest, self.store, workspace, project_id=transfer.project_id
+        )
+        return ProjectService(
+            history.manifest,
+            history,
+            paper,
+            self.launcher,
+            data_dir=self.data_dir,
+            provider_skills=self.provider_skills,
+            project_id=transfer.project_id,
+            repository_inventory=self.repository_ownership_inventory,
+            task_continuation_session=self.store.agent_task_continuation_session_id,
+        )
+
+    def discard_retired_transfer_source(self, request_id: str) -> None:
+        """Drop only runtime visibility after the durable source retirement receipt."""
+
+        transfer = self.store.project_transfer_request(request_id)
+        if transfer is None or transfer.side != "source":
+            raise KeyError(request_id)
+        retired = self.store.retired_project(transfer.project_id)
+        if (
+            retired is None
+            or retired.retired_transfer_request_id != transfer.request_id
+            or transfer.phase not in {"cleanup_acknowledged", "completed"}
+        ):
+            raise ValueError("source transfer has no matching durable retirement receipt")
+        with self._services_lock:
+            opening = self._opening.get(transfer.project_id)
+        if opening is not None:
+            with suppress(Exception):
+                opening.result()
+        with self._services_lock:
+            self._services.pop(transfer.project_id, None)
+
     def open_snapshot(self, project_id: str) -> tuple[ProjectService, _ProjectSnapshotDraft]:
         project_id = self._canonical_project_id(project_id)
         service, initialized_state = self._service_or_open(project_id)

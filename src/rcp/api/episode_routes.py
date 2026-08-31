@@ -17,6 +17,7 @@ from rcp.api.dependencies import (
     get_project_service,
     get_store,
     require_project_membership,
+    require_project_write_admission,
     require_registered_project,
 )
 from rcp.api.episodes import (
@@ -107,6 +108,7 @@ def episodes(
     "/api/projects/{project_id}/episodes",
     response_model=EpisodeResponse,
     status_code=202,
+    dependencies=[Depends(require_project_write_admission)],
 )
 def start_episode(
     project_id: str,
@@ -199,6 +201,7 @@ def stop_episode(
     "/api/projects/{project_id}/episodes/{episode_id}/merge",
     response_model=EpisodeResponse,
     status_code=202,
+    dependencies=[Depends(require_project_write_admission)],
 )
 def merge_episode_branch(
     project_id: str,
@@ -250,6 +253,7 @@ def merge_episode_branch(
     "/api/projects/{project_id}/episodes/{episode_id}/reauthorize",
     response_model=EpisodeResponse,
     status_code=202,
+    dependencies=[Depends(require_project_write_admission)],
 )
 def reauthorize_episode(
     project_id: str,
@@ -331,6 +335,7 @@ def episode_messages(
     "/api/projects/{project_id}/episodes/{episode_id}/messages",
     response_model=AutoResearchMessageRecord,
     status_code=201,
+    dependencies=[Depends(require_project_write_admission)],
 )
 def send_episode_message(
     project_id: str,

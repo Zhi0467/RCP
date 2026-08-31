@@ -140,6 +140,11 @@ class ExperimentStoreMixin:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 if (
+                    auto_research_route is None
+                    and record.request.get("trigger") == "experiment_run"
+                ):
+                    self._require_project_accepts_new_work(connection, record.project_id)
+                if (
                     connection.execute(
                         "SELECT 1 FROM episodes WHERE episode_id = ?", (episode.episode_id,)
                     ).fetchone()

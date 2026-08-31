@@ -1091,9 +1091,25 @@ archive digest and is consumed, not imported, by the target. Every relay retry
 re-hashes and streams that same file;
 an already bound archive is never regenerated from a later provider-history
 selection. The file remains recovery-critical until the matching target
-activation receipt arrives. Only then may the source retire its catalog row and
-unlink that exact request file. Ordinary project Delete is unavailable while
-the source fence or sealed export is needed.
+activation receipt arrives. Cleanup validates the still-present bound archive
+before consuming the raw proof or retiring the source; missing or corrupt bytes
+leave the project visible for repair. After proof consumption it retires the
+catalog row and revalidates before unlinking that exact request file. Cleanup
+requests are serialized by the project operation lock and retries use the
+durable consumed-proof plus retirement receipts to distinguish a completed
+unlink from premature loss. Ordinary project Delete is unavailable while the
+source fence or sealed export is needed.
+
+`source_released` is also the durable new-work fence. Fresh human-root task,
+episode, Auto-research, direct Experiment, and branch-merge admissions recheck
+that fence inside their database write transaction; HTTP routes additionally
+hold the per-project operation lock across admission. Already-authorized
+watcher and episode continuations may settle, but terminal export refuses any
+remaining live work. Canonical and transformed project-file capture holds the
+workspace transaction, including the remote advisory lease for SSH state.
+Source retirement hides the project from catalogs and
+active membership checks without deleting its retained membership or invitation
+audit rows.
 
 The desktop is the transfer-byte relay for this first target. Its final review
 records target admission before source release through the two separate
@@ -1102,7 +1118,8 @@ then fences source admission, settles authorized work, commits the home change
 with both human actors, and binds the resulting exact archive digest to both
 linked requests. Only after both human receipts and the source-fence receipt
 exist does the native Rust shell re-verify the pinned personal backend, request
-the confirmed request-bound sealed export itself, and stream bounded response chunks
+the confirmed request-bound sealed export itself with the exact pinned-instance
+header, and stream bounded response chunks
 into the stdin of one system-SSH child running the fixed remote command
 `rcp server project transfer-import <request-id>`. Through the private control
 socket, that CLI obtains the expected digest/size and an upload lease, then alone

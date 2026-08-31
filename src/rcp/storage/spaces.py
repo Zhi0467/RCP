@@ -345,7 +345,13 @@ class SpaceStoreMixin:
         with self.connection() as connection:
             return (
                 connection.execute(
-                    "SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?",
+                    """
+                    SELECT 1
+                    FROM project_members AS member
+                    JOIN projects AS project ON project.project_id = member.project_id
+                    WHERE member.project_id = ? AND member.user_id = ?
+                      AND project.retired_at IS NULL
+                    """,
                     (project_id, user_id),
                 ).fetchone()
                 is not None
@@ -354,7 +360,12 @@ class SpaceStoreMixin:
     def member_project_ids(self, user_id: str) -> set[str]:
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT project_id FROM project_members WHERE user_id = ?",
+                """
+                SELECT member.project_id
+                FROM project_members AS member
+                JOIN projects AS project ON project.project_id = member.project_id
+                WHERE member.user_id = ? AND project.retired_at IS NULL
+                """,
                 (user_id,),
             ).fetchall()
         return {row["project_id"] for row in rows}

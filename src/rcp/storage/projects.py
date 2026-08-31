@@ -206,7 +206,7 @@ class ProjectStoreMixin:
     def project_by_locator(self, locator: str) -> ProjectRecord | None:
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT * FROM projects WHERE locator = ?", (locator,)
+                "SELECT * FROM projects WHERE locator = ? AND retired_at IS NULL", (locator,)
             ).fetchone()
         return self._project_record(row) if row else None
 
@@ -214,7 +214,17 @@ class ProjectStoreMixin:
         with self.connection() as connection:
             canonical_project_id = self._resolve_project_id_from_connection(connection, project_id)
             row = connection.execute(
-                "SELECT * FROM projects WHERE project_id = ?", (canonical_project_id,)
+                "SELECT * FROM projects WHERE project_id = ? AND retired_at IS NULL",
+                (canonical_project_id,),
+            ).fetchone()
+        return self._project_record(row) if row else None
+
+    def retired_project(self, project_id: str) -> ProjectRecord | None:
+        with self.connection() as connection:
+            canonical_project_id = self._resolve_project_id_from_connection(connection, project_id)
+            row = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ? AND retired_at IS NOT NULL",
+                (canonical_project_id,),
             ).fetchone()
         return self._project_record(row) if row else None
 
@@ -243,6 +253,7 @@ class ProjectStoreMixin:
             rows = connection.execute(
                 """
                 SELECT * FROM projects
+                WHERE retired_at IS NULL
                 ORDER BY added_at DESC, name COLLATE NOCASE, project_id
                 """
             ).fetchall()
