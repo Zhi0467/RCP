@@ -15,6 +15,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { api } from "../api";
 import { chooseDesktopRepositoryFolder, isDesktopRuntime } from "../desktopRuntime";
 import {
@@ -26,12 +27,20 @@ import {
   reasoningOptions,
   runtimeOptions,
 } from "../providers";
-import { repositoryPickerPresentation, stateRepositoryAfterRemoval } from "../projectSetup";
+import {
+  assertSupportedProjectCreationIntent,
+  repositoryPickerPresentation,
+  selectedProjectCreationIntent,
+  stateRepositoryAfterRemoval,
+} from "../projectSetup";
+import { TeamProjectSetup } from "./TeamProjectSetup";
 import type {
   AgentExecutionProfile,
   ExistingResearchAction,
   ProviderReadiness,
   ProjectCard,
+  ProjectCreationControl,
+  ProjectCreationIntent,
   ProjectSetupRequest,
   SetupAgentProfile,
   SetupAgents,
@@ -40,6 +49,7 @@ import type {
 } from "../types";
 
 interface Props {
+  projectCreation: ProjectCreationControl;
   onCancel: () => void;
   onCreated: (projectId: string) => void;
 }
@@ -77,7 +87,54 @@ const defaultAgentProfile = (model = ""): SetupAgentProfile => ({
   host: "",
 });
 
-export function ProjectSetup({ onCancel, onCreated }: Props) {
+export function ProjectSetup({ projectCreation, onCancel, onCreated }: Props) {
+  const [intent, setIntent] = useState(() => selectedProjectCreationIntent(projectCreation));
+  assertSupportedProjectCreationIntent(projectCreation, intent);
+  const intentChooser = (
+    <ProjectIntentChooser control={projectCreation} selected={intent} onSelect={setIntent} />
+  );
+  if (intent === "move_personal_project_to_team") {
+    throw new Error("Personal-to-team move mode is not implemented in this build.");
+  }
+  return (
+    <div
+      className={
+        intent === "create_shared_team_project" ? "setup-shell team-project-setup" : "setup-shell"
+      }
+    >
+      <header className="setup-header">
+        <button
+          className="rcp-mark setup-brand"
+          onClick={onCancel}
+          aria-label="Return to project index"
+        >
+          <span className="rcp-wordmark" aria-hidden="true">
+            RCP
+          </span>
+        </button>
+        <span className="setup-header-title">Add project</span>
+        <button className="button ghost" onClick={onCancel}>
+          Cancel
+        </button>
+      </header>
+      {intent === "create_shared_team_project" ? (
+        <TeamProjectSetup intentChooser={intentChooser} onCancel={onCancel} onCreated={onCreated} />
+      ) : (
+        <PersonalProjectSetup
+          intentChooser={intentChooser}
+          onCancel={onCancel}
+          onCreated={onCreated}
+        />
+      )}
+    </div>
+  );
+}
+
+function PersonalProjectSetup({
+  intentChooser,
+  onCancel,
+  onCreated,
+}: Omit<Props, "projectCreation"> & { intentChooser: ReactNode }) {
   const [step, setStep] = useState(0);
   const [name, setName] = useState("");
   const [repositories, setRepositories] = useState<DraftRepository[]>([
@@ -344,23 +401,7 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
   };
 
   return (
-    <div className="setup-shell">
-      <header className="setup-header">
-        <button
-          className="rcp-mark setup-brand"
-          onClick={onCancel}
-          aria-label="Return to project index"
-        >
-          <span className="rcp-wordmark" aria-hidden="true">
-            RCP
-          </span>
-        </button>
-        <span className="setup-header-title">Add project</span>
-        <button className="button ghost" onClick={onCancel}>
-          Cancel
-        </button>
-      </header>
-
+    <>
       <main className="setup-layout">
         <nav className="setup-steps" aria-label="Project setup progress">
           <span className="eyebrow">Configuration route</span>
@@ -374,6 +415,7 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
                     : "setup-step"
               }
               disabled={index > step}
+              aria-current={index === step ? "step" : undefined}
               key={number}
               onClick={() => {
                 if (index < step) {
@@ -393,6 +435,7 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
         <section className="setup-sheet">
           {step === 0 && (
             <div className="setup-section">
+              {intentChooser}
               <SectionHeading
                 eyebrow="Project identity"
                 title="Start with the paper and one repository."
@@ -770,6 +813,42 @@ export function ProjectSetup({ onCancel, onCreated }: Props) {
           onChoose={(action) => void create(action)}
         />
       )}
+    </>
+  );
+}
+
+function ProjectIntentChooser({
+  control,
+  selected,
+  onSelect,
+}: {
+  control: ProjectCreationControl;
+  selected: ProjectCreationIntent;
+  onSelect: (intent: ProjectCreationIntent) => void;
+}) {
+  const labels: Record<ProjectCreationIntent, string> = {
+    use_existing_checkout_personally: "Use an existing checkout personally",
+    create_shared_team_project: "Create a shared team project",
+    move_personal_project_to_team: "Move an existing personal project to a team",
+  };
+  return (
+    <div className="project-intent-choices" role="group" aria-label="Project setup kind">
+      {control.intents.map((intent) => (
+        <button
+          className={intent.intent === selected ? "active" : ""}
+          type="button"
+          key={intent.intent}
+          aria-pressed={intent.intent === selected}
+          disabled={!intent.eligible}
+          title={intent.unavailable_reason ?? undefined}
+          onClick={() => onSelect(intent.intent)}
+        >
+          <strong>{labels[intent.intent]}</strong>
+          {!intent.eligible && intent.unavailable_reason && (
+            <span>{intent.unavailable_reason}</span>
+          )}
+        </button>
+      ))}
     </div>
   );
 }

@@ -50,6 +50,20 @@ function landingProps(identityValue = identity) {
     onOpen() {},
     onOpenExperiment() {},
     onCreate() {},
+    projectCreation: {
+      requires_authenticated_member: false,
+      intents: [
+        {
+          intent: "use_existing_checkout_personally",
+          eligible: true,
+          preselected: true,
+          primary_action_label: "Use existing checkout",
+          required_fields: ["repositories"],
+          pinned_source_project_id: null,
+          unavailable_reason: null,
+        },
+      ],
+    },
     onDelete() {},
     openProjectTabs: [],
     onActivateProjectTab() {},
@@ -59,6 +73,13 @@ function landingProps(identityValue = identity) {
     onRequestIdentityName() {},
   };
 }
+
+test("the project index uses the backend-selected creation label", () => {
+  const html = renderToStaticMarkup(React.createElement(ProjectLanding, landingProps()));
+
+  assert.match(html, /Use existing checkout/);
+  assert.doesNotMatch(html, />New project</);
+});
 
 test("the project index starts with covers and exposes the named identity with its full ID", () => {
   const html = renderToStaticMarkup(React.createElement(ProjectLanding, landingProps()));

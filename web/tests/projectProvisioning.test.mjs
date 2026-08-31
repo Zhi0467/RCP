@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   cancelProjectProvisioningRequest,
+  completeProjectProvisioningRequest,
   createTeamProjectProvisioning,
   loadProjectProvisioningRequest,
   loadProjectProvisioningRequests,
@@ -102,6 +103,10 @@ test("project provisioning calls preserve the backend projection and exact reque
     assert.deepEqual(await loadProjectProvisioningRequests(), [projectedResponse]);
     assert.deepEqual(await loadProjectProvisioningRequest("request / one"), projectedResponse);
     assert.deepEqual(await cancelProjectProvisioningRequest("request / one"), projectedResponse);
+    assert.deepEqual(
+      await completeProjectProvisioningRequest("request / one", "a".repeat(64)),
+      projectedResponse,
+    );
 
     assert.equal(requests[0].path, "/api/project-provisioning/requests");
     assert.equal(requests[0].init.method, "POST");
@@ -113,6 +118,12 @@ test("project provisioning calls preserve the backend projection and exact reque
     assert.equal(requests[3].path, "/api/project-provisioning/requests/request%20%2F%20one/cancel");
     assert.equal(requests[3].init.method, "POST");
     assert.deepEqual(JSON.parse(requests[3].init.body), {});
+    assert.equal(
+      requests[4].path,
+      "/api/project-provisioning/requests/request%20%2F%20one/complete",
+    );
+    assert.equal(requests[4].init.method, "POST");
+    assert.deepEqual(JSON.parse(requests[4].init.body), { final_review_digest: "a".repeat(64) });
   } finally {
     globalThis.fetch = originalFetch;
   }

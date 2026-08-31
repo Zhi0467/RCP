@@ -138,6 +138,19 @@ export function cancelProjectProvisioningRequest(
   );
 }
 
+export function completeProjectProvisioningRequest(
+  requestId: string,
+  finalReviewDigest: string,
+): Promise<ProjectProvisioningResponse> {
+  return api<ProjectProvisioningResponse>(
+    `/api/project-provisioning/requests/${encodeURIComponent(requestId)}/complete`,
+    {
+      method: "POST",
+      body: JSON.stringify({ final_review_digest: finalReviewDigest }),
+    },
+  );
+}
+
 async function notifyMutationFailure(path: string): Promise<void> {
   if (mutationFailureHandler) await mutationFailureHandler(path);
 }

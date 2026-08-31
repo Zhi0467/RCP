@@ -12,15 +12,19 @@ covered_by:
   - tests/test_team_project_provisioning.py
   - tests/test_team_project_deletion_guard.py
   - web/tests/landingIdentity.test.mjs
+  - web/tests/projectProvisioning.test.mjs
+  - web/tests/projectSetup.test.mjs
   - web/src-tauri/src/server_commands.rs::tests
 invariants: [3, 4, 6, 8]
 last_checked: >-
   2026-08-30 — the durable request, Git key/write proof, central checkout,
   provider readiness, resumable private-control orchestration, fixed desktop
-  operator bridge, and exact human-confirmed final creation plus the team
-  deletion guard pass hermetic regressions and rendered browser verification;
-  cancellation after preparation, unified UI, live direct/sudo operator launch,
-  and the complete live drive remain pending.
+  operator bridge, unified personal/new-team wizard, and exact human-confirmed
+  final creation plus the team deletion guard pass hermetic regressions. A
+  disposable browser and rebuilt source desktop verify the one wizard shell and
+  reload-stable setup route. Cancellation after preparation, live authenticated
+  team provisioning, direct/sudo operator launch, and the complete live drive
+  remain pending.
 ---
 
 # A human starts team setup in the app and the server CLI prepares it

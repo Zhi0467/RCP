@@ -78,7 +78,17 @@ pub fn desktop_configure_server_operator_route(
     lifecycle: State<'_, BackendState>,
     request: ConfigureServerOperatorRouteRequest,
 ) -> Result<TeamConnectionMetadata, String> {
-    authorize_personal_origin(&window, &lifecycle)?;
+    let saved = connections.list()?;
+    let caller = window
+        .url()
+        .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?;
+    authorize_connection_repair_origin(
+        &caller,
+        &lifecycle.status()?.base_url,
+        &saved,
+        &request.connection_id,
+        cfg!(debug_assertions),
+    )?;
     connections.set_operator_route(&request.connection_id, request.route)
 }
 

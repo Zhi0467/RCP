@@ -1918,6 +1918,40 @@ button:disabled {
   flex: 1;
   padding: 46px 50px 35px;
 }
+.project-intent-choices {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 28px;
+}
+.project-intent-choices button {
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink-soft);
+  min-height: 62px;
+  padding: 10px;
+  text-align: left;
+}
+.project-intent-choices button.active {
+  background: var(--cobalt-soft);
+  border-color: var(--cobalt);
+  color: var(--cobalt-dark);
+}
+.project-intent-choices button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.project-intent-choices strong,
+.project-intent-choices span {
+  display: block;
+  font-size: 9px;
+  line-height: 1.35;
+}
+.project-intent-choices span {
+  color: var(--muted);
+  margin-top: 4px;
+}
 .setup-section-heading {
   border-bottom: 1px solid var(--line);
   margin-bottom: 30px;
@@ -2154,6 +2188,238 @@ button:disabled {
 }
 .add-repository strong {
   font-size: 10px;
+}
+.team-machine-stack,
+.team-repository-stack {
+  display: grid;
+  gap: 13px;
+}
+.team-repository-stack {
+  margin-top: 28px;
+}
+.team-machine-editor {
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.team-machine-editor > header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 9px;
+  min-height: 48px;
+  padding: 8px 12px;
+}
+.team-machine-editor > header > strong {
+  flex: 1;
+  font-size: 11px;
+}
+.team-machine-fields,
+.team-repository-fields {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 14px;
+}
+.team-machine-fields label,
+.team-repository-fields label,
+.operator-route-card label {
+  color: var(--muted);
+  display: grid;
+  font-size: 8px;
+  font-weight: 700;
+  gap: 4px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.team-machine-fields label.wide,
+.team-repository-fields label:nth-child(2) {
+  grid-column: 1 / -1;
+}
+.team-machine-fields input,
+.team-machine-fields select,
+.team-repository-fields input,
+.team-repository-fields select,
+.operator-route-card input,
+.operator-route-card select {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 9px;
+  height: 35px;
+  padding: 0 9px;
+  width: 100%;
+}
+.provisioning-resume-list {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 7px;
+  margin-top: 28px;
+  padding-top: 18px;
+}
+.provisioning-resume-list > strong {
+  font-size: 10px;
+}
+.provisioning-resume-list button {
+  align-items: center;
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  display: flex;
+  font-size: 9px;
+  justify-content: space-between;
+  padding: 10px;
+  text-align: left;
+}
+.provisioning-status-banner {
+  align-items: baseline;
+  background: var(--cobalt-soft);
+  border-left: 3px solid var(--cobalt);
+  display: flex;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 13px;
+}
+.provisioning-status-banner strong {
+  font-size: 12px;
+}
+.provisioning-status-banner span {
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+.provisioning-summary,
+.provisioning-final-review dl,
+.provisioning-operator-action dl {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0 0 18px;
+}
+.provisioning-summary div,
+.provisioning-final-review dl div,
+.provisioning-operator-action dl div {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px;
+}
+.provisioning-summary dt,
+.provisioning-final-review dt,
+.provisioning-operator-action dt {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.provisioning-summary dd,
+.provisioning-final-review dd,
+.provisioning-operator-action dd {
+  font-size: 9px;
+  line-height: 1.4;
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+}
+.provisioning-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 18px;
+}
+.operator-route-card,
+.provisioning-events,
+.provisioning-operator-action,
+.provisioning-final-review {
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 18px 0;
+  padding: 14px;
+}
+.operator-route-card > header {
+  align-items: center;
+  display: flex;
+  font-size: 10px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.operator-route-card > div {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1.2fr 1fr auto;
+}
+.operator-route-card > p {
+  color: var(--red);
+  font-size: 9px;
+  margin: 10px 0 0;
+}
+.provisioning-events {
+  display: grid;
+  gap: 8px;
+}
+.provisioning-events > div,
+.operator-action-line {
+  display: grid;
+  font-size: 9px;
+  gap: 6px;
+  grid-template-columns: minmax(90px, 0.28fr) minmax(0, 1fr);
+}
+.provisioning-events span,
+.provisioning-operator-action p,
+.operator-action-line span {
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
+.provisioning-operator-action h2,
+.provisioning-final-review h2,
+.provisioning-ledger h2 {
+  font-family: var(--editorial);
+  font-size: 22px;
+  font-weight: 500;
+  margin: 6px 0 14px;
+}
+.provisioning-operator-action > a {
+  color: var(--cobalt-dark);
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+.operator-action-line {
+  border-top: 1px solid var(--line);
+  padding: 9px 0;
+}
+.operator-action-line code,
+.provisioning-ledger code,
+.provisioning-final-review code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.provisioning-ledger {
+  display: grid;
+  gap: 8px;
+}
+.provisioning-ledger h2 {
+  border-bottom: 1px solid var(--line);
+  margin-top: 18px;
+  padding-bottom: 8px;
+}
+.provisioning-ledger article {
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  display: grid;
+  font-size: 9px;
+  gap: 5px;
+  padding: 10px;
+}
+.provisioning-ledger article > span,
+.provisioning-ledger article > p {
+  color: var(--ink-soft);
+  margin: 0;
 }
 .existing-manifest {
   align-items: flex-start;

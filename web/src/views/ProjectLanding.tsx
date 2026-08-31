@@ -10,8 +10,10 @@ import type {
   ExperimentLoopIndexEntry,
   IdentityResponse,
   ProjectCard,
+  ProjectCreationControl,
   ProjectInvitation,
 } from "../types";
+import { projectCreationPrimaryLabel } from "../projectSetup";
 
 interface Props {
   projects: ProjectCard[];
@@ -21,6 +23,7 @@ interface Props {
   onOpen: (projectId: string) => void;
   onOpenExperiment: (projectId: string, experimentRoute: string) => void;
   onCreate: () => void;
+  projectCreation: ProjectCreationControl;
   onDelete: (projectId: string) => Promise<void> | void;
   openProjectTabs: ProjectTab[];
   onActivateProjectTab: (projectId: string) => void;
@@ -109,6 +112,7 @@ export function ProjectLanding({
   onOpen,
   onOpenExperiment,
   onCreate,
+  projectCreation,
   onDelete,
   openProjectTabs,
   onActivateProjectTab,
@@ -280,7 +284,7 @@ export function ProjectLanding({
             <span className="new-project-plus" aria-hidden="true">
               +
             </span>
-            <strong>New project</strong>
+            <strong>{projectCreationPrimaryLabel(projectCreation)}</strong>
             <span className="project-cover-open" aria-hidden="true">
               Create →
             </span>

@@ -615,11 +615,14 @@ export default function App() {
   const [initialRoute] = useState(() => {
     const navigation = window.performance.getEntriesByType("navigation")[0] as
       PerformanceNavigationTiming | undefined;
-    const hash = initialProjectHash(window.location.hash, navigation?.type);
+    const requestedHash = window.location.hash;
+    const hash = isSetupHash(requestedHash)
+      ? requestedHash
+      : initialProjectHash(requestedHash, navigation?.type);
     if (hash !== window.location.hash) {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
-    return { project: parseProjectHash(hash), setupOpen: hash === "#/projects/new" };
+    return { project: parseProjectHash(hash), setupOpen: isSetupHash(hash) };
   });
   const {
     identityReady,
@@ -3101,7 +3104,11 @@ export default function App() {
   if (setupOpen)
     return (
       <>
-        <ProjectSetup onCancel={returnToProjects} onCreated={openProject} />
+        <ProjectSetup
+          projectCreation={verifiedHealth!.project_creation}
+          onCancel={returnToProjects}
+          onCreated={openProject}
+        />
         {updateSurface}
         {desktopAccessSurface}
         {actorNameSurface}
@@ -3119,6 +3126,7 @@ export default function App() {
           onOpen={openProject}
           onOpenExperiment={openProject}
           onCreate={openSetup}
+          projectCreation={verifiedHealth!.project_creation}
           onDelete={deleteProject}
           openProjectTabs={openProjectTabs}
           onActivateProjectTab={activateProjectTab}
@@ -4148,7 +4156,11 @@ export function taskRetryRequestBody(
 }
 
 function isSetupRoute(): boolean {
-  return window.location.hash === "#/projects/new";
+  return isSetupHash(window.location.hash);
+}
+
+function isSetupHash(hash: string): boolean {
+  return hash === "#/projects/new" || hash.startsWith("#/projects/new?");
 }
 
 interface DesktopUpdateNoticeProps {

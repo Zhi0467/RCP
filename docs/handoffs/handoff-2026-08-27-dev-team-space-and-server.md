@@ -14,7 +14,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Gates | G0, G2 | — | — |
 | Server foundation | F1, F2, F3a, F3b, F4, F5, F6a, F6b, F6c | F6d | — |
 | Provisioning | P1, P2, P3, P4, P5, P6b, P6c | P6a | — |
-| Desktop | D1, D2, D3 | D4a, D4b, D5, D6 | D7 |
+| Desktop | D1, D2, D3 | D4a, D4b, D5, D6, D7 | — |
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | — | — | O6 |
@@ -175,9 +175,9 @@ The remaining seams are also concrete:
   live server with an installed `rcp` account;
 - the durable project-provisioning request, complete finalizer, member API,
   repository-credential primitive, exact-account provider check, checkout
-  preparation, and machine-step orchestration exist, but the unified wizard,
-  post-setup cancellation, complete live qualification, and personal-to-team
-  transfer record do not;
+  preparation, machine-step orchestration, and unified personal/new-team
+  project wizard exist, but post-setup cancellation, complete live team
+  qualification, and the personal-to-team transfer record do not;
   and
 - canonical identity replay currently treats two differing identity payloads as
   corruption, so a home transfer cannot be represented by appending a second
@@ -3592,6 +3592,26 @@ If SSH or `sudo` needs interaction, produce the exact quoted Terminal argv and
 open Terminal only after a human action. Never collect a password or private key.
 
 ### D7 — Unified project wizard provisioning mode
+
+**Implemented 2026-08-30; complete team drive still open:** one top-level
+wizard shell now consumes the backend `project_creation` contract for its
+personal and new-team modes,
+creates and resumes durable provisioning requests, renders every backend-owned
+status/action/readiness/final-review answer, and relays only D6's proven native
+operator capability. All 456 Web tests, typecheck, the production build, 90
+native tests, and strict Clippy pass. A disposable browser drive proved the
+single shell and reload-stable `#/projects/new` route; a freshly rebuilt source
+desktop opened that same shell from a disposable data directory and exposed its
+native folder action. The one independent audit is closed after fixing stale
+operator-probe admission, durable-request loading, exact command quoting,
+machine-alias references, impossible lifecycle fixtures, structured operator
+content, explicit Git-write facts, confirmation ordering, final-review detail,
+and accessibility semantics.
+
+Not done here: T5b still owns the intentionally unavailable move mode, and the
+complete authenticated team-server/direct-or-sudo operator drive remains open
+in S128 with D5/D6/P6a. The reachable lab host still has no installed `rcp`
+account, so this packet did not invent a false live server qualification.
 
 Own:
 
