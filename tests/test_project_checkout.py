@@ -335,6 +335,7 @@ def test_manager_refuses_a_symlinked_git_directory_before_running_git(tmp_path: 
         )
 
     assert error.value.checkout_disposition == "reused_existing"
+    assert "git-directory operation" in str(error.value)
     assert (checkout / ".git").is_symlink()
 
 

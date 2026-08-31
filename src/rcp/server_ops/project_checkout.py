@@ -769,6 +769,7 @@ class ProjectCheckoutManager:
         machine: ProjectProvisioningMachineIntent,
         arguments: tuple[str, ...],
     ) -> dict[str, object]:
+        operation = arguments[0]
         result = self._target(
             machine,
             ("python3", "-c", _remote_helper_source(), *arguments),
@@ -776,7 +777,8 @@ class ProjectCheckoutManager:
         if result.returncode != 0:
             raise ProjectCheckoutRefused(
                 "account_or_path",
-                "The checkout helper refused the exact account, path, ownership, or mode.",
+                f"The checkout helper refused the {operation} operation's exact account, path, "
+                "ownership, or mode.",
             )
         if len(result.stdout.encode("utf-8", errors="replace")) > _MAX_HELPER_OUTPUT_BYTES:
             raise ProjectCheckoutRefused(
