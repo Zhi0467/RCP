@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b, T2c, T3a, T3b, T3b-export, T3b-files | — | T3a-config, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c, T3a, T3b, T3b-export, T3b-files, T3c | — | T3a-config, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -5214,7 +5214,44 @@ bytes, mutate either project home, or import target records. T3f owns target
 publication through the same concrete owners, including inserting inert
 history-only result-view rows from the sanitized bindings.
 
-### T3c — Provider-native selection and archive capture
+### T3c — Provider-native selection and archive capture — complete
+
+`capture_provider_history` now asks `ConversationIndexer` for the native
+conversations positively matched to the project's declared repositories,
+excludes `app_chat`, snapshots each original through the exact indexed local or
+SSH account, and writes the unchanged bytes under
+`provider-history/<provider>/<sha256>`. The indexer enumerates roots from every
+registered `ProviderProfile.session_roots` contract rather than a second
+Codex/Claude root list. Its public original-source seam rechecks the indexed
+identity for local files, always refetches remote originals through the saved
+SSH host/account, refuses non-regular remote results, and never returns a native
+provider path as archive authority.
+
+After copying, the indexer reparses the captured bytes and reruns its existing
+repository matcher. A changed working path, malformed or unreadable original,
+unmatched file, or unavailable configured source is omitted best-effort with
+bounded aggregate counts and safe diagnostics. Matching files remain complete
+raw provider histories; no cursor slicing or lossy normalized transcript enters
+the transfer. Identical bytes for one provider share their content-addressed
+entry. The capture model counts admitted source files separately from unique
+content entries, while binding the exact unique payload byte total.
+
+Focused tests cover byte-exact Codex and Claude capture, app-chat exclusion,
+unmatched/malformed summaries, one disappearing selected file without losing
+the rest, a post-index working-path rewrite with no partial bytes, registry root
+enumeration through a fixture provider, and the actual index/refetch SSH
+command boundary under an explicit remote account. This packet does not publish
+target provider sources or change Seed/Refresh; T3d and T3d-ssh retain those
+owners.
+
+The packet's sole read-only audit found one high-severity publication boundary
+bug and two medium accounting gaps. The correction now lets local/SSH source
+read or reparse failures remain best-effort omissions, but any destination
+write, replace, or fsync failure aborts and removes the entire new capture root.
+Remote indexing returns explicit unmatched/malformed counts, and identical
+source files increment the selected-file count even when their payload bytes
+deduplicate. Focused regressions inject a destination fsync failure, duplicate
+content, and remote malformed/unmatched files. No second audit round was run.
 
 Own:
 

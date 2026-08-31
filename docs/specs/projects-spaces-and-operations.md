@@ -1028,19 +1028,20 @@ project-source corruption and blocks Seed/Refresh rather than being silently
 omitted. Source repositories are absent because target
 provisioning prepares the central checkout set through Git.
 
-This provider-history extension remains pending with the rest of the transfer
-workflow. The source indexer copies each selected original native transcript
-file byte-for-byte under
-`<RCP_DATA_DIR>/project-sources/<project-id>/provider-history/<provider>/`, using
-content-addressed filenames and read-only modes. This is durable project-owned
-app data, not canonical `.research`, a source checkout, a rebuildable cache, or a
-native provider home. RCP does not normalize the bytes into its lossy
-conversation-record model. Provider session ids, source paths, tool output, and
-other passive metadata may remain inside them, but none becomes a live execution
-or resumption binding. After copying, the indexer rechecks the recorded working
-path against the same declared repository before the file is admitted. Selection
-is deliberately limited to best-effort path matching; historical checkout
-inference and a conversation-classification UI are outside this slice.
+Source-side provider-history selection and archive capture are implemented. The
+source indexer copies each selected original native transcript byte-for-byte to
+`provider-history/<provider>/<sha256>` in the transfer capture. It uses the
+configured provider root on the exact local or SSH source account, then rechecks
+the copied file's recorded working path against the same declared repository.
+RCP does not normalize the bytes into its lossy conversation-record model.
+Provider session ids, source paths, tool output, and other passive metadata may
+remain inside them, but none becomes a live execution or resumption binding.
+Selection is deliberately best-effort; unmatched, rewritten, malformed, or
+unreadable sources are summarized without a completeness claim, and historical
+checkout inference and a conversation-classification UI remain outside this
+slice. T3d still owns publishing the sealed bytes under
+`<RCP_DATA_DIR>/project-sources/<project-id>/provider-history/<provider>/` as
+read-only durable project data for target Seed/Refresh.
 
 The target validates the complete manifest, checksums, identities, canonical
 replay, record references, and excluded-field rules before mutation. It stages

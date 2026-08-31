@@ -16,6 +16,7 @@ from rcp.sources.indexer import (
     ConversationRecord,
     ConversationSession,
     ConversationSlice,
+    OriginalConversationSource,
 )
 from rcp.sources.preflight import preflight_provider_roots
 
@@ -33,6 +34,7 @@ __all__ = [
     "ConversationRecord",
     "ConversationSession",
     "ConversationSlice",
+    "OriginalConversationSource",
     "preflight_provider_roots",
     "RebuildableCache",
     "RebuildableCacheMetrics",

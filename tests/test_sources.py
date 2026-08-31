@@ -496,7 +496,13 @@ def test_chat_context_ignores_remote_indexed_app_chat(manifest, tmp_path, monkey
         ),
         data_dir=tmp_path / "data",
     )
-    monkeypatch.setattr(service.indexer, "_inspect_remote_root", lambda *_args: [])
+    monkeypatch.setattr(
+        service.indexer,
+        "_inspect_remote_root",
+        lambda *_args: source_indexer.RemoteConversationIndex(
+            sessions=(), unmatched_files=0, malformed_files=0
+        ),
+    )
 
     index = service.index_snapshot(execution_machine="remote-1")
     session = next(item for item in index.sessions if item.provider == "app_chat")
@@ -579,17 +585,21 @@ def test_chat_context_does_not_resolve_remote_transcript_pointers(
     monkeypatch.setattr(
         indexer,
         "_inspect_remote_root",
-        lambda _host, _root, provider, _machine: [
-            {
-                "path": f"/remote/sessions/{provider}.jsonl",
-                "cwd": "/remote/project",
-                "session_id": f"{provider}-session",
-                "first_timestamp": None,
-                "last_timestamp": None,
-                "last_uuid": "last",
-                "record_count": 2,
-            }
-        ],
+        lambda _host, _root, provider, _machine: source_indexer.RemoteConversationIndex(
+            sessions=(
+                {
+                    "path": f"/remote/sessions/{provider}.jsonl",
+                    "cwd": "/remote/project",
+                    "session_id": f"{provider}-session",
+                    "first_timestamp": None,
+                    "last_timestamp": None,
+                    "last_uuid": "last",
+                    "record_count": 2,
+                },
+            ),
+            unmatched_files=0,
+            malformed_files=0,
+        ),
     )
 
     def cache_remote_files(
@@ -676,6 +686,7 @@ def test_remote_index_script_filters_by_embedded_cwd(tmp_path) -> None:
             + "\n",
             encoding="utf-8",
         )
+    (root / "malformed.jsonl").write_text("{not json}\n", encoding="utf-8")
     payload = json.dumps(
         {
             "root": str(root),
@@ -691,7 +702,11 @@ def test_remote_index_script_filters_by_embedded_cwd(tmp_path) -> None:
         check=True,
     )
 
-    records = [json.loads(line) for line in result.stdout.splitlines()]
+    records = [
+        record
+        for line in result.stdout.splitlines()
+        if (record := json.loads(line))["kind"] == "session"
+    ]
     by_session = {record["session_id"]: record for record in records}
     assert set(by_session) == {"matching", "legacy-subagent"}
     assert by_session["matching"]["thread_source"] == "subagent"
@@ -700,6 +715,12 @@ def test_remote_index_script_filters_by_embedded_cwd(tmp_path) -> None:
     assert by_session["matching"]["source_kind"] == "subagent"
     assert by_session["legacy-subagent"]["source_kind"] == "subagent"
     assert by_session["legacy-subagent"]["parent_session_id"] is None
+    summary = next(
+        json.loads(line)
+        for line in result.stdout.splitlines()
+        if json.loads(line)["kind"] == "summary"
+    )
+    assert summary == {"kind": "summary", "unmatched_files": 1, "malformed_files": 1}
 
 
 def test_remote_index_counts_claude_records_before_first_cwd(tmp_path) -> None:
@@ -749,13 +770,14 @@ def test_remote_index_counts_claude_records_before_first_cwd(tmp_path) -> None:
         text=True,
         check=True,
     )
-    metadata = json.loads(indexed.stdout)
+    metadata, summary = [json.loads(line) for line in indexed.stdout.splitlines()]
 
     assert metadata["session_id"] == "claude-session"
     assert metadata["first_timestamp"] == "2026-07-27T00:00:00Z"
     assert metadata["last_timestamp"] == "2026-07-27T00:00:03Z"
     assert metadata["record_count"] == len(records)
     assert metadata["last_uuid"] == "terminal"
+    assert summary == {"kind": "summary", "unmatched_files": 0, "malformed_files": 0}
 
     slice_payload = json.dumps(
         {
@@ -791,17 +813,21 @@ def test_remote_execution_keeps_same_machine_sources_out_of_permanent_cache(
     indexer = ConversationIndexer(manifest, tmp_path / "cache")
 
     def inspect_remote(_host, _root, provider, _machine_alias):
-        return [
-            {
-                "path": f"/remote/sessions/{provider}.jsonl",
-                "cwd": "/remote/project",
-                "session_id": f"{provider}-session",
-                "first_timestamp": None,
-                "last_timestamp": None,
-                "last_uuid": "last",
-                "record_count": 2,
-            }
-        ]
+        return source_indexer.RemoteConversationIndex(
+            sessions=(
+                {
+                    "path": f"/remote/sessions/{provider}.jsonl",
+                    "cwd": "/remote/project",
+                    "session_id": f"{provider}-session",
+                    "first_timestamp": None,
+                    "last_timestamp": None,
+                    "last_uuid": "last",
+                    "record_count": 2,
+                },
+            ),
+            unmatched_files=0,
+            malformed_files=0,
+        )
 
     monkeypatch.setattr(indexer, "_inspect_remote_root", inspect_remote)
     cache_calls: list[list[str]] = []

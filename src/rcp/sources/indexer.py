@@ -7,10 +7,12 @@ import os
 import posixpath
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -19,7 +21,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from rcp.config import Manifest, RepositoryConfig
-from rcp.limits import REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS
+from rcp.limits import (
+    REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
+    SOURCE_ORIGINAL_COPY_BUFFER_BYTES,
+)
+from rcp.providers import PROVIDERS, ProviderId
 from rcp.sources.cache import (
     REMOTE_SOURCE_CACHE_LIMITS,
     SESSION_SLICE_CACHE_LIMITS,
@@ -51,9 +57,27 @@ class LocalSourceIdentity(BaseModel):
     mtime_ns: int
 
 
+@dataclass(frozen=True)
+class OriginalConversationSource:
+    """One private byte-exact snapshot of an indexed provider original."""
+
+    path: Path
+    content_sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class RemoteConversationIndex:
+    """Matched remote sessions plus exact best-effort omission counts."""
+
+    sessions: tuple[dict[str, Any], ...]
+    unmatched_files: int
+    malformed_files: int
+
+
 class ConversationSession(BaseModel):
     key: str
-    provider: Literal["claude", "codex", "app_chat"]
+    provider: ProviderId | Literal["app_chat"]
     source_machine: str
     truth_repository: str
     session_id: str
@@ -132,6 +156,7 @@ class ConversationIndexer:
         self,
         *,
         execution_machine: str | None = None,
+        cache_remote_sources: bool = True,
         active_cache_paths: Iterable[str | Path] = (),
         pin_artifact: Callable[[Path], None] | None = None,
     ) -> ConversationIndex:
@@ -147,8 +172,10 @@ class ConversationIndexer:
         source_errors: list[str] = []
 
         roots = [
-            ("claude", Path(root).expanduser()) for root in self.manifest.sources.claude_roots
-        ] + [("codex", Path(root).expanduser()) for root in self.manifest.sources.codex_roots]
+            (profile.id, Path(root).expanduser())
+            for profile in PROVIDERS.values()
+            for root in profile.session_roots(self.manifest.sources, remote=False)
+        ]
         repository_paths = [item.path for item in self.manifest.repositories]
         repository_path_key = tuple(repository_paths)
         if repository_path_key != self._local_metadata_repository_paths:
@@ -218,25 +245,31 @@ class ConversationIndexer:
             if not machine.host:
                 continue
             remote_roots = [
-                ("claude", root) for root in self.manifest.sources.remote_claude_roots
-            ] + [("codex", root) for root in self.manifest.sources.remote_codex_roots]
+                (profile.id, root)
+                for profile in PROVIDERS.values()
+                for root in profile.session_roots(self.manifest.sources, remote=True)
+            ]
             for provider, root in remote_roots:
                 try:
-                    metadata_items = self._inspect_remote_root(
+                    remote_index = self._inspect_remote_root(
                         machine.host, root, provider, machine.alias
                     )
                 except (OSError, ValueError) as exc:
                     source_errors.append(f"{machine.alias}/{provider}: {exc}")
                     continue
+                unmatched += remote_index.unmatched_files
+                malformed += remote_index.malformed_files
                 matched: list[tuple[dict[str, Any], RepositoryConfig]] = []
-                for metadata in metadata_items:
+                for metadata in remote_index.sessions:
                     repository = self._match_repository(metadata["cwd"])
                     if repository is None:
                         unmatched += 1
                         continue
                     matched.append((metadata, repository))
-                same_execution_machine = execution_machine == machine.alias
-                if same_execution_machine:
+                original_stays_remote = (
+                    execution_machine == machine.alias or not cache_remote_sources
+                )
+                if original_stays_remote:
                     # Keep the provider original on its own machine. Slice
                     # materialization runs the normalizer there and transfers only
                     # the cursor-bounded derived records.
@@ -276,7 +309,7 @@ class ConversationIndexer:
                             source_kind=metadata.get("source_kind"),
                             remote_source_host=machine.host,
                             remote_source_path=metadata["path"],
-                            source_path_is_remote=same_execution_machine,
+                            source_path_is_remote=original_stays_remote,
                         )
                     )
 
@@ -595,6 +628,51 @@ class ConversationIndexer:
             yield add
 
     @contextmanager
+    def original_source(
+        self,
+        session: ConversationSession,
+    ) -> Iterator[OriginalConversationSource]:
+        """Snapshot one provider original from its indexed local or SSH account."""
+
+        if session.provider == "app_chat":
+            raise ValueError("RCP chats are not provider-native sources.")
+        with tempfile.TemporaryDirectory(prefix="rcp-provider-original-") as temporary_root:
+            snapshot = Path(temporary_root) / "conversation.jsonl"
+            if session.remote_source_host and session.remote_source_path:
+                self._fetch_remote_file(
+                    session.remote_source_host,
+                    session.remote_source_path,
+                    snapshot,
+                )
+            else:
+                _copy_local_original(session, snapshot)
+            metadata = snapshot.lstat()
+            if not stat.S_ISREG(metadata.st_mode):
+                raise OSError("provider conversation source is not one regular file")
+            yield OriginalConversationSource(
+                path=snapshot,
+                content_sha256=_file_sha256(snapshot),
+                size_bytes=metadata.st_size,
+            )
+
+    def original_repository_alias(
+        self,
+        session: ConversationSession,
+        copied_path: Path,
+    ) -> str | None:
+        """Reinspect copied native bytes through the indexer's matching owner."""
+
+        if session.provider == "app_chat":
+            return None
+        metadata = self._inspect(
+            copied_path,
+            session.provider,
+            [item.path for item in self.manifest.repositories],
+        )
+        repository = self._match_repository(metadata["cwd"])
+        return None if repository is None else repository.alias
+
+    @contextmanager
     def _source_path(self, session: ConversationSession) -> Iterator[Path]:
         source_path = Path(session.path)
         if not session.source_path_is_remote and source_path.is_file():
@@ -634,7 +712,11 @@ class ConversationIndexer:
                 "remote conversation reconstruction timed out after "
                 f"{REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS} seconds"
             ) from exc
-        if result.returncode or not destination.is_file():
+        try:
+            metadata = destination.lstat()
+        except OSError:
+            metadata = None
+        if result.returncode or metadata is None or not stat.S_ISREG(metadata.st_mode):
             raise OSError(
                 result.stderr.strip() or f"remote conversation source is unavailable: {remote_path}"
             )
@@ -762,7 +844,7 @@ class ConversationIndexer:
 
     def _inspect_remote_root(
         self, host: str, root: str, provider: str, machine_alias: str
-    ) -> list[dict[str, Any]]:
+    ) -> RemoteConversationIndex:
         repository_paths = [
             item.path for item in self.manifest.repositories if item.machine == machine_alias
         ]
@@ -786,14 +868,35 @@ class ConversationIndexer:
         if result.returncode:
             raise OSError(result.stderr.strip() or f"remote index exited {result.returncode}")
         items: list[dict[str, Any]] = []
+        summary: tuple[int, int] | None = None
         for line in result.stdout.splitlines():
             if not line.strip():
                 continue
             item = json.loads(line)
+            kind = item.pop("kind", None)
+            if kind == "summary":
+                if summary is not None or set(item) != {"unmatched_files", "malformed_files"}:
+                    raise ValueError("remote conversation index returned an invalid summary")
+                counts = (item["unmatched_files"], item["malformed_files"])
+                if any(
+                    isinstance(value, bool) or not isinstance(value, int) or value < 0
+                    for value in counts
+                ):
+                    raise ValueError("remote conversation index returned invalid omission counts")
+                summary = counts
+                continue
+            if kind != "session":
+                raise ValueError("remote conversation index returned an unknown record")
             item["first_timestamp"] = _parse_datetime(item.get("first_timestamp"))
             item["last_timestamp"] = _parse_datetime(item.get("last_timestamp"))
             items.append(item)
-        return items
+        if summary is None:
+            raise ValueError("remote conversation index did not return its omission summary")
+        return RemoteConversationIndex(
+            sessions=tuple(items),
+            unmatched_files=summary[0],
+            malformed_files=summary[1],
+        )
 
     def _cache_remote_files(
         self,
@@ -881,6 +984,57 @@ def _local_source_identity_matches(session: ConversationSession) -> bool:
         return False
 
 
+def _copy_local_original(session: ConversationSession, destination: Path) -> None:
+    expected = session.local_source_identity
+    if expected is None:
+        raise ValueError("provider conversation changed while it was indexed")
+    source = Path(session.path)
+    source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    destination_descriptor = -1
+    try:
+        initial = os.fstat(source_descriptor)
+        observed = (initial.st_dev, initial.st_ino, initial.st_size, initial.st_mtime_ns)
+        expected_fields = (expected.device, expected.inode, expected.size, expected.mtime_ns)
+        if not stat.S_ISREG(initial.st_mode) or observed != expected_fields:
+            raise ValueError("provider conversation changed after it was indexed")
+        destination_descriptor = os.open(
+            destination,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+            0o400,
+        )
+        while True:
+            chunk = os.read(source_descriptor, SOURCE_ORIGINAL_COPY_BUFFER_BYTES)
+            if not chunk:
+                break
+            remaining = memoryview(chunk)
+            while remaining:
+                written = os.write(destination_descriptor, remaining)
+                if written <= 0:
+                    raise OSError("short provider conversation snapshot write")
+                remaining = remaining[written:]
+        final = os.fstat(source_descriptor)
+        current = source.lstat()
+        if (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns) != expected_fields or (
+            current.st_dev,
+            current.st_ino,
+            current.st_size,
+            current.st_mtime_ns,
+        ) != expected_fields:
+            raise ValueError("provider conversation changed during snapshot")
+        os.fchmod(destination_descriptor, 0o400)
+        os.fsync(destination_descriptor)
+    except BaseException:
+        if destination_descriptor >= 0:
+            os.close(destination_descriptor)
+            destination_descriptor = -1
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(source_descriptor)
+        if destination_descriptor >= 0:
+            os.close(destination_descriptor)
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -931,6 +1085,8 @@ from pathlib import Path
 request = json.loads(sys.argv[1])
 provider = request["provider"]
 roots = request["repository_paths"]
+unmatched_files = 0
+malformed_files = 0
 
 for path in Path(request["root"]).expanduser().rglob("*.jsonl"):
     if provider == "claude" and "subagents" in path.parts:
@@ -1001,6 +1157,7 @@ for path in Path(request["root"]).expanduser().rglob("*.jsonl"):
                 last_uuid = sequence_last_uuid
         if relevant and cwd:
             print(json.dumps({
+                "kind": "session",
                 "path": str(path),
                 "cwd": cwd,
                 "session_id": session_id or path.stem,
@@ -1013,8 +1170,18 @@ for path in Path(request["root"]).expanduser().rglob("*.jsonl"):
                 "originator": originator,
                 "source_kind": source_kind,
             }))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        continue
+        elif cwd:
+            unmatched_files += 1
+        else:
+            malformed_files += 1
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        malformed_files += 1
+
+print(json.dumps({
+    "kind": "summary",
+    "unmatched_files": unmatched_files,
+    "malformed_files": malformed_files,
+}))
 """
 
 

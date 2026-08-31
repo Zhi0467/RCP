@@ -121,6 +121,7 @@ SESSION_SLICE_CACHE_MAX_COUNT = 512
 PROJECT_TRANSFER_SOURCE_PROBE_TIMEOUT_SECONDS = 30
 SESSION_SLICE_CACHE_MAX_BYTES = 512 * 1024 * 1024
 REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS = 180
+SOURCE_ORIGINAL_COPY_BUFFER_BYTES = 1024 * 1024
 
 # Personal-to-team transfer archives fail visibly when an inventory or diagnostic
 # cannot be represented. Scientific payload bytes have no aggregate size ceiling;

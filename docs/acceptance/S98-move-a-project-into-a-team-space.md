@@ -12,6 +12,7 @@ covered_by:
   - tests/test_transfer_record_models.py
   - tests/test_transfer_records.py
   - tests/test_transfer_project_files.py
+  - tests/test_transfer_provider_history_selection.py
 invariants: [1, 3, 6, 11]
 ---
 
@@ -35,7 +36,10 @@ source history, strips execution bindings recursively, and preserves the source
 unchanged. Canonical RCP chats, Paper introduction, safe opaque facts, referenced
 kept artifacts, and legacy kept result views now have a bounded local/SSH file
 capture with exact byte bindings and no source execution continuation. Complete
-archive assembly/provider-history capture, machine relay/import, source/target
+matched provider-native histories now enter the transfer byte-for-byte through
+their configured local/SSH source accounts, while unmatched, rewritten, or
+unreadable sources produce bounded best-effort summaries. Complete archive
+assembly, machine relay/import, source/target
 activation and cleanup orchestration, and the desktop drive remain open. Its boundaries are
 in [Project identity and home](../specs/projects-spaces-and-operations.md#project-identity-and-home)
 and [Personal-to-team transfer archive](../specs/projects-spaces-and-operations.md#personal-to-team-transfer-archive).
