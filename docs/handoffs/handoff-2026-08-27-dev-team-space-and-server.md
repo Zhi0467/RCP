@@ -12,7 +12,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Lane | Done | Implemented, drive still open | Not started |
 | --- | --- | --- | --- |
 | Gates | G0, G2 | — | — |
-| Server foundation | F1, F2, F3a, F3b, F4, F5, F6a, F6b, F6c | F6d | — |
+| Server foundation | F1, F2, F3a, F3b, F4, F5, F6a, F6b, F6c, F6d | — | — |
 | Provisioning | P1, P2, P3, P4, P5, P6b, P6c | P6a | — |
 | Desktop | D1, D2, D3 | D4a, D4b, D5, D6, D7 | — |
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
@@ -23,16 +23,6 @@ is written and passing its own tests, but still owes a drive on real hardware.
 
 What each open drive is waiting on:
 
-- **F6d** — the Ubuntu 22.04/24.04 update workflow. It is implemented and pushed
-  with closed admission, systemd cutover, loud rollback, crash re-entry, and a
-  disposable-host death drive. Hosted-runner access is restored. Exact-head run
-  [33422984697](https://github.com/Zhi0467/RCP/actions/runs/33422984697) drove both
-  Ubuntu releases through installation and successful rollback recovery, then
-  exposed one production startup-order defect: the systemd entrypoint acquired
-  its data-directory lock before checking the unfinished rollback journal, so a
-  direct start could recreate an empty live root during replacement. The gate is
-  now moved before any data-root access with a focused regression. F6d remains
-  open only until that production correction is pushed and the matrix passes.
 - **P6a** — the complete team-service and GitHub live qualification.
 - **O4d** — the fresh-host Ubuntu restore drive.
 - **D4a, D4b, D5** — the integrated source-built two-space desktop drive.
@@ -349,7 +339,19 @@ gate are deliberately future work and do not block this plan.
   services stopped even after file restoration completes; intentional candidate
   and old-release starts remain admitted only in their later durable states. A
   focused regression covers the complete-journal/pre-cutover interval without
-  creating the data root. The rerun is still required.
+  creating the data root. The following exact-head rerun closes the packet.
+- Commit `566b81e` closes F6d. Exact-head CI run
+  [33425627487](https://github.com/Zhi0467/RCP/actions/runs/33425627487) passed
+  Python 3.11 and 3.12, lint and full pre-commit, all Web checks, and old-data
+  upgrade. Exact-head live run
+  [33425653252](https://github.com/Zhi0467/RCP/actions/runs/33425653252) passed the
+  complete source installation, service/SSH/enrollment/restart checks, forced
+  candidate rollback, every injected rollback-journal crash phase, exact
+  recovery readback, and cleanup on both Ubuntu 22.04 and 24.04. The production
+  pre-lock gate prevented both incomplete replacement and restored-but-not-yet-
+  cut-over state from touching the live data root. F6d is complete; later live
+  provisioning, disaster restore, operator-route, and desktop drives remain
+  separate closure work.
 
 #### 2026-08-31 — V2 current-tree baseline and compatibility repair complete
 
@@ -2180,10 +2182,8 @@ gate are deliberately future work and do not block this plan.
 The planned code paths are implemented and hermetically verified. Closure still
 requires real-environment evidence:
 
-1. push the pre-lock replacement-journal gate and pass the Ubuntu
-   22.04/24.04 source install/update/rollback qualification; then extend retained
-   live evidence through provisioning, backup/restore, member removal, and both
-   fixed operator routes;
+1. extend retained live evidence through provisioning, backup/restore, member
+   removal, and both fixed operator routes;
 2. drive the unlocked rebuilt source desktop through two distinct member
    identities, personal/team switching, Keychain readback, SSH/TLS isolation,
    new team project setup, and personal-to-team transfer/restart recovery; and
@@ -3257,13 +3257,11 @@ disaster restore.
 
 ### F6d — Update cutover, verification, and loud rollback
 
-Status: implemented and pushed on `main` through `75fcafc` on 2026-08-29 with
-focused and complete local verification plus a closed independent audit. Hosted
-execution is available again; runs 33408513981, 33414148518, and 33422149838
-successively drove both Ubuntu releases through installation and deeper into the
-root-death rollback path, exposing stale/racy live-test assumptions while cleanup
-passed. This packet is not complete until the repaired exact-head matrix passes
-and the live evidence is recorded in the implementation log.
+Status: complete on `main` through `566b81e` on 2026-08-31. Exact-head run
+33425653252 passed the complete install/update/forced-rollback and five-phase
+crash-recovery drive on Ubuntu 22.04 and 24.04 with successful cleanup. Exact-
+head CI run 33425627487 also passed. The preceding failed runs and production
+startup-order corrections are recorded in the implementation log.
 
 Own:
 
