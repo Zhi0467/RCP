@@ -1478,9 +1478,15 @@ class ProjectProvisioningStoreMixin:
                 canonical_request_id,
             )
             admission = current.target_admission_receipt
-            if current.side != "target" or admission is None or admission.admitted_by != actor:
+            if (
+                current.side != "target"
+                or admission is None
+                or admission.admitted_by.space_id != actor.space_id
+                or admission.admitted_by.user_id != actor.user_id
+            ):
                 raise ValueError("restored target transfer requires its exact confirmer")
             self._require_transfer_actor(connection, actor)
+            confirmer_snapshot = admission.admitted_by
 
             provisioning_row = connection.execute(
                 "SELECT * FROM project_provisioning_requests WHERE request_id = ?",
@@ -1522,7 +1528,7 @@ class ProjectProvisioningStoreMixin:
                     or prior.resume_phase != expected_resume_phase
                     or prior.provisioning_revision != provisioning.revision
                     or prior.provisioning_final_review_sha256 != expected_review
-                    or prior.confirmed_by != actor
+                    or prior.confirmed_by != confirmer_snapshot
                     or upload.status not in {"active", "complete"}
                     or upload.lease_boundary_sha256 != prior.replacement_lease_boundary_sha256
                 ):
@@ -1565,7 +1571,7 @@ class ProjectProvisioningStoreMixin:
                 resume_phase="archive_bound",
                 provisioning_revision=provisioning.revision,
                 provisioning_final_review_sha256=expected_review,
-                confirmed_by=actor,
+                confirmed_by=confirmer_snapshot,
                 archive_sha256=current.archive_sha256,
                 archive_size_bytes=current.archive_size_bytes,
                 replacement_lease_boundary_sha256=replacement.lease_boundary_sha256,

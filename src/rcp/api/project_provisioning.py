@@ -48,6 +48,7 @@ from rcp.storage import (
     ProjectProvisioningStatus,
     ProjectTransferCleanupAcknowledgment,
     ProjectTransferLinkReceipt,
+    ProjectTransferPhase,
     ProjectTransferRequestRecord,
     ProjectTransferSourceConfiguration,
     ProjectTransferSourceReleaseReceipt,
@@ -92,6 +93,18 @@ _CHECK_LABELS: dict[ProjectProvisioningCheckStatus, str] = {
     "checking": "Checking",
     "operator_action_needed": "Operator action needed",
     "ready": "Ready",
+}
+_TRANSFER_PHASE_LABELS: dict[ProjectTransferPhase, str] = {
+    "awaiting_link": "Awaiting target link",
+    "linked": "Target setup in progress",
+    "target_admitted": "Target admitted; source release pending",
+    "source_released": "Source released; archive relay pending",
+    "source_fenced": "Source fenced; archive binding pending",
+    "archive_bound": "Archive bound; target activation pending",
+    "target_activated": "Target activated; cleanup pending",
+    "cleanup_acknowledged": "Cleanup acknowledged",
+    "completed": "Completed",
+    "operator_action_needed": "Operator action needed",
 }
 
 
@@ -272,6 +285,12 @@ class ProjectTransferSourceReleaseRequest(_StrictModel):
     expected_source_head: GraphHeadRef
 
 
+class ProjectTransferRestoreReentryRequest(_StrictModel):
+    expected_restored_revision: int = Field(ge=0)
+    expected_resume_phase: Literal["archive_bound"]
+    expected_final_review_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ProjectTransferSourceReceiptRequest(_StrictModel):
     receipt: dict[str, object]
 
@@ -363,7 +382,7 @@ class ProjectProvisioningFinalReview(_StrictModel):
 
 class ProjectProvisioningResponse(_StrictModel):
     request_id: str
-    kind: Literal["create_team_project"]
+    kind: Literal["create_team_project", "incoming_transfer"]
     status: ProjectProvisioningStatus
     status_label: str
     next_action: str | None
@@ -393,6 +412,37 @@ class ProjectProvisioningResponse(_StrictModel):
     setup_started_at: str | None
     completed_at: str | None
     cancelled_at: str | None
+
+
+class ProjectTransferResponse(ProjectTransferRequestRecord):
+    """Safe transfer read model with backend-owned lifecycle decisions.
+
+    The durable record contains only commitments and public receipts; it has no
+    raw proof or upload lease secret.  Keep mutations on the existing record
+    responses while reads use this projection so the Web client does not have
+    to interpret transfer phases itself.
+    """
+
+    phase_label: str
+    next_action: str | None
+    can_link: bool
+    can_run_setup: bool
+    can_review: bool
+    can_admit: bool
+    can_accept_admission: bool
+    can_release: bool
+    can_accept_release: bool
+    can_relay: bool
+    can_restore_reentry: bool
+    can_complete: bool
+
+
+class ProjectTransferSourceBoundaryResponse(_StrictModel):
+    """The exact read-only source boundary a release request must echo."""
+
+    source_configuration: ProjectTransferSourceConfiguration
+    source_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_head: GraphHeadRef
 
 
 def project_creation_control(space_kind: SpaceKind) -> ProjectCreationControl:
@@ -428,11 +478,13 @@ def project_creation_control(space_kind: SpaceKind) -> ProjectCreationControl:
             ),
             ProjectCreationIntentControl(
                 intent="move_personal_project_to_team",
-                eligible=False,
+                eligible=personal,
                 preselected=False,
                 primary_action_label="Move to team space",
-                required_fields=(),
-                unavailable_reason=("Personal-to-team transfer is not available in this build."),
+                required_fields=("source_project", "team_connection"),
+                unavailable_reason=(
+                    None if personal else "Move-to-team setup begins in a personal space."
+                ),
             ),
         ),
     )
@@ -440,7 +492,7 @@ def project_creation_control(space_kind: SpaceKind) -> ProjectCreationControl:
 
 @router.post(
     "/api/project-transfers/incoming-provisioning-requests",
-    response_model=ProjectProvisioningRequestRecord,
+    response_model=ProjectProvisioningResponse,
     status_code=status.HTTP_201_CREATED,
 )
 def create_incoming_transfer_provisioning_request(
@@ -449,11 +501,11 @@ def create_incoming_transfer_provisioning_request(
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
-) -> ProjectProvisioningRequestRecord:
+) -> ProjectProvisioningResponse:
     identity_access.require_team_space()
     actor = identity_access.require_patch_capable_identity(request)
     try:
-        return store.create_project_provisioning_request(
+        record = store.create_project_provisioning_request(
             kind="incoming_transfer",
             authorized_by=actor,
             machines=[machine.intent() for machine in body.machines],
@@ -471,22 +523,23 @@ def create_incoming_transfer_provisioning_request(
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _project_provisioning_response(record, viewer_user_id=actor.user_id)
 
 
 @router.get(
     "/api/project-transfers/incoming-provisioning-requests",
-    response_model=list[ProjectProvisioningRequestRecord],
+    response_model=list[ProjectProvisioningResponse],
 )
 def incoming_transfer_provisioning_requests(
     request: Request,
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
-) -> list[ProjectProvisioningRequestRecord]:
+) -> list[ProjectProvisioningResponse]:
     identity_access.require_team_space()
-    identity_access.acting_user(request)
+    viewer = identity_access.acting_user(request)
     return [
-        record
+        _project_provisioning_response(record, viewer_user_id=viewer.user_id)
         for record in store.project_provisioning_requests()
         if record.kind == "incoming_transfer"
     ]
@@ -494,7 +547,7 @@ def incoming_transfer_provisioning_requests(
 
 @router.get(
     "/api/project-transfers/incoming-provisioning-requests/{request_id}",
-    response_model=ProjectProvisioningRequestRecord,
+    response_model=ProjectProvisioningResponse,
 )
 def incoming_transfer_provisioning_request(
     request_id: str,
@@ -502,13 +555,13 @@ def incoming_transfer_provisioning_request(
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
-) -> ProjectProvisioningRequestRecord:
+) -> ProjectProvisioningResponse:
     identity_access.require_team_space()
-    identity_access.acting_user(request)
+    viewer = identity_access.acting_user(request)
     record = _request_or_404(store, request_id)
     if record.kind != "incoming_transfer":
         raise HTTPException(status_code=404, detail="Provisioning request not found")
-    return record
+    return _project_provisioning_response(record, viewer_user_id=viewer.user_id)
 
 
 @router.post(
@@ -580,21 +633,24 @@ def create_target_project_transfer_request(
 
 @router.get(
     "/api/project-transfers/requests",
-    response_model=list[ProjectTransferRequestRecord],
+    response_model=list[ProjectTransferResponse],
 )
 def project_transfer_requests(
     request: Request,
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
-) -> list[ProjectTransferRequestRecord]:
-    identity_access.acting_user(request)
-    return store.project_transfer_requests()
+) -> list[ProjectTransferResponse]:
+    viewer = identity_access.acting_user(request)
+    return [
+        _project_transfer_response(record, store=store, viewer_user_id=viewer.user_id)
+        for record in store.project_transfer_requests()
+    ]
 
 
 @router.get(
     "/api/project-transfers/requests/{request_id}",
-    response_model=ProjectTransferRequestRecord,
+    response_model=ProjectTransferResponse,
 )
 def project_transfer_request(
     request_id: str,
@@ -602,9 +658,13 @@ def project_transfer_request(
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
-) -> ProjectTransferRequestRecord:
-    identity_access.acting_user(request)
-    return _transfer_request_or_404(store, request_id)
+) -> ProjectTransferResponse:
+    viewer = identity_access.acting_user(request)
+    return _project_transfer_response(
+        _transfer_request_or_404(store, request_id),
+        store=store,
+        viewer_user_id=viewer.user_id,
+    )
 
 
 @router.post(
@@ -673,6 +733,50 @@ def accept_target_project_transfer_admission(
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get(
+    "/api/project-transfers/source-requests/{request_id}/release-boundary",
+    response_model=ProjectTransferSourceBoundaryResponse,
+)
+def read_source_project_transfer_release_boundary(
+    request_id: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+    operation_lock: OperationLockDependency,
+) -> ProjectTransferSourceBoundaryResponse:
+    """Capture the source boundary that the release mutation must echo."""
+
+    _require_transfer_space(store, "personal")
+    actor = identity_access.require_patch_capable_identity(request)
+    try:
+        transfer = _transfer_request_or_404(store, request_id)
+        if transfer.side != "source":
+            raise ValueError("source release boundary belongs only to a source transfer")
+        if not store.is_project_member(transfer.project_id, actor.user_id):
+            raise HTTPException(status_code=404, detail="Project not found")
+        with operation_lock(transfer.project_id):
+            current = _transfer_request_or_404(store, request_id)
+            if current.side != "source":
+                raise ValueError("source release boundary belongs only to a source transfer")
+            if not store.is_project_member(current.project_id, actor.user_id):
+                raise HTTPException(status_code=404, detail="Project not found")
+            if current.phase != "target_admitted":
+                raise ValueError("source transfer is not awaiting its release boundary")
+            service = catalog.open(current.project_id)
+            configuration, source_head = capture_project_transfer_source(service)
+    except HTTPException:
+        raise
+    except (KeyError, OSError, StateUnavailable, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ProjectTransferSourceBoundaryResponse(
+        source_configuration=configuration,
+        source_configuration_sha256=project_transfer_source_configuration_sha256(configuration),
+        source_head=source_head,
+    )
 
 
 @router.post(
@@ -748,6 +852,35 @@ def accept_source_project_transfer_release(
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/project-transfers/target-requests/{request_id}/restore-reentry",
+    response_model=ProjectTransferRequestRecord,
+)
+def reenter_restored_target_project_transfer(
+    request_id: str,
+    body: ProjectTransferRestoreReentryRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> ProjectTransferRequestRecord:
+    """Resume one restored archive-bound target transfer with a new lease."""
+
+    identity_access.require_team_space()
+    confirmed_by = identity_access.require_patch_capable_identity(request)
+    try:
+        transfer, _upload = store.reenter_restored_target_project_transfer(
+            request_id,
+            expected_restored_revision=body.expected_restored_revision,
+            expected_resume_phase=body.expected_resume_phase,
+            expected_final_review_digest=body.expected_final_review_digest,
+            confirmed_by=confirmed_by,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return transfer
 
 
 @router.post(
@@ -1250,13 +1383,127 @@ def _native_bearer_token(request: Request) -> str:
     return token
 
 
+def _project_transfer_response(
+    record: ProjectTransferRequestRecord,
+    *,
+    store: AppStore,
+    viewer_user_id: str,
+) -> ProjectTransferResponse:
+    """Project a transfer record into the decisions needed by its UI owner."""
+
+    provisioning = (
+        store.project_provisioning_request(record.request_id) if record.side == "target" else None
+    )
+    effective_phase = (
+        record.restore_resume_phase if record.phase == "operator_action_needed" else record.phase
+    )
+    target_ready_for_review = provisioning is not None and provisioning.status == "ready_for_review"
+    can_link = record.side == "source" and record.phase == "awaiting_link"
+    can_run_setup = (
+        record.side == "target"
+        and effective_phase == "linked"
+        and provisioning is not None
+        and provisioning.status
+        in {"waiting_for_server_setup", "setup_in_progress", "operator_action_needed"}
+    )
+    can_admit = (
+        record.side == "target"
+        and record.phase == "linked"
+        and target_ready_for_review
+        and record.target_admission_receipt is None
+    )
+    can_accept_admission = (
+        record.side == "source"
+        and record.phase == "linked"
+        and record.target_admission_receipt is None
+    )
+    can_release = (
+        record.side == "source"
+        and record.phase == "target_admitted"
+        and record.source_release_receipt is None
+    )
+    can_accept_release = (
+        record.side == "target"
+        and record.phase == "target_admitted"
+        and record.source_release_receipt is None
+    )
+    can_relay = (record.side == "source" and record.phase == "archive_bound") or (
+        record.side == "target" and record.phase == "source_released"
+    )
+    can_restore_reentry = (
+        record.side == "target"
+        and record.phase == "operator_action_needed"
+        and record.restore_resume_phase == "archive_bound"
+        and target_ready_for_review
+        and record.target_admission_receipt is not None
+        and record.target_admission_receipt.admitted_by.space_id == store.space_id
+        and record.target_admission_receipt.admitted_by.user_id == viewer_user_id
+    )
+    # Target cleanup is completed by the native proof relay. There is no
+    # browser mutation to advertise as a generic "complete" action.
+    can_complete = False
+
+    if record.phase == "operator_action_needed":
+        next_action = record.restore_diagnostic or "Re-enter the restored transfer boundary."
+    elif record.side == "source":
+        next_action = {
+            "awaiting_link": "Link the target transfer request.",
+            "linked": "Wait for target preparation and admission.",
+            "target_admitted": "Review and release the source project.",
+            "source_released": "Wait for source fencing and archive sealing.",
+            "source_fenced": "Bind and relay the sealed source archive.",
+            "archive_bound": "Relay the sealed source archive to the target.",
+            "target_activated": "Wait for target cleanup confirmation.",
+            "cleanup_acknowledged": "Finish source transfer cleanup.",
+            "completed": None,
+        }[record.phase]
+    else:
+        if record.phase == "linked":
+            if target_ready_for_review:
+                next_action = "Review and admit the prepared target project."
+            elif provisioning is not None and provisioning.status == "cancelled":
+                next_action = "The target preparation was cancelled."
+            else:
+                next_action = "Run target server setup."
+        else:
+            next_action = {
+                "awaiting_link": None,
+                "target_admitted": "Wait for the source release.",
+                "source_released": "Relay and bind the sealed source archive.",
+                "source_fenced": None,
+                "archive_bound": "Activate the imported target project.",
+                "target_activated": "Wait for native transfer cleanup confirmation.",
+                "cleanup_acknowledged": "Finish target transfer cleanup.",
+                "completed": None,
+            }[record.phase]
+
+    # Keep tuple-valued protocol fields as tuples while validating this strict
+    # response model; FastAPI performs the JSON conversion at the boundary.
+    payload = record.model_dump()
+    payload.update(
+        {
+            "phase_label": _TRANSFER_PHASE_LABELS[record.phase],
+            "next_action": next_action,
+            "can_link": can_link,
+            "can_run_setup": can_run_setup,
+            "can_review": can_admit,
+            "can_admit": can_admit,
+            "can_accept_admission": can_accept_admission,
+            "can_release": can_release,
+            "can_accept_release": can_accept_release,
+            "can_relay": can_relay,
+            "can_restore_reentry": can_restore_reentry,
+            "can_complete": can_complete,
+        }
+    )
+    return ProjectTransferResponse.model_validate(payload)
+
+
 def _project_provisioning_response(
     record: ProjectProvisioningRequestRecord,
     *,
     viewer_user_id: str,
 ) -> ProjectProvisioningResponse:
-    if record.kind != "create_team_project":
-        raise ValueError("the new-team provisioning projection requires a create request")
     machines = [_machine_projection(machine) for machine in record.machines]
     repositories = [_repository_projection(repository) for repository in record.repositories]
     providers = [_provider_projection(check) for check in record.provider_checks]
@@ -1281,7 +1528,8 @@ def _project_provisioning_response(
         in {"waiting_for_server_setup", "setup_in_progress", "operator_action_needed"},
         can_review=record.status == "ready_for_review",
         can_cancel=(
-            record.status == "waiting_for_server_setup"
+            record.kind == "create_team_project"
+            and record.status == "waiting_for_server_setup"
             and record.authorized_by.user_id == viewer_user_id
         ),
         target_space_id=record.target_space_id,
@@ -1407,6 +1655,9 @@ __all__ = [
     "ProjectProvisioningCompleteRequest",
     "ProjectProvisioningCreateRequest",
     "ProjectProvisioningResponse",
+    "ProjectTransferResponse",
+    "ProjectTransferRestoreReentryRequest",
+    "ProjectTransferSourceBoundaryResponse",
     "project_creation_control",
     "router",
 ]

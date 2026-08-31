@@ -104,14 +104,12 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
                 },
                 {
                     "intent": "move_personal_project_to_team",
-                    "eligible": False,
+                    "eligible": True,
                     "preselected": False,
                     "primary_action_label": "Move to team space",
-                    "required_fields": [],
+                    "required_fields": ["source_project", "team_connection"],
                     "pinned_source_project_id": None,
-                    "unavailable_reason": (
-                        "Personal-to-team transfer is not available in this build."
-                    ),
+                    "unavailable_reason": None,
                 },
             ],
         },
