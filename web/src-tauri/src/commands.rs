@@ -17,10 +17,10 @@ use crate::{
     lifecycle::DesktopStatus,
     navigation,
     project_transfer::{
-        self, ProjectTransferBundle, ProjectTransferCoordinatorState,
+        self, ProjectTransferAdvanceResult, ProjectTransferBundle, ProjectTransferCoordinatorState,
         ProjectTransferExportCleanupResult, ProjectTransferExportResult,
-        ProjectTransferFinishResult, ProjectTransferPrepareRequest, ProjectTransferRunResult,
-        TargetProviderSetupProjection,
+        ProjectTransferExportSelectionResult, ProjectTransferFinishResult,
+        ProjectTransferPrepareRequest, ProjectTransferRunResult, TargetProviderSetupProjection,
     },
     server_commands::{
         self, ConfigureServerOperatorRouteRequest, ServerCommandRunResult, ServerOperatorProbe,
@@ -224,6 +224,7 @@ pub async fn desktop_load_project_transfer(
     window: WebviewWindow,
     connections: State<'_, TeamConnectionState>,
     sessions: State<'_, TeamSessionState>,
+    tunnels: State<'_, TeamTunnelState>,
     coordinator: State<'_, ProjectTransferCoordinatorState>,
     lifecycle: State<'_, BackendState>,
     source_request_id: String,
@@ -233,6 +234,7 @@ pub async fn desktop_load_project_transfer(
         &lifecycle,
         &connections,
         &sessions,
+        &tunnels,
         &coordinator,
         &source_request_id,
     )
@@ -240,10 +242,38 @@ pub async fn desktop_load_project_transfer(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn desktop_advance_project_transfer(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    tunnels: State<'_, TeamTunnelState>,
+    coordinator: State<'_, ProjectTransferCoordinatorState>,
+    lifecycle: State<'_, BackendState>,
+    source_request_id: String,
+    on_event: Channel<Value>,
+) -> Result<ProjectTransferAdvanceResult, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    project_transfer::advance(
+        &lifecycle,
+        &connections,
+        &sessions,
+        &tunnels,
+        &coordinator,
+        &source_request_id,
+        &on_event,
+        PathBuf::from("/usr/bin/ssh"),
+    )
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn desktop_run_incoming_project_provision(
     window: WebviewWindow,
     connections: State<'_, TeamConnectionState>,
     sessions: State<'_, TeamSessionState>,
+    tunnels: State<'_, TeamTunnelState>,
     coordinator: State<'_, ProjectTransferCoordinatorState>,
     lifecycle: State<'_, BackendState>,
     source_request_id: String,
@@ -254,6 +284,7 @@ pub async fn desktop_run_incoming_project_provision(
         &lifecycle,
         &connections,
         &sessions,
+        &tunnels,
         &coordinator,
         &source_request_id,
         &on_event,
@@ -299,10 +330,34 @@ pub async fn desktop_export_project_transfer(
 }
 
 #[tauri::command]
+pub async fn desktop_select_project_transfer_export(
+    app: AppHandle,
+    window: WebviewWindow,
+    lifecycle: State<'_, BackendState>,
+    request_id: String,
+) -> Result<ProjectTransferExportSelectionResult, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    server_commands::validate_uuid4(&request_id, "project transfer request identity")?;
+    let Some(chosen) = app
+        .dialog()
+        .file()
+        .set_title("Select RCP project transfer archive")
+        .blocking_pick_file()
+    else {
+        return Ok(ProjectTransferExportSelectionResult::cancelled(&request_id));
+    };
+    let archive_path = chosen
+        .into_path()
+        .map_err(|error| format!("selected archive is not a local file: {error}"))?;
+    project_transfer::select_export(&lifecycle, &request_id, archive_path).await
+}
+
+#[tauri::command]
 pub async fn desktop_open_project_transfer_terminal(
     window: WebviewWindow,
     connections: State<'_, TeamConnectionState>,
     sessions: State<'_, TeamSessionState>,
+    tunnels: State<'_, TeamTunnelState>,
     lifecycle: State<'_, BackendState>,
     request_id: String,
     archive_path: String,
@@ -312,6 +367,7 @@ pub async fn desktop_open_project_transfer_terminal(
         &lifecycle,
         &connections,
         &sessions,
+        &tunnels,
         &request_id,
         PathBuf::from(archive_path),
     )

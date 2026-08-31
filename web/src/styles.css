@@ -1918,6 +1918,223 @@ button:disabled {
   flex: 1;
   padding: 46px 50px 35px;
 }
+.setup-route-failure-layout,
+.transfer-setup-layout {
+  grid-template-columns: 220px minmax(540px, 760px) minmax(250px, 300px);
+}
+.setup-route-failure-layout {
+  grid-template-columns: minmax(540px, 760px);
+  justify-content: center;
+}
+.setup-route-failure {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+}
+.setup-route-failure > svg {
+  color: var(--red);
+  margin-bottom: 20px;
+}
+.setup-route-failure p,
+.transfer-unavailable p {
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.65;
+  margin: 0 0 24px;
+  max-width: 54ch;
+}
+.transfer-setup-layout .setup-sheet {
+  min-height: 0;
+}
+.transfer-section {
+  padding-bottom: 28px;
+}
+.transfer-source-pin {
+  align-items: center;
+  background: var(--cobalt-soft);
+  border: 1px solid color-mix(in srgb, var(--cobalt) 28%, var(--line));
+  border-radius: 7px;
+  color: var(--cobalt-dark);
+  display: flex;
+  font-size: 10px;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 10px 12px;
+}
+.transfer-source-pin code {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 9px;
+  margin-left: auto;
+  overflow-wrap: anywhere;
+}
+.transfer-card {
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+.transfer-card > header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 11px;
+  padding: 15px 16px;
+}
+.transfer-card h2 {
+  font-family: var(--editorial);
+  font-size: 20px;
+  font-weight: 550;
+  letter-spacing: -0.015em;
+  margin: 4px 0 0;
+}
+.transfer-path-list {
+  padding: 14px 16px 16px;
+}
+.transfer-path-list > strong {
+  color: var(--ink-soft);
+  display: block;
+  font-size: 10px;
+  margin-bottom: 9px;
+}
+.transfer-path {
+  align-items: baseline;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 88px minmax(0, 1fr);
+  padding: 9px 0 2px;
+}
+.transfer-path > span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+.transfer-path code {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+.transfer-work-card > p {
+  border-top: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 11px 16px 14px;
+}
+.transfer-work-counts {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  padding: 15px 16px;
+}
+.transfer-work-counts > div + div {
+  border-left: 1px solid var(--line);
+  padding-left: 16px;
+}
+.transfer-work-counts strong,
+.transfer-work-counts span {
+  display: block;
+}
+.transfer-work-counts strong {
+  color: var(--cobalt-dark);
+  font-family: var(--editorial);
+  font-size: 28px;
+  font-weight: 550;
+  line-height: 1;
+}
+.transfer-work-counts span {
+  color: var(--muted);
+  font-size: 9px;
+  margin-top: 5px;
+}
+.transfer-target-picker {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+.transfer-target-picker legend {
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 750;
+  margin-bottom: 9px;
+  padding: 0;
+}
+.transfer-target-option {
+  align-items: flex-start;
+  background: var(--surface-cool);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  gap: 11px;
+  margin-bottom: 8px;
+  padding: 12px;
+}
+.transfer-target-option:has(input:checked) {
+  background: var(--cobalt-soft);
+  border-color: var(--cobalt);
+}
+.transfer-target-option input {
+  accent-color: var(--cobalt);
+  margin-top: 3px;
+}
+.transfer-target-copy,
+.transfer-target-copy > strong,
+.transfer-target-copy > span {
+  display: block;
+}
+.transfer-target-copy > strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+.transfer-target-copy > span {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9px;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.transfer-target-copy > .transfer-target-ready,
+.transfer-target-copy > .transfer-target-missing {
+  font-family: var(--sans);
+  font-weight: 700;
+}
+.transfer-target-ready {
+  color: var(--teal) !important;
+}
+.transfer-target-missing {
+  color: var(--red) !important;
+}
+.transfer-target-empty {
+  align-items: center;
+  background: var(--surface-cool);
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  color: var(--muted);
+  display: flex;
+  font-size: 10px;
+  gap: 8px;
+  padding: 15px 12px;
+}
+.transfer-unavailable-sheet {
+  grid-column: 1 / -1;
+}
+.transfer-unavailable {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+}
+.transfer-unavailable > svg {
+  color: var(--red);
+  margin-bottom: 20px;
+}
+.transfer-ledger .ledger-item:last-child strong {
+  color: var(--cobalt-dark);
+}
 .project-intent-choices {
   display: grid;
   gap: 7px;

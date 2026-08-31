@@ -297,6 +297,20 @@ Seed/Refresh sources. Provider credentials, native-home installation, resumption
 authority, active work, scratch, caches, and machine configuration do not
 transfer.
 
+## Implemented substrate
+
+T1 through T5b are implemented as of 2026-08-31. The source and target state
+machines, exact archive/export/import boundary, central-checkout rebuild,
+retained-history transformation, activation proofs, native relay, unified move
+wizard, independent actor confirmations, cold-restart session recovery, and
+explicit protected manual relay all have focused coverage. The Web receives
+only safe projections and native decisions; cross-space receipts, proofs,
+configuration commitments, and archive bytes remain behind the native boundary.
+Automatic relay failures are visible and retryable rather than being treated as
+success. This scenario remains pending because the complete source-built
+desktop interruption drive against two real spaces and a real SSH operator
+route has not yet passed.
+
 ## Boundary
 
 Releasing a project *from* a team space remains outside this first lab-server

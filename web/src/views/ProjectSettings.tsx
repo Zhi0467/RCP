@@ -64,6 +64,7 @@ interface Props {
   onRefreshReadiness: () => Promise<void>;
   showDisplaySettings: boolean;
   spaceKind: "personal" | "team";
+  onMovePersonalProjectToTeam?: (sourceProjectId: string) => void;
   textScale: number;
   onTextScaleChange: (action: "decrease" | "increase" | "reset") => void;
 }
@@ -161,6 +162,7 @@ export function ProjectSettings({
   onRefreshReadiness,
   showDisplaySettings,
   spaceKind,
+  onMovePersonalProjectToTeam,
   textScale,
   onTextScaleChange,
 }: Props) {
@@ -494,6 +496,24 @@ export function ProjectSettings({
           </header>
         </section>
       )}
+      {spaceKind === "personal" && onMovePersonalProjectToTeam ? (
+        <section className="settings-section project-home-settings">
+          <header>
+            <span>
+              <GitBranch size={16} />
+            </span>
+            <h2>Project home</h2>
+          </header>
+          <button
+            className="button secondary"
+            type="button"
+            disabled={writesDisabled}
+            onClick={() => onMovePersonalProjectToTeam(project.id)}
+          >
+            <Server size={14} /> Move to team space
+          </button>
+        </section>
+      ) : null}
       <ProjectMembers projectId={project.id} identity={identity} api={api} onLeft={onLeftProject} />
       <article className="settings-section boundary-settings">
         <header>

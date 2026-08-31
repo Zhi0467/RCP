@@ -47,6 +47,7 @@ const SOURCE_LINK_PATH_PREFIX: &str = "/api/project-transfers/source-requests/";
 const COORDINATOR_VERSION: u32 = 1;
 const COORDINATOR_FILENAME: &str = "project-transfer-coordinator.json";
 const MAX_COORDINATOR_BYTES: u64 = 1024 * 1024;
+const MAX_ADVANCE_TRANSITIONS: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PinnedPersonalBackend {
@@ -427,6 +428,69 @@ pub struct ProjectTransferLinkReceipt {
     pub created_at: String,
 }
 
+/// Public receipt written by the target admission transition.  This is kept
+/// native-only: the browser may render the lifecycle decisions, but it never
+/// supplies or forwards the receipt that authorizes the next mutation.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ProjectTransferResolvedPath {
+    repository_alias: String,
+    machine_alias: String,
+    path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectTransferTargetAdmissionReceipt {
+    source_request_id: String,
+    target_request_id: String,
+    project_id: String,
+    source_space_id: String,
+    target_space_id: String,
+    admitted_by: ProjectProvisioningAuthorizedHuman,
+    source_configuration_sha256: String,
+    target_preparation_revision: u64,
+    target_preparation_sha256: String,
+    resolved_paths: Vec<ProjectTransferResolvedPath>,
+    accepted_schema_generation: u64,
+    accepted_archive_codec: String,
+    source_release_proof_sha256: String,
+    target_activation_proof_sha256: String,
+    created_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectTransferSourceReleaseReceipt {
+    source_request_id: String,
+    target_request_id: String,
+    project_id: String,
+    source_space_id: String,
+    target_space_id: String,
+    released_by: ProjectProvisioningAuthorizedHuman,
+    source_configuration_sha256: String,
+    target_admission_sha256: String,
+    target_preparation_revision: u64,
+    target_preparation_sha256: String,
+    source_head: TransferGraphHead,
+    accepted_schema_generation: u64,
+    accepted_archive_codec: String,
+    source_release_proof_sha256: String,
+    target_activation_proof_sha256: String,
+    created_at: String,
+}
+
+/// The source-side read-only boundary is the only input accepted by the
+/// source release mutation.  The coordinator captures it immediately before
+/// release and echoes it exactly; Web code never sees a release receipt.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectTransferSourceBoundaryResponse {
+    source_configuration: ProjectTransferSourceConfiguration,
+    source_configuration_sha256: String,
+    source_head: TransferGraphHead,
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct ProjectTransferProjection {
     pub request_id: String,
@@ -466,6 +530,13 @@ pub struct ProjectTransferBundle {
     pub target: ProjectTransferProjection,
     pub incoming_provisioning: ProjectProvisioningProjection,
     pub target_provider_setup: Vec<TargetProviderSetupProjection>,
+    /// Aggregate decisions are computed only from the backend-published
+    /// `can_*` answers.  They let the browser render one final-review action
+    /// without interpreting transfer phases.
+    pub can_advance: bool,
+    pub advance_label: Option<String>,
+    pub can_manual_relay: bool,
+    pub finished: bool,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -627,6 +698,8 @@ struct ProjectTransferRecord {
     target_space_id: String,
     source_configuration: Option<ProjectTransferSourceConfiguration>,
     source_configuration_sha256: Option<String>,
+    target_admission_receipt: Option<ProjectTransferTargetAdmissionReceipt>,
+    source_release_receipt: Option<ProjectTransferSourceReleaseReceipt>,
     accepted_schema_generation: Option<u64>,
     accepted_archive_codec: Option<String>,
     source_release_proof_sha256: Option<String>,
@@ -683,6 +756,17 @@ pub struct ProjectTransferExportResult {
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ProjectTransferExportSelectionResult {
+    pub selected: bool,
+    pub request_id: String,
+    pub target_request_id: Option<String>,
+    pub target_space_id: Option<String>,
+    pub archive_sha256: Option<String>,
+    pub archive_size_bytes: Option<u64>,
+    pub path: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct ProjectTransferExportCleanupResult {
     pub request_id: String,
     pub removed: bool,
@@ -693,6 +777,20 @@ impl ProjectTransferExportResult {
     pub fn cancelled(request_id: &str) -> Self {
         Self {
             saved: false,
+            request_id: request_id.to_string(),
+            target_request_id: None,
+            target_space_id: None,
+            archive_sha256: None,
+            archive_size_bytes: None,
+            path: None,
+        }
+    }
+}
+
+impl ProjectTransferExportSelectionResult {
+    pub fn cancelled(request_id: &str) -> Self {
+        Self {
+            selected: false,
             request_id: request_id.to_string(),
             target_request_id: None,
             target_space_id: None,
@@ -822,6 +920,17 @@ struct TargetTransferCreateBody<'a> {
 #[derive(Debug, Serialize)]
 struct SourceLinkBody<'a> {
     receipt: &'a ProjectTransferLinkReceipt,
+}
+
+#[derive(Debug, Serialize)]
+struct TargetAdmissionBody<'a> {
+    receipt: &'a ProjectTransferTargetAdmissionReceipt,
+}
+
+#[derive(Debug, Serialize)]
+struct SourceReleaseBody<'a> {
+    expected_source_configuration_sha256: &'a str,
+    expected_source_head: &'a TransferGraphHead,
 }
 
 /// Create or validate the exact two-request transfer bundle and its target
@@ -957,6 +1066,7 @@ pub async fn prepare(
         &linked_target,
         &linked_incoming,
         read_target_provider_setup(connections, sessions, &target.connection_id).await?,
+        target.operator_route.is_some(),
     )?;
     validate_bundle(&bundle)?;
     coordinator.remove(&request, &target.expected_space_id)?;
@@ -969,10 +1079,20 @@ pub async fn load_bundle(
     lifecycle: &BackendState,
     connections: &TeamConnectionState,
     sessions: &TeamSessionState,
+    tunnels: &TeamTunnelState,
     coordinator: &ProjectTransferCoordinatorState,
     source_request_id: &str,
 ) -> Result<ProjectTransferBundle, String> {
     validate_uuid4(source_request_id, "source transfer request identity")?;
+    let _ = ensure_transfer_request_session(
+        lifecycle,
+        connections,
+        sessions,
+        tunnels,
+        coordinator,
+        source_request_id,
+    )
+    .await?;
     if let Some(record) = coordinator.load(source_request_id)? {
         // A crash before source link leaves only the native coordinator record
         // and perhaps an idempotently-created source request. Re-enter the
@@ -1009,17 +1129,384 @@ pub async fn load_bundle(
         &target_record,
         &incoming,
         read_target_provider_setup(connections, sessions, &target.connection_id).await?,
+        target.operator_route.is_some(),
     )?;
     validate_bundle(&bundle)?;
     Ok(bundle)
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ProjectTransferAdvanceResult {
+    pub bundle: ProjectTransferBundle,
+    pub relay: Option<ProjectTransferRunResult>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProjectTransferAdvanceAction {
+    AdmitTarget,
+    AcceptAdmission,
+    ReleaseSource,
+    AcceptRelease,
+    RestoreReentry,
+    Relay,
+    CompletedRetry,
+}
+
+/// Drive the human-confirmation and native relay protocol from the durable
+/// source request identity. Web supplies no receipt, proof, release boundary,
+/// or target configuration. Each iteration rereads the three authoritative
+/// projections, then chooses only an action explicitly published by a
+/// backend `can_*` decision.
+#[allow(clippy::too_many_arguments)]
+pub async fn advance(
+    lifecycle: &BackendState,
+    connections: &TeamConnectionState,
+    sessions: &TeamSessionState,
+    tunnels: &TeamTunnelState,
+    coordinator: &ProjectTransferCoordinatorState,
+    source_request_id: &str,
+    on_event: &Channel<Value>,
+    ssh_program: PathBuf,
+) -> Result<ProjectTransferAdvanceResult, String> {
+    validate_uuid4(source_request_id, "source transfer request identity")?;
+
+    // Resolve the target before prepare/load so the tunnel is live for every
+    // authenticated team request. A transfer cannot enter the final-review
+    // protocol without the saved native relay route; manual relay still uses
+    // that same configured route interactively.
+    let target = ensure_transfer_request_session(
+        lifecycle,
+        connections,
+        sessions,
+        tunnels,
+        coordinator,
+        source_request_id,
+    )
+    .await?;
+    server_commands::configured_route(&target)?;
+
+    // This repairs an interrupted prepare using the exact native coordinator
+    // record before any final-review mutation is considered.
+    let _ = load_bundle(
+        lifecycle,
+        connections,
+        sessions,
+        tunnels,
+        coordinator,
+        source_request_id,
+    )
+    .await?;
+    let status = lifecycle.status()?;
+    let pinned = pin_personal_backend(lifecycle, &status).await?;
+    let mut state =
+        read_advance_state(&pinned, connections, sessions, &target, source_request_id).await?;
+
+    for _ in 0..MAX_ADVANCE_TRANSITIONS {
+        let Some(action) = next_advance_action(&state.source, &state.target, true) else {
+            return Ok(ProjectTransferAdvanceResult {
+                bundle: state.bundle,
+                relay: None,
+            });
+        };
+
+        match action {
+            ProjectTransferAdvanceAction::AdmitTarget => {
+                let value = sessions
+                    .admit_target_project_transfer(
+                        connections,
+                        &target.connection_id,
+                        &state.target.request_id,
+                    )
+                    .await?;
+                let mutation =
+                    parse_transfer_mutation_record(&value, &state.target.request_id, "target")?;
+                let receipt = mutation.target_admission_receipt.as_ref().ok_or_else(|| {
+                    "target admission returned no durable admission receipt".to_string()
+                })?;
+                validate_target_admission_matches(receipt, &state.source, &mutation)?;
+            }
+            ProjectTransferAdvanceAction::AcceptAdmission => {
+                let receipt = state
+                    .target
+                    .target_admission_receipt
+                    .as_ref()
+                    .ok_or_else(|| {
+                        "target admission decision has no durable target receipt".to_string()
+                    })?;
+                validate_target_admission_matches(receipt, &state.source, &state.target)?;
+                let value =
+                    post_target_admission(&pinned, &state.source.request_id, receipt).await?;
+                let mutation =
+                    parse_transfer_mutation_record(&value, &state.source.request_id, "source")?;
+                let accepted = mutation.target_admission_receipt.as_ref().ok_or_else(|| {
+                    "target admission acceptance returned no durable source receipt".to_string()
+                })?;
+                validate_target_admission_matches(accepted, &mutation, &state.target)?;
+            }
+            ProjectTransferAdvanceAction::ReleaseSource => {
+                let boundary =
+                    read_source_release_boundary(&pinned, &state.source.request_id).await?;
+                if boundary.source_configuration_sha256
+                    != state
+                        .source
+                        .source_configuration_sha256
+                        .as_deref()
+                        .unwrap_or_default()
+                {
+                    return Err("source release boundary changed its reviewed configuration".into());
+                }
+                let value =
+                    post_source_release(&pinned, &state.source.request_id, &boundary).await?;
+                let mutation =
+                    parse_transfer_mutation_record(&value, &state.source.request_id, "source")?;
+                let receipt = mutation.source_release_receipt.as_ref().ok_or_else(|| {
+                    "source release returned no durable release receipt".to_string()
+                })?;
+                validate_source_release_matches(receipt, &mutation, &state.target)?;
+            }
+            ProjectTransferAdvanceAction::AcceptRelease => {
+                let receipt = state
+                    .source
+                    .source_release_receipt
+                    .as_ref()
+                    .ok_or_else(|| {
+                        "source release decision has no durable source receipt".to_string()
+                    })?;
+                validate_source_release_matches(receipt, &state.source, &state.target)?;
+                let value = sessions
+                    .accept_source_project_transfer_release(
+                        connections,
+                        &target.connection_id,
+                        &state.target.request_id,
+                        receipt,
+                    )
+                    .await?;
+                let mutation =
+                    parse_transfer_mutation_record(&value, &state.target.request_id, "target")?;
+                let accepted = mutation.source_release_receipt.as_ref().ok_or_else(|| {
+                    "source release acceptance returned no durable target receipt".to_string()
+                })?;
+                validate_source_release_matches(accepted, &state.source, &mutation)?;
+            }
+            ProjectTransferAdvanceAction::RestoreReentry => {
+                let digest = state
+                    .bundle
+                    .incoming_provisioning
+                    .final_review_digest
+                    .as_deref()
+                    .ok_or_else(|| {
+                        "restored target transfer has no final-review digest to re-enter"
+                            .to_string()
+                    })?;
+                let value = sessions
+                    .restore_target_project_transfer_reentry(
+                        connections,
+                        &target.connection_id,
+                        &state.target.request_id,
+                        state.target.revision,
+                        digest,
+                    )
+                    .await?;
+                let _ = parse_transfer_mutation_record(&value, &state.target.request_id, "target")?;
+            }
+            ProjectTransferAdvanceAction::Relay | ProjectTransferAdvanceAction::CompletedRetry => {
+                let relay = run(
+                    lifecycle,
+                    connections,
+                    sessions,
+                    tunnels,
+                    source_request_id,
+                    on_event,
+                    ssh_program,
+                )
+                .await?;
+                let final_state =
+                    read_advance_state(&pinned, connections, sessions, &target, source_request_id)
+                        .await?;
+                return Ok(ProjectTransferAdvanceResult {
+                    bundle: final_state.bundle,
+                    relay: Some(relay),
+                });
+            }
+        }
+        state =
+            read_advance_state(&pinned, connections, sessions, &target, source_request_id).await?;
+    }
+    Err("the project transfer advance exceeded its bounded transition count".into())
+}
+
+struct ProjectTransferAdvanceState {
+    source: ProjectTransferRecord,
+    target: ProjectTransferRecord,
+    bundle: ProjectTransferBundle,
+}
+
+async fn read_advance_state(
+    pinned: &PinnedPersonalBackend,
+    connections: &TeamConnectionState,
+    sessions: &TeamSessionState,
+    target: &TeamConnectionMetadata,
+    source_request_id: &str,
+) -> Result<ProjectTransferAdvanceState, String> {
+    let source_value = read_personal_transfer_value(pinned, source_request_id).await?;
+    let source = parse_transfer_record(&source_value, source_request_id, "source")?;
+    let target_request_id = source
+        .linked_request_id
+        .as_deref()
+        .ok_or_else(|| "the source transfer has no target request link".to_string())?;
+    if target.expected_space_id != source.target_space_id {
+        return Err("the saved target connection does not match the source transfer space".into());
+    }
+    let target_value = sessions
+        .read_project_transfer_value(connections, &target.connection_id, target_request_id)
+        .await?;
+    let target_record = parse_transfer_record(&target_value, target_request_id, "target")?;
+    let incoming_value = sessions
+        .read_incoming_transfer_provisioning_value(
+            connections,
+            &target.connection_id,
+            target_request_id,
+        )
+        .await?;
+    let incoming = parse_project_provisioning_projection(
+        &incoming_value,
+        target_request_id,
+        &source.target_space_id,
+    )?;
+    let bundle = assemble_bundle(
+        &source,
+        &target_record,
+        &incoming,
+        read_target_provider_setup(connections, sessions, &target.connection_id).await?,
+        target.operator_route.is_some(),
+    )?;
+    validate_bundle(&bundle)?;
+    Ok(ProjectTransferAdvanceState {
+        source,
+        target: target_record,
+        bundle,
+    })
+}
+
+fn next_advance_action(
+    source: &ProjectTransferRecord,
+    target: &ProjectTransferRecord,
+    operator_route_available: bool,
+) -> Option<ProjectTransferAdvanceAction> {
+    if target.can_admit {
+        Some(ProjectTransferAdvanceAction::AdmitTarget)
+    } else if source.can_accept_admission && target.target_admission_receipt.is_some() {
+        Some(ProjectTransferAdvanceAction::AcceptAdmission)
+    } else if source.can_release {
+        Some(ProjectTransferAdvanceAction::ReleaseSource)
+    } else if target.can_accept_release {
+        Some(ProjectTransferAdvanceAction::AcceptRelease)
+    } else if target.can_restore_reentry {
+        Some(ProjectTransferAdvanceAction::RestoreReentry)
+    } else if operator_route_available && (source.can_relay || target.can_relay) {
+        Some(ProjectTransferAdvanceAction::Relay)
+    } else if operator_route_available && source.finished && target.finished {
+        Some(ProjectTransferAdvanceAction::CompletedRetry)
+    } else {
+        None
+    }
+}
+
+fn validate_target_admission_matches(
+    receipt: &ProjectTransferTargetAdmissionReceipt,
+    source: &ProjectTransferRecord,
+    target: &ProjectTransferRecord,
+) -> Result<(), String> {
+    let source_configuration_sha256 = source
+        .source_configuration_sha256
+        .as_deref()
+        .ok_or_else(|| "source transfer has no configuration commitment".to_string())?;
+    let accepted_schema_generation = target
+        .accepted_schema_generation
+        .ok_or_else(|| "target transfer has no accepted schema generation".to_string())?;
+    let accepted_archive_codec = target
+        .accepted_archive_codec
+        .as_deref()
+        .ok_or_else(|| "target transfer has no accepted archive codec".to_string())?;
+    let target_activation_proof_sha256 = target
+        .target_activation_proof_sha256
+        .as_deref()
+        .ok_or_else(|| "target transfer has no activation commitment".to_string())?;
+    if receipt.source_request_id != source.request_id
+        || receipt.target_request_id != target.request_id
+        || receipt.project_id != source.project_id
+        || receipt.source_space_id != source.source_space_id
+        || receipt.target_space_id != source.target_space_id
+        || receipt.source_configuration_sha256 != source_configuration_sha256
+        || receipt.accepted_schema_generation != accepted_schema_generation
+        || receipt.accepted_archive_codec != accepted_archive_codec
+        || receipt.source_release_proof_sha256
+            != source
+                .source_release_proof_sha256
+                .as_deref()
+                .unwrap_or_default()
+        || receipt.target_activation_proof_sha256 != target_activation_proof_sha256
+    {
+        return Err("target admission receipt does not match the transfer boundary".into());
+    }
+    Ok(())
+}
+
+fn validate_source_release_matches(
+    receipt: &ProjectTransferSourceReleaseReceipt,
+    source: &ProjectTransferRecord,
+    target: &ProjectTransferRecord,
+) -> Result<(), String> {
+    let source_configuration_sha256 = source
+        .source_configuration_sha256
+        .as_deref()
+        .ok_or_else(|| "source transfer has no configuration commitment".to_string())?;
+    let accepted_schema_generation = target
+        .accepted_schema_generation
+        .ok_or_else(|| "target transfer has no accepted schema generation".to_string())?;
+    let accepted_archive_codec = target
+        .accepted_archive_codec
+        .as_deref()
+        .ok_or_else(|| "target transfer has no accepted archive codec".to_string())?;
+    let target_activation_proof_sha256 = target
+        .target_activation_proof_sha256
+        .as_deref()
+        .ok_or_else(|| "target transfer has no activation commitment".to_string())?;
+    if receipt.source_request_id != source.request_id
+        || receipt.target_request_id != target.request_id
+        || receipt.project_id != source.project_id
+        || receipt.source_space_id != source.source_space_id
+        || receipt.target_space_id != source.target_space_id
+        || receipt.source_configuration_sha256 != source_configuration_sha256
+        || receipt.accepted_schema_generation != accepted_schema_generation
+        || receipt.accepted_archive_codec != accepted_archive_codec
+        || receipt.source_release_proof_sha256
+            != source
+                .source_release_proof_sha256
+                .as_deref()
+                .unwrap_or_default()
+        || receipt.target_activation_proof_sha256 != target_activation_proof_sha256
+    {
+        return Err("source release receipt does not match the transfer boundary".into());
+    }
+    if let Some(admission) = target.target_admission_receipt.as_ref() {
+        if receipt.target_preparation_revision != admission.target_preparation_revision
+            || receipt.target_preparation_sha256 != admission.target_preparation_sha256
+        {
+            return Err("source release receipt does not match target admission".into());
+        }
+    }
+    Ok(())
+}
+
 /// Run the fixed target-side provisioning command for the already prepared
 /// bundle, then read its lifecycle from the incoming-transfer endpoint.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_incoming_provision(
     lifecycle: &BackendState,
     connections: &TeamConnectionState,
     sessions: &TeamSessionState,
+    tunnels: &TeamTunnelState,
     coordinator: &ProjectTransferCoordinatorState,
     source_request_id: &str,
     on_event: &Channel<Value>,
@@ -1029,6 +1516,7 @@ pub async fn run_incoming_provision(
         lifecycle,
         connections,
         sessions,
+        tunnels,
         coordinator,
         source_request_id,
     )
@@ -1227,6 +1715,15 @@ fn resolve_prepare_target(
     connections: &TeamConnectionState,
     sessions: &TeamSessionState,
 ) -> Result<TeamConnectionMetadata, String> {
+    let target = resolve_prepare_target_metadata(request, connections)?;
+    sessions.established(&target.connection_id)?;
+    Ok(target)
+}
+
+fn resolve_prepare_target_metadata(
+    request: &ProjectTransferPrepareRequest,
+    connections: &TeamConnectionState,
+) -> Result<TeamConnectionMetadata, String> {
     let matches = connections
         .list()?
         .into_iter()
@@ -1235,7 +1732,6 @@ fn resolve_prepare_target(
     let [target] = matches.as_slice() else {
         return Err("the selected target connection is not saved on this desktop".into());
     };
-    sessions.established(&target.connection_id)?;
     Ok(target.clone())
 }
 
@@ -1243,6 +1739,15 @@ fn resolve_target_connection_for_space(
     target_space_id: &str,
     connections: &TeamConnectionState,
     sessions: &TeamSessionState,
+) -> Result<TeamConnectionMetadata, String> {
+    let target = resolve_target_connection_metadata_for_space(target_space_id, connections)?;
+    sessions.established(&target.connection_id)?;
+    Ok(target)
+}
+
+fn resolve_target_connection_metadata_for_space(
+    target_space_id: &str,
+    connections: &TeamConnectionState,
 ) -> Result<TeamConnectionMetadata, String> {
     validate_uuid4(target_space_id, "target transfer space identity")?;
     let matches = connections
@@ -1255,8 +1760,30 @@ fn resolve_target_connection_for_space(
             "the source transfer target space has no unique saved desktop connection".into(),
         );
     };
-    sessions.established(&target.connection_id)?;
     Ok(target.clone())
+}
+
+async fn ensure_transfer_request_session(
+    lifecycle: &BackendState,
+    connections: &TeamConnectionState,
+    sessions: &TeamSessionState,
+    tunnels: &TeamTunnelState,
+    coordinator: &ProjectTransferCoordinatorState,
+    source_request_id: &str,
+) -> Result<TeamConnectionMetadata, String> {
+    let target = if let Some(record) = coordinator.load(source_request_id)? {
+        resolve_prepare_target_metadata(&record.as_request(), connections)?
+    } else {
+        let status = lifecycle.status()?;
+        let pinned = pin_personal_backend(lifecycle, &status).await?;
+        let source_value = read_personal_transfer_value(&pinned, source_request_id).await?;
+        let source = parse_transfer_record(&source_value, source_request_id, "source")?;
+        resolve_target_connection_metadata_for_space(&source.target_space_id, connections)?
+    };
+    sessions
+        .ensure_native_session(connections, tunnels, lifecycle, &target.connection_id)
+        .await?;
+    Ok(target)
 }
 
 async fn create_source_request(
@@ -1307,6 +1834,94 @@ async fn post_source_link(
         .await
         .map_err(|error| format!("could not link the personal transfer request: {error}"))?;
     personal_json_response(response, "personal transfer link").await
+}
+
+async fn post_target_admission(
+    pinned: &PinnedPersonalBackend,
+    source_request_id: &str,
+    receipt: &ProjectTransferTargetAdmissionReceipt,
+) -> Result<Value, String> {
+    validate_uuid4(source_request_id, "source transfer request identity")?;
+    validate_target_admission_receipt(receipt)?;
+    if receipt.source_request_id != source_request_id {
+        return Err("target admission receipt does not match the source request".into());
+    }
+    let client = personal_client(&pinned.base_url)?;
+    let body = TargetAdmissionBody { receipt };
+    let response = client
+        .post(format!(
+            "{}{SOURCE_LINK_PATH_PREFIX}{source_request_id}/target-admission",
+            pinned.base_url
+        ))
+        .header(
+            "X-RCP-Instance-ID",
+            HeaderValue::from_str(&pinned.instance_id)
+                .map_err(|_| "the personal backend instance identity is invalid".to_string())?,
+        )
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| format!("could not accept the target transfer admission: {error}"))?;
+    personal_json_response(response, "target transfer admission acceptance").await
+}
+
+async fn read_source_release_boundary(
+    pinned: &PinnedPersonalBackend,
+    source_request_id: &str,
+) -> Result<ProjectTransferSourceBoundaryResponse, String> {
+    validate_uuid4(source_request_id, "source transfer request identity")?;
+    let client = personal_client(&pinned.base_url)?;
+    let response = client
+        .get(format!(
+            "{}{SOURCE_LINK_PATH_PREFIX}{source_request_id}/release-boundary",
+            pinned.base_url
+        ))
+        .header(
+            "X-RCP-Instance-ID",
+            HeaderValue::from_str(&pinned.instance_id)
+                .map_err(|_| "the personal backend instance identity is invalid".to_string())?,
+        )
+        .send()
+        .await
+        .map_err(|error| format!("could not read the source release boundary: {error}"))?;
+    let value = personal_json_response(response, "source release boundary readback").await?;
+    let boundary = serde_json::from_value::<ProjectTransferSourceBoundaryResponse>(value)
+        .map_err(|_| "the source release boundary returned an invalid response".to_string())?;
+    validate_source_configuration(&boundary.source_configuration)?;
+    validate_digest(
+        &boundary.source_configuration_sha256,
+        "source configuration commitment",
+    )?;
+    validate_transfer_graph_head(&boundary.source_head, true, "source release boundary head")?;
+    Ok(boundary)
+}
+
+async fn post_source_release(
+    pinned: &PinnedPersonalBackend,
+    source_request_id: &str,
+    boundary: &ProjectTransferSourceBoundaryResponse,
+) -> Result<Value, String> {
+    validate_uuid4(source_request_id, "source transfer request identity")?;
+    let client = personal_client(&pinned.base_url)?;
+    let body = SourceReleaseBody {
+        expected_source_configuration_sha256: &boundary.source_configuration_sha256,
+        expected_source_head: &boundary.source_head,
+    };
+    let response = client
+        .post(format!(
+            "{}{SOURCE_LINK_PATH_PREFIX}{source_request_id}/release",
+            pinned.base_url
+        ))
+        .header(
+            "X-RCP-Instance-ID",
+            HeaderValue::from_str(&pinned.instance_id)
+                .map_err(|_| "the personal backend instance identity is invalid".to_string())?,
+        )
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| format!("could not release the source transfer request: {error}"))?;
+    personal_json_response(response, "source transfer release").await
 }
 
 async fn load_source_record(
@@ -1361,13 +1976,66 @@ fn assemble_bundle(
     target: &ProjectTransferRecord,
     incoming: &ProjectProvisioningProjection,
     target_provider_setup: Vec<TargetProviderSetupProjection>,
+    operator_route_available: bool,
 ) -> Result<ProjectTransferBundle, String> {
+    let route_capable = operator_route_available;
+    let (can_advance, advance_label, finished) =
+        aggregate_transfer_decisions(source, target, route_capable);
     Ok(ProjectTransferBundle {
         source: source.to_projection()?,
         target: target.to_projection()?,
         incoming_provisioning: incoming.clone(),
         target_provider_setup,
+        can_advance,
+        advance_label,
+        can_manual_relay: route_capable && (source.can_relay || target.can_relay),
+        finished,
     })
+}
+
+/// Select the one native action exposed by the two backend projections.  The
+/// ordering mirrors the cross-space protocol, while every gate is a backend
+/// `can_*` answer rather than a client-side phase/status interpretation.
+fn aggregate_transfer_decisions(
+    source: &ProjectTransferRecord,
+    target: &ProjectTransferRecord,
+    operator_route_available: bool,
+) -> (bool, Option<String>, bool) {
+    let actions = [
+        (
+            target.can_admit,
+            Some("Confirm target admission and continue"),
+        ),
+        (
+            source.can_accept_admission && target.target_admission_receipt.is_some(),
+            Some("Record target admission and continue"),
+        ),
+        (
+            source.can_release,
+            Some("Release the personal project and continue"),
+        ),
+        (
+            target.can_accept_release,
+            Some("Record source release and continue"),
+        ),
+        (
+            target.can_restore_reentry,
+            Some("Re-enter the restored transfer and continue"),
+        ),
+        (
+            operator_route_available && (source.can_relay || target.can_relay),
+            Some("Relay the sealed project archive and continue"),
+        ),
+    ];
+    let advance_label = actions
+        .iter()
+        .find_map(|(enabled, label)| enabled.then(|| label.map(str::to_string)).flatten());
+    let can_advance = actions.iter().any(|(enabled, _)| *enabled);
+    (
+        can_advance,
+        advance_label,
+        source.finished && target.finished,
+    )
 }
 
 impl ProjectTransferRecord {
@@ -1503,6 +2171,16 @@ fn parse_transfer_record_inner(
         "source_configuration_sha256",
         "source configuration commitment",
     )?;
+    let target_admission_receipt = object
+        .get("target_admission_receipt")
+        .filter(|value| !value.is_null())
+        .map(parse_target_admission_receipt)
+        .transpose()?;
+    let source_release_receipt = object
+        .get("source_release_receipt")
+        .filter(|value| !value.is_null())
+        .map(parse_source_release_receipt)
+        .transpose()?;
     let source_release_proof_sha256 = optional_digest(
         object,
         "source_release_proof_sha256",
@@ -1556,6 +2234,8 @@ fn parse_transfer_record_inner(
         target_space_id,
         source_configuration,
         source_configuration_sha256,
+        target_admission_receipt,
+        source_release_receipt,
         accepted_schema_generation,
         accepted_archive_codec: optional_text(object, "accepted_archive_codec")?,
         source_release_proof_sha256,
@@ -1931,6 +2611,198 @@ fn parse_link_receipt(value: &Value) -> Result<ProjectTransferLinkReceipt, Strin
     )?;
     validate_safe_line(&receipt.created_at, "transfer link timestamp", 120, true)?;
     Ok(receipt)
+}
+
+fn parse_target_admission_receipt(
+    value: &Value,
+) -> Result<ProjectTransferTargetAdmissionReceipt, String> {
+    let receipt = serde_json::from_value::<ProjectTransferTargetAdmissionReceipt>(value.clone())
+        .map_err(|_| "the target transfer returned an invalid admission receipt".to_string())?;
+    validate_target_admission_receipt(&receipt)?;
+    Ok(receipt)
+}
+
+fn parse_source_release_receipt(
+    value: &Value,
+) -> Result<ProjectTransferSourceReleaseReceipt, String> {
+    let receipt = serde_json::from_value::<ProjectTransferSourceReleaseReceipt>(value.clone())
+        .map_err(|_| "the source transfer returned an invalid release receipt".to_string())?;
+    validate_source_release_receipt(&receipt)?;
+    Ok(receipt)
+}
+
+fn validate_receipt_identities(
+    source_request_id: &str,
+    target_request_id: &str,
+    project_id: &str,
+    source_space_id: &str,
+    target_space_id: &str,
+) -> Result<(), String> {
+    for (value, label) in [
+        (source_request_id, "source transfer request identity"),
+        (target_request_id, "target transfer request identity"),
+        (project_id, "transfer project identity"),
+        (source_space_id, "source transfer space identity"),
+        (target_space_id, "target transfer space identity"),
+    ] {
+        validate_uuid4(value, label)?;
+    }
+    if source_space_id == target_space_id {
+        return Err("the transfer receipt must cross spaces".into());
+    }
+    Ok(())
+}
+
+fn validate_receipt_actor(
+    actor: &ProjectProvisioningAuthorizedHuman,
+    expected_space_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    validate_uuid4(&actor.space_id, &format!("{label} space identity"))?;
+    validate_uuid4(&actor.user_id, &format!("{label} user identity"))?;
+    if actor.space_id != expected_space_id {
+        return Err(format!("{label} belongs to another transfer space"));
+    }
+    validate_safe_line(&actor.display_name, label, 200, true)
+}
+
+fn validate_transfer_graph_head(
+    head: &TransferGraphHead,
+    require_main: bool,
+    label: &str,
+) -> Result<(), String> {
+    validate_safe_line(&head.target.kind, &format!("{label} target kind"), 20, true)?;
+    if !matches!(head.target.kind.as_str(), "main" | "branch") {
+        return Err(format!("{label} target kind is invalid"));
+    }
+    match (head.target.kind.as_str(), head.target.branch_id.as_deref()) {
+        ("main", None) => {}
+        ("main", Some(_)) => return Err(format!("{label} main target has a branch id")),
+        ("branch", Some(branch_id)) => {
+            validate_uuid4(branch_id, &format!("{label} branch identity"))?
+        }
+        ("branch", None) => return Err(format!("{label} branch target has no branch id")),
+        _ => unreachable!(),
+    }
+    if require_main && head.target.kind != "main" {
+        return Err(format!("{label} must bind the main canonical head"));
+    }
+    if let Some(transition_id) = &head.transition_id {
+        validate_digest(transition_id, &format!("{label} transition identity"))?;
+    }
+    Ok(())
+}
+
+fn validate_target_admission_receipt(
+    receipt: &ProjectTransferTargetAdmissionReceipt,
+) -> Result<(), String> {
+    validate_receipt_identities(
+        &receipt.source_request_id,
+        &receipt.target_request_id,
+        &receipt.project_id,
+        &receipt.source_space_id,
+        &receipt.target_space_id,
+    )?;
+    validate_receipt_actor(
+        &receipt.admitted_by,
+        &receipt.target_space_id,
+        "admission actor",
+    )?;
+    for (value, label) in [
+        (
+            &receipt.source_configuration_sha256,
+            "source configuration commitment",
+        ),
+        (
+            &receipt.target_preparation_sha256,
+            "target preparation commitment",
+        ),
+        (
+            &receipt.source_release_proof_sha256,
+            "source release proof commitment",
+        ),
+        (
+            &receipt.target_activation_proof_sha256,
+            "target activation proof commitment",
+        ),
+    ] {
+        validate_digest(value, label)?;
+    }
+    if receipt.target_preparation_revision == 0 || receipt.accepted_schema_generation == 0 {
+        return Err("the target admission receipt has an invalid revision".into());
+    }
+    validate_safe_line(
+        &receipt.accepted_archive_codec,
+        "accepted archive codec",
+        120,
+        true,
+    )?;
+    validate_safe_line(&receipt.created_at, "target admission timestamp", 120, true)?;
+    if receipt.resolved_paths.is_empty() || receipt.resolved_paths.len() > 64 {
+        return Err("the target admission receipt has an invalid resolved path list".into());
+    }
+    let mut aliases = HashSet::new();
+    for path in &receipt.resolved_paths {
+        validate_alias(&path.repository_alias, "resolved repository alias")?;
+        validate_alias(&path.machine_alias, "resolved machine alias")?;
+        validate_absolute_path(&path.path, "resolved repository path")?;
+        if !aliases.insert(&path.repository_alias) {
+            return Err("the target admission receipt repeats a repository alias".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_source_release_receipt(
+    receipt: &ProjectTransferSourceReleaseReceipt,
+) -> Result<(), String> {
+    validate_receipt_identities(
+        &receipt.source_request_id,
+        &receipt.target_request_id,
+        &receipt.project_id,
+        &receipt.source_space_id,
+        &receipt.target_space_id,
+    )?;
+    validate_receipt_actor(
+        &receipt.released_by,
+        &receipt.source_space_id,
+        "release actor",
+    )?;
+    for (value, label) in [
+        (
+            &receipt.source_configuration_sha256,
+            "source configuration commitment",
+        ),
+        (
+            &receipt.target_admission_sha256,
+            "target admission commitment",
+        ),
+        (
+            &receipt.target_preparation_sha256,
+            "target preparation commitment",
+        ),
+        (
+            &receipt.source_release_proof_sha256,
+            "source release proof commitment",
+        ),
+        (
+            &receipt.target_activation_proof_sha256,
+            "target activation proof commitment",
+        ),
+    ] {
+        validate_digest(value, label)?;
+    }
+    if receipt.target_preparation_revision == 0 || receipt.accepted_schema_generation == 0 {
+        return Err("the source release receipt has an invalid revision".into());
+    }
+    validate_safe_line(
+        &receipt.accepted_archive_codec,
+        "accepted archive codec",
+        120,
+        true,
+    )?;
+    validate_transfer_graph_head(&receipt.source_head, true, "source release head")?;
+    validate_safe_line(&receipt.created_at, "source release timestamp", 120, true)
 }
 
 fn validate_target_for_prepare(
@@ -2432,10 +3304,8 @@ pub async fn run(
     ssh_program: PathBuf,
 ) -> Result<ProjectTransferRunResult, String> {
     let (pinned, source) = load_source_request(lifecycle, request_id, false).await?;
-    let target = resolve_target_connection(&source, connections, sessions)?;
-    let _ = tunnels
-        .connect_saved(connections, lifecycle, &target.connection_id)
-        .await?;
+    let target =
+        resolve_target_connection(lifecycle, connections, sessions, tunnels, &source).await?;
     let target_readback = read_target_transfer(sessions, connections, &source, &target).await?;
 
     if matches!(source.phase.as_str(), "cleanup_acknowledged" | "completed") {
@@ -2553,10 +3423,8 @@ pub async fn finish(
     archive_path: PathBuf,
 ) -> Result<ProjectTransferFinishResult, String> {
     let (_pinned, source) = load_source_request(lifecycle, request_id, false).await?;
-    let target = resolve_target_connection(&source, connections, sessions)?;
-    let _ = tunnels
-        .connect_saved(connections, lifecycle, &target.connection_id)
-        .await?;
+    let target =
+        resolve_target_connection(lifecycle, connections, sessions, tunnels, &source).await?;
     let target_readback = read_target_transfer(sessions, connections, &source, &target).await?;
     if matches!(source.phase.as_str(), "cleanup_acknowledged" | "completed")
         && target_readback.phase == "completed"
@@ -2619,15 +3487,46 @@ pub async fn export(
     })
 }
 
+/// Verify a manually exported archive selected after a desktop restart. The
+/// source request is loaded above this boundary so the browser cannot choose
+/// which transfer metadata to trust. Selection itself is read-only: it neither
+/// copies the archive nor advances either transfer request.
+pub async fn select_export(
+    lifecycle: &BackendState,
+    request_id: &str,
+    archive_path: PathBuf,
+) -> Result<ProjectTransferExportSelectionResult, String> {
+    let (_pinned, source) = load_source_request(lifecycle, request_id, true).await?;
+    select_verified_export(&source, archive_path)
+}
+
+fn select_verified_export(
+    source: &SourceTransferRequest,
+    archive_path: PathBuf,
+) -> Result<ProjectTransferExportSelectionResult, String> {
+    verify_local_archive(&archive_path, source)?;
+    Ok(ProjectTransferExportSelectionResult {
+        selected: true,
+        request_id: source.request_id.clone(),
+        target_request_id: Some(source.target_request_id.clone()),
+        target_space_id: Some(source.target_space_id.clone()),
+        archive_sha256: Some(source.archive_sha256.clone()),
+        archive_size_bytes: Some(source.archive_size_bytes),
+        path: Some(archive_path.display().to_string()),
+    })
+}
+
 pub async fn terminal(
     lifecycle: &BackendState,
     connections: &TeamConnectionState,
     sessions: &TeamSessionState,
+    tunnels: &TeamTunnelState,
     request_id: &str,
     archive_path: PathBuf,
 ) -> Result<TerminalLaunchResult, String> {
     let (_pinned, source) = load_source_request(lifecycle, request_id, true).await?;
-    let target = resolve_target_connection(&source, connections, sessions)?;
+    let target =
+        resolve_target_connection(lifecycle, connections, sessions, tunnels, &source).await?;
     verify_local_archive(&archive_path, &source)?;
     let argv =
         server_commands::terminal_transfer_argv(&target, &source.target_request_id, &archive_path)?;
@@ -2837,10 +3736,12 @@ fn validate_archive_headers(
     Ok(())
 }
 
-fn resolve_target_connection(
-    source: &SourceTransferRequest,
+async fn resolve_target_connection(
+    lifecycle: &BackendState,
     connections: &TeamConnectionState,
     sessions: &TeamSessionState,
+    tunnels: &TeamTunnelState,
+    source: &SourceTransferRequest,
 ) -> Result<TeamConnectionMetadata, String> {
     let matches = connections
         .list()?
@@ -2852,8 +3753,10 @@ fn resolve_target_connection(
             "the source transfer target space has no unique saved desktop connection".into(),
         );
     };
-    sessions.established(&target.connection_id)?;
     server_commands::configured_route(target)?;
+    sessions
+        .ensure_native_session(connections, tunnels, lifecycle, &target.connection_id)
+        .await?;
     Ok(target.clone())
 }
 
@@ -3109,7 +4012,7 @@ fn validate_uuid4(value: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_digest(value: &str, label: &str) -> Result<(), String> {
+pub(crate) fn validate_digest(value: &str, label: &str) -> Result<(), String> {
     if value.len() != 64
         || !value
             .bytes()
@@ -3275,6 +4178,253 @@ mod tests {
             "finished": false,
             "revision": 2
         })
+    }
+
+    fn decision_record(side: &str, request_id: &str) -> ProjectTransferRecord {
+        ProjectTransferRecord {
+            request_id: request_id.into(),
+            side: side.into(),
+            phase: "linked".into(),
+            phase_label: Some("Linked".into()),
+            next_action: Some("Continue transfer".into()),
+            linked_request_id: Some(if side == "source" {
+                TARGET_ID.into()
+            } else {
+                REQUEST_ID.into()
+            }),
+            project_id: PROJECT_ID.into(),
+            source_space_id: SOURCE_SPACE_ID.into(),
+            target_space_id: TARGET_SPACE_ID.into(),
+            source_configuration: Some(transfer_configuration()),
+            source_configuration_sha256: Some("a".repeat(64)),
+            target_admission_receipt: None,
+            source_release_receipt: None,
+            accepted_schema_generation: Some(1),
+            accepted_archive_codec: Some("tar-zstd-v1".into()),
+            source_release_proof_sha256: Some("b".repeat(64)),
+            target_activation_proof_sha256: Some("c".repeat(64)),
+            archive_sha256: Some("d".repeat(64)),
+            archive_size_bytes: Some(1),
+            can_link: false,
+            can_run_setup: false,
+            can_review: false,
+            can_admit: false,
+            can_accept_admission: false,
+            can_release: false,
+            can_accept_release: false,
+            can_relay: false,
+            can_restore_reentry: false,
+            can_complete: false,
+            finished: false,
+            revision: 1,
+        }
+    }
+
+    fn transfer_configuration() -> ProjectTransferSourceConfiguration {
+        ProjectTransferSourceConfiguration {
+            source_rcp_version: "0.3.2".into(),
+            source_schema_generation: 1,
+            supported_archive_codecs: vec!["tar-zstd-v1".into()],
+            machine_aliases: vec!["server".into()],
+            repositories: vec![ProjectTransferRepositorySource {
+                alias: "state".into(),
+                repository: ProjectTransferRepositoryIdentity {
+                    identity: "example/state".into(),
+                },
+                machine_alias: "server".into(),
+            }],
+            state_repository: "state".into(),
+            project_truth_scope: vec!["state".into()],
+            default_run_truth_scope: vec!["state".into()],
+            source_manifest_sha256: "a".repeat(64),
+        }
+    }
+
+    fn authorized_human(space_id: &str, user_id: &str) -> ProjectProvisioningAuthorizedHuman {
+        ProjectProvisioningAuthorizedHuman {
+            space_id: space_id.into(),
+            user_id: user_id.into(),
+            display_name: "RCP test user".into(),
+        }
+    }
+
+    fn target_admission_receipt() -> ProjectTransferTargetAdmissionReceipt {
+        ProjectTransferTargetAdmissionReceipt {
+            source_request_id: REQUEST_ID.into(),
+            target_request_id: TARGET_ID.into(),
+            project_id: PROJECT_ID.into(),
+            source_space_id: SOURCE_SPACE_ID.into(),
+            target_space_id: TARGET_SPACE_ID.into(),
+            admitted_by: authorized_human(TARGET_SPACE_ID, "88888888-8888-4888-8888-888888888888"),
+            source_configuration_sha256: "a".repeat(64),
+            target_preparation_revision: 4,
+            target_preparation_sha256: "b".repeat(64),
+            resolved_paths: vec![ProjectTransferResolvedPath {
+                repository_alias: "state".into(),
+                machine_alias: "server".into(),
+                path: "/srv/rcp/projects/state".into(),
+            }],
+            accepted_schema_generation: 1,
+            accepted_archive_codec: "tar-zstd-v1".into(),
+            source_release_proof_sha256: "c".repeat(64),
+            target_activation_proof_sha256: "d".repeat(64),
+            created_at: "2026-08-31T00:00:00Z".into(),
+        }
+    }
+
+    fn source_release_receipt() -> ProjectTransferSourceReleaseReceipt {
+        ProjectTransferSourceReleaseReceipt {
+            source_request_id: REQUEST_ID.into(),
+            target_request_id: TARGET_ID.into(),
+            project_id: PROJECT_ID.into(),
+            source_space_id: SOURCE_SPACE_ID.into(),
+            target_space_id: TARGET_SPACE_ID.into(),
+            released_by: authorized_human(SOURCE_SPACE_ID, "99999999-9999-4999-8999-999999999999"),
+            source_configuration_sha256: "a".repeat(64),
+            target_admission_sha256: "e".repeat(64),
+            target_preparation_revision: 4,
+            target_preparation_sha256: "b".repeat(64),
+            source_head: TransferGraphHead {
+                target: TransferGraphTarget {
+                    kind: "main".into(),
+                    branch_id: None,
+                },
+                revision: 7,
+                transition_id: Some("f".repeat(64)),
+            },
+            accepted_schema_generation: 1,
+            accepted_archive_codec: "tar-zstd-v1".into(),
+            source_release_proof_sha256: "c".repeat(64),
+            target_activation_proof_sha256: "d".repeat(64),
+            created_at: "2026-08-31T00:00:01Z".into(),
+        }
+    }
+
+    #[test]
+    fn native_advance_action_sequence_follows_backend_decisions() {
+        let mut source = decision_record("source", REQUEST_ID);
+        let mut target = decision_record("target", TARGET_ID);
+
+        // Fresh final review: target admission is the only eligible action.
+        target.can_admit = true;
+        assert_eq!(
+            next_advance_action(&source, &target, true),
+            Some(ProjectTransferAdvanceAction::AdmitTarget)
+        );
+
+        // A crash after target admission resumes at the source acceptance.
+        target.can_admit = false;
+        source.can_accept_admission = true;
+        assert_eq!(next_advance_action(&source, &target, true), None);
+        assert!(!aggregate_transfer_decisions(&source, &target, true).0);
+        target.target_admission_receipt = Some(target_admission_receipt());
+        assert_eq!(
+            next_advance_action(&source, &target, true),
+            Some(ProjectTransferAdvanceAction::AcceptAdmission)
+        );
+        assert!(aggregate_transfer_decisions(&source, &target, true).0);
+
+        // The source release is its own bounded transition after admission
+        // acceptance; a crash here must not skip it or imply a relay.
+        source.can_accept_admission = false;
+        source.can_release = true;
+        assert_eq!(
+            next_advance_action(&source, &target, true),
+            Some(ProjectTransferAdvanceAction::ReleaseSource)
+        );
+
+        // A crash after source release resumes at target receipt acceptance.
+        source.can_release = false;
+        target.can_accept_release = true;
+        assert_eq!(
+            next_advance_action(&source, &target, true),
+            Some(ProjectTransferAdvanceAction::AcceptRelease)
+        );
+
+        // A restored target is explicitly re-entered before another relay.
+        target.can_accept_release = false;
+        target.can_restore_reentry = true;
+        assert_eq!(
+            next_advance_action(&source, &target, true),
+            Some(ProjectTransferAdvanceAction::RestoreReentry)
+        );
+
+        target.can_restore_reentry = false;
+        source.can_relay = true;
+        assert_eq!(
+            next_advance_action(&source, &target, true),
+            Some(ProjectTransferAdvanceAction::Relay)
+        );
+
+        // A completed retry remains an explicit idempotent native action.
+        source.can_relay = false;
+        source.finished = true;
+        target.finished = true;
+        assert_eq!(
+            next_advance_action(&source, &target, true),
+            Some(ProjectTransferAdvanceAction::CompletedRetry)
+        );
+    }
+
+    #[test]
+    fn final_review_receipts_are_strict_and_round_trip_without_browser_fields() {
+        let admission = target_admission_receipt();
+        let admission_value = serde_json::to_value(&admission).unwrap();
+        let parsed_admission = parse_target_admission_receipt(&admission_value).unwrap();
+        assert_eq!(parsed_admission, admission);
+
+        let mut admission_with_unknown = admission_value;
+        admission_with_unknown["unexpected"] = Value::Bool(true);
+        assert!(parse_target_admission_receipt(&admission_with_unknown).is_err());
+
+        let release = source_release_receipt();
+        let release_value = serde_json::to_value(&release).unwrap();
+        let parsed_release = parse_source_release_receipt(&release_value).unwrap();
+        assert_eq!(parsed_release, release);
+
+        let mut release_with_invalid_head = release_value;
+        release_with_invalid_head["source_head"]["target"]["kind"] = Value::String("branch".into());
+        assert!(parse_source_release_receipt(&release_with_invalid_head).is_err());
+
+        // These native-only receipts never become fields on the safe bundle.
+        let bundle_fields = serde_json::to_value(ProjectTransferBundle {
+            source: decision_record("source", REQUEST_ID)
+                .to_projection()
+                .unwrap(),
+            target: decision_record("target", TARGET_ID)
+                .to_projection()
+                .unwrap(),
+            incoming_provisioning: parse_project_provisioning_projection(
+                &incoming_projection_payload("ready_for_review", Value::Null, Value::Null),
+                TARGET_ID,
+                TARGET_SPACE_ID,
+            )
+            .unwrap(),
+            target_provider_setup: Vec::new(),
+            can_advance: true,
+            advance_label: Some("Continue".into()),
+            can_manual_relay: false,
+            finished: false,
+        })
+        .unwrap();
+        assert!(bundle_fields.get("target_admission_receipt").is_none());
+        assert!(bundle_fields.get("source_release_receipt").is_none());
+    }
+
+    #[test]
+    fn advance_transition_budget_is_explicitly_bounded() {
+        assert_eq!(MAX_ADVANCE_TRANSITIONS, 8);
+    }
+
+    #[test]
+    fn native_advance_does_not_silently_fallback_without_a_backend_decision() {
+        let mut source = decision_record("source", REQUEST_ID);
+        let target = decision_record("target", TARGET_ID);
+        source.can_relay = true;
+        assert_eq!(next_advance_action(&source, &target, false), None);
+
+        source.can_relay = false;
+        assert_eq!(next_advance_action(&source, &target, true), None);
     }
 
     #[test]
@@ -3559,6 +4709,39 @@ mod tests {
         assert_eq!(result.archive_size_bytes, source.archive_size_bytes);
     }
 
+    fn source_for_archive(bytes: &[u8]) -> SourceTransferRequest {
+        SourceTransferRequest {
+            request_id: REQUEST_ID.into(),
+            phase: "archive_bound".into(),
+            target_request_id: TARGET_ID.into(),
+            project_id: PROJECT_ID.into(),
+            source_space_id: SOURCE_SPACE_ID.into(),
+            target_space_id: TARGET_SPACE_ID.into(),
+            target_activation_proof_sha256: "b".repeat(64),
+            archive_sha256: hex_digest(bytes),
+            archive_size_bytes: bytes.len() as u64,
+        }
+    }
+
+    #[test]
+    fn cancelled_manual_export_selection_returns_only_empty_metadata() {
+        let value =
+            serde_json::to_value(ProjectTransferExportSelectionResult::cancelled(REQUEST_ID))
+                .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "selected": false,
+                "request_id": REQUEST_ID,
+                "target_request_id": null,
+                "target_space_id": null,
+                "archive_sha256": null,
+                "archive_size_bytes": null,
+                "path": null
+            })
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn manual_export_cleanup_removes_only_the_exact_verified_copy() {
@@ -3604,5 +4787,97 @@ mod tests {
 
         assert!(remove_local_export(&archive_path, &source).is_err());
         assert!(archive_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manual_export_selection_accepts_the_exact_verified_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("manual.rcp-transfer");
+        let bytes = b"manual transfer archive";
+        fs::write(&archive_path, bytes).unwrap();
+        fs::set_permissions(&archive_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let source = source_for_archive(bytes);
+
+        let result = select_verified_export(&source, archive_path.clone()).unwrap();
+        assert!(result.selected);
+        assert_eq!(result.request_id, REQUEST_ID);
+        assert_eq!(result.target_request_id.as_deref(), Some(TARGET_ID));
+        assert_eq!(result.target_space_id.as_deref(), Some(TARGET_SPACE_ID));
+        assert_eq!(
+            result.archive_sha256.as_deref(),
+            Some(source.archive_sha256.as_str())
+        );
+        assert_eq!(result.archive_size_bytes, Some(bytes.len() as u64));
+        assert_eq!(result.path.as_deref(), archive_path.to_str());
+        assert_eq!(fs::read(&archive_path).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manual_export_selection_rejects_wrong_digest_without_mutating_the_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("manual.rcp-transfer");
+        let bytes = b"manual transfer archive";
+        fs::write(&archive_path, bytes).unwrap();
+        fs::set_permissions(&archive_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let source = source_for_archive(b"different archive");
+
+        assert!(select_verified_export(&source, archive_path.clone()).is_err());
+        assert_eq!(fs::read(&archive_path).unwrap(), bytes);
+        assert_eq!(
+            fs::symlink_metadata(&archive_path).unwrap().len(),
+            bytes.len() as u64
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manual_export_selection_rejects_wrong_mode_without_mutating_the_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("manual.rcp-transfer");
+        let bytes = b"manual transfer archive";
+        fs::write(&archive_path, bytes).unwrap();
+        fs::set_permissions(&archive_path, fs::Permissions::from_mode(0o644)).unwrap();
+        let source = source_for_archive(bytes);
+
+        assert!(select_verified_export(&source, archive_path.clone()).is_err());
+        assert_eq!(fs::read(&archive_path).unwrap(), bytes);
+        assert_eq!(
+            fs::symlink_metadata(&archive_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manual_export_selection_rejects_a_nonfile_without_mutating_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("manual.rcp-transfer");
+        fs::create_dir(&archive_path).unwrap();
+        let source = source_for_archive(b"manual transfer archive");
+
+        assert!(select_verified_export(&source, archive_path.clone()).is_err());
+        assert!(archive_path.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manual_export_selection_rejects_an_archive_bound_to_another_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("manual.rcp-transfer");
+        let bytes = b"request one archive";
+        fs::write(&archive_path, bytes).unwrap();
+        fs::set_permissions(&archive_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut other_request = source_for_archive(b"request two archive");
+        other_request.request_id = "77777777-7777-4777-8777-777777777777".into();
+        other_request.target_request_id = "88888888-8888-4888-8888-888888888888".into();
+
+        assert!(select_verified_export(&other_request, archive_path.clone()).is_err());
+        assert_eq!(fs::read(&archive_path).unwrap(), bytes);
     }
 }

@@ -314,6 +314,11 @@ export interface ProjectTransferRunResult {
   cleanup_acknowledged: boolean;
 }
 
+export interface ProjectTransferAdvanceResult {
+  bundle: ProjectTransferBundle;
+  relay: ProjectTransferRunResult | null;
+}
+
 export interface ProjectTransferFinishResult {
   request_id: string;
   target_request_id: string;
@@ -325,6 +330,16 @@ export interface ProjectTransferFinishResult {
 
 export interface ProjectTransferExportResult {
   saved: boolean;
+  request_id: string;
+  target_request_id: string | null;
+  target_space_id: string | null;
+  archive_sha256: string | null;
+  archive_size_bytes: number | null;
+  path: string | null;
+}
+
+export interface ProjectTransferExportSelectionResult {
+  selected: boolean;
   request_id: string;
   target_request_id: string | null;
   target_space_id: string | null;
@@ -414,6 +429,26 @@ export async function runDesktopProjectTransfer(
   });
 }
 
+/**
+ * Drive the fixed cross-space confirmation and relay sequence. Only the public
+ * request identity and a native event channel cross the Web/native boundary;
+ * receipts, raw proofs, and archive bytes stay in the native coordinator.
+ */
+export async function advanceDesktopProjectTransfer(
+  sourceRequestId: string,
+  onEvent: (event: ProjectTransferCommandEvent) => void,
+): Promise<ProjectTransferAdvanceResult> {
+  if (!isDesktopRuntime())
+    throw new Error("Project transfer can advance only in the source-built desktop app.");
+  const { Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<ProjectTransferCommandEvent>();
+  channel.onmessage = onEvent;
+  return invokeDesktop<ProjectTransferAdvanceResult>("desktop_advance_project_transfer", {
+    sourceRequestId,
+    onEvent: channel,
+  });
+}
+
 export async function exportDesktopProjectTransfer(
   requestId: string,
 ): Promise<ProjectTransferExportResult> {
@@ -422,6 +457,17 @@ export async function exportDesktopProjectTransfer(
   return invokeDesktop<ProjectTransferExportResult>("desktop_export_project_transfer", {
     requestId,
   });
+}
+
+export async function selectDesktopProjectTransferExport(
+  requestId: string,
+): Promise<ProjectTransferExportSelectionResult> {
+  if (!isDesktopRuntime())
+    throw new Error("Transfer export recovery is available only in the source-built desktop app.");
+  return invokeDesktop<ProjectTransferExportSelectionResult>(
+    "desktop_select_project_transfer_export",
+    { requestId },
+  );
 }
 
 export async function openDesktopProjectTransferTerminal(

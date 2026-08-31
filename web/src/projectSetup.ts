@@ -4,6 +4,118 @@ import type {
   ProjectProvisioningCreateRequest,
 } from "./types";
 
+const UUID4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+export interface ProjectMoveSetupRouteInput {
+  sourceProjectId: string;
+  sourceRequestId?: string | null;
+  targetRequestId?: string | null;
+}
+
+export type ProjectSetupRoute =
+  | { kind: "none" }
+  | { kind: "create"; requestId: string | null }
+  | ({ kind: "move"; intent: "move_personal_project_to_team" } & ProjectMoveSetupRouteInput & {
+        sourceRequestId: string | null;
+        targetRequestId: string | null;
+      })
+  | { kind: "invalid"; reason: "invalid_provisioning_route" | "invalid_move_route" };
+
+function isCanonicalUuid4(value: string): boolean {
+  return UUID4_PATTERN.test(value);
+}
+
+function requireCanonicalUuid4(value: string, label: string): string {
+  if (!isCanonicalUuid4(value)) {
+    throw new Error(`${label} must be a canonical UUID4.`);
+  }
+  return value;
+}
+
+function optionalCanonicalUuid4(value: string | null | undefined, label: string): string | null {
+  if (value === null || value === undefined) return null;
+  return requireCanonicalUuid4(value, label);
+}
+
+function oneQueryValue(params: URLSearchParams, name: string): string | null | undefined {
+  const values = params.getAll(name);
+  return values.length > 1 ? undefined : (values[0] ?? null);
+}
+
+/**
+ * Parse the one visible project-setup route. The move variant is deliberately
+ * separate from ordinary provisioning so a source project can never be
+ * inferred from a generic `request` link.
+ */
+export function parseProjectSetupRoute(hash: string): ProjectSetupRoute {
+  if (hash === "#/projects/new") return { kind: "create", requestId: null };
+  if (!hash.startsWith("#/projects/new?")) return { kind: "none" };
+
+  const params = new URLSearchParams(hash.slice(hash.indexOf("?") + 1));
+  const intent = oneQueryValue(params, "intent");
+  if (intent === "move_personal_project_to_team") {
+    const sourceProjectId = oneQueryValue(params, "source_project_id");
+    const sourceRequestId = oneQueryValue(params, "source_request_id");
+    const targetRequestId = oneQueryValue(params, "target_request_id");
+    const allowed = new Set([
+      "intent",
+      "source_project_id",
+      "source_request_id",
+      "target_request_id",
+    ]);
+    const hasUnknown = [...params.keys()].some((name) => !allowed.has(name));
+    if (
+      hasUnknown ||
+      sourceProjectId === null ||
+      sourceProjectId === undefined ||
+      !isCanonicalUuid4(sourceProjectId) ||
+      sourceRequestId === undefined ||
+      targetRequestId === undefined
+    ) {
+      return { kind: "invalid", reason: "invalid_move_route" };
+    }
+    if ((sourceRequestId === null) !== (targetRequestId === null)) {
+      return { kind: "invalid", reason: "invalid_move_route" };
+    }
+    if (
+      (sourceRequestId !== null && !isCanonicalUuid4(sourceRequestId)) ||
+      (targetRequestId !== null && !isCanonicalUuid4(targetRequestId))
+    ) {
+      return { kind: "invalid", reason: "invalid_move_route" };
+    }
+    return {
+      kind: "move",
+      intent,
+      sourceProjectId,
+      sourceRequestId,
+      targetRequestId,
+    };
+  }
+
+  // Preserve the existing create/resume behavior. Its old parser ignored
+  // unrelated query keys, so keep accepting them for compatibility.
+  const requestId = oneQueryValue(params, "request");
+  return requestId !== null && requestId !== undefined && isCanonicalUuid4(requestId)
+    ? { kind: "create", requestId }
+    : { kind: "invalid", reason: "invalid_provisioning_route" };
+}
+
+export function projectMoveSetupHash(input: ProjectMoveSetupRouteInput): string {
+  const sourceProjectId = requireCanonicalUuid4(input.sourceProjectId, "Source project identity");
+  const sourceRequestId = optionalCanonicalUuid4(input.sourceRequestId, "Source request identity");
+  const targetRequestId = optionalCanonicalUuid4(input.targetRequestId, "Target request identity");
+  if ((sourceRequestId === null) !== (targetRequestId === null)) {
+    throw new Error("Source and target request identities must be created as one pair.");
+  }
+  const params = new URLSearchParams({
+    intent: "move_personal_project_to_team",
+    source_project_id: sourceProjectId,
+  });
+  if (sourceRequestId) params.set("source_request_id", sourceRequestId);
+  if (targetRequestId) params.set("target_request_id", targetRequestId);
+  return `#/projects/new?${params.toString()}`;
+}
+
 export function stateRepositoryAfterRemoval(
   repositories: Array<{ id: number; alias: string }>,
   removedId: number,
@@ -51,7 +163,7 @@ export function assertSupportedProjectCreationIntent(
       "confirmed",
     ],
     create_shared_team_project: ["machines", "repositories", "provider_checks"],
-    move_personal_project_to_team: [],
+    move_personal_project_to_team: ["source_project", "team_connection"],
   };
   const actualFields = new Set(selected.required_fields);
   if (
@@ -72,21 +184,16 @@ export function projectCreationPrimaryLabel(control: ProjectCreationControl): st
 }
 
 export function projectProvisioningRequestId(hash: string): string | null {
-  if (hash === "#/projects/new") return null;
-  if (!hash.startsWith("#/projects/new?")) return null;
-  const requestId = new URLSearchParams(hash.slice(hash.indexOf("?") + 1)).get("request");
-  return requestId &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)
-    ? requestId
-    : null;
+  const route = parseProjectSetupRoute(hash);
+  return route.kind === "create" ? route.requestId : null;
 }
 
 export function invalidProjectProvisioningHash(hash: string): boolean {
-  return hash.startsWith("#/projects/new?") && projectProvisioningRequestId(hash) === null;
+  return hash.startsWith("#/projects/new?") && parseProjectSetupRoute(hash).kind === "invalid";
 }
 
 export function projectProvisioningHash(requestId: string): string {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)) {
+  if (!isCanonicalUuid4(requestId)) {
     throw new Error("Project provisioning request identity must be a canonical UUID4.");
   }
   return `#/projects/new?request=${encodeURIComponent(requestId)}`;

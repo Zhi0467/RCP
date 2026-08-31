@@ -23,7 +23,9 @@ use crate::{
     backend::BackendState,
     lifecycle::DesktopStatus,
     local_https::{install_team_session_cookie, LocalHttpsIdentity},
-    project_transfer::ProjectTransferCleanupAcknowledgment,
+    project_transfer::{
+        validate_digest, ProjectTransferCleanupAcknowledgment, ProjectTransferSourceReleaseReceipt,
+    },
     server_commands::ProjectProvisionReadback,
     team_connections::{CachedTeamProjectCard, TeamConnectionMetadata, TeamConnectionState},
     team_tunnel::{TeamTunnelReady, TeamTunnelState},
@@ -242,6 +244,93 @@ impl TeamSessionState {
             .await
             .map_err(|error| format!("could not read the target transfer request: {error}"))?;
         response_json(response, "target transfer request readback").await
+    }
+
+    /// Admit the prepared target request using the currently authenticated
+    /// member. The actor is resolved by the server session; the browser sends
+    /// neither an actor identity nor an admission receipt.
+    pub(crate) async fn admit_target_project_transfer(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        request_id: &str,
+    ) -> Result<Value, String> {
+        validate_uuid4(request_id, "target transfer request identity")?;
+        let (connection, client, cookie) = self
+            .authenticated_request_context(connections, connection_id)
+            .await?;
+        let response = client
+            .post(endpoint(
+                &connection.local_origin,
+                &format!("/api/project-transfers/target-requests/{request_id}/admit"),
+            )?)
+            .header(COOKIE, cookie)
+            .send()
+            .await
+            .map_err(|error| format!("could not admit the target transfer request: {error}"))?;
+        response_json(response, "target transfer admission").await
+    }
+
+    /// Carry the public source release receipt to the target backend. This is
+    /// deliberately separate from the native proof endpoint used later by the
+    /// archive relay.
+    pub(crate) async fn accept_source_project_transfer_release(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        request_id: &str,
+        receipt: &ProjectTransferSourceReleaseReceipt,
+    ) -> Result<Value, String> {
+        validate_uuid4(request_id, "target transfer request identity")?;
+        let (connection, client, cookie) = self
+            .authenticated_request_context(connections, connection_id)
+            .await?;
+        let body = TransferReceiptBody { receipt };
+        let response = client
+            .post(endpoint(
+                &connection.local_origin,
+                &format!("/api/project-transfers/target-requests/{request_id}/source-release"),
+            )?)
+            .header(COOKIE, cookie)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| format!("could not accept the source transfer release: {error}"))?;
+        response_json(response, "source transfer release acceptance").await
+    }
+
+    /// Re-enter a restored target transfer using the exact durable revision
+    /// and final-review digest shown by the target projection. The actor is
+    /// inferred by the authenticated target session.
+    pub(crate) async fn restore_target_project_transfer_reentry(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        request_id: &str,
+        expected_restored_revision: u64,
+        expected_final_review_digest: &str,
+    ) -> Result<Value, String> {
+        validate_uuid4(request_id, "target transfer request identity")?;
+        validate_digest(expected_final_review_digest, "target final-review digest")?;
+        let (connection, client, cookie) = self
+            .authenticated_request_context(connections, connection_id)
+            .await?;
+        let body = RestoreReentryBody {
+            expected_restored_revision,
+            expected_resume_phase: "archive_bound",
+            expected_final_review_digest,
+        };
+        let response = client
+            .post(endpoint(
+                &connection.local_origin,
+                &format!("/api/project-transfers/target-requests/{request_id}/restore-reentry"),
+            )?)
+            .header(COOKIE, cookie)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| format!("could not re-enter the restored target transfer: {error}"))?;
+        response_json(response, "restored target transfer re-entry").await
     }
 
     pub async fn read_project_transfer(
@@ -557,6 +646,38 @@ impl TeamSessionState {
         self.record(connection, identity, &health)
     }
 
+    /// Establish the saved member session for a native-only operation. This
+    /// deliberately does not touch the WebView cookie or browser navigation;
+    /// the native request methods exchange the saved member token again for
+    /// each authenticated request. It lets a resumed transfer recover after
+    /// a desktop restart while keeping the browser session optional.
+    pub(crate) async fn ensure_native_session(
+        &self,
+        connections: &TeamConnectionState,
+        tunnels: &TeamTunnelState,
+        lifecycle: &BackendState,
+        connection_id: &str,
+    ) -> Result<EstablishedTeamSession, String> {
+        if let Ok(existing) = self.established(connection_id) {
+            return Ok(existing);
+        }
+        let connection = connections
+            .list()?
+            .into_iter()
+            .find(|connection| connection.connection_id == connection_id)
+            .ok_or_else(|| "the team connection is not saved on this desktop".to_string())?;
+        let ready = tunnels
+            .connect_saved(connections, lifecycle, connection_id)
+            .await?;
+        let client = self.client(&ready.local_origin)?;
+        let health = read_health(&client, &ready.local_origin).await?;
+        validate_health(&health, Some(&connection))?;
+        let token = connections.load_member_token(connection_id)?;
+        let (identity, _cookie) = exchange_session(&client, &ready.local_origin, &token).await?;
+        validate_identity(&identity, &health)?;
+        self.record(connection, identity, &health)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn enroll_over_tunnel(
         &self,
@@ -735,6 +856,18 @@ impl TeamSessionState {
 #[derive(Debug, Serialize)]
 struct CleanupAcknowledgmentBody<'a> {
     acknowledgment: &'a ProjectTransferCleanupAcknowledgment,
+}
+
+#[derive(Debug, Serialize)]
+struct TransferReceiptBody<'a, T> {
+    receipt: &'a T,
+}
+
+#[derive(Debug, Serialize)]
+struct RestoreReentryBody<'a> {
+    expected_restored_revision: u64,
+    expected_resume_phase: &'static str,
+    expected_final_review_digest: &'a str,
 }
 
 fn bearer_header(token: &str) -> Result<HeaderValue, String> {
@@ -1267,5 +1400,23 @@ mod tests {
         wrong_space["target_space_id"] =
             Value::String("cccccccc-cccc-4ccc-8ccc-cccccccccccc".into());
         assert!(parse_target_transfer_readback(&wrong_space, request_id, &space_id).is_err());
+    }
+
+    #[test]
+    fn restore_reentry_body_binds_the_fixed_archive_boundary() {
+        let digest = "a".repeat(64);
+        let body = RestoreReentryBody {
+            expected_restored_revision: 9,
+            expected_resume_phase: "archive_bound",
+            expected_final_review_digest: &digest,
+        };
+        assert_eq!(
+            serde_json::to_value(body).unwrap(),
+            serde_json::json!({
+                "expected_restored_revision": 9,
+                "expected_resume_phase": "archive_bound",
+                "expected_final_review_digest": "a".repeat(64),
+            })
+        );
     }
 }

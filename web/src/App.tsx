@@ -175,6 +175,11 @@ import { ProjectLanding } from "./views/ProjectLanding";
 import { ProjectOverview } from "./views/ProjectOverview";
 import { ProjectSetup } from "./views/ProjectSetup";
 import {
+  parseProjectSetupRoute,
+  projectMoveSetupHash,
+  type ProjectSetupRoute,
+} from "./projectSetup";
+import {
   changeTextScale,
   normalizeTextScale,
   TEXT_SCALE_STORAGE_KEY,
@@ -716,6 +721,9 @@ export default function App() {
       identityReady && !identityIssue && actorIdentityChecked && !teamSessionRequired,
     reportError: reportErrorNotice,
   });
+  const openMoveProjectSetup = useCallback((sourceProjectId: string) => {
+    window.location.hash = projectMoveSetupHash({ sourceProjectId });
+  }, []);
   const [textScale, setTextScale] = useState(readTextScale);
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
@@ -3045,6 +3053,9 @@ export default function App() {
   const acceptanceAgentSurface = (
     <AcceptanceAgentIndicator agentMode={verifiedHealth?.agent_mode} />
   );
+  const setupRoute: ProjectSetupRoute = setupOpen
+    ? parseProjectSetupRoute(window.location.hash)
+    : { kind: "none" };
 
   if (!identityReady)
     return (
@@ -3105,9 +3116,11 @@ export default function App() {
     return (
       <>
         <ProjectSetup
+          key={projectSetupRouteKey(setupRoute)}
           projectCreation={verifiedHealth!.project_creation}
           onCancel={returnToProjects}
           onCreated={openProject}
+          setupRoute={setupRoute}
         />
         {updateSurface}
         {desktopAccessSurface}
@@ -3754,6 +3767,15 @@ export default function App() {
               textScale={textScale}
               onTextScaleChange={changeAppTextScale}
               onRefreshReadiness={refreshReadiness}
+              onMovePersonalProjectToTeam={
+                desktop &&
+                verifiedHealth?.space_kind === "personal" &&
+                verifiedHealth.project_creation.intents.some(
+                  (intent) => intent.intent === "move_personal_project_to_team" && intent.eligible,
+                )
+                  ? openMoveProjectSetup
+                  : undefined
+              }
               onCacheMetricsChange={(cacheMetrics) => {
                 updateProject((current) =>
                   current ? { ...current, cache_metrics: cacheMetrics } : current,
@@ -4161,7 +4183,20 @@ function isSetupRoute(): boolean {
 }
 
 function isSetupHash(hash: string): boolean {
-  return hash === "#/projects/new" || hash.startsWith("#/projects/new?");
+  return parseProjectSetupRoute(hash).kind !== "none";
+}
+
+function projectSetupRouteKey(route: ProjectSetupRoute): string {
+  if (route.kind === "move") {
+    return [
+      route.kind,
+      route.sourceProjectId,
+      route.sourceRequestId ?? "",
+      route.targetRequestId ?? "",
+    ].join(":");
+  }
+  if (route.kind === "create") return `${route.kind}:${route.requestId ?? ""}`;
+  return route.kind;
 }
 
 interface DesktopUpdateNoticeProps {

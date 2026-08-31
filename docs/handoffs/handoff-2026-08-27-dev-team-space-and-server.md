@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c | — | T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c | T5a, T5b | — |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -35,6 +35,9 @@ What each open drive is waiting on:
   account and CLI. The reachable shared lab host was checked, but it has no
   `rcp` Linux account, so it cannot qualify either route without changing that
   machine.
+- **T5a, T5b** — the native relay, unified move wizard, and restart recovery are
+  implemented and hermetically verified. They still need the S98 source-built
+  desktop drive against two real spaces and a real SSH operator route.
 
 Status is recorded four different ways in this file: a `Status:` line in a packet
 section, a bold `**Status (date)**` block, a `— complete` heading suffix, and a
@@ -234,6 +237,32 @@ decision blocks the feature lanes. Q10 and the later public branch-protection
 gate are deliberately future work and do not block this plan.
 
 ### Implementation log
+
+#### 2026-08-31 — T5a/T5b native relay and unified transfer workflow implemented
+
+- The existing project wizard now owns the personal-to-team move. Project
+  Settings opens one URL-pinned source project; prepare writes an exact durable
+  source/target request pair before either cross-space request is created, and a
+  reload resumes only that pair. The browser renders backend/native decisions,
+  active/live answers, resolved paths, archive boundaries, operator work, and
+  final-review attribution without comparing transfer phase or status strings.
+- One final native action now drives target admission, source-side receipt
+  acceptance, a freshly revalidated source release boundary, target release
+  acceptance, restored-target re-entry, and T5a's proof relay in fixed order.
+  Receipt, proof, configuration, and archive bytes remain native-only. The
+  source is never released before a real target-admission receipt exists.
+- Cold restart re-establishes the exact saved team tunnel and permanent-member
+  session before loading, provisioning, automatic relay, Terminal relay, or
+  proof completion. Manual recovery can select an existing mode-0600 export and
+  continues only after exact request, size, and digest verification. Automatic
+  relay failure remains durable and is shown loudly with the explicit manual
+  path; it is never treated as success or selected silently.
+- Verification passed 472 Web tests, production typecheck/build, 120 native
+  tests with one explicit live-SSH ignore, strict Clippy, and scoped pre-commit.
+  The one independent audit found the missing cold-session recovery and hidden
+  nonzero relay result; both were fixed in the single correction round. The
+  real source-built two-space/SSH interruption drive remains open, so S98 is
+  still pending.
 
 #### 2026-08-31 — T4a source fence, exact export, and retirement complete
 
@@ -3737,10 +3766,10 @@ machine-alias references, impossible lifecycle fixtures, structured operator
 content, explicit Git-write facts, confirmation ordering, final-review detail,
 and accessibility semantics.
 
-Not done here: T5b still owns the intentionally unavailable move mode, and the
-complete authenticated team-server/direct-or-sudo operator drive remains open
-in S128 with D5/D6/P6a. The reachable lab host still has no installed `rcp`
-account, so this packet did not invent a false live server qualification.
+T5b now activates move mode in this same wizard. The complete authenticated
+team-server/direct-or-sudo operator drive remains open in S128 with D5/D6/P6a.
+The reachable lab host still has no installed `rcp` account, so this packet did
+not invent a false live server qualification.
 
 Own:
 
@@ -3752,7 +3781,7 @@ Own:
 - browser plus desktop tests.
 
 Extend the current wizard with plainly named personal and new-team intents; T5b
-later activates move mode in this same shell. Render the backend's six statuses,
+activates move mode in this same shell. Render the backend's six statuses,
 exact diagnostic/next action, resolved paths, Git write and provider readiness,
 final-review digest, and human authority. The team request form accepts only
 P1's two documented GitHub.com URL forms and shows the canonical
@@ -3786,8 +3815,8 @@ login—adds it with **Allow write access**.
 
 Use one primary action and real error text. Do not add muted helper/commentary
 lines beneath primary labels. Final creation requires an explicit human review
-action. Until T5b lands, the backend does not offer the move intent; D7 does not
-show a half-built transfer state or create a separate future transfer wizard.
+action. Move is shown only through T5b's complete pinned-source route; D7 does
+not show a half-built transfer state or create a separate transfer wizard.
 
 ## Operations packets
 
@@ -4727,8 +4756,8 @@ equivalence, agent-authoring rejection, exact retry/concurrency behavior,
 revision summaries, and old Patch JSON compatibility. T1 does **not** create the
 linked cross-space request or human-confirmation protocol, export/import an
 archive, prepare or relay checkouts, activate a target catalog, clean up a
-source, or expose transfer UI. Those remain T2a through T5b; S98 therefore stays
-pending until its live two-space drive passes.
+source, or expose transfer UI. Those responsibilities are implemented across
+T2a through T5b; S98 stays pending until its live two-space drive passes.
 
 The one read-only audit found two release-blocking compatibility edges, both
 fixed before commit. First, nullable Patch defaults participate in the durable
@@ -4815,8 +4844,9 @@ requested or run.
 
 T2a deliberately does **not** expose HTTP endpoints, classify restored requests,
 define or write archive bytes, run checkout preparation, append T1's home
-transfer, activate or clean either catalog, or add desktop UI. Those remain T2b
-through T5b, so S98 stays pending.
+transfer, activate or clean either catalog, or add desktop UI. Those
+responsibilities are implemented across T2b through T5b; S98 stays pending for
+its live drive.
 
 Own:
 
@@ -4898,7 +4928,7 @@ stream an archive, import files/rows, activate the target catalog, retire the
 source catalog/recovery archive, or drive the desktop workflow. Those are T2c
 through T5b. Source proof acknowledgment is retained after target-proof
 verification, but its raw source proof and recovery state are not consumed
-until the later source-retirement owner completes.
+until the source-retirement owner completes.
 
 Own:
 
@@ -4962,10 +4992,11 @@ passes again.
 T4b now invalidates both active and complete upload receipts through this same
 detachment owner. T4c adds the machine-import/activation receipt and a reviewed
 `archive_bound` storage re-entry that binds the restored revision, rebuilt final
-review, exact target confirmer, archive, and fresh upload lease. It still fails
-closed on `operator_action_needed` until T5b revalidates both backends and invokes
-that boundary; later restored proof/cleanup phases remain frozen for their owning
-recovery steps. No fallback path is inferred from old machine authority.
+review, exact target confirmer, archive, and fresh upload lease. It fails closed
+on `operator_action_needed` until T5b revalidates both backends and invokes that
+boundary; T5b now performs that reviewed re-entry. Later restored proof/cleanup
+phases remain frozen for their owning recovery steps. No fallback path is
+inferred from old machine authority.
 
 Own:
 
@@ -5853,9 +5884,8 @@ For an `archive_bound` request, the storage owner now requires the exact restore
 revision, rebuilt ready-for-review digest, original current target confirmer,
 archive identity, and invalidated upload before it atomically returns to
 `archive_bound` with a fresh lease and typed re-entry receipt. No proof is exposed
-by re-entry. T5b still owns invoking this reviewed recovery path in the product;
-later restored proof/cleanup phases remain frozen for their owning recovery
-steps.
+by re-entry. T5b now invokes this reviewed recovery path in the product; later
+restored proof/cleanup phases remain frozen for their owning recovery steps.
 
 The source accepts the eventual native proof return and retires its recovery copy
 only when that proof hashes to the precommitted target value. T5a owns that native
@@ -5864,6 +5894,12 @@ home transfer commits. An arbitrary file, byte stream, request id, serialized
 receipt, or CLI exit grants no import authority.
 
 ### T5a — Native transfer relay
+
+**Implemented 2026-08-31; real source-built SSH drive still open:** the native
+shell owns one request-bound streaming relay, proof return, cleanup
+acknowledgment, protected manual export, exact retry, and strict IPC boundary.
+Hermetic native tests and lint pass; S98 still owes the real operator-route
+drive.
 
 Own:
 
@@ -5920,6 +5956,12 @@ behavior. It may be driven with a fixed test request and archive; it does not
 own the transfer screen or decide transfer lifecycle state.
 
 ### T5b — Transfer UI and crash-recovery drive
+
+**Implemented 2026-08-31; live two-space drive still open:** the existing
+wizard owns the pinned move route, durable final-review coordinator, native
+restart recovery, explicit manual relay, and loud retry state. Browser, build,
+native, and hook checks pass; S98 remains pending until the source-built desktop
+interruption drive passes.
 
 Own:
 

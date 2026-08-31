@@ -10,7 +10,9 @@ import {
   buildTeamProvisioningRequest,
   formatCommandArgv,
   invalidProjectProvisioningHash,
+  parseProjectSetupRoute,
   projectCreationPrimaryLabel,
+  projectMoveSetupHash,
   projectProvisioningHash,
   projectProvisioningRequestId,
   repositoryPickerPresentation,
@@ -28,6 +30,14 @@ const server = await createServer({
 const { ProjectSetup, RepositoryEditor } = await server.ssrLoadModule(
   "/src/views/ProjectSetup.tsx",
 );
+const { ProjectSettings } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
+const {
+  TransferProjectSetup,
+  transferActiveWorkSummary,
+  transferFinished,
+  transferRelayFailure,
+  transferTargetIsReady,
+} = await server.ssrLoadModule("/src/views/TransferProjectSetup.tsx");
 const {
   ProvisioningStatus,
   gitWriteFact,
@@ -231,6 +241,305 @@ test("a provisioning request deep link accepts only one canonical UUID4", () => 
   assert.equal(invalidProjectProvisioningHash("#/projects/new?request=../other"), true);
   assert.equal(invalidProjectProvisioningHash("#/projects/new"), false);
   assert.equal(projectProvisioningRequestId("#/projects/other"), null);
+});
+
+test("move setup links pin the source and round-trip the linked request identities", () => {
+  const sourceProjectId = "11111111-1111-4111-8111-111111111111";
+  const sourceRequestId = "33333333-3333-4333-8333-333333333333";
+  const targetRequestId = "44444444-4444-4444-8444-444444444444";
+  const hash = projectMoveSetupHash({
+    sourceProjectId,
+    sourceRequestId,
+    targetRequestId,
+  });
+
+  assert.equal(
+    hash,
+    `#/projects/new?intent=move_personal_project_to_team&source_project_id=${sourceProjectId}&source_request_id=${sourceRequestId}&target_request_id=${targetRequestId}`,
+  );
+  assert.deepEqual(parseProjectSetupRoute(hash), {
+    kind: "move",
+    intent: "move_personal_project_to_team",
+    sourceProjectId,
+    sourceRequestId,
+    targetRequestId,
+  });
+  assert.deepEqual(parseProjectSetupRoute(projectMoveSetupHash({ sourceProjectId })), {
+    kind: "move",
+    intent: "move_personal_project_to_team",
+    sourceProjectId,
+    sourceRequestId: null,
+    targetRequestId: null,
+  });
+  assert.throws(
+    () => projectMoveSetupHash({ sourceProjectId: "../other" }),
+    /Source project identity must be a canonical UUID4/,
+  );
+});
+
+test("move setup links fail closed for missing, forged, or duplicate identities", () => {
+  assert.deepEqual(parseProjectSetupRoute("#/projects/new?intent=move_personal_project_to_team"), {
+    kind: "invalid",
+    reason: "invalid_move_route",
+  });
+  assert.deepEqual(
+    parseProjectSetupRoute(
+      "#/projects/new?intent=move_personal_project_to_team&source_project_id=../other",
+    ),
+    { kind: "invalid", reason: "invalid_move_route" },
+  );
+  assert.deepEqual(
+    parseProjectSetupRoute(
+      "#/projects/new?intent=move_personal_project_to_team&source_project_id=11111111-1111-4111-8111-111111111111&source_project_id=22222222-2222-4222-8222-222222222222",
+    ),
+    { kind: "invalid", reason: "invalid_move_route" },
+  );
+  assert.deepEqual(
+    parseProjectSetupRoute(
+      "#/projects/new?intent=move_personal_project_to_team&source_project_id=11111111-1111-4111-8111-111111111111&transfer_request_id=22222222-2222-4222-8222-222222222222",
+    ),
+    { kind: "invalid", reason: "invalid_move_route" },
+  );
+  assert.deepEqual(
+    parseProjectSetupRoute(
+      "#/projects/new?intent=move_personal_project_to_team&source_project_id=11111111-1111-4111-8111-111111111111&source_request_id=33333333-3333-4333-8333-333333333333",
+    ),
+    { kind: "invalid", reason: "invalid_move_route" },
+  );
+  assert.equal(
+    invalidProjectProvisioningHash(
+      "#/projects/new?intent=move_personal_project_to_team&source_project_id=11111111-1111-4111-8111-111111111111",
+    ),
+    false,
+  );
+  assert.throws(
+    () =>
+      projectMoveSetupHash({
+        sourceProjectId: "11111111-1111-4111-8111-111111111111",
+        sourceRequestId: "33333333-3333-4333-8333-333333333333",
+      }),
+    /created as one pair/,
+  );
+});
+
+const moveCreation = {
+  ...personalCreation,
+  intents: personalCreation.intents.map((intent) =>
+    intent.intent === "move_personal_project_to_team"
+      ? {
+          ...intent,
+          eligible: true,
+          preselected: false,
+          required_fields: ["source_project", "team_connection"],
+          unavailable_reason: null,
+        }
+      : { ...intent, eligible: false, preselected: false },
+  ),
+};
+
+test("the move route is consumed by the one wizard and locks its intent", () => {
+  const originalWindow = globalThis.window;
+  globalThis.window = { __TAURI_INTERNALS__: {} };
+  try {
+    const html = renderToStaticMarkup(
+      React.createElement(ProjectSetup, {
+        projectCreation: moveCreation,
+        setupRoute: parseProjectSetupRoute(
+          "#/projects/new?intent=move_personal_project_to_team&source_project_id=11111111-1111-4111-8111-111111111111",
+        ),
+        onCancel() {},
+        onCreated() {},
+      }),
+    );
+    assert.match(html, /Move an existing personal project to a team/);
+    assert.match(html, /Source project pinned/);
+    assert.match(html, /11111111-1111-4111-8111-111111111111/);
+    assert.match(html, /aria-pressed="true"/);
+    assert.match(html, /disabled=""/);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test("invalid setup routes fail visibly without mounting a setup form", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ProjectSetup, {
+      projectCreation: personalCreation,
+      setupRoute: { kind: "invalid", reason: "invalid_move_route" },
+      onCancel() {},
+      onCreated() {},
+    }),
+  );
+  assert.match(html, /role="alert"/);
+  assert.match(html, /setup link is invalid/);
+  assert.doesNotMatch(html, /Project name|Absolute repository path/);
+});
+
+test("move setup is visibly unavailable outside the desktop runtime", () => {
+  const originalWindow = globalThis.window;
+  delete globalThis.window;
+  try {
+    const html = renderToStaticMarkup(
+      React.createElement(TransferProjectSetup, {
+        route: parseProjectSetupRoute(
+          "#/projects/new?intent=move_personal_project_to_team&source_project_id=11111111-1111-4111-8111-111111111111",
+        ),
+        intentChooser: React.createElement("div", null, "locked move intent"),
+        onCancel() {},
+      }),
+    );
+    assert.match(html, /unavailable in a browser/);
+    assert.match(html, /source-built desktop app/);
+  } finally {
+    if (originalWindow !== undefined) globalThis.window = originalWindow;
+  }
+});
+
+test("move active-work counts use backend active and live booleans", () => {
+  assert.deepEqual(
+    transferActiveWorkSummary(
+      [
+        { active: true, status: "succeeded" },
+        { active: false, status: "running" },
+      ],
+      [
+        { live: true, status: "completed" },
+        { live: false, status: "active" },
+      ],
+    ),
+    { activeTaskCount: 1, liveEpisodeCount: 1, totalCount: 2 },
+  );
+});
+
+test("move target readiness requires a saved origin and operator route", () => {
+  const ready = {
+    connection_id: "team-1",
+    expected_space_id: "space-team-1",
+    local_origin: "https://rcp-team-1.localhost:9001",
+    operator_route: { ssh_target: "rcp@example.org", mode: "direct_rcp" },
+  };
+  assert.equal(transferTargetIsReady(ready), true);
+  assert.equal(transferTargetIsReady({ ...ready, operator_route: null }), false);
+  assert.equal(transferTargetIsReady(null), false);
+});
+
+test("move completion renders the native cross-space decision", () => {
+  assert.equal(
+    transferFinished({
+      source: { finished: false },
+      target: { finished: false },
+      finished: true,
+    }),
+    true,
+  );
+  assert.equal(
+    transferFinished({
+      source: { finished: true },
+      target: { finished: true },
+      finished: false,
+    }),
+    false,
+  );
+  assert.equal(transferFinished(null), false);
+});
+
+test("move relay failures stay loud and point to the explicit manual path", () => {
+  const failed = transferRelayFailure({
+    exit_code: 17,
+    proof_verified: false,
+    cleanup_acknowledged: false,
+  });
+  assert.match(failed, /Automatic relay failed/);
+  assert.match(failed, /code 17/);
+  assert.match(failed, /Manual relay/);
+  assert.equal(
+    transferRelayFailure({
+      exit_code: 0,
+      proof_verified: true,
+      cleanup_acknowledged: true,
+    }),
+    null,
+  );
+  assert.equal(transferRelayFailure(null), null);
+});
+
+function settingsProject() {
+  const permissions = {
+    read_graph: true,
+    read_research_md: true,
+    read_introduction: false,
+    read_repositories: "run_scope",
+    read_conversations: "none",
+    write_graph_patch: false,
+    write_project_files: false,
+    write_paper: false,
+  };
+  const profile = {
+    provider: "codex",
+    model: "",
+    reasoning: "medium",
+    run_on: "local",
+    permissions,
+  };
+  const metric = {
+    bytes: 0,
+    count: 0,
+    limits: { max_bytes: 1, max_count: 1, ttl_seconds: 1 },
+    reclaimable_bytes: 0,
+    reclaimable_count: 0,
+  };
+  return {
+    id: "11111111-1111-4111-8111-111111111111",
+    name: "Personal project",
+    state_repository: "research",
+    run_on: "local",
+    default_run_truth_scope: ["research"],
+    default_auto_research_invocation_ceiling: 10,
+    repositories: [{ alias: "research", machine: "local", path: "/repo" }],
+    machines: [{ alias: "local", host: "", provider_paths: { codex: "codex" } }],
+    agent_profiles: {
+      seed: profile,
+      refresh: profile,
+      node_chat: profile,
+      project_chat: profile,
+      paper_coach: profile,
+      orchestrator: profile,
+    },
+    providers: {},
+    provider_readiness: {},
+    cache_metrics: { remote_sources: metric, session_slices: metric },
+  };
+}
+
+test("Project Settings opens the move route only for a personal project", () => {
+  const project = settingsProject();
+  const renderSettings = (spaceKind, onMove) =>
+    renderToStaticMarkup(
+      React.createElement(ProjectSettings, {
+        apiBase: "/api/projects/project",
+        project,
+        identity: null,
+        onLeftProject() {},
+        usage: null,
+        onRefreshUsage: async () => {},
+        cacheClearDisabled: false,
+        onSaved() {},
+        onCacheMetricsChange() {},
+        onRefreshReadiness: async () => {},
+        showDisplaySettings: false,
+        spaceKind,
+        onMovePersonalProjectToTeam: onMove,
+        textScale: 100,
+        onTextScaleChange() {},
+      }),
+    );
+
+  const personal = renderSettings("personal", () => {});
+  const team = renderSettings("team", () => {});
+  assert.match(personal, /Project home/);
+  assert.match(personal, /Move to team space/);
+  assert.doesNotMatch(team, /Move to team space/);
 });
 
 test("copyable server argv preserves exact token boundaries", () => {

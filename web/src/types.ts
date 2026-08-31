@@ -573,6 +573,10 @@ export interface ProjectTransferBundle {
   target: ProjectTransferProjection;
   incoming_provisioning: ProjectTransferIncomingProvisioningProjection;
   target_provider_setup: TargetProviderSetupProjection[];
+  can_advance: boolean;
+  advance_label: string | null;
+  can_manual_relay: boolean;
+  finished: boolean;
 }
 
 export interface SpaceUser {

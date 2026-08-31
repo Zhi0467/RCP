@@ -32,8 +32,10 @@ import {
   repositoryPickerPresentation,
   selectedProjectCreationIntent,
   stateRepositoryAfterRemoval,
+  type ProjectSetupRoute,
 } from "../projectSetup";
 import { TeamProjectSetup } from "./TeamProjectSetup";
+import { TransferProjectSetup } from "./TransferProjectSetup";
 import type {
   AgentExecutionProfile,
   ExistingResearchAction,
@@ -52,6 +54,7 @@ interface Props {
   projectCreation: ProjectCreationControl;
   onCancel: () => void;
   onCreated: (projectId: string) => void;
+  setupRoute: ProjectSetupRoute;
 }
 
 interface DraftRepository extends SetupRepository {
@@ -87,21 +90,52 @@ const defaultAgentProfile = (model = ""): SetupAgentProfile => ({
   host: "",
 });
 
-export function ProjectSetup({ projectCreation, onCancel, onCreated }: Props) {
-  const [intent, setIntent] = useState(() => selectedProjectCreationIntent(projectCreation));
-  assertSupportedProjectCreationIntent(projectCreation, intent);
-  const intentChooser = (
-    <ProjectIntentChooser control={projectCreation} selected={intent} onSelect={setIntent} />
-  );
-  if (intent === "move_personal_project_to_team") {
-    throw new Error("Personal-to-team move mode is not implemented in this build.");
+export function ProjectSetup({
+  projectCreation,
+  onCancel,
+  onCreated,
+  setupRoute = { kind: "create", requestId: null },
+}: Props) {
+  const routeIntent =
+    setupRoute.kind === "move" ? ("move_personal_project_to_team" as const) : null;
+  const [selectedIntent, setSelectedIntent] = useState(() => {
+    if (routeIntent) return routeIntent;
+    try {
+      return selectedProjectCreationIntent(projectCreation);
+    } catch {
+      return projectCreation.intents[0]?.intent ?? "use_existing_checkout_personally";
+    }
+  });
+  const intent = routeIntent ?? selectedIntent;
+  let setupError: string | null = null;
+  if (setupRoute.kind === "invalid") {
+    setupError =
+      setupRoute.reason === "invalid_move_route"
+        ? "This move setup link is invalid. It needs one pinned source project and, when resumed, one complete request pair."
+        : "This project setup link has an invalid provisioning request identity.";
+  } else {
+    try {
+      assertSupportedProjectCreationIntent(projectCreation, intent);
+    } catch (caught) {
+      setupError = caught instanceof Error ? caught.message : String(caught);
+    }
   }
+  const intentChooser = (
+    <ProjectIntentChooser
+      control={projectCreation}
+      selected={intent}
+      locked={routeIntent !== null}
+      onSelect={setSelectedIntent}
+    />
+  );
+  const shellClass =
+    intent === "create_shared_team_project"
+      ? "setup-shell team-project-setup"
+      : intent === "move_personal_project_to_team"
+        ? "setup-shell transfer-project-setup"
+        : "setup-shell";
   return (
-    <div
-      className={
-        intent === "create_shared_team_project" ? "setup-shell team-project-setup" : "setup-shell"
-      }
-    >
+    <div className={shellClass}>
       <header className="setup-header">
         <button
           className="rcp-mark setup-brand"
@@ -112,12 +146,22 @@ export function ProjectSetup({ projectCreation, onCancel, onCreated }: Props) {
             RCP
           </span>
         </button>
-        <span className="setup-header-title">Add project</span>
+        <span className="setup-header-title">
+          {intent === "move_personal_project_to_team" ? "Move project" : "Add project"}
+        </span>
         <button className="button ghost" onClick={onCancel}>
           Cancel
         </button>
       </header>
-      {intent === "create_shared_team_project" ? (
+      {setupError ? (
+        <SetupRouteFailure message={setupError} onCancel={onCancel} />
+      ) : intent === "move_personal_project_to_team" ? (
+        <TransferProjectSetup
+          route={setupRoute as Extract<ProjectSetupRoute, { kind: "move" }>}
+          intentChooser={intentChooser}
+          onCancel={onCancel}
+        />
+      ) : intent === "create_shared_team_project" ? (
         <TeamProjectSetup intentChooser={intentChooser} onCancel={onCancel} onCreated={onCreated} />
       ) : (
         <PersonalProjectSetup
@@ -134,7 +178,7 @@ function PersonalProjectSetup({
   intentChooser,
   onCancel,
   onCreated,
-}: Omit<Props, "projectCreation"> & { intentChooser: ReactNode }) {
+}: Omit<Props, "projectCreation" | "setupRoute"> & { intentChooser: ReactNode }) {
   const [step, setStep] = useState(0);
   const [name, setName] = useState("");
   const [repositories, setRepositories] = useState<DraftRepository[]>([
@@ -817,13 +861,32 @@ function PersonalProjectSetup({
   );
 }
 
+function SetupRouteFailure({ message, onCancel }: { message: string; onCancel: () => void }) {
+  return (
+    <main className="setup-layout setup-route-failure-layout">
+      <section className="setup-sheet">
+        <div className="setup-section setup-route-failure" role="alert">
+          <TriangleAlert size={21} aria-hidden="true" />
+          <SectionHeading eyebrow="Project setup" title="This setup route cannot continue." />
+          <p>{message}</p>
+          <button className="button secondary" type="button" onClick={onCancel}>
+            <ArrowLeft size={15} /> Return to projects
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function ProjectIntentChooser({
   control,
   selected,
+  locked = false,
   onSelect,
 }: {
   control: ProjectCreationControl;
   selected: ProjectCreationIntent;
+  locked?: boolean;
   onSelect: (intent: ProjectCreationIntent) => void;
 }) {
   const labels: Record<ProjectCreationIntent, string> = {
@@ -839,7 +902,7 @@ function ProjectIntentChooser({
           type="button"
           key={intent.intent}
           aria-pressed={intent.intent === selected}
-          disabled={!intent.eligible}
+          disabled={!intent.eligible || locked}
           title={intent.unavailable_reason ?? undefined}
           onClick={() => onSelect(intent.intent)}
         >

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { isMutationRequest } from "../src/api.ts";
 import {
+  advanceDesktopProjectTransfer,
   backendReconnectLabel,
   desktopDownloadPath,
   desktopFolderSelectionPath,
@@ -21,6 +22,7 @@ import {
   reverifyBackendIdentity,
   runDesktopIncomingProjectProvision,
   runDesktopProjectTransfer,
+  selectDesktopProjectTransferExport,
   setDesktopWebviewZoom,
 } from "../src/desktopRuntime.ts";
 
@@ -287,6 +289,21 @@ test("project transfer bindings keep the relay native and pass only public metad
           cleanup_acknowledged: true,
         };
       }
+      if (command === "desktop_advance_project_transfer") {
+        return {
+          bundle: {
+            source: {},
+            target: {},
+            incoming_provisioning: {},
+            target_provider_setup: [],
+            can_advance: false,
+            advance_label: null,
+            can_manual_relay: false,
+            finished: true,
+          },
+          relay: null,
+        };
+      }
       if (command === "desktop_export_project_transfer") {
         return {
           saved: false,
@@ -296,6 +313,17 @@ test("project transfer bindings keep the relay native and pass only public metad
           archive_sha256: null,
           archive_size_bytes: null,
           path: null,
+        };
+      }
+      if (command === "desktop_select_project_transfer_export") {
+        return {
+          selected: true,
+          request_id: "11111111-1111-4111-8111-111111111111",
+          target_request_id: "22222222-2222-4222-8222-222222222222",
+          target_space_id: "33333333-3333-4333-8333-333333333333",
+          archive_sha256: "a".repeat(64),
+          archive_size_bytes: 1,
+          path: "/tmp/transfer.rcp-transfer",
         };
       }
       if (command === "desktop_finish_project_transfer") {
@@ -323,7 +351,10 @@ test("project transfer bindings keep the relay native and pass only public metad
     const requestId = "11111111-1111-4111-8111-111111111111";
     const runResult = await runDesktopProjectTransfer(requestId, () => undefined);
     assert.equal(runResult.proof_verified, true);
+    const advanceResult = await advanceDesktopProjectTransfer(requestId, () => undefined);
+    assert.equal(advanceResult.bundle.finished, true);
     await exportDesktopProjectTransfer(requestId);
+    await selectDesktopProjectTransferExport(requestId);
     await openDesktopProjectTransferTerminal(requestId, "/tmp/transfer.rcp-transfer");
     await finishDesktopProjectTransfer(requestId, "/tmp/transfer.rcp-transfer");
     await discardDesktopProjectTransferExport(requestId, "/tmp/transfer.rcp-transfer");
@@ -332,7 +363,7 @@ test("project transfer bindings keep the relay native and pass only public metad
       invocations.map(({ command, args }) => ({
         command,
         keys: Object.keys(args),
-        requestId: args.requestId,
+        requestId: args.requestId ?? args.sourceRequestId,
         archivePath: args.archivePath,
       })),
       [
@@ -343,7 +374,19 @@ test("project transfer bindings keep the relay native and pass only public metad
           archivePath: undefined,
         },
         {
+          command: "desktop_advance_project_transfer",
+          keys: ["sourceRequestId", "onEvent"],
+          requestId,
+          archivePath: undefined,
+        },
+        {
           command: "desktop_export_project_transfer",
+          keys: ["requestId"],
+          requestId,
+          archivePath: undefined,
+        },
+        {
+          command: "desktop_select_project_transfer_export",
           keys: ["requestId"],
           requestId,
           archivePath: undefined,
@@ -368,8 +411,9 @@ test("project transfer bindings keep the relay native and pass only public metad
         },
       ],
     );
-    assert.equal(JSON.stringify(invocations[0].args).includes("archive_bytes"), false);
-    assert.equal(JSON.stringify(invocations[0].args).includes("proof_bytes"), false);
+    assert.equal(JSON.stringify(invocations).includes("archive_bytes"), false);
+    assert.equal(JSON.stringify(invocations).includes("proof_bytes"), false);
+    assert.equal(JSON.stringify(invocations).includes("receipt"), false);
   } finally {
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;

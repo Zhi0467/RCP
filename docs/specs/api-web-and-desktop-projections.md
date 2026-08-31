@@ -267,6 +267,13 @@ the native relay and remote CLI cannot provide either confirmation. A partial
 first confirmation is durable state that the same request resumes, not evidence
 that the project moved.
 
+The native coordinator restores the exact saved team tunnel and member session
+before every cold-resume read or transfer operation; Web code never reconstructs
+that credentialed state. A relay command's nonzero exit or incomplete proof and
+cleanup result remains a durable retryable failure and is shown as an error. It
+may expose the explicit protected manual relay, but it never silently selects
+that path or labels the native call successful.
+
 Every machine-readable operator-action event carries the same structured
 responsibility, typed machine or external-service target, ordered safe commands
 or GitHub actions, nonsecret values, success check, and resume command that the
