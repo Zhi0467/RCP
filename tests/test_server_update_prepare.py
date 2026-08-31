@@ -5,7 +5,6 @@ import json
 import os
 import stat
 import subprocess
-import sys
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -787,7 +786,9 @@ def test_real_local_origin_fetch_fast_forward_and_detached_release(tmp_path: Pat
     executable.parent.mkdir(parents=True)
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     executable.chmod(0o755)
-    (executable.parent / "python").symlink_to(sys.executable)
+    python = executable.parent / "python"
+    python.write_text("#!/bin/sh\nprintf 'Python 3.12.0\\n'\n", encoding="utf-8")
+    python.chmod(0o755)
     web_index = release / "web" / "dist" / "index.html"
     web_index.parent.mkdir(parents=True)
     web_index.write_text("<!doctype html><title>RCP</title>\n", encoding="utf-8")

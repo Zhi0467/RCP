@@ -1233,7 +1233,7 @@ def _wait_for_private_control_socket() -> dict[str, object]:
     while time.monotonic() < deadline:
         try:
             return _probe_private_control_socket()
-        except pytest.fail.Exception as exc:
+        except (FileNotFoundError, ConnectionRefusedError, pytest.fail.Exception) as exc:
             last_error = exc
             time.sleep(0.1)
     pytest.fail(f"fenced service did not publish its control socket: {last_error}")
@@ -1394,6 +1394,24 @@ def test_root_path_probe_fails_on_probe_error(monkeypatch: pytest.MonkeyPatch) -
 
     with pytest.raises(pytest.fail.Exception, match="could not inspect root-owned path"):
         _root_path_exists_or_is_symlink(Path("/etc/sudoers.d/rcp-project-provision"))
+
+
+def test_private_control_socket_waits_for_publish(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = {"instance_id": "ready"}
+    attempts = 0
+
+    def probe() -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise FileNotFoundError("control socket is not published yet")
+        return expected
+
+    monkeypatch.setattr(sys.modules[__name__], "_probe_private_control_socket", probe)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    assert _wait_for_private_control_socket() == expected
+    assert attempts == 2
 
 
 def _looks_like_rcp_server(command: str) -> bool:

@@ -25,13 +25,13 @@ What each open drive is waiting on:
 
 - **F6d** — the Ubuntu 22.04/24.04 update workflow. It is implemented and pushed
   with closed admission, systemd cutover, loud rollback, crash re-entry, and a
-  disposable-host death drive. Hosted-runner access is restored. Run
-  [33408513981](https://github.com/Zhi0467/RCP/actions/runs/33408513981) genuinely
-  drove both Ubuntu releases through source installation, then found one stale
-  live-test protocol assertion: the private control probe now includes the
-  implemented `pending_member_removals` inventory. Both cleanup jobs passed.
-  The exact-shape assertion is repaired locally and F6d remains open only until
-  the repair is pushed and the two-release rerun passes.
+  disposable-host death drive. Hosted-runner access is restored. Exact-head run
+  [33414148518](https://github.com/Zhi0467/RCP/actions/runs/33414148518) drove both
+  Ubuntu releases through installation and into the root-death rollback drive,
+  where its socket-wait helper exposed one more test-only race by treating the
+  normal not-yet-published socket as terminal. Cleanup passed on both releases.
+  The bounded wait is repaired locally and F6d remains open only until this
+  follow-up is pushed and the two-release rerun passes.
 - **P6a** — the complete team-service and GitHub live qualification.
 - **O4d** — the fresh-host Ubuntu restore drive.
 - **D4a, D4b, D5** — the integrated source-built two-space desktop drive.
@@ -286,6 +286,26 @@ gate are deliberately future work and do not block this plan.
   personal index. No team enrollment, credential transmission, two-space
   navigation, provisioning, or transfer has yet been claimed from that visible
   check; the integrated desktop drive remains next.
+- Commit `86c0459` pushed the cross-platform and admission-lock repairs. Exact-
+  head CI run
+  [33414115809](https://github.com/Zhi0467/RCP/actions/runs/33414115809) passed
+  Python 3.12, lint, all Web checks, and old-data upgrade. Its sole Python 3.11
+  failure was a matrix-dependent test fixture: the candidate-release test linked
+  its fake runtime to the matrix interpreter even though production correctly
+  requires installed releases to use Python 3.12. The fixture now supplies the
+  explicit fake 3.12 version it intends to model, independent of the test runner.
+- Exact-head live run
+  [33414148518](https://github.com/Zhi0467/RCP/actions/runs/33414148518) passed
+  source setup, install, team initialization, service and SSH checks, enrollment,
+  restart, and entry into the candidate rollback death drive on Ubuntu 22.04 and
+  24.04. Both failed at the same intended post-crash fenced-service restart: the
+  named wait helper retried assertion failures but not the raw `FileNotFoundError`
+  emitted before `/run/rcp/control.sock` was republished. It now retries bounded
+  missing/refused socket states and still fails on a persistent or invalid
+  control plane. Both jobs revoked the temporary deploy key and removed temporary
+  credentials and routes. The two complete affected modules and the focused new
+  regressions pass locally; these two follow-ups change qualification fixtures,
+  not production behavior.
 
 #### 2026-08-31 — V2 current-tree baseline and compatibility repair complete
 
@@ -2116,10 +2136,10 @@ gate are deliberately future work and do not block this plan.
 The planned code paths are implemented and hermetically verified. Closure still
 requires real-environment evidence:
 
-1. push the two real-run repairs, obtain clean CI, and pass the exact-head Ubuntu
-   22.04/24.04 source install/update/rollback qualification; then extend retained
-   live evidence through provisioning, backup/restore, member removal, and both
-   fixed operator routes;
+1. push the two test-only exact-head follow-ups, obtain clean CI, and pass the
+   Ubuntu 22.04/24.04 source install/update/rollback qualification; then extend
+   retained live evidence through provisioning, backup/restore, member removal,
+   and both fixed operator routes;
 2. drive the unlocked rebuilt source desktop through two distinct member
    identities, personal/team switching, Keychain readback, SSH/TLS isolation,
    new team project setup, and personal-to-team transfer/restart recovery; and
@@ -3195,10 +3215,11 @@ disaster restore.
 
 Status: implemented and pushed on `main` through `75fcafc` on 2026-08-29 with
 focused and complete local verification plus a closed independent audit. Hosted
-execution is available again; run 33408513981 reached the real driver on both
-Ubuntu releases and found the now-repaired stale `pending_member_removals` probe
-assertion. This packet is not complete until the repaired exact-head matrix
-passes and the live evidence is recorded in the implementation log.
+execution is available again; runs 33408513981 and 33414148518 successively drove
+both Ubuntu releases through installation and into the root-death rollback path,
+exposing two now-repaired stale/racy live-test assumptions while cleanup passed.
+This packet is not complete until the repaired exact-head matrix passes and the
+live evidence is recorded in the implementation log.
 
 Own:
 
