@@ -41,6 +41,8 @@ _DISPOSABLE_CONFIRMATION = "RCP_SERVER_INSTALL_LIVE_DISPOSABLE"
 _EXPECTED_DISPOSABLE_CONFIRMATION = "I_UNDERSTAND_THIS_MUTATES_THE_HOST"
 _TOKEN_FILE = "RCP_LIVE_GITHUB_ADMIN_TOKEN_FILE"
 _DEPLOY_KEY_RECEIPT_FILE = "RCP_LIVE_DEPLOY_KEY_RECEIPT_FILE"
+_BACKUP_ARCHIVE_RECEIPT_FILE = "RCP_LIVE_BACKUP_ARCHIVE_RECEIPT_FILE"
+_BACKUP_IDENTITY_FILE = "RCP_LIVE_BACKUP_IDENTITY_FILE"
 _REPOSITORY = "Zhi0467/RCP"
 _TEAM_NAME = "RCP live install qualification"
 _GITHUB_ED25519_FINGERPRINT = "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
@@ -217,6 +219,15 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
             base_projects=before_projects,
             session_cookie=session_cookie,
         )
+        second_member_id, second_session_cookie = _enroll_invited_member(session_cookie)
+        archive_path = _drive_live_backup()
+        _write_backup_archive_receipt(archive_path)
+        _remove_live_member(
+            second_member_id,
+            removed_session_cookie=second_session_cookie,
+            surviving_session_cookie=session_cookie,
+            expected_projects=before_projects,
+        )
     finally:
         if deploy_key_id is not None:
             _delete_deploy_key(token, deploy_key_id)
@@ -225,11 +236,15 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
             shutil.rmtree(bootstrap_parent)
 
 
-def _enroll_live_member(bootstrap_code: str) -> tuple[str, str]:
+def _enroll_live_member(
+    bootstrap_code: str,
+    *,
+    display_name: str = "Live update operator",
+) -> tuple[str, str]:
     enrolled, _headers = _http_json(
         "POST",
         "/api/team/enroll",
-        {"code": bootstrap_code, "display_name": "Live update operator"},
+        {"code": bootstrap_code, "display_name": display_name},
     )
     identity = enrolled.get("identity")
     token = enrolled.get("token")
@@ -249,6 +264,112 @@ def _enroll_live_member(bootstrap_code: str) -> tuple[str, str]:
         pytest.fail("team session exchange did not return one cookie")
     morsel = next(iter(cookies.values()))
     return str(user["user_id"]), f"{morsel.key}={morsel.value}"
+
+
+def _enroll_invited_member(inviting_cookie: str) -> tuple[str, str]:
+    invitation, _headers = _http_json(
+        "POST",
+        "/api/team/invitations",
+        cookie=inviting_cookie,
+    )
+    if not isinstance(invitation, dict) or not isinstance(invitation.get("code"), str):
+        pytest.fail("team invitation did not return one enrollment code")
+    return _enroll_live_member(str(invitation["code"]), display_name="Live removal member")
+
+
+def _drive_live_backup() -> Path:
+    identity_path = _protected_live_output_path(_BACKUP_IDENTITY_FILE)
+    if identity_path.exists():
+        pytest.fail("the live backup identity output already exists")
+    _run_checked(("age-keygen", "-o", str(identity_path)))
+    identity_path.chmod(0o600)
+    recipient = _run_checked(("age-keygen", "-y", str(identity_path))).stdout.strip()
+    if not recipient.startswith("age1"):
+        pytest.fail("age-keygen did not return one X25519 recovery recipient")
+
+    destination = Path("/tmp/rcp-server-install-live-backups")
+    _run_checked(
+        (
+            "sudo",
+            "-n",
+            "install",
+            "--directory",
+            "--owner=rcp",
+            "--group=rcp",
+            "--mode=0700",
+            str(destination),
+        )
+    )
+    configure_code, configure_events = _run_installed_server_command(
+        (
+            "server",
+            "backup",
+            "configure",
+            "--destination",
+            str(destination),
+            "--recipient",
+            recipient,
+            "--schedule",
+            "02:00",
+            "--retention",
+            "2",
+            "--confirm",
+            "--machine-readable",
+        ),
+        as_root=True,
+    )
+    assert configure_code == 0
+    assert _terminal_step(configure_events, "backup_configuration_readback")["state"] == (
+        "succeeded"
+    )
+
+    backup_code, backup_events = _run_installed_server_command(
+        ("server", "backup", "run", "--machine-readable"),
+    )
+    assert backup_code == 0
+    backup_step = _terminal_step(backup_events, "backup_run")
+    assert backup_step["state"] == "succeeded"
+    backup_fields = _fields(backup_step)
+    assert backup_fields["backup_status"] == "protected"
+    assert backup_fields["uncaptured_projects"] == 0
+    archive_path = Path(str(backup_fields["archive_path"]))
+    if archive_path.parent != destination or not _root_path_exists_or_is_symlink(archive_path):
+        pytest.fail("the protected backup archive was not published in the reviewed destination")
+    return archive_path
+
+
+def _remove_live_member(
+    member_id: str,
+    *,
+    removed_session_cookie: str,
+    surviving_session_cookie: str,
+    expected_projects: list[dict[str, object]],
+) -> None:
+    preview_code, preview_events = _run_installed_server_command(
+        ("server", "member", "remove", member_id, "--machine-readable"),
+    )
+    assert preview_code == 3
+    preview = _terminal_step(preview_events, "member_removal")
+    assert preview["state"] == "operator_action_needed"
+    commands = _command_actions(preview)
+    if len(commands) != 1:
+        pytest.fail("member-removal preview did not return one exact confirmation command")
+    confirmation = commands[0]
+    if confirmation[:5] != ("rcp", "server", "member", "remove", member_id):
+        pytest.fail("member-removal confirmation changed the reviewed member")
+
+    confirmed_code, confirmed_events = _run_installed_server_command(
+        (*confirmation[1:], "--machine-readable"),
+    )
+    assert confirmed_code == 0
+    final = _terminal_step(confirmed_events, "member_removal")
+    assert final["state"] == "succeeded"
+    assert _fields(final)["removal_state"] == "removed"
+
+    assert _http_status("GET", "/api/identity", cookie=removed_session_cookie) == 401
+    assert _authenticated_get_json("/api/projects", surviving_session_cookie) == expected_projects
+    doctor = _run_doctor()
+    assert doctor["overall_state"] == "healthy"
 
 
 def _http_json(
@@ -285,6 +406,26 @@ def _http_json(
     if not isinstance(value, (dict, list)):
         pytest.fail("live team API returned an unsupported JSON value")
     return value, response_headers
+
+
+def _http_status(method: str, path: str, *, cookie: str | None = None) -> int:
+    headers = {"Accept": "application/json"}
+    if cookie is not None:
+        headers["Cookie"] = cookie
+    request = urllib.request.Request(
+        f"http://127.0.0.1:8421{path}",
+        method=method,
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response.read(2 * 1024 * 1024 + 1)
+            return response.status
+    except urllib.error.HTTPError as exc:
+        exc.read(2 * 1024 * 1024 + 1)
+        return exc.code
+    except urllib.error.URLError:
+        pytest.fail(f"live team API request {path} was unreachable")
 
 
 def _authenticated_get_json(path: str, cookie: str) -> list[dict[str, object]]:
@@ -1527,6 +1668,35 @@ def _clear_deploy_key_receipt() -> None:
         path.unlink()
 
 
+def _protected_live_output_path(environment_name: str) -> Path:
+    raw = os.environ.get(environment_name)
+    if not raw:
+        pytest.fail(f"{environment_name} must name one protected live-test output")
+    path = Path(raw)
+    if not path.is_absolute() or path.is_symlink() or not path.parent.is_dir():
+        pytest.fail(f"{environment_name} must be an absolute non-symlink path")
+    parent = path.parent.stat()
+    if parent.st_uid != os.getuid() or stat.S_IMODE(parent.st_mode) & 0o022:
+        pytest.fail(f"{environment_name} parent must be caller-owned and not writable by others")
+    return path
+
+
+def _write_backup_archive_receipt(archive_path: Path) -> None:
+    receipt_path = _protected_live_output_path(_BACKUP_ARCHIVE_RECEIPT_FILE)
+    if receipt_path.exists():
+        pytest.fail("the backup archive cleanup receipt already exists")
+    descriptor = os.open(
+        receipt_path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+    )
+    try:
+        os.write(descriptor, f"{archive_path}\n".encode())
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _prepare_bootstrap(workspace: Path, bootstrap: Path) -> None:
     _run_checked(("git", "clone", "--no-hardlinks", str(workspace), str(bootstrap)))
     _run_checked(
@@ -1587,6 +1757,33 @@ def _run_install(
         events.append(event.model_dump(mode="json"))
     assert events[0]["event"] == "plan"
     assert events[0]["command"] == "server install"
+    return result.returncode, events
+
+
+def _run_installed_server_command(
+    argv: tuple[str, ...],
+    *,
+    as_root: bool = False,
+) -> tuple[int, list[dict[str, object]]]:
+    prefix = ("sudo", "-n") if as_root else ("sudo", "-n", "-u", "rcp", "-H")
+    result = _run(
+        (*prefix, "/usr/local/bin/rcp", *argv),
+        timeout=_COMMAND_TIMEOUT_SECONDS,
+    )
+    if result.returncode not in {0, 3}:
+        pytest.fail(
+            f"installed server command returned unexpected exit status {result.returncode}; "
+            f"stdout tail={result.stdout[-4096:]!r}; stderr tail={result.stderr[-4096:]!r}"
+        )
+    events: list[dict[str, object]] = []
+    for line in result.stdout.splitlines():
+        try:
+            event = _EVENT_ADAPTER.validate_json(line)
+        except Exception:
+            pytest.fail("installed server command mixed non-JSON output into its event stream")
+        events.append(event.model_dump(mode="json"))
+    if not events or events[0]["event"] != "plan":
+        pytest.fail("installed server command did not emit its plan first")
     return result.returncode, events
 
 

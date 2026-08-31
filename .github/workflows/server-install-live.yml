@@ -93,7 +93,38 @@ jobs:
           RCP_SERVER_INSTALL_LIVE_DISPOSABLE: I_UNDERSTAND_THIS_MUTATES_THE_HOST
           RCP_LIVE_GITHUB_ADMIN_TOKEN_FILE: ${{ runner.temp }}/rcp-live-github-admin-token
           RCP_LIVE_DEPLOY_KEY_RECEIPT_FILE: ${{ runner.temp }}/rcp-live-deploy-key-label
+          RCP_LIVE_BACKUP_ARCHIVE_RECEIPT_FILE: ${{ runner.temp }}/rcp-live-backup-archive-path
+          RCP_LIVE_BACKUP_IDENTITY_FILE: ${{ runner.temp }}/rcp-live-backup-identity
         run: uv run pytest tests/test_server_install_live.py -vv
+
+      - name: Prepare the protected restore drill inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          RCP_ARCHIVE_PATH="$(cat "$RUNNER_TEMP/rcp-live-backup-archive-path")"
+          case "$RCP_ARCHIVE_PATH" in
+            /tmp/rcp-server-install-live-backups/*.tar.age) ;;
+            *) echo "Live backup receipt named an unexpected archive" >&2; exit 1 ;;
+          esac
+          sudo install \
+            --owner="$(id -u)" \
+            --group="$(id -g)" \
+            --mode=0600 \
+            "$RCP_ARCHIVE_PATH" \
+            "$RUNNER_TEMP/rcp-live-backup.tar.age"
+          test -s "$RUNNER_TEMP/rcp-live-backup.tar.age"
+          test -s "$RUNNER_TEMP/rcp-live-backup-identity"
+
+      - name: Preserve the disposable backup for a fresh-host restore
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rcp-live-backup-${{ matrix.runner }}
+          path: |
+            ${{ runner.temp }}/rcp-live-backup.tar.age
+            ${{ runner.temp }}/rcp-live-backup-identity
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
       - name: Revoke an interrupted test's deploy key
         if: always()
@@ -123,6 +154,9 @@ jobs:
         run: |
           rm -f -- "$RUNNER_TEMP/rcp-live-github-admin-token"
           rm -f -- "$RUNNER_TEMP/rcp-live-deploy-key-label"
+          rm -f -- "$RUNNER_TEMP/rcp-live-backup-archive-path"
+          rm -f -- "$RUNNER_TEMP/rcp-live-backup-identity"
+          rm -f -- "$RUNNER_TEMP/rcp-live-backup.tar.age"
 
       - name: Remove temporary live access routes
         if: always()
