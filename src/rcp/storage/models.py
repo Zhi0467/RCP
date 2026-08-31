@@ -279,6 +279,26 @@ ProjectProvisioningCheckoutDisposition = Literal[
     "request_created",
     "reused_existing",
 ]
+ProjectTransferSide = Literal["source", "target"]
+ProjectTransferPhase = Literal[
+    "awaiting_link",
+    "linked",
+    "target_admitted",
+    "source_released",
+    "source_fenced",
+    "archive_bound",
+    "target_activated",
+    "cleanup_acknowledged",
+    "completed",
+    "operator_action_needed",
+]
+ProjectTransferProofKind = Literal["source_release", "target_activation"]
+ProjectTransferProofState = Literal[
+    "unexposed",
+    "exposed",
+    "acknowledged",
+    "consumed",
+]
 
 _PROVISIONING_ALIAS = re.compile(r"[a-z][a-z0-9-]{0,47}")
 _PROVISIONING_HOST = re.compile(r"[A-Za-z0-9_.@:-]{1,255}")
@@ -867,6 +887,462 @@ class ProjectProvisioningStepReceiptRecord(_StrictProvisioningModel):
         if _SHA256_HEX.fullmatch(value) is None:
             raise ValueError("provisioning transition digest must be lowercase SHA-256")
         return value
+
+
+class ProjectTransferRepositorySource(_StrictProvisioningModel):
+    alias: str
+    repository: GitHubRepositoryRef
+    machine_alias: str
+
+    @field_validator("alias", "machine_alias")
+    @classmethod
+    def validate_alias(cls, value: str) -> str:
+        if _PROVISIONING_ALIAS.fullmatch(value) is None:
+            raise ValueError("transfer repository or machine alias is invalid")
+        return value
+
+
+class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
+    source_rcp_version: str = Field(min_length=1, max_length=120)
+    source_schema_generation: int = Field(ge=1)
+    supported_archive_codecs: tuple[str, ...] = Field(min_length=1, max_length=16)
+    repositories: tuple[ProjectTransferRepositorySource, ...] = Field(
+        min_length=1,
+        max_length=64,
+    )
+    state_repository: str
+    project_truth_scope: tuple[str, ...] = Field(min_length=1, max_length=64)
+    default_run_truth_scope: tuple[str, ...] = Field(min_length=1, max_length=64)
+    source_manifest_sha256: str
+
+    @field_validator("source_rcp_version")
+    @classmethod
+    def validate_rcp_version(cls, value: str) -> str:
+        if (
+            value != value.strip()
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+            or redact_server_text(value) != value
+        ):
+            raise ValueError("source RCP version must be one nonsecret safe line")
+        return value
+
+    @field_validator("supported_archive_codecs")
+    @classmethod
+    def validate_archive_codecs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)) or any(
+            _PROVISIONING_RUNTIME.fullmatch(item) is None for item in value
+        ):
+            raise ValueError("transfer archive codecs must be unique safe identifiers")
+        return value
+
+    @field_validator("state_repository")
+    @classmethod
+    def validate_state_repository(cls, value: str) -> str:
+        if _PROVISIONING_ALIAS.fullmatch(value) is None:
+            raise ValueError("transfer state repository alias is invalid")
+        return value
+
+    @field_validator("project_truth_scope", "default_run_truth_scope")
+    @classmethod
+    def validate_scope(cls, value: tuple[str, ...], info: ValidationInfo) -> tuple[str, ...]:
+        if len(value) != len(set(value)) or any(
+            _PROVISIONING_ALIAS.fullmatch(alias) is None for alias in value
+        ):
+            raise ValueError(f"transfer {info.field_name} must contain unique repository aliases")
+        return value
+
+    @field_validator("source_manifest_sha256")
+    @classmethod
+    def validate_manifest_digest(cls, value: str) -> str:
+        if _SHA256_HEX.fullmatch(value) is None:
+            raise ValueError("source manifest digest must be lowercase SHA-256")
+        return value
+
+    @model_validator(mode="after")
+    def validate_repository_provenance(self) -> ProjectTransferSourceConfiguration:
+        aliases = [repository.alias for repository in self.repositories]
+        identities = [repository.repository.identity for repository in self.repositories]
+        if len(aliases) != len(set(aliases)):
+            raise ValueError("transfer repository aliases must be unique")
+        if len(identities) != len(set(identities)):
+            raise ValueError("one GitHub repository cannot appear twice in transfer provenance")
+        alias_set = set(aliases)
+        if self.state_repository not in alias_set:
+            raise ValueError("transfer state repository must name a declared repository")
+        if not set(self.project_truth_scope).issubset(alias_set):
+            raise ValueError("transfer project truth scope names an unknown repository")
+        if self.state_repository not in self.project_truth_scope:
+            raise ValueError("transfer state repository must remain in project truth scope")
+        if not set(self.default_run_truth_scope).issubset(self.project_truth_scope):
+            raise ValueError("transfer default run truth scope must be a project subset")
+        return self
+
+
+class ProjectTransferResolvedPath(_StrictProvisioningModel):
+    repository_alias: str
+    machine_alias: str
+    path: str
+
+    @field_validator("repository_alias", "machine_alias")
+    @classmethod
+    def validate_alias(cls, value: str) -> str:
+        if _PROVISIONING_ALIAS.fullmatch(value) is None:
+            raise ValueError("resolved transfer alias is invalid")
+        return value
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        return _provisioning_absolute_path(value, label="resolved transfer repository path")
+
+
+class ProjectTransferRepositoryBinding(_StrictProvisioningModel):
+    alias: str
+    repository: GitHubRepositoryRef
+
+    @field_validator("alias")
+    @classmethod
+    def validate_alias(cls, value: str) -> str:
+        if _PROVISIONING_ALIAS.fullmatch(value) is None:
+            raise ValueError("linked transfer repository alias is invalid")
+        return value
+
+
+class ProjectTransferLinkReceipt(_StrictProvisioningModel):
+    source_request_id: str
+    target_request_id: str
+    project_id: str
+    source_space_id: str
+    target_space_id: str
+    source_configuration_sha256: str
+    target_repositories: tuple[ProjectTransferRepositoryBinding, ...] = Field(
+        min_length=1,
+        max_length=64,
+    )
+    accepted_schema_generation: int = Field(ge=1)
+    accepted_archive_codec: str
+    source_release_proof_sha256: str
+    target_activation_proof_sha256: str
+    created_at: str
+
+    @field_validator(
+        "source_request_id",
+        "target_request_id",
+        "project_id",
+        "source_space_id",
+        "target_space_id",
+    )
+    @classmethod
+    def validate_identifier(cls, value: str, info: ValidationInfo) -> str:
+        try:
+            return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator(
+        "source_configuration_sha256",
+        "source_release_proof_sha256",
+        "target_activation_proof_sha256",
+    )
+    @classmethod
+    def validate_digest(cls, value: str) -> str:
+        if _SHA256_HEX.fullmatch(value) is None:
+            raise ValueError("transfer link digest must be lowercase SHA-256")
+        return value
+
+    @field_validator("accepted_archive_codec")
+    @classmethod
+    def validate_archive_codec(cls, value: str) -> str:
+        if _PROVISIONING_RUNTIME.fullmatch(value) is None:
+            raise ValueError("accepted transfer archive codec is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def validate_link(self) -> ProjectTransferLinkReceipt:
+        if self.source_space_id == self.target_space_id:
+            raise ValueError("a transfer link must cross spaces")
+        aliases = [item.alias for item in self.target_repositories]
+        identities = [item.repository.identity for item in self.target_repositories]
+        if len(aliases) != len(set(aliases)):
+            raise ValueError("linked target repository aliases must be unique")
+        if aliases != sorted(aliases):
+            raise ValueError("linked target repositories must be ordered by alias")
+        if len(identities) != len(set(identities)):
+            raise ValueError("one target repository cannot appear twice in a transfer link")
+        return self
+
+
+class ProjectTransferTargetAdmissionReceipt(_StrictProvisioningModel):
+    source_request_id: str
+    target_request_id: str
+    project_id: str
+    source_space_id: str
+    target_space_id: str
+    admitted_by: AuthorizedHuman
+    source_configuration_sha256: str
+    target_preparation_revision: int = Field(ge=0)
+    target_preparation_sha256: str
+    resolved_paths: tuple[ProjectTransferResolvedPath, ...] = Field(
+        min_length=1,
+        max_length=64,
+    )
+    accepted_schema_generation: int = Field(ge=1)
+    accepted_archive_codec: str
+    source_release_proof_sha256: str
+    target_activation_proof_sha256: str
+    created_at: str
+
+    @field_validator(
+        "source_request_id",
+        "target_request_id",
+        "project_id",
+        "source_space_id",
+        "target_space_id",
+    )
+    @classmethod
+    def validate_identifier(cls, value: str, info: ValidationInfo) -> str:
+        try:
+            return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator(
+        "source_configuration_sha256",
+        "target_preparation_sha256",
+        "source_release_proof_sha256",
+        "target_activation_proof_sha256",
+    )
+    @classmethod
+    def validate_digest(cls, value: str) -> str:
+        if _SHA256_HEX.fullmatch(value) is None:
+            raise ValueError("transfer receipt digest must be lowercase SHA-256")
+        return value
+
+    @field_validator("accepted_archive_codec")
+    @classmethod
+    def validate_archive_codec(cls, value: str) -> str:
+        if _PROVISIONING_RUNTIME.fullmatch(value) is None:
+            raise ValueError("accepted transfer archive codec is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def admission_actor_matches_target(self) -> ProjectTransferTargetAdmissionReceipt:
+        if self.source_space_id == self.target_space_id:
+            raise ValueError("a transfer must cross spaces")
+        if self.admitted_by.space_id != self.target_space_id:
+            raise ValueError("target admission actor must belong to the target space")
+        aliases = [item.repository_alias for item in self.resolved_paths]
+        if len(aliases) != len(set(aliases)):
+            raise ValueError("target admission paths must have unique repository aliases")
+        return self
+
+
+class ProjectTransferSourceReleaseReceipt(_StrictProvisioningModel):
+    source_request_id: str
+    target_request_id: str
+    project_id: str
+    source_space_id: str
+    target_space_id: str
+    released_by: AuthorizedHuman
+    source_configuration_sha256: str
+    target_admission_sha256: str
+    target_preparation_revision: int = Field(ge=0)
+    target_preparation_sha256: str
+    source_head: GraphHeadRef
+    accepted_schema_generation: int = Field(ge=1)
+    accepted_archive_codec: str
+    source_release_proof_sha256: str
+    target_activation_proof_sha256: str
+    created_at: str
+
+    @field_validator(
+        "source_request_id",
+        "target_request_id",
+        "project_id",
+        "source_space_id",
+        "target_space_id",
+    )
+    @classmethod
+    def validate_identifier(cls, value: str, info: ValidationInfo) -> str:
+        try:
+            return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator(
+        "source_configuration_sha256",
+        "target_admission_sha256",
+        "target_preparation_sha256",
+        "source_release_proof_sha256",
+        "target_activation_proof_sha256",
+    )
+    @classmethod
+    def validate_digest(cls, value: str) -> str:
+        if _SHA256_HEX.fullmatch(value) is None:
+            raise ValueError("transfer receipt digest must be lowercase SHA-256")
+        return value
+
+    @field_validator("accepted_archive_codec")
+    @classmethod
+    def validate_archive_codec(cls, value: str) -> str:
+        if _PROVISIONING_RUNTIME.fullmatch(value) is None:
+            raise ValueError("accepted transfer archive codec is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def release_actor_matches_source(self) -> ProjectTransferSourceReleaseReceipt:
+        if self.source_space_id == self.target_space_id:
+            raise ValueError("a transfer must cross spaces")
+        if self.released_by.space_id != self.source_space_id:
+            raise ValueError("source release actor must belong to the source space")
+        if self.source_head.target.kind != "main":
+            raise ValueError("source release must bind the main canonical head")
+        return self
+
+
+_PROJECT_TRANSFER_PHASE_RANK: dict[ProjectTransferPhase, int] = {
+    "awaiting_link": 0,
+    "linked": 1,
+    "target_admitted": 2,
+    "source_released": 3,
+    "source_fenced": 4,
+    "archive_bound": 5,
+    "target_activated": 6,
+    "cleanup_acknowledged": 7,
+    "completed": 8,
+    "operator_action_needed": 9,
+}
+
+
+class ProjectTransferRequestRecord(_StrictProvisioningModel):
+    request_id: str
+    side: ProjectTransferSide
+    phase: ProjectTransferPhase
+    linked_request_id: str | None = None
+    project_id: str
+    source_space_id: str
+    target_space_id: str
+    initiated_by: AuthorizedHuman
+    source_configuration: ProjectTransferSourceConfiguration
+    source_configuration_sha256: str
+    accepted_schema_generation: int | None = Field(default=None, ge=1)
+    accepted_archive_codec: str | None = None
+    source_release_proof_sha256: str
+    target_activation_proof_sha256: str | None = None
+    link_receipt: ProjectTransferLinkReceipt | None = None
+    proof_state: ProjectTransferProofState = "unexposed"
+    proof_acknowledgement_sha256: str | None = None
+    target_admission_receipt: ProjectTransferTargetAdmissionReceipt | None = None
+    source_release_receipt: ProjectTransferSourceReleaseReceipt | None = None
+    source_fence_head: GraphHeadRef | None = None
+    archive_sha256: str | None = None
+    archive_size_bytes: int | None = Field(default=None, ge=1)
+    revision: int = Field(ge=0)
+    created_at: str
+    updated_at: str
+
+    @field_validator(
+        "request_id",
+        "linked_request_id",
+        "project_id",
+        "source_space_id",
+        "target_space_id",
+    )
+    @classmethod
+    def validate_identifier(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        try:
+            return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator(
+        "source_configuration_sha256",
+        "source_release_proof_sha256",
+        "target_activation_proof_sha256",
+        "proof_acknowledgement_sha256",
+        "archive_sha256",
+    )
+    @classmethod
+    def validate_digest(cls, value: str | None) -> str | None:
+        if value is not None and _SHA256_HEX.fullmatch(value) is None:
+            raise ValueError("transfer request digest must be lowercase SHA-256")
+        return value
+
+    @field_validator("accepted_archive_codec")
+    @classmethod
+    def validate_archive_codec(cls, value: str | None) -> str | None:
+        if value is not None and _PROVISIONING_RUNTIME.fullmatch(value) is None:
+            raise ValueError("accepted transfer archive codec is invalid")
+        return value
+
+    @model_validator(mode="after")
+    def validate_protocol_shape(self) -> ProjectTransferRequestRecord:
+        if self.source_space_id == self.target_space_id:
+            raise ValueError("a transfer must cross spaces")
+        expected_actor_space = (
+            self.source_space_id if self.side == "source" else self.target_space_id
+        )
+        if self.initiated_by.space_id != expected_actor_space:
+            raise ValueError("transfer initiator belongs to the wrong space")
+        linked_fields = (
+            self.linked_request_id,
+            self.accepted_schema_generation,
+            self.accepted_archive_codec,
+            self.target_activation_proof_sha256,
+        )
+        if self.phase == "awaiting_link":
+            if (
+                self.side != "source"
+                or any(value is not None for value in linked_fields)
+                or self.link_receipt is not None
+            ):
+                raise ValueError("only an unlinked source request may await its target")
+        elif any(value is None for value in linked_fields) or self.link_receipt is None:
+            raise ValueError("a linked transfer request requires its exact link receipt")
+        if (
+            self.accepted_schema_generation is not None
+            and self.accepted_schema_generation
+            != self.source_configuration.source_schema_generation
+        ):
+            raise ValueError("accepted transfer schema must match the bound source schema")
+        if (
+            self.accepted_archive_codec is not None
+            and self.accepted_archive_codec
+            not in self.source_configuration.supported_archive_codecs
+        ):
+            raise ValueError("accepted transfer codec is not supported by the source")
+        rank = _PROJECT_TRANSFER_PHASE_RANK[self.phase]
+        if self.phase != "operator_action_needed":
+            if rank >= _PROJECT_TRANSFER_PHASE_RANK["target_admitted"]:
+                if self.target_admission_receipt is None:
+                    raise ValueError("admitted transfer state requires its target receipt")
+            elif self.target_admission_receipt is not None:
+                raise ValueError("target admission receipt appears before admission")
+            if rank >= _PROJECT_TRANSFER_PHASE_RANK["source_released"]:
+                if self.source_release_receipt is None:
+                    raise ValueError("released transfer state requires its source receipt")
+            elif self.source_release_receipt is not None:
+                raise ValueError("source release receipt appears before release")
+            if rank >= _PROJECT_TRANSFER_PHASE_RANK["source_fenced"]:
+                if self.side == "source" and self.source_fence_head is None:
+                    raise ValueError("fenced source transfer state requires its canonical head")
+            elif self.source_fence_head is not None:
+                raise ValueError("source fence head appears before the fence")
+            if rank >= _PROJECT_TRANSFER_PHASE_RANK["archive_bound"]:
+                if self.archive_sha256 is None or self.archive_size_bytes is None:
+                    raise ValueError("archive-bound transfer state requires exact archive metadata")
+                if self.source_fence_head is None:
+                    raise ValueError("archive binding requires the exact fenced source head")
+            elif self.archive_sha256 is not None or self.archive_size_bytes is not None:
+                raise ValueError("transfer archive metadata appears before its binding")
+        if self.proof_state in {"acknowledged", "consumed"}:
+            if self.proof_acknowledgement_sha256 is None:
+                raise ValueError("acknowledged transfer proof requires its receipt digest")
+        elif self.proof_acknowledgement_sha256 is not None:
+            raise ValueError("transfer proof acknowledgment appears before acknowledgment")
+        return self
 
 
 class ProviderSkillInventoryRecord(BaseModel):
@@ -2396,6 +2872,18 @@ __all__ = [
     "ProjectProvisioningRequestRecord",
     "ProjectProvisioningStatus",
     "ProjectProvisioningStepReceiptRecord",
+    "ProjectTransferPhase",
+    "ProjectTransferProofKind",
+    "ProjectTransferProofState",
+    "ProjectTransferRepositoryBinding",
+    "ProjectTransferLinkReceipt",
+    "ProjectTransferRepositorySource",
+    "ProjectTransferRequestRecord",
+    "ProjectTransferResolvedPath",
+    "ProjectTransferSide",
+    "ProjectTransferSourceConfiguration",
+    "ProjectTransferSourceReleaseReceipt",
+    "ProjectTransferTargetAdmissionReceipt",
     "ProjectRecord",
     "ProjectStageRecord",
     "ProposalResolvedGraphCondition",

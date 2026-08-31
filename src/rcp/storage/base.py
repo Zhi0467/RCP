@@ -664,6 +664,65 @@ class AppStoreBase:
                 );
                 CREATE INDEX IF NOT EXISTS project_provisioning_receipts_revision
                     ON project_provisioning_step_receipts(request_id, resulting_revision);
+                CREATE TABLE IF NOT EXISTS project_transfer_requests (
+                    request_id TEXT PRIMARY KEY,
+                    side TEXT NOT NULL CHECK(side IN ('source', 'target')),
+                    phase TEXT NOT NULL CHECK(phase IN (
+                        'awaiting_link',
+                        'linked',
+                        'target_admitted',
+                        'source_released',
+                        'source_fenced',
+                        'archive_bound',
+                        'target_activated',
+                        'cleanup_acknowledged',
+                        'completed',
+                        'operator_action_needed'
+                    )),
+                    project_id TEXT NOT NULL,
+                    source_space_id TEXT NOT NULL,
+                    target_space_id TEXT NOT NULL,
+                    linked_request_id TEXT,
+                    record_json TEXT NOT NULL,
+                    revision INTEGER NOT NULL CHECK(revision >= 0),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(side, project_id)
+                );
+                CREATE INDEX IF NOT EXISTS project_transfer_phase
+                    ON project_transfer_requests(side, phase, updated_at DESC, request_id);
+                CREATE TABLE IF NOT EXISTS project_transfer_proofs (
+                    request_id TEXT PRIMARY KEY,
+                    proof_kind TEXT NOT NULL
+                        CHECK(proof_kind IN ('source_release', 'target_activation')),
+                    state TEXT NOT NULL
+                        CHECK(state IN ('unexposed', 'exposed', 'acknowledged', 'consumed')),
+                    commitment_sha256 TEXT NOT NULL,
+                    secret BLOB,
+                    acknowledgement_sha256 TEXT,
+                    exposed_at TEXT,
+                    acknowledged_at TEXT,
+                    consumed_at TEXT,
+                    FOREIGN KEY(request_id) REFERENCES project_transfer_requests(request_id),
+                    CHECK(
+                        (state = 'unexposed' AND secret IS NOT NULL
+                            AND acknowledgement_sha256 IS NULL
+                            AND exposed_at IS NULL AND acknowledged_at IS NULL
+                            AND consumed_at IS NULL)
+                        OR (state = 'exposed' AND secret IS NOT NULL
+                            AND acknowledgement_sha256 IS NULL
+                            AND exposed_at IS NOT NULL AND acknowledged_at IS NULL
+                            AND consumed_at IS NULL)
+                        OR (state = 'acknowledged' AND secret IS NOT NULL
+                            AND acknowledgement_sha256 IS NOT NULL
+                            AND exposed_at IS NOT NULL AND acknowledged_at IS NOT NULL
+                            AND consumed_at IS NULL)
+                        OR (state = 'consumed' AND secret IS NULL
+                            AND acknowledgement_sha256 IS NOT NULL
+                            AND exposed_at IS NOT NULL AND acknowledged_at IS NOT NULL
+                            AND consumed_at IS NOT NULL)
+                    )
+                );
                 CREATE TABLE IF NOT EXISTS project_aliases (
                     alias_id TEXT PRIMARY KEY,
                     canonical_project_id TEXT NOT NULL

@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1 | — | T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a | — | T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -4636,7 +4636,58 @@ Agents cannot author this record. One synchronous backend transition appends it
 or nothing. Historical replay never consults current membership. Existing old
 identity Patches remain byte-compatible.
 
-### T2a — Linked transfer request storage and protocol state
+### T2a — Linked transfer request storage and protocol state — complete
+
+**Status (2026-08-30): implemented, focused-tested, and independently audited
+once.** Two additive SQLite tables now own the public request state and the
+protected proof bytes. The source and target each retain one request row, one
+side-local random 256-bit proof, the other side's commitment, exact revisions,
+and independent target-admission and source-release receipts. Raw proofs are
+stored only as protected BLOBs; they never appear in the public JSON record.
+
+The target creates one strict link receipt and the source accepts that exact
+receipt rather than reconstructing a partial link from separate arguments. It
+binds both request ids, the unchanged project id, both space ids, the source
+configuration digest, the exact target GitHub repository identity for every
+source alias, the accepted schema generation and archive codec, and both proof
+commitments. Machine aliases may differ across spaces, but repository aliases
+and canonical GitHub identities may not. Link attempts with another project,
+repository, space, version, codec, request, or commitment fail before any
+authority changes.
+
+Target admission is still only a human-authored preparation receipt: it records
+the target actor, reviewed provisioning revision and digest, and resolved
+central paths without creating a project. Source release is separately
+authenticated in the personal space and revalidates the source configuration
+and canonical head. Exact receipt retries are checked after authenticating the
+same actor but before consulting mutable preparation or catalog state, so a
+completed call remains retryable after its prerequisites naturally advance.
+User ids are never compared across the two spaces.
+
+The proof sequence is now unskippable: expose, bind the source archive or
+activate the target, record proof acknowledgment, record cleanup
+acknowledgment, erase the raw proof, then complete. Source archive binding also
+rehashes the still-present exposed proof, so an acknowledged or erased secret
+cannot be claimed as included in a later archive. Completion retains the public
+commitment and acknowledgment digest while the raw BLOB is null. The source
+release head remains distinct from the later post-home-transfer fence head; the
+latter must advance the former and is what the archive binds.
+
+The single read-only audit found two release-blocking gaps, both fixed before
+commit: the original partial link did not prove that both sides named the same
+project and GitHub repositories, and the source proof could be erased before an
+archive containing it was bound. It also found that exact admission/release
+retries consulted mutable prerequisites too early; those retries now authorize
+the actor and return the already-recorded exact receipt first. Coverage includes
+all three regressions, independent raw-secret storage, no-common-codec and
+source-drift failures, exact retries, archive mismatch, legal proof erasure, and
+loud rejection of corrupt public/protected state. No second audit round was
+requested or run.
+
+T2a deliberately does **not** expose HTTP endpoints, classify restored requests,
+define or write archive bytes, run checkout preparation, append T1's home
+transfer, activate or clean either catalog, or add desktop UI. Those remain T2b
+through T5b, so S98 stays pending.
 
 Own:
 
