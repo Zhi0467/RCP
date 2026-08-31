@@ -71,6 +71,7 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "project_provisioning_requests",
         "project_provisioning_step_receipts",
         "project_transfer_proofs",
+        "project_transfer_imports",
         "project_transfer_requests",
         "projects",
         "result_views",

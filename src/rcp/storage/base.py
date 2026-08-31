@@ -44,6 +44,7 @@ from rcp.storage.models import (  # noqa: F401
     NodeStatusGraphCondition,
     ProjectRecord,
     ProjectStageRecord,
+    ProjectTransferImportRecord,
     ProposalResolvedGraphCondition,
     ProviderSkillInventoryRecord,
     ResultViewConflict,
@@ -691,6 +692,28 @@ class AppStoreBase:
                 );
                 CREATE INDEX IF NOT EXISTS project_transfer_phase
                     ON project_transfer_requests(side, phase, updated_at DESC, request_id);
+                CREATE TABLE IF NOT EXISTS project_transfer_imports (
+                    request_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    archive_manifest_sha256 TEXT NOT NULL,
+                    target_manifest_sha256 TEXT NOT NULL,
+                    operational_payload_sha256 TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('database_imported', 'complete')),
+                    event_id_map_json TEXT NOT NULL,
+                    receipt_id_map_json TEXT NOT NULL,
+                    publication_sha256 TEXT,
+                    created_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    FOREIGN KEY(request_id) REFERENCES project_transfer_requests(request_id),
+                    CHECK(
+                        (status = 'database_imported'
+                            AND publication_sha256 IS NULL AND completed_at IS NULL)
+                        OR (status = 'complete'
+                            AND publication_sha256 IS NOT NULL AND completed_at IS NOT NULL)
+                    )
+                );
+                CREATE INDEX IF NOT EXISTS project_transfer_imports_project
+                    ON project_transfer_imports(project_id, created_at, request_id);
                 CREATE TABLE IF NOT EXISTS project_transfer_proofs (
                     request_id TEXT PRIMARY KEY,
                     proof_kind TEXT NOT NULL

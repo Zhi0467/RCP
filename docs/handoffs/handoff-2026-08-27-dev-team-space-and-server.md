@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e | — | T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f | — | T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -178,7 +178,7 @@ The remaining seams are also concrete:
   repository-credential primitive, exact-account provider check, checkout
   preparation, machine-step orchestration, and unified personal/new-team
   project wizard exist, but post-setup cancellation, complete live team
-  qualification, and the transfer archive, machine relay/import, activation,
+  qualification, and the transfer archive, machine relay/decode, activation,
   cleanup orchestration, and desktop drive remain open.
 
 The repository's current `AGENTS.md` prescribes direct work on `main`, which the
@@ -234,6 +234,33 @@ gate are deliberately future work and do not block this plan.
 
 ### Implementation log
 
+#### 2026-08-31 — T3f validated target import and readback complete
+
+- Added one strict target importer for an already decoded, request-scoped
+  archive stage. It checks the exact file/directory inventory, regular-file
+  safety, byte counts, digests, archive/envelope/request identities, source
+  fence, reviewed target configuration, heads, attributions, and operational
+  file references before target mutation.
+- Added one canonical operational JSON payload and a compound SQLite import
+  receipt. All selected terminal records enter through one transaction with
+  explicit event/receipt id maps; tasks are history-only, executable bindings
+  are neutralized, and neither a project row nor `writing_sessions` is created.
+- Published the rebuilt target manifest, canonical history, transformed RCP
+  chats, Paper introduction, facts, kept artifacts/views, and imported provider
+  histories through their concrete owners. The source manifest remains archive
+  provenance only. Completion requires owner readback and exact canonical head
+  agreement and stores one deterministic publication digest.
+- Crash and retry coverage now spans a mid-database fault plus the canonical,
+  project-file, provider-history, and final completion boundaries. Every case
+  keeps the project unregistered and resumes the same digest without duplicate
+  history. A post-commit completion exception re-reads the receipt before
+  cleanup, preventing removal of files already bound by a complete receipt.
+- The focused T3f/transfer suite passes. Sealed archive creation and decoding,
+  target upload, activation, source retirement, desktop orchestration, SSH, and
+  the live lab drive remain T4a-T5/V1.
+- The one independent read-only audit found no concrete T3f correctness or stale
+  documentation defect. No correction round was needed.
+
 #### 2026-08-31 — T3e imported provider-source lifecycle integration complete
 
 - `ImportedProviderSourceStore` is now the sole lifecycle owner for the durable
@@ -270,7 +297,7 @@ gate are deliberately future work and do not block this plan.
   pre-activation phase, project identity, expected inventory, and absence of a
   registered project before calling the owner's bounded discard. Ordinary
   Delete still refuses at the team-space guard before any filesystem or database
-  mutation; T3f will invoke this helper from the concrete importer failure path.
+  mutation; T3f now invokes this helper from the concrete importer failure path.
 - Focused coverage proves deterministic archive membership and byte-for-byte
   restore readback, restore idempotence and conflict refusal before visibility,
   candidate rehearsal isolation from live provider state, update rollback and
@@ -5521,8 +5548,8 @@ warning.
 
 Status: complete hermetically on 2026-08-31. Backup, archive, restore
 publication/readback, candidate rehearsal, local update checkpoint/rollback,
-and bounded pre-activation cleanup all use T3d's concrete owner. The remaining
-target-import call site belongs to T3f; S98/S104/V1 retain the live drives.
+and bounded pre-activation cleanup all use T3d's concrete owner. T3f now owns
+the target-import call site; S98/S104/V1 retain the live drives.
 
 Own:
 
@@ -5546,6 +5573,10 @@ turns failure cleanup into a team-project deprovision path.
 
 ### T3f — Validated atomic target import and readback
 
+Status: complete hermetically on 2026-08-31. The importer consumes a previously
+decoded, request-scoped archive staging tree; T4a/T4b/T4c still own sealed archive
+creation, transport, codec decoding, activation, and cross-space retirement.
+
 Own:
 
 - new `src/rcp/transfer/importer.py`;
@@ -5567,6 +5598,40 @@ Never publish a raw source chat or create a target
 and permit T4c activation only after database and every file-group readback.
 Failure leaves one non-active repairable request and no partially visible
 project.
+
+The implemented importer validates the exact staging-tree inventory and every
+declared digest before mutation, parses one canonical operational payload, and
+requires exact archive, request, provisioning-review, target-manifest, identity,
+head, attribution, and file-entry agreement. One SQLite transaction imports the
+selected 28-table terminal projection, records source-to-target event/receipt id
+maps, marks tasks history-only, removes native task/session/stage bindings, and
+does not create either a project row or a writing session. Imported kept result
+views remain kept and non-revisable; their non-null legacy runtime columns carry
+inert values that are never projected as executable authority.
+
+File publication uses the existing concrete owners for the reviewed target
+manifest and canonical history, transformed RCP chats, Paper introduction,
+facts, kept artifacts, legacy kept views, and imported provider histories. Each
+owner verifies the declared digest and size; completion additionally replays the
+canonical head and binds the archive, target-manifest, operational-payload, file
+entry, head, and observed provider-inventory receipts into one publication
+digest. Publication is intentionally repairable rather than a global
+filesystem/SQLite transaction: an interrupted request stays unregistered and
+invisible, matching files are idempotently read back or republished on the same
+digest, and imported-provider cleanup is restricted to the exact unactivated
+request inventory. A completion that committed before the caller observed its
+return is re-read before cleanup, so a complete receipt never loses its imported
+provider files.
+
+Focused coverage proves the full storage projection, no project registration or
+writing-session import, target-manifest rather than source-manifest publication,
+exact Paper/fact/artifact/view/provider bytes, kept-view non-revision, idempotent
+retry, undeclared staging-entry refusal before mutation, SQLite rollback after a
+mid-transaction fault, and same-archive repair after canonical, project-file,
+provider-history, and completion boundary failures. No real archive relay,
+desktop, SSH host, or activation was exercised here; those remain T4a-T5/V1.
+The one independent read-only audit reported no concrete finding, so no audit
+correction round was run.
 
 ### T4a — Source fence, exact export, and retirement receipt
 

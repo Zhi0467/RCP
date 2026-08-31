@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import stat
@@ -43,6 +44,8 @@ _PROJECT_FILE_GROUPS = frozenset(
         "legacy_kept_result_view",
     }
 )
+
+TRANSFER_OPERATIONAL_RECORDS_PATH = "records/project.jsonl"
 
 
 class TransferLegacyKeptResultView(BaseModel):
@@ -185,6 +188,34 @@ class TransferProjectFileCapture(BaseModel):
             if (entry.sha256, entry.size_bytes) != (view.content_sha256, view.size_bytes):
                 raise ValueError("kept result-view record does not match its captured bytes")
         return self
+
+
+def transfer_project_file_payload(capture: TransferProjectFileCapture) -> bytes:
+    """Encode the one typed operational payload bound by the archive manifest."""
+
+    normalized = TransferProjectFileCapture.model_validate(capture)
+    return (
+        json.dumps(
+            normalized.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def parse_transfer_project_file_payload(payload: bytes) -> TransferProjectFileCapture:
+    """Decode one canonical operational payload and reject alternate encodings."""
+
+    try:
+        capture = TransferProjectFileCapture.model_validate_json(payload)
+    except ValueError as exc:
+        raise ValueError("project transfer operational records are invalid") from exc
+    if transfer_project_file_payload(capture) != payload:
+        raise ValueError("project transfer operational records are not canonical")
+    return capture
 
 
 def capture_project_transfer_files(
@@ -509,7 +540,10 @@ def _discard_new_capture_root(capture_root: Path) -> None:
 
 
 __all__ = [
+    "TRANSFER_OPERATIONAL_RECORDS_PATH",
     "TransferLegacyKeptResultView",
     "TransferProjectFileCapture",
     "capture_project_transfer_files",
+    "parse_transfer_project_file_payload",
+    "transfer_project_file_payload",
 ]

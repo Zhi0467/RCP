@@ -1432,6 +1432,75 @@ class ProjectTransferRequestRecord(_StrictProvisioningModel):
         return self
 
 
+class ProjectTransferImportRecord(_StrictProvisioningModel):
+    """Receipt for one atomic, history-only target-side transfer import.
+
+    This is transfer-control state, not project history.  In particular, the
+    imported rows are deliberately usable only for display until a later
+    publication transaction binds the receipt to a canonical/file readback
+    digest.
+    """
+
+    request_id: str
+    project_id: str
+    archive_manifest_sha256: str
+    target_manifest_sha256: str
+    operational_payload_sha256: str
+    status: Literal["database_imported", "complete"]
+    event_id_map: dict[str, int]
+    receipt_id_map: dict[str, int]
+    publication_sha256: str | None = None
+    created_at: str
+    completed_at: str | None = None
+
+    @field_validator("request_id", "project_id")
+    @classmethod
+    def validate_identifier(cls, value: str, info: ValidationInfo) -> str:
+        try:
+            return _canonical_uuid4(value, label=f"project transfer import {info.field_name}")
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator(
+        "archive_manifest_sha256",
+        "target_manifest_sha256",
+        "operational_payload_sha256",
+        "publication_sha256",
+    )
+    @classmethod
+    def validate_digest(cls, value: str | None) -> str | None:
+        if value is not None and _SHA256_HEX.fullmatch(value) is None:
+            raise ValueError("project transfer import digest must be lowercase SHA-256")
+        return value
+
+    @field_validator("event_id_map", "receipt_id_map")
+    @classmethod
+    def validate_id_map(cls, value: dict[str, int]) -> dict[str, int]:
+        if any(not key.strip() or target_id < 1 for key, target_id in value.items()):
+            raise ValueError("project transfer import id maps must contain positive target ids")
+        return dict(sorted(value.items()))
+
+    @field_validator("created_at", "completed_at")
+    @classmethod
+    def validate_timestamp(cls, value: str | None) -> str | None:
+        if value is not None:
+            _required_timestamp(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> ProjectTransferImportRecord:
+        if self.status == "database_imported":
+            if self.publication_sha256 is not None or self.completed_at is not None:
+                raise ValueError("an imported transfer receipt is not complete")
+        elif self.publication_sha256 is None or self.completed_at is None:
+            raise ValueError("a complete transfer receipt requires publication readback")
+        if self.completed_at is not None and _required_timestamp(
+            self.completed_at
+        ) < _required_timestamp(self.created_at):
+            raise ValueError("project transfer import completion precedes creation")
+        return self
+
+
 class ProviderSkillInventoryRecord(BaseModel):
     """One durable last-known provider-native skill inventory."""
 
@@ -2964,6 +3033,7 @@ __all__ = [
     "ProjectTransferProofState",
     "ProjectTransferRepositoryBinding",
     "ProjectTransferCleanupAcknowledgment",
+    "ProjectTransferImportRecord",
     "ProjectTransferLinkReceipt",
     "ProjectTransferRepositorySource",
     "ProjectTransferRequestRecord",

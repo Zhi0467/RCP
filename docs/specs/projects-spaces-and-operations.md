@@ -1062,14 +1062,25 @@ fail the run visibly. Remote Seed/Refresh stages only that sealed inventory,
 rebinds imported roots to the immutable task input, and verifies the retained
 fingerprint before Resume or prepared-context reuse.
 
-The target validates the complete manifest, checksums, identities, canonical
-replay, record references, and excluded-field rules before mutation. It stages
-files, inserts the selected operational records in one SQLite transaction with
-explicit id mapping, publishes canonical, kept, and imported-provider-history
-files through their concrete atomic owners, and records idempotent receipts.
-Activation follows successful database and file readback. A crash can leave one
-non-active repairable request, never a partially imported project presented as
-ready.
+Given a request-scoped archive tree already decoded by the target transfer
+owner, the target importer validates its exact manifest inventory, regular-file
+safety, checksums, identities, canonical heads, record references, reviewed
+target configuration, and excluded-field rules before mutation. It inserts the
+selected operational records in one SQLite transaction with explicit
+source-to-target id maps and an import receipt, then publishes the reviewed
+target manifest, canonical history, transformed RCP chats, Paper, facts, kept
+files, and imported provider histories through their concrete atomic owners.
+Imported task rows are history-only; imported kept result views are already
+kept and non-revisable; no project row or writing session is created. Each
+publication call verifies the declared bytes, canonical replay verifies the
+observed head, and one deterministic completion digest binds those readbacks.
+The publication sequence is repairable rather than one cross-filesystem
+transaction: an interruption can leave matching target bytes and a
+`database_imported` receipt, but the project remains unregistered and invisible,
+and a retry of the same exact digests idempotently reads back or republishes the
+same corpus. Activation follows only a complete receipt. Sealed-byte upload,
+codec decoding, activation, and source retirement remain separate target/source
+transfer-owner steps.
 
 Once the source home change commits, the personal backend atomically seals the
 one exact mode-0600 archive at

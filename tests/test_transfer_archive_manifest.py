@@ -13,6 +13,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.project_transfer import PROJECT_TRANSFER_ARCHIVE_CODEC
 from rcp.server_ops.backup_models import (
+    BACKUP_APP_DATA_CAPTURED,
     BACKUP_APP_DATA_DATABASE,
     BACKUP_APP_DATA_DEFERRED,
     BACKUP_APP_DATA_EXCLUSIONS,
@@ -94,6 +95,7 @@ PROJECT_LINKED_TABLES = {
     "project_members",
     "project_provisioning_requests",
     "project_provisioning_step_receipts",
+    "project_transfer_imports",
     "project_transfer_proofs",
     "project_transfer_requests",
     "projects",
@@ -223,7 +225,10 @@ def test_transfer_root_policy_is_closed_against_current_concrete_owners() -> Non
         TRANSFER_APP_DATA_EXCLUDED_ROOTS,
     )
     assert set().union(*app_groups) == (
-        {BACKUP_APP_DATA_DATABASE} | BACKUP_APP_DATA_DEFERRED | BACKUP_APP_DATA_EXCLUSIONS
+        {BACKUP_APP_DATA_DATABASE}
+        | BACKUP_APP_DATA_CAPTURED
+        | BACKUP_APP_DATA_DEFERRED
+        | BACKUP_APP_DATA_EXCLUSIONS
     )
     assert sum(len(group) for group in app_groups) == len(set().union(*app_groups))
 

@@ -8,8 +8,9 @@ Active:
   foundation, provisioning, backup, restore, and member-removal lanes are
   implemented; two of them still owe a live drive. The desktop team-space lane
   is in progress, and the read-only Server Settings projection is complete.
-  Transfer is implemented through imported-provider-history lifecycle support;
-  target import, activation, cleanup, relay, UI, and the live lab drill remain.
+  Transfer is implemented through validated history-only target import and
+  imported-provider-history lifecycle support; archive relay/decode, activation,
+  cleanup, UI, and the live lab drill remain.
   Read the handoff's packet status table for the current state of any packet.
 
 This directory contains only human-confirmed work that is ready to implement and
