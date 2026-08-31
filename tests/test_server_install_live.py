@@ -1872,7 +1872,23 @@ def _terminal_step(events: list[dict[str, object]], phase: str) -> dict[str, obj
     assert final["event"] == "step"
     step = final["step"]
     assert isinstance(step, dict)
-    assert step["phase"] == phase
+    fields = step.get("fields")
+    field_names = (
+        sorted(
+            str(item.get("name"))
+            for item in fields
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        )
+        if isinstance(fields, list)
+        else []
+    )
+    assert step["phase"] == phase, {
+        "expected_phase": phase,
+        "actual_phase": step.get("phase"),
+        "state": step.get("state"),
+        "message": step.get("message"),
+        "field_names": field_names,
+    }
     return step
 
 
