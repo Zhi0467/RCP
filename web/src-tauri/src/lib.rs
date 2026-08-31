@@ -6,6 +6,7 @@ mod keychain;
 mod lifecycle;
 mod local_https;
 mod navigation;
+mod server_commands;
 mod team_connections;
 mod team_session;
 mod team_tunnel;
@@ -68,6 +69,10 @@ pub fn run() {
             commands::desktop_reconnect_backend,
             commands::desktop_show_ready,
             commands::desktop_list_team_connections,
+            commands::desktop_configure_server_operator_route,
+            commands::desktop_probe_server_operator,
+            commands::desktop_run_project_provision,
+            commands::desktop_open_project_provision_terminal,
             commands::desktop_remove_team_connection_metadata,
             commands::desktop_remove_team_member_token,
             commands::desktop_connect_team_tunnel,

@@ -20,6 +20,7 @@ use crate::{
     backend::BackendState,
     lifecycle::DesktopStatus,
     local_https::{install_team_session_cookie, LocalHttpsIdentity},
+    server_commands::ProjectProvisionReadback,
     team_connections::{CachedTeamProjectCard, TeamConnectionMetadata, TeamConnectionState},
     team_tunnel::{TeamTunnelReady, TeamTunnelState},
 };
@@ -151,6 +152,57 @@ impl TeamSessionState {
     pub fn forget(&self, connection_id: &str) -> Result<(), String> {
         self.acquire()?.remove(connection_id);
         Ok(())
+    }
+
+    pub async fn read_project_provisioning(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        request_id: &str,
+    ) -> Result<ProjectProvisionReadback, String> {
+        let connection = connections
+            .list()?
+            .into_iter()
+            .find(|connection| connection.connection_id == connection_id)
+            .ok_or_else(|| "the team connection is not saved on this desktop".to_string())?;
+        let client = self.client(&connection.local_origin)?;
+        let health = read_health(&client, &connection.local_origin).await?;
+        validate_health(&health, Some(&connection))?;
+        let token = connections.load_member_token(connection_id)?;
+        let (identity, set_cookie) =
+            exchange_session(&client, &connection.local_origin, &token).await?;
+        validate_identity(&identity, &health)?;
+        let cookie = request_cookie(&set_cookie)?;
+        let header = HeaderValue::from_str(&cookie)
+            .map_err(|_| "team session exchange returned an invalid cookie".to_string())?;
+        let response = client
+            .get(endpoint(
+                &connection.local_origin,
+                &format!("/api/project-provisioning/requests/{request_id}"),
+            )?)
+            .header(COOKIE, header)
+            .send()
+            .await
+            .map_err(|error| {
+                format!("could not read back the project provisioning request: {error}")
+            })?;
+        let readback: ProjectProvisionReadback =
+            response_json(response, "project provisioning request readback").await?;
+        if readback.request_id != request_id
+            || readback.target_space_id != connection.expected_space_id
+            || !matches!(
+                readback.status.as_str(),
+                "waiting_for_server_setup"
+                    | "setup_in_progress"
+                    | "operator_action_needed"
+                    | "ready_for_review"
+                    | "completed"
+                    | "cancelled"
+            )
+        {
+            return Err("the project provisioning readback does not match this team space".into());
+        }
+        Ok(readback)
     }
 
     pub async fn enroll(
@@ -386,6 +438,7 @@ fn new_connection(
         local_origin: ready.local_origin.clone(),
         minimum_shell_version: health.version.clone(),
         last_known_cards: Vec::new(),
+        operator_route: None,
     }
 }
 
@@ -740,6 +793,7 @@ mod tests {
             local_origin: "https://rcp-66666666666646668666666666666666.localhost:18421".into(),
             minimum_shell_version: env!("CARGO_PKG_VERSION").into(),
             last_known_cards: Vec::new(),
+            operator_route: None,
         };
         assert!(validate_health(&verified, Some(&connection)).is_ok());
         connection.expected_space_id = "77777777-7777-4777-8777-777777777777".into();

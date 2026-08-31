@@ -52,6 +52,22 @@ pub struct TeamConnectionMetadata {
     pub local_origin: String,
     pub minimum_shell_version: String,
     pub last_known_cards: Vec<CachedTeamProjectCard>,
+    #[serde(default)]
+    pub operator_route: Option<ServerOperatorRoute>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerOperatorMode {
+    DirectRcp,
+    SudoRcp,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ServerOperatorRoute {
+    pub ssh_target: String,
+    pub mode: ServerOperatorMode,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -159,6 +175,29 @@ impl TeamConnectionState {
             self.write_registry(&registry)?;
         }
         Ok(RemovalResult { removed })
+    }
+
+    pub fn set_operator_route(
+        &self,
+        connection_id: &str,
+        route: Option<ServerOperatorRoute>,
+    ) -> Result<TeamConnectionMetadata, String> {
+        validate_uuid4(connection_id, "team connection identity")?;
+        if let Some(route) = &route {
+            route.validate()?;
+        }
+        let _guard = self.acquire()?;
+        let mut registry = self.read_registry()?;
+        let connection = registry
+            .connections
+            .iter_mut()
+            .find(|connection| connection.connection_id == connection_id)
+            .ok_or_else(|| "the team connection is not saved on this desktop".to_string())?;
+        connection.operator_route = route;
+        let updated = connection.clone();
+        registry.validate()?;
+        self.write_registry(&registry)?;
+        Ok(updated)
     }
 
     pub fn store_member_token(&self, connection_id: &str, token: String) -> Result<(), String> {
@@ -344,6 +383,19 @@ impl TeamConnectionMetadata {
             if !card_ids.insert(&card.id) {
                 return Err("cached team project identities must be unique".into());
             }
+        }
+        if let Some(route) = &self.operator_route {
+            route.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl ServerOperatorRoute {
+    fn validate(&self) -> Result<(), String> {
+        validate_ssh_target(&self.ssh_target)?;
+        if self.mode == ServerOperatorMode::DirectRcp && !self.ssh_target.starts_with("rcp@") {
+            return Err("a direct RCP operator route must explicitly use rcp@host".into());
         }
         Ok(())
     }
@@ -621,6 +673,7 @@ mod tests {
                 primary_question: Some("Which intervention works?".into()),
                 attention_count: 2,
             }],
+            operator_route: None,
         }
     }
 
@@ -730,6 +783,39 @@ mod tests {
             credential_reference(CONNECTION_ID).unwrap().account,
             format!("team-connection/{CONNECTION_ID}")
         );
+    }
+
+    #[test]
+    fn operator_route_is_explicit_nonsecret_metadata_and_can_be_cleared() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(directory.path());
+        state.save_metadata(sample_connection()).unwrap();
+        let route = ServerOperatorRoute {
+            ssh_target: "alice@lab-server".into(),
+            mode: ServerOperatorMode::SudoRcp,
+        };
+
+        let configured = state
+            .set_operator_route(CONNECTION_ID, Some(route.clone()))
+            .unwrap();
+        assert_eq!(configured.operator_route, Some(route));
+        let serialized = fs::read_to_string(&state.registry_path).unwrap();
+        assert!(serialized.contains("sudo_rcp"));
+        assert!(!serialized.contains("password"));
+        assert!(!serialized.contains("private_key"));
+
+        let cleared = state.set_operator_route(CONNECTION_ID, None).unwrap();
+        assert_eq!(cleared.operator_route, None);
+
+        assert!(state
+            .set_operator_route(
+                CONNECTION_ID,
+                Some(ServerOperatorRoute {
+                    ssh_target: "alice@lab-server".into(),
+                    mode: ServerOperatorMode::DirectRcp,
+                }),
+            )
+            .is_err());
     }
 
     #[test]

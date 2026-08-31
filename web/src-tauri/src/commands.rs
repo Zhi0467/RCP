@@ -5,7 +5,8 @@ use std::{
 };
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State, WebviewWindow};
+use serde_json::Value;
+use tauri::{ipc::Channel, AppHandle, Emitter, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
@@ -15,6 +16,10 @@ use crate::{
     dictation,
     lifecycle::DesktopStatus,
     navigation,
+    server_commands::{
+        self, ConfigureServerOperatorRouteRequest, ServerCommandRunResult, ServerOperatorProbe,
+        TerminalLaunchResult,
+    },
     team_connections::{RemovalResult, TeamConnectionMetadata, TeamConnectionState},
     team_session::{
         EnrollTeamConnectionRequest, EstablishedTeamSession, ExistingTeamConnectionRequest,
@@ -64,6 +69,102 @@ pub fn desktop_list_team_connections(
     state: State<'_, TeamConnectionState>,
 ) -> Result<Vec<TeamConnectionMetadata>, String> {
     state.list()
+}
+
+#[tauri::command]
+pub fn desktop_configure_server_operator_route(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    lifecycle: State<'_, BackendState>,
+    request: ConfigureServerOperatorRouteRequest,
+) -> Result<TeamConnectionMetadata, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    connections.set_operator_route(&request.connection_id, request.route)
+}
+
+#[tauri::command]
+pub async fn desktop_probe_server_operator(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    lifecycle: State<'_, BackendState>,
+    connection_id: String,
+) -> Result<ServerOperatorProbe, String> {
+    let saved = connections.list()?;
+    authorize_team_tunnel_origin(
+        &window
+            .url()
+            .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?,
+        &lifecycle.status()?.base_url,
+        &saved,
+        &connection_id,
+        cfg!(debug_assertions),
+    )?;
+    let connection = saved_connection(&saved, &connection_id)?;
+    server_commands::probe(connection, PathBuf::from("/usr/bin/ssh")).await
+}
+
+#[tauri::command]
+pub async fn desktop_run_project_provision(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    lifecycle: State<'_, BackendState>,
+    connection_id: String,
+    request_id: String,
+    on_event: Channel<Value>,
+) -> Result<ServerCommandRunResult, String> {
+    let saved = connections.list()?;
+    authorize_team_tunnel_origin(
+        &window
+            .url()
+            .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?,
+        &lifecycle.status()?.base_url,
+        &saved,
+        &connection_id,
+        cfg!(debug_assertions),
+    )?;
+    sessions.established(&connection_id)?;
+    let connection = saved_connection(&saved, &connection_id)?;
+    let (exit_code, event_count) = server_commands::run_project_provision(
+        connection,
+        &request_id,
+        &on_event,
+        PathBuf::from("/usr/bin/ssh"),
+    )
+    .await?;
+    let readback = sessions
+        .read_project_provisioning(&connections, &connection_id, &request_id)
+        .await?;
+    Ok(ServerCommandRunResult {
+        connection_id,
+        request_id,
+        exit_code,
+        event_count,
+        readback,
+    })
+}
+
+#[tauri::command]
+pub async fn desktop_open_project_provision_terminal(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    lifecycle: State<'_, BackendState>,
+    connection_id: String,
+    request_id: String,
+) -> Result<TerminalLaunchResult, String> {
+    let saved = connections.list()?;
+    authorize_team_tunnel_origin(
+        &window
+            .url()
+            .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?,
+        &lifecycle.status()?.base_url,
+        &saved,
+        &connection_id,
+        cfg!(debug_assertions),
+    )?;
+    let argv =
+        server_commands::terminal_argv(saved_connection(&saved, &connection_id)?, &request_id)?;
+    server_commands::open_terminal(argv).await
 }
 
 #[tauri::command]
@@ -319,6 +420,16 @@ fn saved_connection_for_origin<'a>(
     connections.iter().find(|connection| {
         Url::parse(&connection.local_origin).is_ok_and(|origin| same_origin(caller, &origin))
     })
+}
+
+fn saved_connection<'a>(
+    connections: &'a [TeamConnectionMetadata],
+    connection_id: &str,
+) -> Result<&'a TeamConnectionMetadata, String> {
+    connections
+        .iter()
+        .find(|connection| connection.connection_id == connection_id)
+        .ok_or_else(|| "the team connection is not saved on this desktop".to_string())
 }
 
 fn same_origin(left: &Url, right: &Url) -> bool {
@@ -771,6 +882,7 @@ mod tests {
             ),
             minimum_shell_version: "0.3.2".into(),
             last_known_cards: Vec::new(),
+            operator_route: None,
         }
     }
 

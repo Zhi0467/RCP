@@ -1,4 +1,4 @@
-import type { Health, IdentityResponse } from "./types";
+import type { Health, IdentityResponse, ProjectProvisioningStatus, ServerStep } from "./types";
 
 export const BACKEND_IDENTITY_EVENT = "rcp:backend-identity";
 export const DESKTOP_FOLDER_ACCESS_ACK_KEY = "rcp:desktop-folder-access-acknowledgement";
@@ -31,6 +31,60 @@ export interface TeamConnectionMetadata {
   local_origin: string;
   minimum_shell_version: string;
   last_known_cards: CachedTeamProjectCard[];
+  operator_route: ServerOperatorRoute | null;
+}
+
+export type ServerOperatorMode = "direct_rcp" | "sudo_rcp";
+
+export interface ServerOperatorRoute {
+  ssh_target: string;
+  mode: ServerOperatorMode;
+}
+
+export interface ServerOperatorProbe {
+  connection_id: string;
+  available: boolean;
+  route: ServerOperatorRoute;
+  diagnostic: string | null;
+}
+
+export interface ServerPlanEvent {
+  version: 1;
+  event: "plan";
+  command: "server project provision";
+  timestamp: string;
+  steps: ServerStep[];
+}
+
+export interface ServerStepEvent {
+  version: 1;
+  event: "step";
+  command: "server project provision";
+  timestamp: string;
+  step: ServerStep;
+}
+
+export type ServerCommandEvent = ServerPlanEvent | ServerStepEvent;
+
+export interface ProjectProvisionReadback {
+  request_id: string;
+  target_space_id: string;
+  status: ProjectProvisioningStatus;
+  revision: number;
+}
+
+export interface ServerCommandRunResult {
+  connection_id: string;
+  request_id: string;
+  exit_code: number;
+  event_count: number;
+  readback: ProjectProvisionReadback;
+}
+
+export interface TerminalLaunchResult {
+  opened: boolean;
+  argv: string[];
+  command: string;
 }
 
 export interface EstablishedTeamSession {
@@ -162,6 +216,54 @@ export async function desktopReconnectBackend(): Promise<DesktopStatus> {
 export async function listDesktopTeamConnections(): Promise<TeamConnectionMetadata[]> {
   if (!isDesktopRuntime()) return [];
   return invokeDesktop<TeamConnectionMetadata[]>("desktop_list_team_connections");
+}
+
+export async function configureDesktopServerOperatorRoute(
+  connectionId: string,
+  route: ServerOperatorRoute | null,
+): Promise<TeamConnectionMetadata> {
+  if (!isDesktopRuntime())
+    throw new Error("Server operator routes are available in the source-built desktop app.");
+  return invokeDesktop<TeamConnectionMetadata>("desktop_configure_server_operator_route", {
+    request: { connection_id: connectionId, route },
+  });
+}
+
+export async function probeDesktopServerOperator(
+  connectionId: string,
+): Promise<ServerOperatorProbe> {
+  if (!isDesktopRuntime())
+    throw new Error("Server operator routes are available in the source-built desktop app.");
+  return invokeDesktop<ServerOperatorProbe>("desktop_probe_server_operator", { connectionId });
+}
+
+export async function runDesktopProjectProvision(
+  connectionId: string,
+  requestId: string,
+  onEvent: (event: ServerCommandEvent) => void,
+): Promise<ServerCommandRunResult> {
+  if (!isDesktopRuntime())
+    throw new Error("Server setup can run only in the source-built desktop app.");
+  const { Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<ServerCommandEvent>();
+  channel.onmessage = onEvent;
+  return invokeDesktop<ServerCommandRunResult>("desktop_run_project_provision", {
+    connectionId,
+    requestId,
+    onEvent: channel,
+  });
+}
+
+export async function openDesktopProjectProvisionTerminal(
+  connectionId: string,
+  requestId: string,
+): Promise<TerminalLaunchResult> {
+  if (!isDesktopRuntime())
+    throw new Error("Terminal setup is available only in the source-built desktop app.");
+  return invokeDesktop<TerminalLaunchResult>("desktop_open_project_provision_terminal", {
+    connectionId,
+    requestId,
+  });
 }
 
 export async function enrollDesktopTeamConnection(

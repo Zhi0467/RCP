@@ -244,14 +244,18 @@ through their ordinary Git workflow, then records that repository source. RCP
 does not collect GitHub user authentication.
 
 A saved member connection and an operator route are distinct capabilities even
-when they use the same SSH host. **Run setup now** appears only in the desktop
-after a native read-only probe proves it can invoke the fixed `rcp server project
-provision <request-id>` command directly as `rcp` or through noninteractive
-`sudo -u rcp -H`. The shell passes a validated request id as an argument and
-never executes arbitrary command text returned by a server. If SSH or `sudo`
-needs interaction, the app shows or opens the same command in Terminal; it never
-collects a private key or privilege password. The browser shows a copyable
-operator command instead.
+when they use the same SSH host. The source-built desktop stores the latter as
+nonsecret native metadata: either an explicit direct `rcp@host` target or one
+named operator target using `sudo -n -u rcp -H`. **Run setup now** appears only
+after a native read-only probe proves that exact route can invoke the fixed `rcp
+server project provision <request-id> --machine-readable` command. The shell
+passes a validated request id as an argument and never executes arbitrary
+command text returned by a server. It bounds and validates the structured event
+sequence for presentation, then requires an authenticated durable request
+readback from the expected team space. If SSH or `sudo` needs interaction, the
+app shows or opens the same fixed command in Terminal; it never collects a
+private key or privilege password. The browser shows a copyable operator command
+instead.
 
 CLI structured progress is presentation input only. The CLI reports each state
 change to the lock-owning backend through its private local control channel, and

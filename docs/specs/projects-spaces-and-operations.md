@@ -845,12 +845,16 @@ different bound rule below: matching retained history may be reused only after
 the archive proves the same project, source home, aliases, and canonical heads.
 
 The desktop offers **Run setup now** only when its native shell can prove a saved
-operator SSH route can invoke that exact CLI. Otherwise it shows a copyable
-command for an operator. The shell uses the system SSH configuration and agent;
-it never imports a private key or asks for a `sudo` password. Direct `rcp@server`
-access is allowed for the current development deployment. A named operator plus
-`sudo -n -u rcp -H` is preferred because it is independently revocable and
-auditable; if interaction is required, the app opens the command in Terminal
+operator SSH route can invoke that exact CLI. The saved route is explicit
+nonsecret machine metadata, separate from the member connection: direct mode
+requires `rcp@server`, while named-operator mode always inserts
+`sudo -n -u rcp -H`. Otherwise the UI shows a copyable command for an operator.
+The shell uses the system SSH configuration and agent; it never imports a
+private key or asks for a `sudo` password. A named operator is preferred because
+it is independently revocable and auditable. The desktop validates and bounds
+machine-readable progress, then authenticates back to the team service and reads
+the durable request; subprocess exit alone never advances or proves the UI
+state. If interaction is required, the app opens the fixed command in Terminal
 rather than collecting the secret itself. A browser without the desktop shell
 can create and review a request but cannot run its machine steps.
 

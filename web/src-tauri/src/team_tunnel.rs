@@ -780,6 +780,7 @@ mod tests {
             local_origin: format!("https://{HOSTNAME}:18421"),
             minimum_shell_version: "0.3.2".into(),
             last_known_cards: Vec::new(),
+            operator_route: None,
         }
     }
 

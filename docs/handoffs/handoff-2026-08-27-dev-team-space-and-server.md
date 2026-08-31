@@ -14,7 +14,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Gates | G0, G2 | — | — |
 | Server foundation | F1, F2, F3a, F3b, F4, F5, F6a, F6b, F6c | F6d | — |
 | Provisioning | P1, P2, P3, P4, P5, P6b, P6c | P6a | — |
-| Desktop | D1, D2, D3 | D4a, D4b, D5 | D6, D7 |
+| Desktop | D1, D2, D3 | D4a, D4b, D5, D6 | D7 |
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | — | — | O6 |
@@ -30,7 +30,11 @@ What each open drive is waiting on:
   is unavailable. That is a billing block, not a code block.
 - **P6a** — the complete team-service and GitHub live qualification.
 - **O4d** — the fresh-host Ubuntu restore drive.
-- **D4a, D4b, D5** — the integrated source-built desktop drive.
+- **D4a, D4b, D5** — the integrated source-built two-space desktop drive.
+- **D6** — both fixed operator routes on a server with the installed `rcp`
+  account and CLI. The reachable shared lab host was checked, but it has no
+  `rcp` Linux account, so it cannot qualify either route without changing that
+  machine.
 
 Status is recorded four different ways in this file: a `Status:` line in a packet
 section, a bold `**Status (date)**` block, a `— complete` heading suffix, and a
@@ -165,9 +169,10 @@ The remaining seams are also concrete:
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
 - the desktop now implements distinct pinned HTTPS origins, exact SSH tunnel
   ownership, native enrollment/session exchange, permanent-token storage,
-  multi-backend navigation, and a personal-first multi-space index; its combined
-  D4-D5 path still needs the pending visible two-team-space drive recorded in
-  S105;
+  multi-backend navigation, a personal-first multi-space index, and the fixed
+  project-provisioning operator bridge; its combined D4-D5 path still needs the
+  pending visible two-team-space drive recorded in S105, while D6 still needs a
+  live server with an installed `rcp` account;
 - the durable project-provisioning request, complete finalizer, member API,
   repository-credential primitive, exact-account provider check, checkout
   preparation, and machine-step orchestration exist, but the unified wizard,
@@ -230,6 +235,42 @@ decision blocks the feature lanes. Q10 and the later public branch-protection
 gate are deliberately future work and do not block this plan.
 
 ### Implementation log
+
+#### 2026-08-30 — D6 fixed desktop operator bridge implemented
+
+- Saved member transport and saved operator authority are now separate native
+  records. An operator route contains only a validated SSH target and one of two
+  explicit modes: direct `rcp@host`, or a named account using the exact
+  noninteractive `sudo -n -u rcp -H` boundary. No password, key, arbitrary
+  server command, or server-returned shell text enters the registry or IPC.
+- The desktop probe invokes only `/usr/local/bin/rcp server project provision`
+  with a deliberately invalid canonical request id and accepts only the fixed
+  parser refusal. A real run accepts only a validated UUID4, uses system SSH,
+  streams bounded version-1 project-provision events, validates plan order and
+  step transitions before display, and then re-exchanges the authenticated team
+  session to read the exact durable request back from its expected space.
+- Interactive SSH or sudo is never attempted inside the app. Only an explicit
+  human action opens Terminal with the fixed, shell-quoted argv for the actual
+  request. Browser code receives no native bridge capability.
+- Focused Rust tests cover exact direct/sudo argv, route validation, request
+  injection refusal, interactive quoting, the fixed probe, bounded unterminated
+  output, protocol order/state/exit agreement, event streaming, and nonsecret
+  route persistence. The final diff passes the full native suite (90 passed, one
+  opt-in live-SSH test ignored), strict clippy, all 446 Web tests, typecheck,
+  production Web build, all eight documentation tests, and all-file pre-commit.
+- The single permitted independent audit ended before returning a final report.
+  Its three concrete interim findings were still resolved: direct mode must
+  explicitly name `rcp@host`; an unterminated line is bounded before allocation;
+  and the desktop validates plan identity, ordering, state transitions, and exit
+  meaning rather than accepting shape alone. No replacement or second audit
+  round was run.
+- Live drive not done: read-only SSH preflight reached
+  `tianhaowang-gpu0.ucsd.edu` as `zhiwang`, but the exact named-operator probe
+  stopped at `sudo: unknown user rcp`. The shared host therefore cannot prove
+  either D6 route without installing the team-server account and CLI. D6 remains
+  in **Implemented, drive still open**; the implementation did not mutate that
+  server merely to manufacture a passing drive. The next meaningful desktop
+  build/Computer Use milestone remains D7's unified wizard.
 
 #### 2026-08-30 — D4-D5 implementation checkpoint and source-rebuild credential repair
 
@@ -3523,6 +3564,14 @@ tests, typecheck, and the production build pass. Only the visible two-space driv
 remains open for D5.
 
 ### D6 — Fixed operator CLI bridge
+
+**Implemented 2026-08-30:** the native route registry, exact direct/sudo argv,
+fixed read-only probe, bounded structured event channel, authenticated durable
+request readback, explicit Terminal handoff, Tauri permissions, TypeScript
+bindings, and focused regressions are complete. The one audit's three interim
+findings are closed. The live direct and named-operator drives remain open
+because the reachable shared lab host has no installed `rcp` Linux account; no
+server state was changed for this packet.
 
 Own:
 

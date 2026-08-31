@@ -36,6 +36,7 @@ const connection = {
       attention_count: 2,
     },
   ],
+  operator_route: null,
 };
 
 test("an available team group exposes its verified cached project", () => {
