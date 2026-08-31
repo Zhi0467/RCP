@@ -1130,7 +1130,9 @@ def _execute_restore(
             emitter.emit_step(steps[5].model_copy(update={"state": "failed", "message": str(exc)}))
             return
         if outcome.operator_action is not None:
-            emitter.emit_step(outcome.operator_action)
+            emitter.emit_step(
+                _bind_restore_operator_action_to_plan(steps[5], outcome.operator_action)
+            )
             return
         journal = outcome.journal
         emitter.emit_step(
@@ -1450,6 +1452,30 @@ def _restore_probe_cleanup_step(
             NonsecretField(name="temporary_ref", value=temporary_ref),
         ),
         resume_argv=resume_argv,
+    )
+
+
+def _bind_restore_operator_action_to_plan(
+    planned: ServerStep,
+    operator_action: ServerStep,
+) -> ServerStep:
+    """Keep the published plan stable while exposing one bounded human pause."""
+
+    if (
+        operator_action.number != planned.number
+        or operator_action.state != "operator_action_needed"
+        or operator_action.performed_by != "human"
+    ):
+        raise RestoreRefused("Checkout recovery returned an invalid operator-action boundary.")
+    return planned.model_copy(
+        update={
+            "performed_by": "human",
+            "state": "operator_action_needed",
+            "message": operator_action.message,
+            "actions": operator_action.actions,
+            "fields": operator_action.fields,
+            "resume_argv": operator_action.resume_argv,
+        }
     )
 
 

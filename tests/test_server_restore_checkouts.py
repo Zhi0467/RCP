@@ -13,6 +13,7 @@ from typing import Literal
 
 import pytest
 
+import rcp.server_ops.restore as restore_code
 from rcp.config import AGENT_EXECUTION_PROFILES, permissions_for
 from rcp.core.transition_models import GraphHeadRef
 from rcp.projects import rebind_restored_project_registration
@@ -30,9 +31,19 @@ from rcp.server_ops.backup_models import (
     BackupRecoveryMachine,
     BackupRecoveryRepository,
 )
+from rcp.server_ops.cli import CallerIdentity
 from rcp.server_ops.git_credentials import DeployKeyMaterial, GitWriteProbe
 from rcp.server_ops.github import GitHubRepositoryRef
 from rcp.server_ops.layout import ServerLayout
+from rcp.server_ops.models import (
+    ExternalAction,
+    ExternalServiceTarget,
+    NonsecretField,
+    ServerCommandExecution,
+    ServerPlanEvent,
+    ServerStep,
+    ServerStepEvent,
+)
 from rcp.server_ops.project_checkout import ProjectCheckoutResult, RetainedResearchState
 from rcp.server_ops.restore import (
     LinuxRestoreMachine,
@@ -455,6 +466,78 @@ def test_restore_pauses_for_fresh_github_grant_and_resumes_same_key(tmp_path: Pa
     assert resumed.operator_action is None
     assert resumed.journal.phase == "checkouts_ready"
     assert credentials.events == ["preflight", "prepare", "probe", "prepare", "probe"]
+
+
+def test_restore_binds_checkout_operator_action_to_the_published_plan(tmp_path: Path) -> None:
+    layout, _journal_value, _capture = _journal(tmp_path, location="ssh")
+    planned = restore_code._restore_plan(  # noqa: SLF001 - event-contract regression
+        CallerIdentity(uid=0, username="root", host="lab.example"),
+        layout.data_dir,
+    )[5].model_copy(update={"number": 1})
+    action = ServerStep(
+        number=planned.number,
+        title="Grant the fresh restore deploy key",
+        purpose="Grant one repository-scoped GitHub identity.",
+        performed_by="human",
+        target=ExternalServiceTarget(
+            service="github.com",
+            resource="OpenAI/RCP-paper",
+            destination_url="https://github.com/OpenAI/RCP-paper/settings/keys",
+            required_authority_role="repository administrator",
+        ),
+        phase="restore_github_grant",
+        state="operator_action_needed",
+        expected_success="The replacement key can read and write the captured commit.",
+        message="Add the fresh deploy key, then resume restore.",
+        actions=(ExternalAction(instruction="Add the displayed key with write access."),),
+        fields=(NonsecretField(name="deploy_key_label", value="rcp:test:key"),),
+        resume_argv=(
+            "sudo",
+            "/usr/local/bin/rcp",
+            "server",
+            "restore",
+            "/backup.age",
+            "--identity-file",
+            "/recovery.txt",
+            "--confirm-data-dir",
+            str(layout.data_dir),
+        ),
+    )
+
+    paused = restore_code._bind_restore_operator_action_to_plan(  # noqa: SLF001
+        planned,
+        action,
+    )
+
+    assert paused.number == planned.number
+    assert paused.title == planned.title
+    assert paused.target == planned.target
+    assert paused.phase == planned.phase
+    assert paused.performed_by == "human"
+    assert paused.actions == action.actions
+    assert paused.resume_argv == action.resume_argv
+    ServerCommandExecution(
+        events=(
+            ServerPlanEvent(
+                command="server restore",
+                timestamp=CAPTURED_AT,
+                steps=(planned,),
+            ),
+            ServerStepEvent(
+                command="server restore",
+                timestamp=CAPTURED_AT,
+                step=planned.model_copy(
+                    update={"state": "running", "message": "Recovering checkouts."}
+                ),
+            ),
+            ServerStepEvent(
+                command="server restore",
+                timestamp=CAPTURED_AT,
+                step=paused,
+            ),
+        ),
+        exit_code=3,
+    )
 
 
 def test_rebind_helper_is_idempotent_but_refuses_conflicting_repository_path(

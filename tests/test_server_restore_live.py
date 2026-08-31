@@ -109,7 +109,7 @@ def test_protected_backup_restores_on_a_fresh_disposable_ubuntu() -> None:
 
         grant_code, grant_events = _run_restore_action(destination_resume)
         assert grant_code == 3
-        grant = _terminal_step(grant_events, "restore_github_grant")
+        grant = _terminal_step(grant_events, "restore_checkouts")
         grant_fields = _fields(grant)
         project_label = str(grant_fields["deploy_key_label"])
         _write_restore_key_receipt(project_label)
@@ -258,17 +258,7 @@ def _run_restore_action(
 def _run_restore_process(
     argv: tuple[str, ...],
 ) -> tuple[int, list[dict[str, object]]]:
-    try:
-        executable = argv.index("/usr/local/bin/rcp")
-    except ValueError:
-        pytest.fail("restore live diagnostic could not find the installed CLI")
-    diagnostic_argv = (
-        *argv[:executable],
-        "/usr/bin/env",
-        "RCP_LIVE_SERVER_EXCEPTION_FRAMES=1",
-        *argv[executable:],
-    )
-    result = _run(diagnostic_argv, timeout=_COMMAND_TIMEOUT_SECONDS)
+    result = _run(argv, timeout=_COMMAND_TIMEOUT_SECONDS)
     if result.returncode not in {0, 3}:
         pytest.fail(
             f"server restore returned {result.returncode}; stdout tail={result.stdout[-4096:]!r}; "
