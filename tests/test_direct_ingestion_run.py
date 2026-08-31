@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
@@ -394,7 +393,7 @@ def test_clean_retry_reuses_prepared_metadata_without_inspecting_provider_logs(
     )
     assert resumed.context.imported_source_fingerprint == imported_inventory.fingerprint
 
-    shutil.rmtree(service.imported_sources.root)
+    assert service.imported_sources.discard(expected_inventory=imported_inventory)
     empty_inventory = service.imported_source_inventory(
         "refresh",
         manifest.machine_map["laptop"],

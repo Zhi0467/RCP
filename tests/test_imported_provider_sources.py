@@ -213,6 +213,21 @@ def test_remote_seed_inventory_is_available_for_task_staging(
     assert inventory.files[0].sha256 == entries[0].sha256
 
 
+def test_legacy_project_service_has_no_imported_provider_source_owner(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    service = ProjectService(
+        manifest,
+        HistoryManager(manifest),
+        PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
+        data_dir=tmp_path / "data",
+        project_id="legacy-project",
+    )
+
+    assert service.imported_sources is None
+
+
 def test_seed_context_keeps_imported_sources_separate_from_native_provider_homes(
     manifest,
     tmp_path: Path,

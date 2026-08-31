@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -18,7 +18,6 @@ from tests.test_project_transfer_request_storage import (
     _ready_incoming,
 )
 
-RESTORED_AT = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
 TARGET_NONTERMINAL_PHASES: tuple[ProjectTransferPhase, ...] = (
     "linked",
     "target_admitted",
@@ -27,6 +26,11 @@ TARGET_NONTERMINAL_PHASES: tuple[ProjectTransferPhase, ...] = (
     "target_activated",
     "cleanup_acknowledged",
 )
+
+
+@pytest.fixture
+def restored_at() -> datetime:
+    return datetime.now(UTC) + timedelta(minutes=1)
 
 
 def _protected_proof(store: AppStore, request_id: str) -> dict[str, object]:
@@ -125,6 +129,7 @@ def _target_at_phase(
 def test_restore_freezes_each_nonterminal_target_phase_without_moving_its_boundary(
     tmp_path: Path,
     phase: ProjectTransferPhase,
+    restored_at: datetime,
 ) -> None:
     source, target, source_request, target_request = _target_at_phase(tmp_path, phase)
     source_before = source.project_transfer_request(source_request.request_id)
@@ -137,7 +142,7 @@ def test_restore_freezes_each_nonterminal_target_phase_without_moving_its_bounda
     detach_restore_database(
         target.path,
         confirmed_by="root@lab uid=0",
-        detached_at=RESTORED_AT,
+        detached_at=restored_at,
     )
 
     restored_target = target.project_transfer_request(target_request.request_id)
@@ -146,7 +151,7 @@ def test_restore_freezes_each_nonterminal_target_phase_without_moving_its_bounda
     assert restored_target.restore_resume_phase == phase
     assert "replacement-server archive" in restored_target.restore_diagnostic
     assert restored_target.revision == target_request.revision + 1
-    assert restored_target.updated_at == RESTORED_AT.isoformat()
+    assert restored_target.updated_at == restored_at.isoformat()
     assert (
         restored_target.model_dump(
             mode="json",
@@ -169,7 +174,7 @@ def test_restore_freezes_each_nonterminal_target_phase_without_moving_its_bounda
     detach_restore_database(
         target.path,
         confirmed_by="root@lab uid=0",
-        detached_at=RESTORED_AT,
+        detached_at=restored_at,
     )
     assert target.project_transfer_request(target_request.request_id) == restored_target
     assert _protected_proof(target, target_request.request_id) == proof_before
@@ -177,6 +182,7 @@ def test_restore_freezes_each_nonterminal_target_phase_without_moving_its_bounda
 
 def test_restore_keeps_completed_target_and_fenced_source_records_unchanged(
     tmp_path: Path,
+    restored_at: datetime,
 ) -> None:
     source, target, source_request, target_request = _target_at_phase(
         tmp_path,
@@ -197,7 +203,7 @@ def test_restore_keeps_completed_target_and_fenced_source_records_unchanged(
     detach_restore_database(
         target.path,
         confirmed_by="root@lab uid=0",
-        detached_at=RESTORED_AT,
+        detached_at=restored_at,
     )
 
     assert target.project_transfer_request(target_request.request_id) == target_before
@@ -209,6 +215,7 @@ def test_restore_keeps_completed_target_and_fenced_source_records_unchanged(
 def test_restore_invalidates_target_upload_and_refuses_reuse(
     tmp_path: Path,
     complete: bool,
+    restored_at: datetime,
 ) -> None:
     _source, target, _source_request, target_request = _archive_bound_pair(tmp_path)
     leased = target.begin_target_project_transfer_upload(target_request.request_id)
@@ -221,7 +228,7 @@ def test_restore_invalidates_target_upload_and_refuses_reuse(
     detach_restore_database(
         target.path,
         confirmed_by="root@lab uid=0",
-        detached_at=RESTORED_AT,
+        detached_at=restored_at,
     )
 
     invalidated = target.target_project_transfer_upload(target_request.request_id)
@@ -239,6 +246,7 @@ def test_restore_invalidates_target_upload_and_refuses_reuse(
 
 def test_restore_reentry_revalidates_and_issues_only_a_fresh_upload_lease(
     tmp_path: Path,
+    restored_at: datetime,
 ) -> None:
     _source, target, _source_request, target_request = _archive_bound_pair(tmp_path)
     original = target.begin_target_project_transfer_upload(target_request.request_id)
@@ -248,7 +256,7 @@ def test_restore_reentry_revalidates_and_issues_only_a_fresh_upload_lease(
     detach_restore_database(
         target.path,
         confirmed_by="root@lab uid=0",
-        detached_at=RESTORED_AT,
+        detached_at=restored_at,
     )
     restored = target.project_transfer_request(target_request.request_id)
     assert restored is not None
@@ -300,6 +308,7 @@ def test_restore_reentry_revalidates_and_issues_only_a_fresh_upload_lease(
 
 def test_restore_reentry_guards_leave_the_invalidated_boundary_unchanged(
     tmp_path: Path,
+    restored_at: datetime,
 ) -> None:
     _source, target, _source_request, target_request = _archive_bound_pair(tmp_path)
     target.begin_target_project_transfer_upload(target_request.request_id)
@@ -308,7 +317,7 @@ def test_restore_reentry_guards_leave_the_invalidated_boundary_unchanged(
     detach_restore_database(
         target.path,
         confirmed_by="root@lab uid=0",
-        detached_at=RESTORED_AT,
+        detached_at=restored_at,
     )
     restored = target.project_transfer_request(target_request.request_id)
     assert restored is not None

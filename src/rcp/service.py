@@ -943,6 +943,21 @@ class ProjectSettingsRequest(BaseModel):
         return self
 
 
+def _imported_source_store(
+    data_dir: Path | None,
+    project_id: str | None,
+) -> ImportedProviderSourceStore | None:
+    if data_dir is None or project_id is None:
+        return None
+    try:
+        parsed = uuid.UUID(project_id)
+    except ValueError:
+        return None
+    if parsed.version != 4 or str(parsed) != project_id:
+        return None
+    return ImportedProviderSourceStore(data_dir, project_id)
+
+
 class ProjectService:
     def __init__(
         self,
@@ -962,11 +977,7 @@ class ProjectService:
         self.provider_skills = provider_skills
         self._data_dir = data_dir
         self._project_id = project_id or history.project_id
-        self.imported_sources = (
-            ImportedProviderSourceStore(data_dir, self._project_id)
-            if data_dir is not None and self._project_id is not None
-            else None
-        )
+        self.imported_sources = _imported_source_store(data_dir, self._project_id)
         self._repository_inventory = repository_inventory
         self._task_continuation_session = task_continuation_session
         state_repository = manifest.repository_map[manifest.state.repository]

@@ -1,8 +1,8 @@
 # Dev team space and source server completion handoff
 
 Date: 2026-08-27
-Status: active. Design, grilling, and the final cross-document fact-check are
-complete. Implementation is proceeding directly on `main`.
+Status: active. Design, grilling, and all planned implementation packets are
+complete on `main`. The genuine one-lab drive and final evidence closure remain.
 
 ### Packet status
 
@@ -240,6 +240,38 @@ decision blocks the feature lanes. Q10 and the later public branch-protection
 gate are deliberately future work and do not block this plan.
 
 ### Implementation log
+
+#### 2026-08-31 — V2 current-tree baseline and compatibility repair complete
+
+- The full unrestricted Python suite, all 472 Web tests, production Web build,
+  all 120 native tests with one intentional live-SSH ignore, strict Clippy,
+  Ruff check and format-check, Prettier check, the clean source-built desktop
+  build, and scoped pre-commit all pass on the current tree. The source-built
+  bundle is at `web/src-tauri/target/debug/bundle/macos/RCP.app`.
+- T3e's strict UUID4 imported-provider-source owner exposed one real compatibility
+  break: degraded and pre-identity `ProjectService` instances still accept legacy
+  project ids, but attempted to construct the UUID4-only owner. The service now
+  creates that owner only for canonical lowercase UUID4 ids. Canonical projects
+  still fail loudly on missing or corrupt imported-source inventory; legacy
+  projects merely lack transferred-provider-history ownership.
+- Three stale tests were repaired without weakening production behavior: direct
+  ingestion now removes an imported-source owner through its verified `discard`
+  boundary instead of manufacturing a half-deleted corrupt directory; the typed
+  `ApiServices` field inventory includes `server_status_composition`; and restore
+  tests derive their detach time from the current test clock instead of expiring
+  on a literal date. Focused regressions and the independent read-only audit found
+  no remaining issue in this slice.
+- A clean npm install reports `GHSA-2v37-7h3g-55p8` through build-time
+  `vite -> postcss -> nanoid@3.3.16`. RCP does not call the affected custom
+  generator API. No adjacent dependency update was bundled into this baseline
+  repair; resolve and retest it as a separate dependency-maintenance change.
+- The desktop was rebuilt, but the Computer Use drive could not start because the
+  Mac was locked and automatic unlock failed. No visible desktop behavior is
+  claimed from that attempt. GitHub Actions run 33395914834 remains refused
+  before any step because hosted-runner spending is unavailable, and the reachable
+  shared Ubuntu 22.04 host has neither the installed `rcp` account nor
+  noninteractive sudo. Those are the remaining live-environment gates, not local
+  test failures.
 
 #### 2026-08-31 — T5a/T5b native relay and unified transfer workflow implemented
 
@@ -2032,29 +2064,23 @@ gate are deliberately future work and do not block this plan.
 
 ## What remains
 
-The remaining implementation work is:
+The planned code paths are implemented and hermetically verified. Closure still
+requires real-environment evidence:
 
-1. rerun F6d's Ubuntu 22.04/24.04 live qualification for exact head `75fcafc`
-   or a descendant after GitHub hosted-runner billing is available, then record
-   both passing matrix jobs for update cutover, post-switch verification, loud
-   rollback, and crash recovery;
-2. concrete project provisioning, where machine orchestration and final human
-   creation are implemented but still need the complete live qualification,
-   unified UI/desktop drive and post-setup cancellation;
-3. source-built desktop live Keychain enrollment/readback, team
-   session/navigation, cached team groups, and optional operator bridge (the
-   SSH/TLS tunnel, distinct HTTPS origins, desktop identity/pin, navigation
-   fence, and strict metadata/token-write/remove substrate are complete);
-4. app-visible project setup driven by the backend and prepared by the CLI;
-5. restore and the complete live no-pause/partial-capture qualification (archive
-   encryption/readback, durable status, retention, first-run timer activation,
-   strict manifests, online SQLite capture, and optimistic project-file capture
-   are complete hermetically);
-6. console member removal;
-7. append-only personal-to-team home transfer and recovery; and
-8. a live one-lab acceptance drill and operator documentation.
+1. obtain a disposable supported Ubuntu path with root authority, or restored
+   hosted-runner access, and drive install, exact-commit update plus loud rollback,
+   provisioning, backup/restore, member removal, and both fixed operator routes;
+2. unlock the Mac and drive the rebuilt source desktop through two distinct member
+   identities, personal/team switching, Keychain readback, SSH/TLS isolation, new
+   team project setup, and personal-to-team transfer/restart recovery; and
+3. complete V1 end to end with the disposable GitHub repository, local and
+   reachable-SSH provider accounts, then update acceptance evidence, rerun the
+   final clean-tree baselines, and archive this handoff through V2.
 
-No item in that list is implemented merely because its design is now confirmed.
+The current shared lab host cannot substitute for item 1 without installing the
+dedicated account and service, and the previously proposed privileged container
+would expose host cgroups and a temporary public SSH port. Do not use that
+workaround without explicit human approval.
 
 ## Settled decisions
 
