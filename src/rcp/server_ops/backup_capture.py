@@ -28,10 +28,12 @@ from rcp.server_ops.backup_models import (
     BackupAppDataCapturePlan,
     BackupCheckoutRecoveryDescriptor,
     BackupFileEntry,
+    BackupImportedProviderSourceInventory,
     inspect_app_data_capture_plan,
 )
 from rcp.server_ops.models import redact_server_text
 from rcp.server_runtime import ServerMetadata, data_dir_identity
+from rcp.sources.imported import ImportedProviderSourceStore
 from rcp.storage import AppStore, ProjectRecord, ResultViewRecord
 
 BACKUP_SQLITE_CAPTURE_SCHEMA_VERSION = 1
@@ -314,6 +316,7 @@ class BackupSQLiteCaptureReceipt(_StrictCaptureModel):
     sqlite_snapshot: BackupFileEntry
     app_data_plan: BackupAppDataCapturePlan
     projects: tuple[BackupSnapshotProjectInventory, ...]
+    imported_source_inventories: tuple[BackupImportedProviderSourceInventory, ...] = ()
     status: Literal["complete", "partial"]
 
     @field_validator("capture_id", "space_id")
@@ -371,6 +374,13 @@ class BackupSQLiteCaptureReceipt(_StrictCaptureModel):
             for project in self.projects
         ):
             raise ValueError("SQLite capture cannot include another space's project")
+        imported_ids = [item.project_id for item in self.imported_source_inventories]
+        if imported_ids and (
+            tuple(sorted(imported_ids)) != tuple(imported_ids)
+            or len(imported_ids) != len(set(imported_ids))
+            or set(imported_ids) != set(project_ids)
+        ):
+            raise ValueError("SQLite capture imported sources must inventory every project")
         task_ids = [
             operation_id for project in self.projects for operation_id in project.task_operation_ids
         ]
@@ -436,12 +446,40 @@ class BackupCaptureCoordinator:
         space_name = snapshot_store.space_name
         if snapshot_store.space_kind != "team" or space_name is None:
             raise BackupCaptureUnavailable("The SQLite snapshot is not one named team space.")
+        records = tuple(sorted(snapshot_store.projects(), key=lambda item: item.project_id))
         projects = tuple(
             self._project_inventory(snapshot_store, record, captured_at=captured_at)
-            for record in sorted(snapshot_store.projects(), key=lambda item: item.project_id)
+            for record in records
         )
         if len(projects) > BACKUP_INVENTORY_MAX_ENTRIES:
             raise BackupCaptureUnavailable("The project inventory exceeds its entry bound.")
+        project_ids = tuple(record.project_id for record in records)
+        try:
+            if ImportedProviderSourceStore.project_ids(self.data_dir) != tuple(
+                project_id
+                for project_id in project_ids
+                if os.path.lexists(
+                    ImportedProviderSourceStore(self.data_dir, project_id).project_root
+                )
+            ):
+                raise BackupCaptureUnavailable(
+                    "The imported provider-source owners differ from the project catalog."
+                )
+            imported_source_inventories = tuple(
+                BackupImportedProviderSourceInventory.model_validate(
+                    ImportedProviderSourceStore(
+                        self.data_dir,
+                        project_id,
+                    )
+                    .inventory()
+                    .model_dump()
+                )
+                for project_id in project_ids
+            )
+        except (OSError, ValueError) as exc:
+            raise BackupCaptureUnavailable(
+                "The imported provider-source inventory is invalid or unavailable."
+            ) from exc
         database_schema_sha256 = _database_schema_sha256(snapshot_store)
         final_app_data_plan = inspect_app_data_capture_plan(self.data_dir)
         if final_app_data_plan.database_path != app_data_plan.database_path:
@@ -471,6 +509,7 @@ class BackupCaptureCoordinator:
             sqlite_snapshot=sqlite_entry,
             app_data_plan=app_data_plan,
             projects=projects,
+            imported_source_inventories=imported_source_inventories,
             status="partial" if partial else "complete",
         )
         receipt_path = capture_root / "sqlite-capture.json"

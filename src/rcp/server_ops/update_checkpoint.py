@@ -30,11 +30,18 @@ from rcp.server_ops.backup_capture import (
     read_immutable_backup_receipt,
     validate_backup_sqlite_snapshot,
 )
-from rcp.server_ops.backup_models import BackupProjectCapture
+from rcp.server_ops.backup_models import (
+    BackupImportedProviderSourceCapture,
+    BackupProjectCapture,
+)
 from rcp.server_ops.backup_project_files import (
     BackupProjectFileCaptureReceipt,
 )
 from rcp.server_ops.rehearsal import VerifiedCandidateReceipt
+from rcp.sources.imported import (
+    ImportedProviderSourceInventory,
+    ImportedProviderSourceStore,
+)
 from rcp.storage import AppStore
 
 UPDATE_CHECKPOINT_SCHEMA_VERSION = 1
@@ -228,6 +235,7 @@ class VerifiedUpdateCheckpoint(_StrictModel):
     candidate_receipt_archive_path: str
     candidate_receipt_sha256: str
     projects: tuple[UpdateCheckpointProject, ...]
+    imported_sources: tuple[BackupImportedProviderSourceCapture, ...] = ()
     roots: tuple[UpdateCheckpointRoot, ...]
     status: Literal["verified"] = "verified"
     created_at: datetime
@@ -333,6 +341,13 @@ class VerifiedUpdateCheckpoint(_StrictModel):
         root_ids = {item.identity for item in self.roots if item.kind == "project_research"}
         if local_ids != root_ids:
             raise ValueError("checkpoint local projects and replacement roots disagree")
+        imported_ids = [capture.project_id for capture in self.imported_sources]
+        if imported_ids and (
+            tuple(sorted(imported_ids)) != tuple(imported_ids)
+            or len(imported_ids) != len(set(imported_ids))
+            or set(imported_ids) != set(project_ids)
+        ):
+            raise ValueError("checkpoint imported sources must inventory every project")
         return self
 
 
@@ -567,6 +582,13 @@ class UpdateCheckpointCoordinator:
                 )
                 app_directories.update(directories)
                 app_files.extend(files)
+            source_directories, source_files = self._copy_imported_sources(
+                app_root_path,
+                project_receipt,
+                captured_root=("project-sources" in sqlite_receipt.app_data_plan.captured_entries),
+            )
+            app_directories.update(source_directories)
+            app_files.extend(source_files)
             for stage in stages:
                 relative_root = PurePosixPath("run-stage") / stage.root.name
                 directories, files = _snapshot_tree(
@@ -622,6 +644,7 @@ class UpdateCheckpointCoordinator:
                 candidate_receipt_archive_path="proof/verified-candidate.json",
                 candidate_receipt_sha256=proof_digests[2],
                 projects=projects,
+                imported_sources=project_receipt.imported_sources,
                 roots=(app_root, *project_roots),
                 created_at=datetime.now(UTC),
             )
@@ -638,6 +661,94 @@ class UpdateCheckpointCoordinator:
             # A retained operation without checkpoint.json is deliberately unusable and
             # blocks later update admission for operator inspection.
             raise
+
+    def _copy_imported_sources(
+        self,
+        app_root_path: Path,
+        receipt: BackupProjectFileCaptureReceipt,
+        *,
+        captured_root: bool,
+    ) -> tuple[set[str], list[UpdateCheckpointFile]]:
+        directories: set[str] = set()
+        files: list[UpdateCheckpointFile] = []
+        collection = app_root_path / "project-sources"
+        if captured_root:
+            collection.mkdir(mode=_DIRECTORY_MODE)
+            directories.add("project-sources")
+        expected_present = tuple(
+            sorted(capture.project_id for capture in receipt.imported_sources if capture.present)
+        )
+        try:
+            if expected_present and not captured_root:
+                raise UpdateCheckpointRefused(
+                    "The final capture omitted the imported provider-source app-data root."
+                )
+            if ImportedProviderSourceStore.project_ids(self.data_dir) != expected_present:
+                raise UpdateCheckpointRefused(
+                    "The imported provider-source owners changed after final capture."
+                )
+            for capture in receipt.imported_sources:
+                expected = ImportedProviderSourceInventory.model_validate(
+                    capture.inventory.model_dump()
+                )
+                owner = ImportedProviderSourceStore(self.data_dir, capture.project_id)
+                if not capture.present:
+                    if os.path.lexists(owner.root):
+                        raise UpdateCheckpointRefused(
+                            "An imported provider-source root appeared after final capture."
+                        )
+                    continue
+                project_root = collection / capture.project_id
+                project_root.mkdir(mode=_DIRECTORY_MODE)
+                snapshot = owner.capture_snapshot(
+                    project_root / "provider-history",
+                    expected_inventory=expected,
+                )
+                expected_files = {
+                    entry.source_relative_path.removeprefix("provider-history/"): (
+                        entry.sha256,
+                        entry.size_bytes,
+                    )
+                    for entry in capture.files
+                }
+                if (
+                    not snapshot.present
+                    or {
+                        item.relative_path: (item.sha256, item.size_bytes)
+                        for item in snapshot.files
+                    }
+                    != expected_files
+                ):
+                    raise UpdateCheckpointRefused(
+                        "The imported provider-source checkpoint differs from final capture."
+                    )
+                prefix = PurePosixPath("project-sources") / capture.project_id
+                directories.update(
+                    {
+                        prefix.as_posix(),
+                        (prefix / "provider-history").as_posix(),
+                        *(
+                            (prefix / "provider-history" / item.provider).as_posix()
+                            for item in expected.files
+                        ),
+                    }
+                )
+                files.extend(
+                    UpdateCheckpointFile(
+                        relative_path=(prefix / "provider-history" / item.relative_path).as_posix(),
+                        sha256=item.sha256,
+                        size_bytes=item.size_bytes,
+                        mode=0o400,
+                    )
+                    for item in snapshot.files
+                )
+        except UpdateCheckpointRefused:
+            raise
+        except (OSError, ValueError) as exc:
+            raise UpdateCheckpointRefused(
+                "The imported provider-source checkpoint could not be captured safely."
+            ) from exc
+        return directories, files
 
     def _validate_receipts(
         self,
@@ -672,6 +783,18 @@ class UpdateCheckpointCoordinator:
         if sqlite.app_data_plan.deferred_entries or sqlite.app_data_plan.unclassified_entries:
             raise UpdateCheckpointRefused(
                 "The final app-data boundary contains deferred or unclassified durable state."
+            )
+        sqlite_sources = {
+            item.project_id: item.model_dump(mode="json")
+            for item in sqlite.imported_source_inventories
+        }
+        captured_sources = {
+            item.project_id: item.inventory.model_dump(mode="json")
+            for item in projects.imported_sources
+        }
+        if sqlite_sources != captured_sources:
+            raise UpdateCheckpointRefused(
+                "The final imported provider-source inventories do not match."
             )
         sqlite_projects = {project.project_id: project for project in sqlite.projects}
         captured_projects = {project.project_id: project for project in projects.projects}
@@ -1233,6 +1356,8 @@ def _verify_checkpoint_payload(
             expected_uid=expected_uid,
             uniform_file_mode=_PAYLOAD_FILE_MODE,
         )
+        if root.kind == "app_data":
+            _verify_imported_source_owners(checkpoint, archive)
     for project in checkpoint.projects:
         if project.archive_path is None:
             continue
@@ -1297,9 +1422,33 @@ def _root_matches(
             directories=root.directories,
             expected_uid=expected_uid,
         )
+        if root.kind == "app_data":
+            _verify_imported_source_owners(checkpoint, destination)
     except (OSError, UpdateCheckpointRefused):
         return False
     return True
+
+
+def _verify_imported_source_owners(
+    checkpoint: VerifiedUpdateCheckpoint,
+    data_dir: Path,
+) -> None:
+    expected_present = tuple(
+        sorted(capture.project_id for capture in checkpoint.imported_sources if capture.present)
+    )
+    try:
+        if ImportedProviderSourceStore.project_ids(data_dir) != expected_present:
+            raise ValueError("imported provider-source owner inventory changed")
+        for capture in checkpoint.imported_sources:
+            expected = ImportedProviderSourceInventory.model_validate(
+                capture.inventory.model_dump()
+            )
+            if ImportedProviderSourceStore(data_dir, capture.project_id).inventory() != expected:
+                raise ValueError("imported provider-source inventory changed")
+    except (OSError, ValueError) as exc:
+        raise UpdateCheckpointRefused(
+            "The checkpoint imported provider-source state is invalid."
+        ) from exc
 
 
 def _verify_declared_tree(

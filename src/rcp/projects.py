@@ -55,7 +55,11 @@ from rcp.server_ops.backup_models import (
     BackupRecoveryRepository,
 )
 from rcp.service import ProjectService, ProjectSettingsRequest, _ProjectSnapshotDraft
-from rcp.sources import project_cache_roots
+from rcp.sources import (
+    ImportedProviderSourceInventory,
+    ImportedProviderSourceStore,
+    project_cache_roots,
+)
 from rcp.storage import (
     AgentTaskKind,
     AppStore,
@@ -1476,6 +1480,39 @@ class ProjectCatalog:
         finally:
             with self._services_lock:
                 self._deleting.discard(project_id)
+
+    def discard_unactivated_imported_sources(
+        self,
+        request_id: str,
+        *,
+        expected_inventory: ImportedProviderSourceInventory,
+    ) -> bool:
+        """Clean one failed incoming transfer without becoming team deprovisioning."""
+
+        if self.store.space_kind != "team":
+            raise ValueError("incoming transfer cleanup requires a team space")
+        transfer = self.store.project_transfer_request(request_id)
+        provisioning = self.store.project_provisioning_request(request_id)
+        if (
+            transfer is None
+            or transfer.side != "target"
+            or transfer.project_id != expected_inventory.project_id
+            or transfer.phase in {"target_activated", "cleanup_acknowledged", "completed"}
+            or provisioning is None
+            or provisioning.kind != "incoming_transfer"
+            or provisioning.proposed_project_id != expected_inventory.project_id
+            or provisioning.status == "completed"
+        ):
+            raise ValueError("imported provider-source cleanup is outside its pending request")
+        project_id = expected_inventory.project_id
+        with self._snapshot_lock(project_id):
+            if self.store.project(project_id) is not None:
+                raise ValueError(
+                    "imported provider sources cannot be discarded after project registration"
+                )
+            return ImportedProviderSourceStore(self.data_dir, project_id).discard(
+                expected_inventory=expected_inventory
+            )
 
     def _snapshot_lock(self, project_id: str) -> threading.Lock:
         project_id = self._canonical_project_id(project_id)

@@ -56,6 +56,7 @@ from rcp.server_ops.rehearsal import (
 from rcp.server_ops.update import BuiltCandidateReceipt
 from rcp.server_runtime import ServerMetadata
 from rcp.service import RunRequest, resolve_dispatch_authority
+from rcp.sources import ImportedProviderSourceStore
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -64,6 +65,7 @@ from rcp.storage import (
     ProjectProvisioningRepositoryIntent,
     ProjectRecord,
 )
+from rcp.transfer import TransferArchiveEntry
 
 BASE_COMMIT = "a" * 40
 CANDIDATE_COMMIT = "b" * 40
@@ -396,6 +398,24 @@ def test_candidate_rehearsal_replays_a_copy_without_touching_live_state(
         )
     )
     store.seat_project_member(project_id, member.user_id)
+    imported_payload = b'{"type":"assistant","text":"rehearsal source"}\n'
+    imported_digest = hashlib.sha256(imported_payload).hexdigest()
+    imported_capture_root = tmp_path / "imported-capture"
+    imported_source = imported_capture_root / "provider-history" / "codex" / imported_digest
+    imported_source.parent.mkdir(parents=True, mode=0o700)
+    imported_source.write_bytes(imported_payload)
+    imported_owner = ImportedProviderSourceStore(data_dir, project_id)
+    imported_inventory = imported_owner.publish(
+        imported_capture_root,
+        (
+            TransferArchiveEntry(
+                archive_path=f"provider-history/codex/{imported_digest}",
+                group="provider_history",
+                sha256=imported_digest,
+                size_bytes=len(imported_payload),
+            ),
+        ),
+    )
 
     remote_project_id = str(uuid.uuid4())
     remote_manifest_path = _write_remote_manifest(
@@ -591,6 +611,18 @@ def test_candidate_rehearsal_replays_a_copy_without_touching_live_state(
         if "--candidate-migrate" in argv:
             returncode = run_candidate_migration(Path(argv[-2]), Path(argv[-1]))
         else:
+            overlay = RehearsalOverlay.model_validate_json(Path(argv[-2]).read_bytes())
+            rehearsed_owner = ImportedProviderSourceStore(
+                Path(overlay.data_dir),
+                project_id,
+            )
+            assert rehearsed_owner.inventory() == imported_inventory
+            rehearsed_file = (
+                rehearsed_owner.root
+                / imported_inventory.files[0].provider
+                / imported_inventory.files[0].sha256
+            )
+            assert rehearsed_file.read_bytes() == imported_payload
             blocked_roots = (
                 data_dir,
                 repository,
@@ -690,6 +722,7 @@ def test_candidate_rehearsal_replays_a_copy_without_touching_live_state(
     assert stage_sentinel.read_bytes() == b"live task output\n"
     assert checkout_sentinel.read_bytes() == checkout_sentinel_bytes
     assert provider_sentinel.read_bytes() == b"live provider state\n"
+    assert imported_owner.inventory() == imported_inventory
     assert all(path.read_bytes() == payload for path, payload in transfer_sentinels.items())
     assert live_release_marker.read_text(encoding="utf-8") == BASE_COMMIT + "\n"
 

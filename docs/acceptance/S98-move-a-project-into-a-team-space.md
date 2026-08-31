@@ -14,7 +14,11 @@ covered_by:
   - tests/test_transfer_project_files.py
   - tests/test_transfer_provider_history_selection.py
   - tests/test_imported_provider_sources.py
+  - tests/test_imported_provider_source_lifecycle.py
   - tests/test_imported_provider_source_remote_staging.py
+  - tests/test_server_restore_projects.py
+  - tests/test_server_update_checkpoint.py
+  - tests/test_server_update_rehearsal.py
   - tests/test_transfer_project_configuration.py
 invariants: [1, 3, 6, 11]
 ---
@@ -58,6 +62,12 @@ a missing or changed prepared checkpoint into clean Retry. The reachable-SSH
 interruption/removal drive in step 11 remains pending. Its boundaries are
 in [Project identity and home](../specs/projects-spaces-and-operations.md#project-identity-and-home)
 and [Personal-to-team transfer archive](../specs/projects-spaces-and-operations.md#personal-to-team-transfer-archive).
+The imported-history lifecycle is now complete around that still-open importer:
+encrypted backup and restore preserve exact project-owned bytes, candidate
+rehearsal and update rollback validate them through the same owner, and bounded
+failure cleanup can remove only the exact linked pre-activation request state.
+Ordinary team-project Delete remains unavailable. T3f still must invoke these
+owners from the atomic target import before this scenario can become active.
 
 Transfer is personal space → team space, one way. The team server prepares a
 separate central checkout set, with each checkout owned by `rcp` locally or by

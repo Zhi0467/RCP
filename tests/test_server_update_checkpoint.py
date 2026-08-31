@@ -29,6 +29,8 @@ from rcp.server_ops.backup_capture import (
 from rcp.server_ops.backup_models import (
     BackupCheckoutRecoveryDescriptor,
     BackupFileEntry,
+    BackupImportedProviderSourceCapture,
+    BackupImportedProviderSourceInventory,
     BackupManifestConfiguration,
     BackupProjectCapture,
     BackupRecoveryMachine,
@@ -52,7 +54,9 @@ from rcp.server_ops.update_checkpoint import (
     restore_update_checkpoint,
 )
 from rcp.server_runtime import ServerMetadata
+from rcp.sources import ImportedProviderSourceStore
 from rcp.storage import AppStore
+from rcp.transfer import TransferArchiveEntry
 
 BASE_COMMIT = "a" * 40
 CANDIDATE_COMMIT = "b" * 40
@@ -226,6 +230,24 @@ def _local_project_checkpoint_fixture(tmp_path: Path):
     publication = BackupCaptureCoordinator(store, data_dir, _metadata(data_dir)).capture_sqlite()
 
     project_id = str(uuid.uuid4())
+    imported_payload = b'{"type":"assistant","text":"checkpoint source"}\n'
+    imported_digest = hashlib.sha256(imported_payload).hexdigest()
+    imported_capture_root = tmp_path / "imported-capture"
+    imported_source = imported_capture_root / "provider-history" / "codex" / imported_digest
+    imported_source.parent.mkdir(parents=True, mode=0o700)
+    imported_source.write_bytes(imported_payload)
+    imported_owner = ImportedProviderSourceStore(data_dir, project_id)
+    imported_inventory = imported_owner.publish(
+        imported_capture_root,
+        (
+            TransferArchiveEntry(
+                archive_path=f"provider-history/codex/{imported_digest}",
+                group="provider_history",
+                sha256=imported_digest,
+                size_bytes=len(imported_payload),
+            ),
+        ),
+    )
     central_root = tmp_path / "server" / "projects"
     repository = central_root / project_id / "repositories" / "repo"
     research = repository / ".research"
@@ -311,7 +333,18 @@ default_reasoning = "medium"
         recovery=recovery,
     )
     sqlite_receipt = publication.receipt.model_copy(
-        update={"projects": (inventory,), "status": "complete"}
+        update={
+            "app_data_plan": publication.receipt.app_data_plan.model_copy(
+                update={"captured_entries": ("project-sources",)}
+            ),
+            "projects": (inventory,),
+            "imported_source_inventories": (
+                BackupImportedProviderSourceInventory.model_validate(
+                    imported_inventory.model_dump()
+                ),
+            ),
+            "status": "complete",
+        }
     )
     publication.receipt_path.unlink()
     sqlite_sha256 = write_immutable_backup_receipt(publication.receipt_path, sqlite_receipt)
@@ -337,6 +370,33 @@ default_reasoning = "medium"
         recovery=recovery,
         total_bytes=len(original_manifest),
     )
+    imported_collection = publication.receipt_path.parent / "project-sources"
+    imported_collection.mkdir(mode=0o700)
+    imported_project_root = imported_collection / project_id
+    imported_project_root.mkdir(mode=0o700)
+    imported_snapshot = imported_owner.capture_snapshot(
+        imported_project_root / "provider-history",
+        expected_inventory=imported_inventory,
+    )
+    imported_files = tuple(
+        BackupFileEntry(
+            archive_path=(f"project-sources/{project_id}/provider-history/{item.relative_path}"),
+            source_relative_path=f"provider-history/{item.relative_path}",
+            group="imported_provider_history",
+            sha256=item.sha256,
+            size_bytes=item.size_bytes,
+        )
+        for item in imported_snapshot.files
+    )
+    imported_capture = BackupImportedProviderSourceCapture(
+        project_id=project_id,
+        inventory=BackupImportedProviderSourceInventory.model_validate(
+            imported_inventory.model_dump()
+        ),
+        present=True,
+        files=imported_files,
+        total_bytes=sum(item.size_bytes for item in imported_files),
+    )
     project_receipt = BackupProjectFileCaptureReceipt(
         capture_id=sqlite_receipt.capture_id,
         captured_at=captured_at,
@@ -347,6 +407,7 @@ default_reasoning = "medium"
         sqlite_snapshot_sha256=sqlite_receipt.sqlite_snapshot.sha256,
         sqlite_capture_status="complete",
         projects=(project_capture,),
+        imported_sources=(imported_capture,),
         status="complete",
     )
     project_receipt_path = publication.receipt_path.parent / "project-files.json"
@@ -404,7 +465,14 @@ default_reasoning = "medium"
         candidate_receipt_path=candidate_path,
         candidate_receipt_sha256=hashlib.sha256(candidate_path.read_bytes()).hexdigest(),
     )
-    return checkpoint, research, original_manifest
+    return (
+        checkpoint,
+        research,
+        original_manifest,
+        imported_owner,
+        imported_inventory,
+        imported_payload,
+    )
 
 
 def test_local_recovery_stage_inventory_uses_the_task_ledger_and_ignores_remote(
@@ -778,10 +846,24 @@ def test_checkpoint_manifest_detects_payload_tampering(tmp_path: Path) -> None:
 def test_rollback_replaces_local_research_root_and_never_overlays_candidate_files(
     tmp_path: Path,
 ) -> None:
-    checkpoint, research, original_manifest = _local_project_checkpoint_fixture(tmp_path)
+    (
+        checkpoint,
+        research,
+        original_manifest,
+        imported_owner,
+        imported_inventory,
+        imported_payload,
+    ) = _local_project_checkpoint_fixture(tmp_path)
     (research / "manifest.toml").write_bytes(b"candidate changed the manifest\n")
     (research / "candidate-only").mkdir()
     (research / "candidate-only" / "unknown.json").write_bytes(b"unknown\n")
+    imported_file = (
+        imported_owner.root
+        / imported_inventory.files[0].provider
+        / imported_inventory.files[0].sha256
+    )
+    imported_file.chmod(0o600)
+    imported_file.write_bytes(b"candidate changed imported history\n")
 
     restore_update_checkpoint(
         Path(checkpoint.manifest_path),
@@ -790,10 +872,37 @@ def test_rollback_replaces_local_research_root_and_never_overlays_candidate_file
 
     assert (research / "manifest.toml").read_bytes() == original_manifest
     assert not (research / "candidate-only").exists()
+    assert imported_owner.inventory() == imported_inventory
+    assert imported_file.read_bytes() == imported_payload
     project_root = next(root for root in checkpoint.roots if root.kind == "project_research")
     quarantine = Path(project_root.quarantine_path)
     assert (quarantine / "candidate-only" / "unknown.json").read_bytes() == b"unknown\n"
     assert (quarantine / "manifest.toml").read_bytes() == b"candidate changed the manifest\n"
+
+
+def test_checkpoint_rejects_a_symlinked_imported_source_payload(tmp_path: Path) -> None:
+    checkpoint, *_rest = _local_project_checkpoint_fixture(tmp_path)
+    app_root = next(root for root in checkpoint.roots if root.kind == "app_data")
+    imported = next(
+        item
+        for item in app_root.files
+        if item.relative_path.startswith("project-sources/")
+        and not item.relative_path.endswith("manifest.json")
+    )
+    payload = Path(checkpoint.operation_root).joinpath(
+        *PurePosixPath(app_root.archive_path).parts,
+        *PurePosixPath(imported.relative_path).parts,
+    )
+    outside = tmp_path / "outside-imported-history"
+    outside.write_bytes(b"outside\n")
+    payload.unlink()
+    payload.symlink_to(outside)
+
+    with pytest.raises(UpdateCheckpointRefused, match="unsafe file"):
+        restore_update_checkpoint(
+            Path(checkpoint.manifest_path),
+            expected_uid=os.geteuid(),
+        )
 
 
 def test_checkpoint_attachment_digest_is_bound_to_original_bytes(tmp_path: Path) -> None:

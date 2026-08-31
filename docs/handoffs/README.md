@@ -4,10 +4,13 @@ Active:
 
 - [Dev team space and source server completion](handoff-2026-08-27-dev-team-space-and-server.md)
   — human-confirmed implementation through one genuinely usable lab/server
-  deployment; design, grilling, and the final cross-document fact-check are
-  complete and implementation is active directly on `main`. G0 first restores
-  the current red CI baseline; G2, F1, and D1 then begin according to the
-  dependency map.
+  deployment. Implementation is active directly on `main`. The gate, server
+  foundation, provisioning, backup, restore, and member-removal lanes are
+  implemented; two of them still owe a live drive. The desktop team-space lane
+  is in progress, and the read-only Server Settings projection is complete.
+  Transfer is implemented through imported-provider-history lifecycle support;
+  target import, activation, cleanup, relay, UI, and the live lab drill remain.
+  Read the handoff's packet status table for the current state of any packet.
 
 This directory contains only human-confirmed work that is ready to implement and
 not yet complete. A handoff is an execution contract, not a chronological diary.

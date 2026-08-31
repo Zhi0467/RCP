@@ -66,6 +66,10 @@ from rcp.server_ops.project_checkout import (
     ProjectCheckoutManager,
     ProjectCheckoutRefused,
 )
+from rcp.sources.imported import (
+    ImportedProviderSourceInventory,
+    ImportedProviderSourceStore,
+)
 from rcp.storage import AppStore, ProjectProvisioningMachineIntent
 
 RESTORE_JOURNAL_SCHEMA_VERSION = 1
@@ -287,6 +291,9 @@ class RestoreProjectPublication(_StrictModel):
     capture_sha256: str
     published_files: int = Field(ge=1)
     published_bytes: int = Field(ge=0)
+    imported_source_sha256: str | None = None
+    imported_files: int = Field(default=0, ge=0)
+    imported_bytes: int = Field(default=0, ge=0)
     main_revision: int = Field(ge=0)
     branch_count: int = Field(ge=0)
 
@@ -301,10 +308,18 @@ class RestoreProjectPublication(_StrictModel):
             raise ValueError("published project id must be a canonical UUID4")
         return value
 
-    @field_validator("capture_sha256")
+    @field_validator("capture_sha256", "imported_source_sha256")
     @classmethod
-    def validate_capture_sha256(cls, value: str) -> str:
-        return _digest(value, label="published project capture digest")
+    def validate_capture_sha256(cls, value: str | None, info) -> str | None:
+        return None if value is None else _digest(value, label=info.field_name.replace("_", " "))
+
+    @model_validator(mode="after")
+    def validate_imported_source_receipt(self) -> RestoreProjectPublication:
+        if (self.imported_source_sha256 is None) != (
+            self.imported_files == 0 and self.imported_bytes == 0
+        ):
+            raise ValueError("published imported-source receipt is incomplete")
+        return self
 
 
 RestoreOldAuthorityDisposition = Literal[
@@ -2101,6 +2116,7 @@ class LinuxRestoreMachine:
                     ) from exc
 
             publications = {item.project_id: item for item in current.project_publications}
+            self._publish_imported_sources(current)
             operation_projects = {
                 task.operation_id: task.project_id
                 for capture in self._captured_projects(current)
@@ -2195,7 +2211,15 @@ class LinuxRestoreMachine:
                         f"Restored project {capture.project_id} failed canonical publication "
                         "or replay verification."
                     ) from exc
-                receipt = self._project_publication_receipt(capture)
+                imported = next(
+                    (
+                        item
+                        for item in current.manifest.imported_sources
+                        if item.project_id == capture.project_id
+                    ),
+                    None,
+                )
+                receipt = self._project_publication_receipt(capture, imported)
                 existing = publications.get(capture.project_id)
                 if existing is not None and existing != receipt:
                     raise RestoreRefused(
@@ -2205,6 +2229,47 @@ class LinuxRestoreMachine:
                     current = self._write_project_publication(current, receipt)
                     publications[capture.project_id] = receipt
             return self._write_restore_phase(current, "projects_published")
+
+    def _publish_imported_sources(self, journal: RestoreOperationJournal) -> None:
+        expected_present: list[str] = []
+        for capture in journal.manifest.imported_sources:
+            owner = ImportedProviderSourceStore(self.layout.data_dir, capture.project_id)
+            expected = ImportedProviderSourceInventory.model_validate(
+                capture.inventory.model_dump()
+            )
+            if not capture.present:
+                if os.path.lexists(owner.root):
+                    raise RestoreRefused(
+                        "An absent imported provider-source root appeared during restore."
+                    )
+                continue
+            source_root = (
+                Path(journal.candidate_root)
+                / "payload"
+                / "project-sources"
+                / capture.project_id
+                / "provider-history"
+            )
+            try:
+                published = owner.publish_snapshot(source_root, expected)
+                if published != expected or owner.inventory() != expected:
+                    raise ValueError("imported provider-source restore readback differs")
+            except (OSError, ValueError) as exc:
+                raise RestoreRefused(
+                    f"Restored project {capture.project_id} failed imported-source publication."
+                ) from exc
+            expected_present.append(capture.project_id)
+        try:
+            if ImportedProviderSourceStore.project_ids(self.layout.data_dir) != tuple(
+                sorted(expected_present)
+            ):
+                raise RestoreRefused(
+                    "The restored imported provider-source owner inventory differs."
+                )
+        except (OSError, ValueError) as exc:
+            raise RestoreRefused(
+                "The restored imported provider-source collection is invalid."
+            ) from exc
 
     def review_old_authority(
         self,
@@ -2708,7 +2773,7 @@ class LinuxRestoreMachine:
         return source
 
     @staticmethod
-    def _project_publication_receipt(capture) -> RestoreProjectPublication:
+    def _project_publication_receipt(capture, imported) -> RestoreProjectPublication:
         payload = json.dumps(
             capture.model_dump(mode="json"),
             ensure_ascii=False,
@@ -2717,11 +2782,29 @@ class LinuxRestoreMachine:
             allow_nan=False,
         ).encode("utf-8")
         assert capture.main_head is not None
+        imported_payload = (
+            None
+            if imported is None or not imported.present
+            else json.dumps(
+                imported.model_dump(mode="json"),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+        )
         return RestoreProjectPublication(
             project_id=capture.project_id,
             capture_sha256=hashlib.sha256(payload).hexdigest(),
             published_files=len(capture.files),
             published_bytes=capture.total_bytes,
+            imported_source_sha256=(
+                None if imported_payload is None else hashlib.sha256(imported_payload).hexdigest()
+            ),
+            imported_files=(0 if imported is None or not imported.present else len(imported.files)),
+            imported_bytes=(
+                0 if imported is None or not imported.present else imported.total_bytes
+            ),
             main_revision=capture.main_head.revision,
             branch_count=len(capture.branch_heads),
         )
@@ -3075,6 +3158,7 @@ def _extract_verified_archive(
                 for entry in (
                     manifest.sqlite_snapshot,
                     *(item for project in manifest.projects for item in project.files),
+                    *(item for capture in manifest.imported_sources for item in capture.files),
                 )
             }
             if len(entries) + 1 != len(members):

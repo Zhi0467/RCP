@@ -49,6 +49,10 @@ from rcp.server_ops.control import ServerControlBackupCaptureResult, ServerContr
 from rcp.server_ops.models import redact_server_text
 from rcp.server_ops.update import BuiltCandidateReceipt
 from rcp.server_runtime import data_dir_identity
+from rcp.sources.imported import (
+    ImportedProviderSourceInventory,
+    ImportedProviderSourceStore,
+)
 
 REHEARSAL_OVERLAY_SCHEMA_VERSION = 1
 CANDIDATE_MIGRATION_RESULT_SCHEMA_VERSION = 1
@@ -710,6 +714,25 @@ def build_rehearsal_overlay(
         raise CandidateRehearsalRefused(
             "The project files and SQLite snapshot do not share one capture boundary."
         )
+
+    for capture in project_receipt.imported_sources:
+        if not capture.present:
+            continue
+        source_root = capture_root / "project-sources" / capture.project_id / "provider-history"
+        expected = ImportedProviderSourceInventory.model_validate(capture.inventory.model_dump())
+        try:
+            published = ImportedProviderSourceStore(
+                data_dir,
+                capture.project_id,
+            ).publish_snapshot(source_root, expected)
+        except (OSError, ValueError) as exc:
+            raise CandidateRehearsalRefused(
+                "The imported provider-source snapshot failed rehearsal publication."
+            ) from exc
+        if published != expected:
+            raise CandidateRehearsalRefused(
+                "The imported provider-source rehearsal readback differs."
+            )
 
     # The running release owns the coordinator, while the candidate gets only
     # this disposable migration phase. Run it before any schema/path inventory

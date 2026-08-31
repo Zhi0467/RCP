@@ -1153,6 +1153,12 @@ ephemera, process metadata, reconstructed locator copies, derived
 snapshots/caches, temporary execution or upload state, and personal
 transfer-recovery state owned by its source receipt. An unknown direct app-data
 child makes capture visibly partial until its concrete owner classifies it.
+For every project in the copied database, backup records the exact sealed
+imported-history inventory, including an explicit absent result. Project-file
+capture revalidates present bytes through that same owner and the archive binds
+its canonical owner manifest, content-addressed files, byte counts, and digests.
+An orphan, incomplete, rewritten, symlinked, special, or otherwise unsafe owner
+makes capture fail visibly; backup never substitutes a live provider home.
 
 For each protected team project, the manifest also binds a nonsecret recovery
 descriptor from the same captured provisioning state: repository sources and
@@ -1363,7 +1369,11 @@ After all checkouts pass, restore regenerates any required local bootstrap
 manifest and atomically rebinds every captured catalog row while keeping it
 unavailable. It then publishes only manifest-listed canonical main/branch inputs,
 typed RCP chats, Paper introduction, facts, and referenced kept artifacts/views
-through their concrete owners. Each local or SSH write accepts an absent path or
+through their concrete owners. Before any restored project becomes reachable,
+it also publishes and reads back each declared imported-history inventory
+through the project-source owner and refuses a conflicting existing inventory.
+The crash-reentrant project-publication receipt binds those imported digests,
+file counts, and byte counts alongside canonical publication. Each local or SSH write accepts an absent path or
 the same archived bytes and refuses a different existing file without replacing
 it. Main and branch replay must reach the captured transition-aware heads, every
 merge receipt must validate against both histories, and every archived project
@@ -1400,6 +1410,13 @@ HTTP admission; only then does the root coordinator enable the already-running
 unit. Failed activation stops and disables systemd; overlapping update and
 restore journals refuse startup. Provider-native login is not part of this gate
 and may remain absent while restored history serves read-only.
+Candidate update rehearsal publishes imported histories only inside its
+disposable copied data directory. The local update checkpoint binds those typed
+captures, recreates them through the owner in temporary verification, and
+owner-validates the immutable payload and restored live root on every rollback
+journal entry. Request-owned cleanup may discard one exact imported inventory
+only for the linked incoming transfer before project registration and target
+activation; it does not enable ordinary team-project deletion or deprovisioning.
 The private installed-service control socket exposes probe, provider plan/check,
 project-provision plan/step, online SQLite capture, member-removal, update, and
 root-only restore-activation operations. `rcp server

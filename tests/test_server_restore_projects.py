@@ -22,6 +22,8 @@ from rcp.server_ops.backup_models import (
     BackupArchiveManifest,
     BackupCheckoutRecoveryDescriptor,
     BackupFileEntry,
+    BackupImportedProviderSourceCapture,
+    BackupImportedProviderSourceInventory,
     BackupManifestAgentProfile,
     BackupManifestConfiguration,
     BackupManifestMachine,
@@ -43,12 +45,15 @@ from rcp.server_ops.restore import (
     write_restore_journal,
 )
 from rcp.skill_registry import SkillDefaults
+from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
 from rcp.storage import AppStore, ProjectRecord
+from rcp.transfer import TransferArchiveEntry
 
 NOW = datetime(2026, 8, 29, 12, 0, tzinfo=UTC)
 COMMIT = "c" * 40
 OLD_FINGERPRINT = "SHA256:" + ("A" * 43)
 NEW_FINGERPRINT = "SHA256:" + ("B" * 43)
+IMPORTED_PAYLOAD = b'{"type":"assistant","text":"restored native history"}\n'
 
 
 def _layout(root: Path) -> ServerLayout:
@@ -138,6 +143,57 @@ def _copy_entry(payload: Path, entry: BackupFileEntry, source: Path) -> None:
     destination = payload.joinpath(*PurePosixPath(entry.archive_path).parts)
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
+
+
+def _captured_imported_source(
+    root: Path,
+    *,
+    project_id: str,
+) -> BackupImportedProviderSourceCapture:
+    digest = hashlib.sha256(IMPORTED_PAYLOAD).hexdigest()
+    source_data = root / "imported-source-data"
+    source_data.mkdir(mode=0o700)
+    source_capture = root / "imported-source-capture"
+    source = source_capture / "provider-history" / "codex" / digest
+    source.parent.mkdir(parents=True, mode=0o700)
+    source.write_bytes(IMPORTED_PAYLOAD)
+    owner = ImportedProviderSourceStore(source_data, project_id)
+    inventory = owner.publish(
+        source_capture,
+        (
+            TransferArchiveEntry(
+                archive_path=f"provider-history/codex/{digest}",
+                group="provider_history",
+                sha256=digest,
+                size_bytes=len(IMPORTED_PAYLOAD),
+            ),
+        ),
+    )
+    collection = root / "payload" / "project-sources"
+    collection.mkdir(mode=0o700)
+    project_root = collection / project_id
+    project_root.mkdir(mode=0o700)
+    snapshot = owner.capture_snapshot(
+        project_root / "provider-history",
+        expected_inventory=inventory,
+    )
+    files = tuple(
+        BackupFileEntry(
+            archive_path=(f"project-sources/{project_id}/provider-history/{item.relative_path}"),
+            source_relative_path=f"provider-history/{item.relative_path}",
+            group="imported_provider_history",
+            sha256=item.sha256,
+            size_bytes=item.size_bytes,
+        )
+        for item in snapshot.files
+    )
+    return BackupImportedProviderSourceCapture(
+        project_id=project_id,
+        inventory=BackupImportedProviderSourceInventory.model_validate(inventory.model_dump()),
+        present=True,
+        files=files,
+        total_bytes=sum(item.size_bytes for item in files),
+    )
 
 
 def _captured_project(
@@ -357,6 +413,10 @@ def _restore_case(tmp_path: Path):
         sha256=sqlite_sha,
         size_bytes=sqlite_source.stat().st_size,
     )
+    imported = _captured_imported_source(
+        candidate_root,
+        project_id=capture.project_id,
+    )
     manifest = BackupArchiveManifest(
         space_id=store.space_id,
         space_name=store.space_name,
@@ -367,10 +427,12 @@ def _restore_case(tmp_path: Path):
         encryption_recipient_fingerprint="e" * 64,
         installation_id=str(uuid.uuid4()),
         excluded_app_data_entries=(),
+        captured_app_data_entries=("project-sources",),
         uncaptured_app_data_entries=(),
         projects=(capture,),
+        imported_sources=(imported,),
         status="complete",
-        total_bytes=sqlite_entry.size_bytes + capture.total_bytes,
+        total_bytes=sqlite_entry.size_bytes + capture.total_bytes + imported.total_bytes,
     )
     candidate_sqlite = candidate_root / "restored" / "rcp.sqlite3"
     candidate_sqlite.parent.mkdir(parents=True)
@@ -445,6 +507,20 @@ def test_restore_publishes_replays_and_reads_back_every_project_owner(tmp_path: 
 
     assert completed.phase == "projects_published"
     assert completed.project_publications[0].project_id == capture.project_id
+    imported = journal.manifest.imported_sources[0]
+    expected_inventory = ImportedProviderSourceInventory.model_validate(
+        imported.inventory.model_dump()
+    )
+    imported_owner = ImportedProviderSourceStore(machine.layout.data_dir, capture.project_id)
+    assert imported_owner.inventory() == expected_inventory
+    imported_file = (
+        imported_owner.root
+        / expected_inventory.files[0].provider
+        / expected_inventory.files[0].sha256
+    )
+    assert imported_file.read_bytes() == IMPORTED_PAYLOAD
+    assert completed.project_publications[0].imported_files == len(imported.files)
+    assert completed.project_publications[0].imported_bytes == imported.total_bytes
     record = store.project(capture.project_id)
     assert record is not None and record.reachable is True and record.error is None
     research = repository / ".research"
@@ -459,6 +535,39 @@ def test_restore_publishes_replays_and_reads_back_every_project_owner(tmp_path: 
         == (capture.branch_heads[0])
     )
     assert machine.publish_projects(completed) == completed
+
+
+def test_restore_refuses_conflicting_imported_source_before_visibility(
+    tmp_path: Path,
+) -> None:
+    machine, journal, capture, _repository, store = _restore_case(tmp_path)
+    conflicting = b'{"type":"assistant","text":"different history"}\n'
+    digest = hashlib.sha256(conflicting).hexdigest()
+    capture_root = tmp_path / "conflicting-imported-source"
+    source = capture_root / "provider-history" / "codex" / digest
+    source.parent.mkdir(parents=True, mode=0o700)
+    source.write_bytes(conflicting)
+    owner = ImportedProviderSourceStore(machine.layout.data_dir, capture.project_id)
+    owner.publish(
+        capture_root,
+        (
+            TransferArchiveEntry(
+                archive_path=f"provider-history/codex/{digest}",
+                group="provider_history",
+                sha256=digest,
+                size_bytes=len(conflicting),
+            ),
+        ),
+    )
+
+    with pytest.raises(RestoreRefused, match="failed imported-source publication"):
+        machine.publish_projects(journal)
+
+    record = store.project(capture.project_id)
+    assert record is not None and record.reachable is False
+    assert (
+        owner.inventory().fingerprint != journal.manifest.imported_sources[0].inventory.fingerprint
+    )
 
 
 def test_restore_refuses_conflicting_project_byte_before_visibility(tmp_path: Path) -> None:

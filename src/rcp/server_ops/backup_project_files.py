@@ -36,6 +36,7 @@ from rcp.server_ops.backup_checkout import (
 )
 from rcp.server_ops.backup_models import (
     BackupFileEntry,
+    BackupImportedProviderSourceCapture,
     BackupManifestConfiguration,
     BackupProjectCapture,
 )
@@ -50,6 +51,10 @@ from rcp.server_ops.backup_project_io import (
     stable_copy_fact_entry,
     stable_workspace_bytes,
     write_bytes_entry,
+)
+from rcp.sources.imported import (
+    ImportedProviderSourceInventory,
+    ImportedProviderSourceStore,
 )
 from rcp.transport.remote_backup_checkout import CheckoutInspectionError
 from rcp.transport.state import LocalStateWorkspace, StateUnavailable, state_workspace_for_probe
@@ -93,6 +98,7 @@ class BackupProjectFileCaptureReceipt(_StrictProjectCaptureModel):
     sqlite_snapshot_sha256: str
     sqlite_capture_status: Literal["complete", "partial"]
     projects: tuple[BackupProjectCapture, ...]
+    imported_sources: tuple[BackupImportedProviderSourceCapture, ...] = ()
     status: Literal["complete", "partial"]
 
     @field_validator("capture_id", "space_id")
@@ -135,6 +141,13 @@ class BackupProjectFileCaptureReceipt(_StrictProjectCaptureModel):
             for project in self.projects
         ):
             raise ValueError("project-file capture cannot protect another space's project")
+        imported_ids = [capture.project_id for capture in self.imported_sources]
+        if imported_ids and (
+            tuple(sorted(imported_ids)) != tuple(imported_ids)
+            or len(imported_ids) != len(set(imported_ids))
+            or set(imported_ids) != set(project_ids)
+        ):
+            raise ValueError("project-file imported sources must inventory every project")
         partial = self.sqlite_capture_status == "partial" or any(
             project.status == "uncaptured" for project in self.projects
         )
@@ -188,6 +201,7 @@ class BackupProjectFileCaptureCoordinator:
             for project in sqlite_receipt.projects
             for operation_id in project.task_operation_ids
         }
+        imported_sources = self._capture_imported_sources(capture_root, sqlite_receipt)
         projects = tuple(
             self._capture_or_preserve_failure(
                 capture_root,
@@ -211,6 +225,7 @@ class BackupProjectFileCaptureCoordinator:
             sqlite_snapshot_sha256=sqlite_receipt.sqlite_snapshot.sha256,
             sqlite_capture_status=sqlite_receipt.status,
             projects=projects,
+            imported_sources=imported_sources,
             status="partial" if partial else "complete",
         )
         receipt_path = capture_root / "project-files.json"
@@ -221,6 +236,53 @@ class BackupProjectFileCaptureCoordinator:
             receipt_path=receipt_path,
             receipt_sha256=receipt_sha256,
         )
+
+    def _capture_imported_sources(
+        self,
+        capture_root: Path,
+        sqlite_receipt: BackupSQLiteCaptureReceipt,
+    ) -> tuple[BackupImportedProviderSourceCapture, ...]:
+        collection_root = capture_root / "project-sources"
+        captures: list[BackupImportedProviderSourceCapture] = []
+        for recorded in sqlite_receipt.imported_source_inventories:
+            expected = ImportedProviderSourceInventory.model_validate(recorded.model_dump())
+            store = ImportedProviderSourceStore(self.data_dir, recorded.project_id)
+            if os.path.lexists(store.root):
+                collection_root.mkdir(mode=0o700, exist_ok=True)
+                project_root = collection_root / recorded.project_id
+                project_root.mkdir(mode=0o700)
+                destination = project_root / "provider-history"
+            else:
+                destination = collection_root / recorded.project_id / "provider-history"
+            snapshot = store.capture_snapshot(
+                destination,
+                expected_inventory=expected,
+            )
+            files = tuple(
+                BackupFileEntry(
+                    archive_path=(
+                        f"project-sources/{recorded.project_id}/provider-history/"
+                        f"{item.relative_path}"
+                    ),
+                    source_relative_path=f"provider-history/{item.relative_path}",
+                    group="imported_provider_history",
+                    sha256=item.sha256,
+                    size_bytes=item.size_bytes,
+                )
+                for item in snapshot.files
+            )
+            captures.append(
+                BackupImportedProviderSourceCapture(
+                    project_id=recorded.project_id,
+                    inventory=recorded,
+                    present=snapshot.present,
+                    files=files,
+                    total_bytes=sum(item.size_bytes for item in files),
+                )
+            )
+        if collection_root.exists():
+            fsync_tree(collection_root)
+        return tuple(captures)
 
     def _validate_capture_boundary(
         self,

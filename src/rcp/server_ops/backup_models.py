@@ -24,7 +24,7 @@ from rcp.limits import (
     BACKUP_DIAGNOSTIC_MAX_CHARS,
     BACKUP_INVENTORY_MAX_ENTRIES,
 )
-from rcp.providers import ProviderId
+from rcp.providers import PROVIDERS, ProviderId
 from rcp.server_ops.github import GitHubRepositoryRef
 from rcp.server_ops.models import redact_server_text
 from rcp.skill_registry import SkillDefaults
@@ -39,7 +39,8 @@ _HOST = re.compile(r"[A-Za-z0-9_.@:-]{0,255}")
 _ACCOUNT = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,127}")
 
 BACKUP_APP_DATA_DATABASE = "rcp.sqlite3"
-BACKUP_APP_DATA_DEFERRED = frozenset({"project-sources"})
+BACKUP_APP_DATA_CAPTURED = frozenset({"project-sources"})
+BACKUP_APP_DATA_DEFERRED = frozenset()
 BACKUP_APP_DATA_EXCLUSIONS = frozenset(
     {
         "bootstrap-manifests",
@@ -99,6 +100,7 @@ BackupFileGroup = Literal[
     "fact",
     "kept_artifact",
     "legacy_kept_result_view",
+    "imported_provider_history",
 ]
 BackupCanonicalFileKind = Literal[
     "manifest",
@@ -288,9 +290,68 @@ class BackupFileEntry(_StrictBackupModel):
             raise ValueError("legacy kept views must be direct repository view files")
         elif self.group == "sqlite_snapshot" and source != PurePosixPath("rcp.sqlite3"):
             raise ValueError("the SQLite snapshot must retain its fixed source name")
+        elif self.group == "imported_provider_history":
+            parts = source.parts
+            valid = parts == ("provider-history", "manifest.json") or (
+                len(parts) == 3
+                and parts[0] == "provider-history"
+                and parts[1] in PROVIDERS
+                and _SHA256.fullmatch(parts[2]) is not None
+            )
+            if not valid:
+                raise ValueError("imported provider-history entries require owned sealed paths")
         forbidden = {".git", "credentials", "run-stage", "chat-attachments"}
         if forbidden.intersection(source.parts):
             raise ValueError("backup entries cannot include credentials, source Git, or stages")
+        return self
+
+
+class BackupImportedProviderSourceFile(_StrictBackupModel):
+    provider: ProviderId
+    sha256: str
+    size_bytes: int = Field(ge=0)
+
+    @field_validator("sha256")
+    @classmethod
+    def validate_sha256(cls, value: str) -> str:
+        if _SHA256.fullmatch(value) is None:
+            raise ValueError("backup imported-source digest must be lowercase SHA-256")
+        return value
+
+
+class BackupImportedProviderSourceInventory(_StrictBackupModel):
+    project_id: str
+    files: tuple[BackupImportedProviderSourceFile, ...]
+    payload_size_bytes: int = Field(ge=0)
+    fingerprint: str
+
+    @field_validator("project_id")
+    @classmethod
+    def validate_project_id(cls, value: str) -> str:
+        return _canonical_uuid4(value, label="backup imported-source project identity")
+
+    @field_validator("fingerprint")
+    @classmethod
+    def validate_fingerprint(cls, value: str) -> str:
+        if _SHA256.fullmatch(value) is None:
+            raise ValueError("backup imported-source fingerprint must be lowercase SHA-256")
+        return value
+
+    @model_validator(mode="after")
+    def validate_inventory(self) -> BackupImportedProviderSourceInventory:
+        keys = [(item.provider, item.sha256) for item in self.files]
+        if keys != sorted(keys) or len(keys) != len(set(keys)):
+            raise ValueError("backup imported-source files must be sorted and unique")
+        if sum(item.size_bytes for item in self.files) != self.payload_size_bytes:
+            raise ValueError("backup imported-source byte total differs from its files")
+        expected = _canonical_json_sha256(
+            {
+                "project_id": self.project_id,
+                "files": [item.model_dump(mode="json") for item in self.files],
+            }
+        )
+        if self.fingerprint != expected:
+            raise ValueError("backup imported-source fingerprint differs from its files")
         return self
 
 
@@ -426,10 +487,16 @@ class BackupAppDataCapturePlan(_StrictBackupModel):
     database_path: str | None
     database_unavailable_reason: str | None
     excluded_entries: tuple[str, ...]
+    captured_entries: tuple[str, ...] = ()
     deferred_entries: tuple[str, ...]
     unclassified_entries: tuple[str, ...]
 
-    @field_validator("excluded_entries", "deferred_entries", "unclassified_entries")
+    @field_validator(
+        "excluded_entries",
+        "captured_entries",
+        "deferred_entries",
+        "unclassified_entries",
+    )
     @classmethod
     def validate_entry_names(cls, value: tuple[str, ...], info) -> tuple[str, ...]:
         for name in value:
@@ -463,6 +530,7 @@ class BackupAppDataCapturePlan(_StrictBackupModel):
             raise ValueError("backup database availability must carry exactly one result")
         for values, label in (
             (self.excluded_entries, "excluded app-data entry"),
+            (self.captured_entries, "captured app-data entry"),
             (self.deferred_entries, "deferred app-data entry"),
             (self.unclassified_entries, "unclassified app-data entry"),
         ):
@@ -470,6 +538,7 @@ class BackupAppDataCapturePlan(_StrictBackupModel):
                 raise ValueError(f"{label} names must be sorted and unique")
         all_names = (
             *self.excluded_entries,
+            *self.captured_entries,
             *self.deferred_entries,
             *self.unclassified_entries,
         )
@@ -1021,6 +1090,60 @@ class BackupProjectCapture(_StrictBackupModel):
         return self
 
 
+class BackupImportedProviderSourceCapture(_StrictBackupModel):
+    project_id: str
+    inventory: BackupImportedProviderSourceInventory
+    present: bool
+    files: tuple[BackupFileEntry, ...]
+    total_bytes: int = Field(ge=0)
+
+    @field_validator("project_id")
+    @classmethod
+    def validate_project_id(cls, value: str) -> str:
+        return _canonical_uuid4(value, label="imported provider source project identity")
+
+    @model_validator(mode="after")
+    def validate_capture(self) -> BackupImportedProviderSourceCapture:
+        if self.inventory.project_id != self.project_id:
+            raise ValueError("backup imported-source inventory names another project")
+        if not self.present:
+            if self.inventory.files or self.files or self.total_bytes:
+                raise ValueError("an absent imported-source root cannot carry files")
+            return self
+        expected_sources = {"provider-history/manifest.json"}
+        expected_sources.update(
+            f"provider-history/{item.provider}/{item.sha256}" for item in self.inventory.files
+        )
+        sources = {entry.source_relative_path for entry in self.files}
+        if sources != expected_sources or len(sources) != len(self.files):
+            raise ValueError("backup imported-source files differ from their sealed inventory")
+        expected_archive_prefix = f"project-sources/{self.project_id}/"
+        if any(
+            entry.group != "imported_provider_history"
+            or entry.archive_path != expected_archive_prefix + entry.source_relative_path
+            for entry in self.files
+        ):
+            raise ValueError("backup imported-source archive paths escaped their project owner")
+        inventory_files = {
+            f"provider-history/{item.provider}/{item.sha256}": item for item in self.inventory.files
+        }
+        for entry in self.files:
+            if entry.source_relative_path == "provider-history/manifest.json":
+                payload = self.inventory.model_dump_json(indent=2).encode() + b"\n"
+                if (entry.sha256, entry.size_bytes) != (
+                    hashlib.sha256(payload).hexdigest(),
+                    len(payload),
+                ):
+                    raise ValueError("backup imported-source manifest bytes are not canonical")
+                continue
+            item = inventory_files[entry.source_relative_path]
+            if (entry.sha256, entry.size_bytes) != (item.sha256, item.size_bytes):
+                raise ValueError("backup imported-source bytes differ from their inventory")
+        if sum(entry.size_bytes for entry in self.files) != self.total_bytes:
+            raise ValueError("backup imported-source byte total differs from its files")
+        return self
+
+
 class BackupArchiveManifest(_StrictBackupModel):
     schema_version: Literal[BACKUP_MANIFEST_SCHEMA_VERSION] = BACKUP_MANIFEST_SCHEMA_VERSION
     space_id: str
@@ -1034,12 +1157,18 @@ class BackupArchiveManifest(_StrictBackupModel):
     source_deploy_key_label: str | None = None
     source_public_key_fingerprint: str | None = None
     excluded_app_data_entries: tuple[str, ...]
+    captured_app_data_entries: tuple[str, ...] = ()
     uncaptured_app_data_entries: tuple[str, ...]
     projects: tuple[BackupProjectCapture, ...]
+    imported_sources: tuple[BackupImportedProviderSourceCapture, ...] = ()
     status: Literal["complete", "partial"]
     total_bytes: int = Field(ge=0)
 
-    @field_validator("excluded_app_data_entries", "uncaptured_app_data_entries")
+    @field_validator(
+        "excluded_app_data_entries",
+        "captured_app_data_entries",
+        "uncaptured_app_data_entries",
+    )
     @classmethod
     def validate_app_data_names(cls, value: tuple[str, ...], info) -> tuple[str, ...]:
         for name in value:
@@ -1109,6 +1238,13 @@ class BackupArchiveManifest(_StrictBackupModel):
             for project in self.projects
         ):
             raise ValueError("backup manifest cannot capture a project from another space")
+        imported_ids = [capture.project_id for capture in self.imported_sources]
+        if (
+            tuple(sorted(imported_ids)) != tuple(imported_ids)
+            or len(imported_ids) != len(set(imported_ids))
+            or not set(imported_ids).issubset(project_ids)
+        ):
+            raise ValueError("backup imported-source captures must name unique archived projects")
         partial = bool(
             self.uncaptured_app_data_entries
             or any(project.status == "uncaptured" for project in self.projects)
@@ -1117,6 +1253,7 @@ class BackupArchiveManifest(_StrictBackupModel):
             raise ValueError("backup manifest status does not match its capture results")
         entries = [self.sqlite_snapshot]
         entries.extend(entry for project in self.projects for entry in project.files)
+        entries.extend(entry for capture in self.imported_sources for entry in capture.files)
         paths = [entry.archive_path for entry in entries]
         if len(paths) > BACKUP_INVENTORY_MAX_ENTRIES:
             raise ValueError("backup manifest exceeds its entry bound")
@@ -1126,12 +1263,23 @@ class BackupArchiveManifest(_StrictBackupModel):
             raise ValueError("backup manifest byte total does not match its entries")
         for values, label in (
             (self.excluded_app_data_entries, "excluded app-data entry"),
+            (self.captured_app_data_entries, "captured app-data entry"),
             (self.uncaptured_app_data_entries, "uncaptured app-data entry"),
         ):
             if tuple(sorted(set(values))) != values:
                 raise ValueError(f"{label} names must be sorted and unique")
-        if set(self.excluded_app_data_entries).intersection(self.uncaptured_app_data_entries):
-            raise ValueError("an app-data entry cannot be both excluded and uncaptured")
+        classified = (
+            *self.excluded_app_data_entries,
+            *self.captured_app_data_entries,
+            *self.uncaptured_app_data_entries,
+        )
+        if len(classified) != len(set(classified)):
+            raise ValueError("an app-data entry cannot have multiple archive classifications")
+        if (
+            any(capture.present for capture in self.imported_sources)
+            and "project-sources" not in self.captured_app_data_entries
+        ):
+            raise ValueError("imported provider sources require an explicit captured app-data root")
         return self
 
 
@@ -1153,6 +1301,7 @@ def inspect_app_data_capture_plan(data_dir: Path) -> BackupAppDataCapturePlan:
         raise ValueError("The backup app-data inventory exceeds its entry bound.")
 
     excluded: list[str] = []
+    captured: list[str] = []
     deferred: list[str] = []
     unclassified: list[str] = []
     database_path: str | None = None
@@ -1170,6 +1319,8 @@ def inspect_app_data_capture_plan(data_dir: Path) -> BackupAppDataCapturePlan:
                     database_reason = "The application database is not a safe regular file."
         elif entry.name in BACKUP_APP_DATA_EXCLUSIONS:
             excluded.append(entry.name)
+        elif entry.name in BACKUP_APP_DATA_CAPTURED:
+            captured.append(entry.name)
         elif entry.name in BACKUP_APP_DATA_DEFERRED:
             deferred.append(entry.name)
         else:
@@ -1181,6 +1332,7 @@ def inspect_app_data_capture_plan(data_dir: Path) -> BackupAppDataCapturePlan:
         database_path=database_path,
         database_unavailable_reason=database_reason,
         excluded_entries=tuple(excluded),
+        captured_entries=tuple(captured),
         deferred_entries=tuple(deferred),
         unclassified_entries=tuple(unclassified),
     )
@@ -1188,6 +1340,7 @@ def inspect_app_data_capture_plan(data_dir: Path) -> BackupAppDataCapturePlan:
 
 __all__ = [
     "BACKUP_APP_DATA_DATABASE",
+    "BACKUP_APP_DATA_CAPTURED",
     "BACKUP_APP_DATA_DEFERRED",
     "BACKUP_APP_DATA_EXCLUSIONS",
     "BACKUP_MANIFEST_SCHEMA_VERSION",
@@ -1202,6 +1355,9 @@ __all__ = [
     "BackupCanonicalSourcePlan",
     "BackupCheckoutRecoveryDescriptor",
     "BackupFileEntry",
+    "BackupImportedProviderSourceFile",
+    "BackupImportedProviderSourceInventory",
+    "BackupImportedProviderSourceCapture",
     "BackupManifestConfiguration",
     "BackupProjectCapture",
     "BackupRecoveryMachine",

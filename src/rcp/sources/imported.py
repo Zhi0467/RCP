@@ -10,6 +10,7 @@ import shutil
 import stat
 import uuid
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -70,6 +71,20 @@ class ImportedProviderSourceInventory(_StrictImportedSourceModel):
         return {provider: [str(root / provider)] for provider in providers}
 
 
+@dataclass(frozen=True)
+class ImportedProviderSourceSnapshotFile:
+    relative_path: str
+    sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True)
+class ImportedProviderSourceSnapshot:
+    inventory: ImportedProviderSourceInventory
+    present: bool
+    files: tuple[ImportedProviderSourceSnapshotFile, ...]
+
+
 class ImportedProviderSourceStore:
     """Publish and validate one project's immutable imported native histories."""
 
@@ -81,6 +96,30 @@ class ImportedProviderSourceStore:
         self.project_root = data_dir / "project-sources" / project_id
         self.root = self.project_root / "provider-history"
 
+    @staticmethod
+    def project_ids(data_dir: Path) -> tuple[str, ...]:
+        """Return the exact bounded project-owner inventory for this data directory."""
+
+        collection = data_dir / "project-sources"
+        if not os.path.lexists(collection):
+            return ()
+        _require_private_directory(collection, label="imported provider source collection")
+        values: list[str] = []
+        for entry in collection.iterdir():
+            try:
+                parsed = uuid.UUID(entry.name)
+            except ValueError as exc:
+                raise ValueError(
+                    "imported provider source collection has an unknown owner"
+                ) from exc
+            if parsed.version != 4 or str(parsed) != entry.name:
+                raise ValueError("imported provider source collection has an unknown owner")
+            _require_private_directory(entry, label="imported provider project root")
+            values.append(entry.name)
+        if len(values) > PROJECT_TRANSFER_INVENTORY_MAX_ENTRIES:
+            raise ValueError("imported provider source owner inventory exceeds its bound")
+        return tuple(sorted(values))
+
     def publish(
         self,
         capture_root: Path,
@@ -89,19 +128,140 @@ class ImportedProviderSourceStore:
         """Atomically publish one exact provider-history inventory or verify idempotence."""
 
         inventory = _inventory_from_entries(self.project_id, entries)
+        return self._publish_inventory(capture_root / "provider-history", inventory)
+
+    def publish_snapshot(
+        self,
+        source_root: Path,
+        inventory: ImportedProviderSourceInventory,
+    ) -> ImportedProviderSourceInventory:
+        """Publish one previously verified owner snapshot into the live store."""
+
+        if inventory.project_id != self.project_id:
+            raise ValueError("imported provider source snapshot names another project")
+        observed = _inventory_at(source_root, project_id=self.project_id)
+        if observed != inventory:
+            raise ValueError("imported provider source snapshot differs from its inventory")
+        return self._publish_inventory(source_root, inventory)
+
+    def capture_snapshot(
+        self,
+        destination_root: Path,
+        *,
+        expected_inventory: ImportedProviderSourceInventory | None = None,
+    ) -> ImportedProviderSourceSnapshot:
+        """Copy one exact owned tree into a new private lifecycle stage."""
+
+        inventory = self.inventory()
+        if expected_inventory is not None and inventory != expected_inventory:
+            raise ValueError("imported provider source inventory changed before capture")
+        if not os.path.lexists(self.root):
+            return ImportedProviderSourceSnapshot(
+                inventory=inventory,
+                present=False,
+                files=(),
+            )
+        if os.path.lexists(destination_root):
+            raise ValueError("imported provider source snapshot destination already exists")
+        _require_private_directory(
+            destination_root.parent,
+            label="imported provider source snapshot parent",
+        )
+        destination_root.mkdir(mode=0o700)
+        files: list[ImportedProviderSourceSnapshotFile] = []
+        try:
+            manifest_payload = _read_small_regular_file(self.root / _MANIFEST_NAME)
+            manifest_digest = hashlib.sha256(manifest_payload).hexdigest()
+            _copy_exact_regular_file(
+                self.root / _MANIFEST_NAME,
+                destination_root / _MANIFEST_NAME,
+                expected_sha256=manifest_digest,
+                expected_size=len(manifest_payload),
+            )
+            files.append(
+                ImportedProviderSourceSnapshotFile(
+                    relative_path=_MANIFEST_NAME,
+                    sha256=manifest_digest,
+                    size_bytes=len(manifest_payload),
+                )
+            )
+            for item in inventory.files:
+                provider_root = destination_root / item.provider
+                provider_root.mkdir(mode=0o700, exist_ok=True)
+                _copy_exact_regular_file(
+                    self.root / item.provider / item.sha256,
+                    provider_root / item.sha256,
+                    expected_sha256=item.sha256,
+                    expected_size=item.size_bytes,
+                )
+                files.append(
+                    ImportedProviderSourceSnapshotFile(
+                        relative_path=f"{item.provider}/{item.sha256}",
+                        sha256=item.sha256,
+                        size_bytes=item.size_bytes,
+                    )
+                )
+            _fsync_tree(destination_root)
+            observed = _inventory_at(destination_root, project_id=self.project_id)
+            if observed != inventory:
+                raise ValueError("captured imported provider source snapshot failed readback")
+            return ImportedProviderSourceSnapshot(
+                inventory=inventory,
+                present=True,
+                files=tuple(sorted(files, key=lambda item: item.relative_path)),
+            )
+        except BaseException:
+            shutil.rmtree(destination_root)
+            raise
+
+    def discard(
+        self,
+        *,
+        expected_inventory: ImportedProviderSourceInventory,
+    ) -> bool:
+        """Delete only one exact verified project-owned source tree."""
+
+        if expected_inventory.project_id != self.project_id:
+            raise ValueError("imported provider source cleanup names another project")
+        if not os.path.lexists(self.root):
+            self.inventory()
+            if expected_inventory.files:
+                raise ValueError("imported provider source cleanup root is missing")
+            return False
+        current = self.inventory()
+        if current != expected_inventory:
+            raise ValueError("imported provider source cleanup inventory changed")
+        project_entries = {entry.name for entry in self.project_root.iterdir()}
+        if project_entries != {"provider-history"}:
+            raise ValueError("imported provider project root contains unrelated state")
+        for item in current.files:
+            (self.root / item.provider / item.sha256).unlink()
+        for provider in sorted({item.provider for item in current.files}):
+            (self.root / provider).rmdir()
+        (self.root / _MANIFEST_NAME).unlink()
+        self.root.rmdir()
+        self.project_root.rmdir()
+        _fsync_directory(self.project_root.parent)
+        return True
+
+    def _publish_inventory(
+        self,
+        source_root: Path,
+        inventory: ImportedProviderSourceInventory,
+    ) -> ImportedProviderSourceInventory:
         if os.path.lexists(self.root):
             current = self.inventory()
             if current != inventory:
                 raise ValueError("imported provider source root already contains another inventory")
             return current
-        _require_directory(capture_root, label="project transfer capture root")
+        _require_directory(source_root, label="imported provider source publication root")
         _ensure_private_directory(self.project_root.parent)
         _ensure_private_directory(self.project_root)
         staging = self.project_root / f".provider-history-{uuid.uuid4().hex}"
         staging.mkdir(mode=0o700)
         try:
             for item in inventory.files:
-                source = capture_root / "provider-history" / item.provider / item.sha256
+                source = source_root / item.provider / item.sha256
                 destination = staging / item.provider / item.sha256
                 destination.parent.mkdir(mode=0o700, exist_ok=True)
                 _copy_exact_regular_file(
@@ -135,36 +295,18 @@ class ImportedProviderSourceStore:
         """Validate the sealed receipt and every owned byte before returning roots."""
 
         if not os.path.lexists(self.root):
+            if os.path.lexists(self.project_root):
+                _require_private_directory(
+                    self.project_root,
+                    label="imported provider project root",
+                )
+                raise ValueError("imported provider project root lacks its sealed provider history")
             return _empty_inventory(self.project_id)
         _require_private_directory(
             self.project_root.parent,
             label="imported provider source collection",
         )
-        _require_private_directory(self.project_root, label="imported provider project root")
-        _require_private_directory(self.root, label="imported provider source root")
-        manifest_path = self.root / _MANIFEST_NAME
-        payload = _read_small_regular_file(manifest_path)
-        try:
-            expected = ImportedProviderSourceInventory.model_validate_json(payload)
-        except ValueError as exc:
-            raise ValueError("imported provider source manifest is invalid") from exc
-        if expected.project_id != self.project_id:
-            raise ValueError("imported provider source manifest names another project")
-
-        expected_paths = {_MANIFEST_NAME}
-        for item in expected.files:
-            provider_root = self.root / item.provider
-            _require_private_directory(
-                provider_root,
-                label="imported provider source provider root",
-            )
-            path = provider_root / item.sha256
-            _verify_regular_file(path, item.sha256, item.size_bytes)
-            expected_paths.add(f"{item.provider}/{item.sha256}")
-        observed = _relative_inventory(self.root)
-        if observed != expected_paths:
-            raise ValueError("imported provider source root differs from its sealed inventory")
-        return expected
+        return _inventory_at(self.root, project_id=self.project_id)
 
     def source_roots(self) -> dict[ProviderId, list[str]]:
         return self.inventory().roots(self.root)
@@ -209,6 +351,30 @@ def _empty_inventory(project_id: str) -> ImportedProviderSourceInventory:
         payload_size_bytes=0,
         fingerprint=_inventory_fingerprint(project_id, ()),
     )
+
+
+def _inventory_at(root: Path, *, project_id: str) -> ImportedProviderSourceInventory:
+    _require_private_directory(root.parent, label="imported provider project root")
+    _require_private_directory(root, label="imported provider source root")
+    payload = _read_small_regular_file(root / _MANIFEST_NAME)
+    try:
+        expected = ImportedProviderSourceInventory.model_validate_json(payload)
+    except ValueError as exc:
+        raise ValueError("imported provider source manifest is invalid") from exc
+    if expected.project_id != project_id:
+        raise ValueError("imported provider source manifest names another project")
+    expected_paths = {_MANIFEST_NAME}
+    for item in expected.files:
+        provider_root = root / item.provider
+        _require_private_directory(
+            provider_root,
+            label="imported provider source provider root",
+        )
+        _verify_regular_file(provider_root / item.sha256, item.sha256, item.size_bytes)
+        expected_paths.add(f"{item.provider}/{item.sha256}")
+    if _relative_inventory(root) != expected_paths:
+        raise ValueError("imported provider source root differs from its sealed inventory")
+    return expected
 
 
 def _inventory_fingerprint(
@@ -408,5 +574,7 @@ def _fsync_tree(root: Path) -> None:
 __all__ = [
     "ImportedProviderSourceFile",
     "ImportedProviderSourceInventory",
+    "ImportedProviderSourceSnapshot",
+    "ImportedProviderSourceSnapshotFile",
     "ImportedProviderSourceStore",
 ]

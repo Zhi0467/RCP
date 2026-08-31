@@ -17,6 +17,7 @@ from rcp.projects import (
 )
 from rcp.providers import configured_runtime_id
 from rcp.server_ops.backup_models import (
+    BACKUP_APP_DATA_CAPTURED,
     BACKUP_APP_DATA_DEFERRED,
     BACKUP_APP_DATA_EXCLUSIONS,
     BACKUP_MANIFEST_SCHEMA_VERSION,
@@ -27,12 +28,15 @@ from rcp.server_ops.backup_models import (
     BackupCanonicalSourceFile,
     BackupCanonicalSourcePlan,
     BackupFileEntry,
+    BackupImportedProviderSourceCapture,
+    BackupImportedProviderSourceInventory,
     BackupManifestConfiguration,
     BackupProjectCapture,
     inspect_app_data_capture_plan,
 )
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.setup import render_prepared_team_manifest
+from rcp.sources import ImportedProviderSourceStore
 from rcp.storage import (
     ProjectProvisioningGitCheckRecord,
     ProjectProvisioningMachineRecord,
@@ -53,7 +57,8 @@ FINGERPRINT = "SHA256:" + ("A" * 43)
 
 
 def test_backup_root_classification_is_an_exact_closed_policy() -> None:
-    assert {"project-sources"} == BACKUP_APP_DATA_DEFERRED
+    assert {"project-sources"} == BACKUP_APP_DATA_CAPTURED
+    assert not BACKUP_APP_DATA_DEFERRED
     assert {
         "bootstrap-manifests",
         "chat-attachments",
@@ -229,7 +234,8 @@ def test_app_data_inventory_is_closed_and_never_follows_unknown_roots(tmp_path: 
 
     assert plan.database_path == str(data_dir / "rcp.sqlite3")
     assert plan.excluded_entries == ("project-snapshots", "rcp.sqlite3-wal")
-    assert plan.deferred_entries == ("project-sources",)
+    assert plan.captured_entries == ("project-sources",)
+    assert plan.deferred_entries == ()
     assert plan.unclassified_entries == ("future-durable-root",)
     assert plan.complete is False
 
@@ -447,6 +453,30 @@ def test_archive_manifest_round_trips_and_calculates_complete_or_partial(
 
     assert manifest.schema_version == BACKUP_MANIFEST_SCHEMA_VERSION
     assert BackupArchiveManifest.model_validate_json(manifest.model_dump_json()) == manifest
+    absent_inventory = ImportedProviderSourceStore(
+        tmp_path / "data",
+        project.project_id,
+    ).inventory()
+    with_absent_source = manifest.model_copy(
+        update={
+            "imported_sources": (
+                BackupImportedProviderSourceCapture(
+                    project_id=project.project_id,
+                    inventory=BackupImportedProviderSourceInventory.model_validate(
+                        absent_inventory.model_dump()
+                    ),
+                    present=False,
+                    files=(),
+                    total_bytes=0,
+                ),
+            )
+        }
+    )
+    assert "project-sources" not in with_absent_source.captured_app_data_entries
+    assert (
+        BackupArchiveManifest.model_validate(with_absent_source.model_dump(mode="python"))
+        == with_absent_source
+    )
 
     uncaptured = BackupProjectCapture(
         project_id=str(uuid.uuid4()),

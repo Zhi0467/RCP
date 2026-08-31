@@ -12,6 +12,8 @@ from rcp.sources.cache import (
 from rcp.sources.imported import (
     ImportedProviderSourceFile,
     ImportedProviderSourceInventory,
+    ImportedProviderSourceSnapshot,
+    ImportedProviderSourceSnapshotFile,
     ImportedProviderSourceStore,
 )
 from rcp.sources.indexer import (
@@ -42,6 +44,8 @@ __all__ = [
     "OriginalConversationSource",
     "ImportedProviderSourceFile",
     "ImportedProviderSourceInventory",
+    "ImportedProviderSourceSnapshot",
+    "ImportedProviderSourceSnapshotFile",
     "ImportedProviderSourceStore",
     "preflight_provider_roots",
     "RebuildableCache",

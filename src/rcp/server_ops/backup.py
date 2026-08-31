@@ -620,12 +620,15 @@ def build_archive_manifest(
         source_deploy_key_label=source_label,
         source_public_key_fingerprint=source_fingerprint,
         excluded_app_data_entries=sqlite_receipt.app_data_plan.excluded_entries,
+        captured_app_data_entries=sqlite_receipt.app_data_plan.captured_entries,
         uncaptured_app_data_entries=uncaptured_app_data,
         projects=project_receipt.projects,
+        imported_sources=project_receipt.imported_sources,
         status=("partial" if project_receipt.status == "partial" else "complete"),
         total_bytes=(
             sqlite_receipt.sqlite_snapshot.size_bytes
             + sum(project.total_bytes for project in project_receipt.projects)
+            + sum(capture.total_bytes for capture in project_receipt.imported_sources)
         ),
     )
     if (manifest.status == "partial") != (
@@ -808,6 +811,7 @@ def _write_deterministic_archive(
         entries = (
             manifest.sqlite_snapshot,
             *(entry for project in manifest.projects for entry in project.files),
+            *(entry for capture in manifest.imported_sources for entry in capture.files),
         )
         for entry in sorted(entries, key=lambda item: item.archive_path):
             source = (

@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh | — | T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e | — | T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -69,8 +69,9 @@ reserved identity append, registration, and crash recovery without rerunning
 machine preparation. F6b now consumes O2a/O2b to rehearse the candidate against
 copied real state under one reusable startup-effect fence. F6c's current-owner
 checkpoint core now publishes and temp-restores one exact local rollback
-boundary with crash-safe replacement journals. Later T3e/T4b owners extend the
-checkpoint's typed inventory. P6c now publishes and independently enforces the
+boundary with crash-safe replacement journals. T3e now preserves imported
+provider histories through that checkpoint; T4b later adds completed transfer
+entries. P6c now publishes and independently enforces the
 ordinary team-project deletion guard through the card, Web, API, and catalog.
 
 ## Objective
@@ -232,6 +233,57 @@ decision blocks the feature lanes. Q10 and the later public branch-protection
 gate are deliberately future work and do not block this plan.
 
 ### Implementation log
+
+#### 2026-08-31 — T3e imported provider-source lifecycle integration complete
+
+- `ImportedProviderSourceStore` is now the sole lifecycle owner for the durable
+  `<data>/project-sources/<project-id>/provider-history` tree. It inventories
+  exact project owners, captures an immutable private snapshot, atomically
+  publishes a validated snapshot, and deletes only one exact request-bound
+  inventory. Incomplete roots, unknown owners, unsafe modes, symlinks, special
+  files, extra files, size drift, and digest drift are refused.
+- O2a records one sealed imported-source inventory for every project in its
+  copied SQLite boundary and rejects orphan owner roots. O2b revalidates and
+  copies each present tree through the owner into its private capture stage;
+  absent trees remain explicit absent captures. `project-sources/` is a typed
+  captured app-data root only when it exists, so ordinary projects with no
+  imported history still produce valid complete backups.
+- The archive manifest has one closed imported-provider-history file group,
+  binds the canonical owner manifest plus every content-addressed data file,
+  includes those bytes in global uniqueness and byte totals, and streams only
+  declared members. Native provider homes, credentials, SSH state, source
+  repositories, stages, caches, and transfer inbox/export roots remain excluded.
+- Restore extraction accepts only those declared members. Project publication
+  publishes and reads back every imported inventory before making any restored
+  project reachable, refuses a conflicting existing owner, checks the complete
+  owner-id set, and records the imported capture digest/file/byte counts in the
+  crash-reentrant per-project publication receipt. A repeated matching
+  publication is idempotent.
+- Candidate update rehearsal publishes imported history only into its disposable
+  copied data directory. The local update checkpoint binds the typed captures,
+  snapshots them through the same owner, validates them in the immutable
+  payload, temporary reproduction, restored live root, and every journal
+  re-entry, and restores changed bytes by whole-root replacement rather than
+  overlay.
+- Failure cleanup remains separate from team-project deletion. The catalog
+  helper requires the exact linked incoming-transfer request, target side,
+  pre-activation phase, project identity, expected inventory, and absence of a
+  registered project before calling the owner's bounded discard. Ordinary
+  Delete still refuses at the team-space guard before any filesystem or database
+  mutation; T3f will invoke this helper from the concrete importer failure path.
+- Focused coverage proves deterministic archive membership and byte-for-byte
+  restore readback, restore idempotence and conflict refusal before visibility,
+  candidate rehearsal isolation from live provider state, update rollback and
+  unsafe-payload refusal, owner corruption rejection, pre-activation cleanup,
+  post-activation cleanup refusal, and the unchanged team Delete guard. The
+  complete focused backup/restore/update/deletion suite passes outside the
+  macOS sandbox, including its real Unix-socket tests.
+- The one independent read-only audit found two gaps and both were corrected:
+  absent per-project captures no longer require a nonexistent app-data root,
+  and update restore validates imported bytes through the concrete owner rather
+  than relying only on a generic directory comparison. No second audit round was
+  run. No live provider home, SSH host, real lab data, or off-server backup was
+  touched in this packet; the S98/S104/V1 live drives remain open.
 
 #### 2026-08-30 — D6 fixed desktop operator bridge implemented
 
@@ -1450,8 +1502,9 @@ gate are deliberately future work and do not block this plan.
   unknown direct `.research` root makes the plan incomplete.
 - The app-data inventory is likewise closed: the live database is only an O2a
   online-snapshot input; known runtime, cache, locator, attachment, stage, and
-  transfer roots are explicit exclusions; `project-sources/` is explicitly
-  deferred to T3e; every other direct child makes capture partial. Unsafe
+  transfer roots are explicit exclusions; T3e now classifies
+  `project-sources/` through its concrete owner; every other direct child makes
+  capture partial. Unsafe
   database symlinks or special files are refused rather than followed.
 - Ten new O1 regressions plus the affected transport, remote-script, and
   graph-branch suites pass (151 tests total). Focused Ruff and formatting pass.
@@ -1661,9 +1714,9 @@ gate are deliberately future work and do not block this plan.
   them; retention-swept historical references are known-absent rather than a
   permanent update blocker. It explicitly excludes remote stages, provider/SSH
   homes, credentials, source
-  and project checkouts, locks, runtime metadata, and rebuildable caches.
-  `project-sources` remains a loud deferred root for T3e. Nonempty transfer
-  inbox/export roots also fail closed until their later typed receipt owners
+  and project checkouts, locks, runtime metadata, and rebuildable caches. T3e
+  now binds and owner-validates `project-sources` in this same replacement
+  payload. Nonempty transfer inbox/export roots still fail closed until their typed receipt owners
   can distinguish complete durable files from partial work.
 - Every captured project remains in the proof inventory. Server-local state
   repositories additionally become exact `.research` replacement roots;
@@ -1699,8 +1752,8 @@ gate are deliberately future work and do not block this plan.
   parent-directory durability, and payload tamper rejection. The complete
   backend suite, all 437 Web tests, the production Web build, and Ruff pass.
   The independent audit's seven findings are closed here: five in this core,
-  unfinished-journal entry wiring in F6d, and future typed-root extensions in
-  their already-assigned T3e/T4b owners.
+  unfinished-journal entry wiring in F6d, and typed-root extensions now owned by
+  T3e for imported sources and later by T4b for completed transfer entries.
 
 #### 2026-08-29 — F6d cutover and loud rollback implemented; live rerun externally blocked
 
@@ -2898,11 +2951,10 @@ closed admission boundary before switching.
 
 ### F6c — Coherent update rollback checkpoint
 
-Status: current-owner checkpoint core complete on 2026-08-29. This means F6d
-can consume the verified local replacement and journal mechanism; it does not
-claim the future imported-source or transfer roots already exist. Their
-already-ordered T3e/T4b packets must add typed inventory through this owner.
-Until then, a nonempty deferred root fails the update rather than being omitted.
+Status: current-owner checkpoint core complete on 2026-08-29. F6d consumes the
+verified local replacement and journal mechanism. T3e has added typed imported
+provider-source capture and owner readback through this boundary; T4b still owns
+completed transfer entries, whose nonempty roots fail closed until then.
 
 Own:
 
@@ -2931,9 +2983,9 @@ F6d consumes it. Rollback is replacement, not an overlay: after the candidate is
 stopped, its app-data root and each candidate-touched server-local `.research`
 root are atomically moved to an operation-specific quarantine, then rebuilt from
 the checkpoint's SQLite, retained canonical/chat/Paper/facts inputs, local
-stages, complete attachment sets, and bootstrap manifests. T3e later adds
-project-owned imported sources, and T4b later adds completed transfer entries,
-through typed owner inventories; their presence fails closed until then.
+stages, complete attachment sets, bootstrap manifests, and T3e's project-owned
+imported sources through typed owner inventories. T4b later adds completed
+transfer entries; their presence fails closed until then.
 Materialized outputs and caches are regenerated by the previous release. This
 removes candidate-created unknown roots instead of
 leaving them beside restored state; the quarantine remains for diagnosis until
@@ -3700,8 +3752,8 @@ project deploy-key labels/fingerprints already present in provisioning receipts.
 These are revocation pointers only; no private key, SSH credential, or provider
 auth material enters the capture.
 
-T3e later adds the explicit imported-provider-history file group through this
-same manifest owner; O1 does not guess at a future path.
+T3e adds the explicit imported-provider-history file group through this same
+manifest owner; O1's other classifications remain closed.
 
 The plan is read-only and does not pause dispatch. It must distinguish a project
 captured through head N from a project merely present in SQLite. Enumerate the
@@ -3814,9 +3866,9 @@ times, then mark the project uncaptured on continued churn. Atomic replacement
 therefore yields the old or new whole file, never a mixed claim. An
 unknown/malformed/symlink/special required entry or missing referenced kept file
 makes that project uncaptured rather than silently omitted. Remote failure
-marks that project uncaptured while preserving other captures. T3e later adds
-its explicit imported-provider-history file group through this same capture
-owner; O2b does not guess at a future directory. Never walk or copy the live
+marks that project uncaptured while preserving other captures. T3e adds its
+explicit imported-provider-history file group through this same capture owner;
+O2b still never guesses at another directory. Never walk or copy the live
 execution account's provider home.
 
 Never walk whole repository roots or include source, credentials, `.git`,
@@ -4378,7 +4430,7 @@ operator cannot mint a replacement member credential or impersonate that
 person. Never silently claim that a point-in-time archive contains revocations
 made later.
 
-T3e later adds the explicit imported-provider-history entry and byte-for-byte
+T3e adds the explicit imported-provider-history entry and byte-for-byte
 readback through O4c's publication owner and this packet's final readback. The
 restored RCP chats, task answers, and Paper content remain readable, but no
 pre-restore task, chat turn, or writing-session row can Resume, Retry, repair,
@@ -5466,6 +5518,11 @@ native-root probe or downgrade imported-source corruption into a provider-root
 warning.
 
 ### T3e — Imported provider-source lifecycle integration
+
+Status: complete hermetically on 2026-08-31. Backup, archive, restore
+publication/readback, candidate rehearsal, local update checkpoint/rollback,
+and bounded pre-activation cleanup all use T3d's concrete owner. The remaining
+target-import call site belongs to T3f; S98/S104/V1 retain the live drives.
 
 Own:
 
