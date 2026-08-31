@@ -258,13 +258,17 @@ def _run_restore_action(
 def _run_restore_process(
     argv: tuple[str, ...],
 ) -> tuple[int, list[dict[str, object]]]:
-    environment = os.environ.copy()
-    environment["RCP_LIVE_SERVER_EXCEPTION_FRAMES"] = "1"
-    result = _run(
-        argv,
-        environment=environment,
-        timeout=_COMMAND_TIMEOUT_SECONDS,
+    try:
+        executable = argv.index("/usr/local/bin/rcp")
+    except ValueError:
+        pytest.fail("restore live diagnostic could not find the installed CLI")
+    diagnostic_argv = (
+        *argv[:executable],
+        "/usr/bin/env",
+        "RCP_LIVE_SERVER_EXCEPTION_FRAMES=1",
+        *argv[executable:],
     )
+    result = _run(diagnostic_argv, timeout=_COMMAND_TIMEOUT_SECONDS)
     if result.returncode not in {0, 3}:
         pytest.fail(
             f"server restore returned {result.returncode}; stdout tail={result.stdout[-4096:]!r}; "
