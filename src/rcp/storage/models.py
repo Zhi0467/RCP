@@ -1503,7 +1503,7 @@ class ProjectTransferImportRecord(_StrictProvisioningModel):
         return self
 
 
-ProjectTransferUploadStatus = Literal["active", "complete", "invalidated"]
+ProjectTransferUploadStatus = Literal["active", "complete", "consumed", "invalidated"]
 
 
 class ProjectTransferUploadCompleteReceipt(_StrictProvisioningModel):
@@ -1587,9 +1587,9 @@ class ProjectTransferUploadRecord(_StrictProvisioningModel):
         if self.status == "active":
             if self.receipt is not None or self.invalidated_at is not None:
                 raise ValueError("active project transfer upload cannot retain a terminal receipt")
-        elif self.status == "complete":
+        elif self.status in {"complete", "consumed"}:
             if self.receipt is None or self.invalidated_at is not None:
-                raise ValueError("complete project transfer upload requires its receipt")
+                raise ValueError("completed project transfer upload requires its receipt")
             if (
                 self.receipt.request_id != self.request_id
                 or self.receipt.project_id != self.project_id
@@ -1606,6 +1606,201 @@ class ProjectTransferUploadRecord(_StrictProvisioningModel):
             raise ValueError(
                 "invalidated project transfer upload requires only its invalidation time"
             )
+        return self
+
+
+class ProjectTransferRegisteredProject(_StrictProvisioningModel):
+    """The stable catalog boundary committed by target activation."""
+
+    project_id: str
+    home_space_id: str
+    locator: str
+    name: str
+    state_location: str
+    state_remote: bool
+    revision: int | None = Field(default=None, ge=0)
+    registered_at: str
+
+    @field_validator("project_id", "home_space_id")
+    @classmethod
+    def validate_identifier(cls, value: str, info: ValidationInfo) -> str:
+        try:
+            return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("registered_at")
+    @classmethod
+    def validate_registered_at(cls, value: str) -> str:
+        _required_timestamp(value)
+        return value
+
+
+class ProjectTransferActivationReceipt(_StrictProvisioningModel):
+    """One compound target-home activation boundary, without either raw proof."""
+
+    target_request_id: str
+    source_request_id: str
+    project_id: str
+    source_space_id: str
+    target_space_id: str
+    archive_sha256: str
+    source_fence_head: GraphHeadRef
+    source_release_proof_sha256: str
+    target_activation_proof_sha256: str
+    upload_lease_boundary_sha256: str
+    upload_archive_sha256: str
+    upload_archive_size_bytes: int = Field(ge=1)
+    upload_completed_at: str
+    archive_manifest_sha256: str
+    target_manifest_sha256: str
+    operational_payload_sha256: str
+    publication_sha256: str
+    import_completed_at: str
+    provisioning_request_id: str
+    provisioning_revision: int = Field(ge=1)
+    provisioning_final_review_sha256: str
+    provisioning_completed_at: str
+    admitted_by: AuthorizedHuman
+    registered_project: ProjectTransferRegisteredProject
+    first_member: ProjectMemberRecord
+    activated_at: str
+
+    @field_validator(
+        "target_request_id",
+        "source_request_id",
+        "project_id",
+        "source_space_id",
+        "target_space_id",
+        "provisioning_request_id",
+    )
+    @classmethod
+    def validate_identifier(cls, value: str, info: ValidationInfo) -> str:
+        try:
+            return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator(
+        "archive_sha256",
+        "source_release_proof_sha256",
+        "target_activation_proof_sha256",
+        "upload_lease_boundary_sha256",
+        "upload_archive_sha256",
+        "archive_manifest_sha256",
+        "target_manifest_sha256",
+        "operational_payload_sha256",
+        "publication_sha256",
+        "provisioning_final_review_sha256",
+    )
+    @classmethod
+    def validate_digest(cls, value: str, info: ValidationInfo) -> str:
+        if _SHA256_HEX.fullmatch(value) is None:
+            raise ValueError(f"{info.field_name} must be lowercase SHA-256")
+        return value
+
+    @field_validator(
+        "upload_completed_at",
+        "import_completed_at",
+        "provisioning_completed_at",
+        "activated_at",
+    )
+    @classmethod
+    def validate_timestamp(cls, value: str) -> str:
+        _required_timestamp(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_boundary(self) -> ProjectTransferActivationReceipt:
+        if self.source_space_id == self.target_space_id:
+            raise ValueError("a project transfer activation must cross spaces")
+        if self.provisioning_request_id != self.target_request_id:
+            raise ValueError("target activation must complete its linked provisioning request")
+        if self.admitted_by.space_id != self.target_space_id:
+            raise ValueError("target activation actor belongs to another space")
+        if (
+            self.registered_project.project_id != self.project_id
+            or self.registered_project.home_space_id != self.target_space_id
+        ):
+            raise ValueError("target activation project registration does not match its home")
+        if (
+            self.first_member.project_id != self.project_id
+            or self.first_member.user_id != self.admitted_by.user_id
+            or self.first_member.seated_by != self.admitted_by.user_id
+        ):
+            raise ValueError("target activation first member does not match its admitting actor")
+        if self.source_fence_head.target.kind != "main":
+            raise ValueError("target activation must bind the main source fence")
+        if self.upload_archive_sha256 != self.archive_sha256:
+            raise ValueError("target activation upload does not match its bound archive")
+        activated_at = _required_timestamp(self.activated_at)
+        for completed_at in (
+            self.upload_completed_at,
+            self.import_completed_at,
+            self.provisioning_completed_at,
+            self.registered_project.registered_at,
+            self.first_member.seated_at,
+        ):
+            if _required_timestamp(completed_at) > activated_at:
+                raise ValueError("target activation precedes one of its committed boundaries")
+        return self
+
+
+class ProjectTransferRestoreReentryReceipt(_StrictProvisioningModel):
+    """One reviewed replacement-machine relay boundary after restore."""
+
+    target_request_id: str
+    source_request_id: str
+    project_id: str
+    source_space_id: str
+    target_space_id: str
+    restored_revision: int = Field(ge=0)
+    resume_phase: Literal["archive_bound"]
+    provisioning_revision: int = Field(ge=1)
+    provisioning_final_review_sha256: str
+    confirmed_by: AuthorizedHuman
+    archive_sha256: str
+    archive_size_bytes: int = Field(ge=1)
+    replacement_lease_boundary_sha256: str
+    created_at: str
+
+    @field_validator(
+        "target_request_id",
+        "source_request_id",
+        "project_id",
+        "source_space_id",
+        "target_space_id",
+    )
+    @classmethod
+    def validate_identifier(cls, value: str, info: ValidationInfo) -> str:
+        try:
+            return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator(
+        "provisioning_final_review_sha256",
+        "archive_sha256",
+        "replacement_lease_boundary_sha256",
+    )
+    @classmethod
+    def validate_digest(cls, value: str, info: ValidationInfo) -> str:
+        if _SHA256_HEX.fullmatch(value) is None:
+            raise ValueError(f"{info.field_name} must be lowercase SHA-256")
+        return value
+
+    @field_validator("created_at")
+    @classmethod
+    def validate_created_at(cls, value: str) -> str:
+        _required_timestamp(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_boundary(self) -> ProjectTransferRestoreReentryReceipt:
+        if self.source_space_id == self.target_space_id:
+            raise ValueError("a restored transfer re-entry must cross spaces")
+        if self.confirmed_by.space_id != self.target_space_id:
+            raise ValueError("restored transfer confirmer belongs to another space")
         return self
 
 
@@ -3137,6 +3332,7 @@ __all__ = [
     "ProjectProvisioningStatus",
     "ProjectProvisioningStepReceiptRecord",
     "ProjectTransferPhase",
+    "ProjectTransferActivationReceipt",
     "ProjectTransferProofKind",
     "ProjectTransferProofState",
     "ProjectTransferRepositoryBinding",
@@ -3145,6 +3341,8 @@ __all__ = [
     "ProjectTransferLinkReceipt",
     "ProjectTransferRepositorySource",
     "ProjectTransferRequestRecord",
+    "ProjectTransferRegisteredProject",
+    "ProjectTransferRestoreReentryReceipt",
     "ProjectTransferResolvedPath",
     "ProjectTransferSide",
     "ProjectTransferSourceConfiguration",

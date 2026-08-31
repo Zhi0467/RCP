@@ -15,6 +15,7 @@ import pytest
 import rcp.transfer.target as target
 from rcp.server_ops.cli import CallerIdentity, ServerEventEmitter
 from rcp.server_ops.control import (
+    ServerControlProjectTransferActivationResult,
     ServerControlProjectTransferUploadResult,
 )
 from rcp.server_ops.models import ServerCommandRequest
@@ -354,6 +355,7 @@ class _FakeUploadControl:
     ) -> None:
         self.plan = plan
         self.completions: list[tuple[str, str]] = []
+        self.activations: list[tuple[str, str]] = []
 
     def project_transfer_upload_plan(
         self,
@@ -373,6 +375,29 @@ class _FakeUploadControl:
         return ServerControlProjectTransferUploadResult(
             **self.plan.model_dump(exclude={"state"}),
             state="complete",
+        )
+
+    def activate_project_transfer(
+        self,
+        *,
+        request_id: str,
+        lease_boundary_sha256: str,
+    ) -> ServerControlProjectTransferActivationResult:
+        self.activations.append((request_id, lease_boundary_sha256))
+        return ServerControlProjectTransferActivationResult(
+            instance_id=self.plan.instance_id,
+            pid=self.plan.pid,
+            data_dir_id=self.plan.data_dir_id,
+            space_id=self.plan.space_id,
+            target_request_id=self.plan.request_id,
+            source_request_id=str(uuid.uuid4()),
+            project_id=self.plan.project_id,
+            archive_sha256=self.plan.archive_sha256,
+            upload_lease_boundary_sha256=self.plan.lease_boundary_sha256,
+            archive_manifest_sha256="c" * 64,
+            target_manifest_sha256="d" * 64,
+            publication_sha256="e" * 64,
+            activated_at="2026-08-31T20:00:00+00:00",
         )
 
 
@@ -416,6 +441,11 @@ def test_cli_owner_streams_stdin_without_opening_sqlite(
     execution = emitter.finish(failed_exit_code=prepared.failed_exit_code)
 
     assert execution.exit_code == 0
+    assert [step.phase for step in prepared.plan.steps] == [
+        "transfer_upload",
+        "transfer_activation",
+    ]
     assert json.loads(output.getvalue().splitlines()[-1])["step"]["state"] == "succeeded"
     assert control.completions == [(REQUEST_ID, "b" * 64)]
+    assert control.activations == [(REQUEST_ID, "b" * 64)]
     assert target.target_transfer_archive_path(root, REQUEST_ID).read_bytes() == payload

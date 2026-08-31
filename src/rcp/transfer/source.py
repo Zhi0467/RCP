@@ -745,6 +745,14 @@ def stage_transfer_archive(
             _discard_new_stage(root)
 
 
+def discard_transfer_archive_stage(staging_root: Path) -> None:
+    """Remove one exact caller-owned decode tree after validating its parent."""
+
+    root = Path(staging_root)
+    _validate_stage_parent(root.parent)
+    _discard_new_stage(root)
+
+
 def _write_deterministic_archive(
     stream: BinaryIO,
     manifest: TransferArchiveManifest,
@@ -914,8 +922,6 @@ def _read_tar(descriptor: int, *, staging_root: Path | None) -> TransferArchiveM
             if len(manifest.entries) > PROJECT_TRANSFER_INVENTORY_MAX_ENTRIES:
                 raise ValueError("transfer archive exceeds its entry bound")
 
-            if staging_root is not None:
-                _write_staged_member(staging_root, first.name, manifest_bytes)
             for entry in manifest.entries:
                 member = next(members, None)
                 if member is None or member.name != entry.archive_path:
@@ -1256,6 +1262,7 @@ __all__ = [
     "TransferArchiveReadback",
     "advance_source_project_transfer",
     "complete_source_project_transfer",
+    "discard_transfer_archive_stage",
     "read_transfer_archive",
     "seal_transfer_archive",
     "source_transfer_export_path",

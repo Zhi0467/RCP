@@ -22,6 +22,8 @@ def inspect_direct_root(root_path: str) -> list[dict[str, str]]:
     try:
         root_metadata = root.lstat()
         entries = sorted(root.iterdir(), key=lambda path: path.name)
+    except FileNotFoundError:
+        return []
     except OSError as exc:
         raise BackupRootInspectionError("The canonical root is unavailable.") from exc
     if not stat.S_ISDIR(root_metadata.st_mode) or len(entries) > _MAX_DIRECT_ENTRIES:

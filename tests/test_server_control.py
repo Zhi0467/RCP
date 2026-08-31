@@ -34,6 +34,7 @@ from rcp.server_ops.control import (
     ServerControlError,
     ServerControlPeer,
     ServerControlProbeResult,
+    ServerControlProjectTransferActivationResult,
     ServerControlProjectTransferUploadResult,
     ServerControlRequest,
     ServerControlServer,
@@ -48,6 +49,7 @@ from rcp.server_runtime import (
 from rcp.storage import AppStore
 from rcp.transfer.target import upload_target_transfer_archive
 from tests.test_project_transfer_request_storage import _archive_bound_pair
+from tests.test_transfer_import import _archive_fixture
 
 
 @pytest.fixture
@@ -212,6 +214,33 @@ def test_transfer_upload_control_shapes_bind_request_and_lease(
     )
     complete = ServerControlProjectTransferUploadResult(**identity, state="complete")
     assert control._validated_control_result(complete_request, complete) == complete
+    consumed = complete.model_copy(update={"state": "consumed"})
+    assert control._validated_control_result(complete_request, consumed) == consumed
+
+    activation_request = ServerControlRequest(
+        request_id=str(uuid.uuid4()),
+        instance_id=instance_id,
+        operation="project_transfer_activate",
+        selector_kind="request",
+        selector_id=request_id,
+        boundary_sha256=identity["lease_boundary_sha256"],
+    )
+    activation = ServerControlProjectTransferActivationResult(
+        instance_id=instance_id,
+        pid=os.getpid(),
+        data_dir_id=identity["data_dir_id"],
+        space_id=space_id,
+        target_request_id=request_id,
+        source_request_id=str(uuid.uuid4()),
+        project_id=project_id,
+        archive_sha256=identity["archive_sha256"],
+        upload_lease_boundary_sha256=identity["lease_boundary_sha256"],
+        archive_manifest_sha256="c" * 64,
+        target_manifest_sha256="d" * 64,
+        publication_sha256="e" * 64,
+        activated_at="2026-08-31T20:00:00+00:00",
+    )
+    assert control._validated_control_result(activation_request, activation) == activation
 
     metadata = ServerMetadata.create(
         tmp_path / "data",
@@ -222,7 +251,7 @@ def test_transfer_upload_control_shapes_bind_request_and_lease(
     )
     client = ServerControlClient(metadata, expected_server_uid=os.geteuid())
     sent: list[ServerControlRequest] = []
-    responses = iter((plan, complete))
+    responses = iter((plan, complete, activation))
 
     def fake_exchange(request: ServerControlRequest):
         sent.append(request)
@@ -237,6 +266,13 @@ def test_transfer_upload_control_shapes_bind_request_and_lease(
         )
         == complete
     )
+    assert (
+        client.activate_project_transfer(
+            request_id=request_id,
+            lease_boundary_sha256=identity["lease_boundary_sha256"],
+        )
+        == activation
+    )
     assert sent[0].operation == "project_transfer_upload_plan"
     assert sent[0].selector_kind == "request"
     assert sent[0].selector_id == request_id
@@ -245,6 +281,10 @@ def test_transfer_upload_control_shapes_bind_request_and_lease(
     assert sent[1].selector_kind == "request"
     assert sent[1].selector_id == request_id
     assert sent[1].boundary_sha256 == identity["lease_boundary_sha256"]
+    assert sent[2].operation == "project_transfer_activate"
+    assert sent[2].selector_kind == "request"
+    assert sent[2].selector_id == request_id
+    assert sent[2].boundary_sha256 == identity["lease_boundary_sha256"]
 
     with pytest.raises(ValueError, match="request selector"):
         ServerControlRequest(
@@ -309,6 +349,64 @@ def test_running_team_service_owns_the_upload_lease_and_completion(
         assert (
             client.project_transfer_upload_plan(request_id=request.request_id).state == "complete"
         )
+
+
+def test_running_team_service_imports_and_compound_activates_the_uploaded_archive(
+    manifest,
+    tmp_path: Path,
+    control_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _archive_fixture(
+        manifest,
+        tmp_path / "fixture",
+        monkeypatch,
+        seal_archive=True,
+    )
+    store = fixture["target"]
+    sealed = fixture["sealed_archive_path"]
+    assert isinstance(store, AppStore)
+    assert isinstance(sealed, Path)
+    data_dir = store.path.parent
+    data_dir.chmod(0o700)
+    metadata = ServerMetadata.create(
+        data_dir,
+        host="127.0.0.1",
+        port=8421,
+        owner_kind="cli",
+        control_socket=control_root / "transfer-activation-control.sock",
+    )
+    app = create_app(data_dir=data_dir, instance_metadata=metadata)
+    request_id = fixture["archive"].target_request_id
+
+    with published_server_metadata(data_dir, metadata), TestClient(app):
+        client = ServerControlClient.from_data_dir(
+            data_dir,
+            expected_server_uid=os.geteuid(),
+        )
+        plan = client.project_transfer_upload_plan(request_id=request_id)
+        upload_target_transfer_archive(
+            data_dir,
+            request_id,
+            archive_sha256=plan.archive_sha256,
+            archive_size_bytes=plan.archive_size_bytes,
+            source=io.BytesIO(sealed.read_bytes()),
+        )
+        completed = client.complete_project_transfer_upload(
+            request_id=request_id,
+            lease_boundary_sha256=plan.lease_boundary_sha256,
+        )
+        activated = client.activate_project_transfer(
+            request_id=request_id,
+            lease_boundary_sha256=completed.lease_boundary_sha256,
+        )
+
+    assert activated.state == "activated"
+    assert activated.project_id == fixture["archive"].project_id
+    assert store.project(activated.project_id) is not None
+    assert store.project_transfer_request(request_id).phase == "target_activated"
+    assert store.target_project_transfer_upload(request_id).status == "consumed"
+    assert not (data_dir / "transfer-inbox" / f"{request_id}.rcp-transfer").exists()
 
 
 def test_update_maintenance_refuses_an_active_upload_before_closing_admission(

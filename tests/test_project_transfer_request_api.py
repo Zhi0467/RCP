@@ -28,6 +28,10 @@ from rcp.storage import (
 from rcp.transfer.source import read_transfer_archive, stage_transfer_archive
 
 from .helpers import create_named_app
+from .test_project_transfer_request_storage import (
+    _activate_target,
+    _complete_target_boundaries,
+)
 
 _GIT = "/Library/Developer/CommandLineTools/usr/bin/git"
 
@@ -529,7 +533,8 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
             },
         )
         assert target_bound.status_code == 200
-        team_store.mark_target_project_transfer_activated(target_request["request_id"])
+        _complete_target_boundaries(team_store, target_request["request_id"])
+        _activate_target(team_store, target_request["request_id"])
         session_count_before = _session_count(team_data / "rcp.sqlite3")
 
         with TestClient(team_app, base_url="https://team.test") as native_client:

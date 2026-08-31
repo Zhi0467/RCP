@@ -140,6 +140,7 @@ from rcp.server_ops.control import (
     ServerControlProbeResult,
     ServerControlProjectPlanResult,
     ServerControlProjectStepResult,
+    ServerControlProjectTransferActivationResult,
     ServerControlProjectTransferUploadResult,
     ServerControlProviderCheckResult,
     ServerControlProviderPlanResult,
@@ -182,7 +183,10 @@ from rcp.storage import (
     StoredWatcherRecord,
     TeamAuthenticationError,
 )
-from rcp.transfer.target import TargetTransferUploadCoordinator
+from rcp.transfer.target import (
+    TargetTransferActivationCoordinator,
+    TargetTransferUploadCoordinator,
+)
 from rcp.transport import RemoteRunStage, StateUnavailable
 from rcp.watchers import (
     GraphWatcherRetryRegistry,
@@ -383,6 +387,7 @@ def create_app(
     provider_readiness_coordinator: ProviderReadinessCoordinator | None = None
     project_provision_coordinator: ProjectProvisionCoordinator | None = None
     target_transfer_upload_coordinator: TargetTransferUploadCoordinator | None = None
+    target_transfer_activation_coordinator: TargetTransferActivationCoordinator | None = None
     backup_capture_coordinator: BackupCaptureCoordinator | None = None
     member_removal_coordinator: MemberRemovalCoordinator | None = None
     update_service_coordinator: UpdateServiceCoordinator | None = None
@@ -593,6 +598,7 @@ def create_app(
             | ServerControlProviderCheckResult
             | ServerControlProjectPlanResult
             | ServerControlProjectStepResult
+            | ServerControlProjectTransferActivationResult
             | ServerControlProjectTransferUploadResult
             | ServerControlBackupCaptureResult
             | ServerControlUpdateResult
@@ -707,6 +713,32 @@ def create_app(
                         )
                     except ValueError as exc:
                         raise ServerControlError("operation_refused", str(exc)) from exc
+                case "project_transfer_activate":
+                    assert target_transfer_activation_coordinator is not None
+                    assert request.selector_id is not None
+                    assert request.boundary_sha256 is not None
+                    try:
+                        activation = target_transfer_activation_coordinator.activate(
+                            request.selector_id,
+                            lease_boundary_sha256=request.boundary_sha256,
+                        )
+                    except ValueError as exc:
+                        raise ServerControlError("operation_refused", str(exc)) from exc
+                    return ServerControlProjectTransferActivationResult(
+                        instance_id=identity.instance_id,
+                        pid=identity.pid,
+                        data_dir_id=identity.data_dir_id,
+                        space_id=space_id,
+                        target_request_id=activation.target_request_id,
+                        source_request_id=activation.source_request_id,
+                        project_id=activation.project_id,
+                        archive_sha256=activation.archive_sha256,
+                        upload_lease_boundary_sha256=(activation.upload_lease_boundary_sha256),
+                        archive_manifest_sha256=activation.archive_manifest_sha256,
+                        target_manifest_sha256=activation.target_manifest_sha256,
+                        publication_sha256=activation.publication_sha256,
+                        activated_at=activation.activated_at,
+                    )
                 case "backup_sqlite_capture":
                     return capture_sqlite_for_control()
                 case "restore_activation_commit":
@@ -857,6 +889,13 @@ def create_app(
     refresh_cached_project_after_stream = project_display_cache.refresh_cached_project_after_stream
 
     setup = ProjectSetupManager(app_data, catalog, launcher)
+    if control_server is not None:
+        target_transfer_activation_coordinator = TargetTransferActivationCoordinator(
+            store,
+            catalog,
+            setup,
+            app_data,
+        )
     default_record = (
         catalog.register(manifest_path, identity_action="adopted") if manifest_path else None
     )

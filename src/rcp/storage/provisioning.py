@@ -17,6 +17,7 @@ from rcp.core.transition_models import GraphHeadRef
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.models import CommandAction, MachineTarget, MessageText, ServerStep
 from rcp.storage.models import (
+    ProjectMemberRecord,
     ProjectProvisioningCancellationDisposition,
     ProjectProvisioningGitCheckRecord,
     ProjectProvisioningKind,
@@ -29,12 +30,17 @@ from rcp.storage.models import (
     ProjectProvisioningRequestRecord,
     ProjectProvisioningStatus,
     ProjectProvisioningStepReceiptRecord,
+    ProjectRecord,
+    ProjectTransferActivationReceipt,
     ProjectTransferCleanupAcknowledgment,
+    ProjectTransferImportRecord,
     ProjectTransferLinkReceipt,
     ProjectTransferPhase,
+    ProjectTransferRegisteredProject,
     ProjectTransferRepositoryBinding,
     ProjectTransferRequestRecord,
     ProjectTransferResolvedPath,
+    ProjectTransferRestoreReentryReceipt,
     ProjectTransferSide,
     ProjectTransferSourceConfiguration,
     ProjectTransferSourceReleaseReceipt,
@@ -112,6 +118,7 @@ def project_transfer_receipt_sha256(
         ProjectTransferLinkReceipt
         | ProjectTransferTargetAdmissionReceipt
         | ProjectTransferSourceReleaseReceipt
+        | ProjectTransferActivationReceipt
         | ProjectTransferCleanupAcknowledgment
     ),
 ) -> str:
@@ -962,9 +969,6 @@ class ProjectProvisioningStoreMixin:
                 connection,
                 canonical_request_id,
             )
-            self._require_target_upload_request(current)
-            assert current.archive_sha256 is not None
-            assert current.archive_size_bytes is not None
             row = connection.execute(
                 "SELECT * FROM project_transfer_uploads WHERE request_id = ?",
                 (canonical_request_id,),
@@ -972,7 +976,18 @@ class ProjectProvisioningStoreMixin:
             if row is not None:
                 existing = self._project_transfer_upload_record(row)
                 self._require_target_upload_matches(current, existing)
-                if existing.status in {"active", "complete"}:
+                if existing.status in {"complete", "consumed"} and current.phase in {
+                    "archive_bound",
+                    "target_activated",
+                    "cleanup_acknowledged",
+                    "completed",
+                }:
+                    return existing
+            self._require_target_upload_request(current)
+            assert current.archive_sha256 is not None
+            assert current.archive_size_bytes is not None
+            if row is not None:
+                if existing.status == "active":
                     return existing
                 if existing.status != "invalidated":
                     raise RuntimeError("stored project transfer upload state is invalid")
@@ -1090,7 +1105,6 @@ class ProjectProvisioningStoreMixin:
                 connection,
                 canonical_request_id,
             )
-            self._require_target_upload_request(current)
             row = connection.execute(
                 "SELECT * FROM project_transfer_uploads WHERE request_id = ?",
                 (canonical_request_id,),
@@ -1099,10 +1113,16 @@ class ProjectProvisioningStoreMixin:
                 raise KeyError(canonical_request_id)
             existing = self._project_transfer_upload_record(row)
             self._require_target_upload_matches(current, existing)
-            if existing.status == "complete":
+            if existing.status in {"complete", "consumed"} and current.phase in {
+                "archive_bound",
+                "target_activated",
+                "cleanup_acknowledged",
+                "completed",
+            }:
                 if existing.lease_boundary_sha256 != boundary:
                     raise ValueError("project transfer upload already has another lease boundary")
                 return existing
+            self._require_target_upload_request(current)
             if existing.status != "active":
                 raise ValueError("project transfer upload lease is no longer active")
             if existing.lease_boundary_sha256 != boundary:
@@ -1142,28 +1162,456 @@ class ProjectProvisioningStoreMixin:
                 raise RuntimeError("project transfer upload completion lost its transaction guard")
             return updated
 
+    def activate_target_project_transfer(
+        self,
+        request_id: str,
+        *,
+        project: ProjectRecord,
+        expected_provisioning_revision: int,
+        expected_final_review_digest: str,
+    ) -> ProjectTransferActivationReceipt:
+        """Atomically register, seat, complete provisioning, and activate one import."""
+
+        canonical_request_id = self._transfer_uuid(request_id, "transfer request identity")
+        prepared_project = ProjectRecord.model_validate_json(project.model_dump_json())
+        if type(expected_provisioning_revision) is not int or expected_provisioning_revision < 0:
+            raise ValueError("target activation provisioning revision is invalid")
+        expected_review = self._transfer_digest(
+            expected_final_review_digest,
+            "target activation final-review digest",
+        )
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                current = self._project_transfer_request_from_connection(
+                    connection,
+                    canonical_request_id,
+                )
+                existing_row = connection.execute(
+                    "SELECT * FROM project_transfer_activations WHERE target_request_id = ?",
+                    (canonical_request_id,),
+                ).fetchone()
+                if existing_row is not None:
+                    existing = self._project_transfer_activation_record(existing_row)
+                    self._validate_target_activation_receipt(
+                        connection,
+                        current,
+                        existing,
+                    )
+                    if (
+                        existing.provisioning_revision != expected_provisioning_revision + 1
+                        or existing.provisioning_final_review_sha256 != expected_review
+                        or self._activation_project_intent(existing.registered_project)
+                        != self._activation_project_intent(prepared_project)
+                    ):
+                        raise ValueError(
+                            "target activation retry does not match its committed boundary"
+                        )
+                    return existing
+
+                if current.side != "target" or current.phase != "archive_bound":
+                    raise ValueError("target transfer request is not ready to activate")
+                if (
+                    current.linked_request_id is None
+                    or current.source_fence_head is None
+                    or current.archive_sha256 is None
+                    or current.target_activation_proof_sha256 is None
+                    or current.target_admission_receipt is None
+                    or current.source_release_receipt is None
+                ):
+                    raise RuntimeError("archive-bound target transfer lost activation authority")
+                admitted_by = current.target_admission_receipt.admitted_by
+                self._require_transfer_actor(connection, admitted_by)
+                if (
+                    prepared_project.project_id != current.project_id
+                    or prepared_project.home_space_id != current.target_space_id
+                    or prepared_project.retired_at is not None
+                    or prepared_project.retired_transfer_request_id is not None
+                ):
+                    raise ValueError("target activation project does not match its admitted home")
+
+                provisioning_row = connection.execute(
+                    "SELECT * FROM project_provisioning_requests WHERE request_id = ?",
+                    (canonical_request_id,),
+                ).fetchone()
+                if provisioning_row is None:
+                    raise RuntimeError("target transfer lost its provisioning request")
+                provisioning = self._project_provisioning_record(provisioning_row)
+                restore_reentry = self._latest_project_transfer_restore_reentry(
+                    connection,
+                    canonical_request_id,
+                )
+                reviewed_revision = (
+                    current.target_admission_receipt.target_preparation_revision
+                    if restore_reentry is None
+                    else restore_reentry.provisioning_revision
+                )
+                reviewed_digest = (
+                    current.target_admission_receipt.target_preparation_sha256
+                    if restore_reentry is None
+                    else restore_reentry.provisioning_final_review_sha256
+                )
+                if (
+                    provisioning.kind != "incoming_transfer"
+                    or provisioning.status != "ready_for_review"
+                    or provisioning.target_space_id != current.target_space_id
+                    or provisioning.proposed_project_id != current.project_id
+                    or provisioning.revision != expected_provisioning_revision
+                    or provisioning.final_review_digest != expected_review
+                    or reviewed_revision != expected_provisioning_revision
+                    or reviewed_digest != expected_review
+                    or (restore_reentry is not None and restore_reentry.confirmed_by != admitted_by)
+                ):
+                    raise ValueError("reviewed transfer provisioning changed before activation")
+
+                upload_row = connection.execute(
+                    "SELECT * FROM project_transfer_uploads WHERE request_id = ?",
+                    (canonical_request_id,),
+                ).fetchone()
+                if upload_row is None:
+                    raise ValueError("target activation requires its completed upload")
+                upload = self._project_transfer_upload_record(upload_row)
+                self._require_target_upload_matches(current, upload)
+                if upload.status != "complete" or upload.receipt is None:
+                    raise ValueError("target activation requires its completed upload")
+
+                import_row = connection.execute(
+                    "SELECT * FROM project_transfer_imports WHERE request_id = ?",
+                    (canonical_request_id,),
+                ).fetchone()
+                if import_row is None:
+                    raise ValueError("target activation requires its completed import")
+                imported = self._project_transfer_import_record(import_row)
+                if (
+                    imported.status != "complete"
+                    or imported.project_id != current.project_id
+                    or imported.publication_sha256 is None
+                    or imported.completed_at is None
+                ):
+                    raise ValueError("target activation requires its completed import")
+
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM projects WHERE project_id = ? OR locator = ?",
+                        (current.project_id, prepared_project.locator),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise ValueError("target activation project is already registered")
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM project_members WHERE project_id = ?",
+                        (current.project_id,),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise ValueError("target activation project already has a member seat")
+
+                now = self.now()
+                registered_project = ProjectTransferRegisteredProject(
+                    project_id=prepared_project.project_id,
+                    home_space_id=current.target_space_id,
+                    locator=prepared_project.locator,
+                    name=prepared_project.name,
+                    state_location=prepared_project.state_location,
+                    state_remote=prepared_project.state_remote,
+                    revision=prepared_project.revision,
+                    registered_at=prepared_project.added_at,
+                )
+                first_member = ProjectMemberRecord(
+                    project_id=current.project_id,
+                    user_id=admitted_by.user_id,
+                    seated_at=now,
+                    seated_by=admitted_by.user_id,
+                )
+                completed_provisioning = self._completed_transfer_provisioning(
+                    provisioning,
+                    completed_at=now,
+                )
+                activation = ProjectTransferActivationReceipt(
+                    target_request_id=current.request_id,
+                    source_request_id=current.linked_request_id,
+                    project_id=current.project_id,
+                    source_space_id=current.source_space_id,
+                    target_space_id=current.target_space_id,
+                    archive_sha256=current.archive_sha256,
+                    source_fence_head=current.source_fence_head,
+                    source_release_proof_sha256=current.source_release_proof_sha256,
+                    target_activation_proof_sha256=current.target_activation_proof_sha256,
+                    upload_lease_boundary_sha256=upload.lease_boundary_sha256,
+                    upload_archive_sha256=upload.archive_sha256,
+                    upload_archive_size_bytes=upload.archive_size_bytes,
+                    upload_completed_at=upload.receipt.completed_at,
+                    archive_manifest_sha256=imported.archive_manifest_sha256,
+                    target_manifest_sha256=imported.target_manifest_sha256,
+                    operational_payload_sha256=imported.operational_payload_sha256,
+                    publication_sha256=imported.publication_sha256,
+                    import_completed_at=imported.completed_at,
+                    provisioning_request_id=provisioning.request_id,
+                    provisioning_revision=completed_provisioning.revision,
+                    provisioning_final_review_sha256=expected_review,
+                    provisioning_completed_at=now,
+                    admitted_by=admitted_by,
+                    registered_project=registered_project,
+                    first_member=first_member,
+                    activated_at=now,
+                )
+                self._insert_target_activation_project(connection, prepared_project)
+                connection.execute(
+                    """
+                    INSERT INTO project_members (project_id, user_id, seated_at, seated_by)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        first_member.project_id,
+                        first_member.user_id,
+                        first_member.seated_at,
+                        first_member.seated_by,
+                    ),
+                )
+                self._commit_transfer_provisioning_completion(
+                    connection,
+                    provisioning,
+                    completed_provisioning,
+                    registered_project,
+                    admitted_by,
+                )
+                consumed = connection.execute(
+                    """
+                    UPDATE project_transfer_uploads
+                    SET status = 'consumed', updated_at = ?
+                    WHERE request_id = ? AND status = 'complete'
+                    """,
+                    (now, canonical_request_id),
+                ).rowcount
+                if consumed != 1:
+                    raise RuntimeError("target activation lost its completed upload boundary")
+                connection.execute(
+                    """
+                    INSERT INTO project_transfer_activations (
+                        target_request_id, project_id, receipt_json, activated_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        activation.target_request_id,
+                        activation.project_id,
+                        _canonical_json(activation.model_dump(mode="json")),
+                        activation.activated_at,
+                    ),
+                )
+                updated = self._updated_project_transfer_record(
+                    current,
+                    phase="target_activated",
+                )
+                self._replace_project_transfer_record(connection, current, updated)
+                stored = connection.execute(
+                    "SELECT * FROM project_transfer_activations WHERE target_request_id = ?",
+                    (canonical_request_id,),
+                ).fetchone()
+                if stored is None:
+                    raise RuntimeError("target activation receipt disappeared during commit")
+                return self._project_transfer_activation_record(stored)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("target activation conflicts with existing target state") from exc
+
+    def target_project_transfer_activation(
+        self,
+        request_id: str,
+    ) -> ProjectTransferActivationReceipt | None:
+        """Read and validate one committed target activation receipt."""
+
+        canonical_request_id = self._transfer_uuid(request_id, "transfer request identity")
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM project_transfer_activations WHERE target_request_id = ?",
+                (canonical_request_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            receipt = self._project_transfer_activation_record(row)
+            current = self._project_transfer_request_from_connection(
+                connection,
+                canonical_request_id,
+            )
+            self._validate_target_activation_receipt(connection, current, receipt)
+            return receipt
+
     def mark_target_project_transfer_activated(
         self,
         request_id: str,
     ) -> ProjectTransferRequestRecord:
-        """Publish target activation only after its bound archive was accepted."""
+        """Read an already-compound-activated request; never create a partial boundary."""
+
+        activation = self.target_project_transfer_activation(request_id)
+        if activation is None:
+            raise ValueError("target activation requires its compound activation receipt")
+        current = self.project_transfer_request(activation.target_request_id)
+        if current is None:  # pragma: no cover - receipt validation already proves this
+            raise RuntimeError("target activation receipt lost its transfer request")
+        return current
+
+    def reenter_restored_target_project_transfer(
+        self,
+        request_id: str,
+        *,
+        expected_restored_revision: int,
+        expected_resume_phase: ProjectTransferPhase,
+        expected_final_review_digest: str,
+        confirmed_by: AuthorizedHuman,
+    ) -> tuple[ProjectTransferRequestRecord, ProjectTransferUploadRecord]:
+        """Revalidate one restored archive boundary and issue only its fresh relay lease."""
 
         canonical_request_id = self._transfer_uuid(request_id, "transfer request identity")
+        if type(expected_restored_revision) is not int or expected_restored_revision < 0:
+            raise ValueError("restored transfer revision is invalid")
+        if expected_resume_phase != "archive_bound":
+            raise ValueError("restored target import can resume only its archive-bound phase")
+        expected_review = self._transfer_digest(
+            expected_final_review_digest,
+            "restored transfer final-review digest",
+        )
+        actor = AuthorizedHuman.model_validate_json(confirmed_by.model_dump_json())
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             current = self._project_transfer_request_from_connection(
                 connection,
                 canonical_request_id,
             )
-            if current.side != "target":
-                raise ValueError("only the target transfer request can activate")
-            if current.phase == "target_activated":
-                return current
-            if current.phase != "archive_bound":
-                raise ValueError("target transfer request is not ready to activate")
-            updated = self._updated_project_transfer_record(current, phase="target_activated")
+            admission = current.target_admission_receipt
+            if current.side != "target" or admission is None or admission.admitted_by != actor:
+                raise ValueError("restored target transfer requires its exact confirmer")
+            self._require_transfer_actor(connection, actor)
+
+            provisioning_row = connection.execute(
+                "SELECT * FROM project_provisioning_requests WHERE request_id = ?",
+                (canonical_request_id,),
+            ).fetchone()
+            if provisioning_row is None:
+                raise RuntimeError("restored target transfer lost its provisioning request")
+            provisioning = self._project_provisioning_record(provisioning_row)
+            if (
+                provisioning.kind != "incoming_transfer"
+                or provisioning.status != "ready_for_review"
+                or provisioning.target_space_id != current.target_space_id
+                or provisioning.proposed_project_id != current.project_id
+                or provisioning.final_review_digest != expected_review
+            ):
+                raise ValueError("restored transfer provisioning is no longer ready for import")
+
+            upload_row = connection.execute(
+                "SELECT * FROM project_transfer_uploads WHERE request_id = ?",
+                (canonical_request_id,),
+            ).fetchone()
+            if upload_row is None:
+                raise ValueError("restored target transfer has no invalidated upload to replace")
+            upload = self._project_transfer_upload_record(upload_row)
+            self._require_target_upload_matches(current, upload)
+
+            prior_row = connection.execute(
+                """
+                SELECT * FROM project_transfer_restore_reentries
+                WHERE target_request_id = ? AND restored_revision = ?
+                """,
+                (canonical_request_id, expected_restored_revision),
+            ).fetchone()
+            if prior_row is not None:
+                prior = self._project_transfer_restore_reentry_record(prior_row)
+                if (
+                    current.phase != "archive_bound"
+                    or current.revision != expected_restored_revision + 1
+                    or prior.resume_phase != expected_resume_phase
+                    or prior.provisioning_revision != provisioning.revision
+                    or prior.provisioning_final_review_sha256 != expected_review
+                    or prior.confirmed_by != actor
+                    or upload.status not in {"active", "complete"}
+                    or upload.lease_boundary_sha256 != prior.replacement_lease_boundary_sha256
+                ):
+                    raise RuntimeError(
+                        "stored restored-transfer re-entry does not match its current boundary"
+                    )
+                return current, upload
+            if (
+                current.phase != "operator_action_needed"
+                or current.revision != expected_restored_revision
+                or current.restore_resume_phase != expected_resume_phase
+            ):
+                raise ValueError("restored target transfer changed before re-entry")
+            if upload.status != "invalidated":
+                raise ValueError("restored target transfer upload is not invalidated")
+            if current.archive_sha256 is None or current.archive_size_bytes is None:
+                raise RuntimeError("restored archive-bound transfer lost its archive metadata")
+
+            now = self.now()
+            replacement = ProjectTransferUploadRecord(
+                request_id=current.request_id,
+                project_id=current.project_id,
+                archive_sha256=current.archive_sha256,
+                archive_size_bytes=current.archive_size_bytes,
+                lease_boundary_sha256=self._new_transfer_upload_boundary(
+                    connection,
+                    canonical_request_id,
+                ),
+                status="active",
+                created_at=upload.created_at,
+                updated_at=now,
+            )
+            reentry = ProjectTransferRestoreReentryReceipt(
+                target_request_id=current.request_id,
+                source_request_id=current.linked_request_id,
+                project_id=current.project_id,
+                source_space_id=current.source_space_id,
+                target_space_id=current.target_space_id,
+                restored_revision=current.revision,
+                resume_phase="archive_bound",
+                provisioning_revision=provisioning.revision,
+                provisioning_final_review_sha256=expected_review,
+                confirmed_by=actor,
+                archive_sha256=current.archive_sha256,
+                archive_size_bytes=current.archive_size_bytes,
+                replacement_lease_boundary_sha256=replacement.lease_boundary_sha256,
+                created_at=now,
+            )
+            changed = connection.execute(
+                """
+                UPDATE project_transfer_uploads
+                SET archive_sha256 = ?, archive_size_bytes = ?,
+                    lease_boundary_sha256 = ?, status = 'active', receipt_json = NULL,
+                    updated_at = ?, invalidated_at = NULL
+                WHERE request_id = ? AND status = 'invalidated'
+                  AND lease_boundary_sha256 = ?
+                """,
+                (
+                    replacement.archive_sha256,
+                    replacement.archive_size_bytes,
+                    replacement.lease_boundary_sha256,
+                    replacement.updated_at,
+                    canonical_request_id,
+                    upload.lease_boundary_sha256,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("restored target upload replacement lost its transaction guard")
+            updated = self._updated_project_transfer_record(
+                current,
+                phase="archive_bound",
+                restore_resume_phase=None,
+                restore_diagnostic=None,
+            )
             self._replace_project_transfer_record(connection, current, updated)
-        return updated
+            connection.execute(
+                """
+                INSERT INTO project_transfer_restore_reentries (
+                    target_request_id, restored_revision, receipt_json, created_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    reentry.target_request_id,
+                    reentry.restored_revision,
+                    _canonical_json(reentry.model_dump(mode="json")),
+                    reentry.created_at,
+                ),
+            )
+            return updated, replacement
 
     def expose_project_transfer_proof(self, request_id: str) -> bytes:
         """Return the local raw proof only after its committed legal boundary."""
@@ -1575,6 +2023,282 @@ class ProjectProvisioningStoreMixin:
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise RuntimeError("stored project transfer upload is invalid") from exc
 
+    @staticmethod
+    def _project_transfer_activation_record(
+        row: sqlite3.Row,
+    ) -> ProjectTransferActivationReceipt:
+        try:
+            receipt = ProjectTransferActivationReceipt.model_validate_json(row["receipt_json"])
+            if (
+                row["target_request_id"] != receipt.target_request_id
+                or row["project_id"] != receipt.project_id
+                or row["activated_at"] != receipt.activated_at
+            ):
+                raise ValueError("activation receipt columns do not match its payload")
+            return receipt
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("stored project transfer activation receipt is invalid") from exc
+
+    @staticmethod
+    def _project_transfer_restore_reentry_record(
+        row: sqlite3.Row,
+    ) -> ProjectTransferRestoreReentryReceipt:
+        try:
+            receipt = ProjectTransferRestoreReentryReceipt.model_validate_json(row["receipt_json"])
+            if (
+                row["target_request_id"] != receipt.target_request_id
+                or row["restored_revision"] != receipt.restored_revision
+                or row["created_at"] != receipt.created_at
+            ):
+                raise ValueError("restored-transfer receipt columns do not match its payload")
+            return receipt
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("stored project transfer restore re-entry is invalid") from exc
+
+    @classmethod
+    def _latest_project_transfer_restore_reentry(
+        cls,
+        connection: sqlite3.Connection,
+        request_id: str,
+    ) -> ProjectTransferRestoreReentryReceipt | None:
+        row = connection.execute(
+            """
+            SELECT * FROM project_transfer_restore_reentries
+            WHERE target_request_id = ?
+            ORDER BY restored_revision DESC
+            LIMIT 1
+            """,
+            (request_id,),
+        ).fetchone()
+        return None if row is None else cls._project_transfer_restore_reentry_record(row)
+
+    @staticmethod
+    def _project_transfer_import_record(row: sqlite3.Row) -> ProjectTransferImportRecord:
+        from rcp.storage.transfer import ProjectTransferStoreMixin
+
+        return ProjectTransferStoreMixin._project_transfer_import_record(row)
+
+    @staticmethod
+    def _activation_project_intent(
+        project: ProjectRecord | ProjectTransferRegisteredProject,
+    ) -> tuple[object, ...]:
+        return (
+            project.project_id,
+            project.home_space_id,
+            project.locator,
+            project.name,
+            project.state_location,
+            project.state_remote,
+            project.revision,
+            project.added_at if isinstance(project, ProjectRecord) else project.registered_at,
+        )
+
+    @staticmethod
+    def _completed_transfer_provisioning(
+        current: ProjectProvisioningRequestRecord,
+        *,
+        completed_at: str,
+    ) -> ProjectProvisioningRequestRecord:
+        values = current.model_dump(mode="json")
+        values.update(
+            {
+                "status": "completed",
+                "revision": current.revision + 1,
+                "updated_at": completed_at,
+                "completed_at": completed_at,
+            }
+        )
+        return _verify_project_provisioning_review_digest(
+            ProjectProvisioningRequestRecord.model_validate_json(_canonical_json(values))
+        )
+
+    @staticmethod
+    def _insert_target_activation_project(
+        connection: sqlite3.Connection,
+        project: ProjectRecord,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO projects (
+                project_id, home_space_id, locator, name, state_location, state_remote,
+                added_at, last_opened_at, revision, primary_question, attention_count,
+                last_refresh_at, reachable, error, retired_at, retired_transfer_request_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+            """,
+            (
+                project.project_id,
+                project.home_space_id,
+                project.locator,
+                project.name,
+                project.state_location,
+                int(project.state_remote),
+                project.added_at,
+                project.last_opened_at,
+                project.revision,
+                project.primary_question,
+                project.attention_count,
+                project.last_refresh_at,
+                None if project.reachable is None else int(project.reachable),
+                project.error,
+            ),
+        )
+
+    @staticmethod
+    def _commit_transfer_provisioning_completion(
+        connection: sqlite3.Connection,
+        current: ProjectProvisioningRequestRecord,
+        completed: ProjectProvisioningRequestRecord,
+        registered_project: ProjectTransferRegisteredProject,
+        admitted_by: AuthorizedHuman,
+    ) -> None:
+        transition_payload = {
+            "request_id": current.request_id,
+            "phase": "transfer_activation",
+            "expected_revision": current.revision,
+            "final_review_digest": current.final_review_digest,
+            "registered_project": registered_project.model_dump(mode="json"),
+            "admitted_by": admitted_by.model_dump(mode="json"),
+        }
+        transition_sha256 = hashlib.sha256(
+            _canonical_json(transition_payload).encode("utf-8")
+        ).hexdigest()
+        changed = connection.execute(
+            """
+            UPDATE project_provisioning_requests
+            SET status = 'completed', revision = ?, updated_at = ?, completed_at = ?
+            WHERE request_id = ? AND revision = ? AND status = 'ready_for_review'
+              AND final_review_digest = ?
+            """,
+            (
+                completed.revision,
+                completed.updated_at,
+                completed.completed_at,
+                current.request_id,
+                current.revision,
+                current.final_review_digest,
+            ),
+        ).rowcount
+        if changed != 1:
+            raise RuntimeError("target activation lost its provisioning transaction guard")
+        receipt = ProjectProvisioningStepReceiptRecord(
+            request_id=current.request_id,
+            receipt_id="transfer-activation",
+            phase="transfer_activation",
+            from_status="ready_for_review",
+            to_status="completed",
+            transition_sha256=transition_sha256,
+            resulting_revision=completed.revision,
+            created_at=completed.completed_at,
+        )
+        connection.execute(
+            """
+            INSERT INTO project_provisioning_step_receipts (
+                request_id, receipt_id, phase, from_status, to_status,
+                transition_sha256, resulting_revision, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                receipt.request_id,
+                receipt.receipt_id,
+                receipt.phase,
+                receipt.from_status,
+                receipt.to_status,
+                receipt.transition_sha256,
+                receipt.resulting_revision,
+                receipt.created_at,
+            ),
+        )
+
+    @classmethod
+    def _validate_target_activation_receipt(
+        cls,
+        connection: sqlite3.Connection,
+        current: ProjectTransferRequestRecord,
+        receipt: ProjectTransferActivationReceipt,
+    ) -> None:
+        admission = current.target_admission_receipt
+        effective_phase = (
+            current.restore_resume_phase
+            if current.phase == "operator_action_needed"
+            else current.phase
+        )
+        if (
+            current.side != "target"
+            or effective_phase not in {"target_activated", "cleanup_acknowledged", "completed"}
+            or current.linked_request_id != receipt.source_request_id
+            or current.request_id != receipt.target_request_id
+            or current.project_id != receipt.project_id
+            or current.source_space_id != receipt.source_space_id
+            or current.target_space_id != receipt.target_space_id
+            or current.archive_sha256 != receipt.archive_sha256
+            or current.source_fence_head != receipt.source_fence_head
+            or current.source_release_proof_sha256 != receipt.source_release_proof_sha256
+            or current.target_activation_proof_sha256 != receipt.target_activation_proof_sha256
+            or admission is None
+            or admission.admitted_by != receipt.admitted_by
+        ):
+            raise RuntimeError("stored target activation does not match its transfer request")
+
+        upload_row = connection.execute(
+            "SELECT * FROM project_transfer_uploads WHERE request_id = ?",
+            (current.request_id,),
+        ).fetchone()
+        if upload_row is None:
+            raise RuntimeError("stored target activation lost its upload receipt")
+        upload = cls._project_transfer_upload_record(upload_row)
+        if (
+            upload.status != "consumed"
+            or upload.receipt is None
+            or upload.lease_boundary_sha256 != receipt.upload_lease_boundary_sha256
+            or upload.archive_sha256 != receipt.upload_archive_sha256
+            or upload.archive_size_bytes != receipt.upload_archive_size_bytes
+            or upload.receipt.completed_at != receipt.upload_completed_at
+        ):
+            raise RuntimeError("stored target activation does not match its upload receipt")
+
+        import_row = connection.execute(
+            "SELECT * FROM project_transfer_imports WHERE request_id = ?",
+            (current.request_id,),
+        ).fetchone()
+        if import_row is None:
+            raise RuntimeError("stored target activation lost its import receipt")
+        imported = cls._project_transfer_import_record(import_row)
+        if (
+            imported.status != "complete"
+            or imported.archive_manifest_sha256 != receipt.archive_manifest_sha256
+            or imported.target_manifest_sha256 != receipt.target_manifest_sha256
+            or imported.operational_payload_sha256 != receipt.operational_payload_sha256
+            or imported.publication_sha256 != receipt.publication_sha256
+            or imported.completed_at != receipt.import_completed_at
+        ):
+            raise RuntimeError("stored target activation does not match its import receipt")
+
+        provisioning_row = connection.execute(
+            "SELECT * FROM project_provisioning_requests WHERE request_id = ?",
+            (current.request_id,),
+        ).fetchone()
+        if provisioning_row is None:
+            raise RuntimeError("stored target activation lost its provisioning receipt")
+        provisioning = cls._project_provisioning_record(provisioning_row)
+        if (
+            provisioning.status != "completed"
+            or provisioning.revision != receipt.provisioning_revision
+            or provisioning.final_review_digest != receipt.provisioning_final_review_sha256
+            or provisioning.completed_at != receipt.provisioning_completed_at
+        ):
+            raise RuntimeError("stored target activation does not match completed provisioning")
+
+        project_row = connection.execute(
+            "SELECT project_id, home_space_id FROM projects WHERE project_id = ?",
+            (current.project_id,),
+        ).fetchone()
+        if (
+            project_row is None
+            or project_row["project_id"] != receipt.registered_project.project_id
+            or project_row["home_space_id"] != receipt.registered_project.home_space_id
+        ):
+            raise RuntimeError("stored target activation lost its registered target project")
+
     @classmethod
     def _invalidate_project_transfer_upload(
         cls,
@@ -1591,7 +2315,7 @@ class ProjectProvisioningStoreMixin:
             return
         upload = cls._project_transfer_upload_record(row)
         cls._require_target_upload_matches(current, upload)
-        if upload.status == "invalidated":
+        if upload.status in {"invalidated", "consumed"}:
             return
         changed = connection.execute(
             """

@@ -1897,6 +1897,11 @@ class SSHStateWorkspace(StateWorkspace):
             raise StateUnavailable(
                 "Backup source export staging is not one empty private directory."
             )
+        if not direct_root:
+            if self._remote_backup_direct_root_inventory() != direct_root:
+                raise StateUnavailable("The remote backup root changed during its export.")
+            self._mark_reachable()
+            return destination
         remote = f"{self.host}:{shlex.quote(str(self.remote_root))}/"
         try:
             result = subprocess.run(

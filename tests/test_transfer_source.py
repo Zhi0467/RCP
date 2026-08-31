@@ -17,7 +17,13 @@ from rcp.transfer.source import (
 
 from .helpers import create_named_app
 from .test_project_transfer_request_api import _set_origin, _source_project
-from .test_project_transfer_request_storage import _actor, _incoming_request, _ready_incoming
+from .test_project_transfer_request_storage import (
+    _activate_target,
+    _actor,
+    _complete_target_boundaries,
+    _incoming_request,
+    _ready_incoming,
+)
 
 
 def _released_source(tmp_path: Path):
@@ -94,7 +100,8 @@ def _target_activation_proof(target, target_request, source_request) -> bytes:
         archive_size_bytes=source_request.archive_size_bytes,
         source_fence_head=source_request.source_fence_head,
     )
-    target.mark_target_project_transfer_activated(target_request.request_id)
+    _complete_target_boundaries(target, target_request.request_id)
+    _activate_target(target, target_request.request_id)
     return target.expose_project_transfer_proof(target_request.request_id)
 
 

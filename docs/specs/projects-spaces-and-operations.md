@@ -1069,7 +1069,8 @@ owner, the target importer validates its exact manifest inventory, regular-file
 safety, checksums, identities, canonical heads, record references, reviewed
 target configuration, and excluded-field rules before mutation. It inserts the
 selected operational records in one SQLite transaction with explicit
-source-to-target id maps and an import receipt, then publishes the reviewed
+source-to-target id maps, an import receipt, and the exact pre-publication target
+configuration receipt, including retained-history evidence. It then publishes the reviewed
 target manifest, canonical history, transformed RCP chats, Paper, facts, kept
 files, and imported provider histories through their concrete atomic owners.
 Imported task rows are history-only; imported kept result views are already
@@ -1080,7 +1081,9 @@ The publication sequence is repairable rather than one cross-filesystem
 transaction: an interruption can leave matching target bytes and a
 `database_imported` receipt, but the project remains unregistered and invisible,
 and a retry of the same exact digests idempotently reads back or republishes the
-same corpus. Activation follows only a complete receipt. Sealed-byte upload,
+same corpus. Such a retry rebuilds from the stored configuration receipt and
+never re-inventories target state that a partial publication may already have
+changed. Activation follows only a complete receipt. Sealed-byte upload,
 codec decoding, activation, and source retirement remain separate target/source
 transfer-owner steps.
 
@@ -1129,19 +1132,41 @@ writes a mode-0600 same-directory `.partial` under
 `<RCP_DATA_DIR>/transfer-inbox/`, publishes it without overwrite through a
 same-filesystem hard link to `<request-id>.rcp-transfer`, and removes the partial
 after verification. It accepts no arbitrary archive path and never opens SQLite.
-The running service owns the durable active,
-complete, or invalidated upload record; the CLI owns only the request-derived
-filesystem lease and byte stream. Completion re-hashes the final file before
-committing its typed receipt, and an exact retry consumes and verifies stdin
-without replacing the existing final. Update maintenance refuses immediately
-while an upload is active, leaving admission open so the running service can
-accept that upload's completion; its rollback checkpoint preserves only
-receipt-backed complete files. Restore invalidates both active and complete
-uploads for every nonterminal target request, so an old lease cannot complete
-after replacement and later re-entry requires a fresh relay boundary. The later
-target owner revalidates both human confirmations, the source-fence receipt,
-target readiness, ownership/mode, digest, and the precommitted source-release
-proof before importing through the running server.
+The running service owns the durable `active`, `complete`, `consumed`, or
+`invalidated` upload record; the CLI owns only the request-derived filesystem
+lease and byte stream. Completion re-hashes the final file before committing its
+typed receipt, and an exact retry consumes and verifies stdin without replacing
+the existing final. The CLI then invokes a separate control operation on that
+same request and lease boundary. The running service decodes the exact sealed
+archive into a disposable request stage, revalidates both human confirmations,
+the source-fence receipt, target readiness, ownership/mode, digest, reviewed
+manifest, and the precommitted source-release proof, captures retained history
+through the concrete local or SSH state owner, and invokes the atomic target
+importer. Neither upload completion nor CLI success is project authority.
+
+After importer readback and canonical replay, target activation compound-commits
+the prepared project registration, the admitting target member's first seat,
+provisioning completion and its step receipt, the immutable activation receipt,
+the request's `target_activated` phase, and the upload's `consumed` state in one
+SQLite transaction. Only that transaction makes the project visible and makes
+the raw target-activation proof legally retrievable. The verified inbox archive
+and disposable decode stage are then removed. If the process stops after the
+transaction but before file cleanup, an exact retry reads the same activation
+receipt, refreshes process-local catalog state, and removes only the verified
+request file. If decode, import, replay, or final review fails before activation,
+the request remains unregistered and the exact completed inbox file is retained
+for repair.
+
+Update maintenance refuses immediately while an upload is active, leaving
+admission open so the running service can accept that upload's completion. Its
+rollback checkpoint preserves only receipt-backed `complete` files, ignores
+already-`consumed` records, and rejects a leftover or untyped inbox file.
+Restore invalidates active and complete uploads for every nonterminal target
+request, so an old lease cannot complete after replacement. A reviewed
+`archive_bound` restore re-entry binds the exact restored revision, final-review
+digest, confirmer, archive, and a fresh relay lease before returning the request
+to `archive_bound`; the desktop/operator recovery flow still has to invoke that
+boundary explicitly.
 After activation, the native relay carries the target's precommitted activation
 proof from that permanent-member-token-authenticated native route directly back
 to the pinned source backend so source cleanup cannot be authorized by a forged
@@ -1157,12 +1182,14 @@ Terminal commands instead of collecting SSH or sudo secrets.
 
 Partial target inbox files are not team backup data. If a team restore contains
 a nonterminal incoming request, its old upload lease and in-progress machine
-state are invalidated and it becomes **operator action needed**. The target may
-accept only a fresh relay of the already bound request/digest after both
-backends are revalidated; it never treats the absent inbox as imported. The
-sealed source archive belongs to the personal app data, not the team backup. A
-committed source home change remains fenced and is never reversed merely because
-the target was restored.
+state are invalidated and it becomes **operator action needed**. For an
+`archive_bound` request, re-entry requires the exact restored revision, rebuilt
+ready-for-review digest, and original current target confirmer, then issues a
+new upload lease; it never treats the absent inbox as imported. Later restored
+phases remain frozen until their owning proof/cleanup recovery step revalidates
+them. The sealed source archive belongs to the personal app data, not the team
+backup. A committed source home change remains fenced and is never reversed
+merely because the target was restored.
 
 ### Backup and restore
 

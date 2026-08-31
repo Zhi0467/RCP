@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b | — | T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c | — | T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -70,8 +70,9 @@ machine preparation. F6b now consumes O2a/O2b to rehearse the candidate against
 copied real state under one reusable startup-effect fence. F6c's current-owner
 checkpoint core now publishes and temp-restores one exact local rollback
 boundary with crash-safe replacement journals. T3e preserves imported provider
-histories through that checkpoint, and T4b preserves only receipt-backed complete
-transfer inbox files. P6c now publishes and independently enforces the
+histories through that checkpoint. T4b/T4c preserve only receipt-backed complete
+transfer inbox files and ignore already-consumed uploads, while refusing any
+leftover untyped bytes. P6c now publishes and independently enforces the
 ordinary team-project deletion guard through the card, Web, API, and catalog.
 
 ## Objective
@@ -272,8 +273,9 @@ gate are deliberately future work and do not block this plan.
   missing bound archives, transaction-held capture, storage-level fresh-work
   refusal, authenticated exact download, proof inclusion, proof-triggered
   retirement, and idempotent cleanup.
-  T4b owns target upload; T4c owns decoding, T3f import invocation, activation,
-  and the return receipt.
+  T4b owns target upload; T4c now owns decoding, T3f import invocation,
+  compound activation, and the durable target receipt. T5 still owns returning
+  the protected proof to the source.
 - The packet's one independent read-only audit found four defects: missing or
   corrupt recovery bytes could retire the source before validation, SSH capture
   did not hold canonical ownership, and concurrent cleanup retries could race.
@@ -304,9 +306,9 @@ gate are deliberately future work and do not block this plan.
   history. A post-commit completion exception re-reads the receipt before
   cleanup, preventing removal of files already bound by a complete receipt.
 - The focused T3f/transfer suite passes. T4a subsequently completed sealed
-  source archive creation and source retirement, and T4b completed the protected
-  target upload lease and inbox. Decoding, activation, desktop orchestration,
-  SSH, and the live lab drive remain T4c-T5/V1.
+  source archive creation and source retirement, T4b completed the protected
+  target upload lease and inbox, and T4c completed decode/import/activation.
+  Desktop orchestration, proof return, SSH, and the live lab drive remain T5/V1.
 - The one independent read-only audit found no concrete T3f correctness or stale
   documentation defect. No correction round was needed.
 
@@ -4958,11 +4960,12 @@ older immutable fingerprint remains accepted; the complete restore-state suite
 passes again.
 
 T4b now invalidates both active and complete upload receipts through this same
-detachment owner. T4c must add the machine-import receipt and the fresh
-two-backend revalidation/re-entry transition before a relay can resume from
-`restore_resume_phase`. Until then the ordinary transfer methods fail closed on
-`operator_action_needed`; this slice intentionally does not invent a second
-recovery or fallback path.
+detachment owner. T4c adds the machine-import/activation receipt and a reviewed
+`archive_bound` storage re-entry that binds the restored revision, rebuilt final
+review, exact target confirmer, archive, and fresh upload lease. It still fails
+closed on `operator_action_needed` until T5b revalidates both backends and invokes
+that boundary; later restored proof/cleanup phases remain frozen for their owning
+recovery steps. No fallback path is inferred from old machine authority.
 
 Own:
 
@@ -5627,8 +5630,8 @@ turns failure cleanup into a team-project deprovision path.
 Status: complete hermetically on 2026-08-31. The importer consumes a previously
 decoded, request-scoped archive staging tree. T4a owns sealed source-archive
 creation and source retirement; T4b owns the protected target upload boundary;
-and T4c still owns codec decoding, import invocation, activation, and the return
-receipt.
+and T4c now owns codec decoding, import invocation, compound activation, and the
+durable target receipt. T5 owns proof return and source-cleanup orchestration.
 
 Own:
 
@@ -5726,7 +5729,7 @@ cannot retire the source. The sequence is idempotent across every step. Retired
 projects disappear from catalog and active membership queries, but membership
 and invitation rows remain retained for audit. T4a performs no target upload,
 decode, import, registration, or SSH transport; T4b now owns upload, while the
-remaining target lifecycle and transport stay in T4c-T5.
+remaining transport and protected proof return stay in T5 after T4c activation.
 
 ### T4b — Protected target upload lease and inbox — complete
 
@@ -5753,8 +5756,9 @@ restore compatibility. The full T4b focused set passes 195 tests after the
 correction. Its one high-severity audit finding was the same-loop maintenance
 deadlock; the single correction round added the immediate-refusal regression,
 and no second audit was run. T4b does not decode the codec, import or activate a
-project, return cleanup proof, or drive desktop/SSH transport; those remain T4c
-and T5.
+project, return cleanup proof, or drive desktop/SSH transport. T4c now owns the
+first three target lifecycle steps; T5 still owns desktop/SSH transport and proof
+return.
 
 Own:
 
@@ -5764,7 +5768,11 @@ Own:
 - explicit transfer-inbox classification in
   `src/rcp/server_ops/update_checkpoint.py`;
 - and `tests/test_transfer_target_upload.py` with lease, size/hash, restart, and
-  partial-file crash injection.
+partial-file crash injection.
+
+T4c subsequently extends this closed lifecycle with `consumed` and promotes the
+control protocol to v9; the T4b description above records the boundary as it was
+audited, not a second current-state vocabulary.
 
 The service-account CLI asks the lock-owning server for the request's expected
 digest, size, and one bounded upload lease. It accepts bytes only on stdin,
@@ -5777,7 +5785,20 @@ walk or clean the inbox generally. The CLI never opens SQLite and a successful
 upload is not project authority. This packet stops at one verified durable inbox
 file and cannot import records, register a checkout, or activate a project.
 
-### T4c — Target import, activation, and source receipt
+### T4c — Target import, activation, and source receipt — complete
+
+**Status (2026-08-31): implemented, focused-tested, and independently audited
+once.** The audit found one high-risk import-retry defect: a crash after partial
+publication could cause retry to inspect already-mutated target state. The one
+correction round now stores the exact pre-publication target configuration and
+retained-history evidence in the import transaction and reuses it on retry;
+focused crash-boundary regressions cover canonical and project-file publication.
+No second audit was run. The target running service now
+owns codec decode, retained-history inspection, T3f import invocation, replay,
+catalog preparation, and the compound activation boundary. Control protocol v9
+adds a separate `project_transfer_activate` operation; upload completion remains
+byte durability and never becomes project authority. The same fixed stdin-only
+CLI reports success only after both upload and activation complete.
 
 Own:
 
@@ -5792,21 +5813,55 @@ Before import, the server revalidates the target member's admission
 confirmation, the source owner's human release receipt, the later source-fence
 receipt, their common linked request and archive identities, unchanged target
 readiness, ownership, mode, both proof commitments, and T4b's complete upload.
-It hashes the archive's raw source-release proof and requires the target's
-precommitted value before any import mutation, then excludes the raw proof from
-project publication. A successful CLI invocation is never a substitute for
-either human confirmation.
+It verifies the external archive envelope and every declared payload entry,
+including the raw source-release proof's precommitted digest, before import
+mutation; the reserved archive manifest and raw proof are never published into
+the target project. The import transaction stores the exact reviewed target
+configuration receipt and retained-history evidence before any file publication;
+an exact retry after a partial publication reuses that receipt and does not
+reinterpret the mutated live target. Retained canonical history is inspected through the concrete
+local or SSH `StateWorkspace`; an absent SSH research root is accepted only
+after two consistent exact-account inventories, while transport or permission
+errors remain loud. A successful CLI invocation is never a substitute for either
+human confirmation.
 
-After T3f readback, replay under the target `space_id`, register the prepared
-central checkout, seat the target member, activate the project, and publish one
-durable receipt bound to source/target/request/project/archive identities for
-T4a. Only after that transaction commits may the target disclose its raw
-activation proof through T2b's permanent-member-token-authenticated native route
-to the exact target confirmer. It never writes the proof to CLI progress or a
-browser-session response. The source accepts the receipt and retires its recovery
-copy only when that proof hashes to its precommitted target value. Never activate
-before the source home transfer commits. An arbitrary file, byte stream,
-request id, serialized receipt, or CLI exit grants no import authority.
+After T3f readback, the catalog owner replays under the target `space_id` and
+prepares—but does not publish—the exact reviewed registration. One SQLite
+transaction then inserts the project row, seats the admitting target member,
+completes provisioning with a typed step receipt, stores an immutable activation
+receipt, advances the transfer to `target_activated`, and changes the exact
+upload from `complete` to `consumed`. The activation receipt binds both request
+ids and spaces, project/archive/fence identities, both proof commitments, the
+upload lease, every import digest, the reviewed provisioning digest, registered
+project, first member, and timestamps. Only after that transaction commits may
+the target disclose its raw activation proof through T2b's permanent-member-token
+native route to the exact target confirmer. The proof never appears in CLI
+progress, control results, or browser-session responses.
+
+Decode and retained-history stages are request-scoped and removed on every exit.
+Before the compound transaction, failures retain the exact completed inbox file
+and an unregistered repairable import. After commit, a retry reads and validates
+the same activation receipt, refreshes process-local catalog state, and removes
+only an exact verified leftover inbox file. The upload's terminal `consumed`
+record retains its completion receipt. Update checkpoints now copy only
+receipt-backed `complete` inbox files, ignore `consumed` rows, and still fail on
+any consumed leftover or unknown inbox entry. The current SQLite schema digest
+is registered for restore compatibility.
+
+Stopped-service restore keeps nonterminal targets at `operator_action_needed`.
+For an `archive_bound` request, the storage owner now requires the exact restored
+revision, rebuilt ready-for-review digest, original current target confirmer,
+archive identity, and invalidated upload before it atomically returns to
+`archive_bound` with a fresh lease and typed re-entry receipt. No proof is exposed
+by re-entry. T5b still owns invoking this reviewed recovery path in the product;
+later restored proof/cleanup phases remain frozen for their owning recovery
+steps.
+
+The source accepts the eventual native proof return and retires its recovery copy
+only when that proof hashes to the precommitted target value. T5a owns that native
+proof relay and T5b owns the user-visible drive. Never activate before the source
+home transfer commits. An arbitrary file, byte stream, request id, serialized
+receipt, or CLI exit grants no import authority.
 
 ### T5a — Native transfer relay
 

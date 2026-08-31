@@ -17,6 +17,7 @@ from rcp.transfer import (
     TransferGraphHead,
 )
 from rcp.transfer.source import (
+    discard_transfer_archive_stage,
     read_transfer_archive,
     seal_transfer_archive,
     stage_transfer_archive,
@@ -199,10 +200,18 @@ def test_stage_streams_verified_archive_into_private_tree(tmp_path: Path) -> Non
     )
     assert readback.manifest == manifest
     assert stat.S_IMODE(staged.stat().st_mode) == 0o700
+    assert not (staged / "manifest.json").exists()
+    assert {
+        path.relative_to(staged).as_posix() for path in staged.rglob("*") if path.is_file()
+    } == set(payloads)
     for relative, payload in payloads.items():
         path = staged / relative
         assert path.read_bytes() == payload
         assert stat.S_IMODE(path.stat().st_mode) == 0o400
+
+    discard_transfer_archive_stage(staged)
+    assert not staged.exists()
+    discard_transfer_archive_stage(staged)
 
 
 @pytest.mark.parametrize("mutation", ["missing", "symlink", "wrong_mode", "corrupt"])

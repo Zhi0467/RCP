@@ -179,6 +179,7 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
         archive_manifest_sha256=archive.sha256(),
         target_manifest_sha256=configuration.receipt.target_manifest_sha256,
         operational_payload_sha256=operational_entry.sha256,
+        target_configuration_receipt=configuration.receipt.model_dump(mode="json"),
         capture=capture,
         kept_result_view_html=html,
     )
@@ -186,6 +187,11 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
     assert len(receipt.event_id_map) == 1
     assert len(receipt.receipt_id_map) == 1
     assert target.project(capture.project_id) is None
+    stored_configuration = target.project_transfer_import_configuration_receipt_json(
+        archive.target_request_id
+    )
+    assert stored_configuration is not None
+    assert json.loads(stored_configuration) == configuration.receipt.model_dump(mode="json")
     with target.connection() as connection:
         task_row = connection.execute(
             "SELECT * FROM graph_runs WHERE operation_id = ?",
@@ -241,6 +247,7 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
         archive_manifest_sha256=archive.sha256(),
         target_manifest_sha256=configuration.receipt.target_manifest_sha256,
         operational_payload_sha256=operational_entry.sha256,
+        target_configuration_receipt=configuration.receipt.model_dump(mode="json"),
         capture=capture,
         kept_result_view_html=html,
     )

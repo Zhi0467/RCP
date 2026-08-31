@@ -26,71 +26,48 @@ covered_by:
   - tests/test_transfer_import_storage.py
   - tests/test_transfer_source.py
   - tests/test_transfer_source_archive.py
+  - tests/test_transfer_catalog_finalizer.py
+  - tests/test_transfer_target.py
   - tests/test_transfer_target_upload.py
 invariants: [1, 3, 6, 11]
 ---
 
 # Hand a personal project over to the lab, once
 
-This live scenario remains pending end-to-end implementation. Its canonical
-home-transfer record, ordered replay boundary, linked cross-space request
-storage, independent human receipts, strict project/repository link receipt,
-and one-time proof lifecycle are implemented and covered by the tests above.
-The authenticated request APIs, pinned source-archive stream, and native proof
-exchange are also implemented.
-Stopped-service restore now freezes every unfinished target request as operator
-action needed while preserving its exact committed transfer phase, receipts,
-archive binding, and protected proof state. The versioned transfer manifest,
-external archive seal, payload groups, source-proof control entry, and closed
-root/table inventories are defined and tested. The terminal operational-record
-format, task-kind-aware request sanitizer, exact 28/14 table policy, deliberate
-foreign-key mapping, and Paper/assistant compatibility representation are also
-defined and tested. The snapshot-consistent read-only export now covers every
-represented terminal table, refuses unsettled or relationally inconsistent
-source history, strips execution bindings recursively, and preserves the source
-unchanged. Canonical RCP chats, Paper introduction, safe opaque facts, referenced
-kept artifacts, and legacy kept result views now have a bounded local/SSH file
-capture with exact byte bindings and no source execution continuation. Complete
-matched provider-native histories now enter the transfer byte-for-byte through
-their configured local/SSH source accounts, while unmatched, rewritten, or
-unreadable sources produce bounded best-effort summaries. Target import from a
-previously decoded request stage is now implemented: it validates the exact
-archive tree and reviewed configuration, imports terminal rows in one SQLite
-transaction, publishes through concrete owners, proves readback, and leaves no
-registered project before activation. Source release now atomically fences new
-root admissions, waits for terminal history, appends the attributed home Patch,
-seals one deterministic private archive, reuses its exact bytes across crash
-recovery, and retires the source only after the matching target proof. The target
-service now owns one durable request/digest upload lease, while the stdin-only CLI
-owns the flat private partial/final paths, exact byte verification, and atomic
-publication without opening SQLite. Completion is re-hashed through the running
-service, restore invalidates old nonterminal leases and receipts, and update
-maintenance refuses without closing admission while an upload is active so its
-completion can still be accepted. Update checkpointing admits only receipt-backed
-complete inbox files. Desktop relay, codec decoding, and activation remain open.
-The target-owned local provider
-source store atomically publishes validated
-content-addressed histories, keeps them separate from native provider homes,
-and blocks Seed/Refresh on any later corruption. The reviewed target request
-also rebuilds a target-only manifest, validates any retained Git history as an
-exact archive prefix, and replays main plus every branch in an isolated
-workspace before import. Its receipt binds the exact final review and archive
-manifest, not only the resulting target configuration. Machine relay, decoding,
-target activation, cleanup-return orchestration, and the desktop drive remain
-open. Remote Seed/Refresh staging is implemented hermetically: it copies only
-the project-owned sealed inventory, preserves the remote account's native
-roots, verifies the immutable task input before launch and Resume, and rejects
-a missing or changed prepared checkpoint into clean Retry. The reachable-SSH
-interruption/removal drive in step 11 remains pending. Its boundaries are
-in [Project identity and home](../specs/projects-spaces-and-operations.md#project-identity-and-home)
+This live scenario remains pending because the native desktop relay, proof
+return/source cleanup orchestration, unified wizard, crash-recovery drive, and
+real two-space SSH qualification are still open. The backend transfer itself is
+implemented hermetically through target activation.
+
+The implemented path now covers the canonical home-transfer Patch, linked
+cross-space requests, independent human receipts, strict repository/configuration
+binding, one-time protected proofs, snapshot-consistent terminal operational
+export, canonical/project-file capture, best-effort exact provider-history
+selection, the deterministic private source archive, and the source admission
+fence. The target running service owns one request/digest upload lease; the
+stdin-only CLI owns only the derived private partial/final paths and never opens
+SQLite. The same CLI then asks the running service to decode the exact sealed
+archive, validate retained local or SSH history, durably bind that exact
+pre-publication configuration and retained-history evidence, invoke the atomic importer,
+replay the imported canonical state, prepare the reviewed central registration,
+and compound-commit the project row, first member seat, provisioning completion,
+consumed upload, activation receipt, and `target_activated` request phase.
+
+An import retry after partial publication reuses the bound pre-publication
+evidence instead of inspecting already-changed target files. An activation retry
+returns the same receipt and removes only a verified leftover inbox file. Before
+that compound commit, a failed decode/import remains
+unregistered and invisible. Update checkpoints preserve only receipt-backed
+`complete` uploads, ignore `consumed` uploads, and reject any untyped or leftover
+inbox bytes. Restore invalidates machine-bound nonterminal upload authority; an
+`archive_bound` request has a reviewed storage re-entry that issues a fresh lease,
+but the user-facing re-entry/relay drive remains part of the open desktop work.
+Imported provider histories remain project-owned, separate from live provider
+homes, protected through backup/restore/update, and validated for local and SSH
+Seed/Refresh. The reachable-SSH interruption/removal drive in step 11 remains
+pending. Current boundaries are in
+[Project identity and home](../specs/projects-spaces-and-operations.md#project-identity-and-home)
 and [Personal-to-team transfer archive](../specs/projects-spaces-and-operations.md#personal-to-team-transfer-archive).
-The imported-history lifecycle is complete around that importer:
-encrypted backup and restore preserve exact project-owned bytes, candidate
-rehearsal and update rollback validate them through the same owner, and bounded
-failure cleanup can remove only the exact linked pre-activation request state.
-Ordinary team-project Delete remains unavailable. Machine relay and decode,
-target activation and cleanup return, desktop orchestration, and the complete
-live drive still keep this scenario pending.
 
 Transfer is personal space → team space, one way. The team server prepares a
 separate central checkout set, with each checkout owned by `rcp` locally or by

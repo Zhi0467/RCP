@@ -94,6 +94,7 @@ def import_project_transfer(
         archive_manifest_sha256=archive.sha256(),
         target_manifest_sha256=target_configuration.receipt.target_manifest_sha256,
         operational_payload_sha256=operational_entry.sha256,
+        target_configuration_receipt=target_configuration.receipt.model_dump(mode="json"),
         capture=capture,
         kept_result_view_html=kept_html,
     )

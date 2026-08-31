@@ -45,6 +45,7 @@ from rcp.service import canonical_chat_backup_sources, iter_canonical_chat_backu
 from rcp.storage import AppStore
 from rcp.transport import SSHStateWorkspace, StateUnavailable
 from rcp.transport.remote_backup_checkout import CheckoutInspectionError, inspect_checkout
+from rcp.transport.remote_backup_inventory import inspect_direct_root
 
 SOURCE_COMMIT = "a" * 40
 WEB_BUILD_ID = "sha256:" + ("b" * 64)
@@ -697,6 +698,36 @@ def test_remote_backup_export_is_filtered_lock_free_and_root_stable(
     assert "--exclude=/branches/*/graph.json" in command
     assert "--exclude=.refresh.lock" in command
     assert not any("lock" in argument and argument.startswith("mkdir") for argument in command)
+
+
+def test_remote_backup_export_treats_a_proven_missing_root_as_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "export"
+    destination.mkdir(mode=0o700)
+    workspace = SSHStateWorkspace(
+        tmp_path / "cache" / ".research",
+        "research.example",
+        "/srv/rcp/project/repositories/paper",
+    )
+    remote_calls: list[list[str]] = []
+
+    def remote(arguments: list[str], *, timeout: float = 30):
+        remote_calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0, b"[]", b"")
+
+    monkeypatch.setattr(workspace, "_ssh", remote)
+    monkeypatch.setattr(
+        state_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("an empty remote root must not invoke rsync"),
+    )
+
+    assert workspace.backup_source_root(destination) == destination
+    assert len(remote_calls) == 2
+    assert list(destination.iterdir()) == []
+    assert inspect_direct_root(str(tmp_path / "missing" / ".research")) == []
 
 
 def test_remote_backup_export_rejects_an_unknown_direct_root_before_rsync(

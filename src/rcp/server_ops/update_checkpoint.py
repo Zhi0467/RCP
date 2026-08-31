@@ -928,6 +928,8 @@ class UpdateCheckpointCoordinator:
 
         uploads: list[ProjectTransferUploadRecord] = []
         for upload in stored:
+            if upload.status == "consumed":
+                continue
             if upload.status != "complete" or upload.receipt is None:
                 raise UpdateCheckpointRefused(
                     "A transfer inbox upload is not at its durable complete boundary."

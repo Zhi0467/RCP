@@ -44,7 +44,9 @@ from rcp.storage.models import (  # noqa: F401
     NodeStatusGraphCondition,
     ProjectRecord,
     ProjectStageRecord,
+    ProjectTransferActivationReceipt,
     ProjectTransferImportRecord,
+    ProjectTransferRestoreReentryReceipt,
     ProposalResolvedGraphCondition,
     ProviderSkillInventoryRecord,
     ResultViewConflict,
@@ -716,6 +718,12 @@ class AppStoreBase:
                 );
                 CREATE INDEX IF NOT EXISTS project_transfer_imports_project
                     ON project_transfer_imports(project_id, created_at, request_id);
+                CREATE TABLE IF NOT EXISTS project_transfer_import_configurations (
+                    request_id TEXT PRIMARY KEY,
+                    receipt_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(request_id) REFERENCES project_transfer_imports(request_id)
+                );
                 CREATE TABLE IF NOT EXISTS project_transfer_proofs (
                     request_id TEXT PRIMARY KEY,
                     proof_kind TEXT NOT NULL
@@ -754,7 +762,8 @@ class AppStoreBase:
                     archive_sha256 TEXT NOT NULL,
                     archive_size_bytes INTEGER NOT NULL CHECK(archive_size_bytes >= 1),
                     lease_boundary_sha256 TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('active', 'complete', 'invalidated')),
+                    status TEXT NOT NULL
+                        CHECK(status IN ('active', 'complete', 'consumed', 'invalidated')),
                     receipt_json TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -764,9 +773,28 @@ class AppStoreBase:
                         (status = 'active' AND receipt_json IS NULL AND invalidated_at IS NULL)
                         OR (status = 'complete' AND receipt_json IS NOT NULL
                             AND invalidated_at IS NULL)
+                        OR (status = 'consumed' AND receipt_json IS NOT NULL
+                            AND invalidated_at IS NULL)
                         OR (status = 'invalidated' AND receipt_json IS NULL
                             AND invalidated_at IS NOT NULL)
                     )
+                );
+                CREATE TABLE IF NOT EXISTS project_transfer_activations (
+                    target_request_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL UNIQUE,
+                    receipt_json TEXT NOT NULL,
+                    activated_at TEXT NOT NULL,
+                    FOREIGN KEY(target_request_id)
+                        REFERENCES project_transfer_requests(request_id)
+                );
+                CREATE TABLE IF NOT EXISTS project_transfer_restore_reentries (
+                    target_request_id TEXT NOT NULL,
+                    restored_revision INTEGER NOT NULL CHECK(restored_revision >= 0),
+                    receipt_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(target_request_id, restored_revision),
+                    FOREIGN KEY(target_request_id)
+                        REFERENCES project_transfer_requests(request_id)
                 );
                 CREATE TABLE IF NOT EXISTS project_aliases (
                     alias_id TEXT PRIMARY KEY,
@@ -1314,6 +1342,7 @@ class AppStoreBase:
                 "project_config_json",
                 "TEXT",
             )
+            self._allow_consumed_project_transfer_uploads(connection)
             self._ensure_column(connection, "space_identity", "space_name", "TEXT")
             self._ensure_column(connection, "space_users", "removal_started_at", "TEXT")
             self._ensure_column(connection, "space_users", "removed_at", "TEXT")
@@ -1870,6 +1899,59 @@ class AppStoreBase:
                     "UPDATE watchers SET episode_id = ? WHERE watcher_id = ?",
                     (next(iter(candidates)), row["watcher_id"]),
                 )
+
+    @staticmethod
+    def _allow_consumed_project_transfer_uploads(connection: sqlite3.Connection) -> None:
+        """Extend the closed upload lifecycle without discarding retained receipts."""
+
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'project_transfer_uploads'"
+        ).fetchone()
+        if row is None or "'consumed'" in str(row[0]):
+            return
+        connection.execute(
+            """
+            CREATE TABLE project_transfer_uploads_with_consumed (
+                request_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                archive_sha256 TEXT NOT NULL,
+                archive_size_bytes INTEGER NOT NULL CHECK(archive_size_bytes >= 1),
+                lease_boundary_sha256 TEXT NOT NULL,
+                status TEXT NOT NULL
+                    CHECK(status IN ('active', 'complete', 'consumed', 'invalidated')),
+                receipt_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                invalidated_at TEXT,
+                FOREIGN KEY(request_id) REFERENCES project_transfer_requests(request_id),
+                CHECK(
+                    (status = 'active' AND receipt_json IS NULL AND invalidated_at IS NULL)
+                    OR (status IN ('complete', 'consumed') AND receipt_json IS NOT NULL
+                        AND invalidated_at IS NULL)
+                    OR (status = 'invalidated' AND receipt_json IS NULL
+                        AND invalidated_at IS NOT NULL)
+                )
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO project_transfer_uploads_with_consumed (
+                request_id, project_id, archive_sha256, archive_size_bytes,
+                lease_boundary_sha256, status, receipt_json, created_at,
+                updated_at, invalidated_at
+            )
+            SELECT request_id, project_id, archive_sha256, archive_size_bytes,
+                   lease_boundary_sha256, status, receipt_json, created_at,
+                   updated_at, invalidated_at
+            FROM project_transfer_uploads
+            """
+        )
+        connection.execute("DROP TABLE project_transfer_uploads")
+        connection.execute(
+            "ALTER TABLE project_transfer_uploads_with_consumed RENAME TO project_transfer_uploads"
+        )
 
     @staticmethod
     def _ensure_column(

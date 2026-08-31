@@ -11,7 +11,9 @@ from rcp.core.transition_models import GraphHeadRef
 from rcp.server_ops.restore import detach_restore_database
 from rcp.storage import AppStore, ProjectTransferPhase, ProjectTransferRequestRecord
 from tests.test_project_transfer_request_storage import (
+    _activate_target,
     _archive_bound_pair,
+    _complete_target_boundaries,
     _linked_pair,
     _ready_incoming,
 )
@@ -102,7 +104,10 @@ def _target_at_phase(
     if phase == "archive_bound":
         return source, target, source_request, target_request
 
-    target_request = target.mark_target_project_transfer_activated(target_request.request_id)
+    _complete_target_boundaries(target, target_request.request_id)
+    _activation, _project_record = _activate_target(target, target_request.request_id)
+    target_request = target.project_transfer_request(target_request.request_id)
+    assert target_request is not None
     if phase == "target_activated":
         return source, target, source_request, target_request
 
@@ -230,3 +235,127 @@ def test_restore_invalidates_target_upload_and_refuses_reuse(
             target_request.request_id,
             lease_boundary_sha256=leased.lease_boundary_sha256,
         )
+
+
+def test_restore_reentry_revalidates_and_issues_only_a_fresh_upload_lease(
+    tmp_path: Path,
+) -> None:
+    _source, target, _source_request, target_request = _archive_bound_pair(tmp_path)
+    original = target.begin_target_project_transfer_upload(target_request.request_id)
+    proof_before = _protected_proof(target, target_request.request_id)
+    assert target_request.target_admission_receipt is not None
+    confirmer = target_request.target_admission_receipt.admitted_by
+    detach_restore_database(
+        target.path,
+        confirmed_by="root@lab uid=0",
+        detached_at=RESTORED_AT,
+    )
+    restored = target.project_transfer_request(target_request.request_id)
+    assert restored is not None
+    provisioning = _ready_incoming(target, target_request.request_id)
+    assert provisioning.final_review_digest is not None
+    invalidated = target.target_project_transfer_upload(target_request.request_id)
+    assert invalidated is not None
+    assert invalidated.status == "invalidated"
+
+    resumed, replacement = target.reenter_restored_target_project_transfer(
+        restored.request_id,
+        expected_restored_revision=restored.revision,
+        expected_resume_phase="archive_bound",
+        expected_final_review_digest=provisioning.final_review_digest,
+        confirmed_by=confirmer,
+    )
+
+    assert resumed.phase == "archive_bound"
+    assert resumed.restore_resume_phase is None
+    assert resumed.restore_diagnostic is None
+    assert resumed.revision == restored.revision + 1
+    assert replacement.status == "active"
+    assert replacement.lease_boundary_sha256 != original.lease_boundary_sha256
+    assert replacement.archive_sha256 == original.archive_sha256
+    assert replacement.archive_size_bytes == original.archive_size_bytes
+    assert _protected_proof(target, target_request.request_id) == proof_before
+    assert target.target_project_transfer_activation(target_request.request_id) is None
+    with sqlite3.connect(target.path) as connection:
+        row = connection.execute(
+            """
+            SELECT receipt_json FROM project_transfer_restore_reentries
+            WHERE target_request_id = ? AND restored_revision = ?
+            """,
+            (target_request.request_id, restored.revision),
+        ).fetchone()
+    assert row is not None
+    assert '"confirmed_by"' in row[0]
+    assert "secret" not in row[0]
+    with pytest.raises(ValueError, match="not exposed"):
+        target.expose_project_transfer_proof(target_request.request_id)
+    assert target.reenter_restored_target_project_transfer(
+        restored.request_id,
+        expected_restored_revision=restored.revision,
+        expected_resume_phase="archive_bound",
+        expected_final_review_digest=provisioning.final_review_digest,
+        confirmed_by=confirmer,
+    ) == (resumed, replacement)
+
+
+def test_restore_reentry_guards_leave_the_invalidated_boundary_unchanged(
+    tmp_path: Path,
+) -> None:
+    _source, target, _source_request, target_request = _archive_bound_pair(tmp_path)
+    target.begin_target_project_transfer_upload(target_request.request_id)
+    assert target_request.target_admission_receipt is not None
+    confirmer = target_request.target_admission_receipt.admitted_by
+    detach_restore_database(
+        target.path,
+        confirmed_by="root@lab uid=0",
+        detached_at=RESTORED_AT,
+    )
+    restored = target.project_transfer_request(target_request.request_id)
+    assert restored is not None
+    provisioning = _ready_incoming(target, target_request.request_id)
+    assert provisioning.final_review_digest is not None
+    before_upload = target.target_project_transfer_upload(target_request.request_id)
+    assert before_upload is not None
+
+    cases = (
+        {
+            "expected_restored_revision": restored.revision + 1,
+            "expected_resume_phase": "archive_bound",
+            "expected_final_review_digest": provisioning.final_review_digest,
+        },
+        {
+            "expected_restored_revision": restored.revision,
+            "expected_resume_phase": "source_released",
+            "expected_final_review_digest": provisioning.final_review_digest,
+        },
+        {
+            "expected_restored_revision": restored.revision,
+            "expected_resume_phase": "archive_bound",
+            "expected_final_review_digest": "0" * 64,
+        },
+    )
+    for values in cases:
+        with pytest.raises(ValueError):
+            target.reenter_restored_target_project_transfer(
+                restored.request_id,
+                confirmed_by=confirmer,
+                **values,
+            )
+        assert target.project_transfer_request(restored.request_id) == restored
+        assert target.target_project_transfer_upload(restored.request_id) == before_upload
+
+    with sqlite3.connect(target.path) as connection:
+        connection.execute(
+            "UPDATE space_users SET removal_started_at = ? WHERE user_id = ?",
+            (target.now(), confirmer.user_id),
+        )
+    with pytest.raises(ValueError, match="not current"):
+        target.reenter_restored_target_project_transfer(
+            restored.request_id,
+            expected_restored_revision=restored.revision,
+            expected_resume_phase="archive_bound",
+            expected_final_review_digest=provisioning.final_review_digest,
+            confirmed_by=confirmer,
+        )
+    assert target.project_transfer_request(restored.request_id) == restored
+    assert target.target_project_transfer_upload(restored.request_id) == before_upload

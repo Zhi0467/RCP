@@ -21,6 +21,7 @@ from rcp.storage import (
     ProjectProvisioningProviderIntent,
     ProjectProvisioningRepositoryIntent,
     ProjectRecord,
+    ProjectTransferActivationReceipt,
     ProjectTransferRepositorySource,
     ProjectTransferSourceConfiguration,
     ProjectTransferUploadCompleteReceipt,
@@ -128,12 +129,14 @@ def _incoming_request(
 def _ready_incoming(target: AppStore, request_id: str):
     request = target.project_provisioning_request(request_id)
     assert request is not None
+    assert request.status in {"waiting_for_server_setup", "operator_action_needed"}
+    restored = request.status == "operator_action_needed"
     running = target.transition_project_provisioning_request(
         request_id,
-        receipt_id="setup-started",
-        phase="setup_start",
-        expected_revision=0,
-        expected_status="waiting_for_server_setup",
+        receipt_id=(f"restore-setup-{request.revision}" if restored else "setup-started"),
+        phase="restore_reentry" if restored else "setup_start",
+        expected_revision=request.revision,
+        expected_status=request.status,
         to_status="setup_in_progress",
         machines=request.machines,
         repositories=request.repositories,
@@ -170,9 +173,11 @@ def _ready_incoming(target: AppStore, request_id: str):
     ]
     return target.transition_project_provisioning_request(
         request_id,
-        receipt_id="preparation-ready",
+        receipt_id=(
+            f"restore-preparation-ready-{running.revision}" if restored else "preparation-ready"
+        ),
         phase="final_review",
-        expected_revision=1,
+        expected_revision=running.revision,
         expected_status="setup_in_progress",
         to_status="ready_for_review",
         machines=machines,
@@ -281,6 +286,68 @@ def _archive_bound_pair(tmp_path: Path):
     return source, target, source_request, target_request
 
 
+def _activation_project(target: AppStore, project_id: str) -> ProjectRecord:
+    return ProjectRecord(
+        project_id=project_id,
+        home_space_id=target.space_id,
+        locator=f"/srv/rcp/projects/{project_id}/paper/.research/manifest.toml",
+        name="Transfer project",
+        state_location=f"/srv/rcp/projects/{project_id}/paper/.research",
+        state_remote=False,
+        added_at=target.now(),
+        revision=8,
+    )
+
+
+def _complete_target_boundaries(target: AppStore, request_id: str) -> None:
+    upload = target.begin_target_project_transfer_upload(request_id)
+    target.complete_target_project_transfer_upload(
+        request_id,
+        lease_boundary_sha256=upload.lease_boundary_sha256,
+    )
+    target_request = target.project_transfer_request(request_id)
+    assert target_request is not None
+    now = target.now()
+    with sqlite3.connect(target.path) as connection:
+        connection.execute(
+            """
+            INSERT INTO project_transfer_imports (
+                request_id, project_id, archive_manifest_sha256,
+                target_manifest_sha256, operational_payload_sha256, status,
+                event_id_map_json, receipt_id_map_json, publication_sha256,
+                created_at, completed_at
+            ) VALUES (?, ?, ?, ?, ?, 'complete', '{}', '{}', ?, ?, ?)
+            """,
+            (
+                request_id,
+                target_request.project_id,
+                "1" * 64,
+                "2" * 64,
+                "3" * 64,
+                "4" * 64,
+                now,
+                now,
+            ),
+        )
+
+
+def _activate_target(
+    target: AppStore,
+    target_request_id: str,
+) -> tuple[ProjectTransferActivationReceipt, ProjectRecord]:
+    provisioning = target.project_provisioning_request(target_request_id)
+    assert provisioning is not None
+    assert provisioning.final_review_digest is not None
+    project = _activation_project(target, provisioning.proposed_project_id)
+    receipt = target.activate_target_project_transfer(
+        target_request_id,
+        project=project,
+        expected_provisioning_revision=provisioning.revision,
+        expected_final_review_digest=provisioning.final_review_digest,
+    )
+    return receipt, project
+
+
 def test_target_upload_is_bound_to_one_archive_and_replays_its_receipt(
     tmp_path: Path,
 ) -> None:
@@ -324,6 +391,182 @@ def test_target_upload_requires_the_archive_bound_phase(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="archive-bound"):
         target.begin_target_project_transfer_upload(target_request.request_id)
+
+
+def test_existing_upload_table_is_migrated_to_retain_consumed_receipts() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE project_transfer_uploads (
+                request_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                archive_sha256 TEXT NOT NULL,
+                archive_size_bytes INTEGER NOT NULL CHECK(archive_size_bytes >= 1),
+                lease_boundary_sha256 TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('active', 'complete', 'invalidated')),
+                receipt_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                invalidated_at TEXT,
+                CHECK(
+                    (status = 'active' AND receipt_json IS NULL AND invalidated_at IS NULL)
+                    OR (status = 'complete' AND receipt_json IS NOT NULL
+                        AND invalidated_at IS NULL)
+                    OR (status = 'invalidated' AND receipt_json IS NULL
+                        AND invalidated_at IS NOT NULL)
+                )
+            );
+            INSERT INTO project_transfer_uploads VALUES (
+                'request', 'project', 'archive', 1, 'lease', 'complete',
+                '{}', 'created', 'updated', NULL
+            );
+            """
+        )
+
+        AppStore._allow_consumed_project_transfer_uploads(connection)
+        connection.execute(
+            "UPDATE project_transfer_uploads SET status = 'consumed' WHERE request_id = 'request'"
+        )
+
+        row = connection.execute(
+            "SELECT status, receipt_json FROM project_transfer_uploads WHERE request_id = 'request'"
+        ).fetchone()
+        assert row == ("consumed", "{}")
+    finally:
+        connection.close()
+
+
+def test_target_activation_compound_commits_and_replays_its_exact_receipt(
+    tmp_path: Path,
+) -> None:
+    _source, target, _source_request, target_request = _archive_bound_pair(tmp_path)
+    _complete_target_boundaries(target, target_request.request_id)
+    provisioning = target.project_provisioning_request(target_request.request_id)
+    assert provisioning is not None
+    assert provisioning.status == "ready_for_review"
+    assert provisioning.final_review_digest is not None
+    project = _activation_project(target, target_request.project_id)
+
+    assert target.project(project.project_id) is None
+    assert target.project_members(project.project_id) == []
+    receipt = target.activate_target_project_transfer(
+        target_request.request_id,
+        project=project,
+        expected_provisioning_revision=provisioning.revision,
+        expected_final_review_digest=provisioning.final_review_digest,
+    )
+
+    assert receipt.source_request_id == target_request.linked_request_id
+    assert receipt.archive_sha256 == target_request.archive_sha256
+    assert receipt.source_fence_head == target_request.source_fence_head
+    assert receipt.archive_manifest_sha256 == "1" * 64
+    assert receipt.target_manifest_sha256 == "2" * 64
+    assert receipt.operational_payload_sha256 == "3" * 64
+    assert receipt.publication_sha256 == "4" * 64
+    assert receipt.admitted_by == target_request.target_admission_receipt.admitted_by
+    assert receipt.registered_project.project_id == project.project_id
+    assert receipt.registered_project.home_space_id == target.space_id
+    assert receipt.registered_project.registered_at == project.added_at
+    assert receipt.first_member.user_id == receipt.admitted_by.user_id
+    assert receipt.first_member.seated_by == receipt.admitted_by.user_id
+    assert "secret" not in receipt.model_dump(mode="json")
+
+    stored_project = target.project(project.project_id)
+    assert stored_project is not None
+    assert stored_project.home_space_id == target.space_id
+    assert target.project_members(project.project_id) == [receipt.first_member]
+    completed_provisioning = target.project_provisioning_request(target_request.request_id)
+    assert completed_provisioning is not None
+    assert completed_provisioning.status == "completed"
+    assert completed_provisioning.final_review_digest == provisioning.final_review_digest
+    assert completed_provisioning.revision == provisioning.revision + 1
+    assert target.project_transfer_request(target_request.request_id).phase == "target_activated"
+    assert target.target_project_transfer_activation(target_request.request_id) == receipt
+    consumed = target.target_project_transfer_upload(target_request.request_id)
+    assert consumed is not None
+    assert consumed.status == "consumed"
+    assert target.begin_target_project_transfer_upload(target_request.request_id) == consumed
+    assert (
+        target.complete_target_project_transfer_upload(
+            target_request.request_id,
+            lease_boundary_sha256=consumed.lease_boundary_sha256,
+        )
+        == consumed
+    )
+
+    assert (
+        target.activate_target_project_transfer(
+            target_request.request_id,
+            project=project,
+            expected_provisioning_revision=provisioning.revision,
+            expected_final_review_digest=provisioning.final_review_digest,
+        )
+        == receipt
+    )
+    with pytest.raises(ValueError, match="retry does not match"):
+        target.activate_target_project_transfer(
+            target_request.request_id,
+            project=project.model_copy(update={"name": "Another project"}),
+            expected_provisioning_revision=provisioning.revision,
+            expected_final_review_digest=provisioning.final_review_digest,
+        )
+
+
+def test_target_activation_requires_complete_machine_boundaries_atomically(
+    tmp_path: Path,
+) -> None:
+    _source, target, _source_request, target_request = _archive_bound_pair(tmp_path)
+    upload = target.begin_target_project_transfer_upload(target_request.request_id)
+    target.complete_target_project_transfer_upload(
+        target_request.request_id,
+        lease_boundary_sha256=upload.lease_boundary_sha256,
+    )
+    provisioning = target.project_provisioning_request(target_request.request_id)
+    assert provisioning is not None
+    assert provisioning.final_review_digest is not None
+    project = _activation_project(target, target_request.project_id)
+
+    with pytest.raises(ValueError, match="completed import"):
+        target.activate_target_project_transfer(
+            target_request.request_id,
+            project=project,
+            expected_provisioning_revision=provisioning.revision,
+            expected_final_review_digest=provisioning.final_review_digest,
+        )
+
+    assert target.project(project.project_id) is None
+    assert target.project_members(project.project_id) == []
+    assert target.target_project_transfer_activation(target_request.request_id) is None
+    assert target.project_transfer_request(target_request.request_id).phase == "archive_bound"
+    unchanged = target.project_provisioning_request(target_request.request_id)
+    assert unchanged is not None
+    assert unchanged.status == "ready_for_review"
+    retained_upload = target.target_project_transfer_upload(target_request.request_id)
+    assert retained_upload is not None
+    assert retained_upload.status == "complete"
+
+
+def test_corrupt_target_activation_receipt_fails_loudly(tmp_path: Path) -> None:
+    _source, target, _source_request, target_request = _archive_bound_pair(tmp_path)
+    _complete_target_boundaries(target, target_request.request_id)
+    receipt, _project_record = _activate_target(target, target_request.request_id)
+    corrupted = receipt.model_dump(mode="json")
+    corrupted["publication_sha256"] = "9" * 64
+    with sqlite3.connect(target.path) as connection:
+        connection.execute(
+            """
+            UPDATE project_transfer_activations SET receipt_json = ?
+            WHERE target_request_id = ?
+            """,
+            (
+                json.dumps(corrupted, sort_keys=True, separators=(",", ":")),
+                target_request.request_id,
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="import receipt"):
+        target.target_project_transfer_activation(target_request.request_id)
 
 
 def test_source_release_atomically_fences_new_root_task_admission(tmp_path: Path) -> None:
@@ -642,7 +885,10 @@ def test_proofs_expose_only_at_their_boundaries_then_consume_to_receipts(
         archive_size_bytes=27,
         source_fence_head=fenced_head,
     )
-    target_request = target.mark_target_project_transfer_activated(target_request.request_id)
+    _complete_target_boundaries(target, target_request.request_id)
+    _activation, _project_record = _activate_target(target, target_request.request_id)
+    target_request = target.project_transfer_request(target_request.request_id)
+    assert target_request is not None
     target_secret = target.expose_project_transfer_proof(target_request.request_id)
     assert target.expose_project_transfer_proof(target_request.request_id) == target_secret
     assert hashlib.sha256(target_secret).hexdigest() == (
@@ -730,7 +976,7 @@ def test_archive_and_proof_retries_reject_different_boundaries(tmp_path: Path) -
             archive_sha256="0" * 64,
             archive_size_bytes=100,
         )
-    with pytest.raises(ValueError, match="not ready to activate"):
+    with pytest.raises(ValueError, match="compound activation receipt"):
         target.mark_target_project_transfer_activated(target_request.request_id)
 
 

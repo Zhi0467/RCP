@@ -1,10 +1,8 @@
-"""Safe, request-scoped target-side receipt of one transfer archive.
+"""Safe target-side receipt and activation of one project transfer.
 
-The target upload is deliberately only a byte boundary.  It does not open
-SQLite, interpret a transfer manifest, or grant project authority.  The
-server-control owner supplies the already-reviewed request digest and size;
-this module makes those values a filesystem lease and publishes exactly one
-verified file for the later importer.
+Upload remains a byte-only boundary. A separate running-service coordinator
+decodes and imports those verified bytes, then crosses the compound catalog,
+membership, provisioning, and activation boundary.
 """
 
 from __future__ import annotations
@@ -20,21 +18,38 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Protocol
+from typing import TYPE_CHECKING, BinaryIO, Protocol
 
+import tomlkit
+
+from rcp.config import Manifest
 from rcp.limits import PROJECT_TRANSFER_COPY_BUFFER_BYTES
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.control import (
     ServerControlClient,
     ServerControlError,
+    ServerControlProjectTransferActivationResult,
     ServerControlProjectTransferUploadResult,
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import MachineTarget, ServerCommandRequest, ServerPlanEvent, ServerStep
 from rcp.server_runtime import ServerMetadata
-from rcp.storage import AppStore
+from rcp.setup import ProjectSetupManager, render_prepared_team_manifest
+from rcp.storage import AppStore, ProjectTransferActivationReceipt
+from rcp.transfer.archive import TransferArchiveEnvelope
+from rcp.transfer.configuration import (
+    TransferTargetConfigurationReceipt,
+    build_transfer_target_configuration,
+)
+from rcp.transfer.importer import import_project_transfer
+from rcp.transfer.source import discard_transfer_archive_stage, stage_transfer_archive
+from rcp.transport.state import state_workspace_for_probe
+
+if TYPE_CHECKING:
+    from rcp.projects import ProjectCatalog
 
 _TRANSFER_INBOX_NAME = "transfer-inbox"
+_ACTIVATION_STAGE_NAME = "project-transfer-activation"
 _ARCHIVE_SUFFIX = ".rcp-transfer"
 _PARTIAL_SUFFIX = ".partial"
 _ARCHIVE_MODE = 0o600
@@ -64,6 +79,13 @@ class TargetTransferUploadControl(Protocol):
         request_id: str,
         lease_boundary_sha256: str,
     ) -> ServerControlProjectTransferUploadResult: ...
+
+    def activate_project_transfer(
+        self,
+        *,
+        request_id: str,
+        lease_boundary_sha256: str,
+    ) -> ServerControlProjectTransferActivationResult: ...
 
 
 @dataclass(frozen=True)
@@ -205,10 +227,21 @@ def prepare_transfer_import_command(
         expected_success="The exact request archive is sealed in the private transfer inbox.",
         message="RCP will verify stdin against the request's expected digest and size.",
     )
+    activation_pending = ServerStep(
+        number=2,
+        title="Activate the transferred project",
+        purpose="Decode, validate, import, and register the exact reviewed project.",
+        performed_by="system",
+        target=target,
+        phase="transfer_activation",
+        state="pending",
+        expected_success="The imported project is registered once in the target team space.",
+        message="RCP will cross one compound activation boundary after upload readback.",
+    )
     plan = ServerPlanEvent(
         command=request.command,
         timestamp=datetime.now(UTC),
-        steps=(pending,),
+        steps=(pending, activation_pending),
     )
 
     def execute(emitter: ServerEventEmitter, input_stream: BinaryIO) -> None:
@@ -221,7 +254,13 @@ def prepare_transfer_import_command(
             )
         )
         try:
-            if resolved.state == "complete":
+            if resolved.state == "consumed":
+                _consume_stream(
+                    input_stream,
+                    resolved.archive_sha256,
+                    resolved.archive_size_bytes,
+                )
+            elif resolved.state == "complete":
                 replay_target_transfer_archive(
                     layout.data_dir,
                     request.request_id,
@@ -259,6 +298,41 @@ def prepare_transfer_import_command(
                 update={
                     "state": "succeeded",
                     "message": "The exact transfer archive is sealed and durably recorded.",
+                }
+            )
+        )
+        emitter.emit_step(
+            activation_pending.model_copy(
+                update={
+                    "state": "running",
+                    "message": "RCP is activating the exact completed upload.",
+                }
+            )
+        )
+        try:
+            activated = client.activate_project_transfer(
+                request_id=request.request_id,
+                lease_boundary_sha256=resolved.lease_boundary_sha256,
+            )
+            if (
+                activated.target_request_id != resolved.request_id
+                or activated.project_id != resolved.project_id
+                or activated.archive_sha256 != resolved.archive_sha256
+                or activated.upload_lease_boundary_sha256 != resolved.lease_boundary_sha256
+            ):
+                raise TargetTransferUploadError(
+                    "the running server activated another project-transfer boundary"
+                )
+        except (ServerControlError, TargetTransferUploadError, OSError) as exc:
+            emitter.emit_step(
+                activation_pending.model_copy(update={"state": "failed", "message": str(exc)})
+            )
+            return
+        emitter.emit_step(
+            activation_pending.model_copy(
+                update={
+                    "state": "succeeded",
+                    "message": "The transferred project is active in the target team space.",
                 }
             )
         )
@@ -300,22 +374,28 @@ class TargetTransferUploadCoordinator:
             raise TargetTransferUploadError("target transfer upload has no durable lease")
         if upload.lease_boundary_sha256 != lease_boundary_sha256:
             raise TargetTransferUploadError("target transfer upload lease boundary changed")
-        with target_transfer_upload_lease(
-            self.data_dir,
-            request_id,
-            archive_sha256=upload.archive_sha256,
-            archive_size_bytes=upload.archive_size_bytes,
-        ):
-            verify_target_transfer_archive(
-                self.data_dir,
-                request_id,
-                expected_sha256=upload.archive_sha256,
-                expected_size_bytes=upload.archive_size_bytes,
-            )
+        if upload.status == "consumed":
             completed = self.store.complete_target_project_transfer_upload(
                 request_id,
                 lease_boundary_sha256=lease_boundary_sha256,
             )
+        else:
+            with target_transfer_upload_lease(
+                self.data_dir,
+                request_id,
+                archive_sha256=upload.archive_sha256,
+                archive_size_bytes=upload.archive_size_bytes,
+            ):
+                verify_target_transfer_archive(
+                    self.data_dir,
+                    request_id,
+                    expected_sha256=upload.archive_sha256,
+                    expected_size_bytes=upload.archive_size_bytes,
+                )
+                completed = self.store.complete_target_project_transfer_upload(
+                    request_id,
+                    lease_boundary_sha256=lease_boundary_sha256,
+                )
         return ServerControlProjectTransferUploadResult(
             instance_id=self.identity.instance_id,
             pid=self.identity.pid,
@@ -326,13 +406,243 @@ class TargetTransferUploadCoordinator:
             archive_sha256=completed.archive_sha256,
             archive_size_bytes=completed.archive_size_bytes,
             lease_boundary_sha256=completed.lease_boundary_sha256,
-            state="complete",
+            state=completed.status,
         )
 
     def uploads_idle(self) -> bool:
         return all(
             upload.status != "active" for upload in self.store.target_project_transfer_uploads()
         )
+
+
+class TargetTransferActivationCoordinator:
+    """Decode, import, and atomically activate one complete target upload."""
+
+    def __init__(
+        self,
+        store: AppStore,
+        catalog: ProjectCatalog,
+        setup: ProjectSetupManager,
+        data_dir: Path,
+    ) -> None:
+        self.store = store
+        self.catalog = catalog
+        self.setup = setup
+        self.data_dir = Path(data_dir)
+
+    def activate(
+        self,
+        request_id: str,
+        *,
+        lease_boundary_sha256: str,
+    ) -> ProjectTransferActivationReceipt:
+        """Finish one request or return its exact prior activation receipt."""
+
+        request = _canonical_request_id(request_id)
+        upload = self.store.target_project_transfer_upload(request)
+        if upload is None:
+            raise TargetTransferUploadError("target transfer activation has no durable upload")
+        if upload.lease_boundary_sha256 != _canonical_digest(lease_boundary_sha256):
+            raise TargetTransferUploadError("target transfer activation lease boundary changed")
+
+        stage_parent = self.data_dir / "run-stage" / _ACTIVATION_STAGE_NAME
+        _ensure_private_directory(self.data_dir, label="RCP data")
+        _ensure_private_directory(self.data_dir / "run-stage", label="RCP run stage")
+        _ensure_private_directory(stage_parent, label="target activation stage root")
+        request_stage = stage_parent / request
+
+        with target_transfer_upload_lease(
+            self.data_dir,
+            request,
+            archive_sha256=upload.archive_sha256,
+            archive_size_bytes=upload.archive_size_bytes,
+        ):
+            _discard_activation_stage(request_stage)
+            committed = self.store.target_project_transfer_activation(request)
+            if committed is not None:
+                self._finish_committed_retry(committed, upload)
+                return committed
+
+            self._require_ready_boundary(request, upload)
+            archive_receipt = verify_target_transfer_archive(
+                self.data_dir,
+                request,
+                expected_sha256=upload.archive_sha256,
+                expected_size_bytes=upload.archive_size_bytes,
+            )
+            request_stage.mkdir(mode=_DIRECTORY_MODE)
+            payload_root = request_stage / "payload"
+            try:
+                readback = stage_transfer_archive(
+                    archive_receipt.archive_path,
+                    payload_root,
+                )
+                self._require_envelope_matches_upload(readback.envelope, upload)
+                if os.path.lexists(payload_root / "manifest.json"):
+                    raise TargetTransferUploadError(
+                        "decoded transfer payload retained its reserved archive manifest"
+                    )
+
+                transfer = self.store.project_transfer_request(request)
+                provisioning = self.store.project_provisioning_request(request)
+                if transfer is None or provisioning is None:
+                    raise TargetTransferUploadError(
+                        "target transfer activation lost its durable requests"
+                    )
+                if transfer.link_receipt is None:
+                    raise TargetTransferUploadError(
+                        "target transfer activation lost its link receipt"
+                    )
+
+                existing_import = self.store.project_transfer_import(request)
+                if existing_import is None:
+                    configuration = build_transfer_target_configuration(
+                        provisioning,
+                        transfer.source_configuration,
+                        transfer.link_receipt,
+                        readback.manifest,
+                        payload_root,
+                        retained_research_root=self._capture_retained_history(
+                            provisioning,
+                            request_stage,
+                        ),
+                    )
+                else:
+                    persisted_json = self.store.project_transfer_import_configuration_receipt_json(
+                        request
+                    )
+                    if persisted_json is None:
+                        raise TargetTransferUploadError(
+                            "target transfer import lost its pre-publication configuration receipt"
+                        )
+                    persisted = TransferTargetConfigurationReceipt.model_validate_json(
+                        persisted_json
+                    )
+                    configuration = build_transfer_target_configuration(
+                        provisioning,
+                        transfer.source_configuration,
+                        transfer.link_receipt,
+                        readback.manifest,
+                        payload_root,
+                        retained_history=persisted.retained_history,
+                    )
+                    if configuration.receipt != persisted:
+                        raise TargetTransferUploadError(
+                            "target transfer import configuration changed before retry"
+                        )
+                imported = import_project_transfer(
+                    self.catalog,
+                    archive=readback.manifest,
+                    envelope=readback.envelope,
+                    archive_root=payload_root,
+                    target_configuration=configuration,
+                )
+                if imported.status != "complete" or imported.publication_sha256 is None:
+                    raise TargetTransferUploadError(
+                        "target transfer import did not reach its complete boundary"
+                    )
+                project = self.setup.prepare_incoming_transfer_project(
+                    provisioning,
+                    target_configuration=configuration,
+                )
+                assert provisioning.final_review_digest is not None
+                committed = self.store.activate_target_project_transfer(
+                    request,
+                    project=project,
+                    expected_provisioning_revision=provisioning.revision,
+                    expected_final_review_digest=provisioning.final_review_digest,
+                )
+                activated_project = self.store.project(committed.project_id)
+                if activated_project is None:
+                    raise RuntimeError("target activation lost its registered project")
+                self.catalog.refresh_after_incoming_transfer_activation(activated_project)
+                _discard_verified_target_archive(
+                    archive_receipt.archive_path,
+                    expected_sha256=upload.archive_sha256,
+                    expected_size_bytes=upload.archive_size_bytes,
+                )
+                return committed
+            finally:
+                _discard_activation_stage(request_stage)
+
+    def _require_ready_boundary(self, request_id: str, upload) -> None:
+        transfer = self.store.project_transfer_request(request_id)
+        provisioning = self.store.project_provisioning_request(request_id)
+        if transfer is None or provisioning is None:
+            raise TargetTransferUploadError("target transfer activation lost its durable requests")
+        if (
+            transfer.side != "target"
+            or transfer.phase != "archive_bound"
+            or transfer.request_id != upload.request_id
+            or transfer.project_id != upload.project_id
+            or transfer.archive_sha256 != upload.archive_sha256
+            or transfer.archive_size_bytes != upload.archive_size_bytes
+            or transfer.target_space_id != self.store.space_id
+            or transfer.link_receipt is None
+            or transfer.source_release_receipt is None
+            or transfer.target_admission_receipt is None
+            or upload.status != "complete"
+            or upload.receipt is None
+        ):
+            raise TargetTransferUploadError(
+                "target transfer request is not ready for archive activation"
+            )
+        if (
+            provisioning.kind != "incoming_transfer"
+            or provisioning.status != "ready_for_review"
+            or provisioning.request_id != request_id
+            or provisioning.proposed_project_id != transfer.project_id
+            or provisioning.target_space_id != transfer.target_space_id
+            or provisioning.final_review_digest is None
+        ):
+            raise TargetTransferUploadError(
+                "target transfer provisioning is not ready for archive activation"
+            )
+
+    @staticmethod
+    def _require_envelope_matches_upload(envelope: TransferArchiveEnvelope, upload) -> None:
+        if (
+            envelope.archive_sha256 != upload.archive_sha256
+            or envelope.archive_size_bytes != upload.archive_size_bytes
+        ):
+            raise TargetTransferUploadError(
+                "decoded transfer archive differs from its completed upload"
+            )
+
+    def _capture_retained_history(self, provisioning, request_stage: Path) -> Path:
+        content = render_prepared_team_manifest(provisioning)
+        try:
+            manifest = Manifest.model_validate(tomlkit.parse(content).unwrap())
+        except (ValueError, tomlkit.exceptions.ParseError) as exc:
+            raise TargetTransferUploadError(
+                "reviewed target manifest is invalid during retained-history capture"
+            ) from exc
+        state_repository = manifest.repository_map[manifest.state.repository]
+        machine = manifest.machine_map[state_repository.machine]
+        manifest._path = (
+            Path(state_repository.path) / ".research" / "manifest.toml"
+            if not machine.host
+            else request_stage / "target-bootstrap.toml"
+        )
+        workspace = state_workspace_for_probe(manifest, self.data_dir)
+        retained_stage = request_stage / "retained"
+        retained_stage.mkdir(mode=_DIRECTORY_MODE)
+        return workspace.backup_source_root(retained_stage)
+
+    def _finish_committed_retry(self, receipt, upload) -> None:
+        if upload.status != "consumed":
+            raise RuntimeError("target activation receipt lost its consumed upload boundary")
+        project = self.store.project(receipt.project_id)
+        if project is None:
+            raise RuntimeError("target activation receipt lost its registered project")
+        self.catalog.refresh_after_incoming_transfer_activation(project)
+        archive_path = target_transfer_archive_path(self.data_dir, receipt.target_request_id)
+        if os.path.lexists(archive_path):
+            _discard_verified_target_archive(
+                archive_path,
+                expected_sha256=upload.archive_sha256,
+                expected_size_bytes=upload.archive_size_bytes,
+            )
 
 
 def acquire_target_transfer_upload_lease(
@@ -538,6 +848,32 @@ def discard_target_transfer_partial(
             _discard_known_partial(lease.partial_path)
             _fsync_directory(lease.inbox_directory)
         return present
+
+
+def _discard_activation_stage(path: Path) -> None:
+    """Remove only the exact UUID-derived coordinator stage."""
+
+    if not os.path.lexists(path):
+        return
+    discard_transfer_archive_stage(path)
+
+
+def _discard_verified_target_archive(
+    path: Path,
+    *,
+    expected_sha256: str,
+    expected_size_bytes: int,
+) -> None:
+    """Delete one exact consumed inbox file after immutable readback."""
+
+    _verify_final_file(path, expected_sha256, expected_size_bytes)
+    try:
+        path.unlink()
+    except OSError as exc:
+        raise TargetTransferUploadError(
+            "consumed target transfer archive could not be removed"
+        ) from exc
+    _fsync_directory(path.parent)
 
 
 def _receive_with_lease(
@@ -808,6 +1144,7 @@ def _stat_fingerprint(metadata: os.stat_result) -> tuple[int, int, int, int, int
 
 
 __all__ = [
+    "TargetTransferActivationCoordinator",
     "TargetTransferUploadBusy",
     "TargetTransferUploadControl",
     "TargetTransferUploadCoordinator",

@@ -14,6 +14,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -34,7 +35,7 @@ from rcp.server_ops.models import SERVER_CLI_MAX_STEPS, ServerStep, redact_serve
 from rcp.server_ops.update_cutover import TERMINAL_UPDATE_STATES, UpdateOperationState
 from rcp.server_runtime import ServerMetadata, read_server_metadata
 
-SERVER_CONTROL_PROTOCOL_VERSION = 8
+SERVER_CONTROL_PROTOCOL_VERSION = 9
 SERVER_CONTROL_MAX_REQUEST_BYTES = 64 * 1024
 SERVER_CONTROL_MAX_RESPONSE_BYTES = 256 * 1024
 SERVER_CONTROL_SOCKET_MODE = 0o600
@@ -52,6 +53,7 @@ ServerControlOperation = Literal[
     "project_provision_step",
     "project_transfer_upload_plan",
     "project_transfer_upload_complete",
+    "project_transfer_activate",
     "member_removal_plan",
     "member_removal_advance",
     "restore_activation_commit",
@@ -69,6 +71,7 @@ SERVER_CONTROL_OPERATIONS: tuple[ServerControlOperation, ...] = (
     "project_provision_step",
     "project_transfer_upload_plan",
     "project_transfer_upload_complete",
+    "project_transfer_activate",
     "member_removal_plan",
     "member_removal_advance",
     "restore_activation_commit",
@@ -171,7 +174,10 @@ class ServerControlRequest(_StrictModel):
                 raise ValueError("member-removal plan requires one member selector")
             if self.boundary_sha256 is not None or self.target_id is not None:
                 raise ValueError("control plan cannot carry a step boundary")
-        elif self.operation == "project_transfer_upload_complete":
+        elif self.operation in {
+            "project_transfer_upload_complete",
+            "project_transfer_activate",
+        }:
             if (
                 self.selector_kind != "request"
                 or self.selector_id is None
@@ -179,7 +185,7 @@ class ServerControlRequest(_StrictModel):
                 or self.target_id is not None
             ):
                 raise ValueError(
-                    "project transfer upload completion requires one confirmed upload boundary"
+                    "project transfer operation requires one confirmed upload boundary"
                 )
         elif self.operation == "member_removal_advance":
             if (
@@ -537,7 +543,7 @@ class ServerControlProjectTransferUploadResult(_StrictModel):
     archive_sha256: str
     archive_size_bytes: int = Field(ge=1)
     lease_boundary_sha256: str
-    state: Literal["active", "complete"]
+    state: Literal["active", "complete", "consumed"]
 
     @model_validator(mode="after")
     def validate_upload(self) -> ServerControlProjectTransferUploadResult:
@@ -553,6 +559,53 @@ class ServerControlProjectTransferUploadResult(_StrictModel):
             character not in _HEX_DIGEST for character in self.archive_sha256
         ):
             raise ValueError("project transfer upload archive must be a lowercase SHA-256 digest")
+        return self
+
+
+class ServerControlProjectTransferActivationResult(_StrictModel):
+    """Public readback of one committed target activation boundary."""
+
+    instance_id: str
+    pid: int = Field(gt=0)
+    data_dir_id: str
+    space_id: str
+    space_kind: Literal["team"] = "team"
+    target_request_id: str
+    source_request_id: str
+    project_id: str
+    archive_sha256: str
+    upload_lease_boundary_sha256: str
+    archive_manifest_sha256: str
+    target_manifest_sha256: str
+    publication_sha256: str
+    activated_at: str
+    state: Literal["activated"] = "activated"
+
+    @model_validator(mode="after")
+    def validate_activation(self) -> ServerControlProjectTransferActivationResult:
+        _validate_provider_result_identity(
+            self.instance_id,
+            self.space_id,
+            self.data_dir_id,
+            self.target_request_id,
+            self.upload_lease_boundary_sha256,
+        )
+        _canonical_uuid4(self.source_request_id, label="source transfer request id")
+        _canonical_uuid4(self.project_id, label="project transfer activation project id")
+        for value, label in (
+            (self.archive_sha256, "project transfer activation archive"),
+            (self.archive_manifest_sha256, "project transfer archive manifest"),
+            (self.target_manifest_sha256, "project transfer target manifest"),
+            (self.publication_sha256, "project transfer import publication"),
+        ):
+            if len(value) != 64 or any(character not in _HEX_DIGEST for character in value):
+                raise ValueError(f"{label} must be a lowercase SHA-256 digest")
+        try:
+            parsed = datetime.fromisoformat(self.activated_at)
+        except ValueError as exc:
+            raise ValueError("project transfer activation time must be ISO 8601") from exc
+        if parsed.tzinfo is None:
+            raise ValueError("project transfer activation time must include a timezone")
         return self
 
 
@@ -758,6 +811,7 @@ class ServerControlResponse(_StrictModel):
         | ServerControlProjectPlanResult
         | ServerControlProjectStepResult
         | ServerControlProjectTransferUploadResult
+        | ServerControlProjectTransferActivationResult
         | ServerControlBackupCaptureResult
         | ServerControlUpdateResult
         | ServerControlRestoreResult
@@ -806,6 +860,7 @@ ServerControlHandler = Callable[
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
     | ServerControlProjectTransferUploadResult
+    | ServerControlProjectTransferActivationResult
     | ServerControlBackupCaptureResult
     | ServerControlUpdateResult
     | ServerControlRestoreResult,
@@ -1044,13 +1099,35 @@ class ServerControlClient:
             boundary_sha256=lease_boundary_sha256,
         )
         result = self._exchange(request)
-        if (
-            not isinstance(result, ServerControlProjectTransferUploadResult)
-            or result.state != "complete"
-        ):
+        if not isinstance(result, ServerControlProjectTransferUploadResult) or result.state not in {
+            "complete",
+            "consumed",
+        }:
             raise ServerControlError(
                 "invalid_response",
                 "The running RCP process returned the wrong project-transfer upload result.",
+            )
+        return result
+
+    def activate_project_transfer(
+        self,
+        *,
+        request_id: str,
+        lease_boundary_sha256: str,
+    ) -> ServerControlProjectTransferActivationResult:
+        request = ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=self.metadata.instance_id,
+            operation="project_transfer_activate",
+            selector_kind="request",
+            selector_id=request_id,
+            boundary_sha256=lease_boundary_sha256,
+        )
+        result = self._exchange(request)
+        if not isinstance(result, ServerControlProjectTransferActivationResult):
+            raise ServerControlError(
+                "invalid_response",
+                "The running RCP process returned the wrong project-transfer activation.",
             )
         return result
 
@@ -1176,6 +1253,7 @@ class ServerControlClient:
         | ServerControlProjectPlanResult
         | ServerControlProjectStepResult
         | ServerControlProjectTransferUploadResult
+        | ServerControlProjectTransferActivationResult
         | ServerControlBackupCaptureResult
         | ServerControlUpdateResult
         | ServerControlRestoreResult
@@ -1197,7 +1275,10 @@ class ServerControlClient:
             timeout = SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS
         elif request.operation == "project_provision_step":
             timeout = SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS
-        elif request.operation == "project_transfer_upload_complete":
+        elif request.operation in {
+            "project_transfer_upload_complete",
+            "project_transfer_activate",
+        }:
             # Completion re-hashes the request-bound archive before recording
             # its receipt, so it gets the same bounded long operation window
             # as other archive-sized service work.
@@ -1535,6 +1616,7 @@ def _validated_control_result(
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
     | ServerControlProjectTransferUploadResult
+    | ServerControlProjectTransferActivationResult
     | ServerControlBackupCaptureResult
     | ServerControlUpdateResult
     | ServerControlRestoreResult,
@@ -1547,6 +1629,7 @@ def _validated_control_result(
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
     | ServerControlProjectTransferUploadResult
+    | ServerControlProjectTransferActivationResult
     | ServerControlBackupCaptureResult
     | ServerControlUpdateResult
     | ServerControlRestoreResult
@@ -1617,10 +1700,20 @@ def _validated_control_result(
         if (
             validated_upload.request_id != request.selector_id
             or validated_upload.lease_boundary_sha256 != request.boundary_sha256
-            or validated_upload.state != "complete"
+            or validated_upload.state not in {"complete", "consumed"}
         ):
             raise ValueError("project transfer upload returned another request or lease boundary")
         return validated_upload
+    if request.operation == "project_transfer_activate":
+        if not isinstance(result, ServerControlProjectTransferActivationResult):
+            raise ValueError("project transfer activation returned another operation's result")
+        validated_activation = ServerControlProjectTransferActivationResult.model_validate(result)
+        if (
+            validated_activation.target_request_id != request.selector_id
+            or validated_activation.upload_lease_boundary_sha256 != request.boundary_sha256
+        ):
+            raise ValueError("project transfer activation returned another request or lease")
+        return validated_activation
     if request.operation == "backup_sqlite_capture":
         if not isinstance(result, ServerControlBackupCaptureResult):
             raise ValueError("backup SQLite capture returned another operation's result")
@@ -1768,6 +1861,7 @@ __all__ = [
     "ServerControlProbeResult",
     "ServerControlProjectPlanResult",
     "ServerControlProjectStepResult",
+    "ServerControlProjectTransferActivationResult",
     "ServerControlProjectTransferUploadResult",
     "ServerControlProjectTarget",
     "ServerControlProviderCheckResult",

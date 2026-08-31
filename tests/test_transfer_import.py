@@ -44,6 +44,7 @@ from rcp.transfer.project_files import (
     capture_project_transfer_files,
     transfer_project_file_payload,
 )
+from rcp.transfer.source import seal_transfer_archive
 
 from .helpers import authorized_human
 from .test_transfer_project_files import _finished_project, _write_canonical_sources
@@ -210,7 +211,13 @@ def _prepare_target_request(
     )
 
 
-def _archive_fixture(manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def _archive_fixture(
+    manifest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    seal_archive: bool = False,
+):
     service, records, artifact, artifact_name, view, view_name = _finished_project(
         manifest,
         tmp_path / "source",
@@ -381,12 +388,28 @@ def _archive_fixture(manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         payload_size_bytes=sum(item.size_bytes for item in ordered),
         created_at=datetime.now(UTC),
     )
-    encoded = b"sealed transfer archive fixture"
-    envelope = TransferArchiveEnvelope.bind(
-        archive,
-        archive_sha256=hashlib.sha256(encoded).hexdigest(),
-        archive_size_bytes=len(encoded),
-    )
+    sealed_archive_path = None
+    if seal_archive:
+        archive_root.chmod(0o700)
+        for path in archive_root.rglob("*"):
+            if path.is_file():
+                path.chmod(0o400)
+        sealed_root = tmp_path / "sealed"
+        sealed_root.mkdir(mode=0o700)
+        sealed = seal_transfer_archive(
+            manifest=archive,
+            capture_root=archive_root,
+            destination=sealed_root / f"{archive.target_request_id}.rcp-transfer",
+        )
+        envelope = sealed.envelope
+        sealed_archive_path = sealed.archive_path
+    else:
+        encoded = b"sealed transfer archive fixture"
+        envelope = TransferArchiveEnvelope.bind(
+            archive,
+            archive_sha256=hashlib.sha256(encoded).hexdigest(),
+            archive_size_bytes=len(encoded),
+        )
     source.bind_project_transfer_archive(
         source_request.request_id,
         archive_sha256=envelope.archive_sha256,
@@ -416,6 +439,7 @@ def _archive_fixture(manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "catalog": catalog,
         "archive": archive,
         "envelope": envelope,
+        "sealed_archive_path": sealed_archive_path,
         "archive_root": archive_root,
         "configuration": configured,
         "artifact": artifact,

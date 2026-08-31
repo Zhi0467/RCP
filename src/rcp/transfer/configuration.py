@@ -108,8 +108,12 @@ def build_transfer_target_configuration(
     archive_root: Path,
     *,
     retained_research_root: Path | None = None,
+    retained_history: RetainedTransferHistory | None = None,
 ) -> TransferTargetConfiguration:
     """Build and replay one target manifest without publishing project state."""
+
+    if retained_research_root is not None and retained_history is not None:
+        raise ValueError("target configuration has two retained-history sources")
 
     _validate_protocol_bindings(provisioning, source_configuration, link_receipt, archive)
     entries = {entry.archive_path: entry for entry in archive.entries}
@@ -125,11 +129,15 @@ def build_transfer_target_configuration(
     )
     _validate_target_manifest(target_manifest, provisioning, source_configuration)
 
-    retained = _inspect_retained_transfer_history(
-        retained_research_root,
-        archive_root,
-        archive,
-        source_manifest_bytes=source_manifest_bytes,
+    retained = (
+        RetainedTransferHistory.model_validate(retained_history)
+        if retained_history is not None
+        else _inspect_retained_transfer_history(
+            retained_research_root,
+            archive_root,
+            archive,
+            source_manifest_bytes=source_manifest_bytes,
+        )
     )
     _replay_archive(
         target_manifest,

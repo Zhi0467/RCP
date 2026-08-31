@@ -891,7 +891,7 @@ def _transfer_upload_capture_fixture(tmp_path: Path, *, status: str = "complete"
         "archive_size_bytes": len(payload),
         "lease_boundary_sha256": "a" * 64,
         "status": status,
-        "receipt_json": json.dumps(receipt) if status == "complete" else None,
+        "receipt_json": json.dumps(receipt) if status in {"complete", "consumed"} else None,
         "created_at": timestamp,
         "updated_at": timestamp,
         "invalidated_at": None,
@@ -928,10 +928,26 @@ def test_checkpoint_captures_only_receipt_backed_complete_transfer_archive(
     assert stat.S_IMODE(copied.stat().st_mode) == 0o400
 
 
+def test_checkpoint_ignores_consumed_transfer_upload_without_an_inbox_archive(
+    tmp_path: Path,
+) -> None:
+    coordinator, snapshot, destination, final, _payload = _transfer_upload_capture_fixture(
+        tmp_path,
+        status="consumed",
+    )
+    final.unlink()
+
+    directories, files = coordinator._copy_transfer_inbox(snapshot, destination)  # noqa: SLF001
+
+    assert directories == set()
+    assert files == []
+
+
 @pytest.mark.parametrize(
     ("status", "mutation", "message"),
     [
         ("active", lambda _path: None, "durable complete boundary"),
+        ("consumed", lambda _path: None, "no typed completed-upload proof"),
         ("complete", lambda path: path.unlink(), "missing its archive file"),
         ("complete", lambda path: path.write_bytes(b"wrong"), "differs from its receipt"),
         ("complete", lambda path: path.chmod(0o644), "unsafe ownership, mode, or type"),

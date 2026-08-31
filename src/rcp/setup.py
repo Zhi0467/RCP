@@ -8,7 +8,7 @@ import subprocess
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import tomlkit
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -33,10 +33,14 @@ from rcp.providers import (
     configured_runtime,
     configured_runtime_id,
 )
-from rcp.storage import ProjectProvisioningRequestRecord
+from rcp.storage import ProjectProvisioningRequestRecord, ProjectRecord
+from rcp.storage.provisioning import project_provisioning_review_digest
 from rcp.transport import StateWorkspace
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import SSHStateWorkspace, state_workspace_for_probe
+
+if TYPE_CHECKING:
+    from rcp.transfer.configuration import TransferTargetConfiguration
 
 
 class _StrictSetupModel(BaseModel):
@@ -588,6 +592,72 @@ class ProjectSetupManager:
         _, snapshot = self.catalog.open_snapshot(record.project_id)
         self.catalog.update_summary(record.project_id, snapshot)
         return self.catalog.card(record.project_id)
+
+    def prepare_incoming_transfer_project(
+        self,
+        request: ProjectProvisioningRequestRecord,
+        *,
+        target_configuration: TransferTargetConfiguration,
+    ) -> ProjectRecord:
+        """Revalidate one published import without making it catalog-visible."""
+
+        if self.catalog.store.space_kind != "team":
+            raise ValueError("incoming transfer finalization requires a team space")
+        if request.kind != "incoming_transfer" or request.status != "ready_for_review":
+            raise ValueError("only a ready incoming-transfer request can be finalized")
+        if request.target_space_id != self.catalog.store.space_id:
+            raise ValueError("the incoming transfer targets another RCP space")
+        if (
+            request.final_review_digest is None
+            or project_provisioning_review_digest(request) != request.final_review_digest
+        ):
+            raise ValueError("the incoming transfer final review is stale")
+
+        receipt = target_configuration.receipt
+        if (
+            receipt.target_request_id != request.request_id
+            or receipt.project_id != request.proposed_project_id
+            or receipt.target_space_id != request.target_space_id
+            or receipt.final_review_sha256 != request.final_review_digest
+        ):
+            raise ValueError("the reviewed target configuration does not bind this request")
+        expected_manifest = render_prepared_team_manifest(request)
+        if target_configuration.manifest_content != expected_manifest:
+            raise ValueError("the target manifest differs from the reviewed provisioning request")
+
+        imported = self.catalog.store.project_transfer_import(request.request_id)
+        if (
+            imported is None
+            or imported.status != "complete"
+            or imported.project_id != request.proposed_project_id
+            or imported.archive_manifest_sha256 != receipt.archive_manifest_sha256
+            or imported.target_manifest_sha256 != receipt.target_manifest_sha256
+        ):
+            raise ValueError("the incoming transfer import is not complete for this review")
+
+        prepared_repositories = self._prepared_repositories(request)
+        for repository in prepared_repositories.values():
+            self._require_prepared_checkout_path(repository)
+        assert request.state_repository is not None
+        canonical = prepared_repositories[request.state_repository]
+        self._require_prepared_state_path(canonical)
+        actual_manifest = self._read_existing_manifest(canonical)
+        if actual_manifest is None:
+            raise ValueError("the imported canonical manifest is missing")
+        if actual_manifest != expected_manifest:
+            raise ValueError("the imported canonical manifest differs from the reviewed manifest")
+        self._require_prepared_manifest(actual_manifest, expected_manifest)
+        locator = (
+            str(Path(canonical.path) / ".research" / "manifest.toml")
+            if canonical.location == "local"
+            else str(self._write_bootstrap(canonical, expected_manifest))
+        )
+        return self.catalog.prepare_incoming_transfer_registration(
+            locator,
+            project_id=request.proposed_project_id,
+            home_space_id=request.target_space_id,
+            expected_manifest_content=expected_manifest,
+        )
 
     @staticmethod
     def _prepared_repositories(

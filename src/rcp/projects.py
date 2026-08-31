@@ -725,6 +725,75 @@ class ProjectCatalog:
             seated_by=seat_member,
         )
 
+    def prepare_incoming_transfer_registration(
+        self,
+        locator: str,
+        *,
+        project_id: str,
+        home_space_id: str,
+        expected_manifest_content: str,
+    ) -> ProjectRecord:
+        """Build a transfer registration receipt without publishing catalog state."""
+
+        if self.store.space_kind != "team":
+            raise ValueError("incoming transfer registration requires a team space")
+        if home_space_id != self.store.space_id:
+            raise ValueError("the incoming transfer belongs to another RCP space")
+        with self._registration_lock:
+            bootstrap = load_manifest(locator)
+            canonical_locator = str(bootstrap.path)
+            existing_at_locator = self.store.project_by_locator(canonical_locator)
+            existing_for_identity = self.store.project(project_id)
+            if existing_at_locator is not None or existing_for_identity is not None:
+                raise ProjectIdentityConflict(
+                    "The incoming transfer project is already visible in the catalog."
+                )
+            manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir)
+            try:
+                actual_manifest_content = manifest.path.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise ValueError("the imported canonical manifest is unavailable") from exc
+            if actual_manifest_content != expected_manifest_content:
+                raise ValueError("the imported canonical manifest changed after review")
+            history = self._history_for_manifest(manifest, workspace)
+            materialization = history.materialize(write_outputs=False)
+            if materialization.state.replay_status != "complete":
+                raise ValueError("the imported canonical Patch history does not replay completely")
+            identity = history.project_identity(materialization)
+            if (
+                identity is None
+                or identity.project_id != project_id
+                or identity.home_space_id != home_space_id
+            ):
+                raise ProjectIdentityConflict(
+                    "The imported canonical project identity differs from its reviewed target."
+                )
+            return self._record_for_identity(
+                bootstrap,
+                None,
+                project_id=project_id,
+                home_space_id=home_space_id,
+            )
+
+    def refresh_after_incoming_transfer_activation(self, record: ProjectRecord) -> None:
+        """Refresh process-local catalog state after the storage compound commit."""
+
+        stored = self.store.project(record.project_id)
+        stable_fields = (
+            "project_id",
+            "home_space_id",
+            "locator",
+            "name",
+            "state_location",
+            "state_remote",
+            "added_at",
+        )
+        if stored is None or any(
+            getattr(stored, field) != getattr(record, field) for field in stable_fields
+        ):
+            raise RuntimeError("incoming transfer activation catalog readback differs")
+        self._refresh_project_aliases()
+
     def _register(
         self,
         locator: str,

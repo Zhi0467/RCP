@@ -1085,6 +1085,7 @@ class ProjectTransferStoreMixin:
         archive_manifest_sha256: str,
         target_manifest_sha256: str,
         operational_payload_sha256: str,
+        target_configuration_receipt: Mapping[str, object],
         capture: TransferProjectFileCapture,
         kept_result_view_html: Mapping[str, str],
     ) -> ProjectTransferImportRecord:
@@ -1095,6 +1096,7 @@ class ProjectTransferStoreMixin:
         only after every target-side readback has succeeded.
         """
 
+        from rcp.transfer.configuration import TransferTargetConfigurationReceipt
         from rcp.transfer.project_files import TransferProjectFileCapture
 
         canonical_request_id = self._transfer_uuid(request_id, "transfer import request identity")
@@ -1110,9 +1112,20 @@ class ProjectTransferStoreMixin:
             operational_payload_sha256,
             "transfer operational payload digest",
         )
+        configuration_receipt = TransferTargetConfigurationReceipt.model_validate_json(
+            _canonical_json(dict(target_configuration_receipt))
+        )
+        configuration_json = _canonical_json(configuration_receipt.model_dump(mode="json"))
         normalized_capture = TransferProjectFileCapture.model_validate(capture)
         if canonical_request_id == normalized_capture.records.project_id:
             raise ValueError("transfer import request and project identities must differ")
+        if (
+            configuration_receipt.target_request_id != canonical_request_id
+            or configuration_receipt.project_id != normalized_capture.project_id
+            or configuration_receipt.archive_manifest_sha256 != archive_digest
+            or configuration_receipt.target_manifest_sha256 != target_digest
+        ):
+            raise ValueError("target configuration receipt does not bind this import")
         html_by_filename = self._validate_transfer_view_html(
             normalized_capture.kept_result_views,
             kept_result_view_html,
@@ -1135,17 +1148,30 @@ class ProjectTransferStoreMixin:
                 ).fetchone()
                 if existing_row is not None:
                     existing = self._project_transfer_import_record(existing_row)
+                    configuration_row = connection.execute(
+                        "SELECT * FROM project_transfer_import_configurations WHERE request_id = ?",
+                        (canonical_request_id,),
+                    ).fetchone()
+                    if configuration_row is None:
+                        raise ValueError(
+                            "project transfer import predates its resumable configuration receipt"
+                        )
+                    existing_configuration = (
+                        self._project_transfer_import_configuration_receipt_json(configuration_row)
+                    )
                     expected = (
                         normalized_capture.project_id,
                         archive_digest,
                         target_digest,
                         payload_digest,
+                        configuration_json,
                     )
                     observed = (
                         existing.project_id,
                         existing.archive_manifest_sha256,
                         existing.target_manifest_sha256,
                         existing.operational_payload_sha256,
+                        existing_configuration,
                     )
                     if observed != expected:
                         raise ValueError(
@@ -1197,6 +1223,14 @@ class ProjectTransferStoreMixin:
                         _canonical_json(receipt_id_map),
                         now,
                     ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO project_transfer_import_configurations (
+                        request_id, receipt_json, created_at
+                    ) VALUES (?, ?, ?)
+                    """,
+                    (canonical_request_id, configuration_json, now),
                 )
                 row = connection.execute(
                     "SELECT * FROM project_transfer_imports WHERE request_id = ?",
@@ -1279,6 +1313,25 @@ class ProjectTransferStoreMixin:
                 (canonical_request_id,),
             ).fetchone()
         return self._project_transfer_import_record(row) if row is not None else None
+
+    def project_transfer_import_configuration_receipt_json(
+        self,
+        request_id: str,
+    ) -> str | None:
+        """Return one validated configuration receipt captured before publication."""
+
+        canonical_request_id = self._transfer_uuid(
+            request_id,
+            "transfer import request identity",
+        )
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM project_transfer_import_configurations WHERE request_id = ?",
+                (canonical_request_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._project_transfer_import_configuration_receipt_json(row)
 
     @staticmethod
     def _validate_transfer_view_html(
@@ -1368,6 +1421,20 @@ class ProjectTransferStoreMixin:
             )
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise RuntimeError("stored project transfer import receipt is invalid") from exc
+
+    @staticmethod
+    def _project_transfer_import_configuration_receipt_json(row: sqlite3.Row) -> str:
+        from rcp.transfer.configuration import TransferTargetConfigurationReceipt
+
+        try:
+            receipt = TransferTargetConfigurationReceipt.model_validate_json(row["receipt_json"])
+            if receipt.target_request_id != row["request_id"]:
+                raise ValueError("configuration receipt belongs to another import")
+            return _canonical_json(receipt.model_dump(mode="json"))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "stored project transfer import configuration receipt is invalid"
+            ) from exc
 
     @staticmethod
     def _transfer_uuid(value: str, label: str) -> str:
