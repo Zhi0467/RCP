@@ -1034,6 +1034,14 @@ def _execute_restore(
             )
         )
         return
+    emitter.emit_step(
+        steps[0].model_copy(
+            update={
+                "state": "running",
+                "message": "Validating the explicitly confirmed replacement destination.",
+            }
+        )
+    )
     now = datetime.now(UTC)
     confirmer = f"{identity.username}@{identity.host} uid={identity.uid}"
     confirmation = RestoreConfirmation(

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import os
 import shutil
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -284,6 +286,59 @@ def test_restore_cli_pauses_with_the_exact_confirmed_destination(tmp_path: Path)
     assert str(tmp_path / "configured-data") in rendered
     assert "--confirm-data-dir" in rendered
     assert "AGE-SECRET-KEY" not in rendered
+
+
+def test_restore_cli_accepts_confirmed_destination_before_archive_work(
+    tmp_path: Path,
+) -> None:
+    class BoundaryMachine:
+        def configured_data_dir(self) -> Path:
+            return tmp_path / "configured-data"
+
+        def admission(self):
+            return nullcontext()
+
+        def stage_candidate(self, *_args, **_kwargs):
+            raise RestoreRefused("The test archive boundary stopped restore as intended.")
+
+    arguments = build_parser().parse_args(
+        (
+            "server",
+            "restore",
+            "/backups/lab.age",
+            "--identity-file",
+            "/safe/identity.txt",
+            "--confirm-data-dir",
+            str(tmp_path / "configured-data"),
+            "--machine-readable",
+        )
+    )
+    output = StringIO()
+
+    exit_code = run_server_command(
+        arguments,
+        identity=CallerIdentity(uid=0, username="root", host="runnervm76wwg"),
+        input_stream=BytesIO(),
+        stream=output,
+        handler=lambda request, caller: prepare_restore_command(
+            request,
+            caller,
+            machine=BoundaryMachine(),  # type: ignore[arg-type]
+            resume_executable=Path("/usr/local/bin/rcp"),
+        ),
+    )
+
+    assert exit_code == 1
+    events = [json.loads(line) for line in output.getvalue().splitlines()]
+    states = [
+        (event["step"]["number"], event["step"]["state"])
+        for event in events
+        if event["event"] == "step"
+    ]
+    assert states == [(1, "running"), (1, "succeeded"), (2, "running"), (2, "failed")]
+    assert events[-1]["step"]["message"] == (
+        "The test archive boundary stopped restore as intended."
+    )
 
 
 def test_restore_builds_one_detached_offline_sqlite_candidate(tmp_path: Path) -> None:
