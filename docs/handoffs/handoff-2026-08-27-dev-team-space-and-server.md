@@ -277,6 +277,25 @@ gate are deliberately future work and do not block this plan.
   personal index. No team enrollment, credential transmission, two-space
   navigation, provisioning, or transfer has yet been claimed from that visible
   check; the integrated desktop drive remains next.
+- Live run
+  [33433461784](https://github.com/Zhi0467/RCP/actions/runs/33433461784)
+  passed the complete install/update/backup/member-removal source half on both
+  supported Ubuntu releases, then exposed two fresh-host restore outcomes. On
+  24.04, the root restore coordinator launched a Git probe as `rcp` while still
+  standing inside the runner checkout; Git failed before network access because
+  `rcp` could not stat that private working directory. On 22.04, the otherwise
+  identical fresh install hit its two-minute `useradd` bound once.
+- Commit `80bdc8e` makes the shared local/SSH Git runner start every account
+  operation from the installed service home and removes the bounded diagnostic
+  added only to identify the failure. Its focused Git credential and restore
+  suites pass. Follow-up run
+  [33436734564](https://github.com/Zhi0467/RCP/actions/runs/33436734564)
+  was invalidated when `origin/main` advanced during the exact-head check: 24.04
+  correctly refused the moving update target, so restore did not run. Its 22.04
+  half completed the full six-minute source lifecycle successfully, including
+  immediate account creation, which shows the earlier isolated `useradd`
+  timeout is not deterministic. The next run must use one frozen head with no
+  pushes until both fresh restores finish.
 - Commit `86c0459` pushed the cross-platform and admission-lock repairs. Exact-
   head CI run
   [33414115809](https://github.com/Zhi0467/RCP/actions/runs/33414115809) passed
@@ -2195,6 +2214,56 @@ The current shared lab host cannot substitute for item 1 without installing the
 dedicated account and service, and the previously proposed privileged container
 would expose host cgroups and a temporary public SSH port. Do not use that
 workaround without explicit human approval.
+
+## Running the remaining live work
+
+### Order
+
+1. **Hosted CI first.** The Ubuntu 22.04/24.04 matrix in
+   [`server-install-live.yml`](../../.github/workflows/server-install-live.yml)
+   proves the Linux server lifecycle without anyone's hardware: install,
+   service, update, forced rollback, deploy keys. O4d's fresh-host restore
+   belongs here too, because a hosted runner is a fresh host. Do not stack new
+   live work on a red matrix.
+2. **Then one disposable Linux host.** This unblocks D6's probe, then D7 and D5,
+   then P6a's SSH half. Bootstrap it before V1, not during: five desktop packets
+   are stacked on an operator bridge no real server has answered, and F6d showed
+   what hermetic tests miss.
+3. **Then V1** as one coherent drill, then **V2** baselines and archive.
+
+### Authorization during live work
+
+The hosted workflow is part of this goal and can be driven without another
+pause. Before first touching a human-owned host, name the exact host and confirm
+that it is disposable. That approval permits the agreed installation rehearsal,
+including its required SSH and sudo commands; it is not limited to read-only
+inspection and does not extend to another host or unrelated machine work. The
+shared production lab host is not the first target because V1 deliberately
+mutates and restores its host.
+
+At that pause, also confirm the bootstrap clone's origin:
+`discover_bootstrap_repository` records the update source from that checkout,
+so `rcp server update` will pull the same GitHub repository afterwards.
+
+If a host has to be torn down, RCP has no uninstall operation; the five-command
+operating-system sequence is in
+[the operations spec](../specs/projects-spaces-and-operations.md). On a
+disposable host, restoring the snapshot is faster and needs no teardown.
+
+### Human-authority steps inside the drive
+
+The agent can drive the approved host setup and the surrounding CLI/UI checks.
+The human still performs team-space initialization and any provider's native
+login, because RCP never accepts provider credentials. The CLI pauses with the
+exact account and resume command; after the human finishes the native action,
+the agent can run the recheck and continue. Provider login is not required to
+install or enroll in the server, only to qualify server-side agent execution.
+
+Two deliberately separate RCP member identities on one test Mac can prove
+credential, origin, cookie, and attribution separation. That is a technical
+two-member qualification, not evidence that two different people participated.
+`CodexProfile.is_authenticated` already explicitly rejects `Not logged in` and
+has a focused regression; do not carry the earlier substring concern forward.
 
 ## Settled decisions
 
