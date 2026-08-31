@@ -130,7 +130,7 @@ def test_protected_backup_restores_on_a_fresh_disposable_ubuntu() -> None:
         assert len(grant_trust) == 1
         trust_code, trust_output = _run_pty(grant_trust[0], answer_host_key=True)
         assert trust_code == 1
-        assert _GITHUB_ED25519_FINGERPRINT in trust_output
+        assert "successfully authenticated" in trust_output
 
         authority_code, authority_events = _run_restore_action(_single_resume(grant))
         assert authority_code == 3
