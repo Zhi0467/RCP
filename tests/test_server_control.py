@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import socket
@@ -33,6 +34,7 @@ from rcp.server_ops.control import (
     ServerControlError,
     ServerControlPeer,
     ServerControlProbeResult,
+    ServerControlProjectTransferUploadResult,
     ServerControlRequest,
     ServerControlServer,
 )
@@ -44,6 +46,8 @@ from rcp.server_runtime import (
     published_server_metadata,
 )
 from rcp.storage import AppStore
+from rcp.transfer.target import upload_target_transfer_archive
+from tests.test_project_transfer_request_storage import _archive_bound_pair
 
 
 @pytest.fixture
@@ -165,6 +169,250 @@ def test_control_probe_can_report_a_known_incomplete_operation_set() -> None:
             space_id=str(uuid.uuid4()),
             operations=("probe", "provider_readiness_check", "provider_readiness_plan"),
         )
+
+
+def test_transfer_upload_control_shapes_bind_request_and_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_id = str(uuid.uuid4())
+    project_id = str(uuid.uuid4())
+    instance_id = str(uuid.uuid4())
+    space_id = str(uuid.uuid4())
+    identity = {
+        "instance_id": instance_id,
+        "pid": os.getpid(),
+        "data_dir_id": "d" * 64,
+        "space_id": space_id,
+        "request_id": request_id,
+        "project_id": project_id,
+        "archive_sha256": "a" * 64,
+        "archive_size_bytes": 42,
+        "lease_boundary_sha256": "b" * 64,
+    }
+
+    plan_request = ServerControlRequest(
+        request_id=str(uuid.uuid4()),
+        instance_id=instance_id,
+        operation="project_transfer_upload_plan",
+        selector_kind="request",
+        selector_id=request_id,
+    )
+    assert plan_request.boundary_sha256 is None
+    plan = ServerControlProjectTransferUploadResult(**identity, state="active")
+    assert control._validated_control_result(plan_request, plan) == plan
+
+    complete_request = ServerControlRequest(
+        request_id=str(uuid.uuid4()),
+        instance_id=instance_id,
+        operation="project_transfer_upload_complete",
+        selector_kind="request",
+        selector_id=request_id,
+        boundary_sha256=identity["lease_boundary_sha256"],
+    )
+    complete = ServerControlProjectTransferUploadResult(**identity, state="complete")
+    assert control._validated_control_result(complete_request, complete) == complete
+
+    metadata = ServerMetadata.create(
+        tmp_path / "data",
+        host="127.0.0.1",
+        port=8421,
+        owner_kind="cli",
+        control_socket=tmp_path / "control.sock",
+    )
+    client = ServerControlClient(metadata, expected_server_uid=os.geteuid())
+    sent: list[ServerControlRequest] = []
+    responses = iter((plan, complete))
+
+    def fake_exchange(request: ServerControlRequest):
+        sent.append(request)
+        return next(responses)
+
+    monkeypatch.setattr(client, "_exchange", fake_exchange)
+    assert client.project_transfer_upload_plan(request_id=request_id) == plan
+    assert (
+        client.complete_project_transfer_upload(
+            request_id=request_id,
+            lease_boundary_sha256=identity["lease_boundary_sha256"],
+        )
+        == complete
+    )
+    assert sent[0].operation == "project_transfer_upload_plan"
+    assert sent[0].selector_kind == "request"
+    assert sent[0].selector_id == request_id
+    assert sent[0].boundary_sha256 is None
+    assert sent[1].operation == "project_transfer_upload_complete"
+    assert sent[1].selector_kind == "request"
+    assert sent[1].selector_id == request_id
+    assert sent[1].boundary_sha256 == identity["lease_boundary_sha256"]
+
+    with pytest.raises(ValueError, match="request selector"):
+        ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=instance_id,
+            operation="project_transfer_upload_plan",
+            selector_kind="project",
+            selector_id=project_id,
+        )
+    with pytest.raises(ValueError, match="confirmed upload boundary"):
+        ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=instance_id,
+            operation="project_transfer_upload_complete",
+            selector_kind="request",
+            selector_id=request_id,
+        )
+    with pytest.raises(ValueError, match="another request or lease boundary"):
+        control._validated_control_result(
+            complete_request,
+            complete.model_copy(update={"lease_boundary_sha256": "c" * 64}),
+        )
+
+
+def test_running_team_service_owns_the_upload_lease_and_completion(
+    tmp_path: Path,
+    control_root: Path,
+) -> None:
+    _source, store, _source_request, request = _archive_bound_pair(tmp_path)
+    data_dir = store.path.parent
+    data_dir.chmod(0o700)
+    metadata = ServerMetadata.create(
+        data_dir,
+        host="127.0.0.1",
+        port=8421,
+        owner_kind="cli",
+        control_socket=control_root / "transfer-control.sock",
+    )
+    app = create_app(data_dir=data_dir, instance_metadata=metadata)
+
+    with published_server_metadata(data_dir, metadata), TestClient(app):
+        client = ServerControlClient.from_data_dir(
+            data_dir,
+            expected_server_uid=os.geteuid(),
+        )
+        plan = client.project_transfer_upload_plan(request_id=request.request_id)
+        assert plan.state == "active"
+        payload = b"one sealed transfer archive"
+        upload_target_transfer_archive(
+            data_dir,
+            request.request_id,
+            archive_sha256=plan.archive_sha256,
+            archive_size_bytes=plan.archive_size_bytes,
+            source=io.BytesIO(payload),
+        )
+        completed = client.complete_project_transfer_upload(
+            request_id=request.request_id,
+            lease_boundary_sha256=plan.lease_boundary_sha256,
+        )
+
+        assert completed.state == "complete"
+        assert (
+            client.project_transfer_upload_plan(request_id=request.request_id).state == "complete"
+        )
+
+
+def test_update_maintenance_refuses_an_active_upload_before_closing_admission(
+    tmp_path: Path,
+    control_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _source, store, _source_request, request = _archive_bound_pair(tmp_path / "fixture")
+    data_dir = store.path.parent
+    data_dir.chmod(0o700)
+    server_root = data_dir.parent
+    service_home = tmp_path / "home"
+    layout = replace(
+        DEFAULT_SERVER_LAYOUT,
+        service_home=service_home,
+        server_root=server_root,
+        source_checkout=server_root / "source",
+        releases_root=server_root / "releases",
+        data_dir=data_dir,
+        projects_root=server_root / "projects",
+        credentials_root=server_root / "credentials",
+        update_checkpoints_root=server_root / "update-checkpoints",
+        restore_operations_root=server_root / "restore-operations",
+        codex_state_root=service_home / ".codex",
+        claude_state_root=service_home / ".claude",
+        ssh_state_root=service_home / ".ssh",
+        config_path=tmp_path / "etc" / "server.toml",
+        current_release=tmp_path / "etc" / "current",
+        runtime_dir=control_root,
+        control_socket=control_root / "transfer-control.sock",
+        cli_wrapper=tmp_path / "bin" / "rcp",
+        systemd_unit=tmp_path / "etc" / "rcp.service",
+    )
+    layout.update_checkpoints_root.mkdir()
+    layout.restore_operations_root.mkdir()
+    layout.update_checkpoints_root.chmod(0o700)
+    layout.restore_operations_root.chmod(0o700)
+    metadata = ServerMetadata.create(
+        data_dir,
+        host="127.0.0.1",
+        port=8421,
+        owner_kind="cli",
+        control_socket=layout.control_socket,
+    )
+    app = create_app(
+        data_dir=data_dir,
+        instance_metadata=metadata,
+        server_layout=layout,
+    )
+    assert app.state.server_control is not None
+    handler = app.state.server_control.handler
+    service_peer = ServerControlPeer(pid=os.getpid(), uid=os.geteuid(), gid=os.getegid())
+    root_peer = ServerControlPeer(pid=os.getpid(), uid=0, gid=0)
+    plan = handler(
+        ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=metadata.instance_id,
+            operation="project_transfer_upload_plan",
+            selector_kind="request",
+            selector_id=request.request_id,
+        ),
+        service_peer,
+    )
+    assert isinstance(plan, ServerControlProjectTransferUploadResult)
+    monkeypatch.setattr(
+        "rcp.api.app.SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    with pytest.raises(ServerControlError, match="active project transfer upload") as caught:
+        handler(
+            ServerControlRequest(
+                request_id=str(uuid.uuid4()),
+                instance_id=metadata.instance_id,
+                operation="update_maintenance_enter",
+                selector_id=str(uuid.uuid4()),
+                boundary_sha256="a" * 64,
+            ),
+            root_peer,
+        )
+
+    assert caught.value.code == "operation_refused"
+    assert not app.state.background_admission_gate.closed
+    payload = b"one sealed transfer archive"
+    upload_target_transfer_archive(
+        data_dir,
+        request.request_id,
+        archive_sha256=plan.archive_sha256,
+        archive_size_bytes=plan.archive_size_bytes,
+        source=io.BytesIO(payload),
+    )
+    completed = handler(
+        ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=metadata.instance_id,
+            operation="project_transfer_upload_complete",
+            selector_kind="request",
+            selector_id=request.request_id,
+            boundary_sha256=plan.lease_boundary_sha256,
+        ),
+        service_peer,
+    )
+    assert isinstance(completed, ServerControlProjectTransferUploadResult)
+    assert completed.state == "complete"
 
 
 def test_control_socket_is_refused_for_a_personal_or_non_cli_app(
@@ -296,6 +544,11 @@ def test_provider_check_uses_its_bounded_operation_timeout(
             boundary_sha256="a" * 64,
             target_id="b" * 64,
         )
+    with pytest.raises(RuntimeError, match="stop after observing"):
+        client.complete_project_transfer_upload(
+            request_id=str(uuid.uuid4()),
+            lease_boundary_sha256="d" * 64,
+        )
     operation_id = str(uuid.uuid4())
     with pytest.raises(RuntimeError, match="stop after observing"):
         client.enter_update_maintenance(
@@ -322,6 +575,7 @@ def test_provider_check_uses_its_bounded_operation_timeout(
         SERVER_CONTROL_IO_TIMEOUT_SECONDS,
         SERVER_CONTROL_BACKUP_CAPTURE_TIMEOUT_SECONDS,
         SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
+        SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS,
         SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS,
         SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
         SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,

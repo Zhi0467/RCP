@@ -73,6 +73,7 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "project_transfer_proofs",
         "project_transfer_imports",
         "project_transfer_requests",
+        "project_transfer_uploads",
         "projects",
         "result_views",
         "writing_sessions",

@@ -23,6 +23,7 @@ from rcp.storage import (
     ProjectRecord,
     ProjectTransferRepositorySource,
     ProjectTransferSourceConfiguration,
+    ProjectTransferUploadCompleteReceipt,
 )
 from rcp.storage.provisioning import project_transfer_source_configuration_sha256
 
@@ -255,6 +256,74 @@ def _released_pair(tmp_path: Path):
         receipt=source_request.source_release_receipt,
     )
     return source, target, source_request, target_request
+
+
+def _archive_bound_pair(tmp_path: Path):
+    source, target, source_request, target_request = _released_pair(tmp_path)
+    fenced_head = GraphHeadRef(revision=8, transition_id="d" * 64)
+    source_request = source.mark_source_project_transfer_fenced(
+        source_request.request_id,
+        source_head=fenced_head,
+    )
+    source.expose_project_transfer_proof(source_request.request_id)
+    archive_sha256 = hashlib.sha256(b"one sealed transfer archive").hexdigest()
+    source_request = source.bind_project_transfer_archive(
+        source_request.request_id,
+        archive_sha256=archive_sha256,
+        archive_size_bytes=27,
+    )
+    target_request = target.bind_project_transfer_archive(
+        target_request.request_id,
+        archive_sha256=archive_sha256,
+        archive_size_bytes=27,
+        source_fence_head=fenced_head,
+    )
+    return source, target, source_request, target_request
+
+
+def test_target_upload_is_bound_to_one_archive_and_replays_its_receipt(
+    tmp_path: Path,
+) -> None:
+    source, target, source_request, target_request = _archive_bound_pair(tmp_path)
+
+    with pytest.raises(ValueError, match="only a target"):
+        source.begin_target_project_transfer_upload(source_request.request_id)
+
+    leased = target.begin_target_project_transfer_upload(target_request.request_id)
+    assert leased.status == "active"
+    assert len(leased.lease_boundary_sha256) == 64
+    assert leased.archive_sha256 == target_request.archive_sha256
+    assert leased.archive_size_bytes == target_request.archive_size_bytes
+    assert target.begin_target_project_transfer_upload(target_request.request_id) == leased
+    assert target.target_project_transfer_upload(target_request.request_id) == leased
+    assert target.target_project_transfer_uploads() == [leased]
+
+    completed = target.complete_target_project_transfer_upload(
+        target_request.request_id,
+        lease_boundary_sha256=leased.lease_boundary_sha256,
+    )
+    assert completed.status == "complete"
+    assert isinstance(completed.receipt, ProjectTransferUploadCompleteReceipt)
+    assert completed.receipt.lease_boundary_sha256 == leased.lease_boundary_sha256
+    assert (
+        target.complete_target_project_transfer_upload(
+            target_request.request_id,
+            lease_boundary_sha256=leased.lease_boundary_sha256,
+        )
+        == completed
+    )
+    with pytest.raises(ValueError, match="another lease boundary"):
+        target.complete_target_project_transfer_upload(
+            target_request.request_id,
+            lease_boundary_sha256="0" * 64,
+        )
+
+
+def test_target_upload_requires_the_archive_bound_phase(tmp_path: Path) -> None:
+    _source, target, _source_request, target_request = _released_pair(tmp_path)
+
+    with pytest.raises(ValueError, match="archive-bound"):
+        target.begin_target_project_transfer_upload(target_request.request_id)
 
 
 def test_source_release_atomically_fences_new_root_task_admission(tmp_path: Path) -> None:

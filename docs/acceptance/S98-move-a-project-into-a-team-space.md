@@ -17,6 +17,8 @@ covered_by:
   - tests/test_imported_provider_source_lifecycle.py
   - tests/test_imported_provider_source_remote_staging.py
   - tests/test_server_restore_projects.py
+  - tests/test_server_cli.py
+  - tests/test_server_control.py
   - tests/test_server_update_checkpoint.py
   - tests/test_server_update_rehearsal.py
   - tests/test_transfer_project_configuration.py
@@ -24,6 +26,7 @@ covered_by:
   - tests/test_transfer_import_storage.py
   - tests/test_transfer_source.py
   - tests/test_transfer_source_archive.py
+  - tests/test_transfer_target_upload.py
 invariants: [1, 3, 6, 11]
 ---
 
@@ -40,7 +43,7 @@ action needed while preserving its exact committed transfer phase, receipts,
 archive binding, and protected proof state. The versioned transfer manifest,
 external archive seal, payload groups, source-proof control entry, and closed
 root/table inventories are defined and tested. The terminal operational-record
-format, task-kind-aware request sanitizer, exact 28/13 table policy, deliberate
+format, task-kind-aware request sanitizer, exact 28/14 table policy, deliberate
 foreign-key mapping, and Paper/assistant compatibility representation are also
 defined and tested. The snapshot-consistent read-only export now covers every
 represented terminal table, refuses unsettled or relationally inconsistent
@@ -57,16 +60,23 @@ transaction, publishes through concrete owners, proves readback, and leaves no
 registered project before activation. Source release now atomically fences new
 root admissions, waits for terminal history, appends the attributed home Patch,
 seals one deterministic private archive, reuses its exact bytes across crash
-recovery, and retires the source only after the matching target proof. Target
-relay/decoding and activation remain open. The target-owned local provider
+recovery, and retires the source only after the matching target proof. The target
+service now owns one durable request/digest upload lease, while the stdin-only CLI
+owns the flat private partial/final paths, exact byte verification, and atomic
+publication without opening SQLite. Completion is re-hashed through the running
+service, restore invalidates old nonterminal leases and receipts, and update
+maintenance refuses without closing admission while an upload is active so its
+completion can still be accepted. Update checkpointing admits only receipt-backed
+complete inbox files. Desktop relay, codec decoding, and activation remain open.
+The target-owned local provider
 source store atomically publishes validated
 content-addressed histories, keeps them separate from native provider homes,
 and blocks Seed/Refresh on any later corruption. The reviewed target request
 also rebuilds a target-only manifest, validates any retained Git history as an
 exact archive prefix, and replays main plus every branch in an isolated
 workspace before import. Its receipt binds the exact final review and archive
-manifest, not only the resulting target configuration. Machine relay/decoding,
-target activation and cleanup-return orchestration, and the desktop drive remain
+manifest, not only the resulting target configuration. Machine relay, decoding,
+target activation, cleanup-return orchestration, and the desktop drive remain
 open. Remote Seed/Refresh staging is implemented hermetically: it copies only
 the project-owned sealed inventory, preserves the remote account's native
 roots, verifies the immutable task input before launch and Resume, and rejects

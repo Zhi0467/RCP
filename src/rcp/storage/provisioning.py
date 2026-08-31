@@ -39,6 +39,8 @@ from rcp.storage.models import (
     ProjectTransferSourceConfiguration,
     ProjectTransferSourceReleaseReceipt,
     ProjectTransferTargetAdmissionReceipt,
+    ProjectTransferUploadCompleteReceipt,
+    ProjectTransferUploadRecord,
     _canonical_uuid4,
 )
 
@@ -947,6 +949,199 @@ class ProjectProvisioningStoreMixin:
             self._replace_project_transfer_record(connection, current, updated)
         return updated
 
+    def begin_target_project_transfer_upload(
+        self,
+        request_id: str,
+    ) -> ProjectTransferUploadRecord:
+        """Begin or replay the one target-side lease for a bound archive."""
+
+        canonical_request_id = self._transfer_uuid(request_id, "transfer request identity")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._project_transfer_request_from_connection(
+                connection,
+                canonical_request_id,
+            )
+            self._require_target_upload_request(current)
+            assert current.archive_sha256 is not None
+            assert current.archive_size_bytes is not None
+            row = connection.execute(
+                "SELECT * FROM project_transfer_uploads WHERE request_id = ?",
+                (canonical_request_id,),
+            ).fetchone()
+            if row is not None:
+                existing = self._project_transfer_upload_record(row)
+                self._require_target_upload_matches(current, existing)
+                if existing.status in {"active", "complete"}:
+                    return existing
+                if existing.status != "invalidated":
+                    raise RuntimeError("stored project transfer upload state is invalid")
+
+            now = self.now()
+            lease_boundary = self._new_transfer_upload_boundary(connection, canonical_request_id)
+            created_at = now if row is None else existing.created_at
+            replacement = ProjectTransferUploadRecord(
+                request_id=current.request_id,
+                project_id=current.project_id,
+                archive_sha256=current.archive_sha256,
+                archive_size_bytes=current.archive_size_bytes,
+                lease_boundary_sha256=lease_boundary,
+                status="active",
+                created_at=created_at,
+                updated_at=now,
+            )
+            if row is None:
+                connection.execute(
+                    """
+                    INSERT INTO project_transfer_uploads (
+                        request_id, project_id, archive_sha256, archive_size_bytes,
+                        lease_boundary_sha256, status, receipt_json, created_at,
+                        updated_at, invalidated_at
+                    ) VALUES (?, ?, ?, ?, ?, 'active', NULL, ?, ?, NULL)
+                    """,
+                    (
+                        replacement.request_id,
+                        replacement.project_id,
+                        replacement.archive_sha256,
+                        replacement.archive_size_bytes,
+                        replacement.lease_boundary_sha256,
+                        replacement.created_at,
+                        replacement.updated_at,
+                    ),
+                )
+            else:
+                changed = connection.execute(
+                    """
+                    UPDATE project_transfer_uploads
+                    SET archive_sha256 = ?, archive_size_bytes = ?,
+                        lease_boundary_sha256 = ?, status = 'active',
+                        receipt_json = NULL, updated_at = ?, invalidated_at = NULL
+                    WHERE request_id = ? AND status = 'invalidated'
+                    """,
+                    (
+                        replacement.archive_sha256,
+                        replacement.archive_size_bytes,
+                        replacement.lease_boundary_sha256,
+                        replacement.updated_at,
+                        replacement.request_id,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise RuntimeError("project transfer upload restart lost its transaction guard")
+            stored = connection.execute(
+                "SELECT * FROM project_transfer_uploads WHERE request_id = ?",
+                (canonical_request_id,),
+            ).fetchone()
+            if stored is None:
+                raise RuntimeError("project transfer upload disappeared during begin")
+            return self._project_transfer_upload_record(stored)
+
+    def target_project_transfer_upload(
+        self,
+        request_id: str,
+    ) -> ProjectTransferUploadRecord | None:
+        """Read one target upload lease or retained terminal receipt."""
+
+        canonical_request_id = self._transfer_uuid(request_id, "transfer request identity")
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM project_transfer_uploads WHERE request_id = ?",
+                (canonical_request_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            upload = self._project_transfer_upload_record(row)
+            current = self._project_transfer_request_from_connection(
+                connection,
+                canonical_request_id,
+            )
+            self._require_target_upload_matches(current, upload)
+            return upload
+
+    def target_project_transfer_uploads(self) -> list[ProjectTransferUploadRecord]:
+        """List durable target upload boundaries in request order."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM project_transfer_uploads ORDER BY request_id"
+            ).fetchall()
+            uploads = [self._project_transfer_upload_record(row) for row in rows]
+            for upload in uploads:
+                current = self._project_transfer_request_from_connection(
+                    connection,
+                    upload.request_id,
+                )
+                self._require_target_upload_matches(current, upload)
+            return uploads
+
+    def complete_target_project_transfer_upload(
+        self,
+        request_id: str,
+        *,
+        lease_boundary_sha256: str,
+    ) -> ProjectTransferUploadRecord:
+        """Commit one verified upload and retain its typed completion receipt."""
+
+        canonical_request_id = self._transfer_uuid(request_id, "transfer request identity")
+        boundary = self._transfer_digest(lease_boundary_sha256, "transfer upload lease boundary")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._project_transfer_request_from_connection(
+                connection,
+                canonical_request_id,
+            )
+            self._require_target_upload_request(current)
+            row = connection.execute(
+                "SELECT * FROM project_transfer_uploads WHERE request_id = ?",
+                (canonical_request_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(canonical_request_id)
+            existing = self._project_transfer_upload_record(row)
+            self._require_target_upload_matches(current, existing)
+            if existing.status == "complete":
+                if existing.lease_boundary_sha256 != boundary:
+                    raise ValueError("project transfer upload already has another lease boundary")
+                return existing
+            if existing.status != "active":
+                raise ValueError("project transfer upload lease is no longer active")
+            if existing.lease_boundary_sha256 != boundary:
+                raise ValueError("project transfer upload lease boundary does not match")
+            now = self.now()
+            completed = ProjectTransferUploadCompleteReceipt(
+                request_id=current.request_id,
+                project_id=current.project_id,
+                archive_sha256=existing.archive_sha256,
+                archive_size_bytes=existing.archive_size_bytes,
+                lease_boundary_sha256=boundary,
+                completed_at=now,
+            )
+            values = existing.model_dump(mode="json")
+            values.update(
+                {
+                    "status": "complete",
+                    "receipt": completed.model_dump(mode="json"),
+                    "updated_at": now,
+                }
+            )
+            updated = ProjectTransferUploadRecord.model_validate(values)
+            changed = connection.execute(
+                """
+                UPDATE project_transfer_uploads
+                SET status = 'complete', receipt_json = ?, updated_at = ?
+                WHERE request_id = ? AND status = 'active' AND lease_boundary_sha256 = ?
+                """,
+                (
+                    _canonical_json(completed.model_dump(mode="json")),
+                    updated.updated_at,
+                    canonical_request_id,
+                    boundary,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("project transfer upload completion lost its transaction guard")
+            return updated
+
     def mark_target_project_transfer_activated(
         self,
         request_id: str,
@@ -1307,6 +1502,108 @@ class ProjectProvisioningStoreMixin:
             )
             self._replace_project_transfer_record(connection, current, updated)
         return updated
+
+    @staticmethod
+    def _require_target_upload_request(
+        current: ProjectTransferRequestRecord,
+    ) -> None:
+        if current.side != "target":
+            raise ValueError("only a target transfer request may own an upload")
+        if current.phase != "archive_bound":
+            if current.phase == "operator_action_needed":
+                raise ValueError("target transfer upload is unavailable until restore re-entry")
+            raise ValueError("target transfer must be archive-bound for upload")
+        if current.archive_sha256 is None or current.archive_size_bytes is None:
+            raise RuntimeError("archive-bound target transfer lost its archive metadata")
+
+    @staticmethod
+    def _require_target_upload_matches(
+        current: ProjectTransferRequestRecord,
+        upload: ProjectTransferUploadRecord,
+    ) -> None:
+        if (
+            current.side != "target"
+            or upload.request_id != current.request_id
+            or upload.project_id != current.project_id
+            or upload.archive_sha256 != current.archive_sha256
+            or upload.archive_size_bytes != current.archive_size_bytes
+        ):
+            raise RuntimeError("stored project transfer upload does not match its target request")
+
+    @staticmethod
+    def _new_transfer_upload_boundary(
+        connection: sqlite3.Connection,
+        request_id: str,
+    ) -> str:
+        while True:
+            boundary = secrets.token_hex(32)
+            if (
+                connection.execute(
+                    """
+                    SELECT 1 FROM project_transfer_uploads
+                    WHERE request_id = ? AND lease_boundary_sha256 = ?
+                    """,
+                    (request_id, boundary),
+                ).fetchone()
+                is None
+            ):
+                return boundary
+
+    @staticmethod
+    def _project_transfer_upload_record(
+        row: sqlite3.Row,
+    ) -> ProjectTransferUploadRecord:
+        try:
+            receipt = (
+                None
+                if row["receipt_json"] is None
+                else ProjectTransferUploadCompleteReceipt.model_validate_json(row["receipt_json"])
+            )
+            record = ProjectTransferUploadRecord(
+                request_id=row["request_id"],
+                project_id=row["project_id"],
+                archive_sha256=row["archive_sha256"],
+                archive_size_bytes=row["archive_size_bytes"],
+                lease_boundary_sha256=row["lease_boundary_sha256"],
+                status=row["status"],
+                receipt=receipt,
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                invalidated_at=row["invalidated_at"],
+            )
+            return record
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("stored project transfer upload is invalid") from exc
+
+    @classmethod
+    def _invalidate_project_transfer_upload(
+        cls,
+        connection: sqlite3.Connection,
+        current: ProjectTransferRequestRecord,
+        *,
+        now: str,
+    ) -> None:
+        row = connection.execute(
+            "SELECT * FROM project_transfer_uploads WHERE request_id = ?",
+            (current.request_id,),
+        ).fetchone()
+        if row is None:
+            return
+        upload = cls._project_transfer_upload_record(row)
+        cls._require_target_upload_matches(current, upload)
+        if upload.status == "invalidated":
+            return
+        changed = connection.execute(
+            """
+            UPDATE project_transfer_uploads
+            SET status = 'invalidated', receipt_json = NULL,
+                invalidated_at = ?, updated_at = ?
+            WHERE request_id = ? AND status IN ('active', 'complete')
+            """,
+            (now, now, current.request_id),
+        ).rowcount
+        if changed != 1:
+            raise RuntimeError("restore upload invalidation lost its transaction guard")
 
     @staticmethod
     def _transfer_uuid(value: str, label: str) -> str:
@@ -1788,12 +2085,22 @@ class ProjectProvisioningStoreMixin:
             )
             if current.phase == "operator_action_needed":
                 if current.restore_diagnostic == normalized:
+                    self._invalidate_project_transfer_upload(
+                        connection,
+                        current,
+                        now=now,
+                    )
                     continue
                 resume_phase = current.restore_resume_phase
             else:
                 resume_phase = current.phase
             if resume_phase is None:
                 raise RuntimeError("restored target transfer lost its committed phase")
+            self._invalidate_project_transfer_upload(
+                connection,
+                current,
+                now=now,
+            )
             updated = ProjectTransferRequestRecord.model_validate_json(
                 _canonical_json(
                     {

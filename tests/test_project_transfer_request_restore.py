@@ -10,7 +10,11 @@ import pytest
 from rcp.core.transition_models import GraphHeadRef
 from rcp.server_ops.restore import detach_restore_database
 from rcp.storage import AppStore, ProjectTransferPhase, ProjectTransferRequestRecord
-from tests.test_project_transfer_request_storage import _linked_pair, _ready_incoming
+from tests.test_project_transfer_request_storage import (
+    _archive_bound_pair,
+    _linked_pair,
+    _ready_incoming,
+)
 
 RESTORED_AT = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
 TARGET_NONTERMINAL_PHASES: tuple[ProjectTransferPhase, ...] = (
@@ -194,3 +198,35 @@ def test_restore_keeps_completed_target_and_fenced_source_records_unchanged(
     assert target.project_transfer_request(target_request.request_id) == target_before
     assert _protected_proof(target, target_request.request_id) == proof_before
     assert source.project_transfer_request(source_request.request_id) == source_before
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_restore_invalidates_target_upload_and_refuses_reuse(
+    tmp_path: Path,
+    complete: bool,
+) -> None:
+    _source, target, _source_request, target_request = _archive_bound_pair(tmp_path)
+    leased = target.begin_target_project_transfer_upload(target_request.request_id)
+    if complete:
+        target.complete_target_project_transfer_upload(
+            target_request.request_id,
+            lease_boundary_sha256=leased.lease_boundary_sha256,
+        )
+
+    detach_restore_database(
+        target.path,
+        confirmed_by="root@lab uid=0",
+        detached_at=RESTORED_AT,
+    )
+
+    invalidated = target.target_project_transfer_upload(target_request.request_id)
+    assert invalidated is not None
+    assert invalidated.status == "invalidated"
+    assert invalidated.lease_boundary_sha256 == leased.lease_boundary_sha256
+    with pytest.raises(ValueError, match="restore re-entry"):
+        target.begin_target_project_transfer_upload(target_request.request_id)
+    with pytest.raises(ValueError, match="restore re-entry"):
+        target.complete_target_project_transfer_upload(
+            target_request.request_id,
+            lease_boundary_sha256=leased.lease_boundary_sha256,
+        )

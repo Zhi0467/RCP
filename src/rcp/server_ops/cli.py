@@ -489,7 +489,9 @@ def _dispatch_server_command(
 
             return prepare_project_provision_command(request, identity)
         case "server project transfer-import":
-            return _unavailable_command(request, identity)
+            from rcp.transfer.target import prepare_transfer_import_command
+
+            return prepare_transfer_import_command(request, identity)
         case "server backup configure":
             from rcp.server_ops.backup_config import prepare_backup_configure_command
 

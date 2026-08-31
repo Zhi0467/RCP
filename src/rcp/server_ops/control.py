@@ -34,7 +34,7 @@ from rcp.server_ops.models import SERVER_CLI_MAX_STEPS, ServerStep, redact_serve
 from rcp.server_ops.update_cutover import TERMINAL_UPDATE_STATES, UpdateOperationState
 from rcp.server_runtime import ServerMetadata, read_server_metadata
 
-SERVER_CONTROL_PROTOCOL_VERSION = 7
+SERVER_CONTROL_PROTOCOL_VERSION = 8
 SERVER_CONTROL_MAX_REQUEST_BYTES = 64 * 1024
 SERVER_CONTROL_MAX_RESPONSE_BYTES = 256 * 1024
 SERVER_CONTROL_SOCKET_MODE = 0o600
@@ -50,6 +50,8 @@ ServerControlOperation = Literal[
     "provider_readiness_check",
     "project_provision_plan",
     "project_provision_step",
+    "project_transfer_upload_plan",
+    "project_transfer_upload_complete",
     "member_removal_plan",
     "member_removal_advance",
     "restore_activation_commit",
@@ -65,6 +67,8 @@ SERVER_CONTROL_OPERATIONS: tuple[ServerControlOperation, ...] = (
     "provider_readiness_check",
     "project_provision_plan",
     "project_provision_step",
+    "project_transfer_upload_plan",
+    "project_transfer_upload_complete",
     "member_removal_plan",
     "member_removal_advance",
     "restore_activation_commit",
@@ -154,16 +158,29 @@ class ServerControlRequest(_StrictModel):
         elif self.operation in {
             "provider_readiness_plan",
             "project_provision_plan",
+            "project_transfer_upload_plan",
             "member_removal_plan",
         }:
             if self.selector_kind is None or self.selector_id is None:
                 raise ValueError("control plan requires one selector")
             if self.operation == "project_provision_plan" and self.selector_kind != "request":
                 raise ValueError("project provisioning plan requires one request selector")
+            if self.operation == "project_transfer_upload_plan" and self.selector_kind != "request":
+                raise ValueError("project transfer upload plan requires one request selector")
             if self.operation == "member_removal_plan" and self.selector_kind != "member":
                 raise ValueError("member-removal plan requires one member selector")
             if self.boundary_sha256 is not None or self.target_id is not None:
                 raise ValueError("control plan cannot carry a step boundary")
+        elif self.operation == "project_transfer_upload_complete":
+            if (
+                self.selector_kind != "request"
+                or self.selector_id is None
+                or self.boundary_sha256 is None
+                or self.target_id is not None
+            ):
+                raise ValueError(
+                    "project transfer upload completion requires one confirmed upload boundary"
+                )
         elif self.operation == "member_removal_advance":
             if (
                 self.selector_kind != "member"
@@ -507,6 +524,38 @@ class ServerControlProjectStepResult(_StrictModel):
         return self
 
 
+class ServerControlProjectTransferUploadResult(_StrictModel):
+    """One request-bound target upload lease or durable completion."""
+
+    instance_id: str
+    pid: int = Field(gt=0)
+    data_dir_id: str
+    space_id: str
+    space_kind: Literal["team"] = "team"
+    request_id: str
+    project_id: str
+    archive_sha256: str
+    archive_size_bytes: int = Field(ge=1)
+    lease_boundary_sha256: str
+    state: Literal["active", "complete"]
+
+    @model_validator(mode="after")
+    def validate_upload(self) -> ServerControlProjectTransferUploadResult:
+        _validate_provider_result_identity(
+            self.instance_id,
+            self.space_id,
+            self.data_dir_id,
+            self.request_id,
+            self.lease_boundary_sha256,
+        )
+        _canonical_uuid4(self.project_id, label="project transfer upload project id")
+        if len(self.archive_sha256) != 64 or any(
+            character not in _HEX_DIGEST for character in self.archive_sha256
+        ):
+            raise ValueError("project transfer upload archive must be a lowercase SHA-256 digest")
+        return self
+
+
 class ServerControlBackupCaptureResult(_StrictModel):
     instance_id: str
     pid: int = Field(gt=0)
@@ -708,6 +757,7 @@ class ServerControlResponse(_StrictModel):
         | ServerControlProviderCheckResult
         | ServerControlProjectPlanResult
         | ServerControlProjectStepResult
+        | ServerControlProjectTransferUploadResult
         | ServerControlBackupCaptureResult
         | ServerControlUpdateResult
         | ServerControlRestoreResult
@@ -755,6 +805,7 @@ ServerControlHandler = Callable[
     | ServerControlProviderCheckResult
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
+    | ServerControlProjectTransferUploadResult
     | ServerControlBackupCaptureResult
     | ServerControlUpdateResult
     | ServerControlRestoreResult,
@@ -958,6 +1009,51 @@ class ServerControlClient:
             )
         return result
 
+    def project_transfer_upload_plan(
+        self,
+        *,
+        request_id: str,
+    ) -> ServerControlProjectTransferUploadResult:
+        request = ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=self.metadata.instance_id,
+            operation="project_transfer_upload_plan",
+            selector_kind="request",
+            selector_id=request_id,
+        )
+        result = self._exchange(request)
+        if not isinstance(result, ServerControlProjectTransferUploadResult):
+            raise ServerControlError(
+                "invalid_response",
+                "The running RCP process returned the wrong project-transfer upload plan.",
+            )
+        return result
+
+    def complete_project_transfer_upload(
+        self,
+        *,
+        request_id: str,
+        lease_boundary_sha256: str,
+    ) -> ServerControlProjectTransferUploadResult:
+        request = ServerControlRequest(
+            request_id=str(uuid.uuid4()),
+            instance_id=self.metadata.instance_id,
+            operation="project_transfer_upload_complete",
+            selector_kind="request",
+            selector_id=request_id,
+            boundary_sha256=lease_boundary_sha256,
+        )
+        result = self._exchange(request)
+        if (
+            not isinstance(result, ServerControlProjectTransferUploadResult)
+            or result.state != "complete"
+        ):
+            raise ServerControlError(
+                "invalid_response",
+                "The running RCP process returned the wrong project-transfer upload result.",
+            )
+        return result
+
     def capture_backup_sqlite(self) -> ServerControlBackupCaptureResult:
         request = ServerControlRequest(
             request_id=str(uuid.uuid4()),
@@ -1079,6 +1175,7 @@ class ServerControlClient:
         | ServerControlProviderCheckResult
         | ServerControlProjectPlanResult
         | ServerControlProjectStepResult
+        | ServerControlProjectTransferUploadResult
         | ServerControlBackupCaptureResult
         | ServerControlUpdateResult
         | ServerControlRestoreResult
@@ -1099,6 +1196,11 @@ class ServerControlClient:
         elif request.operation == "provider_readiness_check":
             timeout = SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS
         elif request.operation == "project_provision_step":
+            timeout = SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS
+        elif request.operation == "project_transfer_upload_complete":
+            # Completion re-hashes the request-bound archive before recording
+            # its receipt, so it gets the same bounded long operation window
+            # as other archive-sized service work.
             timeout = SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS
         connection.settimeout(timeout)
         try:
@@ -1432,6 +1534,7 @@ def _validated_control_result(
     | ServerControlProviderCheckResult
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
+    | ServerControlProjectTransferUploadResult
     | ServerControlBackupCaptureResult
     | ServerControlUpdateResult
     | ServerControlRestoreResult,
@@ -1443,6 +1546,7 @@ def _validated_control_result(
     | ServerControlProviderCheckResult
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
+    | ServerControlProjectTransferUploadResult
     | ServerControlBackupCaptureResult
     | ServerControlUpdateResult
     | ServerControlRestoreResult
@@ -1497,6 +1601,26 @@ def _validated_control_result(
         if validated_plan.request_id != request.selector_id:
             raise ValueError("project provisioning plan returned another request")
         return validated_plan
+    if request.operation == "project_transfer_upload_plan":
+        if not isinstance(result, ServerControlProjectTransferUploadResult):
+            raise ValueError("project transfer upload plan returned another operation's result")
+        validated_upload_plan = ServerControlProjectTransferUploadResult.model_validate(result)
+        if validated_upload_plan.request_id != request.selector_id:
+            raise ValueError("project transfer upload plan returned another request")
+        return validated_upload_plan
+    if request.operation == "project_transfer_upload_complete":
+        if not isinstance(result, ServerControlProjectTransferUploadResult):
+            raise ValueError(
+                "project transfer upload completion returned another operation's result"
+            )
+        validated_upload = ServerControlProjectTransferUploadResult.model_validate(result)
+        if (
+            validated_upload.request_id != request.selector_id
+            or validated_upload.lease_boundary_sha256 != request.boundary_sha256
+            or validated_upload.state != "complete"
+        ):
+            raise ValueError("project transfer upload returned another request or lease boundary")
+        return validated_upload
     if request.operation == "backup_sqlite_capture":
         if not isinstance(result, ServerControlBackupCaptureResult):
             raise ValueError("backup SQLite capture returned another operation's result")
@@ -1644,6 +1768,7 @@ __all__ = [
     "ServerControlProbeResult",
     "ServerControlProjectPlanResult",
     "ServerControlProjectStepResult",
+    "ServerControlProjectTransferUploadResult",
     "ServerControlProjectTarget",
     "ServerControlProviderCheckResult",
     "ServerControlProviderPlanResult",

@@ -1503,6 +1503,112 @@ class ProjectTransferImportRecord(_StrictProvisioningModel):
         return self
 
 
+ProjectTransferUploadStatus = Literal["active", "complete", "invalidated"]
+
+
+class ProjectTransferUploadCompleteReceipt(_StrictProvisioningModel):
+    """The durable byte-boundary receipt for one target-side upload."""
+
+    request_id: str
+    project_id: str
+    archive_sha256: str
+    archive_size_bytes: int = Field(ge=1)
+    lease_boundary_sha256: str
+    completed_at: str
+
+    @field_validator("request_id", "project_id")
+    @classmethod
+    def validate_identifier(cls, value: str, info: ValidationInfo) -> str:
+        try:
+            return _canonical_uuid4(value, label=f"project transfer upload {info.field_name}")
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("archive_sha256", "lease_boundary_sha256")
+    @classmethod
+    def validate_digest(cls, value: str, info: ValidationInfo) -> str:
+        if _SHA256_HEX.fullmatch(value) is None:
+            raise ValueError(f"project transfer upload {info.field_name} must be lowercase SHA-256")
+        return value
+
+    @field_validator("completed_at")
+    @classmethod
+    def validate_completed_at(cls, value: str) -> str:
+        _required_timestamp(value)
+        return value
+
+
+class ProjectTransferUploadRecord(_StrictProvisioningModel):
+    """One request-bound target upload lease or its terminal receipt.
+
+    Upload rows are operational transfer control, not project history.  An
+    invalidated row is retained as an audit boundary but cannot be completed;
+    a later target re-entry may replace it with a fresh lease for the same
+    immutable request archive.
+    """
+
+    request_id: str
+    project_id: str
+    archive_sha256: str
+    archive_size_bytes: int = Field(ge=1)
+    lease_boundary_sha256: str
+    status: ProjectTransferUploadStatus
+    receipt: ProjectTransferUploadCompleteReceipt | None = None
+    created_at: str
+    updated_at: str
+    invalidated_at: str | None = None
+
+    @field_validator("request_id", "project_id")
+    @classmethod
+    def validate_identifier(cls, value: str, info: ValidationInfo) -> str:
+        try:
+            return _canonical_uuid4(value, label=f"project transfer upload {info.field_name}")
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("archive_sha256", "lease_boundary_sha256")
+    @classmethod
+    def validate_digest(cls, value: str, info: ValidationInfo) -> str:
+        if _SHA256_HEX.fullmatch(value) is None:
+            raise ValueError(f"project transfer upload {info.field_name} must be lowercase SHA-256")
+        return value
+
+    @field_validator("created_at", "updated_at", "invalidated_at")
+    @classmethod
+    def validate_timestamp(cls, value: str | None) -> str | None:
+        if value is not None:
+            _required_timestamp(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> ProjectTransferUploadRecord:
+        if _required_timestamp(self.updated_at) < _required_timestamp(self.created_at):
+            raise ValueError("project transfer upload update precedes creation")
+        if self.status == "active":
+            if self.receipt is not None or self.invalidated_at is not None:
+                raise ValueError("active project transfer upload cannot retain a terminal receipt")
+        elif self.status == "complete":
+            if self.receipt is None or self.invalidated_at is not None:
+                raise ValueError("complete project transfer upload requires its receipt")
+            if (
+                self.receipt.request_id != self.request_id
+                or self.receipt.project_id != self.project_id
+                or self.receipt.archive_sha256 != self.archive_sha256
+                or self.receipt.archive_size_bytes != self.archive_size_bytes
+                or self.receipt.lease_boundary_sha256 != self.lease_boundary_sha256
+            ):
+                raise ValueError("project transfer upload receipt does not match its lease")
+            if _required_timestamp(self.receipt.completed_at) < _required_timestamp(
+                self.created_at
+            ):
+                raise ValueError("project transfer upload completion precedes creation")
+        elif self.receipt is not None or self.invalidated_at is None:
+            raise ValueError(
+                "invalidated project transfer upload requires only its invalidation time"
+            )
+        return self
+
+
 class ProviderSkillInventoryRecord(BaseModel):
     """One durable last-known provider-native skill inventory."""
 
@@ -3044,6 +3150,9 @@ __all__ = [
     "ProjectTransferSourceConfiguration",
     "ProjectTransferSourceReleaseReceipt",
     "ProjectTransferTargetAdmissionReceipt",
+    "ProjectTransferUploadCompleteReceipt",
+    "ProjectTransferUploadRecord",
+    "ProjectTransferUploadStatus",
     "ProjectRecord",
     "ProjectStageRecord",
     "ProposalResolvedGraphCondition",

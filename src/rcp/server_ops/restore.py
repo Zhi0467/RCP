@@ -94,6 +94,7 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "7e6988b524c0b3fdda1873ab5da4bd03664dd1ac9de1447b42fb2d74858b23ef",
         "87150f2308f7db67da7a3ceb3879c475830c560096b836df92df6a6fd43798fb",
         "3abf5220f328382d9abebe6091fd8f73daa634fb1e4bf1ed8993fc2b58f6005b",
+        "2e5ba0c68eccff397619edb4f3bf8574b0002d89879a8095acfa001474da23f4",
     }
 )
 

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import stat
 import sys
 import tempfile
@@ -43,6 +44,8 @@ from rcp.sources.imported import (
     ImportedProviderSourceStore,
 )
 from rcp.storage import AppStore
+from rcp.storage.models import ProjectTransferUploadRecord
+from rcp.transfer.target import target_transfer_archive_path
 
 UPDATE_CHECKPOINT_SCHEMA_VERSION = 1
 ROLLBACK_JOURNAL_SCHEMA_VERSION = 1
@@ -549,7 +552,6 @@ class UpdateCheckpointCoordinator:
                     "The final SQLite snapshot does not belong to the captured team space."
                 )
             stages = checkpoint_local_recovery_stages(snapshot_store, self.data_dir)
-            self._require_empty_transfer_inbox()
             self._require_empty_transfer_exports()
             app_root_path = operation_root / "payload" / "app-data"
             app_root_path.mkdir(mode=_DIRECTORY_MODE)
@@ -564,6 +566,12 @@ class UpdateCheckpointCoordinator:
                 )
             ]
             app_directories: set[str] = set()
+            transfer_directories, transfer_files = self._copy_transfer_inbox(
+                snapshot_store,
+                app_root_path,
+            )
+            app_directories.update(transfer_directories)
+            app_files.extend(transfer_files)
             bootstrap_root = self.data_dir / "bootstrap-manifests"
             if bootstrap_root.exists():
                 directories, files = _snapshot_tree(
@@ -842,12 +850,136 @@ class UpdateCheckpointCoordinator:
         ):
             _require_directory(path, expected_uid=self.expected_uid, label=label)
 
-    def _require_empty_transfer_inbox(self) -> None:
-        self._require_empty_transfer_root(
-            "transfer-inbox",
-            "A transfer inbox entry has no typed completed-upload proof yet. Finish or "
-            "remove the transfer before this source update.",
-        )
+    def _copy_transfer_inbox(
+        self,
+        snapshot_store: AppStore,
+        app_root_path: Path,
+    ) -> tuple[set[str], list[UpdateCheckpointFile]]:
+        """Capture only receipt-backed complete target upload archives.
+
+        The live inbox is deliberately excluded from ordinary backup and
+        rehearsal.  An update checkpoint is the one local boundary that may
+        retain a complete upload, but only when the immutable SQLite snapshot
+        contains a typed completion row that binds the request, archive, and
+        exact bytes.  Filesystem names are derived through the target owner;
+        no path supplied by a database row is trusted.
+        """
+
+        uploads = self._read_complete_transfer_uploads(snapshot_store)
+        live_root = self.data_dir / "transfer-inbox"
+        if not uploads:
+            if os.path.lexists(live_root):
+                self._require_private_transfer_directory(live_root)
+            self._require_empty_transfer_root(
+                "transfer-inbox",
+                "A transfer inbox entry has no typed completed-upload proof yet. Finish or "
+                "remove the transfer before this source update.",
+            )
+            return set(), []
+
+        self._require_private_transfer_directory(live_root)
+        try:
+            entries = tuple(live_root.iterdir())
+        except OSError as exc:
+            raise UpdateCheckpointRefused(
+                "The transfer inbox cannot be inventoried safely."
+            ) from exc
+        expected_names = {f"{upload.request_id}.rcp-transfer" for upload in uploads}
+        actual_names = {entry.name for entry in entries}
+        if expected_names - actual_names:
+            raise UpdateCheckpointRefused("A complete transfer upload is missing its archive file.")
+        if actual_names - expected_names:
+            raise UpdateCheckpointRefused(
+                "The transfer inbox contains an unknown, partial, or untyped entry."
+            )
+
+        destination_root = app_root_path / "transfer-inbox"
+        destination_root.mkdir(mode=_DIRECTORY_MODE)
+        copied: list[UpdateCheckpointFile] = []
+        for upload in uploads:
+            source = target_transfer_archive_path(self.data_dir, upload.request_id)
+            self._require_transfer_archive_file(source)
+            copied_file = _copy_declared_file(
+                source,
+                destination_root / source.name,
+                relative_path=f"transfer-inbox/{source.name}",
+                expected_sha256=upload.archive_sha256,
+                expected_size=upload.archive_size_bytes,
+                restore_mode=0o600,
+            )
+            # The source mode/owner are part of this checkpoint boundary, not
+            # merely properties of the copied payload.
+            self._require_transfer_archive_file(source)
+            copied.append(copied_file)
+        return {"transfer-inbox"}, copied
+
+    def _read_complete_transfer_uploads(
+        self,
+        snapshot_store: AppStore,
+    ) -> tuple[ProjectTransferUploadRecord, ...]:
+        try:
+            stored = snapshot_store.target_project_transfer_uploads()
+        except (KeyError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            raise UpdateCheckpointRefused(
+                "The SQLite snapshot has no readable typed transfer-upload table."
+            ) from exc
+        if len(stored) > BACKUP_INVENTORY_MAX_ENTRIES:
+            raise UpdateCheckpointRefused("The transfer-upload inventory exceeds its bound.")
+
+        uploads: list[ProjectTransferUploadRecord] = []
+        for upload in stored:
+            if upload.status != "complete" or upload.receipt is None:
+                raise UpdateCheckpointRefused(
+                    "A transfer inbox upload is not at its durable complete boundary."
+                )
+            try:
+                request = snapshot_store.project_transfer_request(upload.request_id)
+            except (KeyError, RuntimeError, ValueError) as exc:
+                raise UpdateCheckpointRefused(
+                    "A complete transfer upload is not bound to a valid target request."
+                ) from exc
+            if (
+                request is None
+                or request.side != "target"
+                or request.project_id != upload.project_id
+                or request.archive_sha256 != upload.archive_sha256
+                or request.archive_size_bytes != upload.archive_size_bytes
+            ):
+                raise UpdateCheckpointRefused(
+                    "A complete transfer upload is not bound to its target archive request."
+                )
+            uploads.append(upload)
+        return tuple(uploads)
+
+    def _require_private_transfer_directory(self, path: Path) -> None:
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise UpdateCheckpointRefused("The transfer inbox is unavailable.") from exc
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or path.is_symlink()
+            or metadata.st_uid != self.expected_uid
+            or stat.S_IMODE(metadata.st_mode) != _DIRECTORY_MODE
+        ):
+            raise UpdateCheckpointRefused("The transfer inbox has unsafe ownership, mode, or type.")
+
+    def _require_transfer_archive_file(self, path: Path) -> None:
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise UpdateCheckpointRefused(
+                "A complete transfer upload is missing its archive file."
+            ) from exc
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or path.is_symlink()
+            or metadata.st_uid != self.expected_uid
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise UpdateCheckpointRefused(
+                "A complete transfer upload has unsafe ownership, mode, or type."
+            )
 
     def _require_empty_transfer_exports(self) -> None:
         self._require_empty_transfer_root(

@@ -10,9 +10,11 @@ import stat
 import subprocess
 import sys
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,7 +58,12 @@ from rcp.server_ops.update_checkpoint import (
 from rcp.server_runtime import ServerMetadata
 from rcp.sources import ImportedProviderSourceStore
 from rcp.storage import AppStore
+from rcp.storage.models import (
+    ProjectTransferUploadCompleteReceipt,
+    ProjectTransferUploadRecord,
+)
 from rcp.transfer import TransferArchiveEntry
+from rcp.transfer.target import target_transfer_archive_path
 
 BASE_COMMIT = "a" * 40
 CANDIDATE_COMMIT = "b" * 40
@@ -767,8 +774,9 @@ def test_checkpoint_fails_closed_on_unclassified_transfer_inbox_entry(tmp_path: 
     previous_release.mkdir(parents=True)
     candidate_release.mkdir()
     store, _bootstrap = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Test Lab")
-    inbox = data_dir / "transfer-inbox" / str(uuid.uuid4())
-    inbox.mkdir(parents=True)
+    inbox = data_dir / "transfer-inbox"
+    inbox.mkdir(mode=0o700)
+    inbox.chmod(0o700)
     (inbox / "partial").write_bytes(b"not complete")
     sqlite_publication = BackupCaptureCoordinator(
         store, data_dir, _metadata(data_dir)
@@ -826,6 +834,134 @@ def test_checkpoint_fails_closed_on_unclassified_transfer_inbox_entry(tmp_path: 
             candidate_receipt_sha256=hashlib.sha256(candidate_path.read_bytes()).hexdigest(),
         )
     assert not list(update_root.glob("checkpoint-*/checkpoint.json"))
+
+
+class _TransferUploadSnapshot:
+    def __init__(self, row: dict[str, object], request: object) -> None:
+        self._row = row
+        self._request = request
+
+    def project_transfer_request(self, _request_id: str):
+        return self._request
+
+    def target_project_transfer_uploads(self):
+        receipt_json = self._row["receipt_json"]
+        receipt = (
+            None
+            if receipt_json is None
+            else ProjectTransferUploadCompleteReceipt.model_validate_json(receipt_json)
+        )
+        return [
+            ProjectTransferUploadRecord(
+                **{
+                    **{key: value for key, value in self._row.items() if key != "receipt_json"},
+                    "receipt": receipt,
+                },
+            )
+        ]
+
+
+def _transfer_upload_capture_fixture(tmp_path: Path, *, status: str = "complete"):
+    data_dir = tmp_path / "server" / "data"
+    data_dir.mkdir(parents=True, mode=0o700)
+    data_dir.chmod(0o700)
+    inbox = data_dir / "transfer-inbox"
+    inbox.mkdir(mode=0o700)
+    inbox.chmod(0o700)
+    request_id = str(uuid.uuid4())
+    project_id = str(uuid.uuid4())
+    payload = b"one exact transfer archive\n"
+    digest = hashlib.sha256(payload).hexdigest()
+    final = target_transfer_archive_path(data_dir, request_id)
+    final.write_bytes(payload)
+    final.chmod(0o600)
+    timestamp = datetime.now(UTC).isoformat()
+    receipt = {
+        "request_id": request_id,
+        "project_id": project_id,
+        "archive_sha256": digest,
+        "archive_size_bytes": len(payload),
+        "lease_boundary_sha256": "a" * 64,
+        "completed_at": timestamp,
+    }
+    row = {
+        "request_id": request_id,
+        "project_id": project_id,
+        "archive_sha256": digest,
+        "archive_size_bytes": len(payload),
+        "lease_boundary_sha256": "a" * 64,
+        "status": status,
+        "receipt_json": json.dumps(receipt) if status == "complete" else None,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "invalidated_at": None,
+    }
+    request = SimpleNamespace(
+        side="target",
+        project_id=project_id,
+        archive_sha256=digest,
+        archive_size_bytes=len(payload),
+    )
+    destination = tmp_path / "checkpoint" / "app-data"
+    destination.mkdir(parents=True, mode=0o700)
+    destination.chmod(0o700)
+    coordinator = UpdateCheckpointCoordinator(
+        data_dir=data_dir,
+        update_root=tmp_path / "server" / "update-checkpoints",
+        previous_release_path=tmp_path / "server" / "releases" / BASE_COMMIT,
+        expected_uid=os.geteuid(),
+    )
+    return coordinator, _TransferUploadSnapshot(row, request), destination, final, payload
+
+
+def test_checkpoint_captures_only_receipt_backed_complete_transfer_archive(
+    tmp_path: Path,
+) -> None:
+    coordinator, snapshot, destination, final, payload = _transfer_upload_capture_fixture(tmp_path)
+
+    directories, files = coordinator._copy_transfer_inbox(snapshot, destination)  # noqa: SLF001
+
+    assert directories == {"transfer-inbox"}
+    assert [item.relative_path for item in files] == [f"transfer-inbox/{final.name}"]
+    copied = destination / "transfer-inbox" / final.name
+    assert copied.read_bytes() == payload
+    assert stat.S_IMODE(copied.stat().st_mode) == 0o400
+
+
+@pytest.mark.parametrize(
+    ("status", "mutation", "message"),
+    [
+        ("active", lambda _path: None, "durable complete boundary"),
+        ("complete", lambda path: path.unlink(), "missing its archive file"),
+        ("complete", lambda path: path.write_bytes(b"wrong"), "differs from its receipt"),
+        ("complete", lambda path: path.chmod(0o644), "unsafe ownership, mode, or type"),
+    ],
+)
+def test_checkpoint_refuses_unfinished_or_unsafe_transfer_archive(
+    tmp_path: Path,
+    status: str,
+    mutation: Callable[[Path], None],
+    message: str,
+) -> None:
+    coordinator, snapshot, destination, final, _payload = _transfer_upload_capture_fixture(
+        tmp_path,
+        status=status,
+    )
+    mutation(final)
+
+    with pytest.raises(UpdateCheckpointRefused, match=message):
+        coordinator._copy_transfer_inbox(snapshot, destination)  # noqa: SLF001
+
+
+def test_checkpoint_refuses_extra_transfer_partial_beside_complete_archive(
+    tmp_path: Path,
+) -> None:
+    coordinator, snapshot, destination, final, _payload = _transfer_upload_capture_fixture(tmp_path)
+    (final.parent / ".unexpected.partial").write_bytes(b"partial")
+    (final.parent / ".unexpected.partial").chmod(0o600)
+
+    with pytest.raises(UpdateCheckpointRefused, match="unknown, partial, or untyped"):
+        coordinator._copy_transfer_inbox(snapshot, destination)  # noqa: SLF001
 
 
 def test_checkpoint_manifest_detects_payload_tampering(tmp_path: Path) -> None:

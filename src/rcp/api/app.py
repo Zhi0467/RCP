@@ -140,6 +140,7 @@ from rcp.server_ops.control import (
     ServerControlProbeResult,
     ServerControlProjectPlanResult,
     ServerControlProjectStepResult,
+    ServerControlProjectTransferUploadResult,
     ServerControlProviderCheckResult,
     ServerControlProviderPlanResult,
     ServerControlRequest,
@@ -181,6 +182,7 @@ from rcp.storage import (
     StoredWatcherRecord,
     TeamAuthenticationError,
 )
+from rcp.transfer.target import TargetTransferUploadCoordinator
 from rcp.transport import RemoteRunStage, StateUnavailable
 from rcp.watchers import (
     GraphWatcherRetryRegistry,
@@ -380,6 +382,7 @@ def create_app(
     control_server: ServerControlServer | None = None
     provider_readiness_coordinator: ProviderReadinessCoordinator | None = None
     project_provision_coordinator: ProjectProvisionCoordinator | None = None
+    target_transfer_upload_coordinator: TargetTransferUploadCoordinator | None = None
     backup_capture_coordinator: BackupCaptureCoordinator | None = None
     member_removal_coordinator: MemberRemovalCoordinator | None = None
     update_service_coordinator: UpdateServiceCoordinator | None = None
@@ -590,6 +593,7 @@ def create_app(
             | ServerControlProviderCheckResult
             | ServerControlProjectPlanResult
             | ServerControlProjectStepResult
+            | ServerControlProjectTransferUploadResult
             | ServerControlBackupCaptureResult
             | ServerControlUpdateResult
             | ServerControlRestoreResult
@@ -601,7 +605,12 @@ def create_app(
                 "update_maintenance_abort",
             }
             root_operations = {*update_operations, "restore_activation_commit"}
-            if request.operation not in {"probe", *root_operations}:
+            continuation_operations = {"project_transfer_upload_complete"}
+            if request.operation not in {
+                "probe",
+                *root_operations,
+                *continuation_operations,
+            }:
                 try:
                     background_admission_gate.require_open(
                         f"server-control operation {request.operation}"
@@ -611,7 +620,7 @@ def create_app(
             if (
                 startup_effect_fence is not None
                 and startup_effect_fence.active
-                and request.operation not in {"probe", *root_operations}
+                and request.operation not in {"probe", *root_operations, *continuation_operations}
             ):
                 startup_effect_fence.require_open(f"server-control operation {request.operation}")
             if request.operation in root_operations and _peer.uid != 0:
@@ -680,6 +689,24 @@ def create_app(
                         boundary_sha256=request.boundary_sha256,
                         target_id=request.target_id,
                     )
+                case "project_transfer_upload_plan":
+                    assert target_transfer_upload_coordinator is not None
+                    assert request.selector_id is not None
+                    try:
+                        return target_transfer_upload_coordinator.plan(request.selector_id)
+                    except ValueError as exc:
+                        raise ServerControlError("operation_refused", str(exc)) from exc
+                case "project_transfer_upload_complete":
+                    assert target_transfer_upload_coordinator is not None
+                    assert request.selector_id is not None
+                    assert request.boundary_sha256 is not None
+                    try:
+                        return target_transfer_upload_coordinator.complete(
+                            request.selector_id,
+                            lease_boundary_sha256=request.boundary_sha256,
+                        )
+                    except ValueError as exc:
+                        raise ServerControlError("operation_refused", str(exc)) from exc
                 case "backup_sqlite_capture":
                     return capture_sqlite_for_control()
                 case "restore_activation_commit":
@@ -691,8 +718,18 @@ def create_app(
                     )
                 case "update_maintenance_enter":
                     assert update_service_coordinator is not None
+                    assert target_transfer_upload_coordinator is not None
                     assert request.selector_id is not None
                     assert request.boundary_sha256 is not None
+                    # Control requests are dispatched serially. Refuse before
+                    # closing admission so this same loop can accept the active
+                    # upload's completion continuation.
+                    if not target_transfer_upload_coordinator.uploads_idle():
+                        raise ServerControlError(
+                            "operation_refused",
+                            "An active project transfer upload must complete before server "
+                            "update maintenance can begin.",
+                        )
                     try:
                         receipt, digest, capture = update_service_coordinator.enter_maintenance(
                             operation_id=request.selector_id,
@@ -774,6 +811,11 @@ def create_app(
             store,
             identity,
             provider_readiness_coordinator,
+        )
+        target_transfer_upload_coordinator = TargetTransferUploadCoordinator(
+            store,
+            app_data,
+            identity,
         )
         backup_capture_coordinator = BackupCaptureCoordinator(store, app_data, identity)
     agent_mode: Literal["acceptance", "provider"] = "acceptance" if acceptance_agent else "provider"
@@ -1476,6 +1518,7 @@ def create_app(
         watcher_poller.start()
 
     if control_server is not None and installed_update_layout:
+        assert target_transfer_upload_coordinator is not None
         update_service_coordinator = UpdateServiceCoordinator(
             layout=server_layout,
             instance_metadata=identity,

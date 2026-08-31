@@ -12,7 +12,6 @@ from rcp.__main__ import build_parser, main
 from rcp.server_ops.cli import (
     SERVER_CLI_EXIT_FAILED,
     SERVER_CLI_EXIT_OPERATOR_ACTION,
-    SERVER_CLI_EXIT_UNAVAILABLE,
     SERVER_CLI_EXIT_WRONG_IDENTITY,
     SERVER_CLI_TERMINAL_RESERVE_BYTES,
     CallerIdentity,
@@ -838,8 +837,15 @@ def test_transfer_import_passes_stdin_to_the_handler_without_an_archive_argument
     ]
 
 
-def test_unimplemented_concrete_owner_fails_loudly() -> None:
+def test_transfer_import_dispatches_to_its_concrete_owner(monkeypatch) -> None:
     output = StringIO()
+    calls = []
+
+    def prepare(request, identity):
+        calls.append((request, identity))
+        return _successful_command(request, identity)
+
+    monkeypatch.setattr("rcp.transfer.target.prepare_transfer_import_command", prepare)
 
     exit_code = run_server_command(
         _parse("server", "project", "transfer-import", REQUEST_ID, "--machine-readable"),
@@ -847,9 +853,9 @@ def test_unimplemented_concrete_owner_fails_loudly() -> None:
         stream=output,
     )
 
-    assert exit_code == SERVER_CLI_EXIT_UNAVAILABLE
-    assert json.loads(output.getvalue().splitlines()[-1])["step"]["state"] == "unavailable"
-    assert "not installed yet" in output.getvalue()
+    assert exit_code == 0
+    assert calls[0][0].request_id == REQUEST_ID
+    assert calls[0][1].username == "rcp"
 
 
 def test_top_level_main_routes_server_commands_before_personal_data_resolution(

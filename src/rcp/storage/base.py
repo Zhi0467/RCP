@@ -748,6 +748,26 @@ class AppStoreBase:
                             AND consumed_at IS NOT NULL)
                     )
                 );
+                CREATE TABLE IF NOT EXISTS project_transfer_uploads (
+                    request_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    archive_sha256 TEXT NOT NULL,
+                    archive_size_bytes INTEGER NOT NULL CHECK(archive_size_bytes >= 1),
+                    lease_boundary_sha256 TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('active', 'complete', 'invalidated')),
+                    receipt_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    invalidated_at TEXT,
+                    FOREIGN KEY(request_id) REFERENCES project_transfer_requests(request_id),
+                    CHECK(
+                        (status = 'active' AND receipt_json IS NULL AND invalidated_at IS NULL)
+                        OR (status = 'complete' AND receipt_json IS NOT NULL
+                            AND invalidated_at IS NULL)
+                        OR (status = 'invalidated' AND receipt_json IS NULL
+                            AND invalidated_at IS NOT NULL)
+                    )
+                );
                 CREATE TABLE IF NOT EXISTS project_aliases (
                     alias_id TEXT PRIMARY KEY,
                     canonical_project_id TEXT NOT NULL

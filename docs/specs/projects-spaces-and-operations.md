@@ -567,9 +567,11 @@ Remote stages and SSH project roots, provider/SSH homes, credentials, checkouts,
 locks, runtime metadata, and rebuildable materializations/caches are not copied.
 Every captured remote project remains in the proof inventory, but rollback never
 writes a remote root while startup effects are fenced. A future durable root is
-rejected until its concrete owner classifies it; currently this includes
-imported provider sources and nonempty transfer inbox/export roots pending their
-settled lifecycle packets.
+rejected until its concrete owner classifies it. Imported provider sources use
+their typed owner; `transfer-exports/` remains rejected; and `transfer-inbox/`
+admits only exact mode-0600 archives whose complete upload receipts exist in the
+same SQLite snapshot. Partial, invalidated, missing, corrupt, or extra inbox
+entries fail the checkpoint.
 
 Before publication, the checkpoint is restored into a private temporary root
 and every included byte, declared file mode, private directory mode, and owner
@@ -1124,11 +1126,22 @@ into the stdin of one system-SSH child running the fixed remote command
 `rcp server project transfer-import <request-id>`. Through the private control
 socket, that CLI obtains the expected digest/size and an upload lease, then alone
 writes a mode-0600 same-directory `.partial` under
-`<RCP_DATA_DIR>/transfer-inbox/` and atomically renames it to
-`<request-id>.rcp-transfer` after verification. It accepts no arbitrary archive
-path, never opens SQLite, and revalidates both human confirmations, the
-source-fence receipt, target readiness, ownership/mode, digest, and the
-precommitted source-release proof before importing through the running server.
+`<RCP_DATA_DIR>/transfer-inbox/`, publishes it without overwrite through a
+same-filesystem hard link to `<request-id>.rcp-transfer`, and removes the partial
+after verification. It accepts no arbitrary archive path and never opens SQLite.
+The running service owns the durable active,
+complete, or invalidated upload record; the CLI owns only the request-derived
+filesystem lease and byte stream. Completion re-hashes the final file before
+committing its typed receipt, and an exact retry consumes and verifies stdin
+without replacing the existing final. Update maintenance refuses immediately
+while an upload is active, leaving admission open so the running service can
+accept that upload's completion; its rollback checkpoint preserves only
+receipt-backed complete files. Restore invalidates both active and complete
+uploads for every nonterminal target request, so an old lease cannot complete
+after replacement and later re-entry requires a fresh relay boundary. The later
+target owner revalidates both human confirmations, the source-fence receipt,
+target readiness, ownership/mode, digest, and the precommitted source-release
+proof before importing through the running server.
 After activation, the native relay carries the target's precommitted activation
 proof from that permanent-member-token-authenticated native route directly back
 to the pinned source backend so source cleanup cannot be authorized by a forged
