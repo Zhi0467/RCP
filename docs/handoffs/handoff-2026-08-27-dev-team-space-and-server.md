@@ -268,11 +268,13 @@ gate are deliberately future work and do not block this plan.
   independent lockfile audit found no unintended package change.
 - The desktop was rebuilt, but the Computer Use drive could not start because the
   Mac was locked and automatic unlock failed. No visible desktop behavior is
-  claimed from that attempt. GitHub Actions run 33395914834 remains refused
-  before any step because hosted-runner spending is unavailable, and the reachable
-  shared Ubuntu 22.04 host has neither the installed `rcp` account nor
-  noninteractive sudo. Those are the remaining live-environment gates, not local
-  test failures.
+  claimed from that attempt. Main-branch CI run
+  [33401185898](https://github.com/Zhi0467/RCP/actions/runs/33401185898)
+  for `2c3f262` also failed all five jobs with empty step lists, while update
+  qualification run 33395914834 remains refused before either Ubuntu job starts;
+  hosted-runner spending is unavailable. The reachable shared Ubuntu 22.04 host
+  has neither the installed `rcp` account nor noninteractive sudo. Those are the
+  remaining live-environment gates, not local test failures.
 
 #### 2026-08-31 — T5a/T5b native relay and unified transfer workflow implemented
 
