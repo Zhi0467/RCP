@@ -1,11 +1,13 @@
 use std::{path::PathBuf, process::Stdio, time::Duration};
 
+use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tauri::ipc::Channel;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader},
-    process::Command,
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
+    process::{Child, ChildStdin, Command},
     time,
 };
 use uuid::{Uuid, Version as UuidVersion};
@@ -22,6 +24,10 @@ const MAX_EVENTS: usize = 1_025;
 const MAX_STEPS: usize = 256;
 const MAX_STDOUT_BYTES: usize = 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 64 * 1024;
+const TRANSFER_COPY_BUFFER_BYTES: usize = 1024 * 1024;
+const TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const PROVISION_COMMAND: &str = "server project provision";
+const TRANSFER_IMPORT_COMMAND: &str = "server project transfer-import";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -145,6 +151,186 @@ pub async fn run_project_provision(
     Ok((exit_code, events.len()))
 }
 
+/// Run the one fixed stdin-only target transfer command.
+///
+/// The response body is consumed in bounded chunks and is never represented as
+/// a Tauri value, command argument, or shell string. The target-side CLI owns
+/// digest/size validation and the request-derived inbox path.
+pub async fn run_project_transfer_import(
+    connection: &TeamConnectionMetadata,
+    request_id: &str,
+    archive: Response,
+    expected_archive_sha256: &str,
+    expected_archive_size_bytes: u64,
+    on_event: &Channel<Value>,
+    ssh_program: PathBuf,
+) -> Result<(i32, usize), String> {
+    run_project_transfer_import_with_idle_timeout(
+        connection,
+        request_id,
+        archive,
+        expected_archive_sha256,
+        expected_archive_size_bytes,
+        on_event,
+        ssh_program,
+        TRANSFER_IDLE_TIMEOUT,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_project_transfer_import_with_idle_timeout(
+    connection: &TeamConnectionMetadata,
+    request_id: &str,
+    archive: Response,
+    expected_archive_sha256: &str,
+    expected_archive_size_bytes: u64,
+    on_event: &Channel<Value>,
+    ssh_program: PathBuf,
+    idle_timeout: Duration,
+) -> Result<(i32, usize), String> {
+    validate_uuid4(request_id, "project transfer request identity")?;
+    validate_archive_receipt(expected_archive_sha256, expected_archive_size_bytes)?;
+    if !archive.status().is_success() {
+        return Err(format!(
+            "the personal transfer archive was rejected (HTTP {})",
+            archive.status().as_u16()
+        ));
+    }
+    validate_archive_stream_headers(
+        &archive,
+        expected_archive_sha256,
+        expected_archive_size_bytes,
+    )?;
+    let route = configured_route(connection)?;
+    let argv = transfer_import_ssh_argv(route, request_id, true);
+    let mut child = Command::new(&ssh_program)
+        .args(&argv)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("could not start the saved server operator route: {error}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "the transfer command stdin pipe is unavailable".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "the transfer command stdout pipe is unavailable".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "the transfer command stderr pipe is unavailable".to_string())?;
+    let archive_future = pipe_archive(
+        archive,
+        stdin,
+        expected_archive_sha256.to_string(),
+        expected_archive_size_bytes,
+        idle_timeout,
+    );
+    let events_future = stream_transfer_events(stdout, on_event);
+    tokio::pin!(archive_future);
+    tokio::pin!(events_future);
+    let stderr_task = tauri::async_runtime::spawn(read_capped(stderr, MAX_STDERR_BYTES));
+    enum FirstResult {
+        Archive(Result<(), String>),
+        Events(Result<Vec<Value>, String>),
+    }
+    let first = tokio::select! {
+        result = &mut archive_future => FirstResult::Archive(result),
+        result = &mut events_future => FirstResult::Events(result),
+    };
+    let events = match first {
+        FirstResult::Archive(result) => {
+            if let Err(error) = result {
+                stop_child(&mut child).await;
+                stderr_task.abort();
+                let _ = stderr_task.await;
+                return Err(error);
+            }
+            match time::timeout(idle_timeout, &mut events_future).await {
+                Ok(Ok(events)) => events,
+                Ok(Err(error)) => {
+                    stop_child(&mut child).await;
+                    stderr_task.abort();
+                    let _ = stderr_task.await;
+                    return Err(error);
+                }
+                Err(_) => {
+                    stop_child(&mut child).await;
+                    stderr_task.abort();
+                    let _ = stderr_task.await;
+                    return Err(
+                        "the transfer command made no progress after receiving the archive".into(),
+                    );
+                }
+            }
+        }
+        FirstResult::Events(result) => {
+            let events = match result {
+                Ok(events) => events,
+                Err(error) => {
+                    stop_child(&mut child).await;
+                    stderr_task.abort();
+                    let _ = stderr_task.await;
+                    return Err(error);
+                }
+            };
+            match time::timeout(idle_timeout, &mut archive_future).await {
+                Ok(Ok(())) => events,
+                Ok(Err(error)) => {
+                    stop_child(&mut child).await;
+                    stderr_task.abort();
+                    let _ = stderr_task.await;
+                    return Err(error);
+                }
+                Err(_) => {
+                    stop_child(&mut child).await;
+                    stderr_task.abort();
+                    let _ = stderr_task.await;
+                    return Err("the transfer archive stream made no progress".into());
+                }
+            }
+        }
+    };
+    let status = match time::timeout(idle_timeout, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
+            stop_child(&mut child).await;
+            stderr_task.abort();
+            let _ = stderr_task.await;
+            return Err(format!("could not wait for the transfer command: {error}"));
+        }
+        Err(_) => {
+            stop_child(&mut child).await;
+            stderr_task.abort();
+            let _ = stderr_task.await;
+            return Err("the transfer command did not exit after its final progress event".into());
+        }
+    };
+    let stderr_bytes = match time::timeout(idle_timeout, stderr_task).await {
+        Ok(Ok(Ok(stderr))) => stderr,
+        Ok(Ok(Err(error))) => return Err(error),
+        Ok(Err(_)) => return Err("the transfer command diagnostic reader stopped".into()),
+        Err(_) => return Err("the transfer command diagnostic reader did not finish".into()),
+    };
+    let stderr_text = safe_diagnostic(&stderr_bytes);
+    if events.is_empty() {
+        return Err(format!(
+            "the transfer command returned no structured progress{}",
+            diagnostic_suffix(&stderr_text)
+        ));
+    }
+    validate_transfer_terminal_events(&events, status.code())?;
+    let exit_code = status
+        .code()
+        .ok_or_else(|| "the transfer command ended without an exit code".to_string())?;
+    Ok((exit_code, events.len()))
+}
+
 pub fn terminal_argv(
     connection: &TeamConnectionMetadata,
     request_id: &str,
@@ -154,6 +340,25 @@ pub fn terminal_argv(
         configured_route(connection)?,
         request_id,
     ))
+}
+
+pub fn terminal_transfer_argv(
+    connection: &TeamConnectionMetadata,
+    request_id: &str,
+    archive_path: &std::path::Path,
+) -> Result<Vec<String>, String> {
+    validate_uuid4(request_id, "project transfer request identity")?;
+    validate_terminal_archive_path(archive_path)?;
+    let remote = interactive_transfer_ssh_argv(configured_route(connection)?, request_id);
+    let path = archive_path
+        .to_str()
+        .ok_or_else(|| "the local transfer archive path is not valid UTF-8".to_string())?;
+    let pipeline = format!(
+        "/bin/cat -- {} | {}",
+        shell_quote(path),
+        shell_join(&remote)
+    );
+    Ok(vec!["/bin/sh".into(), "-c".into(), pipeline])
 }
 
 #[cfg(target_os = "macos")]
@@ -188,6 +393,36 @@ pub async fn open_terminal(_argv: Vec<String>) -> Result<TerminalLaunchResult, S
 }
 
 fn ssh_argv(route: &ServerOperatorRoute, request_id: &str, noninteractive: bool) -> Vec<String> {
+    let mut argv = fixed_ssh_prefix(route, noninteractive);
+    argv.extend([
+        INSTALLED_RCP.into(),
+        "server".into(),
+        "project".into(),
+        "provision".into(),
+        request_id.into(),
+        "--machine-readable".into(),
+    ]);
+    argv
+}
+
+fn transfer_import_ssh_argv(
+    route: &ServerOperatorRoute,
+    request_id: &str,
+    noninteractive: bool,
+) -> Vec<String> {
+    let mut argv = fixed_ssh_prefix(route, noninteractive);
+    argv.extend([
+        INSTALLED_RCP.into(),
+        "server".into(),
+        "project".into(),
+        "transfer-import".into(),
+        request_id.into(),
+        "--machine-readable".into(),
+    ]);
+    argv
+}
+
+fn fixed_ssh_prefix(route: &ServerOperatorRoute, noninteractive: bool) -> Vec<String> {
     let mut argv = Vec::new();
     if noninteractive {
         argv.extend([
@@ -205,14 +440,6 @@ fn ssh_argv(route: &ServerOperatorRoute, request_id: &str, noninteractive: bool)
         }
         argv.extend(["-u".into(), "rcp".into(), "-H".into()]);
     }
-    argv.extend([
-        INSTALLED_RCP.into(),
-        "server".into(),
-        "project".into(),
-        "provision".into(),
-        request_id.into(),
-        "--machine-readable".into(),
-    ]);
     argv
 }
 
@@ -222,10 +449,69 @@ fn interactive_ssh_argv(route: &ServerOperatorRoute, request_id: &str) -> Vec<St
     argv
 }
 
+fn interactive_transfer_ssh_argv(route: &ServerOperatorRoute, request_id: &str) -> Vec<String> {
+    let mut argv = vec![SYSTEM_SSH.into()];
+    argv.extend(transfer_import_ssh_argv(route, request_id, false));
+    argv
+}
+
 fn command(program: &PathBuf, argv: &[String]) -> Command {
     let mut command = Command::new(program);
     command.args(argv).stdin(Stdio::null());
     command
+}
+
+async fn pipe_archive(
+    mut response: Response,
+    mut stdin: ChildStdin,
+    expected_digest: String,
+    expected_size: u64,
+    idle_timeout: Duration,
+) -> Result<(), String> {
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    while let Some(chunk) = time::timeout(idle_timeout, response.chunk())
+        .await
+        .map_err(|_| "the personal transfer archive stream made no progress".to_string())?
+        .map_err(|error| format!("the personal transfer archive stream failed: {error}"))?
+    {
+        let chunk_size = u64::try_from(chunk.len())
+            .map_err(|_| "the transfer archive size is too large".to_string())?;
+        size = size
+            .checked_add(chunk_size)
+            .ok_or_else(|| "the transfer archive size overflowed".to_string())?;
+        if size > expected_size {
+            return Err("the personal transfer archive exceeded its durable size".into());
+        }
+        hasher.update(&chunk);
+        // Keep writes bounded even if an HTTP implementation hands us a larger
+        // body chunk. The bytes remain in Rust-owned response state only.
+        for part in chunk.chunks(TRANSFER_COPY_BUFFER_BYTES) {
+            time::timeout(idle_timeout, stdin.write_all(part))
+                .await
+                .map_err(|_| {
+                    "the target transfer command made no progress accepting the archive".to_string()
+                })?
+                .map_err(|error| {
+                    format!("the target transfer command stopped accepting the archive: {error}")
+                })?;
+        }
+    }
+    time::timeout(idle_timeout, stdin.shutdown())
+        .await
+        .map_err(|_| {
+            "the target transfer command did not finish accepting the archive".to_string()
+        })?
+        .map_err(|error| format!("could not close the target transfer archive stream: {error}"))?;
+    if size != expected_size || hex_digest(&hasher.finalize()) != expected_digest {
+        return Err("the personal transfer archive differs from its durable receipt".into());
+    }
+    Ok(())
+}
+
+async fn stop_child(child: &mut Child) {
+    let _ = child.kill().await;
+    let _ = child.wait().await;
 }
 
 struct BoundedOutput {
@@ -288,6 +574,21 @@ async fn stream_events(
     reader: impl AsyncRead + Unpin,
     on_event: &Channel<Value>,
 ) -> Result<Vec<Value>, String> {
+    stream_events_inner(reader, on_event, validate_event_prefix).await
+}
+
+async fn stream_transfer_events(
+    reader: impl AsyncRead + Unpin,
+    on_event: &Channel<Value>,
+) -> Result<Vec<Value>, String> {
+    stream_events_inner(reader, on_event, validate_transfer_event_prefix).await
+}
+
+async fn stream_events_inner(
+    reader: impl AsyncRead + Unpin,
+    on_event: &Channel<Value>,
+    validate_prefix: fn(&[Value]) -> Result<(), String>,
+) -> Result<Vec<Value>, String> {
     let mut lines = BufReader::new(reader.take((MAX_STDOUT_BYTES + 1) as u64)).lines();
     let mut events = Vec::new();
     let mut bytes = 0_usize;
@@ -310,7 +611,7 @@ async fn stream_events(
         if events.len() > MAX_EVENTS {
             return Err("the server command returned too many progress events".into());
         }
-        validate_event_prefix(&events)?;
+        validate_prefix(&events)?;
         on_event
             .send(events.last().unwrap().clone())
             .map_err(|_| "the server command progress receiver closed".to_string())?;
@@ -319,6 +620,17 @@ async fn stream_events(
 }
 
 fn validate_event_prefix(events: &[Value]) -> Result<(), String> {
+    validate_event_prefix_inner(events, validate_provision_common)
+}
+
+fn validate_transfer_event_prefix(events: &[Value]) -> Result<(), String> {
+    validate_event_prefix_inner(events, validate_transfer_common)
+}
+
+fn validate_event_prefix_inner(
+    events: &[Value],
+    validate_common: fn(&Value, &str) -> Result<(), String>,
+) -> Result<(), String> {
     let Some(first) = events.first() else {
         return Err("the server command returned no structured progress".into());
     };
@@ -408,7 +720,22 @@ fn validate_event_prefix(events: &[Value]) -> Result<(), String> {
 }
 
 fn validate_terminal_events(events: &[Value], exit_code: Option<i32>) -> Result<(), String> {
-    validate_event_prefix(events)?;
+    validate_terminal_events_inner(events, exit_code, validate_event_prefix)
+}
+
+fn validate_transfer_terminal_events(
+    events: &[Value],
+    exit_code: Option<i32>,
+) -> Result<(), String> {
+    validate_terminal_events_inner(events, exit_code, validate_transfer_event_prefix)
+}
+
+fn validate_terminal_events_inner(
+    events: &[Value],
+    exit_code: Option<i32>,
+    validate_prefix: fn(&[Value]) -> Result<(), String>,
+) -> Result<(), String> {
+    validate_prefix(events)?;
     let exit_code = exit_code
         .filter(|code| (0..=125).contains(code))
         .ok_or_else(|| "the server command ended without a valid exit code".to_string())?;
@@ -441,10 +768,24 @@ fn validate_terminal_events(events: &[Value], exit_code: Option<i32>) -> Result<
     Ok(())
 }
 
-fn validate_common(event: &Value, expected: &str) -> Result<(), String> {
+fn validate_provision_common(event: &Value, expected: &str) -> Result<(), String> {
     if event.get("version").and_then(Value::as_u64) != Some(1)
         || event.get("event").and_then(Value::as_str) != Some(expected)
-        || event.get("command").and_then(Value::as_str) != Some("server project provision")
+        || event.get("command").and_then(Value::as_str) != Some(PROVISION_COMMAND)
+        || event
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .is_none_or(|timestamp| timestamp.is_empty() || timestamp.len() > 64)
+    {
+        return Err("the server command returned an incompatible progress event".into());
+    }
+    Ok(())
+}
+
+fn validate_transfer_common(event: &Value, expected: &str) -> Result<(), String> {
+    if event.get("version").and_then(Value::as_u64) != Some(1)
+        || event.get("event").and_then(Value::as_str) != Some(expected)
+        || event.get("command").and_then(Value::as_str) != Some(TRANSFER_IMPORT_COMMAND)
         || event
             .get("timestamp")
             .and_then(Value::as_str)
@@ -574,6 +915,71 @@ fn has_control(value: &str) -> bool {
     value.chars().any(char::is_control)
 }
 
+fn validate_archive_receipt(expected_digest: &str, expected_size: u64) -> Result<(), String> {
+    if expected_size == 0
+        || expected_digest.len() != 64
+        || !expected_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err("the transfer archive receipt is invalid".into());
+    }
+    Ok(())
+}
+
+fn validate_archive_stream_headers(
+    response: &Response,
+    expected_digest: &str,
+    expected_size: u64,
+) -> Result<(), String> {
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().unwrap_or_default().trim());
+    if content_type != Some("application/octet-stream") {
+        return Err("the personal transfer archive returned an invalid content type".into());
+    }
+    let content_length = response
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    if content_length != Some(expected_size) {
+        return Err("the personal transfer archive size differs from its durable receipt".into());
+    }
+    let digest = response
+        .headers()
+        .get("X-RCP-Archive-SHA256")
+        .and_then(|value| value.to_str().ok());
+    if digest != Some(expected_digest) {
+        return Err("the personal transfer archive digest differs from its durable receipt".into());
+    }
+    Ok(())
+}
+
+fn hex_digest(digest: &[u8]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn validate_terminal_archive_path(path: &std::path::Path) -> Result<(), String> {
+    if !path.is_absolute()
+        || path == std::path::Path::new("/")
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("the local transfer archive path must be one specific absolute path".into());
+    }
+    let value = path
+        .to_str()
+        .ok_or_else(|| "the local transfer archive path is not valid UTF-8".to_string())?;
+    if value.len() > 4096 || has_control(value) {
+        return Err("the local transfer archive path is not bounded and safe".into());
+    }
+    Ok(())
+}
+
 pub fn validate_uuid4(value: &str, label: &str) -> Result<(), String> {
     let parsed =
         Uuid::parse_str(value).map_err(|_| format!("{label} must be a canonical UUID4"))?;
@@ -634,6 +1040,72 @@ mod tests {
         (directory, path)
     }
 
+    async fn archive_response(
+        body: Vec<u8>,
+        digest: String,
+        declared_size: usize,
+        chunk_delay: Duration,
+    ) -> (Response, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {declared_size}\r\nX-RCP-Archive-SHA256: {digest}\r\nConnection: close\r\n\r\n"
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            let split = body.len().div_ceil(2);
+            stream.write_all(&body[..split]).await.unwrap();
+            if !chunk_delay.is_zero() {
+                time::sleep(chunk_delay).await;
+            }
+            stream.write_all(&body[split..]).await.unwrap();
+            let _ = stream.shutdown().await;
+        });
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/archive"))
+            .send()
+            .await
+            .unwrap();
+        (response, server)
+    }
+
+    #[cfg(unix)]
+    fn transfer_script(
+        plan: &Value,
+        running: &Value,
+        succeeded: &Value,
+        hang_after_stdin: bool,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let capture = directory.path().join("captured-archive");
+        let path = directory.path().join("fake-ssh");
+        let finish = if hang_after_stdin {
+            "/bin/sleep 5".to_string()
+        } else {
+            format!("printf '%s\\n' {}", shell_quote(&succeeded.to_string()))
+        };
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' {}\nprintf '%s\\n' {}\n/bin/cat > {}\n{finish}\n",
+                shell_quote(&plan.to_string()),
+                shell_quote(&running.to_string()),
+                shell_quote(capture.to_str().unwrap()),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        (directory, path, capture)
+    }
+
     #[test]
     fn direct_and_sudo_argv_are_fixed_and_noninteractive_only_in_app() {
         assert_eq!(
@@ -669,6 +1141,33 @@ mod tests {
         let interactive = ssh_argv(&route(ServerOperatorMode::SudoRcp), REQUEST_ID, false);
         assert!(!interactive.iter().any(|value| value == "BatchMode=yes"));
         assert!(!interactive.iter().any(|value| value == "-n"));
+    }
+
+    #[test]
+    fn transfer_argv_has_only_the_fixed_stdin_command() {
+        assert_eq!(
+            transfer_import_ssh_argv(&route(ServerOperatorMode::DirectRcp), REQUEST_ID, true),
+            vec![
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=12",
+                "--",
+                "rcp@lab-server",
+                INSTALLED_RCP,
+                "server",
+                "project",
+                "transfer-import",
+                REQUEST_ID,
+                "--machine-readable",
+            ]
+        );
+        let interactive =
+            interactive_transfer_ssh_argv(&route(ServerOperatorMode::SudoRcp), REQUEST_ID);
+        assert_eq!(
+            shell_join(&interactive),
+            "/usr/bin/ssh -- alice@lab-server /usr/bin/sudo -u rcp -H /usr/local/bin/rcp server project transfer-import 11111111-1111-4111-8111-111111111111 --machine-readable"
+        );
     }
 
     #[test]
@@ -744,6 +1243,44 @@ mod tests {
         assert!(validate_terminal_events(&complete, Some(1)).is_err());
     }
 
+    #[test]
+    fn transfer_progress_accepts_only_the_fixed_transfer_command() {
+        let plan = serde_json::json!({
+            "version": 1,
+            "event": "plan",
+            "command": "server project transfer-import",
+            "timestamp": "2026-08-30T00:00:00Z",
+            "steps": [step(1, "pending")],
+        });
+        let running = serde_json::json!({
+            "version": 1,
+            "event": "step",
+            "command": "server project transfer-import",
+            "timestamp": "2026-08-30T00:00:01Z",
+            "step": step(1, "running"),
+        });
+        let succeeded = serde_json::json!({
+            "version": 1,
+            "event": "step",
+            "command": "server project transfer-import",
+            "timestamp": "2026-08-30T00:00:02Z",
+            "step": step(1, "succeeded"),
+        });
+        let events = vec![plan, running, succeeded];
+        validate_transfer_terminal_events(&events, Some(0)).unwrap();
+        let mut wrong = events[0].clone();
+        wrong["command"] = Value::String(PROVISION_COMMAND.into());
+        assert!(validate_transfer_event_prefix(&[wrong]).is_err());
+    }
+
+    #[test]
+    fn transfer_archive_receipt_is_bounded_and_lowercase() {
+        assert!(validate_archive_receipt(&"a".repeat(64), 1).is_ok());
+        assert!(validate_archive_receipt(&"A".repeat(64), 1).is_err());
+        assert!(validate_archive_receipt(&"a".repeat(63), 1).is_err());
+        assert!(validate_archive_receipt(&"a".repeat(64), 0).is_err());
+    }
+
     #[tokio::test]
     async fn one_unterminated_progress_line_is_bounded_before_parsing() {
         let input = vec![b'x'; MAX_STDOUT_BYTES + 1];
@@ -814,6 +1351,157 @@ mod tests {
 
         assert_eq!(result, (75, 3));
         assert_eq!(captured.lock().unwrap().len(), 3);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn transfer_relay_streams_exact_bytes_and_accepts_progressive_body_chunks() {
+        let body = b"request-bound transfer archive".to_vec();
+        let digest = hex_digest(&Sha256::digest(&body));
+        let (response, server) = archive_response(
+            body.clone(),
+            digest.clone(),
+            body.len(),
+            Duration::from_millis(40),
+        )
+        .await;
+        let plan = serde_json::json!({
+            "version": 1,
+            "event": "plan",
+            "command": TRANSFER_IMPORT_COMMAND,
+            "timestamp": "2026-08-30T00:00:00Z",
+            "steps": [step(1, "pending")],
+        });
+        let running = serde_json::json!({
+            "version": 1,
+            "event": "step",
+            "command": TRANSFER_IMPORT_COMMAND,
+            "timestamp": "2026-08-30T00:00:01Z",
+            "step": step(1, "running"),
+        });
+        let succeeded = serde_json::json!({
+            "version": 1,
+            "event": "step",
+            "command": TRANSFER_IMPORT_COMMAND,
+            "timestamp": "2026-08-30T00:00:02Z",
+            "step": step(1, "succeeded"),
+        });
+        let (_directory, program, capture) = transfer_script(&plan, &running, &succeeded, false);
+        let channel = Channel::<Value>::new(|_| Ok(()));
+
+        let result = run_project_transfer_import_with_idle_timeout(
+            &connection(ServerOperatorMode::DirectRcp),
+            REQUEST_ID,
+            response,
+            &digest,
+            body.len() as u64,
+            &channel,
+            program,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+
+        assert_eq!(result, (0, 3));
+        assert_eq!(fs::read(capture).unwrap(), body);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn transfer_relay_kills_a_target_that_stalls_after_stdin() {
+        let body = b"request-bound transfer archive".to_vec();
+        let digest = hex_digest(&Sha256::digest(&body));
+        let (response, server) =
+            archive_response(body.clone(), digest.clone(), body.len(), Duration::ZERO).await;
+        let plan = serde_json::json!({
+            "version": 1,
+            "event": "plan",
+            "command": TRANSFER_IMPORT_COMMAND,
+            "timestamp": "2026-08-30T00:00:00Z",
+            "steps": [step(1, "pending")],
+        });
+        let running = serde_json::json!({
+            "version": 1,
+            "event": "step",
+            "command": TRANSFER_IMPORT_COMMAND,
+            "timestamp": "2026-08-30T00:00:01Z",
+            "step": step(1, "running"),
+        });
+        let succeeded = serde_json::json!({
+            "version": 1,
+            "event": "step",
+            "command": TRANSFER_IMPORT_COMMAND,
+            "timestamp": "2026-08-30T00:00:02Z",
+            "step": step(1, "succeeded"),
+        });
+        let (_directory, program, _capture) = transfer_script(&plan, &running, &succeeded, true);
+        let channel = Channel::<Value>::new(|_| Ok(()));
+
+        let error = run_project_transfer_import_with_idle_timeout(
+            &connection(ServerOperatorMode::DirectRcp),
+            REQUEST_ID,
+            response,
+            &digest,
+            body.len() as u64,
+            &channel,
+            program,
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        server.await.unwrap();
+
+        assert!(error.contains("no progress"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn transfer_relay_rejects_a_truncated_archive_stream() {
+        let body = b"truncated transfer archive".to_vec();
+        let expected_size = body.len() + 1;
+        let digest = hex_digest(&Sha256::digest(&body));
+        let (response, server) =
+            archive_response(body.clone(), digest.clone(), expected_size, Duration::ZERO).await;
+        let plan = serde_json::json!({
+            "version": 1,
+            "event": "plan",
+            "command": TRANSFER_IMPORT_COMMAND,
+            "timestamp": "2026-08-30T00:00:00Z",
+            "steps": [step(1, "pending")],
+        });
+        let running = serde_json::json!({
+            "version": 1,
+            "event": "step",
+            "command": TRANSFER_IMPORT_COMMAND,
+            "timestamp": "2026-08-30T00:00:01Z",
+            "step": step(1, "running"),
+        });
+        let succeeded = serde_json::json!({
+            "version": 1,
+            "event": "step",
+            "command": TRANSFER_IMPORT_COMMAND,
+            "timestamp": "2026-08-30T00:00:02Z",
+            "step": step(1, "succeeded"),
+        });
+        let (_directory, program, _capture) = transfer_script(&plan, &running, &succeeded, false);
+        let channel = Channel::<Value>::new(|_| Ok(()));
+
+        let error = run_project_transfer_import_with_idle_timeout(
+            &connection(ServerOperatorMode::DirectRcp),
+            REQUEST_ID,
+            response,
+            &digest,
+            expected_size as u64,
+            &channel,
+            program,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        server.await.unwrap();
+
+        assert!(error.contains("stream failed") || error.contains("durable receipt"));
     }
 
     fn step(number: usize, state: &str) -> Value {

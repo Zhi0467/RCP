@@ -266,6 +266,126 @@ export async function openDesktopProjectProvisionTerminal(
   });
 }
 
+export interface ProjectTransferPlanEvent {
+  version: 1;
+  event: "plan";
+  command: "server project transfer-import";
+  timestamp: string;
+  steps: ServerStep[];
+}
+
+export interface ProjectTransferStepEvent {
+  version: 1;
+  event: "step";
+  command: "server project transfer-import";
+  timestamp: string;
+  step: ServerStep;
+}
+
+export type ProjectTransferCommandEvent = ProjectTransferPlanEvent | ProjectTransferStepEvent;
+
+export interface ProjectTransferRunResult {
+  request_id: string;
+  target_request_id: string;
+  target_space_id: string;
+  connection_id: string;
+  archive_sha256: string;
+  archive_size_bytes: number;
+  exit_code: number;
+  event_count: number;
+  proof_verified: boolean;
+  cleanup_acknowledged: boolean;
+}
+
+export interface ProjectTransferFinishResult {
+  request_id: string;
+  target_request_id: string;
+  target_space_id: string;
+  connection_id: string;
+  proof_verified: boolean;
+  cleanup_acknowledged: boolean;
+}
+
+export interface ProjectTransferExportResult {
+  saved: boolean;
+  request_id: string;
+  target_request_id: string | null;
+  target_space_id: string | null;
+  archive_sha256: string | null;
+  archive_size_bytes: number | null;
+  path: string | null;
+}
+
+export interface ProjectTransferExportCleanupResult {
+  request_id: string;
+  removed: boolean;
+  path: string;
+}
+
+export async function runDesktopProjectTransfer(
+  requestId: string,
+  onEvent: (event: ProjectTransferCommandEvent) => void,
+): Promise<ProjectTransferRunResult> {
+  if (!isDesktopRuntime())
+    throw new Error("Project transfer can run only in the source-built desktop app.");
+  const { Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<ProjectTransferCommandEvent>();
+  channel.onmessage = onEvent;
+  return invokeDesktop<ProjectTransferRunResult>("desktop_run_project_transfer", {
+    requestId,
+    onEvent: channel,
+  });
+}
+
+export async function exportDesktopProjectTransfer(
+  requestId: string,
+): Promise<ProjectTransferExportResult> {
+  if (!isDesktopRuntime())
+    throw new Error("Project transfer export is available only in the source-built desktop app.");
+  return invokeDesktop<ProjectTransferExportResult>("desktop_export_project_transfer", {
+    requestId,
+  });
+}
+
+export async function openDesktopProjectTransferTerminal(
+  requestId: string,
+  archivePath: string,
+): Promise<TerminalLaunchResult> {
+  if (!isDesktopRuntime())
+    throw new Error("Transfer setup is available only in the source-built desktop app.");
+  return invokeDesktop<TerminalLaunchResult>("desktop_open_project_transfer_terminal", {
+    requestId,
+    archivePath,
+  });
+}
+
+export async function finishDesktopProjectTransfer(
+  requestId: string,
+  archivePath: string,
+): Promise<ProjectTransferFinishResult> {
+  if (!isDesktopRuntime())
+    throw new Error("Transfer cleanup is available only in the source-built desktop app.");
+  return invokeDesktop<ProjectTransferFinishResult>("desktop_finish_project_transfer", {
+    requestId,
+    archivePath,
+  });
+}
+
+export async function discardDesktopProjectTransferExport(
+  requestId: string,
+  archivePath: string,
+): Promise<ProjectTransferExportCleanupResult> {
+  if (!isDesktopRuntime())
+    throw new Error("Transfer export cleanup is available only in the source-built desktop app.");
+  return invokeDesktop<ProjectTransferExportCleanupResult>(
+    "desktop_discard_project_transfer_export",
+    {
+      requestId,
+      archivePath,
+    },
+  );
+}
+
 export async function enrollDesktopTeamConnection(
   request: EnrollTeamConnectionRequest,
 ): Promise<EstablishedTeamSession> {

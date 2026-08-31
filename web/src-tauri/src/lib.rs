@@ -6,6 +6,7 @@ mod keychain;
 mod lifecycle;
 mod local_https;
 mod navigation;
+mod project_transfer;
 mod server_commands;
 mod team_connections;
 mod team_session;
@@ -73,6 +74,11 @@ pub fn run() {
             commands::desktop_probe_server_operator,
             commands::desktop_run_project_provision,
             commands::desktop_open_project_provision_terminal,
+            commands::desktop_run_project_transfer,
+            commands::desktop_export_project_transfer,
+            commands::desktop_open_project_transfer_terminal,
+            commands::desktop_finish_project_transfer,
+            commands::desktop_discard_project_transfer_export,
             commands::desktop_remove_team_connection_metadata,
             commands::desktop_remove_team_member_token,
             commands::desktop_connect_team_tunnel,

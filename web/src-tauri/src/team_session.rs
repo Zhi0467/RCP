@@ -6,11 +6,14 @@ use std::{
 };
 
 use reqwest::{
-    header::{HeaderMap, HeaderValue, COOKIE, SET_COOKIE},
+    header::{
+        HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, SET_COOKIE,
+    },
     Client, Response,
 };
 use semver::Version;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value;
 use tauri::WebviewWindow;
 use url::Url;
 use uuid::{Uuid, Version as UuidVersion};
@@ -20,6 +23,7 @@ use crate::{
     backend::BackendState,
     lifecycle::DesktopStatus,
     local_https::{install_team_session_cookie, LocalHttpsIdentity},
+    project_transfer::ProjectTransferCleanupAcknowledgment,
     server_commands::ProjectProvisionReadback,
     team_connections::{CachedTeamProjectCard, TeamConnectionMetadata, TeamConnectionState},
     team_tunnel::{TeamTunnelReady, TeamTunnelState},
@@ -31,6 +35,8 @@ const SESSION_COOKIE_PREFIX: &str = "__Host-rcp_session=";
 // The installed systemd unit executes `rcp serve`; that production CLI path
 // publishes `cli`, while desktop and embedded owners are never team services.
 const EXPECTED_SERVER_OWNER: &str = "cli";
+const TARGET_ACTIVATION_PROOF_BYTES: usize = 32;
+const TRANSFER_BINARY_CONTENT_TYPE: &str = "application/octet-stream";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,6 +124,14 @@ pub struct EstablishedTeamSession {
     pub status: DesktopStatus,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectTransferTargetReadback {
+    pub request_id: String,
+    pub phase: String,
+    pub linked_request_id: String,
+    pub target_space_id: String,
+}
+
 pub struct TeamSessionState {
     certificate_der: Vec<u8>,
     established: Mutex<HashMap<String, EstablishedTeamSession>>,
@@ -203,6 +217,130 @@ impl TeamSessionState {
             return Err("the project provisioning readback does not match this team space".into());
         }
         Ok(readback)
+    }
+
+    /// Read only the public target transfer lifecycle through a Rust-owned
+    /// authenticated session. This is used to make native relay retries
+    /// idempotent without exposing any proof or archive bytes to Web code.
+    pub async fn read_project_transfer(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        request_id: &str,
+    ) -> Result<ProjectTransferTargetReadback, String> {
+        validate_uuid4(request_id, "target transfer request identity")?;
+        let (connection, session) = self.saved_established(connections, connection_id)?;
+        let (client, health) = self.native_client(&connection, &session).await?;
+        let token = connections.load_member_token(connection_id)?;
+        let (identity, set_cookie) =
+            exchange_session(&client, &connection.local_origin, &token).await?;
+        validate_identity(&identity, &health)?;
+        let cookie = request_cookie(&set_cookie)?;
+        let header = HeaderValue::from_str(&cookie)
+            .map_err(|_| "team session exchange returned an invalid cookie".to_string())?;
+        let response = client
+            .get(endpoint(
+                &connection.local_origin,
+                &format!("/api/project-transfers/requests/{request_id}"),
+            )?)
+            .header(COOKIE, header)
+            .send()
+            .await
+            .map_err(|error| format!("could not read the target transfer request: {error}"))?;
+        let value: Value = response_json(response, "target transfer request readback").await?;
+        parse_target_transfer_readback(&value, request_id, &connection.expected_space_id)
+    }
+
+    /// Retrieve the target's raw activation proof through the pinned native
+    /// route. The proof remains in Rust-owned zeroizing storage; callers must
+    /// post it directly to the pinned personal backend without serializing it
+    /// into a Web or Tauri value.
+    pub async fn retrieve_target_activation_proof(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        request_id: &str,
+    ) -> Result<Zeroizing<Vec<u8>>, String> {
+        validate_uuid4(request_id, "target transfer request identity")?;
+        let (connection, session) = self.saved_established(connections, connection_id)?;
+        let (client, _health) = self.native_client(&connection, &session).await?;
+        let token = connections.load_member_token(connection_id)?;
+        let authorization = bearer_header(&token)?;
+        let response = client
+            .get(endpoint(
+                &connection.local_origin,
+                &format!(
+                    "/api/native/project-transfers/target-requests/{request_id}/activation-proof"
+                ),
+            )?)
+            .header(AUTHORIZATION, authorization)
+            .send()
+            .await
+            .map_err(|error| format!("could not retrieve the target activation proof: {error}"))?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "the target activation proof was rejected (HTTP {})",
+                response.status().as_u16()
+            ));
+        }
+        validate_binary_response_headers(&response)?;
+        let mut proof = Vec::with_capacity(TARGET_ACTIVATION_PROOF_BYTES);
+        let mut response = response;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| format!("the target activation proof stream failed: {error}"))?
+        {
+            if proof.len().saturating_add(chunk.len()) > TARGET_ACTIVATION_PROOF_BYTES {
+                return Err("the target activation proof exceeded its bounded size".into());
+            }
+            proof.extend_from_slice(&chunk);
+        }
+        if proof.len() != TARGET_ACTIVATION_PROOF_BYTES {
+            return Err("the target activation proof has an invalid size".into());
+        }
+        Ok(Zeroizing::new(proof))
+    }
+
+    /// Acknowledge cleanup using only the typed public receipt returned by the
+    /// personal source endpoint. The response body is intentionally discarded
+    /// so no target-side record can become a second IPC payload.
+    pub async fn post_cleanup_acknowledgment(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        request_id: &str,
+        acknowledgment: &ProjectTransferCleanupAcknowledgment,
+    ) -> Result<(), String> {
+        validate_uuid4(request_id, "target transfer request identity")?;
+        acknowledgment.validate()?;
+        if acknowledgment.target_request_id != request_id {
+            return Err("the cleanup acknowledgment does not match the target request".into());
+        }
+        let (connection, session) = self.saved_established(connections, connection_id)?;
+        let (client, _health) = self.native_client(&connection, &session).await?;
+        let token = connections.load_member_token(connection_id)?;
+        let authorization = bearer_header(&token)?;
+        let body = CleanupAcknowledgmentBody { acknowledgment };
+        let path = format!(
+            "/api/native/project-transfers/target-requests/{request_id}/cleanup-acknowledgment"
+        );
+        let response = client
+            .post(endpoint(&connection.local_origin, &path)?)
+            .header(AUTHORIZATION, authorization)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| {
+                format!("could not post the target transfer cleanup acknowledgment: {error}")
+            })?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "the target transfer cleanup acknowledgment was rejected (HTTP {})",
+                response.status().as_u16()
+            ));
+        }
+        Ok(())
     }
 
     pub async fn enroll(
@@ -413,11 +551,85 @@ impl TeamSessionState {
         build_client(origin, &self.certificate_der)
     }
 
+    fn saved_established(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+    ) -> Result<(TeamConnectionMetadata, EstablishedTeamSession), String> {
+        validate_uuid4(connection_id, "team connection identity")?;
+        let connection = connections
+            .list()?
+            .into_iter()
+            .find(|connection| connection.connection_id == connection_id)
+            .ok_or_else(|| "the team connection is not saved on this desktop".to_string())?;
+        let session = self.established(connection_id)?;
+        if session.connection.connection_id != connection.connection_id
+            || session.connection.expected_space_id != connection.expected_space_id
+            || session.connection.local_origin != connection.local_origin
+            || session.status.base_url != connection.local_origin
+        {
+            return Err(
+                "the established team session is not pinned to its saved connection".into(),
+            );
+        }
+        Ok((connection, session))
+    }
+
+    async fn native_client(
+        &self,
+        connection: &TeamConnectionMetadata,
+        session: &EstablishedTeamSession,
+    ) -> Result<(Client, TeamHealth), String> {
+        let client = self.client(&connection.local_origin)?;
+        let health = read_health(&client, &connection.local_origin).await?;
+        validate_health(&health, Some(connection))?;
+        if health.instance_id != session.status.instance_id
+            || health.data_dir_id != session.status.data_dir_id
+            || health.version != session.status.version
+            || health.owner_kind != session.status.owner_kind
+        {
+            return Err("the team server identity changed; explicit reconnect is required".into());
+        }
+        Ok((client, health))
+    }
+
     fn acquire(&self) -> Result<MutexGuard<'_, HashMap<String, EstablishedTeamSession>>, String> {
         self.established
             .lock()
             .map_err(|_| "the established team session state is unavailable".to_string())
     }
+}
+
+#[derive(Debug, Serialize)]
+struct CleanupAcknowledgmentBody<'a> {
+    acknowledgment: &'a ProjectTransferCleanupAcknowledgment,
+}
+
+fn bearer_header(token: &str) -> Result<HeaderValue, String> {
+    HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|_| "the saved team member credential is invalid".to_string())
+}
+
+fn validate_binary_response_headers(response: &Response) -> Result<(), String> {
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().unwrap_or_default().trim());
+    if content_type != Some(TRANSFER_BINARY_CONTENT_TYPE) {
+        return Err("the target activation proof returned an invalid content type".into());
+    }
+    if let Some(length) = response.headers().get(CONTENT_LENGTH) {
+        let length = length
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .ok_or_else(|| "the target activation proof returned an invalid size".to_string())?;
+        if length != TARGET_ACTIVATION_PROOF_BYTES {
+            return Err("the target activation proof returned an invalid size".into());
+        }
+    }
+    Ok(())
 }
 
 fn new_connection(
@@ -458,6 +670,7 @@ fn build_client(origin: &str, certificate_der: &[u8]) -> Result<Client, String> 
         .no_proxy()
         .tls_built_in_root_certs(false)
         .add_root_certificate(certificate)
+        .redirect(reqwest::redirect::Policy::none())
         // The pinned desktop certificate has a *.localhost SAN, while each
         // connection uses an immediate rcp-<id>.localhost host. rustls does not
         // apply wildcard matching to localhost, so the exact private root is
@@ -561,6 +774,59 @@ async fn response_json<T: DeserializeOwned>(
         .json::<T>()
         .await
         .map_err(|_| format!("{description} returned an invalid response"))
+}
+
+fn parse_target_transfer_readback(
+    value: &Value,
+    expected_request_id: &str,
+    expected_space_id: &str,
+) -> Result<ProjectTransferTargetReadback, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "the target transfer request returned an invalid response".to_string())?;
+    let text = |field: &str| {
+        object
+            .get(field)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("the target transfer request has no valid {field}"))
+    };
+    let request_id = text("request_id")?.to_string();
+    if request_id != expected_request_id {
+        return Err("the target transfer request identity does not match the requested id".into());
+    }
+    validate_uuid4(&request_id, "target transfer request identity")?;
+    if text("side")? != "target" {
+        return Err("the target transfer request is not a target request".into());
+    }
+    let phase = text("phase")?;
+    if !matches!(
+        phase,
+        "awaiting_link"
+            | "linked"
+            | "target_admitted"
+            | "source_released"
+            | "source_fenced"
+            | "archive_bound"
+            | "target_activated"
+            | "cleanup_acknowledged"
+            | "completed"
+            | "operator_action_needed"
+    ) {
+        return Err("the target transfer request has an invalid durable phase".into());
+    }
+    let linked_request_id = text("linked_request_id")?.to_string();
+    validate_uuid4(&linked_request_id, "source transfer request identity")?;
+    let target_space_id = text("target_space_id")?.to_string();
+    validate_uuid4(&target_space_id, "target transfer space identity")?;
+    if target_space_id != expected_space_id {
+        return Err("the target transfer request belongs to another team space".into());
+    }
+    Ok(ProjectTransferTargetReadback {
+        request_id,
+        phase: phase.to_string(),
+        linked_request_id,
+        target_space_id,
+    })
 }
 
 fn endpoint(origin: &str, path: &str) -> Result<Url, String> {
@@ -847,5 +1113,27 @@ mod tests {
         assert!(validate_identity(&identity, &verified).is_ok());
         identity.space_id = "99999999-9999-4999-8999-999999999999".into();
         assert!(validate_identity(&identity, &verified).is_err());
+    }
+
+    #[test]
+    fn target_transfer_readback_is_bound_to_request_and_saved_space() {
+        let request_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let source_request_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let space_id = health().space_id;
+        let value = serde_json::json!({
+            "request_id": request_id,
+            "side": "target",
+            "phase": "target_activated",
+            "linked_request_id": source_request_id,
+            "target_space_id": space_id.clone(),
+        });
+        let readback = parse_target_transfer_readback(&value, request_id, &space_id).unwrap();
+        assert_eq!(readback.phase, "target_activated");
+        assert!(parse_target_transfer_readback(&value, source_request_id, &space_id).is_err());
+
+        let mut wrong_space = value;
+        wrong_space["target_space_id"] =
+            Value::String("cccccccc-cccc-4ccc-8ccc-cccccccccccc".into());
+        assert!(parse_target_transfer_readback(&wrong_space, request_id, &space_id).is_err());
     }
 }

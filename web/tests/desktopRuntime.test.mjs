@@ -7,11 +7,16 @@ import {
   desktopDownloadPath,
   desktopFolderSelectionPath,
   desktopFolderAccessAcknowledgementValue,
+  discardDesktopProjectTransferExport,
   establishBackendIdentity,
+  exportDesktopProjectTransfer,
+  finishDesktopProjectTransfer,
   identityMismatch,
   needsDesktopFolderAccessAcknowledgement,
+  openDesktopProjectTransferTerminal,
   openEpisodeReportFromLink,
   reverifyBackendIdentity,
+  runDesktopProjectTransfer,
   setDesktopWebviewZoom,
 } from "../src/desktopRuntime.ts";
 
@@ -245,6 +250,122 @@ test("episode report links use the native preview only in the desktop shell", as
       false,
     );
     assert.equal(prevented, 1);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test("project transfer bindings keep the relay native and pass only public metadata", async () => {
+  const originalWindow = globalThis.window;
+  const invocations = [];
+  const callbacks = [];
+  const desktopWindow = new EventTarget();
+  desktopWindow.__TAURI_INTERNALS__ = {
+    transformCallback: (callback) => {
+      callbacks.push(callback);
+      return callbacks.length;
+    },
+    unregisterCallback: () => undefined,
+    invoke: async (command, args) => {
+      invocations.push({ command, args });
+      if (command === "desktop_run_project_transfer") {
+        return {
+          request_id: "11111111-1111-4111-8111-111111111111",
+          target_request_id: "22222222-2222-4222-8222-222222222222",
+          target_space_id: "33333333-3333-4333-8333-333333333333",
+          connection_id: "44444444-4444-4444-8444-444444444444",
+          archive_sha256: "a".repeat(64),
+          archive_size_bytes: 1,
+          exit_code: 0,
+          event_count: 3,
+          proof_verified: true,
+          cleanup_acknowledged: true,
+        };
+      }
+      if (command === "desktop_export_project_transfer") {
+        return {
+          saved: false,
+          request_id: "11111111-1111-4111-8111-111111111111",
+          target_request_id: null,
+          target_space_id: null,
+          archive_sha256: null,
+          archive_size_bytes: null,
+          path: null,
+        };
+      }
+      if (command === "desktop_finish_project_transfer") {
+        return {
+          request_id: "11111111-1111-4111-8111-111111111111",
+          target_request_id: "22222222-2222-4222-8222-222222222222",
+          target_space_id: "33333333-3333-4333-8333-333333333333",
+          connection_id: "44444444-4444-4444-8444-444444444444",
+          proof_verified: true,
+          cleanup_acknowledged: true,
+        };
+      }
+      if (command === "desktop_discard_project_transfer_export") {
+        return {
+          request_id: "11111111-1111-4111-8111-111111111111",
+          removed: true,
+          path: "/tmp/transfer.rcp-transfer",
+        };
+      }
+      return { opened: true, argv: [], command: "" };
+    },
+  };
+  globalThis.window = desktopWindow;
+  try {
+    const requestId = "11111111-1111-4111-8111-111111111111";
+    const runResult = await runDesktopProjectTransfer(requestId, () => undefined);
+    assert.equal(runResult.proof_verified, true);
+    await exportDesktopProjectTransfer(requestId);
+    await openDesktopProjectTransferTerminal(requestId, "/tmp/transfer.rcp-transfer");
+    await finishDesktopProjectTransfer(requestId, "/tmp/transfer.rcp-transfer");
+    await discardDesktopProjectTransferExport(requestId, "/tmp/transfer.rcp-transfer");
+
+    assert.deepEqual(
+      invocations.map(({ command, args }) => ({
+        command,
+        keys: Object.keys(args),
+        requestId: args.requestId,
+        archivePath: args.archivePath,
+      })),
+      [
+        {
+          command: "desktop_run_project_transfer",
+          keys: ["requestId", "onEvent"],
+          requestId,
+          archivePath: undefined,
+        },
+        {
+          command: "desktop_export_project_transfer",
+          keys: ["requestId"],
+          requestId,
+          archivePath: undefined,
+        },
+        {
+          command: "desktop_open_project_transfer_terminal",
+          keys: ["requestId", "archivePath"],
+          requestId,
+          archivePath: "/tmp/transfer.rcp-transfer",
+        },
+        {
+          command: "desktop_finish_project_transfer",
+          keys: ["requestId", "archivePath"],
+          requestId,
+          archivePath: "/tmp/transfer.rcp-transfer",
+        },
+        {
+          command: "desktop_discard_project_transfer_export",
+          keys: ["requestId", "archivePath"],
+          requestId,
+          archivePath: "/tmp/transfer.rcp-transfer",
+        },
+      ],
+    );
+    assert.equal(JSON.stringify(invocations[0].args).includes("archive_bytes"), false);
+    assert.equal(JSON.stringify(invocations[0].args).includes("proof_bytes"), false);
   } finally {
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;

@@ -16,6 +16,10 @@ use crate::{
     dictation,
     lifecycle::DesktopStatus,
     navigation,
+    project_transfer::{
+        self, ProjectTransferExportCleanupResult, ProjectTransferExportResult,
+        ProjectTransferFinishResult, ProjectTransferRunResult,
+    },
     server_commands::{
         self, ConfigureServerOperatorRouteRequest, ServerCommandRunResult, ServerOperatorProbe,
         TerminalLaunchResult,
@@ -175,6 +179,106 @@ pub async fn desktop_open_project_provision_terminal(
     let argv =
         server_commands::terminal_argv(saved_connection(&saved, &connection_id)?, &request_id)?;
     server_commands::open_terminal(argv).await
+}
+
+#[tauri::command]
+pub async fn desktop_run_project_transfer(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    tunnels: State<'_, TeamTunnelState>,
+    lifecycle: State<'_, BackendState>,
+    request_id: String,
+    on_event: Channel<Value>,
+) -> Result<ProjectTransferRunResult, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    project_transfer::run(
+        &lifecycle,
+        &connections,
+        &sessions,
+        &tunnels,
+        &request_id,
+        &on_event,
+        PathBuf::from("/usr/bin/ssh"),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn desktop_export_project_transfer(
+    app: AppHandle,
+    window: WebviewWindow,
+    lifecycle: State<'_, BackendState>,
+    request_id: String,
+) -> Result<ProjectTransferExportResult, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    server_commands::validate_uuid4(&request_id, "project transfer request identity")?;
+    let Some(chosen) = app
+        .dialog()
+        .file()
+        .set_title("Save RCP project transfer archive")
+        .set_file_name(format!("{request_id}.rcp-transfer"))
+        .blocking_save_file()
+    else {
+        return Ok(ProjectTransferExportResult::cancelled(&request_id));
+    };
+    let destination = chosen
+        .into_path()
+        .map_err(|error| format!("selected destination is not a local file: {error}"))?;
+    project_transfer::export(&lifecycle, &request_id, destination).await
+}
+
+#[tauri::command]
+pub async fn desktop_open_project_transfer_terminal(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    lifecycle: State<'_, BackendState>,
+    request_id: String,
+    archive_path: String,
+) -> Result<TerminalLaunchResult, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    project_transfer::terminal(
+        &lifecycle,
+        &connections,
+        &sessions,
+        &request_id,
+        PathBuf::from(archive_path),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn desktop_finish_project_transfer(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    tunnels: State<'_, TeamTunnelState>,
+    lifecycle: State<'_, BackendState>,
+    request_id: String,
+    archive_path: String,
+) -> Result<ProjectTransferFinishResult, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    project_transfer::finish(
+        &lifecycle,
+        &connections,
+        &sessions,
+        &tunnels,
+        &request_id,
+        PathBuf::from(archive_path),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn desktop_discard_project_transfer_export(
+    window: WebviewWindow,
+    lifecycle: State<'_, BackendState>,
+    request_id: String,
+    archive_path: String,
+) -> Result<ProjectTransferExportCleanupResult, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    project_transfer::discard_export(&lifecycle, &request_id, PathBuf::from(archive_path)).await
 }
 
 #[tauri::command]
