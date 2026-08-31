@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b, T2c, T3a, T3b | — | T3a-config, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c, T3a, T3b, T3b-export | — | T3a-config, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -5000,9 +5000,9 @@ source path; it is never target configuration or execution authority.
 
 Artifact display metadata is separate from retained bytes. An unkept artifact
 may honestly have no size or content digest; a kept artifact requires a safe
-direct filename, keep time, and digest that the later file/archive packet binds
-to its bytes. Paper draft content, base hash, ancestor content, and cursor state
-are preserved. Assistant output distinguishes exact labelled answers/traces
+direct filename and keep time, while the later file/archive packet computes and
+binds the byte digest. Paper draft content, base hash, ancestor content, and
+cursor state are preserved. Assistant output distinguishes exact labelled answers/traces
 from `legacy_unlabelled_lines`: current source rows combine provider message and
 answer events in one result array, so T3b-export must preserve those lines
 without guessing that the last one is an answer. A future source row with an
@@ -5062,7 +5062,52 @@ packet classifies it as represented by a typed record or explicitly excluded.
 This packet defines the format and classification only; it does not query a live
 store, settle work, mark a target row history-only, or import anything.
 
-### T3b-export — Finished operational database export
+### T3b-export — Finished operational database export — complete
+
+`AppStore.export_project_transfer_records` now takes one explicit SQLite read
+snapshot, validates T3b's closed 28-table positive policy, and projects the
+complete terminal project corpus into the typed transfer bundle. It writes
+nothing to the source. Repeated export of unchanged source rows is byte-stable,
+SQLite-local event and receipt ids use deterministic UUID5 mappings, and every
+exported task is marked `history_only` in the transfer record while its source
+row remains ordinary and unchanged.
+
+The settlement fence rejects active tasks, live or undelivered watchers,
+nonterminal episodes and report attempts, pending Auto-research recovery or
+child work, accepted admissions, unacknowledged notices, and undelivered
+messages. A relational preflight also rejects direct project ids that disagree
+with their owning task or episode. Experiment state is required instead of
+being synthesized, and episode, report-attempt, wrap-up, and report state,
+ending, digest, and allocation lineage must agree before any bundle is built.
+Auto-research lifecycle notice kinds are closed to the four values production
+emits and each source resolves to a retained worker, task, or child episode.
+
+Task-kind request records retain intent and provider labels but not native
+sessions, runtimes, source machines/stages, attachments, disposable result
+views, retry decisions, watcher lists, shell/log/cwd fields, delivery task ids,
+or accepted hand-off bindings. The same execution-field policy recursively
+sanitizes retained event, receipt, usage, graph-update, wrap-up, and
+Auto-research JSON; the one source-digest-bound Finish result instead refuses a
+forbidden field rather than changing its signed content. Legacy task result
+lines remain explicitly unlabelled; there is no last-line answer inference.
+Human attribution resolves by immutable
+source space/user identity, so a display-name change cannot make old history
+unexportable; the archive actor supplies the imported display name.
+
+The single independent audit found one High and five Medium issues: generic
+JSON leaked watcher/delivery bindings; four represented tables did not prove
+their direct project id against their parent; lifecycle notice sources were
+open and unresolved; missing Experiment state was silently replaced with an
+empty record; report and wrap-up lineage could disagree; and display-name
+changes broke attribution lookup. The one correction pass closed all six and
+added real Experiment, Auto-research, Paper, actor-rename, project-mismatch,
+sanitization, and corrupted-report fixtures. No second audit was run.
+
+This packet still does not read kept artifact bytes, capture canonical files or
+facts, build an archive, settle source work by mutation, inspect target-row
+collisions, insert imported rows, or publish target authority. Kept artifact
+digests remain deliberately absent until T3b-files reads and binds the exact
+bytes. Those responsibilities remain with T3b-files, T3f, and T4.
 
 Own:
 

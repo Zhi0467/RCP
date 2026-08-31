@@ -46,6 +46,7 @@ from rcp.transfer.records import (
     TransferTaskRecord,
     TransferWatcherRecord,
     capture_task_request_history,
+    sanitize_transfer_history_json,
 )
 
 PROJECT_ID = "11111111-1111-4111-8111-111111111111"
@@ -109,6 +110,7 @@ def _experiment_episode(**changes: object) -> TransferEpisodeRecord:
         "invocations_used": 1,
         "authorized_by_attribution_id": ARCHIVE_ACTOR_ID,
         "ending": "stopped",
+        "wrapup_state": "skipped",
         "report_attempts_used": 0,
         "created_at": NOW,
         "updated_at": NOW,
@@ -189,6 +191,11 @@ def test_history_json_is_canonical_immutable_and_rejects_live_bindings() -> None
     for field in sorted(transfer_records.TRANSFER_EXECUTABLE_JSON_FIELDS):
         with pytest.raises(ValueError, match="executable field"):
             _json({"safe": [{field: "source binding"}]})
+
+    sanitized = sanitize_transfer_history_json(
+        {"message": "kept", "nested": {"session_id": "removed", "count": 1}}
+    )
+    assert sanitized == {"message": "kept", "nested": {"count": 1}}
 
     assert {
         "session_id",
@@ -375,14 +382,14 @@ def test_artifact_history_supports_unkept_metadata_and_rejects_paths() -> None:
                 source_name=name,
                 media_type="image/png",
             )
-    with pytest.raises(ValidationError, match="content digest"):
-        TransferArtifactReference(
-            artifact_id="a" * 24,
-            source_name="preview.png",
-            media_type="image/png",
-            kept_filename="preview.png",
-            kept_at=NOW,
-        )
+    kept = TransferArtifactReference(
+        artifact_id="a" * 24,
+        source_name="preview.png",
+        media_type="image/png",
+        kept_filename="preview.png",
+        kept_at=NOW,
+    )
+    assert kept.content_sha256 is None
 
 
 def test_episode_records_accept_only_settled_mode_history() -> None:
@@ -405,6 +412,7 @@ def test_episode_records_accept_only_settled_mode_history() -> None:
         invocation_ceiling=5,
         invocations_used=0,
         ending="completed",
+        wrapup_state="not_started",
         report_attempts_used=0,
         created_at=NOW,
         updated_at=NOW,
@@ -450,7 +458,7 @@ def test_episode_records_accept_only_settled_mode_history() -> None:
 def test_lifecycle_notice_requires_completed_delivery_and_acknowledgement() -> None:
     notice = TransferAutoResearchLifecycleNotice(
         notice_id="notice-1",
-        source_kind="work",
+        source_kind="worker",
         source_id="worker-1",
         source_event="finished",
         source_attempt=1,
@@ -461,6 +469,10 @@ def test_lifecycle_notice_requires_completed_delivery_and_acknowledgement() -> N
         acknowledged_by="task-1",
     )
     assert notice.acknowledged_at == NOW
+    with pytest.raises(ValidationError):
+        TransferAutoResearchLifecycleNotice.model_validate(
+            {**notice.model_dump(), "source_kind": "work"}
+        )
     with pytest.raises(ValidationError):
         TransferAutoResearchLifecycleNotice.model_validate(
             {**notice.model_dump(), "acknowledged_at": None}

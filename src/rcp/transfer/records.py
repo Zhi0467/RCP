@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Annotated, Literal
@@ -100,8 +101,16 @@ TRANSFER_EXECUTABLE_JSON_FIELDS = frozenset(
         "attachment_client_id",
         "attachment_batch_id",
         "attachments",
+        "accepted_handoff",
         "artifact_context",
+        "check_command",
+        "cwd",
+        "delivery_operation_id",
+        "log_path",
+        "notification_operation_id",
         "result_view",
+        "runtime_id",
+        "watcher_ids",
         "watcher_snapshot_token",
         "write_scope_fingerprint",
     }
@@ -148,6 +157,20 @@ def _validate_history_json(value: JsonValue) -> None:
             _validate_history_json(child)
 
 
+def sanitize_transfer_history_json(value: JsonValue) -> JsonValue:
+    """Copy inert JSON while dropping every recognized source execution binding."""
+
+    if isinstance(value, dict):
+        return {
+            key: sanitize_transfer_history_json(child)
+            for key, child in value.items()
+            if key not in TRANSFER_EXECUTABLE_JSON_FIELDS
+        }
+    if isinstance(value, list):
+        return [sanitize_transfer_history_json(child) for child in value]
+    return value
+
+
 class _StrictTransferRecord(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -190,6 +213,10 @@ class TransferJsonDocument(_StrictTransferRecord):
         canonical = _canonical_json(value)
         return cls(canonical_json=canonical, sha256=hashlib.sha256(canonical.encode()).hexdigest())
 
+    @classmethod
+    def capture_sanitized(cls, value: JsonValue) -> TransferJsonDocument:
+        return cls.capture(sanitize_transfer_history_json(value))
+
     def value(self) -> JsonValue:
         return json.loads(self.canonical_json)
 
@@ -204,8 +231,12 @@ class TransferLocalId(_StrictTransferRecord):
     @field_validator("archive_id")
     @classmethod
     def validate_archive_id(cls, value: str) -> str:
-        if _UUID4.fullmatch(value) is None:
-            raise ValueError("archive-local record identity must be a canonical UUID4")
+        try:
+            parsed = uuid.UUID(value)
+        except ValueError as exc:
+            raise ValueError("archive-local record identity must be a canonical UUID") from exc
+        if str(parsed) != value:
+            raise ValueError("archive-local record identity must be a canonical UUID")
         return value
 
 
@@ -239,8 +270,6 @@ class TransferArtifactReference(_StrictTransferRecord):
     def validate_kept_reference(self) -> TransferArtifactReference:
         if (self.kept_filename is None) != (self.kept_at is None):
             raise ValueError("kept artifact history requires both its filename and kept time")
-        if self.kept_filename is not None and self.content_sha256 is None:
-            raise ValueError("kept artifact history requires its transferred content digest")
         return self
 
 
@@ -717,12 +746,6 @@ class TransferAutoResearchRecovery(_StrictTransferRecord):
     created_at: AwareTimestamp
     updated_at: AwareTimestamp
 
-    @model_validator(mode="after")
-    def validate_terminal_recovery(self) -> TransferAutoResearchRecovery:
-        if (self.status == "admitted") != (self.admitted_operation_id is not None):
-            raise ValueError("only an admitted recovery names its admitted task")
-        return self
-
 
 class TransferAutoResearchChildWorkAttempt(_StrictTransferRecord):
     operation_id: str = Field(min_length=1)
@@ -791,7 +814,12 @@ class TransferAutoResearchChildAdmission(_StrictTransferRecord):
 
 class TransferAutoResearchLifecycleNotice(_StrictTransferRecord):
     notice_id: str = Field(min_length=1)
-    source_kind: str = Field(min_length=1)
+    source_kind: Literal[
+        "worker",
+        "experiment_task",
+        "experiment_episode",
+        "experiment_replacement",
+    ]
     source_id: str = Field(min_length=1)
     source_event: str = Field(min_length=1)
     source_attempt: int = Field(ge=1)
@@ -889,6 +917,13 @@ class TransferEpisodeRecord(_StrictTransferRecord):
     authorized_by_attribution_id: str | None = None
     ending: Literal["completed", "exhausted", "stopped", "failed", "human_pause"]
     ending_diagnostic: str | None = None
+    wrapup_state: Literal[
+        "not_started",
+        "ready",
+        "failed",
+        "skipped",
+        "legacy_unavailable",
+    ]
     wrapup_error: str | None = None
     report_attempts_used: int = Field(ge=0, le=3)
     created_at: AwareTimestamp
@@ -932,6 +967,32 @@ class TransferEpisodeRecord(_StrictTransferRecord):
             raise ValueError("episode invocation history does not match its used count")
         if len(self.report_attempts) != self.report_attempts_used:
             raise ValueError("episode report attempts do not match their used count")
+        if self.wrapup is None:
+            if self.wrapup_state != "not_started":
+                raise ValueError("terminal wrap-up state requires its retained wrap-up record")
+            if self.report_attempts or self.report is not None:
+                raise ValueError("report history requires its retained episode wrap-up")
+            return self
+        if self.wrapup.state != self.wrapup_state:
+            raise ValueError("episode and retained wrap-up states disagree")
+        if self.wrapup.ending != self.ending:
+            raise ValueError("episode and retained wrap-up endings disagree")
+        if self.report is None:
+            if self.wrapup_state == "ready":
+                raise ValueError("a ready episode wrap-up requires its report")
+            if any(attempt.status == "succeeded" for attempt in self.report_attempts):
+                raise ValueError("a succeeded report attempt requires its report")
+            return self
+        attempts = {attempt.attempt_id: attempt for attempt in self.report_attempts}
+        attempt = attempts.get(self.report.attempt_id)
+        if self.wrapup_state != "ready" or attempt is None or attempt.status != "succeeded":
+            raise ValueError("an episode report requires its succeeded ready attempt")
+        if (
+            self.report.ending != self.ending
+            or self.report.allocation_operation_id != attempt.allocation_operation_id
+            or self.report.allocation_operation_id != self.wrapup.allocation_operation_id
+        ):
+            raise ValueError("episode report lineage disagrees with its wrap-up")
         return self
 
 
@@ -1129,6 +1190,14 @@ class TransferRecordBundle(_StrictTransferRecord):
             if admission.child_id not in identities:
                 raise ValueError("Auto-research admission references an unknown child")
         for notice in history.lifecycle_notices:
+            notice_sources = {
+                "worker": child_work_ids,
+                "experiment_task": task_ids,
+                "experiment_episode": child_experiment_ids,
+                "experiment_replacement": child_experiment_ids,
+            }
+            if notice.source_id not in notice_sources[notice.source_kind]:
+                raise ValueError("Auto-research notice references an unknown lifecycle source")
             require(
                 notice.acknowledged_by,
                 task_ids,
@@ -1180,5 +1249,6 @@ __all__ = [
     "TransferTaskRecord",
     "TransferWatcherRecord",
     "capture_task_request_history",
+    "sanitize_transfer_history_json",
     "validate_transfer_table_policy",
 ]

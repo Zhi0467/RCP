@@ -22,10 +22,12 @@ from rcp.storage.restore_detachment import RestoreDetachmentStoreMixin
 from rcp.storage.result_views import ResultViewStoreMixin
 from rcp.storage.rows import RowMappingMixin
 from rcp.storage.spaces import SpaceStoreMixin
+from rcp.storage.transfer import ProjectTransferStoreMixin
 from rcp.storage.watchers import WatcherStoreMixin
 
 
 class AppStore(
+    ProjectTransferStoreMixin,
     RestoreDetachmentStoreMixin,
     SpaceStoreMixin,
     ProjectProvisioningStoreMixin,

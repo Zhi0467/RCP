@@ -10,6 +10,7 @@ covered_by:
   - tests/test_project_transfer_request_restore.py
   - tests/test_transfer_archive_manifest.py
   - tests/test_transfer_record_models.py
+  - tests/test_transfer_records.py
 invariants: [1, 3, 6, 11]
 ---
 
@@ -27,9 +28,11 @@ external archive seal, payload groups, source-proof control entry, and closed
 root/table inventories are defined and tested. The terminal operational-record
 format, task-kind-aware request sanitizer, exact 28/12 table policy, deliberate
 foreign-key mapping, and Paper/assistant compatibility representation are also
-defined and tested. Archive byte capture, live record/file export, machine
-relay/import, source/target activation and cleanup orchestration, and the
-desktop drive remain open. Its boundaries are
+defined and tested. The snapshot-consistent read-only export now covers every
+represented terminal table, refuses unsettled or relationally inconsistent
+source history, strips execution bindings recursively, and preserves the source
+unchanged. Archive byte/file capture, machine relay/import, source/target
+activation and cleanup orchestration, and the desktop drive remain open. Its boundaries are
 in [Project identity and home](../specs/projects-spaces-and-operations.md#project-identity-and-home)
 and [Personal-to-team transfer archive](../specs/projects-spaces-and-operations.md#personal-to-team-transfer-archive).
 

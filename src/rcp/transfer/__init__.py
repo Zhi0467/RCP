@@ -42,6 +42,7 @@ from rcp.transfer.records import (
     TransferTaskRecord,
     TransferWatcherRecord,
     capture_task_request_history,
+    sanitize_transfer_history_json,
     validate_transfer_table_policy,
 )
 
@@ -81,6 +82,7 @@ __all__ = [
     "TransferTaskRecord",
     "TransferWatcherRecord",
     "capture_task_request_history",
+    "sanitize_transfer_history_json",
     "inspect_project_linked_tables",
     "inspect_transfer_app_data_roots",
     "inspect_transfer_research_roots",
