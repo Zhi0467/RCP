@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,7 @@ _IDENTITY_FILE = "RCP_LIVE_RESTORE_IDENTITY_FILE"
 _METADATA_FILE = "RCP_LIVE_RESTORE_METADATA_FILE"
 _DEPLOY_KEY_RECEIPT_FILE = "RCP_LIVE_RESTORE_DEPLOY_KEY_RECEIPT_FILE"
 _MAX_METADATA_BYTES = 16 * 1024
+_GITHUB_GRANT_PROPAGATION_TIMEOUT_SECONDS = 60
 _RESTORE_KEY_LABEL = re.compile(r"rcp:[0-9a-f-]{36}:[0-9a-f-]{36}:[a-z][a-z0-9_-]{0,63}")
 
 pytestmark = pytest.mark.skipif(
@@ -132,7 +134,7 @@ def test_protected_backup_restores_on_a_fresh_disposable_ubuntu() -> None:
         assert trust_code == 1
         assert "successfully authenticated" in trust_output
 
-        authority_code, authority_events = _run_restore_action(_single_resume(grant))
+        authority_code, authority_events = _resume_after_github_grant(grant)
         assert authority_code == 3
         authority = _terminal_step(authority_events, "restore_old_authority_review")
         destroyed = _command_containing(authority, "old-machine-destroyed")
@@ -281,6 +283,31 @@ def _single_resume(step: dict[str, object]) -> tuple[str, ...]:
     if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
         pytest.fail("restore pause did not return one exact resume command")
     return tuple(raw)
+
+
+def _resume_after_github_grant(
+    grant: dict[str, object],
+) -> tuple[int, list[dict[str, object]]]:
+    resume = _single_resume(grant)
+    expected_fields = _fields(grant)
+    deadline = time.monotonic() + _GITHUB_GRANT_PROPAGATION_TIMEOUT_SECONDS
+    while True:
+        code, events = _run_restore_action(resume)
+        terminal = events[-1].get("step")
+        if not isinstance(terminal, dict):
+            pytest.fail("restore did not end with one terminal step")
+        if terminal.get("phase") != "restore_checkouts":
+            return code, events
+        if (
+            code != 3
+            or terminal.get("state") != "operator_action_needed"
+            or _fields(terminal) != expected_fields
+            or _single_resume(terminal) != resume
+        ):
+            pytest.fail("restore changed its GitHub grant pause while the grant propagated")
+        if time.monotonic() >= deadline:
+            pytest.fail("GitHub did not activate the confirmed write deploy key within one minute")
+        time.sleep(2)
 
 
 def _command_containing(step: dict[str, object], value: str) -> tuple[str, ...]:
