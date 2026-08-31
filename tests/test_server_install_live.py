@@ -782,7 +782,7 @@ def _drive_live_root_death_during_rollback(
             == 0
         )
         if active:
-            _wait_for_private_control_socket()
+            _wait_for_private_control_socket_or_service_stop()
         response = _run(
             (
                 "curl",
@@ -1227,7 +1227,7 @@ print(active[1].model_dump_json())
     return operation
 
 
-def _wait_for_private_control_socket() -> dict[str, object]:
+def _wait_for_private_control_socket_or_service_stop() -> dict[str, object] | None:
     deadline = time.monotonic() + _PTY_TIMEOUT_SECONDS
     last_error: BaseException | None = None
     while time.monotonic() < deadline:
@@ -1235,6 +1235,14 @@ def _wait_for_private_control_socket() -> dict[str, object]:
             return _probe_private_control_socket()
         except (FileNotFoundError, ConnectionRefusedError, pytest.fail.Exception) as exc:
             last_error = exc
+            service = _run(
+                ("sudo", "-n", "systemctl", "is-active", "--quiet", "rcp.service"),
+                timeout=_PTY_TIMEOUT_SECONDS,
+            )
+            if service.returncode == 3:
+                return None
+            if service.returncode != 0:
+                pytest.fail("could not determine whether the fenced service remained active")
             time.sleep(0.1)
     pytest.fail(f"fenced service did not publish its control socket: {last_error}")
 
@@ -1408,10 +1416,35 @@ def test_private_control_socket_waits_for_publish(monkeypatch: pytest.MonkeyPatc
         return expected
 
     monkeypatch.setattr(sys.modules[__name__], "_probe_private_control_socket", probe)
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess((), 0, "", ""),
+    )
     monkeypatch.setattr(time, "sleep", lambda _seconds: None)
 
-    assert _wait_for_private_control_socket() == expected
+    assert _wait_for_private_control_socket_or_service_stop() == expected
     assert attempts == 2
+
+
+def test_private_control_socket_wait_accepts_service_stopping_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def absent() -> dict[str, object]:
+        raise FileNotFoundError("socket absent")
+
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_probe_private_control_socket",
+        absent,
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess((), 3, "", ""),
+    )
+
+    assert _wait_for_private_control_socket_or_service_stop() is None
 
 
 def _looks_like_rcp_server(command: str) -> bool:

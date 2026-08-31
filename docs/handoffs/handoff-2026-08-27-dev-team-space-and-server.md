@@ -26,12 +26,12 @@ What each open drive is waiting on:
 - **F6d** — the Ubuntu 22.04/24.04 update workflow. It is implemented and pushed
   with closed admission, systemd cutover, loud rollback, crash re-entry, and a
   disposable-host death drive. Hosted-runner access is restored. Exact-head run
-  [33414148518](https://github.com/Zhi0467/RCP/actions/runs/33414148518) drove both
-  Ubuntu releases through installation and into the root-death rollback drive,
-  where its socket-wait helper exposed one more test-only race by treating the
-  normal not-yet-published socket as terminal. Cleanup passed on both releases.
-  The bounded wait is repaired locally and F6d remains open only until this
-  follow-up is pushed and the two-release rerun passes.
+  [33422149838](https://github.com/Zhi0467/RCP/actions/runs/33422149838) drove both
+  Ubuntu releases through installation and one step farther into the root-death
+  rollback drive. The service then chose the documented safe fail-closed outcome
+  while the test waited only for the alternate fenced-control-plane outcome.
+  Cleanup passed on both releases. The two-outcome wait is repaired locally and
+  F6d remains open only until this follow-up is pushed and the matrix passes.
 - **P6a** — the complete team-service and GitHub live qualification.
 - **O4d** — the fresh-host Ubuntu restore drive.
 - **D4a, D4b, D5** — the integrated source-built two-space desktop drive.
@@ -306,6 +306,21 @@ gate are deliberately future work and do not block this plan.
   credentials and routes. The two complete affected modules and the focused new
   regressions pass locally; these two follow-ups change qualification fixtures,
   not production behavior.
+- Follow-up commit `679e2dc` is clean in exact-head CI run
+  [33422136275](https://github.com/Zhi0467/RCP/actions/runs/33422136275): Python
+  3.11 and 3.12, lint and full pre-commit, all Web checks, and old-data upgrade
+  pass. Live run
+  [33422149838](https://github.com/Zhi0467/RCP/actions/runs/33422149838) then
+  advanced both Ubuntu releases past the missing-socket race. In the injected
+  rollback crash, the attempted direct systemd start may intentionally either
+  exit closed or publish only the private fenced control plane. Both services
+  exited closed, but the test sampled `active` during startup and waited only for
+  the alternate socket outcome after systemd had stopped them. The bounded wait
+  now returns successfully for an inactive service, continues probing while the
+  service remains active, and still fails on an indeterminate systemd result or
+  a persistent active service without its control socket. The full hermetic live
+  module, its two outcome regressions, Ruff, and format check pass locally. This
+  remains a live-test correction; production rollback behavior did not change.
 
 #### 2026-08-31 — V2 current-tree baseline and compatibility repair complete
 
@@ -2136,10 +2151,10 @@ gate are deliberately future work and do not block this plan.
 The planned code paths are implemented and hermetically verified. Closure still
 requires real-environment evidence:
 
-1. push the two test-only exact-head follow-ups, obtain clean CI, and pass the
-   Ubuntu 22.04/24.04 source install/update/rollback qualification; then extend
-   retained live evidence through provisioning, backup/restore, member removal,
-   and both fixed operator routes;
+1. push the final two-outcome live-test correction and pass the Ubuntu
+   22.04/24.04 source install/update/rollback qualification; then extend retained
+   live evidence through provisioning, backup/restore, member removal, and both
+   fixed operator routes;
 2. drive the unlocked rebuilt source desktop through two distinct member
    identities, personal/team switching, Keychain readback, SSH/TLS isolation,
    new team project setup, and personal-to-team transfer/restart recovery; and
@@ -3215,11 +3230,11 @@ disaster restore.
 
 Status: implemented and pushed on `main` through `75fcafc` on 2026-08-29 with
 focused and complete local verification plus a closed independent audit. Hosted
-execution is available again; runs 33408513981 and 33414148518 successively drove
-both Ubuntu releases through installation and into the root-death rollback path,
-exposing two now-repaired stale/racy live-test assumptions while cleanup passed.
-This packet is not complete until the repaired exact-head matrix passes and the
-live evidence is recorded in the implementation log.
+execution is available again; runs 33408513981, 33414148518, and 33422149838
+successively drove both Ubuntu releases through installation and deeper into the
+root-death rollback path, exposing stale/racy live-test assumptions while cleanup
+passed. This packet is not complete until the repaired exact-head matrix passes
+and the live evidence is recorded in the implementation log.
 
 Own:
 
