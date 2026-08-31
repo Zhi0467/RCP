@@ -43,6 +43,7 @@ _TOKEN_FILE = "RCP_LIVE_GITHUB_ADMIN_TOKEN_FILE"
 _DEPLOY_KEY_RECEIPT_FILE = "RCP_LIVE_DEPLOY_KEY_RECEIPT_FILE"
 _BACKUP_ARCHIVE_RECEIPT_FILE = "RCP_LIVE_BACKUP_ARCHIVE_RECEIPT_FILE"
 _BACKUP_IDENTITY_FILE = "RCP_LIVE_BACKUP_IDENTITY_FILE"
+_BACKUP_METADATA_FILE = "RCP_LIVE_BACKUP_METADATA_FILE"
 _REPOSITORY = "Zhi0467/RCP"
 _TEAM_NAME = "RCP live install qualification"
 _GITHUB_ED25519_FINGERPRINT = "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
@@ -164,7 +165,7 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
         assert health["web_build_id"] == first_doctor["running_web_build_id"]
         _assert_password_refused_and_public_key_accepted()
         _assert_narrow_operator_rule()
-        member_id, session_cookie = _enroll_live_member(bootstrap_code)
+        member_id, session_cookie, member_token = _enroll_live_member(bootstrap_code)
 
         journal = _run_checked(
             ("sudo", "-n", "journalctl", "--unit=rcp.service", "--no-pager", "--output=cat")
@@ -219,9 +220,18 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
             base_projects=before_projects,
             session_cookie=session_cookie,
         )
-        second_member_id, second_session_cookie = _enroll_invited_member(session_cookie)
+        second_member_id, second_session_cookie, second_member_token = _enroll_invited_member(
+            session_cookie
+        )
         archive_path = _drive_live_backup()
         _write_backup_archive_receipt(archive_path)
+        _write_backup_metadata(
+            project_id=project["project_id"],
+            surviving_member_id=member_id,
+            surviving_member_token=member_token,
+            stale_member_id=second_member_id,
+            stale_member_token=second_member_token,
+        )
         _remove_live_member(
             second_member_id,
             removed_session_cookie=second_session_cookie,
@@ -240,7 +250,7 @@ def _enroll_live_member(
     bootstrap_code: str,
     *,
     display_name: str = "Live update operator",
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     enrolled, _headers = _http_json(
         "POST",
         "/api/team/enroll",
@@ -263,13 +273,14 @@ def _enroll_live_member(
     if len(cookies) != 1:
         pytest.fail("team session exchange did not return one cookie")
     morsel = next(iter(cookies.values()))
-    return str(user["user_id"]), f"{morsel.key}={morsel.value}"
+    return str(user["user_id"]), f"{morsel.key}={morsel.value}", token
 
 
-def _enroll_invited_member(inviting_cookie: str) -> tuple[str, str]:
+def _enroll_invited_member(inviting_cookie: str) -> tuple[str, str, str]:
     invitation, _headers = _http_json(
         "POST",
         "/api/team/invitations",
+        {},
         cookie=inviting_cookie,
     )
     if not isinstance(invitation, dict) or not isinstance(invitation.get("code"), str):
@@ -516,11 +527,14 @@ running = store.transition_project_provisioning_request(
     provider_checks=request.provider_checks,
 )
 repository = DEFAULT_SERVER_LAYOUT.project_repository_dir(request.proposed_project_id, "paper")
-repository.mkdir(parents=True)
-subprocess.run(("git", "init", "--initial-branch=main", str(repository)), check=True)
-subprocess.run(("git", "-C", str(repository), "config", "user.name", "RCP Live Test"), check=True)
 subprocess.run(
-    ("git", "-C", str(repository), "config", "user.email", "rcp-live@example.invalid"),
+    (
+        "git",
+        "clone",
+        "--no-hardlinks",
+        str(DEFAULT_SERVER_LAYOUT.source_checkout),
+        str(repository),
+    ),
     check=True,
 )
 subprocess.run(
@@ -529,15 +543,12 @@ subprocess.run(
         "-C",
         str(repository),
         "remote",
-        "add",
+        "set-url",
         "origin",
         repository_ref.ssh_clone_url,
     ),
     check=True,
 )
-(repository / "README.md").write_text("live rollback fixture\n", encoding="utf-8")
-subprocess.run(("git", "-C", str(repository), "add", "README.md"), check=True)
-subprocess.run(("git", "-C", str(repository), "commit", "-m", "live fixture"), check=True)
 commit = subprocess.run(
     ("git", "-C", str(repository), "rev-parse", "HEAD"),
     check=True,
@@ -1692,6 +1703,40 @@ def _write_backup_archive_receipt(archive_path: Path) -> None:
     )
     try:
         os.write(descriptor, f"{archive_path}\n".encode())
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _write_backup_metadata(
+    *,
+    project_id: str,
+    surviving_member_id: str,
+    surviving_member_token: str,
+    stale_member_id: str,
+    stale_member_token: str,
+) -> None:
+    path = _protected_live_output_path(_BACKUP_METADATA_FILE)
+    if path.exists():
+        pytest.fail("the live backup metadata output already exists")
+    payload = json.dumps(
+        {
+            "project_id": project_id,
+            "surviving_member_id": surviving_member_id,
+            "surviving_member_token": surviving_member_token,
+            "stale_member_id": stale_member_id,
+            "stale_member_token": stale_member_token,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+    )
+    try:
+        os.write(descriptor, payload)
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
