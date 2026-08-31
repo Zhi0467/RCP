@@ -33,7 +33,7 @@ On Ubuntu 22.04 only, run:
 
 ```bash
 sudo apt-get update
-sudo apt-get install --yes age ca-certificates curl git iproute2 openssh-client openssh-server sudo xz-utils
+sudo apt-get install --yes age ca-certificates curl git iproute2 libc-bin openssh-client openssh-server passwd sudo util-linux xz-utils
 ```
 
 Success is an exit status of zero. Then continue with the shared Node.js and
@@ -45,7 +45,7 @@ On Ubuntu 24.04 only, run:
 
 ```bash
 sudo apt-get update
-sudo apt-get install --yes age ca-certificates curl git iproute2 openssh-client openssh-server sudo xz-utils
+sudo apt-get install --yes age ca-certificates curl git iproute2 libc-bin openssh-client openssh-server passwd sudo util-linux xz-utils
 ```
 
 Success is an exit status of zero. Then continue with the shared Node.js and
@@ -99,7 +99,7 @@ Finally check every system prerequisite:
 git --version
 ssh -V
 age --version
-command -v curl git node npm ssh ssh-keygen sudo systemctl uv age
+command -v age curl getent git node npm runuser ssh ssh-keygen sudo systemctl useradd uv
 ```
 
 Success is a path for every command, Node.js major 24, and age major 1.
@@ -151,10 +151,12 @@ a private repository, it stops with exit status 3 and prints:
 Add only that public key as a read-only deploy key. Before accepting the SSH
 host key, compare the displayed Ed25519 fingerprint with [GitHub's published
 fingerprints](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints).
-Run the printed actions in order, then run the printed resume command exactly.
-Success is a separate clean checkout under `/home/rcp/rcp-server/source`, an
-immutable built release, a stable `/usr/local/bin/rcp`, and a fresh service that
-is still stopped and disabled.
+At this pause, success is exit status 3 with the exact source deploy-key and
+resume instructions; the managed checkout and installed service do not exist
+yet. Run the printed actions in order, then run the printed resume command
+exactly. Success after that rerun is a separate clean checkout under
+`/home/rcp/rcp-server/source`, an immutable built release, a stable
+`/usr/local/bin/rcp`, and a fresh service that is still stopped and disabled.
 
 For structured output, place `--machine-readable` after `install`:
 
@@ -332,6 +334,10 @@ real lab server.
 The terminal owners for install, doctor, provider readiness, project
 provisioning, backup, restore, update, and member removal are concrete. Their
 live qualification status is tracked in the active team-server handoff and
-acceptance scenarios. The unified desktop wizard/operator bridge and transfer
-import remain incomplete and must say so explicitly. Do not substitute manual
-Git pulls, service-file edits, or direct database access for any owner.
+acceptance scenarios. The unified desktop wizard, fixed operator bridge,
+personal-to-team transfer import, native archive relay, and crash-recovery
+coordinator are implemented and hermetically verified. The remaining work is
+the source-built desktop/SSH drive against real team spaces and the genuine
+one-lab install, collaboration, update, backup, restore, member-removal, and
+transfer qualification. Do not substitute manual Git pulls, service-file
+edits, or direct database access for any owner.

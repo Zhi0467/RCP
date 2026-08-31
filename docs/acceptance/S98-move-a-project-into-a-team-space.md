@@ -29,15 +29,19 @@ covered_by:
   - tests/test_transfer_catalog_finalizer.py
   - tests/test_transfer_target.py
   - tests/test_transfer_target_upload.py
+  - web/tests/projectSetup.test.mjs
+  - web/src-tauri/src/project_transfer.rs::tests
+  - web/src-tauri/src/server_commands.rs::tests
 invariants: [1, 3, 6, 11]
 ---
 
 # Hand a personal project over to the lab, once
 
-This live scenario remains pending because the native desktop relay, proof
-return/source cleanup orchestration, unified wizard, crash-recovery drive, and
-real two-space SSH qualification are still open. The backend transfer itself is
-implemented hermetically through target activation.
+This live scenario remains pending because the complete source-built desktop
+interruption drive against two real spaces and a real SSH operator route has not
+yet passed. The backend transfer, native desktop relay, proof return/source
+cleanup orchestration, unified wizard, and crash-recovery coordinator are
+implemented and hermetically verified.
 
 The implemented path now covers the canonical home-transfer Patch, linked
 cross-space requests, independent human receipts, strict repository/configuration
@@ -61,7 +65,8 @@ unregistered and invisible. Update checkpoints preserve only receipt-backed
 `complete` uploads, ignore `consumed` uploads, and reject any untyped or leftover
 inbox bytes. Restore invalidates machine-bound nonterminal upload authority; an
 `archive_bound` request has a reviewed storage re-entry that issues a fresh lease,
-but the user-facing re-entry/relay drive remains part of the open desktop work.
+and the implemented desktop coordinator can resume that exact re-entry. Its
+behavior still needs the pending source-built two-space/SSH interruption drive.
 Imported provider histories remain project-owned, separate from live provider
 homes, protected through backup/restore/update, and validated for local and SSH
 Seed/Refresh. The reachable-SSH interruption/removal drive in step 11 remains

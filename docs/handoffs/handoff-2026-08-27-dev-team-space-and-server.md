@@ -25,9 +25,12 @@ What each open drive is waiting on:
 
 - **F6d** — the Ubuntu 22.04/24.04 update workflow. It is implemented and pushed
   with closed admission, systemd cutover, loud rollback, crash re-entry, and a
-  disposable-host death drive. The last exact-head rerun was refused before
-  either job started, because the GitHub account's hosted-runner spending limit
-  is unavailable. That is a billing block, not a code block.
+  disposable-host death drive. Exact-head Actions run
+  [33395914834](https://github.com/Zhi0467/RCP/actions/runs/33395914834) on
+  2026-08-31 was refused before either Ubuntu job started; both jobs reported no
+  executed steps because the GitHub account's hosted-runner spending limit is
+  unavailable. That is a billing block, not a code block, and the unchanged
+  workflow should not be redispatched until runner access changes.
 - **P6a** — the complete team-service and GitHub live qualification.
 - **O4d** — the fresh-host Ubuntu restore drive.
 - **D4a, D4b, D5** — the integrated source-built two-space desktop drive.
@@ -114,8 +117,7 @@ Current product authority is in:
   [S102](../acceptance/S102-team-runs-execute-as-the-space-account.md),
   [S103](../acceptance/S103-server-operations-are-console-operations.md),
   [S104](../acceptance/S104-backups-never-pause-work.md),
-  [S105](../acceptance/S105-move-between-spaces-in-one-window.md),
-  [S122](../acceptance/S122-project-invitations.md), and
+  [S105](../acceptance/S105-move-between-spaces-in-one-window.md), and
   [S128](../acceptance/S128-provision-a-team-project-through-desktop-and-server-cli.md).
 
 This handoff scopes implementation. It does not override those documents.
@@ -181,9 +183,10 @@ The remaining seams are also concrete:
 - the durable project-provisioning request, complete finalizer, member API,
   repository-credential primitive, exact-account provider check, checkout
   preparation, machine-step orchestration, and unified personal/new-team
-  project wizard exist, but post-setup cancellation, complete live team
-  qualification, and the transfer archive, machine relay/decode, activation,
-  cleanup orchestration, and desktop drive remain open.
+  project wizard exist. The transfer archive, machine relay/decode, activation,
+  cleanup orchestration, unified move wizard, and restart coordinator also
+  exist. Post-setup cancellation and complete live team qualification remain
+  open, including the real source-built transfer desktop/SSH drive.
 
 The repository's current `AGENTS.md` prescribes direct work on `main`, which the
 human retained for the full private pre-team-server implementation. G0 restored

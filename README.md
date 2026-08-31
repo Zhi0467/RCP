@@ -1,31 +1,28 @@
 # RCP
 
 RCP is a source-built research control panel. The same Python backend and React
-interface run in a browser or in the macOS desktop shell.
+interface run in a browser or in the macOS desktop app.
 
 ## Features
 
-- **Structured research graph:** organize ResearchQuestions, Hypotheses,
-  Evidence, Experiments, Decisions, Blockers, and their relationships in one
-  durable visual workspace.
-- **Work directly from the graph:** discuss a node, run bounded Experiments, or
-  launch Auto-research without translating the project into a separate task
-  tracker.
-- **Provider-flexible execution:** use Codex or Claude through one RCP task
-  interface, with provider profiles running locally or over SSH.
-- **Durable autonomous work:** background tasks, watchers, recovery, budgets,
-  and visual episode reports survive closed tabs and hidden windows.
-- **Artifact feedback loop:** open generated HTML, SVG, and image artifacts;
-  select text or regions, add comments or questions to the originating agent
-  chat, and explicitly keep or revise useful results.
-- **Human authority and writing:** agents gather evidence and propose graph
-  changes while humans retain protected decisions and authorship of the paper.
-- **Bring your own machines:** keep canonical state and repositories locally or
-  on SSH hosts while RCP applies the same task and containment contract.
-- **Team server — in progress:** run RCP from source on a lab Linux server so
-  members can collaborate on the same projects through server-owned checkouts
-  and the provider authentication already present on each execution account,
-  without sharing one human identity.
+- Visualize ResearchQuestions, Hypotheses, Evidence, Experiments, Decisions,
+  Blockers, and their relationships as one durable research graph.
+- Discuss graph nodes, dispatch bounded Experiments, and start Auto-research
+  directly from the graph.
+- Use Codex or Claude through one provider-agnostic task interface, locally or
+  over SSH, with provider/runtime/model settings per agent role.
+- Keep background tasks, watchers, budgets, recovery, and visual episode reports
+  running independently of an open browser tab.
+- Inspect generated artifacts in the built-in viewer, annotate text or image
+  regions, and send questions or revision requests back to the originating
+  agent.
+- Build a paper introduction from human-approved research while agents gather
+  evidence and propose graph changes.
+- Bring your own machines and provider authentication; RCP checks and uses the
+  native credentials already present on each configured execution account.
+- Run a team space on your own Linux server, with shared projects, one team
+  provider credential per execution account, central Git checkouts, member
+  attribution, backup/restore, and personal-to-team project transfer.
 
 ## Install from source
 
@@ -37,7 +34,7 @@ Requirements:
 - Codex CLI or Claude Code, installed and authenticated separately if you want
   to run agent tasks.
 
-Clone and prepare RCP in this order:
+Clone and build in this order:
 
 ```bash
 git clone https://github.com/Zhi0467/RCP.git
@@ -47,38 +44,38 @@ npm --prefix web run build
 uv sync
 ```
 
-The order matters: the Python build includes the generated `web/dist` bundle.
+The order matters because the Python build includes `web/dist`.
 
 ## Run the local Web app
 
-For source development with automatic backend restart and frontend rebuild:
+For development with backend reload and automatic Web rebuild:
 
 ```bash
 uv run rcp serve --reload
 ```
 
-Open <http://127.0.0.1:8421>. Refresh the page after React or CSS changes; the
-source watcher rebuilds the bundle but does not provide Vite hot-module reload.
+Open <http://127.0.0.1:8421>. React and CSS changes rebuild the bundle; refresh
+the page to see them.
 
-For a normal non-reloading launch that also opens your browser:
+For a normal non-reloading launch that opens the browser:
 
 ```bash
 uv run rcp open
 ```
 
-You can register and open a project at launch:
+Register and open a checkout at launch:
 
 ```bash
 uv run rcp open /absolute/path/to/project
 ```
 
-To serve without opening a browser:
+Serve without opening a browser:
 
 ```bash
 uv run rcp serve --host 127.0.0.1 --port 8421
 ```
 
-By default, local application data lives at:
+On macOS, local app data defaults to:
 
 ```text
 ~/Library/Application Support/research-control-panel/
@@ -87,196 +84,126 @@ By default, local application data lives at:
 Set `RCP_DATA_DIR` before launch to use another data directory. Canonical
 research history remains in each project's configured state repository.
 
-## Run the macOS desktop app
+## Run the source-built macOS desktop app
 
-Desktop development also requires Rust and the Xcode command-line tools.
+The desktop app additionally requires Rust and the Xcode command-line tools.
 
-Start the source desktop shell:
+Run directly from the checkout:
 
 ```bash
 npm --prefix web run desktop:dev
 ```
 
-To build a Finder-launchable development app from the current checkout:
+Build a Finder-launchable development app:
 
 ```bash
 npm --prefix web run desktop:build-dev
 ```
 
-The bundle is written to:
+The app is written to:
 
 ```text
 web/src-tauri/target/debug/bundle/macos/RCP.app
 ```
 
-Open that bundle through Finder for real desktop testing. Closing the red window
-hides RCP; **Quit RCP** in the menu, or Cmd+Q, ends the desktop-owned backend. Other
-quit gestures leave that backend running. More native build and verification commands,
-and that quit boundary, are in [docs/desktop.md](docs/desktop.md).
+Closing the red window hides RCP. Use **Quit RCP** or Cmd+Q to end the
+desktop-owned backend. See [docs/desktop.md](docs/desktop.md) for native build,
+logging, and verification details.
 
-## Install the team server from source
+## Install a team server from source
 
-> **Install is live-qualified; restore is hermetically complete and awaits its
-> fresh-host live drive.**
-> `rcp server install`, `doctor`, `provider check`, `project provision`,
-> `backup configure`, `backup run`, `member remove`, and `update` are concrete
-> and share one
-> interactive/machine-readable progress contract. Install is proven on
-> disposable Ubuntu 22.04 and 24.04 hosts. `restore` validates an
-> encrypted archive, installs a stopped detached SQLite candidate, creates fresh
-> repository deploy keys, reconstructs local or SSH central checkouts from Git,
-> rebinds the stopped project catalog, and publishes/replay-verifies captured
-> histories, chats, Paper, facts, and referenced kept files before making each
-> protected project readable. It pauses with exact GitHub grant instructions
-> when the new key needs repository-admin approval, then requires explicit old
-> server-authority and retained-member/token review. It activates behind closed
-> admission through a root-only private readback and completes the journal
-> before serving.
-> `project transfer-import` still stops with an explicit unavailable result.
-> Every command below is terminal-only; no desktop wizard drives them yet.
+The server workflows below are implemented and hermetically verified; the
+complete one-lab live qualification is still pending.
 
-The first supported team deployment is one Ubuntu 22.04 or 24.04 LTS x86-64
-server running systemd and one team space. The server build uses Node.js 24 and
-Python 3.12 managed through `uv`, and requires Git, OpenSSH, and `age`. The
-installer downloads its own `rcp`-owned Python 3.12 through the required
-system-wide `uv`; the operator does not prepare a runtime inside the service
-account first. The final
-backup target uses the upstream `age` CLI `>=1.0.0,<2.0.0` with a native
-X25519 `age1...` recipient. Exact prerequisite commands for both Ubuntu
-releases are in [docs/server.md](docs/server.md), and a guarded GitHub Actions
-workflow drives this install on disposable 22.04 and 24.04 hosts; the RCP
-installer validates
-these tools but does not modify apt repositories or install general system
-software. The service binds to loopback and members connect with source-built
-desktop apps over SSH.
+The supported server is Ubuntu 22.04 or 24.04 LTS on x86-64 with systemd. RCP is
+built from a GitHub `main` checkout; there is no Linux package or binary release
+channel. The service runs under a dedicated `rcp` Linux account and listens only
+on server loopback. Source-built desktop apps connect through SSH.
 
-An operator first creates a temporary bootstrap checkout under their ordinary
-Linux account:
+Install the pinned Node.js 24, `uv`, Git, OpenSSH, `age`, and other prerequisites
+from the exact commands in [docs/server.md](docs/server.md). Then create a
+temporary bootstrap checkout under the ordinary operator account:
 
 ```bash
 git clone https://github.com/Zhi0467/RCP.git rcp-bootstrap
 cd rcp-bootstrap
 npm --prefix web ci
 npm --prefix web run build
-uv sync
+UV_MANAGED_PYTHON=1 UV_PYTHON=3.12 uv sync --frozen
 ```
 
-The first privileged RCP command is then run by that operator with `sudo`:
+Run the first RCP command as root from that checkout:
 
 ```bash
-sudo /absolute/path/to/rcp-bootstrap/.venv/bin/rcp server install --team-name "My lab"
+sudo /usr/bin/env PYTHONDONTWRITEBYTECODE=1 \
+  "$PWD/.venv/bin/rcp" server install --team-name "My lab"
 ```
 
-The installer will:
-
-1. create or validate the dedicated Linux `rcp` account;
-2. create a separate managed Git checkout and clean release directory for the
-   exact GitHub `main` commit in the configured service layout;
-3. give that checkout its own source-fetch identity when the origin is private;
-4. run Git, npm, the Web build, and `uv sync --frozen` as `rcp`, not as root;
-5. install the stable CLI wrapper and non-reloading systemd unit, leaving a
-   fresh service stopped; and
-6. print the exact interactive initialization and resume commands; the resumed
-   CLI activates and verifies systemd itself.
-
-The first team space is initialized interactively as the service account before
-systemd starts, so its one-time bootstrap code appears only in that terminal:
+The CLI prints its complete plan and pauses with exact commands when the private
+source repository needs a read-only deploy key. After that grant, initialize the
+team space as `rcp` and resume installation:
 
 ```bash
 sudo -u rcp -H /usr/local/bin/rcp space init --team --name "My lab"
 sudo /usr/local/bin/rcp server install --team-name "My lab"
 ```
 
-Those are the same ordered actions the installer prints. The final rerun enables
-and starts systemd itself, then verifies it is active and that loopback health
-identifies a team space. Every CLI step names the machine/account and success
-signal; every human
-pause gives ordered copyable commands or UI actions plus the exact resume
-command. The future project wizard renders this same structured operation
-output; the CLI remains independently complete and no setup instruction exists
-only in the wizard.
+The final installer run enables and starts the non-reloading systemd service and
+verifies its team-space health. The bootstrap checkout is not the production
+checkout and may then be removed.
 
-The bootstrap checkout is not the production checkout and may be removed after
-installation. Root is used only for operating-system work such as creating the
-account, directories, and systemd service. Normal service execution and managed
-source work run as `rcp`. The installer gives `rcp` a fixed `/home/rcp` home and
-a real shell, but no usable password; it does not enable password SSH or grant
-broad sudo. Direct `rcp@server` access is optional and key-only, while a named
-operator with the documented narrow sudo command is preferred.
-
-The installed service keeps its source, releases, data, central project
-checkouts, source/repository deploy keys, and update checkpoints under
-`/home/rcp/rcp-server/`. Every provider keeps its native state in its normal
-per-account home path (currently `.codex` and `.claude` for the built-in
-providers); authenticate there with the provider's own command, then use
-`rcp server provider check --request <request-id>` during setup or
-`rcp server provider check --project <project-id>` afterward. RCP only checks
-and uses that native authentication; it never logs in or stores provider
-credentials. Root-owned integration is limited to `/etc/rcp`, `/run/rcp`, the stable
-`/usr/local/bin/rcp` wrapper, systemd, and journald.
-
-Removing a member is a two-call, exact-inventory console operation against the
-running service. The first call changes nothing and prints the member's project
-memberships, permanent-access records, browser logins, pending invitations, and
-live task/episode IDs:
+RCP does not log in to providers. For server-local execution, enter the service
+account and use each provider's own installation/login flow:
 
 ```bash
+sudo -u rcp -H /bin/bash
+```
+
+Configure either the documented narrow named-operator sudo route or the
+development-only direct key route, then use **Add team space** in the desktop
+app. The unified project wizard can create a team project from GitHub or move an
+existing personal RCP project into the team space.
+
+## Update and operate the team server
+
+The CLI owns server updates from GitHub `main`:
+
+```bash
+sudo /usr/local/bin/rcp server update
+```
+
+Review the fetched immutable commit, then run the exact
+`--confirm-target <40-character-commit>` command RCP prints. The confirmed
+update builds and rehearses a detached candidate before systemd cutover, and
+keeps a durable rollback/recovery boundary.
+
+The same console interface owns health, project provisioning, provider checks,
+backup, restore, and member removal:
+
+```bash
+sudo -u rcp -H /usr/local/bin/rcp server doctor
+sudo -u rcp -H /usr/local/bin/rcp server project provision <request-id>
+sudo -u rcp -H /usr/local/bin/rcp server provider check --project <project-id>
+sudo /usr/local/bin/rcp server backup configure \
+  --destination /absolute/path/to/backups \
+  --recipient <age1-public-recipient> \
+  --confirm
+sudo -u rcp -H /usr/local/bin/rcp server backup run
+sudo /usr/local/bin/rcp server restore /absolute/path/lab.tar.age \
+  --identity-file /absolute/protected/path/age-identity.txt
 sudo -u rcp -H /usr/local/bin/rcp server member remove <member-id>
 ```
 
-After reviewing that inventory, run the exact command RCP prints, including its
-`--confirm-boundary <sha256>` value. RCP rechecks the inventory, refuses to
-strand the team space or any project without another enrolled member, fences
-future access atomically, and gracefully drains already-authorized work. A
-crash or still-settling provider turn leaves an explicit removal-in-progress
-record; rerunning the same command and `rcp server doctor` show and reconcile
-the exact work still live. Historical attribution remains under an inactive
-member tombstone.
+Each command prints its full plan, human-action boundaries, success checks, and
+exact resume command. Use [docs/server.md](docs/server.md) for prerequisite,
+deploy-key, operator-route, backup/restore, update, and recovery procedures.
 
-Restore one verified backup only onto the installed server's fresh, empty data
-directory. Keep the native `age` recovery identity in a root-protected file and
-start with:
+## Verify a checkout
 
 ```bash
-sudo rcp server restore /absolute/path/lab.tar.age \
-  --identity-file /absolute/protected/path/age-identity.txt
+uv run pytest
+uv run ruff check src tests
+npm --prefix web test
+npm --prefix web run build
+uv run pre-commit run --all-files
 ```
-
-The command first prints the installed data directory and an exact
-`--confirm-data-dir` resume command. Later pauses print the GitHub deploy-key
-grant work, the archived server-authority checklist, and the exact surviving
-member/permanent-token-id roster. Choose the printed old-machine disposition
-only after destroying the old server or fencing it and revoking every listed
-Git/SSH/provider authority. If a captured member credential is known stale, use
-the printed `--remove-stale-member <member-id>` command; RCP applies the ordinary
-last-member and project guards offline and then requires a new roster digest.
-The final command starts the still-disabled replacement behind closed admission,
-verifies no captured task, episode, watcher, report, or child can recover,
-records exact space/commit/project readback, and only then serves HTTP and
-enables the unit. If the root command disappears first, the fenced process exits
-cleanly after its bounded timeout and stays stopped. Any other failed activation
-stops and disables systemd for the same journaled retry.
-
-Later source updates are owned by:
-
-```bash
-sudo rcp server update
-```
-
-The first call credential-isolates and fetches the configured `origin/main`, then
-prints the exact command to confirm that immutable target, for example:
-
-```bash
-sudo rcp server update --confirm-target <full-40-character-commit>
-```
-
-The confirmed command accepts only a clean fast-forward of managed `main`,
-builds one detached per-commit candidate as `rcp`, rehearses it against copied
-real state behind a closed startup-effect fence, and enters a bounded systemd
-cutover. It verifies the new process before committing the `current` pointer;
-startup failure loudly restores and verifies the prior release, and a crash can
-re-enter the durable cutover or rollback journal. `rcp server doctor` reports
-the managed-main, candidate, current, and running commits. The cutover path has
-hermetic death-boundary coverage but still awaits a clean live Ubuntu
-22.04/24.04 workflow rerun. The `rcp` account receives no general sudo or
-systemd-control permission.
