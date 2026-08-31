@@ -1,6 +1,6 @@
 ---
 id: S31-quit-stops-what-it-started
-status: implemented
+status: pending
 tier: hermetic
 driver: desktop
 covered_by:
@@ -8,10 +8,16 @@ covered_by:
   - web/src-tauri/src/lib.rs
   - desktop 2026-08-12 — isolated owned, reused, takeover, and forced-timeout drive
 invariants: [8, 9]
-last_passed: 2026-08-12 — an owned long-running Work task paused and remained
-  resumable with its exact native session and stage; reused and takeover backends
-  survived Quit at the same instance; a SIGTERM-ignoring owned backend was forced
-  only after 45 seconds with the not-paused warning; rcp open remained healthy
+last_passed: 2026-08-12 — through the menu Quit only. An owned long-running Work
+  task paused and remained resumable with its exact native session and stage;
+  reused and takeover backends survived Quit at the same instance; a
+  SIGTERM-ignoring owned backend was forced only after 45 seconds with the
+  not-paused warning; rcp open remained healthy
+last_checked: >-
+  2026-08-29 — the menu Quit path still routes to the graceful stop, but a
+  measurement found that no other quit gesture reaches it. The scenario is
+  demoted to pending because its promise is written for quitting, not for one
+  menu item.
 ---
 
 # Quit stops what it started, and nothing else
@@ -66,6 +72,28 @@ as intended behavior rather than as something discovered later.
 Deliberately not possible: forced termination as the normal path, a Quit that
 stops a backend the app did not start, a Quit decision made from launch-time
 state, and a "quit anyway" that hides whether work was paused.
+
+## Known gap: only the menu Quit reaches this path
+
+Everything below is implemented for `Quit RCP` in the application menu and its
+Cmd+Q accelerator. That is one custom `MenuItem` routed through `on_menu_event`,
+and it runs the graceful stop.
+
+No other quit gesture does. The Dock icon's Quit, `osascript -e 'quit app
+"RCP"'`, and logout or restart all end the process without Tauri emitting
+`RunEvent::ExitRequested`, so the handler never runs. Measured on 2026-08-29 by
+logging every `ExitRequested` and observing none while the shell exited and its
+backend kept serving.
+
+The failure this produces is the opposite of the one described below. The work
+is not killed unpaused; the backend is left running, still holding port 8421, so
+the next launch adopts it through `--reuse-existing`. See
+[the desktop guide](../desktop.md) for the exact behavior and the manual stop.
+
+Closing this gap means handling `applicationShouldTerminate:` on the macOS
+application delegate. Widening the `RunEvent::ExitRequested` match arm does not
+work: the shutdown's own `app.exit(code)` re-enters that event with `Some(code)`,
+which is why the `code: None` guard is there.
 
 ## Drive
 

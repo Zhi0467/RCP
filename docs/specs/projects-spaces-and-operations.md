@@ -354,6 +354,27 @@ The same command implementation emits either interactive terminal guidance or
 structured progress for the desktop shell. RCP does not add CLI mirrors of
 ordinary graph, task, chat, or project-member actions.
 
+There is deliberately no uninstall operation. Install converges instead of
+stacking, so a failed install is corrected and rerun, and every refusal names
+its cause. Teardown is therefore an ordinary operating-system sequence, complete
+because `ServerLayout` keeps the whole footprint inside four locations plus the
+account:
+
+```bash
+sudo systemctl disable --now rcp.service rcp-backup.timer
+sudo rm -f /etc/systemd/system/rcp.service \
+  /etc/systemd/system/rcp-backup.service /etc/systemd/system/rcp-backup.timer
+sudo systemctl daemon-reload
+sudo rm -rf /etc/rcp /usr/local/bin/rcp
+sudo userdel -r rcp
+```
+
+`/run/rcp` is a systemd `RuntimeDirectory` and disappears when the service
+stops. Skip the backup units when no backup timer was configured. The last
+command takes `/home/rcp` with it, which is where the team space, project
+checkouts, and deploy keys live; deploy keys stay registered with GitHub until
+they are revoked there.
+
 Interactive output is the complete, plain-language operator workflow, not a
 terse diagnostic that assumes the wizard will explain the missing step. Before
 doing work, the CLI prints the numbered plan and distinguishes steps RCP will

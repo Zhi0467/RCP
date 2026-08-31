@@ -139,9 +139,11 @@ sudo /usr/bin/env PYTHONDONTWRITEBYTECODE=1 \
   "$PWD/.venv/bin/rcp" server install --team-name "My lab"
 ```
 
-The CLI prints its complete plan and pauses with exact commands when the private
-source repository needs a read-only deploy key. After that grant, initialize the
-team space as `rcp` and resume installation:
+The CLI prints its complete plan and pauses whenever a human must act, and you
+resume each time by rerunning the same command. While this repository is
+private, the first pause asks for a read-only deploy key so the `rcp` account
+can pull `main` for later updates; a public origin skips that pause entirely.
+The next pause creates the team space, because only a human may create one:
 
 ```bash
 sudo -u rcp -H /usr/local/bin/rcp space init --team --name "My lab"

@@ -30,6 +30,15 @@ pushes and failed or missing checks, and retains an explicit human merge. Record
 a live enforcement proof then. This public-sharing transition is outside the
 current one-lab implementation goal.
 
+The same transition retires the private-source deploy key. A public origin is
+readable without a grant, and going public means no supported private origin, so
+the `grant_needed` install pause, the `source_ed25519` key material, and the
+`rcp-source:<installation-id>` label that backup records for later revocation
+all become dead and are removed together. Per-project deploy keys are unrelated
+and stay: those are write grants on each team project's own repository. Until
+that transition, keep the README's deploy-key step conditional on a private
+origin rather than describing it as an unconditional install step.
+
 There is no permanent `dev` branch, and a server never consumes an arbitrary
 feature branch. Emergency changes during this private phase follow the same
 direct-`main`, scoped-verification discipline.

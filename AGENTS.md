@@ -168,6 +168,8 @@ These identifiers are cited from source and tests. Never renumber them.
   its capability explicitly.
 - Structured deliverables are file-backed. Conversational prose is the labelled
   provider answer; do not create a second answer file.
+- There is no server uninstall, by design: install converges, so a bad install is
+  corrected and rerun. Teardown is the sequence in the operations spec.
 - Limits and timeouts live in `limits.py`, except schema constants that belong
   beside the model they constrain.
 - Remote-executed code is shipped from its source module, never hand-copied into
@@ -212,6 +214,9 @@ These identifiers are cited from source and tests. Never renumber them.
 - Never trust a piped test command's exit status unless `pipefail` is set.
 - Use shared test wait helpers rather than copied short polling loops.
 - Literal expiry dates are test time bombs; derive them from the test clock.
+- Going public is one bundled transition, not a visibility flip: it turns on
+  branch protection and retires the private-source deploy key together. Read
+  `decisions/2026-08-27-main-is-the-server-update-channel.md` before any of it.
 - Two entrances are managed: the browser from `rcp serve`, and the source-built
   desktop app. Everyone builds from source, so the frozen release bundle is not
   a maintained target. Rebuild Tauri only when native files change.
