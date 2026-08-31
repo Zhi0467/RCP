@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b, T2c | — | T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c, T3a | — | T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -4847,7 +4847,56 @@ request whose canonical home change already committed remains fenced; restore
 never fabricates a release reversal or a second writable home. Re-entry is
 idempotent and cannot expose a proof earlier than the original protocol state.
 
-### T3a — Transfer archive manifest and explicit inventory
+### T3a — Transfer archive manifest and explicit inventory — complete
+
+**Status (2026-08-31): implemented, focused-tested, and independently audited
+once.** `src/rcp/transfer/` now owns a frozen
+`rcp-transfer-v1` manifest and external seal contract. The manifest binds both
+spaces and linked requests, project identity, source configuration/schema/RCP
+version, exact main and retained branch heads, a one-to-one historical actor
+mapping, bounded nonsecret warnings, sorted unique entry paths, and the exact
+payload byte total. Canonical Patch inventories must be contiguous through each
+declared head.
+
+The source `manifest.toml` is a required checksummed provenance entry under its
+own group, never a canonical-history or target-configuration entry. The raw
+source-release proof is the one required 32-byte control entry and its digest
+must equal T2a's commitment. The target-activation commitment is retained, but
+there is no group or valid path for its raw proof. Separate groups reserve the
+later typed operational records, rewritten RCP chats, Paper introduction, facts,
+kept artifacts, legacy kept views, and content-addressed provider histories
+without making any of them live execution state.
+
+Two read-only guards close the source inventory before byte capture. Direct
+app-data and `.research` root classifiers report unknown entries instead of
+following them, and their tests are checked against the existing concrete
+backup/canonical root owners. A SQLite schema walk starts at explicit project-id
+columns and follows foreign-key children; its exact 40-table result is frozen in
+the test. The complete SQLite schema is partitioned between that project-linked
+set and an explicit seven-table global set, so a differently named later table
+also appears as unclassified. T3b must consume the project inventory into its
+positive/excluded typed-record policy rather than copy raw rows.
+
+The audit found one high and four medium issues in its single round: shallow
+nested mutability, weak attribution-space validation, provider filenames that
+only looked content-addressed, incomplete whole-schema closure, and a duplicate
+codec literal. The manifest now snapshots graph heads and actors into frozen
+transfer-owned values, accepts historical actors only from the source or target
+space (the home-change record deliberately attributes both humans), requires
+provider filenames to equal their content digest, closes the entire schema, and
+uses the archive codec constant as the negotiation source of truth. The external
+seal can also reverify its manifest before relay. No second audit was run.
+
+Transfer-specific count, diagnostic, manifest, and fixed streaming-buffer
+bounds now live in `limits.py`. There is deliberately no aggregate scientific
+payload ceiling: an overlarge inventory/manifest fails visibly, while later
+capture and relay stream the exact declared bytes. The external envelope records
+the encoded archive digest/size after sealing without creating a self-hash inside
+the manifest.
+
+This packet does not query provider homes, export database rows, transform or
+copy project files, encode an archive, mutate either catalog, or publish target
+configuration. T3a-config, T3b/T3b-files, T3c, T4a, and T3f retain those owners.
 
 Own:
 

@@ -122,6 +122,15 @@ PROJECT_TRANSFER_SOURCE_PROBE_TIMEOUT_SECONDS = 30
 SESSION_SLICE_CACHE_MAX_BYTES = 512 * 1024 * 1024
 REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS = 180
 
+# Personal-to-team transfer archives fail visibly when an inventory or diagnostic
+# cannot be represented. Scientific payload bytes have no aggregate size ceiling;
+# later capture/relay owners stream them with this fixed buffer instead.
+PROJECT_TRANSFER_INVENTORY_MAX_ENTRIES = 100_000
+PROJECT_TRANSFER_DIAGNOSTIC_MAX_COUNT = 128
+PROJECT_TRANSFER_DIAGNOSTIC_MAX_CHARS = 4000
+PROJECT_TRANSFER_MANIFEST_MAX_BYTES = 64 * 1024 * 1024
+PROJECT_TRANSFER_COPY_BUFFER_BYTES = 1024 * 1024
+
 # Canonical-state advisory lock acquisition and holder lifecycle.
 STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS = 30.0
 STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS = 5.0

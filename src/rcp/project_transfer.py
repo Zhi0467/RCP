@@ -12,10 +12,11 @@ from rcp.limits import PROJECT_TRANSFER_SOURCE_PROBE_TIMEOUT_SECONDS
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.service import ProjectService
 from rcp.storage import ProjectTransferRepositorySource, ProjectTransferSourceConfiguration
+from rcp.transfer import TRANSFER_ARCHIVE_CODEC
 from rcp.transport.ssh import ssh_arguments
 
 PROJECT_TRANSFER_SCHEMA_GENERATION = 1
-PROJECT_TRANSFER_ARCHIVE_CODEC = "rcp-transfer-v1"
+PROJECT_TRANSFER_ARCHIVE_CODEC = TRANSFER_ARCHIVE_CODEC
 
 
 def capture_project_transfer_source(
