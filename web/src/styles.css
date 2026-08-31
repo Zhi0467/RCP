@@ -811,9 +811,13 @@ button:disabled {
   width: 100%;
 }
 .team-space-list-error,
+.team-space-connection-error,
 .add-team-error {
   color: var(--red);
   font-size: 12px;
+}
+.team-space-connection-error {
+  margin: 10px 0 0 23px;
 }
 .add-team-dialog {
   background: var(--paper);

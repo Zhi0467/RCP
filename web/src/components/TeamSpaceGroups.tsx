@@ -1,5 +1,5 @@
 import { LoaderCircle, Plus, RefreshCw, Server, WifiOff, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   addExistingDesktopTeamConnection,
   enrollDesktopTeamConnection,
@@ -13,10 +13,42 @@ import {
 
 type ConnectionState = "checking" | "available" | "unavailable";
 
-interface TeamConnectionView {
+export interface TeamConnectionView {
   connection: TeamConnectionMetadata;
   state: ConnectionState;
   error: string | null;
+}
+
+export function replaceTeamConnectionView(
+  current: TeamConnectionView[],
+  next: TeamConnectionView,
+): TeamConnectionView[] {
+  const index = current.findIndex(
+    (item) => item.connection.connection_id === next.connection.connection_id,
+  );
+  if (index < 0) return [...current, next];
+  const updated = [...current];
+  updated[index] = next;
+  return updated;
+}
+
+export function createTeamReconciliationTracker() {
+  let active = true;
+  const attempts = new Map<string, number>();
+  return {
+    begin(connectionId: string): number {
+      const attempt = (attempts.get(connectionId) ?? 0) + 1;
+      attempts.set(connectionId, attempt);
+      return attempt;
+    },
+    isCurrent(connectionId: string, attempt: number): boolean {
+      return active && attempts.get(connectionId) === attempt;
+    },
+    stop(): void {
+      active = false;
+      attempts.clear();
+    },
+  };
 }
 
 export function TeamSpaceGroups({
@@ -32,24 +64,24 @@ export function TeamSpaceGroups({
   const [connections, setConnections] = useState<TeamConnectionView[]>([]);
   const [loading, setLoading] = useState(desktop);
   const [listError, setListError] = useState<string | null>(null);
+  const reconciliation = useRef(createTeamReconciliationTracker());
 
   const updateConnection = useCallback((next: TeamConnectionView) => {
-    setConnections((current) => {
-      const without = current.filter(
-        (item) => item.connection.connection_id !== next.connection.connection_id,
-      );
-      return [...without, next];
-    });
+    setConnections((current) => replaceTeamConnectionView(current, next));
   }, []);
 
   const reconcile = useCallback(
     async (connection: TeamConnectionMetadata) => {
+      const tracker = reconciliation.current;
+      const attempt = tracker.begin(connection.connection_id);
       updateConnection({ connection, state: "checking", error: null });
       try {
         const session = await establishDesktopTeamSession(connection.connection_id);
+        if (!tracker.isCurrent(connection.connection_id, attempt)) return null;
         updateConnection({ connection: session.connection, state: "available", error: null });
         return session;
       } catch (error) {
+        if (!tracker.isCurrent(connection.connection_id, attempt)) return null;
         updateConnection({
           connection,
           state: "unavailable",
@@ -63,6 +95,8 @@ export function TeamSpaceGroups({
 
   useEffect(() => {
     if (!desktop) return;
+    const tracker = createTeamReconciliationTracker();
+    reconciliation.current = tracker;
     let stopped = false;
     setLoading(true);
     setListError(null);
@@ -80,11 +114,13 @@ export function TeamSpaceGroups({
       });
     return () => {
       stopped = true;
+      tracker.stop();
     };
   }, [desktop, reconcile]);
 
   const openProject = async (view: TeamConnectionView, projectId: string) => {
     const session = await reconcile(view.connection);
+    if (!session) return;
     await navigateDesktopToTeam(session.connection.connection_id, projectId);
   };
 
@@ -142,7 +178,7 @@ export function TeamConnectionGroup({
   onReconnect: () => void;
   onOpenProject: (projectId: string) => void;
 }) {
-  const { connection, state } = view;
+  const { connection, state, error } = view;
   return (
     <section
       className={`team-space-group ${state}`}
@@ -165,6 +201,11 @@ export function TeamConnectionGroup({
           </button>
         )}
       </header>
+      {state === "unavailable" && error && (
+        <p className="team-space-connection-error" role="alert">
+          {error}
+        </p>
+      )}
       <div className="team-project-shelf">
         {connection.last_known_cards.map((project) => (
           <button
@@ -202,6 +243,15 @@ export function AddTeamSpaceDialog({
   const [secret, setSecret] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const firstInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const returnFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    firstInputRef.current?.focus();
+    return () => returnFocus?.focus();
+  }, []);
 
   const close = () => {
     if (submitting) return;
@@ -241,11 +291,35 @@ export function AddTeamSpaceDialog({
   return (
     <div
       className="modal-backdrop"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          close();
+          return;
+        }
+        if (event.key !== "Tab") return;
+        const focusable = Array.from(
+          dialogRef.current?.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          ) ?? [],
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) close();
       }}
     >
       <section
+        ref={dialogRef}
         className="add-team-dialog"
         role="dialog"
         aria-modal="true"
@@ -283,6 +357,7 @@ export function AddTeamSpaceDialog({
           <label>
             SSH target
             <input
+              ref={firstInputRef}
               required
               spellCheck={false}
               placeholder="rcp@lab-server"

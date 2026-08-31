@@ -186,8 +186,11 @@ boundary and its real-WKWebView evidence are recorded in the
 
 The ordinary browser can use the team server UI when transport already exists,
 but it cannot own multi-space routing, credential storage, SSH tunnels, or
-server-command execution. Source mode is the supported client for this slice; a
-packaged Linux client is not required.
+server-command execution, so it does not advertise the native **Add team space**
+action. A saved connection that cannot establish a session stays visible with
+its bounded cached cards, the native failure diagnostic, and a reconnect action;
+it never becomes an apparently empty or local space. Source mode is the
+supported client for this slice; a packaged Linux client is not required.
 
 Project creation and transfer use one visible project wizard. Its three named
 intents are **Use an existing checkout personally**, **Create a shared team

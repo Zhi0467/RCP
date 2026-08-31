@@ -297,11 +297,18 @@ gate are deliberately future work and do not block this plan.
   `1788125943`, size 581, and mode `0600`; stopping the test bundle also stopped
   its owned backend. This final startup proof still does not substitute for the
   pending D4-D5 enrollment/navigation drive.
+- The D5 scoped read-only audit reported no Critical or High issue. Its findings
+  are closed: unavailable groups render their native diagnostic, ordinary
+  browsers omit the native Add action, saved group order remains stable, stale
+  reconciliation attempts cannot publish or navigate, and the Add dialog traps
+  focus, handles Escape, and restores prior focus. The risk-bearing helpers and
+  browser boundary now have focused coverage; 446 Web tests, typecheck, and the
+  production build pass.
 - Still open: the Mac was locked during the integrated milestone, so D4-D5 have
   not yet been driven through the visible app against the two disposable team
-  spaces. S105 remains pending, D5 still needs its one scoped read-only audit,
-  and no acceptance claim treats the build/startup proof as a substitute for
-  enrollment, cookie, navigation, unavailable-cache, or restart interaction.
+  spaces. S105 remains pending, and no acceptance claim treats the
+  build/startup proof or audit closure as a substitute for enrollment, cookie,
+  navigation, unavailable-cache, or restart interaction.
 
 #### 2026-08-28 — G0 baseline repair complete in the working tree
 
@@ -3509,8 +3516,11 @@ cards and one reconnect action; it does not block personal work.
 
 **Implemented 2026-08-30:** the grouped index, controlled Add flow, concurrent
 reconcile, cached-unavailable rendering, reconnect, and native navigation bridge
-are in `9be6c22` with 443 passing Web tests, typecheck, and build. The visible
-two-space drive and D5's one independent scoped audit remain open.
+are in `9be6c22`. The follow-up scoped audit found no Critical or High issue and
+closed its findings around visible errors, browser capability, stable ordering,
+stale reconciliation, keyboard behavior, and risk-bearing coverage. All 446 Web
+tests, typecheck, and the production build pass. Only the visible two-space drive
+remains open for D5.
 
 ### D6 — Fixed operator CLI bridge
 

@@ -11,9 +11,12 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { AddTeamSpaceDialog, TeamConnectionGroup } = await server.ssrLoadModule(
-  "/src/components/TeamSpaceGroups.tsx",
-);
+const {
+  AddTeamSpaceDialog,
+  TeamConnectionGroup,
+  createTeamReconciliationTracker,
+  replaceTeamConnectionView,
+} = await server.ssrLoadModule("/src/components/TeamSpaceGroups.tsx");
 
 after(() => server.close());
 
@@ -63,7 +66,42 @@ test("an unavailable team group keeps cached cards visible but inert", () => {
   assert.match(html, /Plasticity study/);
   assert.match(html, /<button[^>]*>.*Reconnect/s);
   assert.match(html, /class="team-project-card"[^>]*disabled=""/);
-  assert.doesNotMatch(html, /server unavailable/);
+  assert.match(html, /role="alert"[^>]*>server unavailable/);
+});
+
+test("connection updates preserve saved registry order", () => {
+  const second = {
+    ...connection,
+    connection_id: "44444444-4444-4444-8444-444444444444",
+    display_name: "Second Lab",
+  };
+  const checking = [connection, second].map((item) => ({
+    connection: item,
+    state: "checking",
+    error: null,
+  }));
+  const updated = replaceTeamConnectionView(checking, {
+    connection: second,
+    state: "available",
+    error: null,
+  });
+
+  assert.deepEqual(
+    updated.map((view) => view.connection.connection_id),
+    [connection.connection_id, second.connection_id],
+  );
+  assert.equal(updated[1].state, "available");
+});
+
+test("superseded and stopped reconciliation attempts cannot publish", () => {
+  const tracker = createTeamReconciliationTracker();
+  const first = tracker.begin(connection.connection_id);
+  const second = tracker.begin(connection.connection_id);
+
+  assert.equal(tracker.isCurrent(connection.connection_id, first), false);
+  assert.equal(tracker.isCurrent(connection.connection_id, second), true);
+  tracker.stop();
+  assert.equal(tracker.isCurrent(connection.connection_id, second), false);
 });
 
 test("Add team space keeps the one credential in a password field and out of URLs", () => {

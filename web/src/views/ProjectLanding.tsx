@@ -4,6 +4,7 @@ import { ExperimentBoard } from "../components/ExperimentBoard";
 import { LandingIdentityMenu } from "../components/LandingIdentityMenu";
 import { ProjectDock } from "../components/ProjectDock";
 import { TeamSpaceGroups } from "../components/TeamSpaceGroups";
+import { isDesktopRuntime } from "../desktopRuntime";
 import type { ProjectTab } from "../projectTabs";
 import type {
   ExperimentLoopIndexEntry,
@@ -116,6 +117,7 @@ export function ProjectLanding({
   identityError,
   onRequestIdentityName,
 }: Props) {
+  const desktop = isDesktopRuntime();
   const [covers, setCovers] = useState<Record<string, CoverStyle>>(() => readCoverPreferences());
   const [openMenuProject, setOpenMenuProject] = useState<string | null>(null);
   const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
@@ -199,7 +201,7 @@ export function ProjectLanding({
           identity={identity}
           identityError={identityError}
           onRequestName={onRequestIdentityName}
-          onAddTeamSpace={() => setAddTeamOpen(true)}
+          onAddTeamSpace={desktop ? () => setAddTeamOpen(true) : undefined}
         />
       </header>
 

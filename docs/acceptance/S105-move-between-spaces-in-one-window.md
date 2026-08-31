@@ -9,8 +9,8 @@ invariants: [8]
 
 # One window, several spaces, no confusion about which one you are in
 
-This scenario is human-confirmed and pending implementation. Its boundaries are
-in [Spaces and durable identity](../specs/projects-spaces-and-operations.md#spaces-and-durable-identity)
+This scenario is human-confirmed and pending live qualification. Its boundaries
+are in [Spaces and durable identity](../specs/projects-spaces-and-operations.md#spaces-and-durable-identity)
 and [Confirmed team desktop target](../specs/api-web-and-desktop-projections.md#confirmed-team-desktop-target).
 
 Every RCP backend serves its own interface. So selecting a team space points the

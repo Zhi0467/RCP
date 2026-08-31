@@ -136,10 +136,12 @@ export function PersonalTeamSeam({
         <span>Desktop</span>
       </header>
       <div className="landing-team-seam-actions">
-        <button type="button" onClick={onAddTeamSpace} disabled={!onAddTeamSpace}>
-          <Link2 size={13} aria-hidden="true" />
-          Add team space
-        </button>
+        {onAddTeamSpace && (
+          <button type="button" onClick={onAddTeamSpace}>
+            <Link2 size={13} aria-hidden="true" />
+            Add team space
+          </button>
+        )}
       </div>
     </section>
   );

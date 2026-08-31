@@ -172,6 +172,13 @@ test("the personal identity panel opens the desktop Add team space flow", () => 
   assert.doesNotMatch(html, /password|access token|private key/i);
 });
 
+test("the ordinary browser does not advertise the desktop Add team space action", () => {
+  const html = renderToStaticMarkup(React.createElement(ProjectLanding, landingProps()));
+
+  assert.doesNotMatch(html, /Add team space/);
+  assert.doesNotMatch(html, /Add your lab server/);
+});
+
 function findElement(node, predicate) {
   if (Array.isArray(node)) {
     for (const child of node) {
