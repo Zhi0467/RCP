@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
@@ -12,6 +14,7 @@ from rcp.agents import AgentEvent
 from rcp.runs.experiment_loop import experiment_loop_semantic_ending
 from rcp.runs.tasks.graph import (
     _agent_read_dirs,
+    _continuation_graph_context,
     _record_context_receipt,
     _stage_graph_context,
     _stage_prepared_graph_context,
@@ -20,6 +23,7 @@ from rcp.runs.tasks.graph import (
 )
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord
+from rcp.transfer import TransferArchiveEntry
 
 from .helpers import (
     agent_patch_json,
@@ -259,6 +263,29 @@ def test_clean_retry_reuses_prepared_metadata_without_inspecting_provider_logs(
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
+    assert service.imported_sources is not None
+    imported_bytes = b'{"type":"assistant","message":"imported evidence"}\n'
+    imported_sha256 = hashlib.sha256(imported_bytes).hexdigest()
+    capture_root = tmp_path / "capture"
+    capture_path = capture_root / "provider-history" / "codex" / imported_sha256
+    capture_path.parent.mkdir(parents=True)
+    capture_path.write_bytes(imported_bytes)
+    service.imported_sources.publish(
+        capture_root,
+        (
+            TransferArchiveEntry(
+                archive_path=f"provider-history/codex/{imported_sha256}",
+                group="provider_history",
+                sha256=imported_sha256,
+                size_bytes=len(imported_bytes),
+            ),
+        ),
+    )
+    imported_inventory = service.imported_source_inventory(
+        "refresh",
+        manifest.machine_map["laptop"],
+    )
+    assert imported_inventory is not None
     context = service.assemble_run(RunRequest(run_truth_scope=["repo-a"]), surface="refresh")
     parent_stage = tmp_path / "parent-stage"
     parent_stage.mkdir()
@@ -301,6 +328,9 @@ def test_clean_retry_reuses_prepared_metadata_without_inspecting_provider_logs(
     }
 
     class RetryStore:
+        def __init__(self) -> None:
+            self.receipts = []
+
         def agent_task(self, operation_id):
             return records.get(operation_id)
 
@@ -308,12 +338,16 @@ def test_clean_retry_reuses_prepared_metadata_without_inspecting_provider_logs(
             assert operation_id == "parent"
             return '{"summary":"retained","ops":[]}'
 
+        def record_agent_task_receipt(self, operation_id, category, payload, **_kwargs):
+            self.receipts.append((operation_id, category, payload))
+
+    retry_store = RetryStore()
     execution = type(
         "Execution",
         (),
         {
             "operation_id": "retry",
-            "store": RetryStore(),
+            "store": retry_store,
             "reuses_native_checkpoint": False,
         },
     )()
@@ -331,13 +365,61 @@ def test_clean_retry_reuses_prepared_metadata_without_inspecting_provider_logs(
         kind="refresh",
         request=RunRequest(run_truth_scope=["repo-a"]),
         execution_host="",
+        imported_source_inventory=imported_inventory,
     )
 
     assert retry is not None
     assert retry.prepared is not None
     assert retry.prepared.context.source_roots == context.source_roots
+    assert retry.prepared.context.imported_source_roots == context.imported_source_roots
     assert retry.prepared.context.ingestion_watermark == context.ingestion_watermark
     assert retry.retained_patch_text == '{"summary":"retained","ops":[]}'
+
+    resume_execution = type(
+        "Execution",
+        (),
+        {
+            "operation_id": "parent",
+            "store": retry_store,
+            "reuses_native_checkpoint": True,
+        },
+    )()
+    resumed = _continuation_graph_context(
+        service,
+        resume_execution,
+        kind="refresh",
+        request=RunRequest(run_truth_scope=["repo-a"]),
+        execution_host="",
+        imported_source_inventory=imported_inventory,
+    )
+    assert resumed.context.imported_source_fingerprint == imported_inventory.fingerprint
+
+    shutil.rmtree(service.imported_sources.root)
+    empty_inventory = service.imported_source_inventory(
+        "refresh",
+        manifest.machine_map["laptop"],
+    )
+    changed_retry = _try_reuse_graph_context(
+        service,
+        execution,
+        kind="refresh",
+        request=RunRequest(run_truth_scope=["repo-a"]),
+        execution_host="",
+        imported_source_inventory=empty_inventory,
+    )
+    assert changed_retry is not None
+    assert changed_retry.prepared is None
+    assert "imported provider history changed" in (changed_retry.context_reason or "")
+
+    with pytest.raises(ValueError, match="imported provider history changed"):
+        _continuation_graph_context(
+            service,
+            resume_execution,
+            kind="refresh",
+            request=RunRequest(run_truth_scope=["repo-a"]),
+            execution_host="",
+            imported_source_inventory=empty_inventory,
+        )
 
 
 @pytest.mark.asyncio

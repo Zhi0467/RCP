@@ -59,6 +59,7 @@ from rcp.runs.shared import (
 )
 from rcp.service import ProjectService, RunRequest
 from rcp.skills.staging import stage_skill_selection
+from rcp.sources import ImportedProviderSourceInventory
 from rcp.storage import AgentTaskRecord
 from rcp.transport import (
     RemoteRunStage,
@@ -137,6 +138,7 @@ def _continuation_graph_context(
     kind: str,
     request: RunRequest,
     execution_host: str,
+    imported_source_inventory: ImportedProviderSourceInventory | None,
 ) -> _PreparedGraphContext:
     """Load the immutable context owned by a native-session continuation.
 
@@ -177,6 +179,13 @@ def _continuation_graph_context(
         problems.append(
             f"graph revision moved from {prepared.graph_revision} to {current_revision}"
         )
+    try:
+        service.validate_imported_source_context(
+            prepared.context,
+            imported_source_inventory,
+        )
+    except ValueError as exc:
+        problems.append(str(exc))
     if problems:
         reason = "; ".join(problems)
         execution.store.record_agent_task_receipt(
@@ -198,6 +207,7 @@ def _try_reuse_graph_context(
     kind: str,
     request: RunRequest,
     execution_host: str,
+    imported_source_inventory: ImportedProviderSourceInventory | None,
 ) -> _GraphRetryState | None:
     lineage = _retry_lineage(execution)
     if not lineage or execution is None:
@@ -224,6 +234,7 @@ def _try_reuse_graph_context(
                 raise ValueError("execution host changed")
             if value.graph_revision != graph_revision:
                 raise ValueError("graph revision changed")
+            service.validate_imported_source_context(value.context, imported_source_inventory)
             prepared = value
             prepared_parent = candidate
             break
@@ -401,6 +412,15 @@ async def stream_graph_run(
     execution_host = execution_machine.host
     provider_binary = execution_machine.provider_paths.get(profile.provider)
     remote_stage: RemoteRunStage | None = None
+    try:
+        imported_source_inventory = await asyncio.to_thread(
+            service.imported_source_inventory,
+            surface,
+            execution_machine,
+        )
+    except (OSError, ValueError) as exc:
+        yield _sse(AgentEvent(event="error", text=str(exc)))
+        return
     workspace = service.history.workspace
     canonical_state_location = workspace.location
     run_lock = workspace.run_lock(
@@ -455,6 +475,7 @@ async def stream_graph_run(
                     kind=kind,
                     request=request,
                     execution_host=execution_host,
+                    imported_source_inventory=imported_source_inventory,
                 )
                 if execution is not None and reuses_native_checkpoint
                 else None
@@ -468,6 +489,7 @@ async def stream_graph_run(
                     kind=kind,
                     request=request,
                     execution_host=execution_host,
+                    imported_source_inventory=imported_source_inventory,
                 )
             )
             if continuation_prepared is not None:
@@ -483,7 +505,11 @@ async def stream_graph_run(
                     _record_context_reuse(
                         execution, reused=False, reason=retry_state.context_reason
                     )
-                context = service.assemble_run(request, surface)
+                context = service.assemble_run(
+                    request,
+                    surface,
+                    imported_source_inventory=imported_source_inventory,
+                )
                 _record_context_receipt(execution, context, surface=surface)
                 _report_source_errors(execution, context.source_errors)
                 graph_revision = context.graph_revision
@@ -660,7 +686,7 @@ async def stream_graph_run(
                     ontology_extensions=context.ontology_extensions,
                     graph_path=context.graph_path,
                     research_path=context.research_md_path,
-                    provider_log_roots=context.source_roots,
+                    provider_log_roots=context.all_source_roots(),
                     ingestion_watermark=context.ingestion_watermark,
                     repositories=[
                         {"alias": item.alias, "host": item.host, "path": item.path}
@@ -1228,14 +1254,16 @@ def _record_context_receipt(
 ) -> None:
     if execution is None:
         return
-    source_root_count = sum(len(roots) for roots in context.source_roots.values())
+    native_source_root_count = sum(len(roots) for roots in context.source_roots.values())
+    imported_source_root_count = sum(len(roots) for roots in context.imported_source_roots.values())
     execution.store.record_agent_task_receipt(
         execution.operation_id,
         "context_assembled",
         {
             "surface": surface,
             "repository_count": len(context.repositories),
-            "source_root_count": source_root_count,
+            "source_root_count": native_source_root_count + imported_source_root_count,
+            "imported_source_root_count": imported_source_root_count,
             "source_warnings": list(context.source_errors),
             "source_error_count": len(context.source_errors),
             "graph_revision": context.graph_revision,
@@ -1289,12 +1317,12 @@ def _agent_read_dirs(
             state_root = Path(state_repository.path) / ".research"
             if str(state_root) not in {str(item) for item in read_dirs}:
                 read_dirs.append(state_root)
-        for roots in context.source_roots.values():
+        for roots in context.all_source_roots().values():
             read_dirs.extend(Path(item) for item in roots)
         return _deduplicate_paths(read_dirs)
     read_dirs = [item for item in read_dirs if item.exists()]
     read_dirs.append(service.manifest.research_dir)
-    for roots in context.source_roots.values():
+    for roots in context.all_source_roots().values():
         for item in roots:
             read_dirs.append(Path(item).expanduser())
     return _deduplicate_paths(read_dirs)

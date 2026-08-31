@@ -10,6 +10,7 @@ from rcp.config import Manifest
 from rcp.core.models import GraphState, Patch
 from rcp.core.operations import SetCoverageOperation
 from rcp.history.delta import RefreshDelta
+from rcp.providers import PROVIDERS
 from rcp.transport import RepositoryAccess
 
 
@@ -38,12 +39,25 @@ class RunContext(BaseModel):
     state_repository: str
     ontology_extensions: bool = False
     source_errors: list[str]
+    # Native provider homes remain separate from immutable project-owned imports.
     source_roots: dict[str, list[str]] = Field(default_factory=dict)
+    imported_source_roots: dict[str, list[str]] = Field(default_factory=dict)
+    imported_source_fingerprint: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
     def prompt_payload(self) -> dict[str, Any]:
         """Return the direct-source representation shown to an ingest agent."""
 
         return self.model_dump(mode="json")
+
+    def all_source_roots(self) -> dict[str, list[str]]:
+        combined = {provider: list(paths) for provider, paths in self.source_roots.items()}
+        for provider, paths in self.imported_source_roots.items():
+            values = combined.setdefault(provider, [])
+            values.extend(path for path in paths if path not in values)
+        return combined
 
 
 class ChatRelation(BaseModel):
@@ -85,6 +99,8 @@ class ContextAssembler:
         repository_access: dict[str, RepositoryAccess] | None = None,
         refresh_delta: RefreshDelta | None = None,
         source_roots: dict[str, list[str]] | None = None,
+        imported_source_roots: dict[str, list[str]] | None = None,
+        imported_source_fingerprint: str | None = None,
         source_errors: list[str] | None = None,
     ) -> RunContext:
         selected = run_truth_scope or self.manifest.agent.default_run_truth_scope
@@ -125,6 +141,8 @@ class ContextAssembler:
             ontology_extensions=_has_ontology_extensions(state),
             source_errors=source_errors or [],
             source_roots=source_roots or {},
+            imported_source_roots=imported_source_roots or {},
+            imported_source_fingerprint=imported_source_fingerprint,
         )
 
     def chat_context(
@@ -180,21 +198,14 @@ class ContextAssembler:
         """Name every configured provider source root on the execution machine."""
         machine = self.manifest.machine_map.get(execution_machine or "")
         remote = bool(machine and machine.host)
-        claude = (
-            self.manifest.sources.remote_claude_roots
-            if remote
-            else self.manifest.sources.claude_roots
-        )
-        codex = (
-            self.manifest.sources.remote_codex_roots
-            if remote
-            else self.manifest.sources.codex_roots
-        )
 
         def display(values: list[str]) -> list[str]:
             return [str(Path(value).expanduser()) if not remote else value for value in values]
 
-        return {"claude": display(claude), "codex": display(codex)}
+        return {
+            profile.id: display(profile.session_roots(self.manifest.sources, remote=remote))
+            for profile in sorted(PROVIDERS.values(), key=lambda item: item.id)
+        }
 
     def paper_pointers(
         self,

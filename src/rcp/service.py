@@ -102,6 +102,8 @@ from rcp.sources import (
     AppChatOrigin,
     ConversationIndex,
     ConversationIndexer,
+    ImportedProviderSourceInventory,
+    ImportedProviderSourceStore,
     preflight_provider_roots,
     project_cache_roots,
 )
@@ -960,6 +962,11 @@ class ProjectService:
         self.provider_skills = provider_skills
         self._data_dir = data_dir
         self._project_id = project_id or history.project_id
+        self.imported_sources = (
+            ImportedProviderSourceStore(data_dir, self._project_id)
+            if data_dir is not None and self._project_id is not None
+            else None
+        )
         self._repository_inventory = repository_inventory
         self._task_continuation_session = task_continuation_session
         state_repository = manifest.repository_map[manifest.state.repository]
@@ -2272,6 +2279,8 @@ class ProjectService:
         self,
         request: RunRequest,
         surface: AgentSurface = "refresh",
+        *,
+        imported_source_inventory: ImportedProviderSourceInventory | None = None,
     ) -> RunContext:
         materialization = self.history.current_materialization()
         state = self.history.require_writable(materialization.state)
@@ -2299,6 +2308,15 @@ class ProjectService:
         assembler = ContextAssembler(self.manifest)
         source_roots = assembler.source_roots(execution_machine.alias)
         source_errors = preflight_provider_roots(source_roots, execution_machine)
+        imported = imported_source_inventory or self.imported_source_inventory(
+            surface,
+            execution_machine,
+        )
+        imported_source_roots = (
+            imported.roots(self.imported_sources.root)
+            if self.imported_sources is not None and imported.files
+            else {}
+        )
         context = assembler.assemble(
             state,
             request.run_truth_scope,
@@ -2307,9 +2325,47 @@ class ProjectService:
                 self.history.refresh_delta(materialization) if surface == "refresh" else None
             ),
             source_roots=source_roots,
+            imported_source_roots=imported_source_roots,
+            imported_source_fingerprint=(
+                imported.fingerprint if imported is not None and imported.files else None
+            ),
             source_errors=source_errors,
         )
         return context
+
+    def imported_source_inventory(
+        self,
+        surface: AgentSurface,
+        execution_machine: MachineConfig,
+    ) -> ImportedProviderSourceInventory | None:
+        if self.imported_sources is None or surface not in {"seed", "refresh"}:
+            return None
+        inventory = self.imported_sources.inventory()
+        if inventory.files and execution_machine.host:
+            raise ValueError(
+                "Imported provider histories require remote task staging before Seed/Refresh "
+                "can run over SSH."
+            )
+        return inventory
+
+    def validate_imported_source_context(
+        self,
+        context: RunContext,
+        inventory: ImportedProviderSourceInventory | None,
+    ) -> None:
+        expected_roots = (
+            inventory.roots(self.imported_sources.root)
+            if inventory is not None and inventory.files and self.imported_sources is not None
+            else {}
+        )
+        expected_fingerprint = (
+            inventory.fingerprint if inventory is not None and inventory.files else None
+        )
+        if (
+            context.imported_source_roots != expected_roots
+            or context.imported_source_fingerprint != expected_fingerprint
+        ):
+            raise ValueError("imported provider history changed after this context was prepared")
 
     def graph_task_contract(
         self,

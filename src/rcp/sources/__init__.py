@@ -9,6 +9,11 @@ from rcp.sources.cache import (
     legacy_shared_cache_roots,
     project_cache_roots,
 )
+from rcp.sources.imported import (
+    ImportedProviderSourceFile,
+    ImportedProviderSourceInventory,
+    ImportedProviderSourceStore,
+)
 from rcp.sources.indexer import (
     AppChatOrigin,
     ConversationIndex,
@@ -35,6 +40,9 @@ __all__ = [
     "ConversationSession",
     "ConversationSlice",
     "OriginalConversationSource",
+    "ImportedProviderSourceFile",
+    "ImportedProviderSourceInventory",
+    "ImportedProviderSourceStore",
     "preflight_provider_roots",
     "RebuildableCache",
     "RebuildableCacheMetrics",

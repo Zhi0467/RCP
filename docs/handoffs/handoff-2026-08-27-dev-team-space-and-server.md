@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b, T2c, T3a, T3b, T3b-export, T3b-files, T3c | — | T3a-config, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c, T3a, T3b, T3b-export, T3b-files, T3c, T3d | — | T3a-config, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -5286,7 +5286,34 @@ profile's exact local or SSH machine/account through the indexer's existing
 transport; they never read a different account's provider home, accept an ad
 hoc host/path, or fall back to the desktop.
 
-### T3d — Imported provider-source owner and local discovery
+### T3d — Imported provider-source owner and local discovery — complete
+
+`ImportedProviderSourceStore` now owns the exact target path
+`project-sources/<project-id>/provider-history`, publishes a complete staged
+directory with one atomic rename, and seals its project id, sorted provider/file
+inventory, byte total, and fingerprint in a private read-only manifest. It
+accepts only known providers and T3c's content-addressed `provider_history`
+entries. Exact repeated publication is idempotent; another inventory is refused.
+
+Every discovery rereads the sealed inventory and checks the complete directory,
+regular-file/read-only mode, size, and content digest. Missing, rewritten,
+writable, symlinked, special, unknown, or extra entries are corruption and fail
+before Seed/Refresh begins. `RunContext` keeps native and imported root maps in
+separate fields, while the launch contract combines their readable locations
+only at the final prompt/read-scope boundary. The ordinary conversation index
+continues to enumerate native provider homes only, so imported bytes cannot
+become a provider Resume/Retry session.
+
+Focused tests cover exact and idempotent publication, injected pre-publication
+failure and equal-publication-race cleanup, required directory/file modes,
+missing, rewritten, writable, symlinked, and FIFO entries, local Seed/Refresh
+discovery, the native/imported type boundary, negative native-session
+discovery, and Resume/Retry fingerprint revalidation. The correction pass also
+moved inventory hashing out of the async canonical-state lock and made remote
+Seed/Refresh fail visibly before any desktop-local path can reach an SSH run.
+This packet does not stage imported bytes to an SSH run, include them in
+lifecycle backup/update/delete paths, or orchestrate transfer import; T3d-ssh,
+T3e, and T3f retain those owners.
 
 Own:
 
