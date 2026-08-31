@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d | — | T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh | — | T3e, T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -5387,16 +5387,64 @@ symlink, special file, or unreadable owned root is durable project-source
 corruption: Seed/Refresh must fail visibly rather than omit that source and
 continue with a falsely incomplete corpus.
 
-### T3d-ssh — Imported provider-source staging for remote Seed/Refresh
+### T3d-ssh — Imported provider-source staging for remote Seed/Refresh — complete
+
+Remote Seed/Refresh now reads T3d's validated inventory before the canonical
+run lock, copies only those content-addressed project-owned files into the
+existing remote input batch, and replaces only `RunContext`'s imported roots
+with the immutable stage paths. Native roots remain the configured execution-
+account paths. The transport accepts the concrete `ImportedProviderSourceStore`
+rather than an arbitrary source directory, opens only inventory-named files,
+rechecks their private parents and read-only modes, and hashes every copied file
+against the sealed inventory.
+
+Before the first provider launch, RCP commits the ordinary batched inputs and
+runs the exact shipped remote verifier against the staged directory. The
+verifier uses no-follow/nonblocking descriptors, rejects writable, missing,
+extra, symlink, special, size-mismatched, or digest-mismatched entries, and
+recomputes the project-bound inventory fingerprint. The task receipt records
+only that fingerprint, file count, byte count, and whether a prior checkpoint
+was reused. Conversation contents and native provider paths are absent.
+
+Prepared remote contexts bind their imported roots to the exact retained stage.
+Native Resume verifies that stage before continuing. Clean Retry reuses a prior
+prepared context only after the same readback; if the stage is missing or
+changed, existing context reuse is rejected and the retry rebuilds from the
+currently validated durable inventory. Local Seed/Refresh is unchanged and
+continues reading the durable project-owned roots directly.
+
+Focused coverage drives fresh staging, exact remote finalize/readback,
+interrupted native Resume, corrupt-checkpoint refusal, clean-retry context
+rebuild, local discovery, ordinary graph context/retry behavior, transport
+batching, and the source-file identity of the shipped remote program. The 144
+focused tests and scoped pre-commit hooks pass. No real SSH account was used in
+this packet; the remote program and SSH transport boundary were executed
+hermetically against local disposable stages. The later S98/V1 live drive still
+owes one reachable-SSH Refresh with interruption and removed-stage retry.
+
+The single read-only audit found one High clean-retry ownership defect, two
+Medium transport/performance issues, and one Low outage-classification issue.
+The one correction pass now stages and rebinds the exact same inventory into
+every new remote retry stage, and proves that a Resume of that retry reads its
+own checkpoint. The verifier receives its bounded inventory over stdin instead
+of an argv-sized JSON value. Imported copying runs in a worker thread and no
+longer repeats the durable store's full inventory walk; SSH unavailability now
+propagates separately, while a proved missing or changed stage enters clean
+Retry. The exact staging copy still occurs while the graph run owns its normal
+canonical-state lease, so the reachable-SSH drive should include a realistically
+large imported corpus when assessing run-start latency. No second audit round
+was run.
 
 Own:
 
 - narrow imported-source staging and effective-context rebinding in
   `src/rcp/runs/tasks/graph.py`;
 - `src/rcp/transport/run_stage.py` only for the bounded immutable-directory
-  fingerprint/readback seam the current stage owner lacks; and
+  fingerprint/readback seam the current stage owner lacks, with the exact
+  shipped verifier in `src/rcp/transport/remote_verify_imported_sources.py`; and
 - `tests/test_imported_provider_source_remote_staging.py` with fresh,
-  interrupted, resumed, and clean-retry SSH drives.
+  interrupted, resumed, and clean-retry SSH drives, plus the shipped-source
+  identity check in `tests/test_remote_scripts.py`.
 
 When Seed or Refresh executes over SSH, copy only T3d's validated project-owned
 imported-source inventory into that task's existing remote `inputs` stage before

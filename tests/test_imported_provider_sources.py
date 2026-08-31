@@ -188,7 +188,7 @@ def test_imported_provider_source_fifo_fails_without_blocking(
             store.inventory()
 
 
-def test_remote_seed_refuses_local_imported_provider_paths(
+def test_remote_seed_inventory_is_available_for_task_staging(
     manifest,
     tmp_path: Path,
 ) -> None:
@@ -204,11 +204,13 @@ def test_remote_seed_refuses_local_imported_provider_paths(
         project_id=PROJECT_ID,
     )
 
-    with pytest.raises(ValueError, match="remote task staging"):
-        service.imported_source_inventory(
-            "seed",
-            MachineConfig(alias="server", host="rcp.example"),
-        )
+    inventory = service.imported_source_inventory(
+        "seed",
+        MachineConfig(alias="server", host="rcp.example"),
+    )
+
+    assert inventory is not None
+    assert inventory.files[0].sha256 == entries[0].sha256
 
 
 def test_seed_context_keeps_imported_sources_separate_from_native_provider_homes(

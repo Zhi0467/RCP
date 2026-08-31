@@ -14,6 +14,7 @@ covered_by:
   - tests/test_transfer_project_files.py
   - tests/test_transfer_provider_history_selection.py
   - tests/test_imported_provider_sources.py
+  - tests/test_imported_provider_source_remote_staging.py
   - tests/test_transfer_project_configuration.py
 invariants: [1, 3, 6, 11]
 ---
@@ -50,7 +51,11 @@ exact archive prefix, and replays main plus every branch in an isolated
 workspace before import. Its receipt binds the exact final review and archive
 manifest, not only the resulting target configuration. Machine relay/import,
 source/target activation and cleanup orchestration, and the desktop drive remain
-open. Its boundaries are
+open. Remote Seed/Refresh staging is implemented hermetically: it copies only
+the project-owned sealed inventory, preserves the remote account's native
+roots, verifies the immutable task input before launch and Resume, and rejects
+a missing or changed prepared checkpoint into clean Retry. The reachable-SSH
+interruption/removal drive in step 11 remains pending. Its boundaries are
 in [Project identity and home](../specs/projects-spaces-and-operations.md#project-identity-and-home)
 and [Personal-to-team transfer archive](../specs/projects-spaces-and-operations.md#personal-to-team-transfer-archive).
 

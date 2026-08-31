@@ -2340,24 +2340,21 @@ class ProjectService:
     ) -> ImportedProviderSourceInventory | None:
         if self.imported_sources is None or surface not in {"seed", "refresh"}:
             return None
-        inventory = self.imported_sources.inventory()
-        if inventory.files and execution_machine.host:
-            raise ValueError(
-                "Imported provider histories require remote task staging before Seed/Refresh "
-                "can run over SSH."
-            )
-        return inventory
+        return self.imported_sources.inventory()
 
     def validate_imported_source_context(
         self,
         context: RunContext,
         inventory: ImportedProviderSourceInventory | None,
+        *,
+        expected_roots: dict[str, list[str]] | None = None,
     ) -> None:
-        expected_roots = (
-            inventory.roots(self.imported_sources.root)
-            if inventory is not None and inventory.files and self.imported_sources is not None
-            else {}
-        )
+        if expected_roots is None:
+            expected_roots = (
+                inventory.roots(self.imported_sources.root)
+                if inventory is not None and inventory.files and self.imported_sources is not None
+                else {}
+            )
         expected_fingerprint = (
             inventory.fingerprint if inventory is not None and inventory.files else None
         )

@@ -1058,7 +1058,9 @@ under `<RCP_DATA_DIR>/project-sources/<project-id>/provider-history/<provider>/`
 with a checksummed inventory receipt and read-only modes. Local Seed/Refresh
 receives those validated project-owned roots separately from native provider
 homes. Missing, rewritten, writable, symlinked, special, or undeclared entries
-fail the run visibly. Remote staging remains owned by T3d-ssh.
+fail the run visibly. Remote Seed/Refresh stages only that sealed inventory,
+rebinds imported roots to the immutable task input, and verifies the retained
+fingerprint before Resume or prepared-context reuse.
 
 The target validates the complete manifest, checksums, identities, canonical
 replay, record references, and excluded-field rules before mutation. It stages

@@ -36,6 +36,7 @@ def test_every_shipped_script_is_the_module_source() -> None:
         "remote_lock_holder.py",
         "remote_archive_research.py",
         "remote_read_kept_view.py",
+        "remote_verify_imported_sources.py",
     ):
         source = _remote_script(name)
         on_disk = (Path(__file__).parent.parent / "src" / "rcp" / "transport" / name).read_text()

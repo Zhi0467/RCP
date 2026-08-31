@@ -62,6 +62,7 @@ from rcp.skills.staging import stage_skill_selection
 from rcp.sources import ImportedProviderSourceInventory
 from rcp.storage import AgentTaskRecord
 from rcp.transport import (
+    ImportedProviderSourceReadback,
     RemoteRunStage,
     RunLockCancelled,
     RunLockLease,
@@ -71,6 +72,7 @@ from rcp.transport import (
 
 logger = logging.getLogger(__name__)
 _PREPARED_GRAPH_CONTEXT_FILE = "prepared-context.json"
+_IMPORTED_PROVIDER_SOURCES_LABEL = "imported-provider-history"
 
 
 class _PreparedGraphContext(BaseModel):
@@ -94,13 +96,64 @@ class _GraphRetryState:
     retained_patch_text: str | None = None
     context_reason: str | None = None
     progress_reason: str | None = None
+    imported_source_readback: ImportedProviderSourceReadback | None = None
+
+
+def _remote_imported_source_roots(
+    inventory: ImportedProviderSourceInventory | None,
+    staged_root: str,
+) -> dict[str, list[str]]:
+    if inventory is None or not inventory.files:
+        return {}
+    return inventory.roots(Path(staged_root))
+
+
+def _verify_prepared_imported_sources(
+    service: ProjectService,
+    context: RunContext,
+    inventory: ImportedProviderSourceInventory | None,
+    parent: AgentTaskRecord,
+) -> ImportedProviderSourceReadback | None:
+    if not parent.stage_host:
+        service.validate_imported_source_context(context, inventory)
+        return None
+    if inventory is None or not inventory.files:
+        service.validate_imported_source_context(context, inventory, expected_roots={})
+        return None
+    if not parent.stage_root:
+        raise ValueError("the prior attempt has no retained imported-source stage")
+    staged_root = str(
+        PurePosixPath(parent.stage_root) / "inputs" / _IMPORTED_PROVIDER_SOURCES_LABEL
+    )
+    service.validate_imported_source_context(
+        context,
+        inventory,
+        expected_roots=_remote_imported_source_roots(inventory, staged_root),
+    )
+    stage = RemoteRunStage(parent.stage_host)
+    stage_available = stage.directory_exists(parent.stage_root)
+    if stage_available is None:
+        raise StateUnavailable("could not reach the saved remote staging directory")
+    if not stage_available:
+        raise ValueError("the saved remote staging directory is unavailable")
+    stage.attach(parent.stage_root)
+    return stage.verify_imported_provider_sources(
+        inventory,
+        _IMPORTED_PROVIDER_SOURCES_LABEL,
+    )
 
 
 def _read_prepared_graph_context(parent: AgentTaskRecord) -> _PreparedGraphContext:
     if not parent.stage_root:
         raise ValueError("the prior attempt has no retained stage")
     if parent.stage_host:
-        stage = RemoteRunStage(parent.stage_host).attach(parent.stage_root)
+        stage = RemoteRunStage(parent.stage_host)
+        stage_available = stage.directory_exists(parent.stage_root)
+        if stage_available is None:
+            raise StateUnavailable("could not reach the saved remote staging directory")
+        if not stage_available:
+            raise ValueError("the prior attempt has no retained stage")
+        stage.attach(parent.stage_root)
         assert stage.root is not None
         raw = stage.read_input_text(_PREPARED_GRAPH_CONTEXT_FILE)
     else:
@@ -151,7 +204,9 @@ def _continuation_graph_context(
         raise ValueError("The saved continuation task is unavailable. Retry this task.")
     try:
         prepared = _read_prepared_graph_context(record)
-    except (OSError, StateUnavailable, ValueError) as exc:
+    except StateUnavailable:
+        raise
+    except (OSError, ValueError) as exc:
         reason = " ".join(str(exc).split())[:400]
         execution.store.record_agent_task_receipt(
             execution.operation_id,
@@ -179,10 +234,13 @@ def _continuation_graph_context(
         problems.append(
             f"graph revision moved from {prepared.graph_revision} to {current_revision}"
         )
+    imported_source_readback = None
     try:
-        service.validate_imported_source_context(
+        imported_source_readback = _verify_prepared_imported_sources(
+            service,
             prepared.context,
             imported_source_inventory,
+            record,
         )
     except ValueError as exc:
         problems.append(str(exc))
@@ -196,6 +254,12 @@ def _continuation_graph_context(
         )
         raise ValueError(
             f"The saved prepared context no longer matches ({reason}). Retry this task."
+        )
+    if imported_source_readback is not None:
+        _record_imported_source_stage_receipt(
+            execution,
+            imported_source_readback,
+            reused=True,
         )
     return prepared
 
@@ -218,6 +282,7 @@ def _try_reuse_graph_context(
     graph_revision = int(service.graph_snapshot()["revision"])
     prepared = None
     prepared_parent = None
+    imported_source_readback = None
     context_errors: list[str] = []
     for candidate in lineage:
         try:
@@ -234,11 +299,16 @@ def _try_reuse_graph_context(
                 raise ValueError("execution host changed")
             if value.graph_revision != graph_revision:
                 raise ValueError("graph revision changed")
-            service.validate_imported_source_context(value.context, imported_source_inventory)
+            imported_source_readback = _verify_prepared_imported_sources(
+                service,
+                value.context,
+                imported_source_inventory,
+                candidate,
+            )
             prepared = value
             prepared_parent = candidate
             break
-        except (OSError, StateUnavailable, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             context_errors.append(f"attempt {candidate.attempt}: {exc}")
 
     progress_parent = None
@@ -260,6 +330,12 @@ def _try_reuse_graph_context(
             break
         progress_errors.append(f"attempt {candidate.attempt}: no retained provider progress")
 
+    if imported_source_readback is not None:
+        _record_imported_source_stage_receipt(
+            execution,
+            imported_source_readback,
+            reused=True,
+        )
     return _GraphRetryState(
         lineage=tuple(lineage),
         prepared=prepared,
@@ -269,6 +345,7 @@ def _try_reuse_graph_context(
         retained_patch_text=retained_patch_text if progress_parent else None,
         context_reason="; ".join(context_errors)[:1200] if prepared is None else None,
         progress_reason="; ".join(progress_errors)[:1200] if progress_parent is None else None,
+        imported_source_readback=imported_source_readback,
     )
 
 
@@ -441,6 +518,7 @@ async def stream_graph_run(
     applied = False
     retry_state: _GraphRetryState | None = None
     graph_revision = 0
+    imported_stage_verified = False
     validator_budget = PatchValidationBudget()
     validator_staged: StagedCommandMailbox | None = None
     try:
@@ -496,10 +574,14 @@ async def stream_graph_run(
                 context = continuation_prepared.context
                 graph_revision = continuation_prepared.graph_revision
                 _record_context_reuse(execution, reused=True)
+                imported_stage_verified = bool(
+                    imported_source_inventory is not None and imported_source_inventory.files
+                )
             elif retry_state is not None and retry_state.prepared is not None:
                 context = retry_state.prepared.context
                 graph_revision = retry_state.prepared.graph_revision
                 _record_context_reuse(execution, reused=True)
+                imported_stage_verified = retry_state.imported_source_readback is not None
             else:
                 if retry_state is not None:
                     _record_context_reuse(
@@ -536,13 +618,16 @@ async def stream_graph_run(
                     if execution is not None:
                         assert remote_stage.root is not None
                         execution.checkpoint_stage(execution_host, str(remote_stage.root))
-                    if retry_state is None or retry_state.prepared is None:
-                        context = _stage_graph_context(
-                            context,
-                            service,
-                            remote_stage,
-                            execution_machine.alias,
-                        )
+                    context = await asyncio.to_thread(
+                        _stage_graph_context,
+                        context,
+                        service,
+                        remote_stage,
+                        execution_machine.alias,
+                        imported_source_inventory=imported_source_inventory,
+                    )
+                    if imported_source_inventory is not None and imported_source_inventory.files:
+                        imported_stage_verified = False
                 workspace = Path(str(remote_stage.workspace))
                 patch_path = str(remote_stage.workspace / "patch.json")
             else:
@@ -796,6 +881,28 @@ async def stream_graph_run(
                 if reuses_native_checkpoint or rounds
                 else None
             )
+            if (
+                remote_stage is not None
+                and imported_source_inventory is not None
+                and imported_source_inventory.files
+                and not imported_stage_verified
+            ):
+                try:
+                    await asyncio.to_thread(remote_stage.finalize_inputs)
+                    imported_readback = await asyncio.to_thread(
+                        remote_stage.verify_imported_provider_sources,
+                        imported_source_inventory,
+                        _IMPORTED_PROVIDER_SOURCES_LABEL,
+                    )
+                except (OSError, StateUnavailable, ValueError) as exc:
+                    yield _sse(AgentEvent(event="error", text=str(exc)))
+                    return
+                _record_imported_source_stage_receipt(
+                    execution,
+                    imported_readback,
+                    reused=False,
+                )
+                imported_stage_verified = True
             _record_agent_launch_receipt(
                 execution,
                 request,
@@ -1264,6 +1371,7 @@ def _record_context_receipt(
             "repository_count": len(context.repositories),
             "source_root_count": native_source_root_count + imported_source_root_count,
             "imported_source_root_count": imported_source_root_count,
+            "imported_source_fingerprint": context.imported_source_fingerprint,
             "source_warnings": list(context.source_errors),
             "source_error_count": len(context.source_errors),
             "graph_revision": context.graph_revision,
@@ -1272,6 +1380,26 @@ def _record_context_receipt(
                 if context.ingestion_watermark is not None
                 else None
             ),
+        },
+    )
+
+
+def _record_imported_source_stage_receipt(
+    execution: AgentTaskExecution | None,
+    readback: ImportedProviderSourceReadback,
+    *,
+    reused: bool,
+) -> None:
+    if execution is None:
+        return
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "imported_source_stage_verified",
+        {
+            "fingerprint": readback.fingerprint,
+            "file_count": readback.file_count,
+            "payload_size_bytes": readback.payload_size_bytes,
+            "reused_checkpoint": reused,
         },
     )
 
@@ -1337,9 +1465,35 @@ def _stage_graph_context(
     service: ProjectService,
     stage: RemoteRunStage,
     execution_machine: str,
+    *,
+    imported_source_inventory: ImportedProviderSourceInventory | None = None,
 ) -> RunContext:
-    """Rebind only canonical state and repository pointers for a remote run."""
+    """Stage project-owned imports and rebind remote-readable context pointers."""
 
-    return context.model_copy(
-        update=_stage_context_paths(context, service, stage, execution_machine)
+    local_imported_roots = (
+        imported_source_inventory.roots(service.imported_sources.root)
+        if imported_source_inventory is not None
+        and imported_source_inventory.files
+        and service.imported_sources is not None
+        else {}
+    )
+    local_context = context.model_copy(update={"imported_source_roots": local_imported_roots})
+    service.validate_imported_source_context(local_context, imported_source_inventory)
+    updates = _stage_context_paths(local_context, service, stage, execution_machine)
+    if imported_source_inventory is not None and imported_source_inventory.files:
+        if service.imported_sources is None:
+            raise ValueError("imported provider source store is unavailable")
+        staged_root = stage.put_imported_provider_sources(
+            service.imported_sources,
+            imported_source_inventory,
+            _IMPORTED_PROVIDER_SOURCES_LABEL,
+        )
+        updates["imported_source_roots"] = _remote_imported_source_roots(
+            imported_source_inventory,
+            staged_root,
+        )
+    else:
+        updates["imported_source_roots"] = {}
+    return local_context.model_copy(
+        update=updates,
     )
