@@ -14,7 +14,7 @@ from contextlib import aclosing, asynccontextmanager, suppress
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import (
     FastAPI,
@@ -199,6 +199,9 @@ from rcp.web_assets import web_dist_path
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from rcp.server_ops.restore import RestoreOperationJournal
+
 
 def _terminate_uncommitted_restore_process() -> None:
     """Exit cleanly so Restart=on-failure leaves the disabled unit stopped."""
@@ -220,6 +223,50 @@ def _installed_rollback_journals(update_root: Path) -> tuple[Path, ...]:
         raise RuntimeError(
             "Installed update recovery state is unsafe; run sudo rcp server update."
         ) from exc
+
+
+def inspect_installed_replacement_startup(
+    app_data: Path,
+    server_layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
+) -> tuple[bool, RestoreOperationJournal | None]:
+    """Refuse incomplete replacement before a server can touch its data root."""
+
+    installed_layout = app_data.resolve(strict=False) == server_layout.data_dir.resolve(
+        strict=False
+    )
+    if not installed_layout:
+        return False, None
+
+    restore_boundary = None
+    if server_layout.restore_operations_root.exists():
+        from rcp.server_ops.restore import RestoreRefused, unfinished_restore_operation
+
+        try:
+            pending_restore = unfinished_restore_operation(
+                server_layout,
+                expected_uid=os.geteuid(),
+            )
+        except (OSError, RestoreRefused) as exc:
+            raise RuntimeError(
+                "Installed restore state is unsafe; keep the service stopped and run sudo rcp "
+                "server restore."
+            ) from exc
+        if pending_restore is not None:
+            if pending_restore.phase != "activation_ready":
+                raise RuntimeError(
+                    "Installed replacement restore is incomplete; run sudo rcp server restore."
+                )
+            restore_boundary = pending_restore
+
+    if server_layout.update_checkpoints_root.exists():
+        pending_rollback_journals = _installed_rollback_journals(
+            server_layout.update_checkpoints_root
+        )
+        if pending_rollback_journals:
+            raise RuntimeError(
+                "Installed rollback restoration is incomplete; run sudo rcp server update."
+            )
+    return True, restore_boundary
 
 
 class TeamPublicAuthBodyLimit:
@@ -319,35 +366,10 @@ def create_app(
     if identity.data_dir_id != data_dir_identity(app_data):
         raise ValueError("Server metadata does not identify this RCP data directory.")
     update_runtime_boundary: UpdateRuntimeBoundary | None = None
-    restore_runtime_boundary = None
-    installed_update_layout = app_data == server_layout.data_dir.resolve(strict=False)
-    if installed_update_layout and server_layout.restore_operations_root.exists():
-        from rcp.server_ops.restore import RestoreRefused, unfinished_restore_operation
-
-        try:
-            pending_restore = unfinished_restore_operation(
-                server_layout,
-                expected_uid=os.geteuid(),
-            )
-        except (OSError, RestoreRefused) as exc:
-            raise RuntimeError(
-                "Installed restore state is unsafe; keep the service stopped and run sudo rcp "
-                "server restore."
-            ) from exc
-        if pending_restore is not None:
-            if pending_restore.phase != "activation_ready":
-                raise RuntimeError(
-                    "Installed replacement restore is incomplete; run sudo rcp server restore."
-                )
-            restore_runtime_boundary = pending_restore
-    if installed_update_layout and server_layout.update_checkpoints_root.exists():
-        pending_rollback_journals = _installed_rollback_journals(
-            server_layout.update_checkpoints_root
-        )
-        if pending_rollback_journals:
-            raise RuntimeError(
-                "Installed rollback restoration is incomplete; run sudo rcp server update."
-            )
+    installed_update_layout, restore_runtime_boundary = inspect_installed_replacement_startup(
+        app_data,
+        server_layout,
+    )
     runtime_admission_gate = RuntimeAdmissionGate()
     background_admission_gate = RuntimeAdmissionGate()
     if (

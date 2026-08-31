@@ -26,12 +26,13 @@ What each open drive is waiting on:
 - **F6d** — the Ubuntu 22.04/24.04 update workflow. It is implemented and pushed
   with closed admission, systemd cutover, loud rollback, crash re-entry, and a
   disposable-host death drive. Hosted-runner access is restored. Exact-head run
-  [33422149838](https://github.com/Zhi0467/RCP/actions/runs/33422149838) drove both
-  Ubuntu releases through installation and one step farther into the root-death
-  rollback drive. The service then chose the documented safe fail-closed outcome
-  while the test waited only for the alternate fenced-control-plane outcome.
-  Cleanup passed on both releases. The two-outcome wait is repaired locally and
-  F6d remains open only until this follow-up is pushed and the matrix passes.
+  [33422984697](https://github.com/Zhi0467/RCP/actions/runs/33422984697) drove both
+  Ubuntu releases through installation and successful rollback recovery, then
+  exposed one production startup-order defect: the systemd entrypoint acquired
+  its data-directory lock before checking the unfinished rollback journal, so a
+  direct start could recreate an empty live root during replacement. The gate is
+  now moved before any data-root access with a focused regression. F6d remains
+  open only until that production correction is pushed and the matrix passes.
 - **P6a** — the complete team-service and GitHub live qualification.
 - **O4d** — the fresh-host Ubuntu restore drive.
 - **D4a, D4b, D5** — the integrated source-built two-space desktop drive.
@@ -321,6 +322,21 @@ gate are deliberately future work and do not block this plan.
   a persistent active service without its control socket. The full hermetic live
   module, its two outcome regressions, Ruff, and format check pass locally. This
   remains a live-test correction; production rollback behavior did not change.
+- Commit `ba4f1fc` is clean in exact-head CI run
+  [33422971518](https://github.com/Zhi0467/RCP/actions/runs/33422971518): Python
+  3.11 and 3.12, lint and full pre-commit, all Web checks, and old-data upgrade
+  pass. Live run
+  [33422984697](https://github.com/Zhi0467/RCP/actions/runs/33422984697) accepted
+  both safe fenced-service outcomes and completed rollback recovery on Ubuntu
+  22.04 and 24.04, then found a real pre-lock startup defect on both. The
+  installed service checked unfinished restore/update journals inside app
+  construction, after `instance_lock` had already recreated a missing data root.
+  The shared installed-replacement inspection now runs from the CLI entrypoint
+  before lock acquisition and remains reused by app construction. Focused main,
+  restore, cutover, and live-harness tests pass outside the macOS PTY sandbox;
+  the regression proves an unfinished journal is found without creating the
+  absent data directory. This production correction still needs its exact-head
+  CI and two-Ubuntu rerun.
 
 #### 2026-08-31 — V2 current-tree baseline and compatibility repair complete
 
@@ -2151,7 +2167,7 @@ gate are deliberately future work and do not block this plan.
 The planned code paths are implemented and hermetically verified. Closure still
 requires real-environment evidence:
 
-1. push the final two-outcome live-test correction and pass the Ubuntu
+1. push the pre-lock replacement-journal gate and pass the Ubuntu
    22.04/24.04 source install/update/rollback qualification; then extend retained
    live evidence through provisioning, backup/restore, member removal, and both
    fixed operator routes;

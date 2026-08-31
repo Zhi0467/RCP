@@ -23,7 +23,7 @@ from fastapi import FastAPI
 
 from rcp import __version__
 from rcp.api import create_app
-from rcp.api.app import default_data_dir
+from rcp.api.app import default_data_dir, inspect_installed_replacement_startup
 from rcp.limits import (
     BROWSER_OPEN_DELAY_SECONDS,
     SERVER_HEALTH_REQUEST_TIMEOUT_SECONDS,
@@ -169,6 +169,10 @@ def main() -> None:
     if args.command == "space":
         _run_space_command(args, data_dir)
         return
+    try:
+        inspect_installed_replacement_startup(data_dir)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     _require_team_bind_is_loopback(args, data_dir)
     if args.command == "serve" and args.reuse_existing:
         if args.force:

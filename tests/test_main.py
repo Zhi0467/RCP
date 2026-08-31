@@ -31,6 +31,7 @@ from rcp.__main__ import (
     instance_lock,
     main,
 )
+from rcp.api.app import inspect_installed_replacement_startup
 from rcp.server_runtime import (
     ServerMetadata,
     read_server_metadata,
@@ -89,6 +90,54 @@ def test_instance_lock_rejects_a_second_server_for_the_same_data(tmp_path) -> No
         instance_lock(tmp_path),
     ):
         pass
+
+
+def test_main_checks_installed_replacement_before_touching_the_data_root(
+    tmp_path, monkeypatch
+) -> None:
+    data_dir = tmp_path / "missing-data"
+    calls = []
+
+    def refuse(path):
+        calls.append(path)
+        raise RuntimeError("Installed rollback restoration is incomplete")
+
+    monkeypatch.setattr("rcp.__main__.default_data_dir", lambda: data_dir)
+    monkeypatch.setattr("rcp.__main__.inspect_installed_replacement_startup", refuse)
+    monkeypatch.setattr(
+        "rcp.__main__.instance_lock",
+        lambda *_args, **_kwargs: pytest.fail("startup touched the data-directory lock"),
+    )
+    monkeypatch.setattr(sys, "argv", ["rcp", "serve"])
+
+    with pytest.raises(SystemExit, match="rollback restoration is incomplete"):
+        main()
+
+    assert calls == [data_dir.resolve()]
+    assert not data_dir.exists()
+
+
+def test_installed_replacement_check_finds_rollback_without_creating_data(
+    tmp_path, monkeypatch
+) -> None:
+    data_dir = tmp_path / "missing-data"
+    update_root = tmp_path / "update-checkpoints"
+    update_root.mkdir()
+    journal = update_root / "operation" / "rollback-journal.json"
+    layout = Namespace(
+        data_dir=data_dir,
+        restore_operations_root=tmp_path / "restore-operations",
+        update_checkpoints_root=update_root,
+    )
+    monkeypatch.setattr(
+        "rcp.api.app._installed_rollback_journals",
+        lambda path: (journal,) if path == update_root else (),
+    )
+
+    with pytest.raises(RuntimeError, match="rollback restoration is incomplete"):
+        inspect_installed_replacement_startup(data_dir, layout)
+
+    assert not data_dir.exists()
 
 
 def test_space_init_creates_a_named_team_without_locking_or_serving(
