@@ -13,7 +13,7 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -140,7 +140,7 @@ class GitCredentialManager:
         runner: CommandRunner | None = None,
     ) -> None:
         self.layout = layout
-        self._runner = runner or _run_process
+        self._runner = runner or partial(_run_process, cwd=self.layout.service_home)
 
     def prepare_key(
         self,
@@ -1298,11 +1298,13 @@ def _remote_helper_source() -> str:
 def _run_process(
     argv: tuple[str, ...],
     *,
+    cwd: Path | None = None,
     timeout: float,
 ) -> subprocess.CompletedProcess[str]:
     try:
         process = subprocess.Popen(
             argv,
+            cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

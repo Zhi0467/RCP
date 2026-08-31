@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from rcp.server_ops import git_credentials as server_git_credentials
 from rcp.server_ops.git_credentials import (
     DeployKeyMaterial,
     GitCredentialManager,
@@ -403,6 +404,37 @@ def test_default_runner_returns_bounded_stdout_stderr_and_exit_status() -> None:
     assert result.returncode == 7
     assert result.stdout == "ready\n"
     assert result.stderr == "note\n"
+
+
+def test_default_manager_runner_starts_from_the_service_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _layout(tmp_path)
+    layout.service_home.mkdir(parents=True)
+    calls: list[tuple[tuple[str, ...], Path | None, float]] = []
+
+    def fake_run(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path | None = None,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, cwd, timeout))
+        return _result(stdout=json.dumps(_receipt(layout, _local_machine(layout))))
+
+    monkeypatch.setattr(server_git_credentials, "_run_process", fake_run)
+
+    GitCredentialManager(layout).prepare_key(
+        _local_machine(layout),
+        REPOSITORY,
+        space_id=SPACE_ID,
+        project_id=PROJECT_ID,
+        repository_alias=ALIAS,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1] == layout.service_home
 
 
 def test_default_runner_keeps_the_timeout_after_output_pipes_close() -> None:
