@@ -595,6 +595,34 @@ class AuthorizedHuman(BaseModel):
     _normalize_display_name = field_validator("display_name", mode="before")(normalize_display_name)
 
 
+class ProjectHomeTransfer(BaseModel):
+    """One ordered, human-authorized change to a project's writable home."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    previous_home_space_id: str
+    new_home_space_id: str
+    source_released_by: AuthorizedHuman
+    target_admitted_by: AuthorizedHuman
+
+    _validate_uuid4 = field_validator(
+        "project_id",
+        "previous_home_space_id",
+        "new_home_space_id",
+    )(_canonical_uuid4)
+
+    @model_validator(mode="after")
+    def authority_matches_both_space_scoped_boundaries(self) -> ProjectHomeTransfer:
+        if self.previous_home_space_id == self.new_home_space_id:
+            raise ValueError("a project home transfer must change spaces")
+        if self.source_released_by.space_id != self.previous_home_space_id:
+            raise ValueError("the source-release actor must belong to the previous home space")
+        if self.target_admitted_by.space_id != self.new_home_space_id:
+            raise ValueError("the target-admission actor must belong to the new home space")
+        return self
+
+
 class GraphBranchMetadata(BaseModel):
     """Canonical identity and current head for one episode-owned graph branch."""
 
@@ -765,6 +793,7 @@ class Patch(BaseModel):
     experiment_control_node_id: str | None = None
     experiment_decision_bundle: list[ExperimentDecisionPin] = Field(default_factory=list)
     project_identity: ProjectIdentity | None = None
+    project_home_transfer: ProjectHomeTransfer | None = None
     authorized_by: AuthorizedHuman | None = None
     profile: Literal["ordinary", "orchestrator"] | None = None
     task_id: str | None = Field(default=None, min_length=1)

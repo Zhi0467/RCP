@@ -458,12 +458,24 @@ def _validate_identity_shape(ctx: OpContext) -> None:
                 "Project identity is legal only on identity patches.",
                 ctx.revision,
             )
+        if patch.project_home_transfer is not None:
+            ctx.report.reject(
+                "unexpected-project-home-transfer",
+                "Project home transfer is legal only on identity patches.",
+                ctx.revision,
+            )
         return
 
-    if patch.project_identity is None:
+    if patch.project_identity is None and patch.project_home_transfer is None:
         ctx.report.reject(
             "missing-project-identity",
             "Identity patches require exactly one project identity payload.",
+            ctx.revision,
+        )
+    elif patch.project_identity is not None and patch.project_home_transfer is not None:
+        ctx.report.reject(
+            "conflicting-identity-payloads",
+            "Identity patches cannot combine a project identity and home transfer.",
             ctx.revision,
         )
     if patch.ops:

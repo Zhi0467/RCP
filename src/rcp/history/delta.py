@@ -118,6 +118,11 @@ def render_revision_summary(
             sentences = [f"Project created in {home_space_id}."]
         else:
             sentences = [f"Project identity adopted in {home_space_id}."]
+    elif patch.kind == "identity" and patch.project_home_transfer is not None:
+        transfer = patch.project_home_transfer
+        sentences = [
+            f"Project moved from {transfer.previous_home_space_id} to {transfer.new_home_space_id}."
+        ]
     else:
         labels = _state_labels(previous_state) | _state_labels(state)
         sentences = [

@@ -37,6 +37,7 @@ from rcp.core.models import (
     GraphBranchMetadata,
     GraphState,
     Patch,
+    ProjectHomeTransfer,
     ProjectIdentity,
     ReplayFailure,
 )
@@ -499,6 +500,73 @@ class HistoryManager:
             )
             assert appended.project_identity is not None
             return appended.project_identity
+
+    def transfer_project_home(
+        self,
+        *,
+        project_id: str,
+        previous_home_space_id: str,
+        new_home_space_id: str,
+        source_released_by: AuthorizedHuman,
+        target_admitted_by: AuthorizedHuman,
+    ) -> ProjectHomeTransfer:
+        """Append one exact home change after both spaces recorded human authority."""
+
+        transfer = ProjectHomeTransfer(
+            project_id=project_id,
+            previous_home_space_id=previous_home_space_id,
+            new_home_space_id=new_home_space_id,
+            source_released_by=source_released_by,
+            target_admitted_by=target_admitted_by,
+        )
+        if self.expected_space_id != transfer.previous_home_space_id:
+            raise ProjectIdentityConflict(
+                "Only the project's current source space may append its home transfer."
+            )
+
+        with self.workspace.transaction(), self._append_lock():
+            self._reload_manifest()
+            current = self.materialize(write_outputs=False)
+            self.require_writable(current.state)
+            identity = self._project_identity_from_replay(current)
+            if identity is None:
+                raise ProjectIdentityConflict(
+                    "Canonical project identity must exist before its home can transfer."
+                )
+            if identity.project_id != transfer.project_id:
+                raise ProjectIdentityConflict(
+                    "The home transfer names a different canonical project identity."
+                )
+            if identity.home_space_id == transfer.new_home_space_id:
+                existing = next(
+                    (
+                        patch.project_home_transfer
+                        for patch in reversed(current.patches)
+                        if patch.admission == "accepted" and patch.project_home_transfer == transfer
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    return existing
+            if identity.home_space_id != transfer.previous_home_space_id:
+                raise ProjectIdentityConflict(
+                    "The home transfer does not continue from the project's current home."
+                )
+            self._require_expected_home(identity)
+            patch = Patch(
+                kind="identity",
+                author=None,
+                producer="system",
+                summary="Project moved to its admitted team space.",
+                ops=[],
+                project_home_transfer=transfer,
+            )
+            appended, _result = self._append_locked(
+                patch,
+                discard_on_reject=True,
+            )
+            assert appended.project_home_transfer is not None
+            return appended.project_home_transfer
 
     def current_accepted_revision(self) -> int:
         """Return the cached accepted revision without reading canonical patch bodies."""
@@ -1539,26 +1607,47 @@ class HistoryManager:
         self,
         result: MaterializationResult,
     ) -> ProjectIdentity | None:
-        identities = [
-            patch.project_identity
-            for patch in result.patches
-            if patch.kind == "identity"
-            and patch.project_identity is not None
-            and (report := result.reports.get(patch.revision)) is not None
-            and not report.rejected
-        ]
-        if not identities:
-            return None
-        identity = identities[0]
-        conflict = next((item for item in identities[1:] if item != identity), None)
-        if conflict is not None:
-            raise ProjectIdentityConflict(
-                "Canonical history contains conflicting project identity revisions "
-                f"({identity.project_id} in {identity.home_space_id} and "
-                f"{conflict.project_id} in {conflict.home_space_id}); it is read-only until "
-                "the history is repaired."
+        initial_identity: ProjectIdentity | None = None
+        current_identity: ProjectIdentity | None = None
+        for patch in result.patches:
+            report = result.reports.get(patch.revision)
+            if patch.kind != "identity" or report is None or report.rejected:
+                continue
+            if patch.project_identity is not None:
+                candidate = patch.project_identity
+                if initial_identity is None:
+                    initial_identity = candidate
+                    current_identity = candidate
+                    continue
+                if candidate != initial_identity:
+                    raise ProjectIdentityConflict(
+                        "Canonical history contains conflicting project identity revisions "
+                        f"({initial_identity.project_id} in "
+                        f"{initial_identity.home_space_id} and "
+                        f"{candidate.project_id} in {candidate.home_space_id}); it is read-only "
+                        "until the history is repaired."
+                    )
+                continue
+            transfer = patch.project_home_transfer
+            if transfer is None:
+                continue
+            if current_identity is None:
+                raise ProjectIdentityConflict(
+                    "Canonical history changes project home before establishing its identity; "
+                    "it is read-only until the history is repaired."
+                )
+            if (
+                transfer.project_id != current_identity.project_id
+                or transfer.previous_home_space_id != current_identity.home_space_id
+            ):
+                raise ProjectIdentityConflict(
+                    "Canonical project home-transfer history does not continue from its current "
+                    "identity and home; it is read-only until the history is repaired."
+                )
+            current_identity = current_identity.model_copy(
+                update={"home_space_id": transfer.new_home_space_id}
             )
-        return identity
+        return current_identity
 
     def _require_expected_home(self, identity: ProjectIdentity) -> None:
         if self.expected_space_id is not None and identity.home_space_id != self.expected_space_id:

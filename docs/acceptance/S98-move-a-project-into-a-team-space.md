@@ -3,13 +3,16 @@ id: S98-move-a-project-into-a-team-space
 status: pending
 tier: live
 driver: pytest + browser + desktop + ssh
-covered_by: none
+covered_by: tests/test_project_home_transfer.py
 invariants: [1, 3, 6]
 ---
 
 # Hand a personal project over to the lab, once
 
-This scenario is human-confirmed and pending implementation. Its boundaries are
+This live scenario remains pending end-to-end implementation. Its canonical
+home-transfer record and ordered replay boundary are implemented and covered by
+`tests/test_project_home_transfer.py`; the linked request, archive, relay,
+activation, and desktop drive remain open. Its boundaries are
 in [Project identity and home](../specs/projects-spaces-and-operations.md#project-identity-and-home)
 and [Personal-to-team transfer archive](../specs/projects-spaces-and-operations.md#personal-to-team-transfer-archive).
 

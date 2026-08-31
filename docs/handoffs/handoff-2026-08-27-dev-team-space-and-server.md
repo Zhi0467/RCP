@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | — | — | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1 | — | T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -4565,7 +4565,54 @@ native SSH action, not an admin API.
 
 ## Transfer packets
 
-### T1 — Append-only canonical home-transfer schema and replay
+### T1 — Append-only canonical home-transfer schema and replay — complete
+
+**Status (2026-08-30): implemented, focused-tested, and independently audited
+once.** The canonical `identity` Patch kind now carries exactly one of the
+immutable initial `ProjectIdentity` nameplate or a `ProjectHomeTransfer`. A home
+transfer records the unchanged project id, distinct previous and new space ids,
+and independently space-bound source-release and target-admission humans. It is
+system-produced, cannot carry graph operations or agent authorship, and appends
+under the existing synchronous workspace transaction and append lock.
+
+`HistoryManager` reduces accepted identity records in order. A transfer before
+the nameplate, a different project id, or a previous home that is not the
+currently derived home halts project identity replay. After a committed move,
+the former home fails the existing guarded write admission while the new home
+can write. Exact retries return the committed record without another revision;
+different or stale retries fail closed, including under concurrent calls.
+Historical replay depends only on the recorded space-scoped actors and never on
+current membership.
+
+The implementation deliberately did not add a second graph state, generic
+transition store, or another Patch kind. Project home is derived beside the
+existing identity reducer rather than materialized into `GraphState`.
+`transition_models.py` remains unchanged because its models describe graph
+operation traces; the only transition-envelope change is allowing the new
+canonical field through `transitions.py`. Existing identity Patch files without
+the new optional field are read without rewriting their bytes.
+
+Coverage proves valid and ordered moves, mismatched replay rejection, source
+fencing and target admission, actor-space validation without cross-space user-id
+equivalence, agent-authoring rejection, exact retry/concurrency behavior,
+revision summaries, and old Patch JSON compatibility. T1 does **not** create the
+linked cross-space request or human-confirmation protocol, export/import an
+archive, prepare or relay checkouts, activate a target catalog, clean up a
+source, or expose transfer UI. Those remain T2a through T5b; S98 therefore stays
+pending until its live two-space drive passes.
+
+The one read-only audit found two release-blocking compatibility edges, both
+fixed before commit. First, nullable Patch defaults participate in the durable
+transition-id envelope even when their serialized field did not exist in old
+history. `project_home_transfer` is therefore explicitly omitted from that
+envelope when null, and a regression pins a literal pre-field transition hash,
+replays JSON with the field absent, and proves the file is not rewritten.
+Second, comparing a later nameplate to the derived current home would have
+accepted `Identity(P, A) -> Transfer(A, B) -> Identity(P, B)`. Replay now keeps
+the immutable initial identity separate from the derived current identity, so
+every later nameplate is compared only with the initial one while transfers
+advance only the current home. A target-home second-nameplate regression proves
+that sequence remains a conflict. No further audit round was requested or run.
 
 Own:
 

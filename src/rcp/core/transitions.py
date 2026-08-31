@@ -320,6 +320,7 @@ class GraphTransitionManager:
             "source_effect_id",
             "source_effect_sha256",
             "project_identity",
+            "project_home_transfer",
             "authorized_by",
             "profile",
             "task_id",
@@ -826,6 +827,11 @@ def _transition_id(
     envelopes = []
     for patch in patches:
         document = patch.model_dump(mode="json")
+        # T1 added this optional canonical identity payload after transition ids
+        # were already durable.  It is not valid on a transition-producing
+        # patch, so its model default must not change historical hashes.
+        if document.get("project_home_transfer") is None:
+            document.pop("project_home_transfer", None)
         for field in (
             "revision",
             "created_at",
