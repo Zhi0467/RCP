@@ -261,10 +261,11 @@ gate are deliberately future work and do not block this plan.
   tests derive their detach time from the current test clock instead of expiring
   on a literal date. Focused regressions and the independent read-only audit found
   no remaining issue in this slice.
-- A clean npm install reports `GHSA-2v37-7h3g-55p8` through build-time
-  `vite -> postcss -> nanoid@3.3.16`. RCP does not call the affected custom
-  generator API. No adjacent dependency update was bundled into this baseline
-  repair; resolve and retest it as a separate dependency-maintenance change.
+- The clean install's `GHSA-2v37-7h3g-55p8` report was resolved separately and
+  narrowly by moving the lockfile within Vite's existing ranges to
+  `postcss@8.5.26` and `nanoid@3.3.18`; `npm audit --omit=dev` now reports zero
+  vulnerabilities. No direct dependency or application API changed, and the
+  independent lockfile audit found no unintended package change.
 - The desktop was rebuilt, but the Computer Use drive could not start because the
   Mac was locked and automatic unlock failed. No visible desktop behavior is
   claimed from that attempt. GitHub Actions run 33395914834 remains refused
