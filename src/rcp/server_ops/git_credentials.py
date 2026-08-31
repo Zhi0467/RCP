@@ -430,7 +430,11 @@ class GitCredentialManager:
             ("git", "ls-remote", origin, "HEAD"),
         )
         if advertised.returncode != 0:
-            return _probe_failure(advertised, operation="read")
+            return _probe_failure(
+                advertised,
+                operation="read",
+                stage="advertised HEAD lookup",
+            )
         refs = _parse_remote_refs(advertised.stdout)
         if not refs:
             return GitWriteProbe(
@@ -450,7 +454,11 @@ class GitCredentialManager:
             ("git", "ls-remote", origin, temporary_ref),
         )
         if existing.returncode != 0:
-            return _probe_failure(existing, operation="read")
+            return _probe_failure(
+                existing,
+                operation="read",
+                stage="temporary-ref absence check",
+            )
         if _parse_remote_refs(existing.stdout):
             return GitWriteProbe(
                 status="temporary_ref_conflict",
@@ -469,7 +477,11 @@ class GitCredentialManager:
             ("git", "init", "--quiet", "--bare", "--template=", git_dir),
         )
         if initialized.returncode != 0:
-            return _probe_failure(initialized, operation="local")
+            return _probe_failure(
+                initialized,
+                operation="local",
+                stage="local bare-repository initialization",
+            )
         fetched = self._git(
             machine,
             material,
@@ -485,7 +497,11 @@ class GitCredentialManager:
             ),
         )
         if fetched.returncode != 0:
-            return _probe_failure(fetched, operation="read")
+            return _probe_failure(
+                fetched,
+                operation="read",
+                stage="advertised HEAD fetch",
+            )
         resolved = self._git(
             machine,
             material,
@@ -587,7 +603,11 @@ class GitCredentialManager:
         temporary_ref: str,
         pushed: subprocess.CompletedProcess[str],
     ) -> GitWriteProbe:
-        failure = _probe_failure(pushed, operation="write")
+        failure = _probe_failure(
+            pushed,
+            operation="write",
+            stage="temporary-ref push",
+        )
         if failure.status in {"github_host_trust_needed", "github_grant_needed"}:
             return GitWriteProbe(
                 status=failure.status,
@@ -1225,6 +1245,7 @@ def _probe_failure(
     result: subprocess.CompletedProcess[str],
     *,
     operation: Literal["read", "write", "local"],
+    stage: str,
 ) -> GitWriteProbe:
     diagnostic = f"{result.stdout}\n{result.stderr}".lower()
     if any(marker in diagnostic for marker in _HOST_TRUST_MARKERS):
@@ -1259,8 +1280,8 @@ def _probe_failure(
         commit=None,
         temporary_ref=None,
         diagnostic=(
-            "The Git write probe failed without a recognized host, network, or grant diagnosis. "
-            "Inspect the target account and resume only after correcting it."
+            f"The Git write probe failed during {stage} without a recognized host, network, "
+            "or grant diagnosis. Inspect the target account and resume only after correcting it."
         ),
     )
 

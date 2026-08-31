@@ -920,6 +920,28 @@ def test_write_probe_reports_host_grant_network_and_empty_repository_states(
     assert probe.status == expected_status
 
 
+def test_write_probe_names_the_exact_unrecognized_failure_stage(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    origin = REPOSITORY.ssh_clone_url
+    script = GitScript(
+        GitResult(
+            ("git", "ls-remote", origin, "HEAD"),
+            returncode=128,
+            stderr="an intentionally unclassified Git failure",
+        )
+    )
+
+    probe = GitCredentialManager(layout, runner=script)._probe_in_directory(
+        _local_machine(layout),
+        _material(layout),
+        request_id=REQUEST_ID,
+        probe_directory="/tmp/rcp-git-probe.test",
+    )
+
+    assert probe.status == "failed"
+    assert "during advertised HEAD lookup" in probe.diagnostic
+
+
 def test_write_probe_never_deletes_a_preexisting_request_ref(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     origin = REPOSITORY.ssh_clone_url
