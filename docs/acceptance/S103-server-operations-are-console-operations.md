@@ -18,9 +18,11 @@ covered_by:
   - tests/test_server_member_removal_storage.py
   - tests/test_server_member_removal.py
   - tests/test_server_restore_activation.py
+  - tests/test_api_server_status.py
+  - web/tests/serverSettings.test.mjs
 invariants: [1, 8]
 last_checked: >-
-  2026-08-29 — install, update preparation, copied-state candidate rehearsal,
+  2026-08-30 — install, update preparation, copied-state candidate rehearsal,
   coherent local rollback checkpoint/re-entry, cutover, loud old-service
   rollback, provider readiness, and project machine preparation have concrete
   OS-authority/private-control regressions. Live run 33278422722 reached the
@@ -35,7 +37,12 @@ last_checked: >-
   remain pending. Restore activation is now hermetically implemented: exact
   authority/member confirmation, offline stale-member removal, closed startup,
   root-only private activation, and durable readback pass focused integration
-  coverage. Its fresh-host live drive remains pending.
+  coverage. Server Settings now has one authenticated GET-only projection over
+  the concrete doctor, protected-backup receipt, and completed-restore readers;
+  it exposes backend decisions and fixed command names without an HTTP machine
+  mutation. Its team-page browser drive passed against a disposable live service,
+  including a GET-only manual refresh and a clean console. The broader fresh-host
+  server-operation drive remains pending.
 ---
 
 # Dangerous operations need the machine, not a login

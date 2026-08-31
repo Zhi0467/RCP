@@ -40,6 +40,71 @@ export interface Health {
   project_creation: ProjectCreationControl;
 }
 
+export type ServerStatusTone = "good" | "attention" | "bad" | "neutral";
+
+export interface ServerStatusSummary {
+  label: string;
+  tone: ServerStatusTone;
+}
+
+export interface ServerReleaseStatus {
+  status: ServerStatusSummary;
+  managed_source_commit: string | null;
+  current_release_commit: string | null;
+  running_commit: string | null;
+  upstream_commit: string | null;
+  candidate_commit: string | null;
+  update_available: boolean;
+  last_update_failure: string | null;
+  command: "rcp server update";
+}
+
+export interface ServerBackupStatus {
+  status: ServerStatusSummary;
+  configured: boolean;
+  destination: string | null;
+  schedule: string | null;
+  retention: number | null;
+  last_attempt_at: string | null;
+  last_protected_at: string | null;
+  captured_bytes: number | null;
+  protected_projects: number | null;
+  uncaptured_projects: number | null;
+  last_failure: string | null;
+  configure_command: "rcp server backup configure";
+  run_command: "rcp server backup run";
+}
+
+export interface ServerRestoreStatus {
+  status: ServerStatusSummary;
+  last_completed_at: string | null;
+  drill_age_days: number | null;
+  command: "rcp server restore";
+}
+
+export interface ServerExecutionReadiness {
+  machine: ServerStatusSummary;
+  provider_checks: ServerStatusSummary;
+  dependency_versions: string;
+  provider_command: "rcp server provider check";
+}
+
+export interface ServerOperatorCommand {
+  name: string;
+  command: string;
+  purpose: string;
+}
+
+export interface ServerStatus {
+  overall: ServerStatusSummary;
+  releases: ServerReleaseStatus;
+  backup: ServerBackupStatus;
+  restore: ServerRestoreStatus;
+  execution: ServerExecutionReadiness;
+  operator_commands: ServerOperatorCommand[];
+  problems: string[];
+}
+
 export interface AuthorizedHuman {
   space_id: string;
   user_id: string;

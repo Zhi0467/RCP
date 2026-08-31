@@ -17,7 +17,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Desktop | D1, D2, D3 | D4a, D4b, D5, D6, D7 | — |
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
-| Server settings | — | — | O6 |
+| Server settings | O6 | — | — |
 | Transfer | — | — | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
@@ -4500,7 +4500,51 @@ the exact work that has not reached its boundary.
 Do not reuse self-service token revocation as fake removal and do not invent a
 member administrator rank or operator-issued member credential.
 
-### O6 — Read-only Server Settings projection
+### O6 — Read-only Server Settings projection — complete
+
+**Status (2026-08-30): implemented, audited once, and live browser-verified.**
+
+The authenticated team-only `GET /api/server-status` projection now composes
+the existing server doctor report, newest retained protected-backup receipt,
+and completed-restore journal. It publishes backend-owned labels and tones for
+release/update state, backup state, restore-drill age, installed machine tools,
+and provider-check availability. Personal spaces receive 404 and any unsafe
+doctor, backup-receipt, restore, or clock read fails visibly with 503. No
+generic status store or HTTP mutation was added.
+
+The team project Settings page now renders a compact source/release commit rail,
+protected-backup and restore facts, execution readiness, current problems, and
+the complete fixed ten-command console family. Refresh performs only the same
+authenticated GET. Missing backup facts remain `Not recorded`; a failed refresh
+removes the prior unqualified status rather than leaving a stale healthy panel.
+The provider wording is deliberately limited to **provider checks are
+available**: the concrete doctor result does not prove every provider account is
+currently authenticated.
+
+One implementation surprise required a small extension to the existing backup
+owner. The mutable last-run outcome is replaced by every attempt, so a failed
+attempt cannot answer when the latest independently protected archive was made.
+`latest_protected_backup_receipt` therefore reads the immutable retained archive
+receipts, while the doctor continues to report the latest attempt and its
+failure. The status reader is strict: any retained receipt that cannot be read
+safely makes the API fail rather than silently showing an older archive.
+
+Verification completed on 2026-08-30:
+
+- focused server-status, backup, route-inventory, health, and team-auth tests;
+- Ruff on every touched Python owner, a production Web build, all 459 Web tests,
+  and diff hygiene;
+- one independent read-only audit, whose four findings were fixed: strict backup
+  receipt inspection, honest missing counts, clearing stale status after a
+  failed refresh, and the two missing fixed console commands; and
+- a disposable live team service opened in the in-app browser. The full panel
+  rendered, manual Refresh produced a second `GET /api/server-status`, no
+  server mutation request appeared, and the browser console had no warnings or
+  errors.
+
+O6 itself is closed. S103 remains pending for its broader fresh-Ubuntu install,
+update, backup, restore, member-removal, and remote qualification drive; that
+live machine work is not a Server Settings implementation gap.
 
 Own:
 

@@ -389,6 +389,23 @@ prospective episode limits, not ontology authoring. History and task detail own
 complete provider attempts, stages, events, diagnostics, package versions,
 answers, graph outcomes, and recovery chains.
 
+In a team space, Settings also reads one authenticated `/api/server-status`
+projection. It carries backend-owned labels and presentation tones for the
+running/current/managed/upstream release relationship, update readiness, the
+latest backup attempt and latest independently retained protected-archive
+receipt, protected and uncaptured project counts, completed-restore age,
+installed machine-tool readiness, private provider-check availability, and the
+fixed console command names. The browser formats timestamps, byte counts, and
+commit abbreviations only; it does not reconstruct operational state from raw
+status vocabularies. An unsafe concrete doctor, backup-receipt, or restore read
+fails visibly instead of becoming an empty or healthy panel.
+
+That route is GET-only and available only to an authenticated team member. It
+does not configure or run backup, update, restore, Git credential preparation,
+project provisioning, provider login/check, or member removal. The commands are
+text in the Web surface. D6's separately proved desktop operator bridge remains
+the only native launcher and accepts only its fixed project-provision command.
+
 ## Causal and relation presentation
 
 Causal layout is a read-only derived projection from the same graph revision.

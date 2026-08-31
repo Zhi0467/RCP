@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 
 from fastapi import HTTPException, Request
@@ -11,6 +13,8 @@ from rcp.attachments import ChatAttachmentStore
 from rcp.background import BackgroundAgentTasks
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
+from rcp.server_ops.backup import BackupArchiveReceipt
+from rcp.server_ops.doctor import ServerDoctorReport
 from rcp.server_runtime import ServerMetadata
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager
@@ -27,6 +31,16 @@ class HealthComposition:
     default_project_name: str | None
     space_id: str
     space_kind: SpaceKind
+
+
+@dataclass(frozen=True, slots=True)
+class ServerStatusComposition:
+    """Concrete read owners used by the read-only Server Settings route."""
+
+    doctor_reader: Callable[[], ServerDoctorReport]
+    protected_backup_reader: Callable[[ServerDoctorReport], BackupArchiveReceipt | None]
+    restore_completed_at_reader: Callable[[], datetime | None]
+    clock: Callable[[], datetime]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +61,7 @@ class ApiServices:
     launcher: AgentLauncher
     setup: ProjectSetupManager
     health_composition: HealthComposition
+    server_status_composition: ServerStatusComposition
 
 
 def _api_services(request: Request) -> ApiServices:
@@ -78,6 +93,10 @@ def get_setup(request: Request) -> ProjectSetupManager:
 
 def get_health_composition(request: Request) -> HealthComposition:
     return _api_services(request).health_composition
+
+
+def get_server_status_composition(request: Request) -> ServerStatusComposition:
+    return _api_services(request).server_status_composition
 
 
 def get_attachment_store(request: Request) -> ChatAttachmentStore:
@@ -142,6 +161,7 @@ def require_project_membership(project_id: str, request: Request) -> str:
 __all__ = [
     "ApiServices",
     "HealthComposition",
+    "ServerStatusComposition",
     "get_attachment_store",
     "get_background_tasks",
     "get_catalog",
@@ -150,6 +170,7 @@ __all__ = [
     "get_experiment_operation_lock",
     "get_experiment_admission",
     "get_health_composition",
+    "get_server_status_composition",
     "get_project_service",
     "get_project_display_cache",
     "get_result_view_keep_locks",

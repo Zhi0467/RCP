@@ -18,6 +18,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { api, clearAllProjectCaches, clearProjectCaches } from "../api";
 import { ProjectMembers } from "../components/ProjectMembers";
+import { ServerSettings } from "../components/ServerSettings";
 import { EMPTY_SKILL_SELECTION } from "../skillPicker";
 import { AgentConfigControls, profileRunConfig } from "../components/AgentConfigControls";
 import { AgentUsageWidgets } from "../components/AgentUsageWidgets";
@@ -62,6 +63,7 @@ interface Props {
   onCacheMetricsChange: (metrics: ProjectCacheMetrics) => void;
   onRefreshReadiness: () => Promise<void>;
   showDisplaySettings: boolean;
+  spaceKind: "personal" | "team";
   textScale: number;
   onTextScaleChange: (action: "decrease" | "increase" | "reset") => void;
 }
@@ -158,6 +160,7 @@ export function ProjectSettings({
   onCacheMetricsChange,
   onRefreshReadiness,
   showDisplaySettings,
+  spaceKind,
   textScale,
   onTextScaleChange,
 }: Props) {
@@ -450,6 +453,7 @@ export function ProjectSettings({
 
   return (
     <section className="settings-page">
+      {spaceKind === "team" ? <ServerSettings /> : null}
       <AgentUsageWidgets usage={usage} providers={project.providers} />
 
       {showDisplaySettings && (

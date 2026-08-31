@@ -22,6 +22,7 @@ from rcp.server_ops.backup import (
     BackupRunRefused,
     LinuxBackupRunMachine,
     ProtectedBackupArchive,
+    latest_protected_backup_receipt,
     prepare_backup_run_command,
     protect_backup_archive,
     read_backup_archive_receipt,
@@ -259,6 +260,27 @@ def test_last_backup_outcome_is_atomically_replaceable_machine_status(tmp_path: 
     )
     write_backup_outcome(failed, layout)
     assert read_backup_outcome(layout) == failed
+    assert (
+        latest_protected_backup_receipt(
+            destination,
+            installation_id=INSTALLATION_ID,
+            expected_uid=destination.stat().st_uid,
+        )
+        == protected.receipt
+    )
+
+    corrupt = destination / (
+        "rcp-team-backup-v1-20260830T120000000000Z-"
+        "1417a462-8b46-45f8-8882-69a216718258.tar.age.receipt.json"
+    )
+    corrupt.write_text("not a receipt", encoding="utf-8")
+    corrupt.chmod(0o600)
+    with pytest.raises(BackupRunRefused, match="archive receipt is invalid"):
+        latest_protected_backup_receipt(
+            destination,
+            installation_id=INSTALLATION_ID,
+            expected_uid=destination.stat().st_uid,
+        )
 
 
 def test_backup_run_composes_capture_protection_retention_and_stage_cleanup(

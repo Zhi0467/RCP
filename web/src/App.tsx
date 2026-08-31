@@ -3750,6 +3750,7 @@ export default function App() {
               cacheClearDisabled={Boolean(activeTask)}
               writesDisabled={mutationsDisabled}
               showDisplaySettings={desktop}
+              spaceKind={verifiedHealth?.space_kind ?? "personal"}
               textScale={textScale}
               onTextScaleChange={changeAppTextScale}
               onRefreshReadiness={refreshReadiness}

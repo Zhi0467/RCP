@@ -9,6 +9,7 @@ import type {
   ProjectProvisioningCreateRequest,
   ProjectProvisioningResponse,
   ProjectSnapshot,
+  ServerStatus,
   StartEpisodeRequest,
   TeamInvitation,
   TeamInvitationIssue,
@@ -115,6 +116,10 @@ export function createTeamProjectProvisioning(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export function loadServerStatus(): Promise<ServerStatus> {
+  return api<ServerStatus>("/api/server-status");
 }
 
 export function loadProjectProvisioningRequests(): Promise<ProjectProvisioningResponse[]> {

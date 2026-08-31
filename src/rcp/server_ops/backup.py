@@ -959,6 +959,38 @@ def plan_backup_retention(
     )
 
 
+def latest_protected_backup_receipt(
+    destination: Path,
+    *,
+    installation_id: str,
+    expected_uid: int,
+) -> BackupArchiveReceipt | None:
+    """Read the newest retained archive proof independently of the last run outcome."""
+
+    _validate_destination_boundary(destination)
+    try:
+        candidates = sorted(destination.glob("*.tar.age.receipt.json"), key=lambda path: path.name)
+    except OSError as exc:
+        raise BackupRunRefused(
+            "The backup destination could not be inspected for server status."
+        ) from exc
+    receipts = [
+        read_backup_archive_receipt(
+            path,
+            expected_destination=destination,
+            expected_installation_id=installation_id,
+            expected_uid=expected_uid,
+            verify_digest=False,
+        )
+        for path in candidates
+    ]
+    return max(
+        receipts,
+        key=lambda receipt: (receipt.protected_at, receipt.archive_name),
+        default=None,
+    )
+
+
 def apply_backup_retention(
     plan: BackupRetentionPlan,
     *,
@@ -1360,6 +1392,7 @@ __all__ = [
     "backup_status_path",
     "build_archive_manifest",
     "discard_backup_capture_root",
+    "latest_protected_backup_receipt",
     "plan_backup_retention",
     "prepare_backup_run_command",
     "protect_backup_archive",

@@ -9,7 +9,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, asynccontextmanager, suppress
 from datetime import UTC, datetime
 from functools import partial
@@ -33,6 +33,7 @@ from rcp.api.chats import router as chats_router
 from rcp.api.dependencies import (
     ApiServices,
     HealthComposition,
+    ServerStatusComposition,
     require_project_membership,
 )
 from rcp.api.dependencies import (
@@ -60,6 +61,7 @@ from rcp.api.paper import router as paper_router
 from rcp.api.project_provisioning import router as project_provisioning_router
 from rcp.api.project_state import router as project_state_router
 from rcp.api.result_views import router as result_views_router
+from rcp.api.server_status import router as server_status_router
 from rcp.api.sync import router as sync_router
 from rcp.api.task_requests import _resolved_graph_request, resolved_agent_surface
 from rcp.api.tasks import router as tasks_router
@@ -126,6 +128,7 @@ from rcp.runs.tasks.graph import stream_graph_run
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
 from rcp.runs.watcher_admission import start_watcher_notification
+from rcp.server_ops.backup import BackupArchiveReceipt, latest_protected_backup_receipt
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.control import (
     SERVER_CONTROL_OPERATIONS,
@@ -144,6 +147,7 @@ from rcp.server_ops.control import (
     ServerControlServer,
     ServerControlUpdateResult,
 )
+from rcp.server_ops.doctor import LinuxServerDoctorMachine, ServerDoctorReport
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.members import MemberRemovalCoordinator
 from rcp.server_ops.project_provision import ProjectProvisionCoordinator
@@ -289,6 +293,12 @@ def create_app(
     trusted_principal_resolver: TrustedPrincipalResolver | None = None,
     startup_effect_fence: StartupEffectFence | None = None,
     server_layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
+    server_doctor_reader: Callable[[], ServerDoctorReport] | None = None,
+    server_protected_backup_reader: (
+        Callable[[ServerDoctorReport], BackupArchiveReceipt | None] | None
+    ) = None,
+    server_restore_completed_at_reader: Callable[[], datetime | None] | None = None,
+    server_status_clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     # macOS exposes /tmp through /private/tmp. Keep every cache and manifest
     # pointer in the same canonical spelling so relative canonical-state paths
@@ -1311,6 +1321,45 @@ def create_app(
         space_id=space_id,
         space_kind=space_kind,
     )
+
+    if server_doctor_reader is None:
+        doctor_machine = LinuxServerDoctorMachine(server_layout)
+        server_doctor_reader = doctor_machine.inspect
+
+    if server_restore_completed_at_reader is None:
+
+        def server_restore_completed_at_reader() -> datetime | None:
+            from rcp.server_ops.restore import read_restore_journal_if_present
+
+            journal = read_restore_journal_if_present(
+                server_layout,
+                expected_uid=os.geteuid(),
+            )
+            if journal is None or journal.phase != "complete":
+                return None
+            if journal.activation_readback is None:
+                raise RuntimeError("completed restore has no activation readback")
+            return journal.activation_readback.activated_at
+
+    if server_protected_backup_reader is None:
+
+        def server_protected_backup_reader(
+            report: ServerDoctorReport,
+        ) -> BackupArchiveReceipt | None:
+            if report.installation_id is None or report.backup_destination is None:
+                return None
+            return latest_protected_backup_receipt(
+                Path(report.backup_destination),
+                installation_id=report.installation_id,
+                expected_uid=os.geteuid(),
+            )
+
+    server_status_composition = ServerStatusComposition(
+        doctor_reader=server_doctor_reader,
+        protected_backup_reader=server_protected_backup_reader,
+        restore_completed_at_reader=server_restore_completed_at_reader,
+        clock=server_status_clock or (lambda: datetime.now(UTC)),
+    )
     services = ApiServices(
         store=store,
         catalog=catalog,
@@ -1326,6 +1375,7 @@ def create_app(
         background_tasks=background_tasks,
         experiment_admission=experiment_admission,
         health_composition=health_composition,
+        server_status_composition=server_status_composition,
     )
 
     async def warm_provider_capabilities() -> None:
@@ -1847,6 +1897,7 @@ def create_app(
     app.state.project_membership_dependency = require_project_membership
 
     app.include_router(health_router)
+    app.include_router(server_status_router)
     app.include_router(team_router)
     app.include_router(index_router)
     app.include_router(index_membership_router)
