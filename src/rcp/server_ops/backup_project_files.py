@@ -47,6 +47,7 @@ from rcp.server_ops.backup_project_io import (
     fsync_directory,
     fsync_tree,
     stable_copy_entry,
+    stable_copy_fact_entry,
     stable_workspace_bytes,
     write_bytes_entry,
 )
@@ -421,13 +422,12 @@ class BackupProjectFileCaptureCoordinator:
                 files.append(paper_entry)
             for fact in fact_backup_sources(source_root):
                 files.append(
-                    stable_copy_entry(
+                    stable_copy_fact_entry(
+                        source_root,
                         fact,
                         project_root,
                         inventory.project_id,
-                        PurePosixPath(".research/facts")
-                        / fact.relative_to(source_root / "facts").as_posix(),
-                        group="fact",
+                        PurePosixPath(".research/facts") / fact.relative_path,
                     )
                 )
 

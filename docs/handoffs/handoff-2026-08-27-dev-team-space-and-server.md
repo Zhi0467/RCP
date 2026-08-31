@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b, T2c, T3a, T3b, T3b-export | — | T3a-config, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c, T3a, T3b, T3b-export, T3b-files | — | T3a-config, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -5144,7 +5144,36 @@ row.
 Keep the compound project query in the transfer storage owner rather than
 teaching every existing lifecycle mixin a one-off archive API.
 
-### T3b-files — Canonical human files, facts, and kept bytes
+### T3b-files — Canonical human files, facts, and kept bytes — complete
+
+`capture_project_transfer_files` now builds one new private capture tree from
+T3b-export's exact record bundle. It rewrites typed canonical RCP chats at their
+observed complete JSONL boundary, strips source native-session and execution
+machine fields, preserves stable display history, and retains only operation
+bindings that resolve to exported terminal tasks. A concurrent append after
+inventory is deliberately outside that boundary rather than a transfer error.
+The canonical Paper introduction and every safe opaque fact are copied through
+their concrete owners. Facts are inventoried and read through held no-follow
+directory descriptors, so swapping any parent for a symlink cannot escape the
+facts tree; the server-backup owner now reuses the same safe seam.
+
+Kept task artifacts are selected only from transferred terminal descriptors,
+read twice through the workspace's named local/SSH owner, checked against any
+stored size or digest, and rebound to the exact captured digest. Referenced
+legacy kept result views now carry a strict inert
+`TransferLegacyKeptResultView` record with their stable view/chat/Experiment,
+provider display, lifecycle, and byte-binding metadata. Source `run_on`, native
+session, stage host/root, and revision authority are absent. Each view record
+must bind to transferred terminal tasks and exactly one checksummed captured
+file, leaving T3f enough information to restore a readable history-only view.
+
+The focused suite covers local capture, a real `SSHStateWorkspace` command/read
+boundary, missing remote bytes, chat appends before and during capture, parent
+directory replacement, source-file failures, record/file mismatches, and
+partial-root cleanup. The single independent audit found two High issues
+(anonymous legacy-view bytes and a facts parent-symlink race), two Medium issues
+(append rejection and a fake remote fixture), and one documentation mismatch.
+This correction pass closed all five; no second audit was run.
 
 Own:
 
@@ -5179,8 +5208,11 @@ enter the archive. A malformed canonical chat, unknown Paper entry, unsafe
 facts entry, or missing/unsafe referenced kept file blocks transfer rather than
 silently losing selected project history.
 
-This packet captures transfer entries only. T3f owns target publication through
-the same concrete owners.
+This packet captures transfer entries and typed legacy-view bindings only. It
+does not build/seal the complete archive, capture provider-native history, relay
+bytes, mutate either project home, or import target records. T3f owns target
+publication through the same concrete owners, including inserting inert
+history-only result-view rows from the sanitized bindings.
 
 ### T3c — Provider-native selection and archive capture
 

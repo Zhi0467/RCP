@@ -12,6 +12,11 @@ from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
+from rcp.history.manager import (
+    CanonicalFactSource,
+    canonical_fact_sources,
+    iter_canonical_fact_bytes,
+)
 from rcp.limits import (
     BACKUP_COPY_BUFFER_BYTES,
     BACKUP_INVENTORY_MAX_ENTRIES,
@@ -105,43 +110,76 @@ def _copy_chat_prefix(
     return _file_entry(project_id, relative, "chat", digest.hexdigest(), size)
 
 
-def fact_backup_sources(source_root: Path) -> tuple[Path, ...]:
-    facts_root = source_root / "facts"
+def fact_backup_sources(source_root: Path) -> tuple[CanonicalFactSource, ...]:
     try:
-        metadata = facts_root.lstat()
-    except FileNotFoundError:
-        return ()
-    except OSError as exc:
-        raise BackupProjectFileUnavailable("The facts directory is unavailable.") from exc
-    if not stat.S_ISDIR(metadata.st_mode):
-        raise BackupProjectFileUnavailable("The facts path is not a safe directory.")
-    pending = [facts_root]
-    files: list[Path] = []
-    observed_entries = 0
-    while pending:
-        directory = pending.pop()
+        return canonical_fact_sources(source_root)
+    except ValueError as exc:
+        raise BackupProjectFileUnavailable(str(exc)) from exc
+
+
+def stable_copy_fact_entry(
+    source_root: Path,
+    source: CanonicalFactSource,
+    project_root: Path,
+    project_id: str,
+    relative: PurePosixPath,
+) -> BackupFileEntry:
+    """Copy one fact through its owner while allowing bounded stable replacement."""
+
+    destination = _destination_path(project_root, relative)
+    _prepare_destination_parent(project_root, destination.parent)
+    last_error: BaseException | None = None
+    for _ in range(BACKUP_STABLE_READ_ATTEMPTS):
+        temporary = destination.with_name(f".{destination.name}.backup-{uuid.uuid4().hex}")
         try:
-            entries = sorted(directory.iterdir(), key=lambda path: path.name, reverse=True)
-        except OSError as exc:
-            raise BackupProjectFileUnavailable("The facts directory cannot be enumerated.") from exc
-        for entry in entries:
-            observed_entries += 1
-            if observed_entries > BACKUP_INVENTORY_MAX_ENTRIES:
-                raise BackupProjectFileUnavailable("The facts inventory exceeds its entry bound.")
-            relative = entry.relative_to(facts_root)
-            if {".git", "credentials"}.intersection(relative.parts):
-                raise BackupProjectFileUnavailable("The facts tree contains a forbidden path.")
-            try:
-                item = entry.lstat()
-            except OSError as exc:
-                raise BackupProjectFileUnavailable("A facts entry cannot be inspected.") from exc
-            if stat.S_ISDIR(item.st_mode):
-                pending.append(entry)
-            elif stat.S_ISREG(item.st_mode):
-                files.append(entry)
-            else:
-                raise BackupProjectFileUnavailable("The facts tree contains an unsafe entry.")
-    return tuple(sorted(files, key=lambda path: path.relative_to(facts_root).as_posix()))
+            current = next(
+                (
+                    candidate
+                    for candidate in canonical_fact_sources(source_root)
+                    if candidate.relative_path == source.relative_path
+                ),
+                None,
+            )
+            if current is None:
+                raise ValueError("The fact disappeared before capture.")
+            digest, size = _copy_fact_source(source_root, current, temporary)
+            os.replace(temporary, destination)
+            fsync_directory(destination.parent)
+            return _file_entry(project_id, relative, "fact", digest, size)
+        except (OSError, ValueError) as exc:
+            last_error = exc
+            _unlink_if_present(temporary)
+    raise BackupProjectFileUnavailable(
+        "A project fact did not stabilize for capture."
+    ) from last_error
+
+
+def _copy_fact_source(
+    source_root: Path,
+    source: CanonicalFactSource,
+    destination: Path,
+) -> tuple[str, int]:
+    descriptor = os.open(
+        destination,
+        os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+        0o400,
+    )
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        for chunk in iter_canonical_fact_bytes(
+            source_root,
+            source,
+            chunk_size=BACKUP_COPY_BUFFER_BYTES,
+        ):
+            _write_all(descriptor, chunk)
+            digest.update(chunk)
+            size += len(chunk)
+        os.fchmod(descriptor, 0o400)
+        os.fsync(descriptor)
+        return digest.hexdigest(), size
+    finally:
+        os.close(descriptor)
 
 
 def stable_copy_entry(
@@ -384,6 +422,7 @@ __all__ = [
     "fsync_directory",
     "fsync_tree",
     "stable_copy_entry",
+    "stable_copy_fact_entry",
     "stable_workspace_bytes",
     "write_bytes_entry",
 ]

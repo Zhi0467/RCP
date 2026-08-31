@@ -5,11 +5,13 @@ import json
 import os
 import re
 import shutil
+import stat
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from rcp.config import (
@@ -58,6 +60,7 @@ from rcp.history.delta import (
     build_refresh_delta,
     render_revision_summary,
 )
+from rcp.limits import PROJECT_TRANSFER_INVENTORY_MAX_ENTRIES
 from rcp.providers import ProviderId
 from rcp.skill_registry import SkillDefaults
 from rcp.transport import (
@@ -69,6 +72,208 @@ from rcp.transport import (
 
 if TYPE_CHECKING:
     from rcp.history.branches import BranchHistoryManager, BranchReadSnapshot
+
+
+@dataclass(frozen=True)
+class CanonicalFactSource:
+    """One safe opaque fact and its observed transfer boundary."""
+
+    path: Path
+    relative_path: PurePosixPath
+    observed_size: int
+    device: int
+    inode: int
+    modified_ns: int
+    changed_ns: int
+    root_device: int
+    root_inode: int
+
+
+def canonical_fact_sources(root: Path) -> tuple[CanonicalFactSource, ...]:
+    """Inventory only bounded regular files below the canonical facts owner."""
+
+    facts_root = root / "facts"
+    try:
+        root_descriptor = os.open(
+            facts_root,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except FileNotFoundError:
+        return ()
+    except OSError as exc:
+        raise ValueError("The facts directory is unavailable.") from exc
+    try:
+        root_metadata = os.fstat(root_descriptor)
+        if not stat.S_ISDIR(root_metadata.st_mode):
+            raise ValueError("The facts path is not a safe directory.")
+        files: list[CanonicalFactSource] = []
+        observed_entries = [0]
+        _inventory_canonical_facts(
+            root_descriptor,
+            facts_root=facts_root,
+            relative_root=PurePosixPath(),
+            root_metadata=root_metadata,
+            files=files,
+            observed_entries=observed_entries,
+        )
+        return tuple(sorted(files, key=lambda source: source.relative_path.as_posix()))
+    finally:
+        os.close(root_descriptor)
+
+
+def _inventory_canonical_facts(
+    directory_descriptor: int,
+    *,
+    facts_root: Path,
+    relative_root: PurePosixPath,
+    root_metadata: os.stat_result,
+    files: list[CanonicalFactSource],
+    observed_entries: list[int],
+) -> None:
+    try:
+        names = sorted(os.listdir(directory_descriptor))
+    except OSError as exc:
+        raise ValueError("The facts directory cannot be enumerated.") from exc
+    for name in names:
+        observed_entries[0] += 1
+        if observed_entries[0] > PROJECT_TRANSFER_INVENTORY_MAX_ENTRIES:
+            raise ValueError("The facts inventory exceeds its entry bound.")
+        relative = relative_root / name
+        if {".git", "credentials"}.intersection(relative.parts):
+            raise ValueError("The facts tree contains a forbidden path.")
+        try:
+            item = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
+        except OSError as exc:
+            raise ValueError("A facts entry cannot be inspected.") from exc
+        if stat.S_ISDIR(item.st_mode):
+            try:
+                child_descriptor = os.open(
+                    name,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=directory_descriptor,
+                )
+            except OSError as exc:
+                raise ValueError("A facts directory changed during inspection.") from exc
+            try:
+                opened = os.fstat(child_descriptor)
+                if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+                    item.st_dev,
+                    item.st_ino,
+                ):
+                    raise ValueError("A facts directory changed during inspection.")
+                _inventory_canonical_facts(
+                    child_descriptor,
+                    facts_root=facts_root,
+                    relative_root=relative,
+                    root_metadata=root_metadata,
+                    files=files,
+                    observed_entries=observed_entries,
+                )
+            finally:
+                os.close(child_descriptor)
+        elif stat.S_ISREG(item.st_mode):
+            files.append(
+                CanonicalFactSource(
+                    path=facts_root.joinpath(*relative.parts),
+                    relative_path=relative,
+                    observed_size=item.st_size,
+                    device=item.st_dev,
+                    inode=item.st_ino,
+                    modified_ns=item.st_mtime_ns,
+                    changed_ns=item.st_ctime_ns,
+                    root_device=root_metadata.st_dev,
+                    root_inode=root_metadata.st_ino,
+                )
+            )
+        else:
+            raise ValueError("The facts tree contains an unsafe entry.")
+
+
+def iter_canonical_fact_bytes(
+    root: Path,
+    source: CanonicalFactSource,
+    *,
+    chunk_size: int,
+) -> Iterator[bytes]:
+    """Read one inventoried fact through a no-follow descriptor chain."""
+
+    relative = source.relative_path
+    if (
+        chunk_size < 1
+        or relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+        or source.path != (root / "facts").joinpath(*relative.parts)
+    ):
+        raise ValueError("The canonical fact source is invalid.")
+    descriptors: list[int] = []
+    try:
+        directory_descriptor = os.open(
+            root / "facts",
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        descriptors.append(directory_descriptor)
+        root_metadata = os.fstat(directory_descriptor)
+        if not stat.S_ISDIR(root_metadata.st_mode) or (
+            root_metadata.st_dev,
+            root_metadata.st_ino,
+        ) != (source.root_device, source.root_inode):
+            raise ValueError("The facts directory changed before transfer.")
+        for part in relative.parts[:-1]:
+            child_descriptor = os.open(
+                part,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_descriptor,
+            )
+            descriptors.append(child_descriptor)
+            directory_descriptor = child_descriptor
+            if not stat.S_ISDIR(os.fstat(directory_descriptor).st_mode):
+                raise ValueError("A facts directory changed before transfer.")
+        file_descriptor = os.open(
+            relative.parts[-1],
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_descriptor,
+        )
+        descriptors.append(file_descriptor)
+        initial = os.fstat(file_descriptor)
+        expected = (
+            source.device,
+            source.inode,
+            source.observed_size,
+            source.modified_ns,
+            source.changed_ns,
+        )
+        if (
+            not stat.S_ISREG(initial.st_mode)
+            or (
+                initial.st_dev,
+                initial.st_ino,
+                initial.st_size,
+                initial.st_mtime_ns,
+                initial.st_ctime_ns,
+            )
+            != expected
+        ):
+            raise ValueError("A fact changed before its transfer read.")
+        while True:
+            chunk = os.read(file_descriptor, chunk_size)
+            if not chunk:
+                break
+            yield chunk
+        final = os.fstat(file_descriptor)
+        if (
+            final.st_dev,
+            final.st_ino,
+            final.st_size,
+            final.st_mtime_ns,
+            final.st_ctime_ns,
+        ) != expected:
+            raise ValueError("A fact changed during its transfer read.")
+    except OSError as exc:
+        raise ValueError("The canonical fact became unavailable during transfer.") from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 class RevisionConflict(ValueError):

@@ -478,6 +478,100 @@ def iter_canonical_chat_backup_prefix(
         os.close(descriptor)
 
 
+def iter_canonical_chat_transfer(
+    source: CanonicalChatBackupSource,
+    *,
+    operation_id_map: Mapping[str, str],
+) -> Iterator[bytes]:
+    """Yield one typed chat with source-native and unmapped task bindings removed."""
+
+    descriptor = os.open(source.path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        initial = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(initial.st_mode)
+            or (initial.st_dev, initial.st_ino) != (source.device, source.inode)
+            or initial.st_size < source.observed_bytes
+        ):
+            raise ValueError("The canonical chat changed before its transfer read.")
+        first: _StoredChatRecord | None = None
+        remaining = source.observed_bytes
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            while remaining:
+                line = handle.readline(remaining)
+                remaining -= len(line)
+                if not line or not line.endswith(b"\n"):
+                    raise ValueError("A canonical chat record is incomplete.")
+                try:
+                    raw = json.loads(line)
+                    record = _StoredChatRecord.model_validate(raw)
+                    _validate_stored_chat_record(
+                        record,
+                        first=first,
+                        root=source.path.parent.parent,
+                        path=source.path,
+                    )
+                except (TypeError, UnicodeError, ValueError) as exc:
+                    raise ValueError("A canonical chat record is malformed.") from exc
+                if first is None:
+                    first = record
+                mapped_operation_id = None
+                if record.operation_id is not None:
+                    try:
+                        source_operation_id = str(uuid.UUID(record.operation_id))
+                    except ValueError as exc:
+                        raise ValueError(
+                            "A canonical chat operation identity is malformed."
+                        ) from exc
+                    if source_operation_id != record.operation_id:
+                        raise ValueError("A canonical chat operation identity is not canonical.")
+                    mapped_operation_id = operation_id_map.get(source_operation_id)
+                    if mapped_operation_id is not None:
+                        try:
+                            canonical_target = str(uuid.UUID(mapped_operation_id))
+                        except ValueError as exc:
+                            raise ValueError(
+                                "A mapped canonical chat operation identity is malformed."
+                            ) from exc
+                        if canonical_target != mapped_operation_id:
+                            raise ValueError(
+                                "A mapped canonical chat operation identity is not canonical."
+                            )
+                transferred = record.model_copy(
+                    update={
+                        "native_session_id": None,
+                        "execution_machine": None,
+                        "operation_id": mapped_operation_id,
+                    }
+                )
+                yield (
+                    json.dumps(
+                        transferred.model_dump(mode="json", by_alias=True, exclude_none=True),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                        allow_nan=False,
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+        if first is None:
+            raise ValueError("A canonical chat cannot transfer without messages.")
+        final = os.fstat(descriptor)
+        try:
+            current = source.path.lstat()
+        except OSError as exc:
+            raise ValueError("The canonical chat changed during its transfer read.") from exc
+        if (
+            (final.st_dev, final.st_ino) != (source.device, source.inode)
+            or (current.st_dev, current.st_ino) != (source.device, source.inode)
+            or final.st_size < source.observed_bytes
+            or current.st_size < source.observed_bytes
+        ):
+            raise ValueError("The canonical chat changed during its transfer read.")
+    finally:
+        os.close(descriptor)
+
+
 def _validate_stored_chat_record(
     record: _StoredChatRecord,
     *,
