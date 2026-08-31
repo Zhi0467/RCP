@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from rcp.api.dependencies import get_identity_access, get_setup, get_store
+from rcp.api.dependencies import get_catalog, get_identity_access, get_setup, get_store
 from rcp.api.identity import IdentityAccess
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
@@ -16,7 +17,10 @@ from rcp.config import (
     AgentExecutionProfile,
 )
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphHeadRef
 from rcp.history import ProjectIdentityConflict
+from rcp.project_transfer import capture_project_transfer_source
+from rcp.projects import ProjectCatalog
 from rcp.providers import ProviderId
 from rcp.server_ops.github import GitHubRepositoryRef, parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
@@ -34,8 +38,16 @@ from rcp.storage import (
     ProjectProvisioningRepositoryRecord,
     ProjectProvisioningRequestRecord,
     ProjectProvisioningStatus,
+    ProjectTransferCleanupAcknowledgment,
+    ProjectTransferLinkReceipt,
+    ProjectTransferRequestRecord,
+    ProjectTransferSourceConfiguration,
+    ProjectTransferSourceReleaseReceipt,
+    ProjectTransferTargetAdmissionReceipt,
     SpaceKind,
+    TeamAuthenticationError,
 )
+from rcp.storage.provisioning import project_transfer_source_configuration_sha256
 from rcp.transport import StateUnavailable
 
 router = APIRouter()
@@ -43,6 +55,7 @@ router = APIRouter()
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 SetupDependency = Annotated[ProjectSetupManager, Depends(get_setup)]
+CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 
 ProjectCreationIntent = Literal[
     "use_existing_checkout_personally",
@@ -171,6 +184,97 @@ class ProjectProvisioningCreateRequest(_StrictModel):
 
 class ProjectProvisioningCompleteRequest(_StrictModel):
     final_review_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ProjectTransferRepositorySourceRequest(_StrictModel):
+    alias: str
+    repository: GitHubRepositoryRef
+    machine_alias: str
+
+
+class ProjectTransferSourceConfigurationRequest(_StrictModel):
+    source_rcp_version: str
+    source_schema_generation: int = Field(ge=1)
+    supported_archive_codecs: list[str] = Field(min_length=1, max_length=16)
+    repositories: list[ProjectTransferRepositorySourceRequest] = Field(
+        min_length=1,
+        max_length=64,
+    )
+    state_repository: str
+    project_truth_scope: list[str] = Field(min_length=1, max_length=64)
+    default_run_truth_scope: list[str] = Field(min_length=1, max_length=64)
+    source_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    def storage_model(self) -> ProjectTransferSourceConfiguration:
+        return ProjectTransferSourceConfiguration.model_validate_json(self.model_dump_json())
+
+
+class ProjectTransferSourceCreateRequest(_StrictModel):
+    request_id: str
+    project_id: str
+    target_space_id: str
+    expected_source_configuration_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+
+class ProjectTransferIncomingProvisioningCreateRequest(ProjectProvisioningCreateRequest):
+    request_id: str
+    source_project_id: str
+
+
+class ProjectTransferTargetCreateRequest(_StrictModel):
+    provisioning_request_id: str
+    source_request_id: str
+    source_project_id: str
+    source_space_id: str
+    source_configuration: ProjectTransferSourceConfigurationRequest
+    source_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_release_proof_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    accepted_schema_generation: int = Field(ge=1)
+    accepted_archive_codec: str
+
+
+class ProjectTransferLinkRequest(_StrictModel):
+    receipt: dict[str, object]
+
+    def storage_model(self) -> ProjectTransferLinkReceipt:
+        return ProjectTransferLinkReceipt.model_validate_json(json.dumps(self.receipt))
+
+
+class ProjectTransferTargetAdmissionRequest(_StrictModel):
+    receipt: dict[str, object]
+
+    def storage_model(self) -> ProjectTransferTargetAdmissionReceipt:
+        return ProjectTransferTargetAdmissionReceipt.model_validate_json(json.dumps(self.receipt))
+
+
+class ProjectTransferSourceReleaseRequest(_StrictModel):
+    expected_source_configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_source_head: GraphHeadRef
+
+
+class ProjectTransferSourceReceiptRequest(_StrictModel):
+    receipt: dict[str, object]
+
+    def storage_model(self) -> ProjectTransferSourceReleaseReceipt:
+        return ProjectTransferSourceReleaseReceipt.model_validate_json(json.dumps(self.receipt))
+
+
+class ProjectTransferArchiveRequest(_StrictModel):
+    archive_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    archive_size_bytes: int = Field(ge=1)
+    source_fence_head: GraphHeadRef | None = None
+
+
+class ProjectTransferCleanupAcknowledgmentRequest(_StrictModel):
+    acknowledgment: dict[str, object]
+
+    def storage_model(self) -> ProjectTransferCleanupAcknowledgment:
+        return ProjectTransferCleanupAcknowledgment.model_validate_json(
+            json.dumps(self.acknowledgment)
+        )
 
 
 class ProjectProvisioningMachineProjection(_StrictModel):
@@ -314,6 +418,468 @@ def project_creation_control(space_kind: SpaceKind) -> ProjectCreationControl:
                 unavailable_reason=("Personal-to-team transfer is not available in this build."),
             ),
         ),
+    )
+
+
+@router.post(
+    "/api/project-transfers/incoming-provisioning-requests",
+    response_model=ProjectProvisioningRequestRecord,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_incoming_transfer_provisioning_request(
+    body: ProjectTransferIncomingProvisioningCreateRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> ProjectProvisioningRequestRecord:
+    identity_access.require_team_space()
+    actor = identity_access.require_patch_capable_identity(request)
+    try:
+        return store.create_project_provisioning_request(
+            kind="incoming_transfer",
+            authorized_by=actor,
+            machines=[machine.intent() for machine in body.machines],
+            repositories=[repository.intent() for repository in body.repositories],
+            provider_checks=body.provider_checks,
+            source_project_id=body.source_project_id,
+            name=body.name,
+            state_repository=body.state_repository,
+            project_truth_scope=body.project_truth_scope,
+            default_run_truth_scope=body.default_run_truth_scope,
+            default_auto_research_invocation_ceiling=(
+                body.default_auto_research_invocation_ceiling
+            ),
+            request_id=body.request_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get(
+    "/api/project-transfers/incoming-provisioning-requests",
+    response_model=list[ProjectProvisioningRequestRecord],
+)
+def incoming_transfer_provisioning_requests(
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> list[ProjectProvisioningRequestRecord]:
+    identity_access.require_team_space()
+    identity_access.acting_user(request)
+    return [
+        record
+        for record in store.project_provisioning_requests()
+        if record.kind == "incoming_transfer"
+    ]
+
+
+@router.get(
+    "/api/project-transfers/incoming-provisioning-requests/{request_id}",
+    response_model=ProjectProvisioningRequestRecord,
+)
+def incoming_transfer_provisioning_request(
+    request_id: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> ProjectProvisioningRequestRecord:
+    identity_access.require_team_space()
+    identity_access.acting_user(request)
+    record = _request_or_404(store, request_id)
+    if record.kind != "incoming_transfer":
+        raise HTTPException(status_code=404, detail="Provisioning request not found")
+    return record
+
+
+@router.post(
+    "/api/project-transfers/source-requests",
+    response_model=ProjectTransferRequestRecord,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_source_project_transfer_request(
+    body: ProjectTransferSourceCreateRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+) -> ProjectTransferRequestRecord:
+    _require_transfer_space(store, "personal")
+    actor = identity_access.require_patch_capable_identity(request)
+    try:
+        existing = store.project_transfer_request(body.request_id)
+        if existing is None:
+            service = catalog.open(body.project_id)
+            configuration, _head = capture_project_transfer_source(service)
+        else:
+            configuration = existing.source_configuration
+        actual_digest = project_transfer_source_configuration_sha256(configuration)
+        if body.expected_source_configuration_sha256 not in {None, actual_digest}:
+            raise ValueError("source configuration changed before transfer creation")
+        return store.create_source_project_transfer_request(
+            project_id=body.project_id,
+            target_space_id=body.target_space_id,
+            initiated_by=actor,
+            source_configuration=configuration,
+            request_id=body.request_id,
+        )
+    except (KeyError, OSError, StateUnavailable, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/project-transfers/target-requests",
+    response_model=ProjectTransferRequestRecord,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_target_project_transfer_request(
+    body: ProjectTransferTargetCreateRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> ProjectTransferRequestRecord:
+    identity_access.require_team_space()
+    actor = identity_access.require_patch_capable_identity(request)
+    try:
+        return store.create_target_project_transfer_request(
+            provisioning_request_id=body.provisioning_request_id,
+            source_request_id=body.source_request_id,
+            source_project_id=body.source_project_id,
+            source_space_id=body.source_space_id,
+            initiated_by=actor,
+            source_configuration=body.source_configuration.storage_model(),
+            source_configuration_sha256=body.source_configuration_sha256,
+            source_release_proof_sha256=body.source_release_proof_sha256,
+            accepted_schema_generation=body.accepted_schema_generation,
+            accepted_archive_codec=body.accepted_archive_codec,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get(
+    "/api/project-transfers/requests",
+    response_model=list[ProjectTransferRequestRecord],
+)
+def project_transfer_requests(
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> list[ProjectTransferRequestRecord]:
+    identity_access.acting_user(request)
+    return store.project_transfer_requests()
+
+
+@router.get(
+    "/api/project-transfers/requests/{request_id}",
+    response_model=ProjectTransferRequestRecord,
+)
+def project_transfer_request(
+    request_id: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> ProjectTransferRequestRecord:
+    identity_access.acting_user(request)
+    return _transfer_request_or_404(store, request_id)
+
+
+@router.post(
+    "/api/project-transfers/source-requests/{request_id}/link",
+    response_model=ProjectTransferRequestRecord,
+)
+def link_source_project_transfer_request(
+    request_id: str,
+    body: ProjectTransferLinkRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> ProjectTransferRequestRecord:
+    _require_transfer_space(store, "personal")
+    identity_access.require_patch_capable_identity(request)
+    try:
+        return store.link_source_project_transfer_request(
+            request_id,
+            receipt=body.storage_model(),
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/project-transfers/target-requests/{request_id}/admit",
+    response_model=ProjectTransferRequestRecord,
+)
+def admit_target_project_transfer_request(
+    request_id: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> ProjectTransferRequestRecord:
+    identity_access.require_team_space()
+    actor = identity_access.require_patch_capable_identity(request)
+    try:
+        return store.record_target_project_transfer_admission(
+            request_id,
+            admitted_by=actor,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/project-transfers/source-requests/{request_id}/target-admission",
+    response_model=ProjectTransferRequestRecord,
+)
+def accept_target_project_transfer_admission(
+    request_id: str,
+    body: ProjectTransferTargetAdmissionRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> ProjectTransferRequestRecord:
+    _require_transfer_space(store, "personal")
+    identity_access.require_patch_capable_identity(request)
+    try:
+        return store.accept_target_project_transfer_admission(
+            request_id,
+            receipt=body.storage_model(),
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/project-transfers/source-requests/{request_id}/release",
+    response_model=ProjectTransferRequestRecord,
+)
+def release_source_project_transfer_request(
+    request_id: str,
+    body: ProjectTransferSourceReleaseRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+) -> ProjectTransferRequestRecord:
+    _require_transfer_space(store, "personal")
+    actor = identity_access.require_patch_capable_identity(request)
+    try:
+        transfer = _transfer_request_or_404(store, request_id)
+        existing_receipt = transfer.source_release_receipt
+        if existing_receipt is None:
+            service = catalog.open(transfer.project_id)
+            configuration, source_head = capture_project_transfer_source(service)
+            if (
+                project_transfer_source_configuration_sha256(configuration)
+                != body.expected_source_configuration_sha256
+                or source_head != body.expected_source_head
+            ):
+                raise ValueError("source configuration or canonical head changed before release")
+        else:
+            if (
+                existing_receipt.source_configuration_sha256
+                != body.expected_source_configuration_sha256
+                or existing_receipt.source_head != body.expected_source_head
+            ):
+                raise ValueError("source release already binds another canonical boundary")
+            configuration = transfer.source_configuration
+            source_head = existing_receipt.source_head
+        return store.record_source_project_transfer_release(
+            request_id,
+            released_by=actor,
+            revalidated_configuration=configuration,
+            source_head=source_head,
+        )
+    except (KeyError, OSError, StateUnavailable, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/project-transfers/target-requests/{request_id}/source-release",
+    response_model=ProjectTransferRequestRecord,
+)
+def accept_source_project_transfer_release(
+    request_id: str,
+    body: ProjectTransferSourceReceiptRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> ProjectTransferRequestRecord:
+    identity_access.require_team_space()
+    identity_access.acting_user(request)
+    try:
+        return store.accept_source_project_transfer_release(
+            request_id,
+            receipt=body.storage_model(),
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/project-transfers/requests/{request_id}/archive",
+    response_model=ProjectTransferRequestRecord,
+)
+def bind_project_transfer_archive(
+    request_id: str,
+    body: ProjectTransferArchiveRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> ProjectTransferRequestRecord:
+    actor = identity_access.acting_user(request)
+    try:
+        transfer = _transfer_request_or_404(store, request_id)
+        if transfer.side == "target":
+            admission = transfer.target_admission_receipt
+            if admission is None or admission.admitted_by.user_id != actor.user_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only the member who admitted this transfer may bind its archive.",
+                )
+        return store.bind_project_transfer_archive(
+            request_id,
+            archive_sha256=body.archive_sha256,
+            archive_size_bytes=body.archive_size_bytes,
+            source_fence_head=body.source_fence_head,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/native/project-transfers/target-requests/{request_id}/cleanup-acknowledgment",
+    response_model=ProjectTransferRequestRecord,
+    include_in_schema=False,
+)
+def acknowledge_project_transfer_cleanup(
+    request_id: str,
+    body: ProjectTransferCleanupAcknowledgmentRequest,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> ProjectTransferRequestRecord:
+    identity_access.require_team_space()
+    token = _native_bearer_token(request)
+    try:
+        member = store.authenticate_team_member_token(token)
+        transfer = _transfer_request_or_404(store, request_id)
+        admission = transfer.target_admission_receipt
+        if (
+            transfer.side != "target"
+            or admission is None
+            or admission.admitted_by.user_id != member.user_id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Only the member who admitted this transfer may acknowledge cleanup.",
+            )
+        return store.accept_project_transfer_cleanup_acknowledgment(
+            request_id,
+            acknowledgment=body.storage_model(),
+            accepted_by=AuthorizedHuman(
+                space_id=store.space_id,
+                user_id=member.user_id,
+                display_name=member.display_name,
+            ),
+        )
+    except TeamAuthenticationError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "team_token_invalid",
+                "message": "The member token is invalid or revoked.",
+            },
+        ) from exc
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/native/project-transfers/source-requests/{request_id}/target-activation-proof",
+    response_model=ProjectTransferCleanupAcknowledgment,
+    include_in_schema=False,
+)
+async def verify_target_activation_proof(
+    request_id: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> ProjectTransferCleanupAcknowledgment:
+    _require_transfer_space(store, "personal")
+    identity_access.require_patch_capable_identity(request)
+    if request.headers.get("content-type", "").split(";", 1)[0] != "application/octet-stream":
+        raise HTTPException(status_code=415, detail="Target activation proof must be binary.")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > 32:
+            raise HTTPException(status_code=413, detail="Target activation proof is too large.")
+        chunks.append(chunk)
+    proof = b"".join(chunks)
+    try:
+        return store.verify_target_project_transfer_activation(request_id, proof=proof)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get(
+    "/api/native/project-transfers/target-requests/{request_id}/activation-proof",
+    response_class=Response,
+    include_in_schema=False,
+)
+def retrieve_target_activation_proof(
+    request_id: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> Response:
+    identity_access.require_team_space()
+    token = _native_bearer_token(request)
+    try:
+        member = store.authenticate_team_member_token(token)
+        transfer = _transfer_request_or_404(store, request_id)
+        admission = transfer.target_admission_receipt
+        if (
+            transfer.side != "target"
+            or admission is None
+            or admission.admitted_by.user_id != member.user_id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Only the member who admitted this transfer may retrieve its proof.",
+            )
+        proof = store.expose_project_transfer_proof(request_id)
+    except TeamAuthenticationError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "team_token_invalid",
+                "message": "The member token is invalid or revoked.",
+            },
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return Response(
+        content=proof,
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -560,6 +1126,38 @@ def _request_or_404(store: AppStore, request_id: str) -> ProjectProvisioningRequ
     if record is None:
         raise HTTPException(status_code=404, detail="Provisioning request not found")
     return record
+
+
+def _transfer_request_or_404(
+    store: AppStore,
+    request_id: str,
+) -> ProjectTransferRequestRecord:
+    try:
+        record = store.project_transfer_request(request_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Transfer request not found") from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail="Transfer request not found")
+    return record
+
+
+def _require_transfer_space(store: AppStore, expected: SpaceKind) -> None:
+    if store.space_kind != expected:
+        raise HTTPException(status_code=404, detail="Transfer request not found")
+
+
+def _native_bearer_token(request: Request) -> str:
+    authorization = request.headers.get("authorization", "")
+    scheme, separator, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not separator or not token or " " in token:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "team_token_required",
+                "message": "This native route requires a permanent team member token.",
+            },
+        )
+    return token
 
 
 def _project_provisioning_response(

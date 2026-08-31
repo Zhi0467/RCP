@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a | — | T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b | — | T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -177,11 +177,8 @@ The remaining seams are also concrete:
   repository-credential primitive, exact-account provider check, checkout
   preparation, machine-step orchestration, and unified personal/new-team
   project wizard exist, but post-setup cancellation, complete live team
-  qualification, and the personal-to-team transfer record do not;
-  and
-- canonical identity replay currently treats two differing identity payloads as
-  corruption, so a home transfer cannot be represented by appending a second
-  `ProjectIdentity` record.
+  qualification, and the transfer archive, machine relay/import, activation,
+  cleanup orchestration, and desktop drive remain open.
 
 The repository's current `AGENTS.md` prescribes direct work on `main`, which the
 human retained for the full private pre-team-server implementation. G0 restored
@@ -4567,7 +4564,7 @@ native SSH action, not an admin API.
 
 ### T1 — Append-only canonical home-transfer schema and replay — complete
 
-**Status (2026-08-30): implemented, focused-tested, and independently audited
+**Status (2026-08-31): implemented, focused-tested, and independently audited
 once.** The canonical `identity` Patch kind now carries exactly one of the
 immutable initial `ProjectIdentity` nameplate or a `ProjectHomeTransfer`. A home
 transfer records the unchanged project id, distinct previous and new space ids,
@@ -4725,12 +4722,57 @@ creating a canonical project or granting machine authority. The source-release
 receipt remains a distinct source-space actor record. Storage never assumes the
 personal and team user ids share a namespace.
 
-### T2b — Authenticated transfer APIs and proof exchange
+### T2b — Authenticated transfer APIs and proof exchange — complete
+
+**Status (2026-08-30): implemented, focused-tested, and independently audited
+once.** Both spaces now expose durable create/list/read/link/confirmation and
+archive-binding calls over their ordinary authenticated APIs. The first source
+and incoming-target calls accept desktop-generated request ids, return the same
+record after a lost response and exact retry, and reject reuse for changed
+intent. The target request already uses the incoming provisioning id as its
+stable identity, so its creation and link are exact-retry safe as well.
+
+The personal backend now constructs the source summary itself. It opens the
+registered project, refreshes and replays canonical state, hashes the live
+manifest bytes, reads each local or SSH checkout's actual GitHub `origin`, and
+publishes the current RCP/schema/codec facts. Source request creation no longer
+accepts a caller-authored configuration. Source release accepts only expected
+digest/head concurrency values, rereads the live source and exact main head,
+and fails before the durable receipt if either value changed.
+
+The target-activation proof exchange is outside Web state in both directions.
+The exact target confirmer retrieves the 32 raw bytes through one bearer-token
+native GET; cookie-only, pre-activation, revoked-token, and other-member calls
+fail. The desktop then sends those bytes directly to the personal backend's
+fixed binary native POST. The source verifies the stored commitment and returns
+one typed acknowledgment bound to both requests and spaces, project, both proof
+commitments, archive digest, and fenced head. Only that typed receipt, submitted
+to a native bearer-token target endpoint by the same confirmer, can atomically
+erase the target proof and complete its request. Wrong proofs, forged receipts,
+wrong members, and retries are covered; permanent-token validation creates no
+browser session. Both native routes are absent from OpenAPI, raw responses are
+`no-store`, and raw proof bytes never appear in public records.
+
+The audit found four release blockers and this was the single correction round:
+caller-authored source state, cleanup without source verification, target
+archive poisoning by another member, and non-idempotent initial POSTs. All four
+were fixed. Target archive binding now requires the original admitting member;
+the source remains the one-owner personal space. The focused provisioning,
+transfer, team-authentication, and frozen-route suites pass. No second audit
+round was run.
+
+T2b deliberately does not create or fence canonical project authority, build or
+stream an archive, import files/rows, activate the target catalog, retire the
+source catalog/recovery archive, or drive the desktop workflow. Those are T2c
+through T5b. Source proof acknowledgment is retained after target-proof
+verification, but its raw source proof and recovery state are not consumed
+until the later source-retirement owner completes.
 
 Own:
 
 - source/target request, link, confirmation, proof-retrieval, and cleanup-ack
-  endpoints in `src/rcp/api/project_provisioning.py`; and
+  endpoints in `src/rcp/api/project_provisioning.py`;
+- concrete live source-state capture in `src/rcp/project_transfer.py`; and
 - `tests/test_project_transfer_request_api.py`.
 
 Expose T2a only through each space's ordinary authenticated request API. The

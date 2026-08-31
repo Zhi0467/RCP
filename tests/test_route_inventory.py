@@ -47,6 +47,34 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/project-provisioning/requests/{request_id}"),
     (("POST",), "/api/project-provisioning/requests/{request_id}/cancel"),
     (("POST",), "/api/project-provisioning/requests/{request_id}/complete"),
+    (("POST",), "/api/project-transfers/incoming-provisioning-requests"),
+    (("GET",), "/api/project-transfers/incoming-provisioning-requests"),
+    (
+        ("GET",),
+        "/api/project-transfers/incoming-provisioning-requests/{request_id}",
+    ),
+    (("POST",), "/api/project-transfers/source-requests"),
+    (("POST",), "/api/project-transfers/target-requests"),
+    (("GET",), "/api/project-transfers/requests"),
+    (("GET",), "/api/project-transfers/requests/{request_id}"),
+    (("POST",), "/api/project-transfers/source-requests/{request_id}/link"),
+    (("POST",), "/api/project-transfers/target-requests/{request_id}/admit"),
+    (("POST",), "/api/project-transfers/source-requests/{request_id}/target-admission"),
+    (("POST",), "/api/project-transfers/source-requests/{request_id}/release"),
+    (("POST",), "/api/project-transfers/target-requests/{request_id}/source-release"),
+    (("POST",), "/api/project-transfers/requests/{request_id}/archive"),
+    (
+        ("POST",),
+        "/api/native/project-transfers/target-requests/{request_id}/cleanup-acknowledgment",
+    ),
+    (
+        ("POST",),
+        "/api/native/project-transfers/source-requests/{request_id}/target-activation-proof",
+    ),
+    (
+        ("GET",),
+        "/api/native/project-transfers/target-requests/{request_id}/activation-proof",
+    ),
     (("DELETE",), "/api/caches"),
     (("GET",), "/api/skills/{kind}/{package_id}"),
     (("DELETE",), "/api/projects/{project_id}"),
@@ -136,6 +164,14 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "clear_all_rebuildable_caches": "src/rcp/api/index.py",
     "clear_rebuildable_caches": "src/rcp/api/project_state.py",
     "complete_project_provisioning_request": "src/rcp/api/project_provisioning.py",
+    "acknowledge_project_transfer_cleanup": "src/rcp/api/project_provisioning.py",
+    "accept_source_project_transfer_release": "src/rcp/api/project_provisioning.py",
+    "accept_target_project_transfer_admission": "src/rcp/api/project_provisioning.py",
+    "admit_target_project_transfer_request": "src/rcp/api/project_provisioning.py",
+    "bind_project_transfer_archive": "src/rcp/api/project_provisioning.py",
+    "create_source_project_transfer_request": "src/rcp/api/project_provisioning.py",
+    "create_target_project_transfer_request": "src/rcp/api/project_provisioning.py",
+    "create_incoming_transfer_provisioning_request": ("src/rcp/api/project_provisioning.py"),
     "create_project_provisioning_request": "src/rcp/api/project_provisioning.py",
     "create_paper": "src/rcp/api/paper.py",
     "create_project": "src/rcp/api/index.py",
@@ -174,6 +210,10 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "project": "src/rcp/api/project_state.py",
     "project_provisioning_request": "src/rcp/api/project_provisioning.py",
     "project_provisioning_requests": "src/rcp/api/project_provisioning.py",
+    "project_transfer_request": "src/rcp/api/project_provisioning.py",
+    "project_transfer_requests": "src/rcp/api/project_provisioning.py",
+    "incoming_transfer_provisioning_request": "src/rcp/api/project_provisioning.py",
+    "incoming_transfer_provisioning_requests": "src/rcp/api/project_provisioning.py",
     "project_invitations_for_me": "src/rcp/api/index.py",
     "project_members": "src/rcp/api/project_state.py",
     "project_readiness": "src/rcp/api/project_state.py",
@@ -184,6 +224,9 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "read_skill_package": "src/rcp/api/index.py",
     "reauthorize_episode": "src/rcp/api/episode_routes.py",
     "register_project": "src/rcp/api/index.py",
+    "release_source_project_transfer_request": "src/rcp/api/project_provisioning.py",
+    "retrieve_target_activation_proof": "src/rcp/api/project_provisioning.py",
+    "verify_target_activation_proof": "src/rcp/api/project_provisioning.py",
     "remove_chat_attachment": "src/rcp/api/chats.py",
     "repair_agent_task_graph_update": "src/rcp/api/tasks.py",
     "resolve_project_provider_path": "src/rcp/api/project_state.py",
@@ -210,6 +253,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "update_team_space": "src/rcp/api/team.py",
     "upload_chat_attachment": "src/rcp/api/chats.py",
     "cancel_project_provisioning_request": "src/rcp/api/project_provisioning.py",
+    "link_source_project_transfer_request": "src/rcp/api/project_provisioning.py",
 }
 
 
@@ -238,15 +282,15 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 99
-    assert len(_FROZEN_ROUTE_INVENTORY) == 99
+    assert len(entries) == 115
+    assert len(_FROZEN_ROUTE_INVENTORY) == 115
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 95
+    assert sum(isinstance(route, APIRoute) for route in routes) == 111
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4
 
 
@@ -261,5 +305,5 @@ def test_handler_module_map_is_separate_and_current(route_app: FastAPI) -> None:
         assert source is not None
         observed[endpoint.__name__] = str(Path(source).resolve().relative_to(repository_root))
 
-    assert len(observed) == 88
+    assert len(observed) == 104
     assert observed == _HANDLER_MODULE_MAP

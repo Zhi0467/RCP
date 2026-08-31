@@ -29,6 +29,7 @@ from rcp.storage.models import (
     ProjectProvisioningRequestRecord,
     ProjectProvisioningStatus,
     ProjectProvisioningStepReceiptRecord,
+    ProjectTransferCleanupAcknowledgment,
     ProjectTransferLinkReceipt,
     ProjectTransferPhase,
     ProjectTransferRepositoryBinding,
@@ -109,6 +110,7 @@ def project_transfer_receipt_sha256(
         ProjectTransferLinkReceipt
         | ProjectTransferTargetAdmissionReceipt
         | ProjectTransferSourceReleaseReceipt
+        | ProjectTransferCleanupAcknowledgment
     ),
 ) -> str:
     """Return the public digest that binds one cross-space receipt."""
@@ -265,12 +267,15 @@ class ProjectProvisioningStoreMixin:
                         "transfer request identity already names another source intent"
                     )
                 return current
-            self._insert_project_transfer_request(
-                connection,
-                record,
-                proof_kind="source_release",
-                secret=secret,
-            )
+            try:
+                self._insert_project_transfer_request(
+                    connection,
+                    record,
+                    proof_kind="source_release",
+                    secret=secret,
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("the source project already has another transfer request") from exc
         return record
 
     def create_target_project_transfer_request(
@@ -955,6 +960,139 @@ class ProjectProvisioningStoreMixin:
                 raise RuntimeError("stored transfer proof state is invalid")
         return secret
 
+    def verify_target_project_transfer_activation(
+        self,
+        request_id: str,
+        *,
+        proof: bytes,
+    ) -> ProjectTransferCleanupAcknowledgment:
+        """Verify target activation on the source and publish one bound acknowledgment."""
+
+        canonical_request_id = self._transfer_uuid(request_id, "transfer request identity")
+        if not isinstance(proof, bytes) or len(proof) != 32:
+            raise ValueError("target activation proof must be exactly 32 bytes")
+        commitment = hashlib.sha256(proof).hexdigest()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._project_transfer_request_from_connection(
+                connection,
+                canonical_request_id,
+            )
+            if (
+                current.side != "source"
+                or current.phase not in {"archive_bound", "cleanup_acknowledged", "completed"}
+                or current.target_activation_proof_sha256 != commitment
+                or current.linked_request_id is None
+                or current.source_fence_head is None
+                or current.archive_sha256 is None
+            ):
+                raise ValueError("target activation proof does not match this source transfer")
+            acknowledgment = ProjectTransferCleanupAcknowledgment(
+                source_request_id=current.request_id,
+                target_request_id=current.linked_request_id,
+                project_id=current.project_id,
+                source_space_id=current.source_space_id,
+                target_space_id=current.target_space_id,
+                source_release_proof_sha256=current.source_release_proof_sha256,
+                target_activation_proof_sha256=commitment,
+                archive_sha256=current.archive_sha256,
+                source_fence_head=current.source_fence_head,
+            )
+            acknowledgment_sha256 = project_transfer_receipt_sha256(acknowledgment)
+            protected = connection.execute(
+                "SELECT * FROM project_transfer_proofs WHERE request_id = ?",
+                (canonical_request_id,),
+            ).fetchone()
+            if protected is None:
+                raise RuntimeError("transfer request lost its protected proof")
+            if protected["state"] in {"acknowledged", "consumed"}:
+                if protected["acknowledgement_sha256"] != acknowledgment_sha256:
+                    raise ValueError("source transfer already verified another target boundary")
+                return acknowledgment
+            if protected["state"] != "exposed" or current.phase != "archive_bound":
+                raise ValueError("source transfer proof is not ready for target verification")
+            now = self.now()
+            changed = connection.execute(
+                """
+                UPDATE project_transfer_proofs
+                SET state = 'acknowledged', acknowledgement_sha256 = ?, acknowledged_at = ?
+                WHERE request_id = ? AND state = 'exposed'
+                """,
+                (acknowledgment_sha256, now, canonical_request_id),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("source transfer proof verification lost its transaction guard")
+            updated = self._updated_project_transfer_record(
+                current,
+                proof_state="acknowledged",
+                proof_acknowledgement_sha256=acknowledgment_sha256,
+            )
+            self._replace_project_transfer_record(connection, current, updated)
+        return acknowledgment
+
+    def accept_project_transfer_cleanup_acknowledgment(
+        self,
+        request_id: str,
+        *,
+        acknowledgment: ProjectTransferCleanupAcknowledgment,
+        accepted_by: AuthorizedHuman,
+    ) -> ProjectTransferRequestRecord:
+        """Consume the target proof only for the source backend's exact acknowledgment."""
+
+        canonical_request_id = self._transfer_uuid(request_id, "transfer request identity")
+        normalized = ProjectTransferCleanupAcknowledgment.model_validate_json(
+            acknowledgment.model_dump_json()
+        )
+        actor = AuthorizedHuman.model_validate(accepted_by.model_dump(mode="json"))
+        acknowledgment_sha256 = project_transfer_receipt_sha256(normalized)
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = self._project_transfer_request_from_connection(
+                connection,
+                canonical_request_id,
+            )
+            self._require_transfer_actor(connection, actor)
+            self._require_cleanup_acknowledgment_matches(current, normalized)
+            admission = current.target_admission_receipt
+            if admission is None or admission.admitted_by != actor:
+                raise ValueError("only the target confirmer may accept transfer cleanup")
+            protected = connection.execute(
+                "SELECT * FROM project_transfer_proofs WHERE request_id = ?",
+                (canonical_request_id,),
+            ).fetchone()
+            if protected is None:
+                raise RuntimeError("transfer request lost its protected proof")
+            if current.phase == "completed":
+                if (
+                    current.proof_state != "consumed"
+                    or protected["state"] != "consumed"
+                    or protected["acknowledgement_sha256"] != acknowledgment_sha256
+                ):
+                    raise ValueError("completed transfer has another cleanup acknowledgment")
+                return current
+            if current.phase != "target_activated" or current.proof_state != "exposed":
+                raise ValueError("target transfer is not ready for cleanup")
+            now = self.now()
+            changed = connection.execute(
+                """
+                UPDATE project_transfer_proofs
+                SET state = 'consumed', acknowledgement_sha256 = ?,
+                    acknowledged_at = ?, consumed_at = ?, secret = NULL
+                WHERE request_id = ? AND state = 'exposed'
+                """,
+                (acknowledgment_sha256, now, now, canonical_request_id),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("target transfer cleanup lost its transaction guard")
+            updated = self._updated_project_transfer_record(
+                current,
+                phase="completed",
+                proof_state="consumed",
+                proof_acknowledgement_sha256=acknowledgment_sha256,
+            )
+            self._replace_project_transfer_record(connection, current, updated)
+        return updated
+
     def acknowledge_project_transfer_proof(
         self,
         request_id: str,
@@ -1088,7 +1226,7 @@ class ProjectProvisioningStoreMixin:
                 connection,
                 canonical_request_id,
             )
-            if current.phase == "cleanup_acknowledged":
+            if current.phase in {"cleanup_acknowledged", "completed"}:
                 return current
             expected_phase = "archive_bound" if current.side == "source" else "target_activated"
             if current.phase != expected_phase or current.proof_state != "acknowledged":
@@ -1418,6 +1556,30 @@ class ProjectProvisioningStoreMixin:
         ):
             raise ValueError("source release receipt does not match the admitted target request")
 
+    @staticmethod
+    def _require_cleanup_acknowledgment_matches(
+        current: ProjectTransferRequestRecord,
+        acknowledgment: ProjectTransferCleanupAcknowledgment,
+    ) -> None:
+        if (
+            current.side != "target"
+            or current.linked_request_id is None
+            or current.target_activation_proof_sha256 is None
+            or current.source_fence_head is None
+            or current.archive_sha256 is None
+            or acknowledgment.source_request_id != current.linked_request_id
+            or acknowledgment.target_request_id != current.request_id
+            or acknowledgment.project_id != current.project_id
+            or acknowledgment.source_space_id != current.source_space_id
+            or acknowledgment.target_space_id != current.target_space_id
+            or acknowledgment.source_release_proof_sha256 != current.source_release_proof_sha256
+            or acknowledgment.target_activation_proof_sha256
+            != current.target_activation_proof_sha256
+            or acknowledgment.archive_sha256 != current.archive_sha256
+            or acknowledgment.source_fence_head != current.source_fence_head
+        ):
+            raise ValueError("transfer cleanup acknowledgment does not match the target request")
+
     def detach_project_provisioning_for_restore(
         self,
         connection: sqlite3.Connection,
@@ -1544,6 +1706,7 @@ class ProjectProvisioningStoreMixin:
         project_truth_scope: list[str] | None = None,
         default_run_truth_scope: list[str] | None = None,
         default_auto_research_invocation_ceiling: int = (DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING),
+        request_id: str | None = None,
     ) -> ProjectProvisioningRequestRecord:
         """Reserve one project namespace without creating project authority."""
 
@@ -1577,7 +1740,16 @@ class ProjectProvisioningStoreMixin:
             except RuntimeError as exc:
                 raise ValueError(str(exc)) from exc
         target_space_id = self.space_id
-        request_id = str(uuid.uuid4())
+        if request_id is None:
+            canonical_request_id = str(uuid.uuid4())
+        else:
+            try:
+                canonical_request_id = _canonical_uuid4(
+                    request_id,
+                    label="provisioning request identity",
+                )
+            except RuntimeError as exc:
+                raise ValueError(str(exc)) from exc
         machine_records = [
             ProjectProvisioningMachineRecord(
                 **machine.model_dump(mode="json"),
@@ -1613,7 +1785,7 @@ class ProjectProvisioningStoreMixin:
         ]
         now = self.now()
         record = ProjectProvisioningRequestRecord(
-            request_id=request_id,
+            request_id=canonical_request_id,
             kind=kind,
             status="waiting_for_server_setup",
             target_space_id=target_space_id,
@@ -1652,6 +1824,19 @@ class ProjectProvisioningStoreMixin:
                 is None
             ):
                 raise ValueError("project provisioning authorizer is not a current space member")
+            existing = connection.execute(
+                "SELECT * FROM project_provisioning_requests WHERE request_id = ?",
+                (canonical_request_id,),
+            ).fetchone()
+            if existing is not None:
+                current = self._project_provisioning_record(existing)
+                if self._project_provisioning_creation_payload(current) != (
+                    self._project_provisioning_creation_payload(record)
+                ):
+                    raise ValueError(
+                        "provisioning request identity already names another project intent"
+                    )
+                return current
             if (
                 connection.execute(
                     "SELECT 1 FROM projects WHERE project_id = ?",
@@ -1665,6 +1850,54 @@ class ProjectProvisioningStoreMixin:
             except sqlite3.IntegrityError as exc:
                 raise ValueError("the proposed project identity is already reserved") from exc
         return record
+
+    @staticmethod
+    def _project_provisioning_creation_payload(
+        record: ProjectProvisioningRequestRecord,
+    ) -> dict[str, object]:
+        return {
+            "request_id": record.request_id,
+            "kind": record.kind,
+            "target_space_id": record.target_space_id,
+            "authorized_by": record.authorized_by.model_dump(mode="json"),
+            "proposed_project_id": record.proposed_project_id,
+            "name": record.name,
+            "state_repository": record.state_repository,
+            "project_truth_scope": record.project_truth_scope,
+            "default_run_truth_scope": record.default_run_truth_scope,
+            "default_auto_research_invocation_ceiling": (
+                record.default_auto_research_invocation_ceiling
+            ),
+            "machines": [
+                machine.model_dump(mode="json", exclude={"resolved_central_root"})
+                for machine in record.machines
+            ],
+            "repositories": [
+                repository.model_dump(
+                    mode="json",
+                    exclude={
+                        "resolved_path",
+                        "checkout_disposition",
+                        "git_check",
+                    },
+                )
+                for repository in record.repositories
+            ],
+            "provider_checks": [
+                check.model_dump(
+                    mode="json",
+                    include={
+                        "profile",
+                        "provider",
+                        "runtime_id",
+                        "model",
+                        "reasoning",
+                        "machine_alias",
+                    },
+                )
+                for check in record.provider_checks
+            ],
+        }
 
     def project_provisioning_request(
         self,

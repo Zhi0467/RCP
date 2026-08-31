@@ -1775,11 +1775,21 @@ def create_app(
             "/api/team/credential/rotate",
             "/api/team/credential/revoke",
         }
+        path_parts = path.split("/")
+        native_team_transfer_path = (
+            len(path_parts) == 7
+            and path_parts[1:5] == ["api", "native", "project-transfers", "target-requests"]
+            and (
+                (request.method == "GET" and path_parts[6:] == ["activation-proof"])
+                or (request.method == "POST" and path_parts[6:] == ["cleanup-acknowledgment"])
+            )
+        )
         if (
             space_kind == "team"
             and request.method != "OPTIONS"
             and (path == "/api" or path.startswith("/api/"))
             and path not in public_team_api_paths
+            and not native_team_transfer_path
         ):
             try:
                 resolve_team_user(request)
@@ -1807,7 +1817,6 @@ def create_app(
                         },
                     )
                 media_type = request.headers.get("content-type", "").partition(";")[0].strip()
-                path_parts = path.split("/")
                 attachment_upload = (
                     request.method == "POST"
                     and len(path_parts) == 7

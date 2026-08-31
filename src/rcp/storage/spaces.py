@@ -730,6 +730,37 @@ class SpaceStoreMixin:
             )
         return session, member
 
+    def authenticate_team_member_token(self, token: str) -> SpaceUserRecord:
+        """Resolve one permanent token without creating a browser session."""
+
+        if (
+            not isinstance(token, str)
+            or len(token) > TEAM_MEMBER_TOKEN_MAX_LENGTH
+            or not token.startswith("rcp_")
+        ):
+            raise TeamAuthenticationError(
+                "team_token_invalid", "The member token is invalid or revoked."
+            )
+        token_hash = _sha256(token)
+        member: SpaceUserRecord | None = None
+        with self.connection() as connection:
+            if self._space_kind_from_connection(connection) != "team":
+                raise ValueError("Only a team space accepts member tokens.")
+            row = connection.execute(
+                """
+                SELECT user_id, token_hash FROM team_member_tokens
+                WHERE token_hash = ? AND revoked_at IS NULL
+                """,
+                (token_hash,),
+            ).fetchone()
+            if row is not None and hmac.compare_digest(row["token_hash"], token_hash):
+                member = self._require_team_member_from_connection(connection, row["user_id"])
+        if member is None:
+            raise TeamAuthenticationError(
+                "team_token_invalid", "The member token is invalid or revoked."
+            )
+        return member
+
     def resolve_team_session(self, session: str | None) -> SpaceUserRecord | None:
         if (
             not session

@@ -1200,6 +1200,53 @@ class ProjectTransferSourceReleaseReceipt(_StrictProvisioningModel):
         return self
 
 
+class ProjectTransferCleanupAcknowledgment(_StrictProvisioningModel):
+    """Public receipt produced only after the source verifies target activation."""
+
+    source_request_id: str
+    target_request_id: str
+    project_id: str
+    source_space_id: str
+    target_space_id: str
+    source_release_proof_sha256: str
+    target_activation_proof_sha256: str
+    archive_sha256: str
+    source_fence_head: GraphHeadRef
+
+    @field_validator(
+        "source_request_id",
+        "target_request_id",
+        "project_id",
+        "source_space_id",
+        "target_space_id",
+    )
+    @classmethod
+    def validate_identifier(cls, value: str, info: ValidationInfo) -> str:
+        try:
+            return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator(
+        "source_release_proof_sha256",
+        "target_activation_proof_sha256",
+        "archive_sha256",
+    )
+    @classmethod
+    def validate_digest(cls, value: str) -> str:
+        if _SHA256_HEX.fullmatch(value) is None:
+            raise ValueError("transfer cleanup receipt digest must be lowercase SHA-256")
+        return value
+
+    @model_validator(mode="after")
+    def validate_spaces(self) -> ProjectTransferCleanupAcknowledgment:
+        if self.source_space_id == self.target_space_id:
+            raise ValueError("a transfer cleanup receipt must cross spaces")
+        if self.source_fence_head.target.kind != "main":
+            raise ValueError("transfer cleanup must bind the fenced main head")
+        return self
+
+
 _PROJECT_TRANSFER_PHASE_RANK: dict[ProjectTransferPhase, int] = {
     "awaiting_link": 0,
     "linked": 1,
@@ -2876,6 +2923,7 @@ __all__ = [
     "ProjectTransferProofKind",
     "ProjectTransferProofState",
     "ProjectTransferRepositoryBinding",
+    "ProjectTransferCleanupAcknowledgment",
     "ProjectTransferLinkReceipt",
     "ProjectTransferRepositorySource",
     "ProjectTransferRequestRecord",
