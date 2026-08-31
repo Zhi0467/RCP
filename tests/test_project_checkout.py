@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pwd
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -279,6 +280,9 @@ def test_shipped_helper_creates_and_reuses_only_the_exact_checkout(tmp_path: Pat
         "empty": True,
     }
     assert checkout.is_dir()
+    # Every directory the helper creates is private to the account it runs as.
+    for created in (root / PROJECT_ID, root / PROJECT_ID / "repositories", checkout):
+        assert stat.S_IMODE(created.stat().st_mode) == 0o700, created
 
     sentinel = checkout / "keep-me"
     sentinel.write_text("preserve", encoding="utf-8")
@@ -746,14 +750,10 @@ def test_recovery_accepts_only_byte_identical_archived_research(tmp_path: Path) 
         )
 
 
-def test_recovery_research_helper_refuses_unclassified_or_symlinked_input(
-    tmp_path: Path,
-) -> None:
-    repository = tmp_path / "repository"
-    research = repository / ".research"
-    research.mkdir(parents=True)
-    account = pwd.getpwuid(os.getuid())
-    policy = json.dumps(
+def _recovery_policy(*, offset: int = 0, page_size: int = 8) -> str:
+    """The recovery policy the manager ships with every remote inspection."""
+
+    return json.dumps(
         {
             "durable_roots": [
                 "branches",
@@ -786,12 +786,22 @@ def test_recovery_research_helper_refuses_unclassified_or_symlinked_input(
                 "research.md",
             ],
             "excluded_prefixes": [".batch-", ".unconfirmed-"],
-            "offset": 0,
-            "page_size": 8,
+            "offset": offset,
+            "page_size": page_size,
         },
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def test_recovery_research_helper_refuses_unclassified_or_symlinked_input(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    research = repository / ".research"
+    research.mkdir(parents=True)
+    account = pwd.getpwuid(os.getuid())
+    policy = _recovery_policy()
     (research / "future-state").mkdir()
 
     refused = _helper(
@@ -817,3 +827,642 @@ def test_recovery_research_helper_refuses_unclassified_or_symlinked_input(
     )
 
     assert symlinked.returncode == 2
+
+
+def _account_arguments() -> tuple[str, str]:
+    account = pwd.getpwuid(os.getuid())
+    return account.pw_name, account.pw_dir
+
+
+def _checkout_with_git(tmp_path: Path) -> Path:
+    """One account-owned checkout carrying a safe `.git/config`."""
+
+    repository = tmp_path / "checkout"
+    repository.mkdir(mode=0o700)
+    git = repository / ".git"
+    git.mkdir(mode=0o700)
+    config = git / "config"
+    config.write_text("[core]\n\trepositoryformatversion = 0\n", encoding="utf-8")
+    config.chmod(0o600)
+    return repository
+
+
+def test_shipped_helper_proves_the_central_git_directory_before_any_git_runs(
+    tmp_path: Path,
+) -> None:
+    repository = _checkout_with_git(tmp_path)
+
+    proved = _helper("git-directory", *_account_arguments(), str(repository))
+
+    assert proved.returncode == 0, proved.stderr
+    assert json.loads(proved.stdout) == {
+        "repository_path": str(repository),
+        "safe": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("mode", "size"),
+    [
+        pytest.param(0o701, None, id="executable-but-not-writable"),
+        pytest.param(0o604, None, id="readable-by-others"),
+        pytest.param(
+            0o600, remote_project_checkout.MAX_GIT_CONFIG_BYTES, id="exactly-at-the-size-bound"
+        ),
+    ],
+)
+def test_shipped_helper_accepts_a_git_config_only_a_stranger_cannot_rewrite(
+    tmp_path: Path,
+    mode: int,
+    size: int | None,
+) -> None:
+    """The config gate is about who can write, and its size bound is inclusive.
+
+    Later `git` commands obey this file, so the check exists to stop another
+    account changing it. Rejecting a config that is merely readable, merely
+    executable, or exactly at the bound would refuse ordinary hosts instead.
+    """
+
+    repository = _checkout_with_git(tmp_path)
+    config = repository / ".git" / "config"
+    if size is not None:
+        config.write_text("#" * size, encoding="utf-8")
+    config.chmod(mode)
+
+    proved = _helper("git-directory", *_account_arguments(), str(repository))
+
+    assert proved.returncode == 0, proved.stderr
+    assert json.loads(proved.stdout)["repository_path"] == str(repository)
+
+
+def test_shipped_helper_refuses_a_git_config_one_byte_over_its_bound(
+    tmp_path: Path,
+) -> None:
+    repository = _checkout_with_git(tmp_path)
+    (repository / ".git" / "config").write_text(
+        "#" * (remote_project_checkout.MAX_GIT_CONFIG_BYTES + 1), encoding="utf-8"
+    )
+
+    refused = _helper("git-directory", *_account_arguments(), str(repository))
+
+    assert refused.returncode == 2
+    assert refused.stdout == ""
+
+
+def _remove_git(repository: Path) -> None:
+    for child in sorted((repository / ".git").iterdir()):
+        child.unlink()
+    (repository / ".git").rmdir()
+
+
+def _symlink_git(repository: Path) -> None:
+    _remove_git(repository)
+    elsewhere = repository.parent / "attacker-git"
+    elsewhere.mkdir(mode=0o700)
+    (elsewhere / "config").write_text("[core]\n", encoding="utf-8")
+    (repository / ".git").symlink_to(elsewhere, target_is_directory=True)
+
+
+def _group_writable_git(repository: Path) -> None:
+    (repository / ".git").chmod(0o770)
+
+
+def _shared_config(repository: Path) -> None:
+    (repository / ".git" / "config").chmod(0o666)
+
+
+def _symlink_config(repository: Path) -> None:
+    elsewhere = repository.parent / "attacker-config"
+    elsewhere.write_text("[core]\n", encoding="utf-8")
+    (repository / ".git" / "config").unlink()
+    (repository / ".git" / "config").symlink_to(elsewhere)
+
+
+@pytest.mark.parametrize(
+    "break_checkout",
+    [
+        pytest.param(_remove_git, id="missing-git-directory"),
+        pytest.param(_symlink_git, id="symlinked-git-directory"),
+        pytest.param(_group_writable_git, id="group-writable-git-directory"),
+        pytest.param(_shared_config, id="world-writable-config"),
+        pytest.param(_symlink_config, id="symlinked-config"),
+    ],
+)
+def test_shipped_helper_refuses_an_unsafe_git_directory_or_config(
+    tmp_path: Path,
+    break_checkout: object,
+) -> None:
+    """The helper runs on the remote host, so it trusts nothing it did not open itself.
+
+    Every case here is a way another account could redirect or rewrite the Git
+    configuration that later Git commands obey.
+    """
+
+    repository = _checkout_with_git(tmp_path)
+    break_checkout(repository)  # type: ignore[operator]
+
+    refused = _helper("git-directory", *_account_arguments(), str(repository))
+
+    assert refused.returncode == 2
+    assert refused.stdout == ""
+
+
+def test_shipped_helper_refuses_a_relative_path_or_an_account_it_is_not_running_as(
+    tmp_path: Path,
+) -> None:
+    repository = _checkout_with_git(tmp_path)
+    account, home = _account_arguments()
+
+    assert _helper("git-directory", account, home, "checkout").returncode == 2
+    assert _helper("git-directory", "rcp-not-this-account", home, str(repository)).returncode == 2
+
+
+def _research(repository: Path) -> Path:
+    research = repository / ".research"
+    research.mkdir(mode=0o700)
+    return research
+
+
+def _patch(research: Path, document: object) -> None:
+    patches = research / "patches"
+    patches.mkdir(mode=0o700, exist_ok=True)
+    payload = document if isinstance(document, str) else json.dumps(document)
+    (patches / "000001.json").write_text(payload, encoding="utf-8")
+
+
+def test_shipped_helper_reports_no_retained_research_when_there_is_none(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "checkout"
+    repository.mkdir(mode=0o700)
+
+    reported = _helper("retained", *_account_arguments(), str(repository))
+
+    assert reported.returncode == 0, reported.stderr
+    assert json.loads(reported.stdout) == {
+        "retained": False,
+        "patch_history": False,
+        "project_id": None,
+        "home_space_id": None,
+    }
+
+
+def test_shipped_helper_treats_an_empty_research_directory_as_nothing_retained(
+    tmp_path: Path,
+) -> None:
+    """An empty `.research` is not retained research.
+
+    The directory alone does not make a project. Reporting it as retained would
+    refuse a checkout that holds no history to lose.
+    """
+
+    repository = tmp_path / "checkout"
+    repository.mkdir(mode=0o700)
+    _research(repository)
+
+    reported = _helper("retained", *_account_arguments(), str(repository))
+
+    assert reported.returncode == 0, reported.stderr
+    assert json.loads(reported.stdout)["retained"] is False
+
+
+def test_shipped_helper_reports_retained_research_without_patch_history(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "checkout"
+    repository.mkdir(mode=0o700)
+    (_research(repository) / "graph.json").write_text("{}", encoding="utf-8")
+
+    reported = _helper("retained", *_account_arguments(), str(repository))
+
+    assert reported.returncode == 0, reported.stderr
+    assert json.loads(reported.stdout) == {
+        "retained": True,
+        "patch_history": False,
+        "project_id": None,
+        "home_space_id": None,
+    }
+
+
+def test_shipped_helper_reads_the_recorded_identity_from_the_first_patch(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "checkout"
+    repository.mkdir(mode=0o700)
+    _patch(
+        _research(repository),
+        {"project_identity": {"project_id": PROJECT_ID, "home_space_id": SPACE_ID}},
+    )
+
+    reported = _helper("retained", *_account_arguments(), str(repository))
+
+    assert reported.returncode == 0, reported.stderr
+    assert json.loads(reported.stdout) == {
+        "retained": True,
+        "patch_history": True,
+        "project_id": PROJECT_ID,
+        "home_space_id": SPACE_ID,
+    }
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param("this is not json", id="unparsable"),
+        pytest.param({"project_identity": {}}, id="no-identity-fields"),
+        pytest.param(
+            {"project_identity": {"project_id": "not-a-uuid", "home_space_id": SPACE_ID}},
+            id="project-id-not-uuid4",
+        ),
+        pytest.param(
+            {"project_identity": {"project_id": PROJECT_ID, "home_space_id": 7}},
+            id="home-space-id-not-a-string",
+        ),
+        pytest.param(["project_identity"], id="patch-is-not-an-object"),
+    ],
+)
+def test_shipped_helper_still_reports_retained_history_when_identity_is_unreadable(
+    tmp_path: Path,
+    document: object,
+) -> None:
+    """An unreadable identity must never downgrade the retained-history answer.
+
+    The identity is a convenience for the operator prompt. The refusal that
+    protects existing research depends on patch_history, so a malformed or
+    hostile patch must not clear it.
+    """
+
+    repository = tmp_path / "checkout"
+    repository.mkdir(mode=0o700)
+    _patch(_research(repository), document)
+
+    reported = _helper("retained", *_account_arguments(), str(repository))
+
+    assert reported.returncode == 0, reported.stderr
+    assert json.loads(reported.stdout) == {
+        "retained": True,
+        "patch_history": True,
+        "project_id": None,
+        "home_space_id": None,
+    }
+
+
+def test_shipped_helper_refuses_symlinked_retained_research(tmp_path: Path) -> None:
+    repository = tmp_path / "checkout"
+    repository.mkdir(mode=0o700)
+    elsewhere = tmp_path / "attacker-research"
+    elsewhere.mkdir(mode=0o700)
+    (repository / ".research").symlink_to(elsewhere, target_is_directory=True)
+
+    refused = _helper("retained", *_account_arguments(), str(repository))
+
+    assert refused.returncode == 2
+    assert refused.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(("nonsense",), id="unknown-operation"),
+        pytest.param(("retained",), id="retained-missing-arguments"),
+        pytest.param(("git-directory", "one", "two"), id="git-directory-too-few"),
+        pytest.param(("prepare", "a", "b", "c"), id="prepare-too-few"),
+        pytest.param(
+            ("recovery-research", "one", "two", "three"),
+            id="recovery-research-too-few",
+        ),
+    ],
+)
+def test_shipped_helper_rejects_an_unknown_operation_or_wrong_argument_count(
+    argv: tuple[str, ...],
+) -> None:
+    refused = _helper(*argv)
+
+    assert refused.returncode == 2
+    assert refused.stdout == ""
+
+
+def _recovery_tree(tmp_path: Path) -> Path:
+    """One checkout whose `.research` mixes durable, excluded, and nested entries."""
+
+    repository = tmp_path / "checkout"
+    repository.mkdir(mode=0o700)
+    research = repository / ".research"
+    research.mkdir(mode=0o700)
+    (research / "manifest.toml").write_text("x\n", encoding="utf-8")
+    (research / "scope-base.json").write_text("{}", encoding="utf-8")
+    (research / "graph.json").write_text("rebuildable", encoding="utf-8")
+    patches = research / "patches"
+    patches.mkdir(mode=0o700)
+    (patches / "000001.json").write_text("{}", encoding="utf-8")
+    chat = research / "chat"
+    chat.mkdir(mode=0o700)
+    (chat / "a.json").write_text("a", encoding="utf-8")
+    (chat / "graph.json").write_text("rebuildable", encoding="utf-8")
+    (chat / ".batch-scratch").write_text("scratch", encoding="utf-8")
+    return repository
+
+
+def test_recovery_research_reports_an_empty_inventory_when_nothing_is_retained(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "checkout"
+    repository.mkdir(mode=0o700)
+
+    reported = _helper(
+        "recovery-research",
+        *_account_arguments(),
+        str(repository),
+        _recovery_policy(),
+    )
+
+    assert reported.returncode == 0, reported.stderr
+    assert json.loads(reported.stdout) == {
+        "research_present": False,
+        "inventory_sha256": hashlib.sha256(b"[]").hexdigest(),
+        "total_files": 0,
+        "next_offset": None,
+        "files": [],
+    }
+
+
+def test_recovery_research_inventories_durable_bytes_and_skips_rebuildable_ones(
+    tmp_path: Path,
+) -> None:
+    """Only durable bytes are inventoried, at every depth.
+
+    `graph.json` is rebuildable both as a direct root and inside a durable
+    subtree, and a `.batch-` scratch entry is never durable.
+    """
+
+    repository = _recovery_tree(tmp_path)
+
+    reported = _helper(
+        "recovery-research",
+        *_account_arguments(),
+        str(repository),
+        _recovery_policy(),
+    )
+
+    assert reported.returncode == 0, reported.stderr
+    payload = json.loads(reported.stdout)
+    assert payload["research_present"] is True
+    assert payload["total_files"] == 4
+    assert [entry["path"] for entry in payload["files"]] == [
+        ".research/chat/a.json",
+        ".research/manifest.toml",
+        ".research/patches/000001.json",
+        ".research/scope-base.json",
+    ]
+    single_byte = next(e for e in payload["files"] if e["path"] == ".research/chat/a.json")
+    assert single_byte["size_bytes"] == 1
+    assert single_byte["sha256"] == hashlib.sha256(b"a").hexdigest()
+
+
+def test_recovery_research_pages_without_changing_the_whole_inventory_digest(
+    tmp_path: Path,
+) -> None:
+    """The digest covers the inventory, not the page.
+
+    A caller reassembling pages needs one digest to prove the tree did not change
+    underneath it between requests.
+    """
+
+    repository = _recovery_tree(tmp_path)
+    account = _account_arguments()
+
+    first = _helper(
+        "recovery-research", *account, str(repository), _recovery_policy(offset=0, page_size=3)
+    )
+    second = _helper(
+        "recovery-research", *account, str(repository), _recovery_policy(offset=3, page_size=3)
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    head, tail = json.loads(first.stdout), json.loads(second.stdout)
+
+    assert head["next_offset"] == 3
+    assert tail["next_offset"] is None
+    assert head["inventory_sha256"] == tail["inventory_sha256"]
+    assert len(head["files"]) == 3
+    assert len(tail["files"]) == 1
+    assert [entry["path"] for entry in head["files"] + tail["files"]] == [
+        ".research/chat/a.json",
+        ".research/manifest.toml",
+        ".research/patches/000001.json",
+        ".research/scope-base.json",
+    ]
+
+
+def _symlink_inside_durable_root(repository: Path) -> None:
+    (repository / ".research" / "chat" / "escape.json").symlink_to(
+        repository.parent / "outside.json"
+    )
+
+
+def _group_writable_research_file(repository: Path) -> None:
+    (repository / ".research" / "chat" / "a.json").chmod(0o666)
+
+
+def _group_writable_research_directory(repository: Path) -> None:
+    (repository / ".research" / "chat").chmod(0o770)
+
+
+@pytest.mark.parametrize(
+    "break_tree",
+    [
+        pytest.param(_symlink_inside_durable_root, id="symlink-inside-durable-root"),
+        pytest.param(_group_writable_research_file, id="group-writable-file"),
+        pytest.param(_group_writable_research_directory, id="group-writable-directory"),
+    ],
+)
+def test_recovery_research_refuses_bytes_another_account_could_have_changed(
+    tmp_path: Path,
+    break_tree: object,
+) -> None:
+    repository = _recovery_tree(tmp_path)
+    (tmp_path / "outside.json").write_text("attacker", encoding="utf-8")
+    break_tree(repository)  # type: ignore[operator]
+
+    refused = _helper(
+        "recovery-research",
+        *_account_arguments(),
+        str(repository),
+        _recovery_policy(),
+    )
+
+    assert refused.returncode == 2
+    assert refused.stdout == ""
+
+
+@pytest.mark.parametrize("page_size", [1, 16])
+def test_recovery_research_accepts_both_ends_of_its_page_bound(
+    tmp_path: Path,
+    page_size: int,
+) -> None:
+    """Both ends of the documented page range are usable.
+
+    A caller that walks the inventory one file at a time, and one that asks for
+    the largest page, are the two callers the bound exists for.
+    """
+
+    repository = _recovery_tree(tmp_path)
+
+    paged = _helper(
+        "recovery-research",
+        *_account_arguments(),
+        str(repository),
+        _recovery_policy(page_size=page_size),
+    )
+
+    assert paged.returncode == 0, paged.stderr
+    assert len(json.loads(paged.stdout)["files"]) == min(page_size, 4)
+
+
+def test_recovery_research_refuses_a_page_larger_than_its_bound(tmp_path: Path) -> None:
+    repository = _recovery_tree(tmp_path)
+
+    refused = _helper(
+        "recovery-research",
+        *_account_arguments(),
+        str(repository),
+        _recovery_policy(page_size=17),
+    )
+
+    assert refused.returncode == 2
+    assert refused.stdout == ""
+
+
+def test_recovery_research_ends_on_an_empty_page_rather_than_a_refusal(
+    tmp_path: Path,
+) -> None:
+    """Reading exactly to the end is a finished walk, not an error.
+
+    A caller paging to the end lands on offset == total. Refusing there would
+    make a completed inventory read indistinguishable from a corrupted one.
+    """
+
+    repository = _recovery_tree(tmp_path)
+
+    ended = _helper(
+        "recovery-research",
+        *_account_arguments(),
+        str(repository),
+        _recovery_policy(offset=4, page_size=2),
+    )
+
+    assert ended.returncode == 0, ended.stderr
+    finished = json.loads(ended.stdout)
+    assert finished["total_files"] == 4
+    assert finished["files"] == []
+    assert finished["next_offset"] is None
+
+
+def test_recovery_research_refuses_a_page_outside_its_inventory(tmp_path: Path) -> None:
+    repository = _recovery_tree(tmp_path)
+
+    refused = _helper(
+        "recovery-research",
+        *_account_arguments(),
+        str(repository),
+        _recovery_policy(offset=99, page_size=2),
+    )
+
+    assert refused.returncode == 2
+    assert refused.stdout == ""
+
+
+_ABSENT = object()
+
+
+def _policy_variant(**overrides: object) -> str:
+    policy = json.loads(_recovery_policy())
+    for key, value in overrides.items():
+        if value is _ABSENT:
+            policy.pop(key)
+        else:
+            policy[key] = value
+    return json.dumps(policy, separators=(",", ":"), sort_keys=True)
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        pytest.param("{ not json", id="unparsable"),
+        pytest.param(_policy_variant(offset=_ABSENT), id="missing-key"),
+        pytest.param(_policy_variant(surprise=1), id="unknown-key"),
+        pytest.param(_policy_variant(durable_roots="patches"), id="root-set-is-not-a-list"),
+        pytest.param(_policy_variant(durable_roots=[7]), id="root-is-not-a-string"),
+        pytest.param(
+            _policy_variant(
+                durable_roots=[
+                    "",
+                    "branches",
+                    "chat",
+                    "facts",
+                    "manifest.toml",
+                    "paper",
+                    "patches",
+                    "scope-base.json",
+                ]
+            ),
+            id="root-is-an-empty-name",
+        ),
+        pytest.param(_policy_variant(excluded_prefixes=[None]), id="prefix-is-not-a-string"),
+        pytest.param(_policy_variant(offset=-1), id="negative-offset"),
+        pytest.param(_policy_variant(page_size=0), id="empty-page"),
+        pytest.param(_policy_variant(offset="0"), id="offset-is-not-an-integer"),
+    ],
+)
+def test_recovery_research_refuses_a_policy_it_cannot_read_exactly(
+    tmp_path: Path,
+    policy: str,
+) -> None:
+    """The policy decides what counts as durable, so a vague one is not usable.
+
+    Accepting a partial policy would silently change which bytes are recovered.
+    """
+
+    repository = _recovery_tree(tmp_path)
+
+    refused = _helper("recovery-research", *_account_arguments(), str(repository), policy)
+
+    assert refused.returncode == 2
+    assert refused.stdout == ""
+
+
+def test_shipped_helper_reads_identity_from_a_batched_patch_directory(
+    tmp_path: Path,
+) -> None:
+    """Patches may live in `batch-` directories, and the first patch still wins.
+
+    Ordering is by patch filename, not by directory, so a batched `000001.json`
+    precedes a later loose `000002.json`.
+    """
+
+    repository = tmp_path / "checkout"
+    repository.mkdir(mode=0o700)
+    research = _research(repository)
+    patches = research / "patches"
+    patches.mkdir(mode=0o700)
+    batch = patches / "batch-0001"
+    batch.mkdir(mode=0o700)
+    (batch / "000001.json").write_text(
+        json.dumps({"project_identity": {"project_id": PROJECT_ID, "home_space_id": SPACE_ID}}),
+        encoding="utf-8",
+    )
+    (patches / "000002.json").write_text(
+        json.dumps({"project_identity": {"project_id": REQUEST_ID, "home_space_id": SPACE_ID}}),
+        encoding="utf-8",
+    )
+
+    reported = _helper("retained", *_account_arguments(), str(repository))
+
+    assert reported.returncode == 0, reported.stderr
+    assert json.loads(reported.stdout) == {
+        "retained": True,
+        "patch_history": True,
+        "project_id": PROJECT_ID,
+        "home_space_id": SPACE_ID,
+    }

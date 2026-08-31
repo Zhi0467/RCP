@@ -74,6 +74,14 @@ def _execute(prepared):
     return final.step
 
 
+def _field(step, name: str) -> object:
+    """Read one rendered console field by name."""
+    for field in step.fields:
+        if field.name == name:
+            return field.value
+    raise AssertionError(f"{name} was not rendered; got {[f.name for f in step.fields]}")
+
+
 def test_cli_previews_exact_boundary_before_confirmation(tmp_path) -> None:
     store, _alice, bob, _metadata, _background, coordinator = _team(tmp_path)
     control = _CoordinatorControl(coordinator)
@@ -97,6 +105,8 @@ def test_cli_previews_exact_boundary_before_confirmation(tmp_path) -> None:
     assert final.resume_argv[-1] == coordinator.plan(bob.user_id).snapshot.boundary_sha256
     assert control.advances == 0
     assert store.space_user(bob.user_id).removal_started_at is None
+    # The console names the state it is about to change, so each state is pinned.
+    assert _field(final, "removal_state") == "active"
 
 
 def test_confirmed_cli_removes_member_and_preserves_history(tmp_path) -> None:
@@ -122,6 +132,33 @@ def test_confirmed_cli_removes_member_and_preserves_history(tmp_path) -> None:
     assert tombstone.display_name == "Bob"
     assert tombstone.removal_started_at is not None
     assert tombstone.removed_at is not None
+
+
+def test_preview_reports_the_state_the_member_is_actually_in(tmp_path) -> None:
+    """An operator re-running the command must see the fence already happened.
+
+    The preview renders one removal_state, and it is the only place the operator
+    learns whether access is still open.
+    """
+
+    store, _alice, bob, _metadata, _background, coordinator = _team(tmp_path)
+    control = _CoordinatorControl(coordinator)
+    preview = store.member_removal_preview(bob.user_id)
+    store.begin_member_removal(bob.user_id, expected_boundary_sha256=preview.boundary_sha256)
+
+    prepared = prepare_member_remove_command(
+        ServerCommandRequest(command="server member remove", member_id=bob.user_id),
+        CallerIdentity(uid=501, username="rcp", host="team.example"),
+        control_factory=lambda _layout: control,
+    )
+    emitter = ServerEventEmitter(prepared.plan, machine_readable=True, stream=StringIO())
+    prepared.execute(emitter, BytesIO())
+    steps = [event.step for event in emitter.events if isinstance(event, ServerStepEvent)]
+
+    # The operator sees the fence that a crash already applied, then its completion.
+    assert _field(steps[0], "removal_state") == "access_fenced"
+    assert _field(steps[0], "member_name") == "Bob"
+    assert _field(steps[-1], "removal_state") == "removed"
 
 
 def test_reentry_reconciles_a_crash_after_the_access_fence(tmp_path) -> None:

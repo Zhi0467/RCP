@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import uuid
-from pathlib import Path
+from collections.abc import Callable
+from dataclasses import FrozenInstanceError, replace
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +27,7 @@ from rcp.server_ops.config import (
 from rcp.server_ops.layout import (
     DEFAULT_SERVER_LAYOUT,
     remote_credentials_root,
+    remote_projects_root,
     server_service_unit_text,
 )
 
@@ -92,13 +96,112 @@ def test_release_and_project_paths_accept_only_bounded_components() -> None:
         layout.project_repository_dir(str(uuid.uuid1()), "repo")
 
 
-def test_remote_credentials_follow_the_proven_home_instead_of_assuming_home_user() -> None:
-    assert str(remote_credentials_root("/srv/research/alice")) == (
-        "/srv/research/alice/.local/share/rcp/credentials"
-    )
-    for invalid in ("home/alice", "/", "/srv/../home/alice", "/home/alice\nother"):
-        with pytest.raises(ValueError):
-            remote_credentials_root(invalid)
+_SAFE_LINE = "remote account home must be one safe line"
+_ABSOLUTE_HOME = "remote account home must be an absolute normalized non-root path"
+
+
+@pytest.mark.parametrize(
+    ("build", "suffix"),
+    [
+        (remote_credentials_root, "credentials"),
+        (remote_projects_root, "projects"),
+    ],
+)
+def test_remote_roots_follow_the_proven_home_instead_of_assuming_home_user(
+    build: Callable[[str], PurePosixPath],
+    suffix: str,
+) -> None:
+    assert str(build("/srv/research/alice")) == f"/srv/research/alice/.local/share/rcp/{suffix}"
+
+
+@pytest.mark.parametrize(
+    ("build", "_suffix"),
+    [
+        (remote_credentials_root, "credentials"),
+        (remote_projects_root, "projects"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("invalid", "message"),
+    [
+        # Control characters cannot reach a remote shell line.
+        ("/home/alice\nother", _SAFE_LINE),
+        ("/home/alice\x00other", _SAFE_LINE),
+        ("/home/alice\x7f", _SAFE_LINE),
+        ("/home/alice\tother", _SAFE_LINE),
+        # A space is not a control character, so it stays a legal home.
+        ("home/alice", _ABSOLUTE_HOME),
+        ("/", _ABSOLUTE_HOME),
+        ("/srv/../home/alice", _ABSOLUTE_HOME),
+        ("/home/alice/..", _ABSOLUTE_HOME),
+    ],
+)
+def test_remote_roots_reject_unsafe_homes_with_the_guard_that_caught_them(
+    build: Callable[[str], PurePosixPath],
+    _suffix: str,
+    invalid: str,
+    message: str,
+) -> None:
+    """Both roots take the same untrusted home, so both need the same proof.
+
+    The message is asserted because the two guards fail differently: one keeps
+    control characters out of a remote command line, the other keeps the path
+    absolute and inside the account.
+    """
+
+    with pytest.raises(ValueError, match=re.escape(message)):
+        build(invalid)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        # Every recorded path must be absolute and normalized.
+        ("data_dir", Path("home/rcp/rcp-server/data"), "must be absolute and normalized"),
+        (
+            "data_dir",
+            Path("/home/rcp/rcp-server/../data"),
+            "must be absolute and normalized",
+        ),
+        # Server-owned children may not escape the server root.
+        ("projects_root", Path("/home/rcp/elsewhere"), "must stay below the server root"),
+        # Server-owned children may not nest inside one another.
+        (
+            "projects_root",
+            Path("/home/rcp/rcp-server/data/projects"),
+            "must not overlap",
+        ),
+        # The control socket belongs directly below the runtime directory.
+        (
+            "control_socket",
+            Path("/run/rcp/nested/control.sock"),
+            "directly below the runtime directory",
+        ),
+    ],
+)
+def test_layout_rejects_a_path_set_that_breaks_its_own_containment(
+    field: str,
+    value: Path,
+    message: str,
+) -> None:
+    """The layout validates itself on construction, so each guard needs a case.
+
+    Only the valid default is exercised elsewhere, which leaves every branch of
+    __post_init__ unproven.
+    """
+
+    with pytest.raises(ValueError, match=message):
+        replace(DEFAULT_SERVER_LAYOUT, **{field: value})
+
+
+def test_layout_cannot_be_rewritten_after_it_validates() -> None:
+    with pytest.raises(FrozenInstanceError):
+        DEFAULT_SERVER_LAYOUT.data_dir = Path("/tmp/elsewhere")  # type: ignore[misc]
+
+
+def test_remote_roots_accept_a_home_containing_a_space() -> None:
+    assert str(remote_credentials_root("/srv/a b/alice")).startswith("/srv/a b/alice/")
+    assert str(remote_projects_root("/srv/a b/alice")).startswith("/srv/a b/alice/")
 
 
 def test_installed_config_round_trips_every_fixed_path() -> None:
