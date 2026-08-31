@@ -25,12 +25,13 @@ What each open drive is waiting on:
 
 - **F6d** — the Ubuntu 22.04/24.04 update workflow. It is implemented and pushed
   with closed admission, systemd cutover, loud rollback, crash re-entry, and a
-  disposable-host death drive. Exact-head Actions run
-  [33395914834](https://github.com/Zhi0467/RCP/actions/runs/33395914834) on
-  2026-08-31 was refused before either Ubuntu job started; both jobs reported no
-  executed steps because the GitHub account's hosted-runner spending limit is
-  unavailable. That is a billing block, not a code block, and the unchanged
-  workflow should not be redispatched until runner access changes.
+  disposable-host death drive. Hosted-runner access is restored. Run
+  [33408513981](https://github.com/Zhi0467/RCP/actions/runs/33408513981) genuinely
+  drove both Ubuntu releases through source installation, then found one stale
+  live-test protocol assertion: the private control probe now includes the
+  implemented `pending_member_removals` inventory. Both cleanup jobs passed.
+  The exact-shape assertion is repaired locally and F6d remains open only until
+  the repair is pushed and the two-release rerun passes.
 - **P6a** — the complete team-service and GitHub live qualification.
 - **O4d** — the fresh-host Ubuntu restore drive.
 - **D4a, D4b, D5** — the integrated source-built two-space desktop drive.
@@ -240,6 +241,51 @@ decision blocks the feature lanes. Q10 and the later public branch-protection
 gate are deliberately future work and do not block this plan.
 
 ### Implementation log
+
+#### 2026-08-31 — hosted closure resumed and first real-run defects repaired
+
+- Restored hosted-runner access turned the previously unavailable gates into
+  real execution. Main CI run
+  [33401288385](https://github.com/Zhi0467/RCP/actions/runs/33401288385) passed
+  lint, Web, and old-data upgrade, then exposed two defects in both Python
+  versions: the new transfer tests invoked the macOS-only absolute Git path on
+  Ubuntu, and the project write-admission dependency used a thread-owned
+  `RLock` even though FastAPI may enter and exit a synchronous dependency on
+  different worker threads.
+- The transfer fixture now resolves Git from `PATH` and fails plainly if the
+  required executable is absent. Project admission now uses the primitive
+  cross-thread lock already supported by `KeyedLocks`; the two route-local
+  duplicate acquisitions were removed, while `ExperimentAdmission` exposes its
+  existing current-Experiment check for retry/repair callers that already hold
+  the outer lock. The removal-versus-run races still serialize, retry and repair
+  still fail closed for a removed Experiment, and the regression explicitly
+  rejects a return to thread-owned locking.
+- Live qualification run
+  [33408513981](https://github.com/Zhi0467/RCP/actions/runs/33408513981) reached
+  the actual source install/update driver on Ubuntu 22.04 and 24.04. Both
+  releases stopped at the same stale strict probe shape after production added
+  `pending_member_removals`; deploy-key revocation and temporary-route cleanup
+  passed on both. The live test now accepts exactly that new field and requires
+  an empty inventory on the clean install. Its focused disposable-host test,
+  Ruff, format check, and independent read-only audit pass locally.
+- Focused transfer tests pass (11 tests), the admission/removal races passed 20
+  consecutive repetitions, all 141 API tests pass, and the Unix-socket
+  provisioning integration passes outside the macOS sandbox. The first lock
+  repair exposed two lock-order defects during its independent audit: Sync held
+  project admission while ready watcher delivery reacquired it, and result-view
+  Resume acquired the view lock before project admission while Keep, Start, and
+  Retry used the opposite order. Sync now publishes its transition under
+  admission and delivers watchers after release; Resume now uses the same
+  project-then-view order as every other result-view mutation. The complete
+  unrestricted Python suite, all graph-watcher and result-view focused suites,
+  Ruff, format, scoped pre-commit, all 472 Web tests, and the production Web
+  build pass. The single independent correction review reports no findings.
+  Pushed CI and the exact-head two-Ubuntu qualification rerun are still required
+  before this checkpoint can close F6d or V2.
+- The Mac is now unlocked and the exact source-built bundle opens to the live
+  personal index. No team enrollment, credential transmission, two-space
+  navigation, provisioning, or transfer has yet been claimed from that visible
+  check; the integrated desktop drive remains next.
 
 #### 2026-08-31 — V2 current-tree baseline and compatibility repair complete
 
@@ -2070,12 +2116,13 @@ gate are deliberately future work and do not block this plan.
 The planned code paths are implemented and hermetically verified. Closure still
 requires real-environment evidence:
 
-1. obtain a disposable supported Ubuntu path with root authority, or restored
-   hosted-runner access, and drive install, exact-commit update plus loud rollback,
-   provisioning, backup/restore, member removal, and both fixed operator routes;
-2. unlock the Mac and drive the rebuilt source desktop through two distinct member
-   identities, personal/team switching, Keychain readback, SSH/TLS isolation, new
-   team project setup, and personal-to-team transfer/restart recovery; and
+1. push the two real-run repairs, obtain clean CI, and pass the exact-head Ubuntu
+   22.04/24.04 source install/update/rollback qualification; then extend retained
+   live evidence through provisioning, backup/restore, member removal, and both
+   fixed operator routes;
+2. drive the unlocked rebuilt source desktop through two distinct member
+   identities, personal/team switching, Keychain readback, SSH/TLS isolation,
+   new team project setup, and personal-to-team transfer/restart recovery; and
 3. complete V1 end to end with the disposable GitHub repository, local and
    reachable-SSH provider accounts, then update acceptance evidence, rerun the
    final clean-tree baselines, and archive this handoff through V2.
@@ -3147,11 +3194,11 @@ disaster restore.
 ### F6d — Update cutover, verification, and loud rollback
 
 Status: implemented and pushed on `main` through `75fcafc` on 2026-08-29 with
-focused and complete local verification plus a closed independent audit. The
-required destructive Ubuntu 22.04/24.04 workflow is still pending: its latest
-exact-head rerun was refused before job setup by the GitHub account's hosted-
-runner payment/spending-limit state. This packet is not complete until both
-matrix jobs pass and the live evidence is recorded in the implementation log.
+focused and complete local verification plus a closed independent audit. Hosted
+execution is available again; run 33408513981 reached the real driver on both
+Ubuntu releases and found the now-repaired stale `pending_member_removals` probe
+assertion. This packet is not complete until the repaired exact-head matrix
+passes and the live evidence is recorded in the implementation log.
 
 Own:
 

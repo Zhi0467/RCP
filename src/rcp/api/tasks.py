@@ -566,7 +566,11 @@ def pause_agent_task(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post("/api/projects/{project_id}/tasks/{operation_id}/resume", status_code=202)
+@router.post(
+    "/api/projects/{project_id}/tasks/{operation_id}/resume",
+    status_code=202,
+    dependencies=[Depends(require_project_write_admission)],
+)
 def resume_agent_task(
     project_id: str,
     operation_id: str,
@@ -609,13 +613,13 @@ def resume_agent_task(
                     previous.kind,
                     stored_request,
                 )
-        with experiment_admission(project_id, service, previous.request):
-            skills = _validate_stored_task_request(service, previous.kind, previous.request)
-            return background_tasks.resume(
-                operation_id,
-                skills=skills,
-                authorized_by=authorized_by,
-            ).model_dump(mode="json")
+        experiment_admission.require_current(service, previous.request)
+        skills = _validate_stored_task_request(service, previous.kind, previous.request)
+        return background_tasks.resume(
+            operation_id,
+            skills=skills,
+            authorized_by=authorized_by,
+        ).model_dump(mode="json")
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     finally:
@@ -655,11 +659,11 @@ def repair_agent_task_graph_update(
     )
     service = get_project_service(catalog, project_id)
     try:
-        with experiment_admission(project_id, service, previous.request):
-            return background_tasks.repair_graph_update(
-                operation_id,
-                authorized_by=authorized_by,
-            ).model_dump(mode="json")
+        experiment_admission.require_current(service, previous.request)
+        return background_tasks.repair_graph_update(
+            operation_id,
+            authorized_by=authorized_by,
+        ).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Agent task not found") from exc
     except ValueError as exc:
@@ -727,27 +731,24 @@ def retry_agent_task(
                 previous.kind,
                 candidate,
             )
-        with experiment_admission(
-            project_id,
+        candidate_payload = candidate.model_dump(mode="json")
+        experiment_admission.require_current(service, candidate_payload)
+        skills = _validate_stored_task_request(
             service,
-            candidate.model_dump(mode="json"),
-        ):
-            skills = _validate_stored_task_request(
+            previous.kind,
+            candidate_payload,
+        )
+        if previous.kind == "auto_research":
+            _require_auto_research_retry_target_ready(
                 service,
-                previous.kind,
-                candidate.model_dump(mode="json"),
+                AutoResearchRunRequest.model_validate(candidate),
             )
-            if previous.kind == "auto_research":
-                _require_auto_research_retry_target_ready(
-                    service,
-                    AutoResearchRunRequest.model_validate(candidate),
-                )
-            return background_tasks.retry(
-                operation_id,
-                skills=skills,
-                authorized_by=authorized_by,
-                **overrides,
-            ).model_dump(mode="json")
+        return background_tasks.retry(
+            operation_id,
+            skills=skills,
+            authorized_by=authorized_by,
+            **overrides,
+        ).model_dump(mode="json")
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     finally:

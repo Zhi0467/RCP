@@ -1867,10 +1867,12 @@ def _probe_private_control_socket() -> dict[str, object]:
         "space_id",
         "space_kind",
         "operations",
+        "pending_member_removals",
     }:
         pytest.fail("the installed control probe returned an unsupported shape")
     assert result["space_kind"] == "team"
     assert "update_candidate_verify" in result["operations"]
+    assert result["pending_member_removals"] == []
     assert result["pid"] == int(
         _run_checked(
             (

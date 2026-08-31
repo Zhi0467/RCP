@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -433,3 +434,64 @@ def test_keep_waits_for_a_resumable_revision_then_allows_recovery(
     kept = fixture.client.post(f"{base}/result-views/{fixture.record.view_id}/keep")
     assert kept.status_code == 200
     assert kept.json()["state"] == "kept"
+
+
+def test_result_view_resume_holds_project_admission_before_view_lock(
+    manifest,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fixture = _fixture(manifest, tmp_path)
+    request = RunRequest(
+        provider=fixture.record.provider,
+        model=fixture.record.model,
+        reasoning=fixture.record.reasoning,
+        run_on=fixture.record.run_on,
+        chat_scope="node",
+        node_id=fixture.record.experiment_id,
+        message="Use a log scale.",
+        chat_id=fixture.record.chat_id,
+        session_id=fixture.record.native_session_id,
+        mode="work",
+        result_view={"action": "revise", "view_id": fixture.record.view_id},
+    )
+    now = fixture.store.now()
+    recoverable = fixture.store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="paused-result-view-lock-order",
+            project_id=fixture.project_id,
+            kind="node_chat",
+            status="paused",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Paused.",
+            native_session_id=fixture.record.native_session_id,
+            stage_root=fixture.record.stage_root,
+        )
+    )
+    project_lock = fixture.client.app.state.services.experiment_operation_lock(fixture.project_id)
+    observed = threading.Event()
+
+    from rcp.api import tasks as tasks_api
+
+    real_admit = tasks_api._admit_result_view_request
+
+    def assert_project_lock_first(*args, **kwargs):
+        assert project_lock.locked()
+        observed.set()
+        return real_admit(*args, **kwargs)
+
+    monkeypatch.setattr(tasks_api, "_admit_result_view_request", assert_project_lock_first)
+    monkeypatch.setattr(
+        fixture.client.app.state.background_tasks,
+        "_spawn_record",
+        lambda record, *_args, **_kwargs: record,
+    )
+
+    resumed = fixture.client.post(
+        f"/api/projects/{fixture.project_id}/tasks/{recoverable.operation_id}/resume"
+    )
+
+    assert resumed.status_code == 202, resumed.text
+    assert observed.is_set()

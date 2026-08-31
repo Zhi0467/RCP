@@ -63,93 +63,89 @@ def run_experiment(
     store: StoreDependency,
     identity_access: IdentityAccessDependency,
     background_tasks: BackgroundTasksDependency,
-    experiment_operation_lock: ExperimentOperationLockDependency,
 ) -> dict[str, object]:
     authorized_by = identity_access.require_patch_capable_identity(request)
     service = get_project_service(catalog, project_id)
     try:
-        with experiment_operation_lock(project_id):
-            state = service.history.state()
-            node = state.nodes.get(node_id)
-            if not isinstance(node, Experiment):
-                raise HTTPException(status_code=404, detail="Experiment not found")
-            runtime, control = _experiment_control(
-                store,
+        state = service.history.state()
+        node = state.nodes.get(node_id)
+        if not isinstance(node, Experiment):
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        runtime, control = _experiment_control(
+            store,
+            project_id,
+            state,
+            node_id,
+            graph_target=GraphTargetRef(),
+        )
+        if not control.ready:
+            raise HTTPException(status_code=409, detail=" ".join(control.reasons))
+        supplied = RunRequest.model_validate(body)
+        if supplied.result_view is not None:
+            raise ValueError("Result views require an ordinary node Work turn.")
+        if not supplied.chat_id:
+            raise ValueError("Run requires a chat_id")
+        uuid.UUID(supplied.chat_id)
+        episode_id = str(uuid.uuid4())
+        pending_group = (
+            None
+            if runtime.stop_requested and runtime.stop_settled
+            else store.completed_experiment_watcher_group(
                 project_id,
-                state,
                 node_id,
                 graph_target=GraphTargetRef(),
             )
-            if not control.ready:
-                raise HTTPException(status_code=409, detail=" ".join(control.reasons))
-            supplied = RunRequest.model_validate(body)
-            if supplied.result_view is not None:
-                raise ValueError("Result views require an ordinary node Work turn.")
-            if not supplied.chat_id:
-                raise ValueError("Run requires a chat_id")
-            uuid.UUID(supplied.chat_id)
-            episode_id = str(uuid.uuid4())
-            pending_group = (
-                None
-                if runtime.stop_requested and runtime.stop_settled
-                else store.completed_experiment_watcher_group(
-                    project_id,
-                    node_id,
-                    graph_target=GraphTargetRef(),
-                )
-            )
-            if pending_group is not None:
-                experiment_request = experiment_watcher_delivery_request(
-                    pending_group,
-                    trigger="experiment_run",
-                    episode_id=episode_id,
-                    invocation=1,
-                    invocation_ceiling=node.invocation_ceiling,
-                    control_revision=state.revision,
-                    decision_bundle=control.governing_decisions,
-                    completion_criteria=list(node.completion_criteria),
-                )
-                experiment_request = experiment_request.model_copy(
-                    update={
-                        "run_truth_scope": supplied.run_truth_scope,
-                        "chat_scope": "node",
-                        "node_id": node_id,
-                        "message": experiment_start_message(supplied.message, node_id),
-                        "chat_id": supplied.chat_id,
-                        "session_id": None,
-                    }
-                )
-                experiment_request = resolve_experiment_node_work_request(
-                    service, experiment_request
-                )
-                record = start_watcher_notification(
-                    background_tasks,
-                    project_id,
-                    "node_chat",
-                    experiment_request,
-                    [item.watcher_id for item in pending_group],
-                    authorized_by=authorized_by,
-                )
-                if record is None:
-                    raise ValueError(
-                        "The pending watcher completion could not be claimed because its "
-                        "conversation is active."
-                    )
-                return record.model_dump(mode="json")
-            experiment_request = fresh_experiment_run_request(
-                service,
-                supplied,
-                node=node,
-                state_revision=state.revision,
-                control=control,
+        )
+        if pending_group is not None:
+            experiment_request = experiment_watcher_delivery_request(
+                pending_group,
+                trigger="experiment_run",
                 episode_id=episode_id,
+                invocation=1,
+                invocation_ceiling=node.invocation_ceiling,
+                control_revision=state.revision,
+                decision_bundle=control.governing_decisions,
+                completion_criteria=list(node.completion_criteria),
             )
-            record = background_tasks.start(
+            experiment_request = experiment_request.model_copy(
+                update={
+                    "run_truth_scope": supplied.run_truth_scope,
+                    "chat_scope": "node",
+                    "node_id": node_id,
+                    "message": experiment_start_message(supplied.message, node_id),
+                    "chat_id": supplied.chat_id,
+                    "session_id": None,
+                }
+            )
+            experiment_request = resolve_experiment_node_work_request(service, experiment_request)
+            record = start_watcher_notification(
+                background_tasks,
                 project_id,
                 "node_chat",
                 experiment_request,
+                [item.watcher_id for item in pending_group],
                 authorized_by=authorized_by,
             )
+            if record is None:
+                raise ValueError(
+                    "The pending watcher completion could not be claimed because its "
+                    "conversation is active."
+                )
+            return record.model_dump(mode="json")
+        experiment_request = fresh_experiment_run_request(
+            service,
+            supplied,
+            node=node,
+            state_revision=state.revision,
+            control=control,
+            episode_id=episode_id,
+        )
+        record = background_tasks.start(
+            project_id,
+            "node_chat",
+            experiment_request,
+            authorized_by=authorized_by,
+        )
     except ValueError as exc:
         status = 409 if "already running" in str(exc) else 422
         raise HTTPException(status_code=status, detail=str(exc)) from exc

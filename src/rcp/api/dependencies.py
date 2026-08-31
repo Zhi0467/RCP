@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -158,8 +159,9 @@ def require_project_membership(project_id: str, request: Request) -> str:
     return canonical
 
 
-def require_project_write_admission(project_id: str, request: Request) -> Iterator[str]:
-    """Hold the one process-local admission fence across a new human mutation."""
+@contextmanager
+def project_write_admission(project_id: str, request: Request) -> Iterator[str]:
+    """Hold the one process-local admission fence across a human mutation."""
 
     canonical = get_catalog(request).resolve_project_id(project_id)
     with get_experiment_operation_lock(request)(canonical):
@@ -167,6 +169,13 @@ def require_project_write_admission(project_id: str, request: Request) -> Iterat
             get_store(request).require_project_accepts_new_work(canonical)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        yield canonical
+
+
+def require_project_write_admission(project_id: str, request: Request) -> Iterator[str]:
+    """Dependency form of the project write-admission fence."""
+
+    with project_write_admission(project_id, request) as canonical:
         yield canonical
 
 
@@ -190,6 +199,7 @@ __all__ = [
     "get_store",
     "get_watcher_delivery",
     "get_watcher_poller",
+    "project_write_admission",
     "require_registered_project",
     "require_project_membership",
     "require_project_write_admission",

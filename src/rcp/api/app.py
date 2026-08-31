@@ -907,7 +907,9 @@ def create_app(
     default_service = (
         _LazyProjectService(catalog, default_project_id) if default_project_id is not None else None
     )
-    experiment_operation_lock = KeyedLocks(threading.RLock)
+    # FastAPI may enter and exit the synchronous admission dependency on
+    # different worker threads, so this must remain a primitive Lock, not RLock.
+    experiment_operation_lock = KeyedLocks()
     result_view_keep_lock = KeyedLocks()
     experiment_admission = ExperimentAdmission(
         experiment_operation_lock,

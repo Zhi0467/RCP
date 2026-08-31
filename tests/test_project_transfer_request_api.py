@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 import subprocess
 import uuid
@@ -39,7 +40,9 @@ from .test_project_transfer_request_storage import (
     _ready_incoming as _ready_storage_incoming,
 )
 
-_GIT = "/Library/Developer/CommandLineTools/usr/bin/git"
+_GIT = shutil.which("git")
+if _GIT is None:
+    raise RuntimeError("Git is required to run the project-transfer API tests.")
 
 
 def _source_configuration() -> ProjectTransferSourceConfiguration:

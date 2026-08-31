@@ -6,20 +6,18 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from rcp.api.dependencies import (
     get_catalog,
-    get_experiment_operation_lock,
     get_identity_access,
     get_project_display_cache,
     get_project_service,
     get_store,
     get_watcher_delivery,
+    project_write_admission,
     require_project_membership,
-    require_project_write_admission,
 )
 from rcp.api.identity import IdentityAccess
 from rcp.core.transition_models import GraphTargetRef
 from rcp.core.transitions import current_project_projection
 from rcp.history import PatchRejected, RevisionConflict
-from rcp.keyed_locks import KeyedLocks
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.service import GraphSyncRequest, NodeEditConflict
 from rcp.storage import AppStore
@@ -32,16 +30,9 @@ IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 DisplayCacheDependency = Annotated[ProjectDisplayCache, Depends(get_project_display_cache)]
 WatcherDeliveryDependency = Annotated[WatcherDelivery, Depends(get_watcher_delivery)]
-ExperimentOperationLockDependency = Annotated[
-    KeyedLocks,
-    Depends(get_experiment_operation_lock),
-]
 
 
-@router.post(
-    "/api/projects/{project_id}/sync",
-    dependencies=[Depends(require_project_write_admission)],
-)
+@router.post("/api/projects/{project_id}/sync")
 def sync_graph(
     project_id: str,
     body: GraphSyncRequest,
@@ -52,49 +43,42 @@ def sync_graph(
     identity_access: IdentityDependency,
     project_display_cache: DisplayCacheDependency,
     watcher_delivery: WatcherDeliveryDependency,
-    experiment_operation_lock: ExperimentOperationLockDependency,
 ):
     authorized_by = identity_access.require_patch_capable_identity(request)
-    service = get_project_service(catalog, project_id)
     try:
-        if body.removed_node_ids:
-            with experiment_operation_lock(project_id):
-                transition = service.sync_graph_transition(
-                    body,
-                    active_control_node_ids=store.active_experiment_control_ids(
-                        project_id,
-                        graph_target=GraphTargetRef(),
-                    ),
-                    authorized_by=authorized_by,
-                )
-        else:
+        with project_write_admission(project_id, request) as canonical_project_id:
+            service = get_project_service(catalog, canonical_project_id)
             transition = service.sync_graph_transition(
                 body,
                 active_control_node_ids=store.active_experiment_control_ids(
-                    project_id,
+                    canonical_project_id,
                     graph_target=GraphTargetRef(),
                 ),
                 authorized_by=authorized_by,
             )
-        if transition is None:
-            current = service.history.current_materialization()
-            head = service.history.head_ref(current)
-            projection = current_project_projection(
-                current.state,
-                transition_id=head.transition_id,
-                target=head.target,
+            if transition is None:
+                current = service.history.current_materialization()
+                head = service.history.head_ref(current)
+                projection = current_project_projection(
+                    current.state,
+                    transition_id=head.transition_id,
+                    target=head.target,
+                )
+            else:
+                projection = transition.projection
+            state = projection.graph
+            payload = state.model_dump(mode="json")
+            payload.update(
+                project_display_cache.transition_payload(
+                    canonical_project_id,
+                    projection,
+                    reconcile_operational=True,
+                )
             )
-        else:
-            projection = transition.projection
-        state = projection.graph
-        watcher_delivery.evaluate_graph_wake_boundary(project_id, state, source="human Sync")
-        payload = state.model_dump(mode="json")
-        payload.update(
-            project_display_cache.transition_payload(
-                project_id,
-                projection,
-                reconcile_operational=True,
-            )
+        watcher_delivery.evaluate_graph_wake_boundary(
+            canonical_project_id,
+            state,
+            source="human Sync",
         )
         return payload
     except KeyError as exc:

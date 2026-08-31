@@ -6893,6 +6893,36 @@ def test_experiment_removal_and_run_admission_are_atomic_when_admission_wins(
         release_stream.set()
 
 
+def test_experiment_operation_lock_can_cross_fastapi_worker_threads(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    lock = app.state.services.experiment_operation_lock(project_id)
+    failures: list[BaseException] = []
+
+    def enter() -> None:
+        try:
+            lock.__enter__()
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    def exit() -> None:
+        try:
+            lock.__exit__(None, None, None)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    entering = threading.Thread(target=enter)
+    entering.start()
+    entering.join(timeout=3)
+    assert not entering.is_alive()
+
+    exiting = threading.Thread(target=exit)
+    exiting.start()
+    exiting.join(timeout=3)
+    assert not exiting.is_alive()
+    assert failures == []
+
+
 def test_removed_experiment_fails_closed_for_every_continuation_admission(
     manifest, tmp_path, monkeypatch
 ) -> None:

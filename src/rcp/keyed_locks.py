@@ -50,13 +50,17 @@ class ExperimentAdmission:
         service: _ProjectService,
         request: object,
     ) -> Iterator[None]:
+        with self._locks(project_id):
+            self.require_current(service, request)
+            yield
+
+    def require_current(self, service: _ProjectService, request: object) -> None:
+        """Validate one continuation when its caller already holds the project lock."""
+
         control_node_id = self._control_node_id(request)
         if control_node_id is None:
-            yield
             return
-        with self._locks(project_id):
-            if not isinstance(service.history.state().nodes.get(control_node_id), Experiment):
-                raise ValueError(
-                    f"Experiment {control_node_id} no longer exists; it cannot be continued."
-                )
-            yield
+        if not isinstance(service.history.state().nodes.get(control_node_id), Experiment):
+            raise ValueError(
+                f"Experiment {control_node_id} no longer exists; it cannot be continued."
+            )
