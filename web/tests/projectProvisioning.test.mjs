@@ -129,11 +129,15 @@ test("project provisioning calls preserve the backend projection and exact reque
   }
 });
 
-test("complete provisioning lifecycles remain opaque to browser code", async () => {
+test("complete provisioning and transfer lifecycles remain opaque to browser code", async () => {
   const types = await readFile(new URL("../src/types.ts", import.meta.url), "utf8");
 
   assert.match(types, /declare const OPAQUE_PROJECT_PROVISIONING_STATUS: unique symbol/);
   assert.match(types, /declare const OPAQUE_PROJECT_PROVISIONING_CHECK_STATUS: unique symbol/);
+  assert.match(types, /declare const OPAQUE_PROJECT_TRANSFER_PHASE: unique symbol/);
+  assert.match(types, /declare const OPAQUE_PROJECT_TRANSFER_PROOF_STATE: unique symbol/);
   assert.doesNotMatch(types, /type ProjectProvisioningStatus\s*=\s*"/);
   assert.doesNotMatch(types, /type ProjectProvisioningCheckStatus\s*=\s*"/);
+  assert.doesNotMatch(types, /type ProjectTransferPhase\s*=\s*"/);
+  assert.doesNotMatch(types, /type ProjectTransferProofState\s*=\s*"/);
 });

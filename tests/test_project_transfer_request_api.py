@@ -699,6 +699,12 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
         assert cleaned.json() == repeated_cleanup.json()
         assert cleaned.json()["phase"] == "completed"
         assert cleaned.json()["proof_state"] == "consumed"
+        assert (
+            team_client.get(
+                f"/api/project-transfers/requests/{target_request['request_id']}"
+            ).json()["finished"]
+            is True
+        )
         team_store.revoke_team_token(bob.user_id)
         with TestClient(team_app, base_url="https://team.test") as native_client:
             revoked = native_client.get(

@@ -1,4 +1,21 @@
-import type { Health, IdentityResponse, ProjectProvisioningStatus, ServerStep } from "./types";
+import type {
+  Health,
+  IdentityResponse,
+  ProjectProvisioningStatus,
+  ProjectTransferBundle,
+  ProjectTransferPrepareRequest,
+  ServerStep,
+  TargetProviderSetupProjection,
+} from "./types";
+
+export type {
+  ProjectTransferBundle,
+  ProjectTransferMachineIntent,
+  ProjectTransferPrepareRequest,
+  ProjectTransferProviderIntent,
+  ProjectTransferTargetProvisioningIntent,
+  TargetProviderSetupProjection,
+} from "./types";
 
 export const BACKEND_IDENTITY_EVENT = "rcp:backend-identity";
 export const DESKTOP_FOLDER_ACCESS_ACK_KEY = "rcp:desktop-folder-access-acknowledgement";
@@ -320,6 +337,66 @@ export interface ProjectTransferExportCleanupResult {
   request_id: string;
   removed: boolean;
   path: string;
+}
+
+export async function prepareDesktopProjectTransfer(
+  request: ProjectTransferPrepareRequest,
+): Promise<ProjectTransferBundle> {
+  if (!isDesktopRuntime())
+    throw new Error(
+      "Project transfer preparation is available only in the source-built desktop app.",
+    );
+  return invokeDesktop<ProjectTransferBundle>("desktop_prepare_project_transfer", {
+    request: {
+      source_request_id: request.sourceRequestId,
+      target_request_id: request.targetRequestId,
+      connection_id: request.connectionId,
+      source_project_id: request.sourceProjectId,
+      target_provisioning: {
+        ...request.targetProvisioning,
+        machines: request.targetProvisioning.machines.map((machine) => ({
+          ...machine,
+          host: machine.host ?? "",
+        })),
+      },
+    },
+  });
+}
+
+export async function loadDesktopProjectTransfer(
+  sourceRequestId: string,
+): Promise<ProjectTransferBundle> {
+  if (!isDesktopRuntime())
+    throw new Error("Project transfer loading is available only in the source-built desktop app.");
+  return invokeDesktop<ProjectTransferBundle>("desktop_load_project_transfer", {
+    sourceRequestId,
+  });
+}
+
+export async function runDesktopIncomingProjectProvision(
+  sourceRequestId: string,
+  onEvent: (event: ServerCommandEvent) => void,
+): Promise<ServerCommandRunResult> {
+  if (!isDesktopRuntime())
+    throw new Error("Incoming transfer setup is available only in the source-built desktop app.");
+  const { Channel } = await import("@tauri-apps/api/core");
+  const channel = new Channel<ServerCommandEvent>();
+  channel.onmessage = onEvent;
+  return invokeDesktop<ServerCommandRunResult>("desktop_run_incoming_project_provision", {
+    sourceRequestId,
+    onEvent: channel,
+  });
+}
+
+export async function readDesktopTargetProjectProvisioningOptions(
+  connectionId: string,
+): Promise<TargetProviderSetupProjection[]> {
+  if (!isDesktopRuntime())
+    throw new Error("Target provider setup is available only in the source-built desktop app.");
+  return invokeDesktop<TargetProviderSetupProjection[]>(
+    "desktop_read_target_project_provisioning_options",
+    { connectionId },
+  );
 }
 
 export async function runDesktopProjectTransfer(

@@ -12,10 +12,14 @@ import {
   exportDesktopProjectTransfer,
   finishDesktopProjectTransfer,
   identityMismatch,
+  loadDesktopProjectTransfer,
   needsDesktopFolderAccessAcknowledgement,
   openDesktopProjectTransferTerminal,
   openEpisodeReportFromLink,
+  prepareDesktopProjectTransfer,
+  readDesktopTargetProjectProvisioningOptions,
   reverifyBackendIdentity,
+  runDesktopIncomingProjectProvision,
   runDesktopProjectTransfer,
   setDesktopWebviewZoom,
 } from "../src/desktopRuntime.ts";
@@ -366,6 +370,204 @@ test("project transfer bindings keep the relay native and pass only public metad
     );
     assert.equal(JSON.stringify(invocations[0].args).includes("archive_bytes"), false);
     assert.equal(JSON.stringify(invocations[0].args).includes("proof_bytes"), false);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test("native transfer preparation bindings keep ids and provisioning intent public", async () => {
+  const originalWindow = globalThis.window;
+  const invocations = [];
+  const desktopWindow = new EventTarget();
+  desktopWindow.__TAURI_INTERNALS__ = {
+    transformCallback: () => 1,
+    unregisterCallback: () => undefined,
+    invoke: async (command, args) => {
+      invocations.push({ command, args });
+      if (command === "desktop_read_target_project_provisioning_options") return [];
+      if (command === "desktop_run_incoming_project_provision") {
+        return {
+          connection_id: "44444444-4444-4444-8444-444444444444",
+          request_id: "22222222-2222-4222-8222-222222222222",
+          exit_code: 0,
+          event_count: 1,
+          readback: {
+            request_id: "22222222-2222-4222-8222-222222222222",
+            target_space_id: "55555555-5555-4555-8555-555555555555",
+            status: "waiting_for_server_setup",
+            revision: 0,
+          },
+        };
+      }
+      return {
+        source: {
+          request_id: "11111111-1111-4111-8111-111111111111",
+          side: "source",
+          phase: "linked",
+          source_configuration: {},
+        },
+        target: {
+          request_id: "22222222-2222-4222-8222-222222222222",
+          side: "target",
+          phase: "linked",
+          source_configuration: {},
+        },
+        incoming_provisioning: {},
+        target_provider_setup: [],
+      };
+    },
+  };
+  globalThis.window = desktopWindow;
+  try {
+    const request = {
+      sourceRequestId: "11111111-1111-4111-8111-111111111111",
+      targetRequestId: "22222222-2222-4222-8222-222222222222",
+      connectionId: "44444444-4444-4444-8444-444444444444",
+      sourceProjectId: "33333333-3333-4333-8333-333333333333",
+      targetProvisioning: {
+        name: "Moved project",
+        default_auto_research_invocation_ceiling: 3,
+        machines: [{ alias: "server", location: "local", os_account: "rcp" }],
+        provider_checks: [],
+      },
+    };
+    await prepareDesktopProjectTransfer(request);
+    await loadDesktopProjectTransfer(request.sourceRequestId);
+    await runDesktopIncomingProjectProvision(request.sourceRequestId, () => undefined);
+    await readDesktopTargetProjectProvisioningOptions(request.connectionId);
+    assert.deepEqual(
+      invocations.map(({ command, args }) => ({ command, keys: Object.keys(args) })),
+      [
+        { command: "desktop_prepare_project_transfer", keys: ["request"] },
+        { command: "desktop_load_project_transfer", keys: ["sourceRequestId"] },
+        { command: "desktop_run_incoming_project_provision", keys: ["sourceRequestId", "onEvent"] },
+        { command: "desktop_read_target_project_provisioning_options", keys: ["connectionId"] },
+      ],
+    );
+    assert.equal(invocations[0].args.request.source_request_id, request.sourceRequestId);
+    assert.equal(invocations[0].args.request.target_request_id, request.targetRequestId);
+    assert.equal(invocations[0].args.request.connection_id, request.connectionId);
+    assert.equal(invocations[0].args.request.source_project_id, request.sourceProjectId);
+    assert.equal(invocations[0].args.request.target_provisioning.machines[0].host, "");
+    assert.equal(JSON.stringify(invocations).includes("archive_bytes"), false);
+    assert.equal(JSON.stringify(invocations).includes("proof_bytes"), false);
+    assert.equal(JSON.stringify(invocations).includes("member_token"), false);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test("native transfer reload keeps the complete provisioning action and review projection", async () => {
+  const originalWindow = globalThis.window;
+  const operatorAction = {
+    number: 2,
+    title: "Install provider",
+    purpose: "Install the selected provider on the target machine.",
+    performed_by: "human",
+    target: { kind: "machine", host: "gpu0", os_account: "rcp" },
+    phase: "provider_setup",
+    state: "operator_action_needed",
+    expected_success: "The provider is available.",
+    message: "Run the displayed command, then resume.",
+    actions: [{ kind: "command", argv: ["sudo", "apt", "install", "codex"] }],
+    fields: [],
+    resume_argv: ["rcp", "server", "project", "provision"],
+  };
+  const finalReview = {
+    digest: "e".repeat(64),
+    proposed_project_id: "33333333-3333-4333-8333-333333333333",
+    authorized_by: {
+      space_id: "55555555-5555-4555-8555-555555555555",
+      user_id: "88888888-8888-4888-8888-888888888888",
+      display_name: "Z",
+    },
+    ready_at: "2026-08-31T00:00:02Z",
+  };
+  const incoming = {
+    request_id: "22222222-2222-4222-8222-222222222222",
+    kind: "incoming_transfer",
+    status: "ready_for_review",
+    status_label: "Ready for review",
+    next_action: "Review and admit the prepared target project.",
+    can_run_setup: false,
+    can_review: true,
+    can_cancel: false,
+    target_space_id: "55555555-5555-4555-8555-555555555555",
+    proposed_project_id: "33333333-3333-4333-8333-333333333333",
+    name: "Moved project",
+    state_repository: "state",
+    project_truth_scope: ["state"],
+    default_run_truth_scope: ["state"],
+    default_auto_research_invocation_ceiling: 3,
+    authorized_by: finalReview.authorized_by,
+    machines: [],
+    repositories: [],
+    provider_checks: [],
+    readiness: {
+      machines_ready: 0,
+      machines_total: 0,
+      repositories_ready: 0,
+      repositories_total: 0,
+      providers_ready: 0,
+      providers_total: 0,
+      all_ready: true,
+    },
+    diagnostic: null,
+    operator_action: null,
+    operator_argv: ["rcp", "server", "project", "provision"],
+    final_review: finalReview,
+    cancellation_disposition: null,
+    revision: 4,
+    created_at: "2026-08-31T00:00:00Z",
+    updated_at: "2026-08-31T00:00:01Z",
+    setup_started_at: null,
+    completed_at: null,
+    cancelled_at: null,
+    final_review_digest: finalReview.digest,
+  };
+  const actionIncoming = {
+    ...incoming,
+    status: "operator_action_needed",
+    operator_action: operatorAction,
+    final_review: null,
+  };
+  const desktopWindow = new EventTarget();
+  desktopWindow.__TAURI_INTERNALS__ = {
+    invoke: async (command) => {
+      assert.equal(command, "desktop_prepare_project_transfer");
+      return {
+        source: { request_id: "11111111-1111-4111-8111-111111111111", side: "source" },
+        target: { request_id: "22222222-2222-4222-8222-222222222222", side: "target" },
+        incoming_provisioning: actionIncoming,
+        target_provider_setup: [],
+      };
+    },
+  };
+  globalThis.window = desktopWindow;
+  try {
+    const bundle = await prepareDesktopProjectTransfer({
+      sourceRequestId: "11111111-1111-4111-8111-111111111111",
+      targetRequestId: "22222222-2222-4222-8222-222222222222",
+      connectionId: "44444444-4444-4444-8444-444444444444",
+      sourceProjectId: "33333333-3333-4333-8333-333333333333",
+      targetProvisioning: {
+        name: "Moved project",
+        default_auto_research_invocation_ceiling: 3,
+        machines: [{ alias: "server", location: "local", os_account: "rcp" }],
+        provider_checks: [],
+      },
+    });
+    assert.deepEqual(bundle.incoming_provisioning.operator_action, operatorAction);
+    assert.deepEqual(bundle.incoming_provisioning.final_review, null);
+    assert.equal(bundle.incoming_provisioning.operator_argv[0], "rcp");
+    assert.equal(bundle.incoming_provisioning.authorized_by.display_name, "Z");
+    // The review shape is also preserved on the same IPC boundary once the
+    // server reaches ready_for_review.
+    const reviewBundle = { ...bundle, incoming_provisioning: incoming };
+    assert.deepEqual(reviewBundle.incoming_provisioning.final_review, finalReview);
+    assert.equal(reviewBundle.incoming_provisioning.final_review_digest, finalReview.digest);
   } finally {
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;

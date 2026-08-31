@@ -17,8 +17,10 @@ use crate::{
     lifecycle::DesktopStatus,
     navigation,
     project_transfer::{
-        self, ProjectTransferExportCleanupResult, ProjectTransferExportResult,
-        ProjectTransferFinishResult, ProjectTransferRunResult,
+        self, ProjectTransferBundle, ProjectTransferCoordinatorState,
+        ProjectTransferExportCleanupResult, ProjectTransferExportResult,
+        ProjectTransferFinishResult, ProjectTransferPrepareRequest, ProjectTransferRunResult,
+        TargetProviderSetupProjection,
     },
     server_commands::{
         self, ConfigureServerOperatorRouteRequest, ServerCommandRunResult, ServerOperatorProbe,
@@ -202,6 +204,74 @@ pub async fn desktop_run_project_transfer(
         PathBuf::from("/usr/bin/ssh"),
     )
     .await
+}
+
+#[tauri::command]
+pub async fn desktop_prepare_project_transfer(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    coordinator: State<'_, ProjectTransferCoordinatorState>,
+    lifecycle: State<'_, BackendState>,
+    request: ProjectTransferPrepareRequest,
+) -> Result<ProjectTransferBundle, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    project_transfer::prepare(&lifecycle, &connections, &sessions, &coordinator, request).await
+}
+
+#[tauri::command]
+pub async fn desktop_load_project_transfer(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    coordinator: State<'_, ProjectTransferCoordinatorState>,
+    lifecycle: State<'_, BackendState>,
+    source_request_id: String,
+) -> Result<ProjectTransferBundle, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    project_transfer::load_bundle(
+        &lifecycle,
+        &connections,
+        &sessions,
+        &coordinator,
+        &source_request_id,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn desktop_run_incoming_project_provision(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    coordinator: State<'_, ProjectTransferCoordinatorState>,
+    lifecycle: State<'_, BackendState>,
+    source_request_id: String,
+    on_event: Channel<Value>,
+) -> Result<ServerCommandRunResult, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    project_transfer::run_incoming_provision(
+        &lifecycle,
+        &connections,
+        &sessions,
+        &coordinator,
+        &source_request_id,
+        &on_event,
+        PathBuf::from("/usr/bin/ssh"),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn desktop_read_target_project_provisioning_options(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    lifecycle: State<'_, BackendState>,
+    connection_id: String,
+) -> Result<Vec<TargetProviderSetupProjection>, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    project_transfer::read_target_provider_setup(&connections, &sessions, &connection_id).await
 }
 
 #[tauri::command]

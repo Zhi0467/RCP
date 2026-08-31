@@ -435,6 +435,7 @@ class ProjectTransferResponse(ProjectTransferRequestRecord):
     can_relay: bool
     can_restore_reentry: bool
     can_complete: bool
+    finished: bool
 
 
 class ProjectTransferSourceBoundaryResponse(_StrictModel):
@@ -1494,6 +1495,7 @@ def _project_transfer_response(
             "can_relay": can_relay,
             "can_restore_reentry": can_restore_reentry,
             "can_complete": can_complete,
+            "finished": record.phase == "completed",
         }
     )
     return ProjectTransferResponse.model_validate(payload)

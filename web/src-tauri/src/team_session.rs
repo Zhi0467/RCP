@@ -222,33 +222,148 @@ impl TeamSessionState {
     /// Read only the public target transfer lifecycle through a Rust-owned
     /// authenticated session. This is used to make native relay retries
     /// idempotent without exposing any proof or archive bytes to Web code.
+    pub(crate) async fn read_project_transfer_value(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        request_id: &str,
+    ) -> Result<Value, String> {
+        validate_uuid4(request_id, "target transfer request identity")?;
+        let (connection, client, cookie) = self
+            .authenticated_request_context(connections, connection_id)
+            .await?;
+        let response = client
+            .get(endpoint(
+                &connection.local_origin,
+                &format!("/api/project-transfers/requests/{request_id}"),
+            )?)
+            .header(COOKIE, cookie)
+            .send()
+            .await
+            .map_err(|error| format!("could not read the target transfer request: {error}"))?;
+        response_json(response, "target transfer request readback").await
+    }
+
     pub async fn read_project_transfer(
         &self,
         connections: &TeamConnectionState,
         connection_id: &str,
         request_id: &str,
     ) -> Result<ProjectTransferTargetReadback, String> {
+        let (connection, _session) = self.saved_established(connections, connection_id)?;
+        let value = self
+            .read_project_transfer_value(connections, connection_id, request_id)
+            .await?;
+        parse_target_transfer_readback(&value, request_id, &connection.expected_space_id)
+    }
+
+    /// Create or validate the target's incoming-transfer provisioning request.
+    /// The body is assembled by the native coordinator from strict public
+    /// input; this method only posts the one fixed endpoint through the saved
+    /// established team session.
+    pub(crate) async fn create_incoming_transfer_provisioning(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        body: &Value,
+    ) -> Result<Value, String> {
+        let request_id = body
+            .get("request_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "incoming provisioning intent has no request id".to_string())?;
         validate_uuid4(request_id, "target transfer request identity")?;
-        let (connection, session) = self.saved_established(connections, connection_id)?;
-        let (client, health) = self.native_client(&connection, &session).await?;
-        let token = connections.load_member_token(connection_id)?;
-        let (identity, set_cookie) =
-            exchange_session(&client, &connection.local_origin, &token).await?;
-        validate_identity(&identity, &health)?;
-        let cookie = request_cookie(&set_cookie)?;
-        let header = HeaderValue::from_str(&cookie)
-            .map_err(|_| "team session exchange returned an invalid cookie".to_string())?;
+        let (connection, client, cookie) = self
+            .authenticated_request_context(connections, connection_id)
+            .await?;
+        let response = client
+            .post(endpoint(
+                &connection.local_origin,
+                "/api/project-transfers/incoming-provisioning-requests",
+            )?)
+            .header(COOKIE, cookie)
+            .json(body)
+            .send()
+            .await
+            .map_err(|error| {
+                format!("could not create the incoming transfer provisioning request: {error}")
+            })?;
+        response_json(response, "incoming transfer provisioning request creation").await
+    }
+
+    /// Create or validate the target-side transfer request from the source's
+    /// public configuration and commitments.
+    pub(crate) async fn create_target_project_transfer(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        body: &Value,
+    ) -> Result<Value, String> {
+        let request_id = body
+            .get("provisioning_request_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "target transfer intent has no request id".to_string())?;
+        validate_uuid4(request_id, "target transfer request identity")?;
+        let (connection, client, cookie) = self
+            .authenticated_request_context(connections, connection_id)
+            .await?;
+        let response = client
+            .post(endpoint(
+                &connection.local_origin,
+                "/api/project-transfers/target-requests",
+            )?)
+            .header(COOKIE, cookie)
+            .json(body)
+            .send()
+            .await
+            .map_err(|error| format!("could not create the target transfer request: {error}"))?;
+        response_json(response, "target transfer request creation").await
+    }
+
+    /// Read the target provisioning lifecycle from the incoming-transfer
+    /// endpoint. This must remain distinct from the create-team path because
+    /// incoming requests have different ownership and cancellation semantics.
+    pub(crate) async fn read_incoming_transfer_provisioning_value(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        request_id: &str,
+    ) -> Result<Value, String> {
+        validate_uuid4(request_id, "target transfer request identity")?;
+        let (connection, client, cookie) = self
+            .authenticated_request_context(connections, connection_id)
+            .await?;
         let response = client
             .get(endpoint(
                 &connection.local_origin,
-                &format!("/api/project-transfers/requests/{request_id}"),
+                &format!("/api/project-transfers/incoming-provisioning-requests/{request_id}"),
             )?)
-            .header(COOKIE, header)
+            .header(COOKIE, cookie)
             .send()
             .await
-            .map_err(|error| format!("could not read the target transfer request: {error}"))?;
-        let value: Value = response_json(response, "target transfer request readback").await?;
-        parse_target_transfer_readback(&value, request_id, &connection.expected_space_id)
+            .map_err(|error| {
+                format!("could not read the incoming transfer provisioning request: {error}")
+            })?;
+        response_json(response, "incoming transfer provisioning readback").await
+    }
+
+    /// Read target-side provider/setup choices from the fixed public registry
+    /// endpoint. Authentication remains Rust-owned even though the response is
+    /// public readiness information.
+    pub(crate) async fn read_target_provider_setup_value(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+    ) -> Result<Value, String> {
+        let (connection, client, cookie) = self
+            .authenticated_request_context(connections, connection_id)
+            .await?;
+        let response = client
+            .get(endpoint(&connection.local_origin, "/api/providers")?)
+            .header(COOKIE, cookie)
+            .send()
+            .await
+            .map_err(|error| format!("could not read target provider setup choices: {error}"))?;
+        response_json(response, "target provider setup choices").await
     }
 
     /// Retrieve the target's raw activation proof through the pinned native
@@ -591,6 +706,23 @@ impl TeamSessionState {
             return Err("the team server identity changed; explicit reconnect is required".into());
         }
         Ok((client, health))
+    }
+
+    async fn authenticated_request_context(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+    ) -> Result<(TeamConnectionMetadata, Client, HeaderValue), String> {
+        let (connection, session) = self.saved_established(connections, connection_id)?;
+        let (client, health) = self.native_client(&connection, &session).await?;
+        let token = connections.load_member_token(connection_id)?;
+        let (identity, set_cookie) =
+            exchange_session(&client, &connection.local_origin, &token).await?;
+        validate_identity(&identity, &health)?;
+        let cookie = request_cookie(&set_cookie)?;
+        let header = HeaderValue::from_str(&cookie)
+            .map_err(|_| "team session exchange returned an invalid cookie".to_string())?;
+        Ok((connection, client, header))
     }
 
     fn acquire(&self) -> Result<MutexGuard<'_, HashMap<String, EstablishedTeamSession>>, String> {

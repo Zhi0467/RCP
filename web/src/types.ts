@@ -183,6 +183,25 @@ export interface ProjectProvisioningCreateRequest {
   provider_checks: ProjectProvisioningProviderRequest[];
 }
 
+/** Native transfer setup uses the same public provisioning intent shapes. */
+export type ProjectTransferMachineIntent = ProjectProvisioningMachineRequest;
+export type ProjectTransferProviderIntent = ProjectProvisioningProviderRequest;
+
+export interface ProjectTransferTargetProvisioningIntent {
+  name: string;
+  default_auto_research_invocation_ceiling: number;
+  machines: ProjectTransferMachineIntent[];
+  provider_checks: ProjectTransferProviderIntent[];
+}
+
+export interface ProjectTransferPrepareRequest {
+  sourceRequestId: string;
+  targetRequestId: string;
+  connectionId: string;
+  sourceProjectId: string;
+  targetProvisioning: ProjectTransferTargetProvisioningIntent;
+}
+
 export interface ServerMachineTarget {
   kind: "machine";
   host: string;
@@ -310,7 +329,7 @@ export type ProjectProvisioningCancellationDisposition =
 
 export interface ProjectProvisioningResponse {
   request_id: string;
-  kind: "create_team_project";
+  kind: "create_team_project" | "incoming_transfer";
   status: ProjectProvisioningStatus;
   status_label: string;
   next_action: string | null;
@@ -340,6 +359,220 @@ export interface ProjectProvisioningResponse {
   setup_started_at: string | null;
   completed_at: string | null;
   cancelled_at: string | null;
+}
+
+/**
+ * Opaque because the backend publishes transfer labels, next actions, and every
+ * `can_*` decision. Web code must not reconstruct the cross-space state machine.
+ */
+declare const OPAQUE_PROJECT_TRANSFER_PHASE: unique symbol;
+export type ProjectTransferPhase = {
+  readonly [OPAQUE_PROJECT_TRANSFER_PHASE]: "ProjectTransferPhase";
+};
+
+declare const OPAQUE_PROJECT_TRANSFER_PROOF_STATE: unique symbol;
+export type ProjectTransferProofState = {
+  readonly [OPAQUE_PROJECT_TRANSFER_PROOF_STATE]: "ProjectTransferProofState";
+};
+
+export interface ProjectTransferRepositorySource {
+  alias: string;
+  repository: GitHubRepositoryRef;
+  machine_alias: string;
+}
+
+export interface ProjectTransferSourceConfiguration {
+  source_rcp_version: string;
+  source_schema_generation: number;
+  supported_archive_codecs: string[];
+  machine_aliases: string[];
+  repositories: ProjectTransferRepositorySource[];
+  state_repository: string;
+  project_truth_scope: string[];
+  default_run_truth_scope: string[];
+  source_manifest_sha256: string;
+}
+
+export interface ProjectTransferRepositoryBinding {
+  alias: string;
+  repository: GitHubRepositoryRef;
+}
+
+export interface ProjectTransferResolvedPath {
+  repository_alias: string;
+  machine_alias: string;
+  path: string;
+}
+
+export interface ProjectTransferLinkReceipt {
+  source_request_id: string;
+  target_request_id: string;
+  project_id: string;
+  source_space_id: string;
+  target_space_id: string;
+  source_configuration_sha256: string;
+  target_repositories: ProjectTransferRepositoryBinding[];
+  accepted_schema_generation: number;
+  accepted_archive_codec: string;
+  source_release_proof_sha256: string;
+  target_activation_proof_sha256: string;
+  created_at: string;
+}
+
+export interface ProjectTransferTargetAdmissionReceipt {
+  source_request_id: string;
+  target_request_id: string;
+  project_id: string;
+  source_space_id: string;
+  target_space_id: string;
+  admitted_by: AuthorizedHuman;
+  source_configuration_sha256: string;
+  target_preparation_revision: number;
+  target_preparation_sha256: string;
+  resolved_paths: ProjectTransferResolvedPath[];
+  accepted_schema_generation: number;
+  accepted_archive_codec: string;
+  source_release_proof_sha256: string;
+  target_activation_proof_sha256: string;
+  created_at: string;
+}
+
+export interface ProjectTransferSourceReleaseReceipt {
+  source_request_id: string;
+  target_request_id: string;
+  project_id: string;
+  source_space_id: string;
+  target_space_id: string;
+  released_by: AuthorizedHuman;
+  source_configuration_sha256: string;
+  target_admission_sha256: string;
+  target_preparation_revision: number;
+  target_preparation_sha256: string;
+  source_head: GraphHeadRef;
+  accepted_schema_generation: number;
+  accepted_archive_codec: string;
+  source_release_proof_sha256: string;
+  target_activation_proof_sha256: string;
+  created_at: string;
+}
+
+export interface ProjectTransferResponse {
+  request_id: string;
+  side: "source" | "target";
+  phase: ProjectTransferPhase;
+  linked_request_id: string | null;
+  project_id: string;
+  source_space_id: string;
+  target_space_id: string;
+  initiated_by: AuthorizedHuman;
+  source_configuration: ProjectTransferSourceConfiguration;
+  source_configuration_sha256: string;
+  accepted_schema_generation: number | null;
+  accepted_archive_codec: string | null;
+  source_release_proof_sha256: string;
+  target_activation_proof_sha256: string | null;
+  link_receipt: ProjectTransferLinkReceipt | null;
+  proof_state: ProjectTransferProofState;
+  proof_acknowledgement_sha256: string | null;
+  target_admission_receipt: ProjectTransferTargetAdmissionReceipt | null;
+  source_release_receipt: ProjectTransferSourceReleaseReceipt | null;
+  source_fence_head: GraphHeadRef | null;
+  archive_sha256: string | null;
+  archive_size_bytes: number | null;
+  restore_resume_phase: ProjectTransferPhase | null;
+  restore_diagnostic: string | null;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  phase_label: string;
+  next_action: string | null;
+  can_link: boolean;
+  can_run_setup: boolean;
+  can_review: boolean;
+  can_admit: boolean;
+  can_accept_admission: boolean;
+  can_release: boolean;
+  can_accept_release: boolean;
+  can_relay: boolean;
+  can_restore_reentry: boolean;
+  can_complete: boolean;
+  finished: boolean;
+}
+
+export interface ProjectTransferSourceBoundaryResponse {
+  source_configuration: ProjectTransferSourceConfiguration;
+  source_configuration_sha256: string;
+  source_head: GraphHeadRef;
+}
+
+export interface ProjectTransferProjection {
+  request_id: string;
+  side: "source" | "target";
+  phase: ProjectTransferPhase;
+  phase_label: string | null;
+  next_action: string | null;
+  linked_request_id: string | null;
+  project_id: string;
+  source_space_id: string;
+  target_space_id: string;
+  source_configuration: ProjectTransferSourceConfiguration;
+  source_configuration_sha256: string;
+  accepted_schema_generation: number | null;
+  accepted_archive_codec: string | null;
+  source_release_proof_sha256: string;
+  target_activation_proof_sha256: string | null;
+  archive_sha256: string | null;
+  archive_size_bytes: number | null;
+  can_link: boolean;
+  can_run_setup: boolean;
+  can_review: boolean;
+  can_admit: boolean;
+  can_accept_admission: boolean;
+  can_release: boolean;
+  can_accept_release: boolean;
+  can_relay: boolean;
+  can_restore_reentry: boolean;
+  can_complete: boolean;
+  finished: boolean;
+  revision: number;
+}
+
+export type ProjectTransferIncomingProvisioningProjection = ProjectProvisioningResponse & {
+  kind: "incoming_transfer";
+  final_review_digest: string | null;
+};
+
+export interface TargetProviderModelProjection {
+  id: string;
+  label: string;
+  reasoning: string[];
+  default_reasoning: string;
+}
+
+export interface TargetProviderRuntimeProjection {
+  id: string;
+  label: string;
+}
+
+export interface TargetProviderSetupProjection {
+  provider: string;
+  label: string;
+  installed: boolean;
+  authenticated: boolean;
+  version: string | null;
+  reason: string | null;
+  binary_path: string | null;
+  path_state: string;
+  models: TargetProviderModelProjection[];
+  runtimes: TargetProviderRuntimeProjection[];
+  default_runtime: string;
+}
+
+export interface ProjectTransferBundle {
+  source: ProjectTransferProjection;
+  target: ProjectTransferProjection;
+  incoming_provisioning: ProjectTransferIncomingProvisioningProjection;
+  target_provider_setup: TargetProviderSetupProjection[];
 }
 
 export interface SpaceUser {

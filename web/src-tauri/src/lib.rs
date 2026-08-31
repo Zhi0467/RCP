@@ -75,6 +75,10 @@ pub fn run() {
             commands::desktop_run_project_provision,
             commands::desktop_open_project_provision_terminal,
             commands::desktop_run_project_transfer,
+            commands::desktop_prepare_project_transfer,
+            commands::desktop_load_project_transfer,
+            commands::desktop_run_incoming_project_provision,
+            commands::desktop_read_target_project_provisioning_options,
             commands::desktop_export_project_transfer,
             commands::desktop_open_project_transfer_terminal,
             commands::desktop_finish_project_transfer,
@@ -122,6 +126,15 @@ pub fn run() {
             if !app.manage(team_sessions) {
                 return Err(std::io::Error::other(
                     "RCP desktop team session state was already registered",
+                )
+                .into());
+            }
+            let project_transfer_coordinator =
+                project_transfer::ProjectTransferCoordinatorState::for_app(app.handle())
+                    .map_err(std::io::Error::other)?;
+            if !app.manage(project_transfer_coordinator) {
+                return Err(std::io::Error::other(
+                    "RCP desktop project transfer coordinator was already registered",
                 )
                 .into());
             }
