@@ -36,6 +36,7 @@ def _source_configuration() -> ProjectTransferSourceConfiguration:
         source_rcp_version="0.1.0.dev0+main",
         source_schema_generation=1,
         supported_archive_codecs=("rcp-transfer-v1",),
+        machine_aliases=("laptop",),
         repositories=(
             ProjectTransferRepositorySource(
                 alias="paper",

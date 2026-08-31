@@ -14,6 +14,7 @@ covered_by:
   - tests/test_transfer_project_files.py
   - tests/test_transfer_provider_history_selection.py
   - tests/test_imported_provider_sources.py
+  - tests/test_transfer_project_configuration.py
 invariants: [1, 3, 6, 11]
 ---
 
@@ -43,8 +44,13 @@ unreadable sources produce bounded best-effort summaries. End-to-end archive
 assembly and target-import orchestration remain open, but the target-owned
 local provider source store now atomically publishes validated
 content-addressed histories, keeps them separate from native provider homes,
-and blocks Seed/Refresh on any later corruption. Machine relay/import, source/target
-activation and cleanup orchestration, and the desktop drive remain open. Its boundaries are
+and blocks Seed/Refresh on any later corruption. The reviewed target request
+also rebuilds a target-only manifest, validates any retained Git history as an
+exact archive prefix, and replays main plus every branch in an isolated
+workspace before import. Its receipt binds the exact final review and archive
+manifest, not only the resulting target configuration. Machine relay/import,
+source/target activation and cleanup orchestration, and the desktop drive remain
+open. Its boundaries are
 in [Project identity and home](../specs/projects-spaces-and-operations.md#project-identity-and-home)
 and [Personal-to-team transfer archive](../specs/projects-spaces-and-operations.md#personal-to-team-transfer-archive).
 
@@ -183,7 +189,7 @@ Patch byte.
 - `execution_configuration_must_be_re_established_in_the_target_space`
 - `the_source_manifest_is_provenance_and_never_the_live_target_manifest`
 - `historical_machine_and_repository_aliases_remain_replayable_after_rebinding`
-- `target_paths_hosts_provider_roots_and_profiles_come_only_from_reviewed_target_configuration`
+- `target_paths_hosts_and_profiles_come_from_reviewed_configuration_while_provider_roots_follow_target_account_conventions`
 - `main_and_retained_branches_replay_against_the_rebuilt_target_manifest`
 - `an_identical_retained_history_prefix_may_be_reused_without_overwrite`
 - `different_identity_later_head_renamed_alias_or_changed_patch_blocks_import`

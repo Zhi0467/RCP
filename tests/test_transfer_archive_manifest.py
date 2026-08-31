@@ -39,6 +39,7 @@ from rcp.transfer import (
     TransferArchiveEnvelope,
     TransferArchiveManifest,
     TransferGraphHead,
+    TransferGraphTarget,
     inspect_project_linked_tables,
     inspect_transfer_app_data_roots,
     inspect_transfer_research_roots,
@@ -359,6 +360,35 @@ def test_attribution_accepts_both_transfer_spaces_but_rejects_an_unrelated_space
 def test_manifest_rejects_boundary_mismatches(changes: dict[str, object], match: str) -> None:
     with pytest.raises(ValidationError, match=match):
         _replace_manifest(_manifest(), **changes)
+
+
+def test_manifest_accepts_a_branch_tail_that_starts_after_its_main_base() -> None:
+    manifest = _manifest()
+    entries = tuple(
+        entry
+        for entry in manifest.entries
+        if entry.archive_path != f"canonical/branches/{BRANCH_ID}/patches/000001.json"
+    ) + (
+        _entry(
+            f"canonical/branches/{BRANCH_ID}/patches/000002.json",
+            "canonical_history",
+        ),
+    )
+    entries = tuple(sorted(entries, key=lambda entry: entry.archive_path))
+
+    moved = _replace_manifest(
+        manifest,
+        branch_heads=[
+            TransferGraphHead(
+                target=TransferGraphTarget(kind="branch", branch_id=BRANCH_ID),
+                revision=2,
+            ).model_dump(mode="json")
+        ],
+        entries=[entry.model_dump(mode="json") for entry in entries],
+        payload_size_bytes=sum(entry.size_bytes for entry in entries),
+    )
+
+    assert moved.branch_heads[0].revision == 2
 
 
 def test_entry_groups_cannot_smuggle_materializations_credentials_or_target_proof() -> None:

@@ -196,6 +196,7 @@ class ProjectTransferSourceConfigurationRequest(_StrictModel):
     source_rcp_version: str
     source_schema_generation: int = Field(ge=1)
     supported_archive_codecs: list[str] = Field(min_length=1, max_length=16)
+    machine_aliases: list[str] = Field(min_length=1, max_length=32)
     repositories: list[ProjectTransferRepositorySourceRequest] = Field(
         min_length=1,
         max_length=64,

@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b, T2c, T3a, T3b, T3b-export, T3b-files, T3c, T3d | — | T3a-config, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d | — | T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -4940,7 +4940,48 @@ Python byte string.
 This packet defines the codec and inventory only. It does not query provider
 homes, copy operational records, or mutate the target.
 
-### T3a-config — Rebuild target manifest without carrying source execution
+### T3a-config — Rebuild target manifest without carrying source execution — complete
+
+`build_transfer_target_configuration` now binds the ready incoming
+provisioning review, the source configuration digest, the cross-space link, and
+the archive manifest before constructing anything. It parses the checksummed
+source manifest only as provenance, requires its complete machine-alias
+inventory plus repository aliases and bindings to match the source summary, and
+requires its scope to match the linked source summary. It renders the live
+manifest solely from reviewed target checkout paths, hosts/accounts, provider
+readiness proofs, profiles, and permissions. Native provider source roots use
+the target-account conventions already owned by manifest rendering; they are
+not copied from the source. Target repository identities, historical
+machine/repository aliases, and transferred state/truth-scope aliases must
+remain exact.
+
+Before publication, the validator accepts either no retained `.research` or a
+source manifest plus canonical main/branch inputs that are byte-identical to a
+contiguous prefix of the archive. Unknown paths, special files, missing scope or
+identity, changed bytes, and archive-external revisions stop without mutation.
+It then restores the complete archive into an isolated local `StateWorkspace`
+with the rebuilt target manifest and proves the main head, every branch head,
+merge receipts, project id, and final target home by semantic replay. The
+resulting immutable receipt binds the exact provisioning final-review and
+archive-manifest digests alongside the target manifest digest/size, source
+digests, format, heads, and retained-prefix fingerprint for T3f.
+
+A real nonzero-base branch fixture exposed and fixed T3a's old assumption that
+branch Patch filenames begin at revision 1. The archive now accepts one
+contiguous tail ending at the declared head; semantic replay proves its actual
+base. Opening transferred branches likewise accepts the authorizer from the
+canonical project home at that branch's exact immutable main base, while
+current write authority still belongs only to the final home. This packet does
+not publish the manifest or project files,
+insert database rows, or activate the target.
+
+The single read-only audit found four High and five Medium issues. The one
+correction pass bound the exact review and archive, carried the full historical
+machine-alias inventory, required branch authority from the exact base home,
+made retained branch heads true prefixes, rejected unsafe retained top-level
+entries, made restore reads no-follow/nonblocking and size-bounded, reused one
+main snapshot across branch-list checks, rechecked codec negotiation, and
+corrected the provider-root authority wording. No second audit was run.
 
 Own:
 
@@ -4955,10 +4996,11 @@ The source manifest is evidence about the history being transferred, not a file
 to publish on the team checkout. Preserve every repository and machine alias
 needed by historical Patches and `SourceRef`s, plus the canonical state
 repository and initial/current truth-scope provenance. Rebind repository paths,
-machine hosts/accounts, provider executable and native-source roots, profile
-`run_on` choices, and other execution settings exclusively from the reviewed
-target provisioning request. Source absolute paths and provider homes may appear
-only in the non-published provenance entry and bounded transfer diagnostics.
+machine hosts/accounts, provider executables, profile `run_on` choices, and
+other execution settings exclusively from the reviewed target provisioning
+request. Native-source roots follow target-account provider conventions. Source
+absolute paths and provider homes may appear only in the non-published
+provenance entry and bounded transfer diagnostics.
 
 For an incoming transfer, inspect any retained `.research` already present in
 the prepared Git checkout. Accept it only when its project id, source home,

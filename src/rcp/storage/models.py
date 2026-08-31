@@ -906,6 +906,7 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
     source_rcp_version: str = Field(min_length=1, max_length=120)
     source_schema_generation: int = Field(ge=1)
     supported_archive_codecs: tuple[str, ...] = Field(min_length=1, max_length=16)
+    machine_aliases: tuple[str, ...] = Field(min_length=1, max_length=32)
     repositories: tuple[ProjectTransferRepositorySource, ...] = Field(
         min_length=1,
         max_length=64,
@@ -933,6 +934,15 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
             _PROVISIONING_RUNTIME.fullmatch(item) is None for item in value
         ):
             raise ValueError("transfer archive codecs must be unique safe identifiers")
+        return value
+
+    @field_validator("machine_aliases")
+    @classmethod
+    def validate_machine_aliases(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)) or any(
+            _PROVISIONING_ALIAS.fullmatch(alias) is None for alias in value
+        ):
+            raise ValueError("transfer machine aliases must be unique safe identifiers")
         return value
 
     @field_validator("state_repository")
@@ -966,6 +976,10 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
             raise ValueError("transfer repository aliases must be unique")
         if len(identities) != len(set(identities)):
             raise ValueError("one GitHub repository cannot appear twice in transfer provenance")
+        if not {repository.machine_alias for repository in self.repositories}.issubset(
+            self.machine_aliases
+        ):
+            raise ValueError("transfer repository names an unknown historical machine alias")
         alias_set = set(aliases)
         if self.state_repository not in alias_set:
             raise ValueError("transfer state repository must name a declared repository")

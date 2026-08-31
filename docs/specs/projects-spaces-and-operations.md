@@ -1003,14 +1003,28 @@ it is never published as the target's live manifest. Historical repository and
 machine aliases, state-repository identity, and truth-scope provenance remain
 stable because accepted Patches and `SourceRef`s refer to them. The reviewed
 target request rebuilds the live manifest with the team central paths,
-host/accounts, provider binaries and native-source roots, and profile execution
-choices. Source absolute paths and provider homes cannot become target
-configuration. Before import, main and every retained branch must replay against
-that rebuilt manifest. Retained `.research` already cloned from Git is accepted
-only when its identity and canonical inputs are byte-identical to the bound
-archive and contain no later archive-external commit; a different identity,
-missing/renamed historical alias, later head, unknown durable entry, or byte
-conflict stops without overwrite.
+host/accounts, provider binaries, and profile execution choices. Native provider
+source roots follow the target account's provider conventions; they are not
+source execution state and are never copied from the source manifest. Source
+absolute paths and provider homes cannot become target configuration. Before
+import, main and every retained branch must replay against that rebuilt
+manifest. Retained `.research` already cloned from Git is accepted only when its
+identity and canonical inputs are byte-identical to a coherent prefix of the
+bound archive and contain no later archive-external commit; a different
+identity, missing/renamed historical alias, later head, unknown durable entry,
+or byte conflict stops without overwrite.
+
+The target-configuration validator implements that boundary before import. It
+binds the ready provisioning review, source configuration, link receipt, and
+archive identities; renders configuration only from target readiness proofs;
+checks retained Git inputs as an exact archive prefix; and semantically replays
+the complete main and branch history in an isolated workspace. Its receipt
+binds the exact final review, archive manifest, rebuilt target manifest,
+retained-prefix fingerprint, and replay heads for the later atomic importer. A
+transferred branch accepts only the authorizer from the canonical project home
+at its exact immutable main base; matching the current home is insufficient for
+an older base, and that historical authority does not grant current write
+authority after the home-transfer Patch.
 
 Imported task histories are readable only and cannot Resume or Retry. Imported
 provider histories receive no execution binding and are never installed under

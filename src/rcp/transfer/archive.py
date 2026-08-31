@@ -488,7 +488,10 @@ class TransferArchiveManifest(_StrictTransferModel):
         for branch_id, values in observed.items():
             patches = sorted(values["patches"])
             assert isinstance(patches, list)
-            if values["metadata"] != 1 or patches != list(range(1, heads[branch_id].revision + 1)):
+            contiguous_tail = not patches or patches == list(
+                range(patches[0], heads[branch_id].revision + 1)
+            )
+            if values["metadata"] != 1 or not contiguous_tail:
                 raise ValueError("transfer branch head does not match its retained inputs")
 
     def canonical_bytes(self) -> bytes:

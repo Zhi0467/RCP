@@ -763,7 +763,10 @@ def _stage_exact_restore_file(
             return
         raise StateUnavailable(f"Restored project file conflicts with existing bytes: {relative}")
 
-    source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    source_descriptor = os.open(
+        source,
+        os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+    )
     temporary = parent / f".{relative.name}.restore-{uuid.uuid4().hex}"
     destination_descriptor = -1
     digest = hashlib.sha256()
@@ -788,6 +791,8 @@ def _stage_exact_restore_file(
                 break
             digest.update(chunk)
             size += len(chunk)
+            if size > expected_size:
+                raise StateUnavailable("An archived project file changed during publication.")
             remaining = memoryview(chunk)
             while remaining:
                 written = os.write(destination_descriptor, remaining)

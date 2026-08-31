@@ -1069,7 +1069,12 @@ def existing_receipt_for_main_append(
     metadata = GraphBranchMetadata.model_validate_json(metadata_path.read_text(encoding="utf-8"))
     if metadata.branch_id != provenance.branch_id or metadata.episode_id != provenance.episode_id:
         raise ValueError("branch merge receipt belongs to a different episode branch")
-    _require_parent_identity(parent, metadata)
+    _require_parent_identity(
+        parent,
+        metadata,
+        allow_historical_home=True,
+        materialization=main,
+    )
     branch = BranchHistoryManager(parent, metadata)
     branch_result = branch.materialize(write_outputs=False)
     receipt = branch._read_validated_merge_receipt(target, branch_result, main)
@@ -1127,6 +1132,7 @@ def read_branch_snapshots(
                 branch_id,
                 expected_episode_id=episode_id,
                 expected_project_id=project_id,
+                main=main,
                 main_heads=main_heads,
                 main_states=main_states,
                 main_receipts=main_receipts.get(branch_id, ()),
@@ -1140,6 +1146,7 @@ def _read_branch_snapshot(
     *,
     expected_episode_id: str,
     expected_project_id: str,
+    main: MaterializationResult,
     main_heads: dict[int, GraphHeadRef],
     main_states: dict[int, GraphState],
     main_receipts: tuple[BranchMergeReceipt, ...],
@@ -1159,7 +1166,12 @@ def _read_branch_snapshot(
         raise ValueError("graph branch belongs to a different episode")
     if metadata.project_id != expected_project_id:
         raise ValueError("graph branch belongs to a different project")
-    _require_parent_identity(parent, metadata)
+    _require_parent_identity(
+        parent,
+        metadata,
+        allow_historical_home=True,
+        materialization=main,
+    )
 
     exact_base = main_heads.get(metadata.base_head.revision)
     if exact_base != metadata.base_head:
@@ -1514,20 +1526,31 @@ def open_branch(
         raise ValueError("graph branch belongs to a different episode")
     if expected_project_id is not None and metadata.project_id != expected_project_id:
         raise ValueError("graph branch belongs to a different project")
-    _require_parent_identity(parent, metadata)
+    _require_parent_identity(parent, metadata, allow_historical_home=True)
     branch = BranchHistoryManager(parent, metadata)
     branch._metadata = branch._read_metadata()
     branch.initialize()
     return branch
 
 
-def _require_parent_identity(parent: HistoryManager, metadata: GraphBranchMetadata) -> None:
+def _require_parent_identity(
+    parent: HistoryManager,
+    metadata: GraphBranchMetadata,
+    *,
+    allow_historical_home: bool = False,
+    materialization: MaterializationResult | None = None,
+) -> None:
     if parent.project_id is not None and metadata.project_id != parent.project_id:
         raise ValueError("graph branch belongs to a different project")
-    if (
-        parent.expected_space_id is not None
-        and metadata.authorized_by.space_id != parent.expected_space_id
-    ):
+    expected_space_id = (
+        parent.project_home_space_id_at_revision(
+            metadata.base_head.revision,
+            materialization=materialization,
+        )
+        if allow_historical_home
+        else parent.expected_space_id
+    )
+    if expected_space_id is not None and metadata.authorized_by.space_id != expected_space_id:
         raise ValueError("graph branch authorizer belongs to a different space")
 
 

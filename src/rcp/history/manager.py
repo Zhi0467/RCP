@@ -635,6 +635,22 @@ class HistoryManager:
             result = self.materialize(write_outputs=False)
             return self._project_identity_from_replay(result)
 
+    def project_home_space_id_at_revision(
+        self,
+        revision: int,
+        materialization: MaterializationResult | None = None,
+    ) -> str | None:
+        """Return the canonical project home at one retained main revision."""
+
+        result = materialization or self.current_materialization()
+        if revision < 0 or revision > result.state.revision:
+            raise ValueError("project home revision is outside retained main history")
+        identity = self._project_identity_from_replay(
+            result,
+            through_revision=revision,
+        )
+        return identity.home_space_id if identity is not None else None
+
     def claim_project_identity(
         self,
         action: str,
@@ -1811,10 +1827,14 @@ class HistoryManager:
     def _project_identity_from_replay(
         self,
         result: MaterializationResult,
+        *,
+        through_revision: int | None = None,
     ) -> ProjectIdentity | None:
         initial_identity: ProjectIdentity | None = None
         current_identity: ProjectIdentity | None = None
         for patch in result.patches:
+            if through_revision is not None and patch.revision > through_revision:
+                break
             report = result.reports.get(patch.revision)
             if patch.kind != "identity" or report is None or report.rejected:
                 continue

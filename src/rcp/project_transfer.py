@@ -45,6 +45,7 @@ def capture_project_transfer_source(
         source_rcp_version=__version__,
         source_schema_generation=PROJECT_TRANSFER_SCHEMA_GENERATION,
         supported_archive_codecs=(PROJECT_TRANSFER_ARCHIVE_CODEC,),
+        machine_aliases=tuple(sorted(manifest.machine_map)),
         repositories=repositories,
         state_repository=manifest.state.repository,
         project_truth_scope=tuple(manifest.project.truth_scope),
