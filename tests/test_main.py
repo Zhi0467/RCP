@@ -140,6 +140,30 @@ def test_installed_replacement_check_finds_rollback_without_creating_data(
     assert not data_dir.exists()
 
 
+def test_installed_replacement_check_keeps_completed_restore_stopped_until_cutover(
+    tmp_path, monkeypatch
+) -> None:
+    data_dir = tmp_path / "restored-data"
+    update_root = tmp_path / "update-checkpoints"
+    update_root.mkdir()
+    operation = Namespace(state="rollback_restoring")
+    layout = Namespace(
+        data_dir=data_dir,
+        restore_operations_root=tmp_path / "restore-operations",
+        update_checkpoints_root=update_root,
+    )
+    monkeypatch.setattr("rcp.api.app._installed_rollback_journals", lambda _path: ())
+    monkeypatch.setattr(
+        "rcp.server_ops.update_cutover.update_operation_needing_recovery",
+        lambda _path, *, expected_uid: (update_root / "operation.json", operation, "a" * 64),
+    )
+
+    with pytest.raises(RuntimeError, match="rollback cutover is incomplete"):
+        inspect_installed_replacement_startup(data_dir, layout)
+
+    assert not data_dir.exists()
+
+
 def test_space_init_creates_a_named_team_without_locking_or_serving(
     tmp_path, monkeypatch, capsys
 ) -> None:

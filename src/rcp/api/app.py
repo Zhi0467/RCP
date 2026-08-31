@@ -266,6 +266,27 @@ def inspect_installed_replacement_startup(
             raise RuntimeError(
                 "Installed rollback restoration is incomplete; run sudo rcp server update."
             )
+        from rcp.server_ops.update_cutover import (
+            UpdateCutoverRefused,
+            update_operation_needing_recovery,
+        )
+
+        try:
+            pending_update = update_operation_needing_recovery(
+                server_layout.update_checkpoints_root,
+                expected_uid=os.geteuid(),
+            )
+        except (OSError, UpdateCutoverRefused) as exc:
+            raise RuntimeError(
+                "Installed update recovery state is unsafe; run sudo rcp server update."
+            ) from exc
+        if pending_update is not None and pending_update[1].state in {
+            "rollback_restoring",
+            "repair_required",
+        }:
+            raise RuntimeError(
+                "Installed rollback cutover is incomplete; run sudo rcp server update."
+            )
     return True, restore_boundary
 
 

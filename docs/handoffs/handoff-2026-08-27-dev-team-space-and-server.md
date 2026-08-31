@@ -337,6 +337,19 @@ gate are deliberately future work and do not block this plan.
   the regression proves an unfinished journal is found without creating the
   absent data directory. This production correction still needs its exact-head
   CI and two-Ubuntu rerun.
+- Exact-head live run
+  [33424660135](https://github.com/Zhi0467/RCP/actions/runs/33424660135) passed
+  the formerly failing early rollback phases on Ubuntu 22.04, then exposed the
+  adjacent final-phase boundary. A `complete` file-restore journal can coexist
+  briefly with a still-nonterminal `rollback_restoring` update receipt before
+  the root coordinator switches `current` back to the old release. Direct
+  systemd start in that interval was allowed to create runtime lock metadata in
+  the exact restored tree, so re-entry correctly rejected the changed tree. The
+  same pre-lock inspection now keeps `rollback_restoring` and `repair_required`
+  services stopped even after file restoration completes; intentional candidate
+  and old-release starts remain admitted only in their later durable states. A
+  focused regression covers the complete-journal/pre-cutover interval without
+  creating the data root. The rerun is still required.
 
 #### 2026-08-31 — V2 current-tree baseline and compatibility repair complete
 
