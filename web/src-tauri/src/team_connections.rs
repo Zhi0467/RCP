@@ -30,7 +30,7 @@ const SESSION_TOKEN_PREFIX: &[u8] = b"rcp_session_";
 const ENROLLMENT_CODE_ID_BYTES: usize = 16;
 const BOOTSTRAP_CODE_PREFIX: &[u8] = b"rcp_bootstrap_";
 const INVITATION_CODE_PREFIX: &[u8] = b"rcp_invite_";
-const KEYCHAIN_SERVICE: &str = "app.researchcontrolpanel.rcp.team-member-token";
+const KEYCHAIN_SERVICE: &str = "app.researchcontrolpanel.rcp.team-member-token.source-v1";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -559,26 +559,17 @@ fn secure_file_permissions(_file: &File) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn store_keychain_password(reference: &CredentialReference, token: &[u8]) -> Result<(), String> {
-    security_framework::passwords::set_generic_password(
-        reference.service,
-        &reference.account,
-        token,
-    )
-    .map_err(|error| format!("could not store the team member credential in Keychain: {error}"))
+    crate::keychain::set(reference.service, &reference.account, token)
+        .map_err(|error| format!("could not store the team member credential in Keychain: {error}"))
 }
 
 #[cfg(target_os = "macos")]
 fn load_keychain_password(
     reference: &CredentialReference,
 ) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
-    match security_framework::passwords::get_generic_password(reference.service, &reference.account)
-    {
-        Ok(bytes) => Ok(Some(Zeroizing::new(bytes))),
-        Err(error) if error.code() == security_framework_sys::base::errSecItemNotFound => Ok(None),
-        Err(error) => Err(format!(
-            "could not read the team member credential from Keychain: {error}"
-        )),
-    }
+    crate::keychain::get(reference.service, &reference.account).map_err(|error| {
+        format!("could not read the team member credential from Keychain: {error}")
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -595,16 +586,9 @@ fn load_keychain_password(
 
 #[cfg(target_os = "macos")]
 fn remove_keychain_password(reference: &CredentialReference) -> Result<bool, String> {
-    match security_framework::passwords::delete_generic_password(
-        reference.service,
-        &reference.account,
-    ) {
-        Ok(()) => Ok(true),
-        Err(error) if error.code() == security_framework_sys::base::errSecItemNotFound => Ok(false),
-        Err(error) => Err(format!(
-            "could not remove the team member credential from Keychain: {error}"
-        )),
-    }
+    crate::keychain::remove(reference.service, &reference.account).map_err(|error| {
+        format!("could not remove the team member credential from Keychain: {error}")
+    })
 }
 
 #[cfg(not(target_os = "macos"))]

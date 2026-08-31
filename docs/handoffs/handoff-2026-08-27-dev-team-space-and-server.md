@@ -1,46 +1,73 @@
 # Dev team space and source server completion handoff
 
 Date: 2026-08-27
-Status: active; design, grilling, and the final cross-document fact-check are
-complete, and implementation is proceeding directly on `main`. G0, G2, F1,
-F2, F3a, F3b, F4, F5, F6a, F6b, F6c, P1, P2, P3, P4, P5, P6b, P6c, D1, O1, O2a,
-O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c, O4d, O5a, O5b, D2, and D3
-are complete hermetically. O4d's fresh-host Ubuntu restore drive remains part of
-the live acceptance work. D2 promotes the proved local-HTTPS mechanism into the
-production source-built desktop: one Keychain identity, canonical
+Status: active. Design, grilling, and the final cross-document fact-check are
+complete. Implementation is proceeding directly on `main`.
+
+### Packet status
+
+"Done" means implemented and verified hermetically. A packet in the third column
+is written and passing its own tests, but still owes a drive on real hardware.
+
+| Lane | Done | Implemented, drive still open | Not started |
+| --- | --- | --- | --- |
+| Gates | G0, G2 | — | — |
+| Server foundation | F1, F2, F3a, F3b, F4, F5, F6a, F6b, F6c | F6d | — |
+| Provisioning | P1, P2, P3, P4, P5, P6b, P6c | P6a | — |
+| Desktop | D1, D2, D3 | D4a, D4b, D5 | D6, D7 |
+| Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
+| Member removal | O5a, O5b | — | — |
+| Server settings | — | — | O6 |
+| Transfer | — | — | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Closure | — | — | V1, V2 |
+
+What each open drive is waiting on:
+
+- **F6d** — the Ubuntu 22.04/24.04 update workflow. It is implemented and pushed
+  with closed admission, systemd cutover, loud rollback, crash re-entry, and a
+  disposable-host death drive. The last exact-head rerun was refused before
+  either job started, because the GitHub account's hosted-runner spending limit
+  is unavailable. That is a billing block, not a code block.
+- **P6a** — the complete team-service and GitHub live qualification.
+- **O4d** — the fresh-host Ubuntu restore drive.
+- **D4a, D4b, D5** — the integrated source-built desktop drive.
+
+Status is recorded four different ways in this file: a `Status:` line in a packet
+section, a bold `**Status (date)**` block, a `— complete` heading suffix, and a
+dated entry in the implementation log. The table above is the one place to read
+it. The log records packets completed through D3; later packets record status in
+their own section.
+
+The previously planned G1 pull-request transition was rejected by the human for
+this private, single-developer pre-team-server implementation. It no longer gates
+any packet.
+
+### Notes carried from earlier status updates
+
+D2 promotes the proved local-HTTPS mechanism into the production source-built
+desktop: one sealed identity with its short key in Keychain, canonical
 connection-bound origins, an app-scoped WKWebView pin, and exact saved-origin
 navigation are implemented and live-verified on this host. D3 adds the real
 system-SSH forward, local TLS proxy, reuse/backoff, and owned-child cleanup.
-D4-D5 remain open for the server session and team-space UI. The live
-Ubuntu 22.04/24.04 install and doctor drives remain recorded below. F6a is
-pushed at `fff75c3` with exact-target confirmation, an immutable built-candidate
-receipt, and an unchanged live-service boundary. P2 now provides the
-member-authorized provisioning API, backend-owned project-creation and lifecycle
-answers, sealed Web response vocabularies, and a fail-before-input guard on all
-three ordinary existing-checkout entry routes. It performs no machine work and
-does not create a team project. P4 now supplies the exact-account local/SSH
-central-checkout primitive, path receipts, retained-research refusal, and
-backward-compatible project-configuration persistence. P6a now implements the
-next provisioning boundary by durably composing P3-P5 through the installed
-service and stops at **ready for review** without creating a project; the
-packet's complete team-service/GitHub live qualification remains open. P6b now
-owns the exact final human confirmation, reserved identity append, registration,
-and crash recovery without rerunning machine preparation. F6b now consumes
-O2a/O2b to rehearse the candidate against copied real state under one reusable
-startup-effect fence. F6c's current-owner checkpoint core now publishes and
-temp-restores one exact local rollback boundary with crash-safe replacement
-journals. F6d is implemented and pushed on `main` with closed admission,
-systemd cutover, loud rollback, crash re-entry, and a disposable-host death
-drive, but remains incomplete until that Ubuntu 22.04/24.04 workflow passes;
-the latest exact-head rerun was refused before either job started because the
-GitHub account's hosted-runner spending limit is currently unavailable.
-Later T3e/T4b owners extend the checkpoint's typed inventory. P6c now
-publishes and independently
-enforces the ordinary team-project deletion guard through the card, Web, API,
-and catalog.
-The previously planned G1 pull-request transition was rejected by the human for this
-private, single-developer pre-team-server implementation; it no longer gates any
-packet.
+The live Ubuntu 22.04/24.04 install and doctor drives remain recorded below.
+F6a is pushed at `fff75c3` with exact-target confirmation, an immutable
+built-candidate receipt, and an unchanged live-service boundary. P2 now
+provides the member-authorized provisioning API, backend-owned project-creation
+and lifecycle answers, sealed Web response vocabularies, and a
+fail-before-input guard on all three ordinary existing-checkout entry routes.
+It performs no machine work and does not create a team project. P4 now supplies
+the exact-account local/SSH central-checkout primitive, path receipts,
+retained-research refusal, and backward-compatible project-configuration
+persistence. P6a now implements the next provisioning boundary by durably
+composing P3-P5 through the installed service and stops at **ready for review**
+without creating a project; P6b now owns the exact final human confirmation,
+reserved identity append, registration, and crash recovery without rerunning
+machine preparation. F6b now consumes O2a/O2b to rehearse the candidate against
+copied real state under one reusable startup-effect fence. F6c's current-owner
+checkpoint core now publishes and temp-restores one exact local rollback
+boundary with crash-safe replacement journals. Later T3e/T4b owners extend the
+checkpoint's typed inventory. P6c now publishes and independently enforces the
+ordinary team-project deletion guard through the card, Web, API, and catalog.
 
 ## Objective
 
@@ -136,11 +163,11 @@ The remaining seams are also concrete:
   reconciliation;
 - `default_data_dir()` still falls back to the macOS Application Support path;
   a Linux service works only through an explicit `RCP_DATA_DIR` today;
-- the Web UI still says “Team connections are not implemented in this build”;
-- the Tauri shell now stores strict nonsecret team-connection metadata and can
-  write/remove a permanent member token in macOS Keychain, but it still trusts
-  one current loopback backend and has no distinct-origin allocator, SSH tunnel,
-  live token read/enrollment, multi-backend navigation, or operator-command owner;
+- the desktop now implements distinct pinned HTTPS origins, exact SSH tunnel
+  ownership, native enrollment/session exchange, permanent-token storage,
+  multi-backend navigation, and a personal-first multi-space index; its combined
+  D4-D5 path still needs the pending visible two-team-space drive recorded in
+  S105;
 - the durable project-provisioning request, complete finalizer, member API,
   repository-credential primitive, exact-account provider check, checkout
   preparation, and machine-step orchestration exist, but the unified wizard,
@@ -203,6 +230,78 @@ decision blocks the feature lanes. Q10 and the later public branch-protection
 gate are deliberately future work and do not block this plan.
 
 ### Implementation log
+
+#### 2026-08-30 — D4-D5 implementation checkpoint and source-rebuild credential repair
+
+- D4 now verifies team health and compatibility through D3's exact tunnel,
+  supports bootstrap/invitation enrollment and existing-member tokens, stores
+  permanent tokens only through the native credential owner, exchanges them for
+  server sessions, installs the HTTP-only cookie before navigation, and returns
+  only nonsecret session state. Metadata is reserved before a one-time code is
+  consumed, so a failure after enrollment leaves a repairable saved connection
+  and credential instead of losing the issued identity. Reconnect never routes
+  a team project through the personal backend.
+- D5 replaces the old unavailable seam with the local personal-first index,
+  concurrent team reconciliation, named available/unavailable groups, bounded
+  cached inert project cards, reconnect, and one Add-team-space flow for new and
+  existing members. The Web still renders backend/native decisions rather than
+  deriving team authority. D4-D5 were checkpointed on `main` at `9be6c22`; 443
+  Web tests, typecheck/build, the native suite, and pre-commit passed. D4's one
+  independent read-only audit found and fixed an asynchronous WebView cookie
+  callback use-after-free risk; no second D4 audit round was run.
+- The first real source-built drive exposed a macOS boundary hidden by unit
+  tests: the legacy Keychain attached an ad-hoc app cdhash to a directly stored
+  secret, so every rebuild could hang before the window while requesting access
+  to the previous build's record. Removing that partition before insertion did
+  not work because `securityd` restored it. Apple's signed `/usr/bin/security`
+  tool instead receives short values over pipes as the ACL-authorized executable
+  and gives the item the stable `apple-tool:` partition. The helper starts the
+  tool in a separate session so a terminal-launched dev app cannot divert the
+  password prompt away from the pipe. Values over the tool's proved 64-byte
+  limit fail before launch rather than being truncated.
+- This is source-rebuild stability, not hostile same-account isolation: any
+  process running as the same macOS user can deliberately invoke the same
+  general-purpose Apple tool for a known service and account. That limitation
+  matches the current cooperative provider threat model. A future publicly
+  distributed signed build must replace it with stable app-bound credential
+  access.
+- The certificate/private-key record is larger than that limit. The final source
+  design stores only a random 32-byte AES-256-GCM sealing key in Keychain and
+  atomically writes the authenticated encrypted identity to
+  `local-https-identity-v1.sealed` with mode `0600`. A missing half, malformed
+  record, or authentication failure stops startup; only absence of both creates
+  a new identity. Unit coverage proves binary credential encoding, size refusal,
+  identity encryption round-trip, and tamper rejection.
+- Live proof used two clean source bundles with different binary hashes and
+  cdhashes (`2a41dd…`/`bd98…`, then `530746…`/`8372…`). Both launched from a
+  terminal and reached a healthy owned personal backend. Across the rebuild the
+  sealed identity stayed byte-for-byte identical (`efd99f…`), with the same
+  timestamp, 581-byte size, and `0600` mode; the Keychain ACL remained tool-only
+  with `apple-tool:`. Three exact obsolete experimental items
+  (`desktop-identity/source-v1`, `/source-v2`, and `/source-v3`) were deleted;
+  the original pre-experiment `desktop-identity/v1` record was not touched.
+- The D4 checkpoint's unversioned team-token service was replaced by
+  `app.researchcontrolpanel.rcp.team-member-token.source-v1`. Fact-checking found
+  neither a saved `team-connections.json` nor any item under the old service, so
+  the checkpoint never produced a live credential to migrate. The source-only
+  namespace break is explicit rather than a silent compatibility fallback.
+- The checkpoint's independent audit reported no Critical issue. Its remaining
+  findings were closed here: Keychain stdout is read through a hard bounded pipe
+  and the child is killed/reaped on overflow; the encrypted identity is opened
+  once with `O_NOFOLLOW`, validated on that handle, and read through a bounded
+  reader; obsolete Keychain wording was removed; and the same-UID limitation and
+  pre-live token namespace boundary are now explicit.
+- The exact final repair source bundle (`895dd1…`, cdhash `fdd4db…`) built from
+  this tree, launched from a terminal, and reported a healthy desktop-owned
+  personal backend. The encrypted identity remained exactly `efd99f…`, mtime
+  `1788125943`, size 581, and mode `0600`; stopping the test bundle also stopped
+  its owned backend. This final startup proof still does not substitute for the
+  pending D4-D5 enrollment/navigation drive.
+- Still open: the Mac was locked during the integrated milestone, so D4-D5 have
+  not yet been driven through the visible app against the two disposable team
+  spaces. S105 remains pending, D5 still needs its one scoped read-only audit,
+  and no acceptance claim treats the build/startup proof as a substitute for
+  enrollment, cookie, navigation, unavailable-cache, or restart interaction.
 
 #### 2026-08-28 — G0 baseline repair complete in the working tree
 
@@ -1636,8 +1735,9 @@ gate are deliberately future work and do not block this plan.
   registry version 2 validates that exact connection binding and rejects the
   former HTTP shape.
 - The desktop generates one `localhost`/`*.localhost` certificate and private
-  key, stores both atomically as a bounded versioned Keychain item, and fails
-  loudly on an unreadable, malformed, or mismatched pair. Only the DER SHA-256
+  key, stores their authenticated encrypted record atomically with only its
+  bounded sealing key in Keychain, and fails loudly on an unreadable, malformed,
+  or mismatched pair. Only the DER SHA-256
   reaches the live WebView trust hook. The hook detects selector ownership,
   reattaches wry's live delegate, accepts only the stored pin, and installs no
   system trust.
@@ -1648,8 +1748,9 @@ gate are deliberately future work and do not block this plan.
 - Verification: all 64 Rust library tests pass. The retained real-WKWebView login
   and restart phases pass with isolated `Secure`/`HttpOnly`/`__Host-` cookies
   and refusal of a third origin with another certificate. The actual
-  source-built `RCP.app` builds and opens against the checkout, and the expected
-  Keychain record exists without reading its secret. That live drive also found
+  source-built `RCP.app` builds and opens against the checkout. The later
+  source-rebuild repair replaced this checkpoint's direct identity record with
+  the encrypted-file/sealing-key pair described above. That live drive also found
   and fixed an asynchronous probe diagnostic that retained a borrowed C string.
 - The packet's one independent audit found no Critical or High issue. It caught
   default HTTPS port normalization, missing certificate/private-key pairing
@@ -1658,8 +1759,9 @@ gate are deliberately future work and do not block this plan.
   pre-commit pass.
 - Not done at D2 completion: opening SSH, terminating TLS around a forwarded
   connection, exchanging a team member token, and navigating to a team backend.
-  D3 has since closed the SSH/TLS portion; D4-D5 retain the session and navigation
-  work. The source-built app was checked on this one macOS host; a second Mac and
+  D3 has since closed the SSH/TLS portion; D4-D5 implement the session and
+  navigation work but retain the integrated live drive. The source-built app
+  was checked on this one macOS host; a second Mac and
   signed packaged app remain later compatibility qualification, not blockers for
   the accepted source-built client. The app build/open drive preceded the final
   audit-only port, pair-validation, and zeroization cleanups; those changes
@@ -1676,7 +1778,7 @@ gate are deliberately future work and do not block this plan.
   SSH control sharing, persistence, and post-authentication backgrounding are
   disabled so the spawned process group necessarily owns that forward.
 - The saved D2 port is bound on both IPv4 and IPv6 before SSH starts. A rustls
-  listener presents the D2 Keychain identity and forwards only to the private
+  listener presents the D2 desktop identity and forwards only to the private
   SSH listener. A healthy route is reused only while origin, SSH target, and
   remote port all still match. A dead or changed route waits through the short
   reconnect backoff before replacement, and a failed start refuses immediate
@@ -3313,11 +3415,13 @@ needs the delegate reattached; and wry's delegate class name is
 version-qualified, so the hook reads it off the live `WKWebView`.
 
 **Production completion, 2026-08-30:** D2 now owns the canonical allocator,
-versioned Keychain identity, production trust-hook linkage, exact registry-backed
-navigation rule, and bounded Tauri capability. The two-phase probe and actual
-source-built app pass on this host. D3 has since closed TLS through the real SSH
-proxy; the D4 team session remains open. A second Mac and signed packaged app are
-later compatibility qualification.
+versioned sealed identity and Keychain sealing key, production trust-hook
+linkage, exact registry-backed navigation rule, and bounded Tauri capability.
+The two-phase probe and actual source-built app pass on this host, including
+reuse across two different ad-hoc build hashes. D3 has since closed TLS through
+the real SSH proxy; D4-D5 are implemented but their integrated team-space drive
+remains open. A second Mac and signed packaged app are later compatibility
+qualification.
 
 ### D3 — SSH tunnel lifecycle
 
@@ -3379,6 +3483,11 @@ saved distinct origin. Return-to-index navigates home. Reconnect never converts
 team work into local work, and Quit continues to stop only the local backend and
 tunnels the shell owns.
 
+**Implemented 2026-08-30:** D4a and D4b share D3's transport and one native
+session owner. Focused tests, strict native checks, source build/startup, and the
+scoped D4 audit pass. S105's real enrollment/cookie/navigation/restart drive is
+still required before this packet is live-complete.
+
 ### D5 — Local multi-space project index
 
 Own:
@@ -3397,6 +3506,11 @@ an existing permanent token, and delegates all secret handling to D4a. Personal
 space stays first. Team cards navigate through D4b and never submit a team
 request to the local backend. An unavailable group is dimmed with last-known
 cards and one reconnect action; it does not block personal work.
+
+**Implemented 2026-08-30:** the grouped index, controlled Add flow, concurrent
+reconcile, cached-unavailable rendering, reconnect, and native navigation bridge
+are in `9be6c22` with 443 passing Web tests, typecheck, and build. The visible
+two-space drive and D5's one independent scoped audit remain open.
 
 ### D6 — Fixed operator CLI bridge
 

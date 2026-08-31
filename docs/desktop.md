@@ -114,12 +114,24 @@ session survives an application restart. Each run first asserts that the host
 does not already trust the probe certificate, so a success cannot be confused
 with pre-existing system trust.
 
-Production startup loads or creates one versioned local-HTTPS identity at the
-Keychain service `app.researchcontrolpanel.rcp.local-https`, account
-`desktop-identity/v1`. Never print or export that item's bytes. Saved team
-connections use connection-bound `rcp-<uuid>.localhost` origins; only their
-exact validated origins may enter the main window, and only the stored
-certificate fingerprint is passed to the native trust hook.
+Production startup loads or creates one versioned local-HTTPS identity in
+`local-https-identity-v1.sealed` under the app configuration directory. The file
+is authenticated encryption with mode `0600`; its 32-byte key is the Keychain
+item at service `app.researchcontrolpanel.rcp.local-https`, account
+`desktop-identity-sealing-key/source-v1`. Never print or export the Keychain
+value or decrypted identity. The source-built app accesses that short key only
+through `/usr/bin/security`, whose ACL remains stable across ad-hoc rebuilds.
+That ACL authorizes the Apple tool, not the calling RCP process: it prevents
+rebuild churn and keeps secrets out of argv/page/log state, but it does not
+protect them from another process deliberately invoking the tool as the same
+macOS user. The current cooperative provider model accepts that source-mode
+limitation; a future public signed build must use app-bound credential access.
+Permanent team member tokens use the same bounded helper under service
+`app.researchcontrolpanel.rcp.team-member-token.source-v1`, with one
+`team-connection/<uuid>` account per saved connection.
+Saved team connections use connection-bound `rcp-<uuid>.localhost` origins;
+only their exact validated origins may enter the main window, and only the
+stored certificate fingerprint is passed to the native trust hook.
 
 The ignored D3 live test uses the same production tunnel owner with an existing
 system SSH login, forwards only the remote host's loopback SSH banner, then

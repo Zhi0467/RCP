@@ -1,6 +1,8 @@
 mod backend;
 mod commands;
 mod dictation;
+#[cfg(target_os = "macos")]
+mod keychain;
 mod lifecycle;
 mod local_https;
 mod navigation;
@@ -87,8 +89,8 @@ pub fn run() {
             commands::apply_update,
         ])
         .setup(|app| {
-            let local_https =
-                local_https::LocalHttpsIdentity::load_or_create().map_err(std::io::Error::other)?;
+            let local_https = local_https::LocalHttpsIdentity::load_or_create(app.handle())
+                .map_err(std::io::Error::other)?;
             let team_connections = team_connections::TeamConnectionState::for_app(app.handle())
                 .map_err(std::io::Error::other)?;
             if !app.manage(team_connections) {

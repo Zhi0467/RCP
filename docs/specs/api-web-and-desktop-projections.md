@@ -111,7 +111,7 @@ closes its open tab and returns to the index.
 
 ## Confirmed team desktop target
 
-The pending first team client is the source-built desktop app. Its local project
+The first team client is the source-built desktop app. Its local project
 index groups the personal space and saved team connections without making the
 local backend an authority for any team project. Each connection stores
 nonsecret routing metadata, its expected `space_id`, compatibility information,
@@ -143,7 +143,7 @@ control sharing/backgrounding, and one explicit
 `127.0.0.1:<ephemeral>:127.0.0.1:<configured-server-port>` forward. It therefore
 uses the member's existing SSH config and agent for host, key, proxy, and host
 verification without accepting an interactive password prompt inside RCP. A
-desktop-owned dual-stack loopback TLS listener presents the Keychain identity at
+desktop-owned dual-stack loopback TLS listener presents the desktop identity at
 the saved HTTPS origin and forwards plain bytes only to that private SSH
 listener. One healthy connection is reused only while origin, SSH target, and
 remote port still match; an ended, changed, or failed connection observes a
@@ -162,13 +162,27 @@ on the same `127.0.0.1` host are not isolation because cookies ignore ports; suc
 tunnels would collide on the shared `__Host-` session-cookie name. The shell
 uses `https://rcp-<connection-id-without-hyphens>.localhost:<local-port>`.
 Navigation admits only exact origins derived from its validated saved-connection
-registry. The desktop stores one versioned certificate/private-key record in
-Keychain, pins that certificate in the live WKWebView navigation delegate, and
-never installs system-wide trust. A malformed identity fails startup rather
-than being silently replaced. The Tauri capability covers the bounded hostname
-family, but the saved-origin navigation check and certificate pin remain
-independent fences. The production boundary and its real-WKWebView evidence are
-recorded in the [local HTTPS decision](../decisions/2026-08-30-desktop-local-https-origins.md).
+registry. The desktop stores one versioned authenticated-encrypted
+certificate/private-key file and keeps only its 32-byte sealing key in the
+operating-system credential store. Source builds access that key through
+Apple's signed Keychain tool with an ACL pinned to that tool, not an ad-hoc app
+cdhash; the value never enters argv, URLs, page state, logs, or native command
+output. The desktop pins the certificate in the live WKWebView navigation
+delegate and never installs system-wide trust. A malformed, unauthenticated, or
+partial identity/key pair fails startup rather than being silently replaced.
+The tool ACL solves source-rebuild stability; because a same-UID process can
+invoke the same general-purpose Apple tool, it is not same-account read
+isolation. That limitation is accepted only under the current cooperative
+provider model and must be replaced by app-bound credential access for wider
+public distribution. Team tokens use the versioned service
+`app.researchcontrolpanel.rcp.team-member-token.source-v1` and a distinct
+connection account. The immediately preceding D4 checkpoint never created a
+saved team registry or a token in its unversioned pre-live namespace, so this
+source-mode namespace break has no credential to migrate.
+The Tauri capability covers the bounded hostname family, but the saved-origin
+navigation check and certificate pin remain independent fences. The production
+boundary and its real-WKWebView evidence are recorded in the
+[local HTTPS decision](../decisions/2026-08-30-desktop-local-https-origins.md).
 
 The ordinary browser can use the team server UI when transport already exists,
 but it cannot own multi-space routing, credential storage, SSH tunnels, or

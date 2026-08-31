@@ -112,16 +112,19 @@ only what the window does with it.
 
 ## Implemented substrate
 
-D2 and D3 are complete as of 2026-08-30. The production desktop allocates a stable
-connection-bound HTTPS localhost alias, stores one bounded identity in Keychain,
-installs its exact certificate pin on the live main WKWebView, and rejects
-navigation outside the validated saved-origin set. The retained two-origin
+D2 through D5 are implemented as of 2026-08-30. The production desktop allocates
+a stable connection-bound HTTPS localhost alias, keeps its bounded identity in
+an authenticated encrypted file with the sealing key in Keychain, installs its
+exact certificate pin on the live main WKWebView, and rejects navigation outside
+the validated saved-origin set. The retained two-origin
 WKWebView drive passes login and restart phases, including cookie isolation and
 an unpinned-certificate refusal. The saved-connection owner also launches and
 reuses the direct system-SSH forward, wraps it in that TLS identity, and reaps
 the exact local process group on stop. Admission prevents launch after removal,
 Quit, or update cleanup; failed cleanup remains owned, and a team origin cannot
 launch another saved connection. A live authenticated drive passed through the
-production manager without changing the remote host. This scenario remains
-pending because team enrollment/session exchange, project navigation, and
-unavailable-space paths belong to D4-D5 and have not been driven.
+production manager without changing the remote host. The native enrollment,
+session exchange, cookie installation, navigation, grouped index, cached
+unavailable cards, and reconnect paths now have focused Rust/Web coverage. This
+scenario remains pending because those D4-D5 paths have not yet been driven
+together through the real source-built app against the two live team spaces.
