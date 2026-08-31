@@ -6,8 +6,10 @@ import http.cookies
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -107,7 +109,10 @@ def test_protected_backup_restores_on_a_fresh_disposable_ubuntu() -> None:
         destination = _terminal_step(first_restore_events, "restore_destination_confirm")
         destination_resume = _single_resume(destination)
 
-        grant_code, grant_events = _run_restore_action(destination_resume)
+        grant_code, grant_events = _run_restore_action(
+            destination_resume,
+            diagnostic_project_id=str(metadata["project_id"]),
+        )
         assert grant_code == 3
         grant = _terminal_step(grant_events, "restore_github_grant")
         grant_fields = _fields(grant)
@@ -247,18 +252,39 @@ def _run_restore(argv: tuple[str, ...]) -> tuple[int, list[dict[str, object]]]:
     return _run_restore_process(("sudo", "-n", "/usr/local/bin/rcp", *argv))
 
 
-def _run_restore_action(argv: tuple[str, ...]) -> tuple[int, list[dict[str, object]]]:
+def _run_restore_action(
+    argv: tuple[str, ...],
+    *,
+    diagnostic_project_id: str | None = None,
+) -> tuple[int, list[dict[str, object]]]:
     if argv[:2] != ("sudo", "/usr/local/bin/rcp"):
         pytest.fail("restore returned an unsupported resume command")
-    return _run_restore_process((*argv, "--machine-readable"))
+    return _run_restore_process(
+        (*argv, "--machine-readable"),
+        diagnostic_project_id=diagnostic_project_id,
+    )
 
 
-def _run_restore_process(argv: tuple[str, ...]) -> tuple[int, list[dict[str, object]]]:
+def _run_restore_process(
+    argv: tuple[str, ...],
+    *,
+    diagnostic_project_id: str | None = None,
+) -> tuple[int, list[dict[str, object]]]:
     result = _run(argv, timeout=_COMMAND_TIMEOUT_SECONDS)
     if result.returncode not in {0, 3}:
+        git_diagnostic = ""
+        if (
+            diagnostic_project_id is not None
+            and "failed during advertised HEAD lookup" in result.stdout
+        ):
+            probe = _diagnose_restore_git_head(diagnostic_project_id)
+            git_diagnostic = (
+                f"; diagnostic Git returncode={probe.returncode}; "
+                f"stdout tail={probe.stdout[-4096:]!r}; stderr tail={probe.stderr[-4096:]!r}"
+            )
         pytest.fail(
             f"server restore returned {result.returncode}; stdout tail={result.stdout[-4096:]!r}; "
-            f"stderr tail={result.stderr[-4096:]!r}"
+            f"stderr tail={result.stderr[-4096:]!r}{git_diagnostic}"
         )
     events = []
     for line in result.stdout.splitlines():
@@ -270,6 +296,56 @@ def _run_restore_process(argv: tuple[str, ...]) -> tuple[int, list[dict[str, obj
     if not events or events[0]["event"] != "plan":
         pytest.fail("server restore did not emit its plan first")
     return result.returncode, events
+
+
+def _diagnose_restore_git_head(project_id: str) -> subprocess.CompletedProcess[str]:
+    key = Path(f"/home/rcp/rcp-server/credentials/projects/{project_id}/paper/id_ed25519")
+    ssh_command = shlex.join(
+        (
+            "ssh",
+            "-F",
+            "/dev/null",
+            "-i",
+            str(key),
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "GlobalKnownHostsFile=/etc/ssh/ssh_known_hosts",
+            "-o",
+            "UserKnownHostsFile=/home/rcp/.ssh/known_hosts",
+        )
+    )
+    return _run(
+        (
+            "sudo",
+            "-n",
+            "-u",
+            "rcp",
+            "-H",
+            "env",
+            "-i",
+            "HOME=/home/rcp",
+            "USER=rcp",
+            "LOGNAME=rcp",
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "LANG=C.UTF-8",
+            "LC_ALL=C.UTF-8",
+            "GIT_CONFIG_GLOBAL=/dev/null",
+            "GIT_CONFIG_NOSYSTEM=1",
+            "GIT_TERMINAL_PROMPT=0",
+            "GIT_SSH_VARIANT=ssh",
+            f"GIT_SSH_COMMAND={ssh_command}",
+            "git",
+            "ls-remote",
+            f"git@github.com:{_REPOSITORY}.git",
+            "HEAD",
+        ),
+        timeout=30.0,
+    )
 
 
 def _single_resume(step: dict[str, object]) -> tuple[str, ...]:
