@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b, T2c, T3a | — | T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c, T3a, T3b | — | T3a-config, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -4975,7 +4975,52 @@ it. Require the archive's source manifest and schema/codec to match T2a's bound
 summary exactly. Produce one immutable configuration/readback receipt for T3f. This packet
 does not publish files, insert rows, or activate the target.
 
-### T3b — Finished operational record schema
+### T3b — Finished operational record schema — complete
+
+The versioned transfer-record bundle is now a strict, deeply immutable typed
+format. It closes the current project-linked schema into 28 represented tables
+and 12 explicit exclusions; a later table fails the inventory test until it is
+classified. Only succeeded/failed/interrupted tasks, completed/stopped
+watchers, terminal episodes and report attempts, and settled Auto-research
+children, admissions, recoveries, notices, and receipts are representable.
+Every retained foreign key is resolved inside the bundle. Globally unique
+operational ids remain stable, while SQLite-local event and receipt integers
+receive explicit archive UUID mappings; the later target import still owes a
+pre-mutation collision check against rows already in the target database.
+
+Persisted task requests pass through one task-kind-aware historical projection.
+It retains human intent, graph/episode lineage, provider/model labels, and
+selected workflow/skill names, but has no native session, source `run_on`,
+stage, attachment capability, result-view binding, watcher wake list, or
+retry/repair decision. Generic retained JSON also rejects those executable
+field names recursively. Watcher shell checks and delivery state are absent,
+and terminal rows carry the literal `history_only` marker. Prompt and contract
+text remains exact inert historical evidence even when it mentions an old
+source path; it is never target configuration or execution authority.
+
+Artifact display metadata is separate from retained bytes. An unkept artifact
+may honestly have no size or content digest; a kept artifact requires a safe
+direct filename, keep time, and digest that the later file/archive packet binds
+to its bytes. Paper draft content, base hash, ancestor content, and cursor state
+are preserved. Assistant output distinguishes exact labelled answers/traces
+from `legacy_unlabelled_lines`: current source rows combine provider message and
+answer events in one result array, so T3b-export must preserve those lines
+without guessing that the last one is an answer. A future source row with an
+exact label can use the labelled fields without changing the archive version.
+
+The single independent audit found two High and three substantive Medium
+issues: generic requests leaked native/machine/retry fields, bundle foreign keys
+were not closed, unkept artifacts required unavailable hashes, kept filenames
+accepted paths, and the Paper-coach fixture invented a final-answer label the
+source does not store. The one correction pass replaced raw requests with the
+typed sanitizer, closed all bundle identities and relationships, separated
+artifact metadata from retained content, enforced direct filenames, and added
+the honest legacy assistant representation. No second audit was run.
+
+This packet remains format-only. It does not query a live store, settle source
+work, export rows, add exact answer labels to current task persistence, check
+target-database collisions, insert history-only rows, or import files. Those
+operations remain with T3b-export, T3b-files, and T3f.
 
 Own:
 
