@@ -18,7 +18,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
-| Transfer | T1, T2a, T2b | — | T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
+| Transfer | T1, T2a, T2b, T2c | — | T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c, T5a, T5b |
 | Closure | — | — | V1, V2 |
 
 What each open drive is waiting on:
@@ -4801,7 +4801,38 @@ cleanup acknowledgment lets the target erase its raw proof; retry beforehand
 returns the same request-bound value to the same member. API progress and errors
 remain bounded and never reveal either raw value.
 
-### T2c — Restored transfer-request classification
+### T2c — Restored transfer-request classification — complete
+
+**Status (2026-08-31): implemented, focused-tested, and independently audited
+once.** The stopped-service restore worker now classifies every unfinished
+target transfer as **operator action needed** in the same transaction that
+detaches the other captured lifecycle owners. The public record retains an
+explicit `restore_resume_phase`, a bounded restore diagnostic, and every prior
+receipt, identity, archive commitment, revision boundary, and public proof
+state. The protected proof row is not rewritten. Completed target transfers
+remain unchanged, and a second identical detachment is a no-op.
+
+The concrete policy lives beside transfer storage in
+`src/rcp/storage/provisioning.py` and is invoked by the existing composition in
+`src/rcp/storage/restore_detachment.py`; `src/rcp/server_ops/restore.py` remains
+the stopped-service entry point instead of gaining a duplicate record-writing
+path. The focused test drives that real entry point through linked,
+target-admitted, source-released, archive-bound, target-activated, and
+cleanup-acknowledged states. It proves no restore can expose the target proof,
+move the independent personal source request, or mutate a completed transfer.
+
+The drive exposed one earlier integration omission: T2a's transfer tables had
+changed the current SQLite schema fingerprint without adding it to the restore
+compatibility registry. The current fingerprint is now accepted while every
+older immutable fingerprint remains accepted; the complete restore-state suite
+passes again.
+
+T2c cannot invalidate an upload lease or machine-import receipt because those
+records do not exist yet. T4b must add them to this same detachment owner and
+must add the fresh two-backend revalidation/re-entry transition before a relay
+can resume from `restore_resume_phase`. Until then the ordinary transfer methods
+fail closed on `operator_action_needed`; this slice intentionally does not
+invent a second recovery or fallback path.
 
 Own:
 

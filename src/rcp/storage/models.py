@@ -1260,6 +1260,17 @@ _PROJECT_TRANSFER_PHASE_RANK: dict[ProjectTransferPhase, int] = {
     "operator_action_needed": 9,
 }
 
+_PROJECT_TRANSFER_RESTORABLE_TARGET_PHASES: frozenset[ProjectTransferPhase] = frozenset(
+    {
+        "linked",
+        "target_admitted",
+        "source_released",
+        "archive_bound",
+        "target_activated",
+        "cleanup_acknowledged",
+    }
+)
+
 
 class ProjectTransferRequestRecord(_StrictProvisioningModel):
     request_id: str
@@ -1284,6 +1295,8 @@ class ProjectTransferRequestRecord(_StrictProvisioningModel):
     source_fence_head: GraphHeadRef | None = None
     archive_sha256: str | None = None
     archive_size_bytes: int | None = Field(default=None, ge=1)
+    restore_resume_phase: ProjectTransferPhase | None = None
+    restore_diagnostic: MessageText | None = None
     revision: int = Field(ge=0)
     created_at: str
     updated_at: str
@@ -1333,13 +1346,27 @@ class ProjectTransferRequestRecord(_StrictProvisioningModel):
         )
         if self.initiated_by.space_id != expected_actor_space:
             raise ValueError("transfer initiator belongs to the wrong space")
+        if self.phase == "operator_action_needed":
+            if (
+                self.side != "target"
+                or self.restore_resume_phase not in _PROJECT_TRANSFER_RESTORABLE_TARGET_PHASES
+                or self.restore_diagnostic is None
+            ):
+                raise ValueError(
+                    "restored transfer action must preserve one unfinished target phase"
+                )
+            effective_phase = self.restore_resume_phase
+        else:
+            if self.restore_resume_phase is not None or self.restore_diagnostic is not None:
+                raise ValueError("ordinary transfer state cannot carry restore action metadata")
+            effective_phase = self.phase
         linked_fields = (
             self.linked_request_id,
             self.accepted_schema_generation,
             self.accepted_archive_codec,
             self.target_activation_proof_sha256,
         )
-        if self.phase == "awaiting_link":
+        if effective_phase == "awaiting_link":
             if (
                 self.side != "source"
                 or any(value is not None for value in linked_fields)
@@ -1360,30 +1387,29 @@ class ProjectTransferRequestRecord(_StrictProvisioningModel):
             not in self.source_configuration.supported_archive_codecs
         ):
             raise ValueError("accepted transfer codec is not supported by the source")
-        rank = _PROJECT_TRANSFER_PHASE_RANK[self.phase]
-        if self.phase != "operator_action_needed":
-            if rank >= _PROJECT_TRANSFER_PHASE_RANK["target_admitted"]:
-                if self.target_admission_receipt is None:
-                    raise ValueError("admitted transfer state requires its target receipt")
-            elif self.target_admission_receipt is not None:
-                raise ValueError("target admission receipt appears before admission")
-            if rank >= _PROJECT_TRANSFER_PHASE_RANK["source_released"]:
-                if self.source_release_receipt is None:
-                    raise ValueError("released transfer state requires its source receipt")
-            elif self.source_release_receipt is not None:
-                raise ValueError("source release receipt appears before release")
-            if rank >= _PROJECT_TRANSFER_PHASE_RANK["source_fenced"]:
-                if self.side == "source" and self.source_fence_head is None:
-                    raise ValueError("fenced source transfer state requires its canonical head")
-            elif self.source_fence_head is not None:
-                raise ValueError("source fence head appears before the fence")
-            if rank >= _PROJECT_TRANSFER_PHASE_RANK["archive_bound"]:
-                if self.archive_sha256 is None or self.archive_size_bytes is None:
-                    raise ValueError("archive-bound transfer state requires exact archive metadata")
-                if self.source_fence_head is None:
-                    raise ValueError("archive binding requires the exact fenced source head")
-            elif self.archive_sha256 is not None or self.archive_size_bytes is not None:
-                raise ValueError("transfer archive metadata appears before its binding")
+        rank = _PROJECT_TRANSFER_PHASE_RANK[effective_phase]
+        if rank >= _PROJECT_TRANSFER_PHASE_RANK["target_admitted"]:
+            if self.target_admission_receipt is None:
+                raise ValueError("admitted transfer state requires its target receipt")
+        elif self.target_admission_receipt is not None:
+            raise ValueError("target admission receipt appears before admission")
+        if rank >= _PROJECT_TRANSFER_PHASE_RANK["source_released"]:
+            if self.source_release_receipt is None:
+                raise ValueError("released transfer state requires its source receipt")
+        elif self.source_release_receipt is not None:
+            raise ValueError("source release receipt appears before release")
+        if rank >= _PROJECT_TRANSFER_PHASE_RANK["source_fenced"]:
+            if self.side == "source" and self.source_fence_head is None:
+                raise ValueError("fenced source transfer state requires its canonical head")
+        elif self.source_fence_head is not None:
+            raise ValueError("source fence head appears before the fence")
+        if rank >= _PROJECT_TRANSFER_PHASE_RANK["archive_bound"]:
+            if self.archive_sha256 is None or self.archive_size_bytes is None:
+                raise ValueError("archive-bound transfer state requires exact archive metadata")
+            if self.source_fence_head is None:
+                raise ValueError("archive binding requires the exact fenced source head")
+        elif self.archive_sha256 is not None or self.archive_size_bytes is not None:
+            raise ValueError("transfer archive metadata appears before its binding")
         if self.proof_state in {"acknowledged", "consumed"}:
             if self.proof_acknowledgement_sha256 is None:
                 raise ValueError("acknowledged transfer proof requires its receipt digest")

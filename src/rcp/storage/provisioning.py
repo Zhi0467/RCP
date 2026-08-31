@@ -1692,6 +1692,52 @@ class ProjectProvisioningStoreMixin:
                 ),
             )
 
+    def detach_project_transfers_for_restore(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        diagnostic: str,
+        now: str,
+    ) -> None:
+        """Freeze unfinished target transfers at their last committed boundary."""
+
+        if not connection.in_transaction:
+            raise RuntimeError("restore transfer detachment requires one active transaction")
+        normalized = _MESSAGE_TEXT_ADAPTER.validate_python(diagnostic)
+        rows = connection.execute(
+            """
+            SELECT * FROM project_transfer_requests
+            WHERE side = 'target' AND phase != 'completed'
+            ORDER BY request_id
+            """
+        ).fetchall()
+        for row in rows:
+            current = self._project_transfer_request_from_connection(
+                connection,
+                row["request_id"],
+            )
+            if current.phase == "operator_action_needed":
+                if current.restore_diagnostic == normalized:
+                    continue
+                resume_phase = current.restore_resume_phase
+            else:
+                resume_phase = current.phase
+            if resume_phase is None:
+                raise RuntimeError("restored target transfer lost its committed phase")
+            updated = ProjectTransferRequestRecord.model_validate_json(
+                _canonical_json(
+                    {
+                        **current.model_dump(mode="json"),
+                        "phase": "operator_action_needed",
+                        "restore_resume_phase": resume_phase,
+                        "restore_diagnostic": normalized,
+                        "revision": current.revision + 1,
+                        "updated_at": now,
+                    }
+                )
+            )
+            self._replace_project_transfer_record(connection, current, updated)
+
     def create_project_provisioning_request(
         self,
         *,
