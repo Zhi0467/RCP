@@ -9,6 +9,7 @@ import re
 import shlex
 import socket
 import sys
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -453,7 +454,17 @@ def run_server_command(
         )
     try:
         prepared.execute(emitter, resolved_input)
-    except Exception:
+    except Exception as exc:
+        if os.environ.get("RCP_LIVE_SERVER_EXCEPTION_FRAMES") == "1":
+            print(
+                f"RCP live diagnostic type={type(exc).__module__}.{type(exc).__qualname__}",
+                file=sys.stderr,
+            )
+            for frame in traceback.extract_tb(exc.__traceback__)[-12:]:
+                print(
+                    f"RCP live diagnostic frame={frame.filename}:{frame.lineno}:{frame.name}",
+                    file=sys.stderr,
+                )
         emitter.fail_unexpected()
     execution = emitter.finish(failed_exit_code=prepared.failed_exit_code)
     return execution.exit_code

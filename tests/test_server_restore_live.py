@@ -258,7 +258,13 @@ def _run_restore_action(
 def _run_restore_process(
     argv: tuple[str, ...],
 ) -> tuple[int, list[dict[str, object]]]:
-    result = _run(argv, timeout=_COMMAND_TIMEOUT_SECONDS)
+    environment = os.environ.copy()
+    environment["RCP_LIVE_SERVER_EXCEPTION_FRAMES"] = "1"
+    result = _run(
+        argv,
+        environment=environment,
+        timeout=_COMMAND_TIMEOUT_SECONDS,
+    )
     if result.returncode not in {0, 3}:
         pytest.fail(
             f"server restore returned {result.returncode}; stdout tail={result.stdout[-4096:]!r}; "
