@@ -1,6 +1,7 @@
 import { Check, ChevronDown, Copy, Link2, Pencil, UserPlus, UserRound } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { createTeamInvitation, loadTeamInvitations, revokeTeamInvitation } from "../api";
+import { listDesktopTeamConnections, type TeamConnectionMetadata } from "../desktopRuntime";
 import type { IdentityResponse, TeamInvitation, TeamInvitationIssue } from "../types";
 
 interface Props {
@@ -19,6 +20,7 @@ interface IdentityProvenanceSlipProps {
   onEdit: () => void;
   teamPanelActive?: boolean;
   onAddTeamSpace?: () => void;
+  teamSpaces?: TeamConnectionMetadata[];
 }
 
 export async function copyIdentityId(
@@ -40,6 +42,7 @@ export function IdentityProvenanceSlip({
   onEdit,
   teamPanelActive = true,
   onAddTeamSpace,
+  teamSpaces,
 }: IdentityProvenanceSlipProps) {
   const displayName = identity.user.display_name ?? "";
   const spaceLabel = identity.space_kind === "personal" ? "Personal space" : "Team space";
@@ -112,18 +115,29 @@ export function IdentityProvenanceSlip({
       {identity.space_kind === "team" ? (
         <TeamInvitationPanel identity={identity} active={teamPanelActive} />
       ) : (
-        <PersonalTeamSeam noticeId={teamNoticeId} onAddTeamSpace={onAddTeamSpace} />
+        <PersonalTeamSeam
+          noticeId={teamNoticeId}
+          onAddTeamSpace={onAddTeamSpace}
+          teamSpaces={teamSpaces}
+        />
       )}
     </>
   );
 }
 
+/**
+ * The saved team spaces, named. Entering one stays the project index's job —
+ * this roster only has to stop the record from reading as "you have none".
+ * Names come from saved connection metadata, so listing them costs no tunnel.
+ */
 export function PersonalTeamSeam({
   noticeId,
   onAddTeamSpace,
+  teamSpaces = [],
 }: {
   noticeId: string;
   onAddTeamSpace?: () => void;
+  teamSpaces?: TeamConnectionMetadata[];
 }) {
   return (
     <section
@@ -135,6 +149,13 @@ export function PersonalTeamSeam({
         <span id={`${noticeId}-title`}>Team spaces</span>
         <span>Desktop</span>
       </header>
+      {teamSpaces.length > 0 && (
+        <ul className="landing-team-seam-list">
+          {teamSpaces.map((connection) => (
+            <li key={connection.connection_id}>{connection.display_name}</li>
+          ))}
+        </ul>
+      )}
       <div className="landing-team-seam-actions">
         {onAddTeamSpace && (
           <button type="button" onClick={onAddTeamSpace}>
@@ -372,6 +393,7 @@ export function LandingIdentityMenu({
 }: Props) {
   const [open, setOpen] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const [teamSpaces, setTeamSpaces] = useState<TeamConnectionMetadata[]>([]);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelId = useId();
@@ -419,6 +441,23 @@ export function LandingIdentityMenu({
       setCopyStatus("failed");
     }
   };
+
+  useEffect(() => {
+    if (!open || identity?.space_kind !== "personal") return;
+    let stopped = false;
+    void listDesktopTeamConnections()
+      .then((next) => {
+        if (!stopped) setTeamSpaces(next);
+      })
+      .catch(() => {
+        // The roster is a courtesy, not authority. An unreadable registry
+        // leaves the section at its Add action rather than claiming none.
+        if (!stopped) setTeamSpaces([]);
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [open, identity?.space_kind]);
 
   return (
     <div className={`landing-identity-menu${identityError ? " has-error" : ""}`} ref={rootRef}>
@@ -471,6 +510,7 @@ export function LandingIdentityMenu({
             onCopy={() => void copyUserId()}
             onEdit={requestName}
             teamPanelActive={open}
+            teamSpaces={teamSpaces}
             onAddTeamSpace={onAddTeamSpace}
           />
         </section>

@@ -147,18 +147,9 @@ def test_server_status_projects_concrete_read_models_without_mutation(tmp_path) 
         "label": "Provider checks are available",
         "tone": "good",
     }
-    assert [item["command"] for item in payload["operator_commands"]] == [
-        "rcp server install",
-        "rcp server doctor",
-        "rcp server update",
-        "rcp server backup configure",
-        "rcp server backup run",
-        "rcp server restore",
-        "rcp server provider check",
-        "rcp server project provision",
-        "rcp server project transfer-import",
-        "rcp server member remove",
-    ]
+    # Machine operations are console work with CLI help of their own; the
+    # projection reports health and never carries a command catalogue.
+    assert "operator_commands" not in payload
     assert refused.status_code == 405
 
 

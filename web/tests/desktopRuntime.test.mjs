@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { isMutationRequest } from "../src/api.ts";
@@ -616,4 +617,19 @@ test("native transfer reload keeps the complete provisioning action and review p
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;
   }
+});
+
+test("a source build's missing update channel never becomes an on-screen error", async () => {
+  const source = await readFile(
+    new URL("../src/hooks/useDesktopShell.ts", import.meta.url),
+    "utf8",
+  );
+
+  // Nothing in the repository sets RCP_UPDATE_ENDPOINT/RCP_UPDATE_PUBKEY, so
+  // every supported source build reports `enabled: false` forever. Routing that
+  // reason into the error banner puts a permanent alert on every screen.
+  assert.doesNotMatch(source, /setUpdateError\([^)]*reason/);
+  assert.doesNotMatch(source, /enabled === false/);
+  // A check that actually fails still has to reach the human.
+  assert.match(source, /catch \(error\) \{\s*setUpdateError\(/);
 });

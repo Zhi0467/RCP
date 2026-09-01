@@ -2865,15 +2865,18 @@ export default function App() {
   const continueDesktopProjectOpen = () => {
     continueDesktopProjectAccess(commitProjectOpen);
   };
+  // Leaving a project returns to the index of the space you are in. A team
+  // space keeps its own index, so Cmd+T means the same thing in both. Leaving
+  // the space itself is the separate, explicit action below.
   const returnToProjects = () => {
     rememberProjectState(projectId);
-    if (desktop && verifiedHealth?.space_kind === "team") {
-      void returnDesktopToPersonal().catch((error) => {
-        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
-      });
-      return;
-    }
     returnToProjectIndex();
+  };
+
+  const exitTeamSpace = () => {
+    void returnDesktopToPersonal().catch((error) => {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+    });
   };
 
   const answerProjectInvitation = async (invitationId: string, response: "accept" | "decline") => {
@@ -3147,6 +3150,7 @@ export default function App() {
           identity={actorIdentity}
           identityError={actorIdentityError}
           onRequestIdentityName={requestActorName}
+          onExitTeamSpace={desktop ? exitTeamSpace : undefined}
         />
         {notice && (
           <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>

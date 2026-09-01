@@ -36,7 +36,11 @@ export function useDesktopShell(desktop: boolean) {
     try {
       const result = await checkDesktopUpdate();
       setDesktopUpdate(result?.available ? result : null);
-      setUpdateError(result?.enabled === false && result.reason ? result.reason : null);
+      // A source build carries no signed updater endpoint, and everyone builds
+      // from source, so `enabled: false` is the ordinary state of every
+      // supported desktop app rather than a failure worth alerting on. A build
+      // that is genuinely misconfigured fails the check and lands in `catch`.
+      setUpdateError(null);
     } catch (error) {
       setUpdateError(error instanceof Error ? error.message : String(error));
     }

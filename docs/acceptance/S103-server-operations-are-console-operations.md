@@ -46,10 +46,10 @@ last_checked: >-
   root-only private activation, and durable readback pass focused integration
   coverage. Server Settings now has one authenticated GET-only projection over
   the concrete doctor, protected-backup receipt, and completed-restore readers;
-  it exposes backend decisions and fixed command names without an HTTP machine
-  mutation. Its team-page browser drive passed against a disposable live service,
-  including a GET-only manual refresh and a clean console. The broader fresh-host
-  server-operation drive remains pending.
+  it exposes backend decisions without an HTTP machine mutation and without
+  restating the console command catalogue. Its team-page browser drive passed
+  against a disposable live service, including a GET-only manual refresh and a
+  clean console. The broader fresh-host server-operation drive remains pending.
 ---
 
 # Dangerous operations need the machine, not a login
@@ -194,8 +194,11 @@ member running a long task plus active Auto-research and Experiment episodes.
 
 Server Settings shows the last successful backup, latest failure, running and
 upstream Git commits, and whether `origin/main` is ahead — as status, with no Web
-control that changes any of them. Where a member might expect a button, the
-interface names the corresponding `rcp server ...` command.
+control that changes any of them. It does not carry a standing catalogue of the
+`rcp server ...` commands: whoever may run them already holds machine authority
+and reads the CLI's own help there, so a second copy in a member-visible panel
+only drifts. A command still appears where one specific request needs it,
+carrying that request's identifier.
 
 Rotating or safely revoking your own member credential remains an ordinary
 member action. Removing somebody's durable identity and stopping all of their

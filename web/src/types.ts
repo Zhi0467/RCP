@@ -89,19 +89,12 @@ export interface ServerExecutionReadiness {
   provider_command: "rcp server provider check";
 }
 
-export interface ServerOperatorCommand {
-  name: string;
-  command: string;
-  purpose: string;
-}
-
 export interface ServerStatus {
   overall: ServerStatusSummary;
   releases: ServerReleaseStatus;
   backup: ServerBackupStatus;
   restore: ServerRestoreStatus;
   execution: ServerExecutionReadiness;
-  operator_commands: ServerOperatorCommand[];
   problems: string[];
 }
 

@@ -5,7 +5,6 @@ import {
   RefreshCw,
   ServerCog,
   ShieldCheck,
-  Terminal,
   TriangleAlert,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
@@ -244,22 +243,6 @@ export function ServerSettings({ loadStatus = loadServerStatus }: Props) {
               </ul>
             </section>
           ) : null}
-
-          <section className="server-command-ledger" aria-labelledby="server-commands-title">
-            <div className="server-settings-section-title">
-              <Terminal size={15} />
-              <h3 id="server-commands-title">Console operations</h3>
-            </div>
-            <div className="server-command-list">
-              {status.operator_commands.map((item) => (
-                <div className="server-command-row" key={item.command}>
-                  <strong>{item.name}</strong>
-                  <code>{item.command}</code>
-                  <span>{item.purpose}</span>
-                </div>
-              ))}
-            </div>
-          </section>
         </div>
       ) : null}
     </section>

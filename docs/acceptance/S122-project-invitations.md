@@ -117,6 +117,12 @@ name and resolves to the durable user id; duplicate display names are legal. The
 same panel lists who is on
 the project, with no rank, owner, or role beside any name.
 
+Because it can only offer enrolled people, the control has nothing to show in a
+space of one, and says which of the two reasons applies: everyone here is
+already on the project, or nobody else has been enrolled yet and a team
+invitation comes first. A personal space holds one human permanently, so it
+carries no invite control at all rather than a permanently dead one.
+
 **Leaving** is in the same place. When you are the only member it is visibly
 unavailable. The completed team-server target says the project needs another
 member and does not offer ordinary team deletion. This is the one case where

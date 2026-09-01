@@ -43,7 +43,8 @@ whose server can be stopped.
 4. Return to the index and open a project in the reachable team space.
 5. Read the header. Inspect the window's origin, URL, page storage, saved
    connection record, logs, and native command output for the permanent token.
-6. Return to the index and reopen the personal project.
+6. Return to the team space's own index, confirm it names the space, then use
+   **Exit team space** and reopen the personal project.
 7. Stop the second team space's server. Reload the index, then open a personal
    project and start a task.
 8. Attempt to open a project in the stopped space.
@@ -63,6 +64,7 @@ whose server can be stopped.
 - `the_one_secret_entry_is_cleared_and_never_persisted_as_page_state`
 - `opening_a_team_project_navigates_to_that_servers_own_interface`
 - `the_header_states_which_space_is_active`
+- `leaving_a_project_returns_to_its_own_spaces_index_not_the_local_one`
 - `the_permanent_token_exists_only_in_the_operating_system_credential_store`
 - `the_permanent_token_is_absent_from_page_storage_urls_logs_and_command_output`
 - `the_session_is_established_before_navigation_and_is_http_only`
@@ -82,8 +84,9 @@ saved team connection with its name and reachability. Pending project
 invitations appear here as cards ([S122](S122-project-invitations.md)).
 
 Opening a team project reloads the window into that server's interface. The
-project shell's header names the active space. Returning to the index reloads
-back to the local one.
+project shell's header names the active space. Leaving a project returns to that
+space's own index, which names the space and carries the one **Exit team space**
+control; only that control reloads back to the local index.
 
 An unreachable team connection appears as a named, dimmed group with its last
 known cards, not as an error that blocks the page.

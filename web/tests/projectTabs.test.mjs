@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -228,4 +229,20 @@ test("dock exposes current-page navigation and named close controls", () => {
   assert.doesNotMatch(html, /role="tab(list)?"|aria-selected=/);
   assert.match(html, /aria-label="Close Alpha study"/);
   assert.match(html, /aria-label="Close Beta study"/);
+});
+
+test("the index shortcut returns to this space's own index, never out of the space", async () => {
+  const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const returnToProjects = source.slice(
+    source.indexOf("const returnToProjects = () => {"),
+    source.indexOf("const exitTeamSpace = () => {"),
+  );
+
+  // Cmd+T means the same thing in a team space as in a personal one: this
+  // space's project index. Leaving the space is the separate Exit control, so
+  // returning to projects must not reach for the local backend.
+  assert.ok(returnToProjects.length > 0);
+  assert.doesNotMatch(returnToProjects, /returnDesktopToPersonal|space_kind/);
+  assert.match(returnToProjects, /returnToProjectIndex\(\)/);
+  assert.match(source, /const exitTeamSpace = \(\) => \{\s*void returnDesktopToPersonal\(\)/);
 });

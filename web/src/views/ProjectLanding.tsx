@@ -1,4 +1,4 @@
-import { Mail, MoreHorizontal, Server, Trash2, WifiOff } from "lucide-react";
+import { LogOut, Mail, MoreHorizontal, Server, Trash2, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ExperimentBoard } from "../components/ExperimentBoard";
 import { LandingIdentityMenu } from "../components/LandingIdentityMenu";
@@ -31,6 +31,7 @@ interface Props {
   identity: IdentityResponse | null;
   identityError: string | null;
   onRequestIdentityName: () => Promise<boolean> | void;
+  onExitTeamSpace?: () => void;
 }
 
 const COVER_STYLES = ["plain", "dye", "mosaic", "wood", "marble", "diffusion"] as const;
@@ -120,6 +121,7 @@ export function ProjectLanding({
   identity,
   identityError,
   onRequestIdentityName,
+  onExitTeamSpace,
 }: Props) {
   const desktop = isDesktopRuntime();
   const [covers, setCovers] = useState<Record<string, CoverStyle>>(() => readCoverPreferences());
@@ -212,6 +214,20 @@ export function ProjectLanding({
       <main className="landing-main">
         {identity?.space_kind === "personal" && (
           <h1 className="space-group-title">Personal space</h1>
+        )}
+        {identity?.space_kind === "team" && (
+          // This index belongs to the team server. Say so, and put the one way
+          // back to the local index here, so returning to projects can keep
+          // meaning "this space's projects".
+          <div className="space-group-title-row">
+            <h1 className="space-group-title">{identity.space_name || "Team space"}</h1>
+            {onExitTeamSpace && (
+              <button className="team-space-exit" type="button" onClick={onExitTeamSpace}>
+                <LogOut size={13} aria-hidden="true" />
+                Exit team space
+              </button>
+            )}
+          </div>
         )}
         <section className="project-shelf" aria-label="RCP projects">
           {invitations.map((invitation) => (

@@ -193,6 +193,77 @@ test("the personal identity panel opens the desktop Add team space flow", () => 
   assert.doesNotMatch(html, /password|access token|private key/i);
 });
 
+test("the identity record names the team spaces already saved on this desktop", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(IdentityProvenanceSlip, {
+      identity,
+      identityError: null,
+      teamNoticeId: "team-status",
+      copyStatus: "idle",
+      onCopy() {},
+      onEdit() {},
+      onAddTeamSpace() {},
+      teamSpaces: [
+        { connection_id: "11111111-1111-4111-8111-111111111111", display_name: "WTH UCSD" },
+        { connection_id: "22222222-2222-4222-8222-222222222222", display_name: "Causal Systems" },
+      ],
+    }),
+  );
+
+  assert.match(html, /WTH UCSD/);
+  assert.match(html, /Causal Systems/);
+  // Entering a space stays the project index's job; the roster only names them.
+  assert.doesNotMatch(html, /<button[^>]*>[^<]*WTH UCSD/);
+});
+
+test("a desktop with no saved team space still offers only the Add action", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(IdentityProvenanceSlip, {
+      identity,
+      identityError: null,
+      teamNoticeId: "team-status",
+      copyStatus: "idle",
+      onCopy() {},
+      onEdit() {},
+      onAddTeamSpace() {},
+    }),
+  );
+
+  assert.doesNotMatch(html, /landing-team-seam-list/);
+  assert.match(html, /Add team space/);
+});
+
+test("a team index names its space and carries the one way back to the local index", () => {
+  const teamIdentity = {
+    ...identity,
+    space_kind: "team",
+    space_name: "Causal Systems Lab",
+  };
+  let exits = 0;
+  const html = renderToStaticMarkup(
+    React.createElement(ProjectLanding, {
+      ...landingProps(teamIdentity),
+      onExitTeamSpace() {
+        exits += 1;
+      },
+    }),
+  );
+
+  assert.match(html, /Causal Systems Lab/);
+  assert.match(html, /Exit team space/);
+  assert.doesNotMatch(html, /Personal space/);
+  assert.equal(exits, 0);
+});
+
+test("the personal index never offers an exit, because there is no space to leave", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ProjectLanding, { ...landingProps(), onExitTeamSpace() {} }),
+  );
+
+  assert.match(html, /Personal space/);
+  assert.doesNotMatch(html, /Exit team space/);
+});
+
 test("the ordinary browser does not advertise the desktop Add team space action", () => {
   const html = renderToStaticMarkup(React.createElement(ProjectLanding, landingProps()));
 

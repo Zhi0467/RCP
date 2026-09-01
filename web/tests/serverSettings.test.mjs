@@ -49,14 +49,15 @@ test("server status formats exact backend facts without deriving lifecycle state
   assert.notEqual(formatServerTimestamp("2026-08-30T12:00:00Z"), "Not recorded");
 });
 
-test("server settings exposes command names as text and no machine mutation handler", async () => {
+test("server settings reads health only, with no command catalogue or mutation handler", async () => {
   const source = await readFile(
     new URL("../src/components/ServerSettings.tsx", import.meta.url),
     "utf8",
   );
 
-  assert.match(source, /status\.operator_commands\.map/);
-  assert.match(source, /<code>\{item\.command\}<\/code>/);
+  // Console operations are the operator's own CLI work. The panel reads health
+  // and never republishes a catalogue of machine commands.
+  assert.doesNotMatch(source, /operator_commands|Console operations/);
   assert.match(source, /catch \(failure\) \{\s*setStatus\(null\);\s*setError\(/);
   assert.doesNotMatch(source, /method:\s*["'](?:POST|PUT|PATCH|DELETE)/);
   assert.doesNotMatch(source, /runDesktopServerCommand|invokeServerCommand/);

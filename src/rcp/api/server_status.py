@@ -77,74 +77,13 @@ class ServerExecutionReadiness(_StrictModel):
     provider_command: Literal["rcp server provider check"] = "rcp server provider check"
 
 
-class ServerOperatorCommand(_StrictModel):
-    name: str = Field(min_length=1, max_length=80)
-    command: str = Field(min_length=1, max_length=120)
-    purpose: str = Field(min_length=1, max_length=200)
-
-
 class ServerStatusResponse(_StrictModel):
     overall: ServerStatusSummary
     releases: ServerReleaseStatus
     backup: ServerBackupStatus
     restore: ServerRestoreStatus
     execution: ServerExecutionReadiness
-    operator_commands: tuple[ServerOperatorCommand, ...]
     problems: tuple[str, ...]
-
-
-_OPERATOR_COMMANDS = (
-    ServerOperatorCommand(
-        name="Install server",
-        command="rcp server install",
-        purpose="Install the source-built team service and its fixed machine layout.",
-    ),
-    ServerOperatorCommand(
-        name="Inspect server",
-        command="rcp server doctor",
-        purpose="Read source, release, service, backup, and operation health.",
-    ),
-    ServerOperatorCommand(
-        name="Update RCP",
-        command="rcp server update",
-        purpose="Fetch, build, rehearse, and activate GitHub main with rollback protection.",
-    ),
-    ServerOperatorCommand(
-        name="Configure backups",
-        command="rcp server backup configure",
-        purpose="Set the protected destination, age recipient, schedule, and retention.",
-    ),
-    ServerOperatorCommand(
-        name="Run backup",
-        command="rcp server backup run",
-        purpose="Capture, encrypt, read back, and retain one protected archive.",
-    ),
-    ServerOperatorCommand(
-        name="Restore server",
-        command="rcp server restore",
-        purpose="Verify and activate one replacement server from a protected archive.",
-    ),
-    ServerOperatorCommand(
-        name="Check providers",
-        command="rcp server provider check",
-        purpose="Check saved provider profiles on their exact execution accounts.",
-    ),
-    ServerOperatorCommand(
-        name="Provision project",
-        command="rcp server project provision",
-        purpose="Prepare the machines, repositories, Git access, and provider profiles.",
-    ),
-    ServerOperatorCommand(
-        name="Import transferred project",
-        command="rcp server project transfer-import",
-        purpose="Validate and activate one staged personal-to-team project transfer.",
-    ),
-    ServerOperatorCommand(
-        name="Remove member",
-        command="rcp server member remove",
-        purpose="Fence access and gracefully settle one member's active work.",
-    ),
-)
 
 
 @router.get("/api/server-status", response_model=ServerStatusResponse)
@@ -236,7 +175,6 @@ def project_server_status(
             ),
             dependency_versions=report.dependency_versions,
         ),
-        operator_commands=_OPERATOR_COMMANDS,
         problems=report.problems,
     )
 

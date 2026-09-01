@@ -134,7 +134,15 @@ stored member token and establishes the team server's HTTP-only session in the
 WebView before navigating to that server's own application. A changed
 `space_id` blocks mutations until the human explicitly reconnects; an
 unavailable team connection leaves personal work usable and shows its cached
-cards as unavailable. Returning to the local index reloads the local backend.
+cards as unavailable.
+
+Each space serves its own project index, so leaving a project returns to the
+index of the space that project is in, by the same control and shortcut in
+both. Leaving the space is a separate explicit action: the team index names the
+active space and carries the one **Exit team space** control, which reloads the
+local backend. The local index is still the only screen that shows more than
+one space at a time; the identity record names the saved team spaces without
+becoming a second way into them.
 
 For a saved connection, the macOS shell launches `/usr/bin/ssh` directly with
 argument-vector execution, batch authentication, no remote command or terminal,
@@ -413,17 +421,22 @@ projection. It carries backend-owned labels and presentation tones for the
 running/current/managed/upstream release relationship, update readiness, the
 latest backup attempt and latest independently retained protected-archive
 receipt, protected and uncaptured project counts, completed-restore age,
-installed machine-tool readiness, private provider-check availability, and the
-fixed console command names. The browser formats timestamps, byte counts, and
-commit abbreviations only; it does not reconstruct operational state from raw
-status vocabularies. An unsafe concrete doctor, backup-receipt, or restore read
-fails visibly instead of becoming an empty or healthy panel.
+installed machine-tool readiness, and private provider-check availability. The
+browser formats timestamps, byte counts, and commit abbreviations only; it does
+not reconstruct operational state from raw status vocabularies. An unsafe
+concrete doctor, backup-receipt, or restore read fails visibly instead of
+becoming an empty or healthy panel.
 
 That route is GET-only and available only to an authenticated team member. It
 does not configure or run backup, update, restore, Git credential preparation,
-project provisioning, provider login/check, or member removal. The commands are
-text in the Web surface. D6's separately proved desktop operator bridge remains
-the only native launcher and accepts only its fixed project-provision command.
+project provisioning, provider login/check, or member removal. It also does not
+enumerate the console operations that do: an operator holds machine authority
+already and reads `rcp server --help` on the machine, so restating that
+catalogue in a member-visible panel adds a second place for it to drift. A
+command still appears in the Web surface where one specific request needs it,
+carrying that request's own identifier. D6's separately proved desktop operator
+bridge remains the only native launcher and accepts only its fixed
+project-provision command.
 
 ## Causal and relation presentation
 

@@ -213,6 +213,10 @@ still stabilizing. Before publishing one:
 
 Do not create Tauri updater artifacts for an unsigned preview. Automatic updates remain
 disabled until an updater signing key, HTTPS endpoint, and published manifest exist.
+Nothing in the repository sets `RCP_UPDATE_ENDPOINT` or `RCP_UPDATE_PUBKEY`, so every
+build anyone makes today reports `enabled: false`. That is the expected state of a
+source build and the app says nothing about it; only a check that actually fails —
+including a build that set exactly one of the two variables — reaches the screen.
 
 ## Publish a signed macOS release
 

@@ -488,6 +488,20 @@ button:disabled {
   line-height: 1.45;
   margin: 8px 0 11px;
 }
+.landing-team-seam-list {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 9px 0 10px;
+  padding: 0;
+}
+.landing-team-seam-list li {
+  border-left: 2px solid var(--teal);
+  color: var(--landing-ink);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 0 3px 8px;
+}
 .landing-team-seam-actions {
   display: grid;
   gap: 6px;
@@ -696,6 +710,12 @@ button:disabled {
   font-weight: 600;
   margin: 0 0 20px;
 }
+.space-group-title-row {
+  align-items: baseline;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+}
 .team-space-groups {
   border-top: 1px solid var(--landing-rule);
   margin-top: 48px;
@@ -717,6 +737,7 @@ button:disabled {
 }
 .team-space-groups-header button,
 .team-space-group > header button,
+.team-space-exit,
 .team-space-empty {
   align-items: center;
   background: var(--landing-sheet);
@@ -731,6 +752,7 @@ button:disabled {
 }
 .team-space-groups-header button:hover,
 .team-space-group > header button:hover,
+.team-space-exit:hover,
 .team-space-empty:hover {
   border-color: var(--landing-accent);
   color: var(--landing-accent);
@@ -11340,6 +11362,13 @@ button.relation-map-node:hover {
   margin: 0.5rem 0 0;
   font-size: 0.8rem;
 }
+.project-member-note {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  margin: 0.6rem 0 0;
+  padding: 0 20px;
+}
 
 /* O6 — one read-only operational ledger for the shared team server. */
 .server-settings > header {
@@ -11415,7 +11444,6 @@ button.relation-map-node:hover {
   color: var(--ink-soft);
 }
 .server-release-ledger,
-.server-command-ledger,
 .server-problem-ledger,
 .server-status-card {
   background: var(--sheet);
@@ -11457,8 +11485,7 @@ button.relation-map-node:hover {
 }
 .server-release-ledger > code,
 .server-status-card > code,
-.server-status-commands code,
-.server-command-row code {
+.server-status-commands code {
   background: var(--paper);
   border: 1px solid var(--line);
   color: var(--oxblood-dark);
@@ -11518,24 +11545,6 @@ button.relation-map-node:hover {
   margin: 12px 0 0;
   padding-left: 20px;
 }
-.server-command-list {
-  display: grid;
-  margin-top: 12px;
-}
-.server-command-row {
-  align-items: center;
-  border-top: 1px solid var(--line);
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(120px, 0.6fr) minmax(190px, 0.9fr) minmax(0, 1.5fr);
-  padding: 9px 0;
-}
-.server-command-row:first-child {
-  border-top: 0;
-}
-.server-command-row span {
-  color: var(--ink-soft);
-}
 
 @media (max-width: 920px) {
   .server-status-card-grid {
@@ -11556,11 +11565,7 @@ button.relation-map-node:hover {
     grid-row: 2;
   }
   .server-commit-rail,
-  .server-status-card dl,
-  .server-command-row {
+  .server-status-card dl {
     grid-template-columns: 1fr;
-  }
-  .server-command-row {
-    gap: 6px;
   }
 }
