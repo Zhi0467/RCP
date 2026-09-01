@@ -1,4 +1,4 @@
-"""Account-local central-checkout path and retained-state inspection.
+"""Account-local central-checkout path, sealing, and retained-state inspection.
 
 The server sends this module's source through ``python3 -c``. It performs only
 filesystem work on the selected local or SSH account and returns bounded,
@@ -346,6 +346,55 @@ def _git_directory(
     return {"repository_path": str(path), "safe": True}
 
 
+def _seal_git_directory(
+    expected_account: str,
+    expected_home: str,
+    repository_path: str,
+) -> dict[str, object]:
+    """Seal only the Git metadata of a checkout the current request just cloned."""
+
+    account, _home = _account(expected_account, expected_home)
+    path = _absolute_path(repository_path, "repository checkout path")
+    with _opened_absolute_directory(
+        path,
+        uid=account.pw_uid,
+        require_owner=True,
+    ) as repository_descriptor:
+        try:
+            git_descriptor = os.open(".git", _DIRECTORY_FLAGS, dir_fd=repository_descriptor)
+        except OSError as exc:
+            raise ValueError("new central checkout Git directory is unavailable or unsafe") from exc
+        with _Directory(git_descriptor) as opened_git:
+            git_info = os.fstat(opened_git)
+            if not stat.S_ISDIR(git_info.st_mode) or git_info.st_uid != account.pw_uid:
+                raise ValueError("new central checkout Git directory has unsafe ownership or type")
+            try:
+                config_descriptor = os.open(
+                    "config",
+                    os.O_RDONLY | os.O_NOFOLLOW,
+                    dir_fd=opened_git,
+                )
+            except OSError as exc:
+                raise ValueError(
+                    "new central checkout Git config is unavailable or unsafe"
+                ) from exc
+            try:
+                config = os.fstat(config_descriptor)
+                if (
+                    not stat.S_ISREG(config.st_mode)
+                    or config.st_uid != account.pw_uid
+                    or config.st_size > MAX_GIT_CONFIG_BYTES
+                ):
+                    raise ValueError("new central checkout Git config has unsafe ownership or type")
+                os.fchmod(opened_git, DIRECTORY_MODE)
+                os.fchmod(config_descriptor, 0o600)
+                os.fsync(config_descriptor)
+                os.fsync(opened_git)
+            finally:
+                os.close(config_descriptor)
+    return {"repository_path": str(path), "sealed": True}
+
+
 def _recovery_research(
     expected_account: str,
     expected_home: str,
@@ -671,6 +720,8 @@ def main(argv: list[str] | None = None) -> int:
         operation = arguments.pop(0)
         if operation == "prepare" and len(arguments) == 6:
             payload = _prepare(*arguments)
+        elif operation == "seal-git-directory" and len(arguments) == 3:
+            payload = _seal_git_directory(*arguments)
         elif operation == "git-directory" and len(arguments) == 3:
             payload = _git_directory(*arguments)
         elif operation == "retained" and len(arguments) == 3:

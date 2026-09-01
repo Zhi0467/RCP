@@ -170,6 +170,21 @@ class _LocalOriginCheckoutManager(ProjectCheckoutManager):
         return super()._git(machine, material, tuple(mapped))
 
 
+class _InheritedModeCheckoutManager(_LocalOriginCheckoutManager):
+    """Model a host default ACL widening modes after Git creates its metadata."""
+
+    def _clone(
+        self,
+        machine: ProjectProvisioningMachineIntent,
+        material: DeployKeyMaterial,
+        repository_path: str,
+    ) -> None:
+        super()._clone(machine, material, repository_path)
+        git_directory = Path(repository_path) / ".git"
+        git_directory.chmod(0o770)
+        (git_directory / "config").chmod(0o660)
+
+
 def _helper(operation: str, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         (sys.executable, str(HELPER), operation, *arguments),
@@ -452,6 +467,31 @@ def test_manager_clones_with_private_modes_under_operator_umask(tmp_path: Path) 
     git_directory = Path(prepared.repository_path) / ".git"
     assert stat.S_IMODE(git_directory.stat().st_mode) & 0o077 == 0
     assert stat.S_IMODE((git_directory / "config").stat().st_mode) & 0o077 == 0
+
+
+def test_manager_seals_modes_inherited_by_a_new_clone(tmp_path: Path) -> None:
+    origin, commit = _origin(tmp_path)
+    manager, layout, machine, material, runner = _manager(tmp_path, origin)
+    manager = _InheritedModeCheckoutManager(
+        layout,
+        runner=runner,
+        credential_manager=_StaticCredentialManager(),  # type: ignore[arg-type]
+        origin=origin,
+    )
+
+    prepared = manager.prepare(
+        machine,
+        material,
+        request_kind="create_team_project",
+        project_id=PROJECT_ID,
+        repository_alias=ALIAS,
+        state_repository=False,
+        expected_commit=commit,
+    )
+
+    git_directory = Path(prepared.repository_path) / ".git"
+    assert stat.S_IMODE(git_directory.stat().st_mode) == 0o700
+    assert stat.S_IMODE((git_directory / "config").stat().st_mode) == 0o600
 
 
 def test_manager_refuses_wrong_origin_without_rewriting_it(tmp_path: Path) -> None:
@@ -883,6 +923,28 @@ def test_shipped_helper_proves_the_central_git_directory_before_any_git_runs(
         "repository_path": str(repository),
         "safe": True,
     }
+
+
+def test_shipped_helper_seals_owned_new_git_metadata_before_verification(
+    tmp_path: Path,
+) -> None:
+    repository = _checkout_with_git(tmp_path)
+    git = repository / ".git"
+    config = git / "config"
+    git.chmod(0o770)
+    config.chmod(0o660)
+
+    sealed = _helper("seal-git-directory", *_account_arguments(), str(repository))
+    proved = _helper("git-directory", *_account_arguments(), str(repository))
+
+    assert sealed.returncode == 0, sealed.stderr
+    assert json.loads(sealed.stdout) == {
+        "repository_path": str(repository),
+        "sealed": True,
+    }
+    assert proved.returncode == 0, proved.stderr
+    assert stat.S_IMODE(git.stat().st_mode) == 0o700
+    assert stat.S_IMODE(config.stat().st_mode) == 0o600
 
 
 @pytest.mark.parametrize(

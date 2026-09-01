@@ -163,6 +163,11 @@ class ProjectCheckoutManager:
         try:
             if receipt.empty:
                 self._clone(machine, observed_material, receipt.repository_path)
+                self._seal_new_git_directory(
+                    machine,
+                    observed_material,
+                    receipt.repository_path,
+                )
             self._verify_git_directory(
                 machine,
                 observed_material,
@@ -484,6 +489,25 @@ class ProjectCheckoutManager:
             raise ProjectCheckoutRefused(
                 "account_or_path",
                 "The central checkout returned an invalid Git-directory receipt.",
+            )
+
+    def _seal_new_git_directory(
+        self,
+        machine: ProjectProvisioningMachineIntent,
+        material: DeployKeyMaterial,
+        repository_path: str,
+    ) -> None:
+        payload = self._helper(
+            machine,
+            ("seal-git-directory", machine.os_account, material.account_home, repository_path),
+        )
+        if set(payload) != {"repository_path", "sealed"} or payload != {
+            "repository_path": repository_path,
+            "sealed": True,
+        }:
+            raise ProjectCheckoutRefused(
+                "account_or_path",
+                "The new central checkout returned an invalid Git-directory seal receipt.",
             )
 
     def _clone(
