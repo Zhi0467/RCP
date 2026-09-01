@@ -1808,12 +1808,13 @@ def _copy_stable_file(
 def _copy_checkpoint_file(source: Path, destination: Path, *, mode: int) -> None:
     destination.parent.mkdir(mode=_DIRECTORY_MODE, parents=True, exist_ok=True)
     source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    destination_descriptor = os.open(
-        destination,
-        os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
-        mode,
-    )
+    destination_descriptor = -1
     try:
+        destination_descriptor = os.open(
+            destination,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+            mode,
+        )
         while True:
             chunk = os.read(source_descriptor, BACKUP_COPY_BUFFER_BYTES)
             if not chunk:
@@ -1823,7 +1824,8 @@ def _copy_checkpoint_file(source: Path, destination: Path, *, mode: int) -> None
         os.fsync(destination_descriptor)
     finally:
         os.close(source_descriptor)
-        os.close(destination_descriptor)
+        if destination_descriptor >= 0:
+            os.close(destination_descriptor)
     _fsync_directory(destination.parent)
 
 

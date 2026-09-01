@@ -463,40 +463,45 @@ def _copy_regular_file(
     *,
     expected_size: int,
 ) -> TransferArchiveEntry:
-    source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     destination = destination_root.joinpath(*PurePosixPath(archive_path).parts)
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor = os.open(
-        destination,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        0o400,
-    )
-    digest = hashlib.sha256()
-    size = 0
+    source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        source_metadata = os.fstat(source_descriptor)
-        source_path_metadata = source.lstat()
-        if not stat.S_ISREG(source_metadata.st_mode) or source_metadata.st_size != expected_size:
-            raise ValueError("source transfer file is unsafe or changed")
-        if _stat_fingerprint(source_metadata) != _stat_fingerprint(source_path_metadata):
-            raise ValueError("source transfer file is unsafe or changed")
-        while True:
-            chunk = os.read(source_descriptor, PROJECT_TRANSFER_COPY_BUFFER_BYTES)
-            if not chunk:
-                break
-            _write_all(descriptor, chunk)
-            digest.update(chunk)
-            size += len(chunk)
-        os.fchmod(descriptor, 0o400)
-        os.fsync(descriptor)
-        final_source_metadata = os.fstat(source_descriptor)
-        final_source_path_metadata = source.lstat()
-    except BaseException:
-        destination.unlink(missing_ok=True)
-        raise
+        digest = hashlib.sha256()
+        size = 0
+        descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o400,
+        )
+        try:
+            source_metadata = os.fstat(source_descriptor)
+            source_path_metadata = source.lstat()
+            if (
+                not stat.S_ISREG(source_metadata.st_mode)
+                or source_metadata.st_size != expected_size
+            ):
+                raise ValueError("source transfer file is unsafe or changed")
+            if _stat_fingerprint(source_metadata) != _stat_fingerprint(source_path_metadata):
+                raise ValueError("source transfer file is unsafe or changed")
+            while True:
+                chunk = os.read(source_descriptor, PROJECT_TRANSFER_COPY_BUFFER_BYTES)
+                if not chunk:
+                    break
+                _write_all(descriptor, chunk)
+                digest.update(chunk)
+                size += len(chunk)
+            os.fchmod(descriptor, 0o400)
+            os.fsync(descriptor)
+            final_source_metadata = os.fstat(source_descriptor)
+            final_source_path_metadata = source.lstat()
+        except BaseException:
+            destination.unlink(missing_ok=True)
+            raise
+        finally:
+            os.close(descriptor)
     finally:
         os.close(source_descriptor)
-        os.close(descriptor)
     if (
         size != expected_size
         or _stat_fingerprint(source_metadata) != _stat_fingerprint(final_source_metadata)

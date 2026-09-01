@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import rcp.transfer.source as transfer_source_module
 from rcp.core.models import AuthorizedHuman
 from rcp.transfer import (
     TransferArchiveActor,
@@ -29,6 +30,42 @@ TARGET_SPACE_ID = "33333333-3333-4333-8333-333333333333"
 SOURCE_REQUEST_ID = "44444444-4444-4444-8444-444444444444"
 TARGET_REQUEST_ID = "55555555-5555-4555-8555-555555555555"
 SOURCE_USER_ID = "66666666-6666-4666-8666-666666666666"
+
+
+def test_regular_copy_closes_source_without_deleting_existing_destination(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.write_bytes(b"source")
+    destination_root = tmp_path / "destination"
+    destination_root.mkdir()
+    destination = destination_root / "existing"
+    destination.write_bytes(b"keep")
+    closed: list[int] = []
+    calls = 0
+
+    def fake_open(*_args, **_kwargs) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 101
+        raise FileExistsError(destination)
+
+    monkeypatch.setattr(transfer_source_module.os, "open", fake_open)
+    monkeypatch.setattr(transfer_source_module.os, "close", closed.append)
+
+    with pytest.raises(FileExistsError):
+        transfer_source_module._copy_regular_file(
+            source,
+            destination_root,
+            "existing",
+            "operational_records",
+            expected_size=len(b"source"),
+        )
+
+    assert closed == [101]
+    assert destination.read_bytes() == b"keep"
 
 
 def _entry(path: str, group: str, payload: bytes) -> TransferArchiveEntry:

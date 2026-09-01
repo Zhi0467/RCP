@@ -178,13 +178,6 @@ class ExperimentStoreMixin:
                         auto_research_route,
                         admission_id=auto_research_admission_id,
                     )
-                    self._claim_auto_research_experiment_allowance(
-                        connection,
-                        auto_research_episode_id=auto_research_route.auto_research_episode_id,
-                        child_episode_id=episode.episode_id,
-                        operation_id=record.operation_id,
-                        created_at=record.created_at,
-                    )
                 self._insert_episode(connection, started)
                 connection.execute(
                     """
@@ -194,6 +187,14 @@ class ExperimentStoreMixin:
                     (episode.episode_id, episode.created_at, record.created_at),
                 )
                 self._insert_agent_task(connection, record, continuation_cause="fresh")
+                if auto_research_route is not None:
+                    self._claim_auto_research_experiment_allowance(
+                        connection,
+                        auto_research_episode_id=auto_research_route.auto_research_episode_id,
+                        child_episode_id=episode.episode_id,
+                        operation_id=record.operation_id,
+                        created_at=record.created_at,
+                    )
                 connection.execute(
                     """
                     INSERT INTO episode_invocations (
@@ -289,6 +290,7 @@ class ExperimentStoreMixin:
                     raise ValueError(
                         "the Experiment watcher wake does not match its Auto-research route"
                     )
+                self._insert_agent_task(connection, record, continuation_cause="watcher_wake")
                 if routed_parent_id is not None:
                     self._claim_auto_research_experiment_allowance(
                         connection,
@@ -297,7 +299,6 @@ class ExperimentStoreMixin:
                         operation_id=record.operation_id,
                         created_at=record.created_at,
                     )
-                self._insert_agent_task(connection, record, continuation_cause="watcher_wake")
                 connection.execute(
                     """
                     INSERT INTO episode_invocations (

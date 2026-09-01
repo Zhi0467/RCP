@@ -152,6 +152,7 @@ class AppStoreBase:
             connection = sqlite3.connect(uri, timeout=30.0, uri=True)
         else:
             connection = sqlite3.connect(self.path, timeout=30.0)
+        connection.execute("PRAGMA foreign_keys = ON")
         connection.row_factory = sqlite3.Row
         try:
             yield connection
@@ -183,8 +184,10 @@ class AppStoreBase:
 
         flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(destination, flags, 0o600)
-        created = os.fstat(descriptor)
-        os.close(descriptor)
+        try:
+            created = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
         try:
             target = sqlite3.connect(destination, timeout=30.0)
             try:

@@ -9,6 +9,7 @@ from contextlib import contextmanager
 
 import pytest
 
+import rcp.storage.base as storage_base_module
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, AuthorizedHuman
 from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
@@ -1038,6 +1039,7 @@ def test_brief_database_write_contention_waits_then_succeeds(tmp_path) -> None:
 
     with store.connection() as connection:
         assert connection.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         with sqlite3.connect(store.path) as blocker:
@@ -1051,6 +1053,29 @@ def test_brief_database_write_contention_waits_then_succeeds(tmp_path) -> None:
         future.result(timeout=5)
 
     assert store.agent_task("operation-a") is not None
+
+
+def test_online_snapshot_closes_new_file_if_identity_read_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    snapshot_root = tmp_path / "snapshot"
+    snapshot_root.mkdir(mode=0o700)
+    closed: list[int] = []
+
+    monkeypatch.setattr(storage_base_module.os, "open", lambda *_args, **_kwargs: 101)
+    monkeypatch.setattr(
+        storage_base_module.os,
+        "fstat",
+        lambda _descriptor: (_ for _ in ()).throw(OSError("injected fstat failure")),
+    )
+    monkeypatch.setattr(storage_base_module.os, "close", closed.append)
+
+    with pytest.raises(OSError, match="injected fstat failure"):
+        store.online_snapshot(snapshot_root / "snapshot.sqlite3")
+
+    assert closed == [101]
 
 
 def test_experiment_runtime_batch_matches_scalar_for_active_stopped_and_empty(

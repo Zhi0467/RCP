@@ -2020,11 +2020,19 @@ def _migrate_campaign_wrapup(
         else output_name
     )
     allocation_operation_id = str(report["operation_id"]) if report is not None else None
+    concluding_operation_id = campaign["root_operation_id"]
+    if concluding_operation_id is not None:
+        concluding_task = connection.execute(
+            "SELECT 1 FROM graph_runs WHERE operation_id = ?",
+            (concluding_operation_id,),
+        ).fetchone()
+        if concluding_task is None:
+            concluding_operation_id = None
     wrapup = EpisodeWrapupRecord(
         episode_id=campaign_id,
         ending=ending,
         partial=ending != "completed",
-        concluding_operation_id=campaign["root_operation_id"],
+        concluding_operation_id=concluding_operation_id,
         allocation_operation_id=allocation_operation_id,
         provider=request.get("provider") if isinstance(request.get("provider"), str) else None,
         run_on=request.get("run_on") if isinstance(request.get("run_on"), str) else None,

@@ -1468,8 +1468,20 @@ class LinuxInstallMachine:
             capture_output=True,
             error="Creating the dedicated source key failed. Inspect the credential path and rerun.",
         )
-        os.chmod(private, _PRIVATE_KEY_MODE)
-        os.chmod(public, _PUBLIC_KEY_MODE)
+        _set_owned_file_mode_no_follow(
+            private,
+            uid=self._service_uid_value,
+            gid=self._service_gid_value,
+            mode=_PRIVATE_KEY_MODE,
+            label="source private key",
+        )
+        _set_owned_file_mode_no_follow(
+            public,
+            uid=self._service_uid_value,
+            gid=self._service_gid_value,
+            mode=_PUBLIC_KEY_MODE,
+            label="source public key",
+        )
 
     def _validate_source_key_pair(
         self,
@@ -1890,6 +1902,28 @@ def _require_owned_file(
     info = path.stat()
     if (info.st_uid, info.st_gid) != (uid, gid) or stat.S_IMODE(info.st_mode) != mode:
         raise InstallRefused(f"The {label} has unexpected ownership or mode.")
+
+
+def _set_owned_file_mode_no_follow(
+    path: Path,
+    *,
+    uid: int,
+    gid: int,
+    mode: int,
+    label: str,
+) -> None:
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or (info.st_uid, info.st_gid) != (uid, gid):
+            raise InstallRefused(f"The {label} has unexpected type or ownership.")
+        os.fchmod(descriptor, mode)
+    except OSError as exc:
+        raise InstallRefused(f"The {label} could not be secured without following links.") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def _reject_symlink_ancestry(path: Path) -> None:

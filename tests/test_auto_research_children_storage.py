@@ -1061,7 +1061,7 @@ def test_stopped_child_experiment_terminalizes_route_and_notifies_parent(tmp_pat
 def test_lifecycle_notice_dedup_harvest_clear_and_delivery_are_durable(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
-    parent, _ = _auto_parent(store)
+    parent, root = _auto_parent(store)
     now = store.now()
     first = AutoResearchLifecycleNoticeRecord(
         notice_id="notice-one",
@@ -1084,7 +1084,7 @@ def test_lifecycle_notice_dedup_harvest_clear_and_delivery_are_durable(tmp_path)
 
     delivered = store.claim_auto_research_lifecycle_notices(
         parent.episode_id,
-        "wake-operation",
+        root.operation_id,
     )
     assert [notice.state for notice in delivered] == ["delivered"]
     assert store.pending_auto_research_lifecycle_notices(parent.episode_id) == []
@@ -1147,7 +1147,7 @@ def test_keyed_inbox_receipt_replays_empty_snapshot_without_clearing_later_notic
 ) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
-    parent, _ = _auto_parent(store)
+    parent, root = _auto_parent(store)
 
     already_delivered = store.record_auto_research_lifecycle_notice(
         AutoResearchLifecycleNoticeRecord(
@@ -1162,7 +1162,7 @@ def test_keyed_inbox_receipt_replays_empty_snapshot_without_clearing_later_notic
     )
     claimed = store.claim_auto_research_lifecycle_notices(
         parent.episode_id,
-        "lifecycle-wake",
+        root.operation_id,
     )
     assert [notice.notice_id for notice in claimed] == [already_delivered.notice_id]
 

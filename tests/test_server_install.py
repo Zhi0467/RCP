@@ -551,6 +551,34 @@ def test_existing_source_key_must_match_recorded_public_key(monkeypatch, tmp_pat
         machine._validate_source_key_pair(config, private, public)
 
 
+def test_source_key_creation_refuses_a_symlink_swap_before_root_mode_change(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    layout = _temporary_layout(tmp_path)
+    layout.credentials_root.mkdir(parents=True)
+    private = layout.credentials_root / "source_ed25519"
+    public = layout.credentials_root / "source_ed25519.pub"
+    victim = tmp_path / "root-owned-shape"
+    victim.write_text("protected", encoding="utf-8")
+    victim.chmod(0o600)
+    machine = server_install.LinuxInstallMachine(layout)
+    machine._service_uid = os.getuid()
+    machine._service_gid = os.getgid()
+
+    def swap_key_entries(*_args, **_kwargs):
+        private.symlink_to(victim)
+        public.write_text("public", encoding="utf-8")
+        return subprocess.CompletedProcess(("ssh-keygen",), 0, "", "")
+
+    monkeypatch.setattr(machine, "_run_as_service", swap_key_entries)
+
+    with pytest.raises(InstallRefused, match="without following links"):
+        machine._create_source_key_pair(private, public, label="rcp-source:test")
+
+    assert victim.stat().st_mode & 0o777 == 0o600
+
+
 def test_data_state_refuses_unknown_content_without_opening_sqlite(tmp_path: Path) -> None:
     layout = _temporary_layout(tmp_path)
     layout.data_dir.mkdir(parents=True)

@@ -70,6 +70,32 @@ CANDIDATE_COMMIT = "b" * 40
 WEB_BUILD_ID = "sha256:" + ("c" * 64)
 
 
+def test_checkpoint_copy_closes_source_when_destination_open_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.write_bytes(b"source")
+    destination = tmp_path / "checkpoint" / "copy"
+    closed: list[int] = []
+    calls = 0
+
+    def fake_open(*_args, **_kwargs) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 101
+        raise FileExistsError(destination)
+
+    monkeypatch.setattr(update_checkpoint_module.os, "open", fake_open)
+    monkeypatch.setattr(update_checkpoint_module.os, "close", closed.append)
+
+    with pytest.raises(FileExistsError):
+        update_checkpoint_module._copy_checkpoint_file(source, destination, mode=0o400)
+
+    assert closed == [101]
+
+
 def _metadata(data_dir: Path) -> ServerMetadata:
     return ServerMetadata.create(
         data_dir,

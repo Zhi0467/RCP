@@ -1217,7 +1217,9 @@ def test_campaign_migration_does_not_promote_a_legacy_stop_report(tmp_path) -> N
     assert episode.status == "stopped"
     assert episode.ending == "stopped"
     assert episode.wrapup_state == "skipped"
-    assert migrated.episode_wrapup("stopped-campaign").state == "skipped"
+    wrapup = migrated.episode_wrapup("stopped-campaign")
+    assert wrapup.state == "skipped"
+    assert wrapup.concluding_operation_id is None
     assert migrated.episode_report("stopped-campaign") is None
     assert migrated.agent_task("stop-report-task").visible is False
 
@@ -1519,6 +1521,15 @@ def _downgrade_wrapups_to_not_null(path, *, episode_id: str) -> None:
     """
 
     connection = sqlite3.connect(path)
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO episodes (
+            episode_id, project_id, mode, status, invocation_ceiling,
+            created_at, updated_at
+        ) VALUES (?, 'project', 'experiment_loop', 'failed', 1, 'then', 'then')
+        """,
+        (episode_id,),
+    )
     connection.execute("DROP TABLE episode_wrapups")
     connection.execute(_LEGACY_WRAPUPS_NOT_NULL_DDL)
     connection.execute(
@@ -1584,6 +1595,16 @@ def test_the_migrated_column_accepts_a_wrapup_that_has_no_ending(tmp_path) -> No
     store = AppStore(path)
 
     with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO episodes (
+                episode_id, project_id, mode, status, invocation_ceiling,
+                created_at, updated_at
+            ) VALUES (
+                'unclassifiable', 'project', 'experiment_loop', 'failed', 1, 'now', 'now'
+            )
+            """
+        )
         connection.execute(
             """
             INSERT INTO episode_wrapups (
