@@ -14,6 +14,7 @@ from typing import Literal
 import pytest
 
 import rcp.server_ops.restore as restore_code
+from rcp.__main__ import instance_lock
 from rcp.config import AGENT_EXECUTION_PROFILES, permissions_for
 from rcp.core.transition_models import GraphHeadRef
 from rcp.projects import rebind_restored_project_registration
@@ -227,6 +228,9 @@ def _journal(
     )
     capture = _capture(store=store, layout=layout, location=location)
     sqlite_path = layout.data_dir / "rcp.sqlite3"
+    sqlite_path.chmod(0o600)
+    with instance_lock(layout.data_dir, timeout=0.0):
+        pass
     sqlite_sha256 = hashlib.sha256(sqlite_path.read_bytes()).hexdigest()
     sqlite_entry = BackupFileEntry(
         archive_path="database/rcp.sqlite3",
@@ -418,6 +422,8 @@ def test_restore_recovers_and_rebinds_local_or_ssh_checkout(
     assert stored is not None
     assert stored.reachable is False
     assert stored.error == "Replacement restore publication is pending."
+    assert machine.install_sqlite_candidate(completed) == completed
+    assert machine.verify_offline_candidate(completed) == completed
     if location == "local":
         assert stored.locator.endswith("/.research/manifest.toml")
         assert not Path(stored.locator).exists()

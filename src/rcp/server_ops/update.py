@@ -1834,7 +1834,8 @@ class LinuxUpdateMachine:
             ).run(built, preflight)
         except (InstalledServiceControlRefused, ServerControlError, UpdateCutoverRefused) as exc:
             raise UpdateRefused(
-                str(exc) or "The server update failed at its safe boundary."
+                str(exc) or "The server update failed at its safe boundary.",
+                fields=_caused_update_fields(exc),
             ) from exc
 
     def _enter_update_maintenance(self, *, operation_id: str, receipt_sha256: str):
@@ -1944,7 +1945,7 @@ class LinuxUpdateMachine:
         base_commit: str,
     ) -> None:
         current_python = self.layout.release_dir(base_commit) / ".venv" / "bin" / "python"
-        completed = self._run_service_checked(
+        completed = self._run_service(
             (
                 str(current_python),
                 "-m",
@@ -1956,11 +1957,17 @@ class LinuxUpdateMachine:
             cwd=self.layout.release_dir(base_commit),
             environment={"PYTHONDONTWRITEBYTECODE": "1"},
             timeout=SERVER_UPDATE_CHECKPOINT_TIMEOUT_SECONDS,
-            error=(
-                "The rollback checkpoint could not be restored. RCP kept the service stopped "
-                "and retained the exact journal for re-entry."
-            ),
+            capture_output=True,
         )
+        if completed.returncode != 0:
+            diagnostic = " ".join(redact_server_text(completed.stderr).split())[:2048]
+            if not diagnostic:
+                diagnostic = "rollback worker exited without a diagnostic"
+            raise UpdateRefused(
+                "The rollback checkpoint could not be restored. RCP kept the service stopped "
+                "and retained the exact journal for re-entry.",
+                fields=(NonsecretField(name="diagnostic", value=diagnostic),),
+            )
         if completed.stdout.splitlines() != ["complete"]:
             raise UpdateRefused(
                 "The rollback worker did not report one complete replacement journal."
@@ -2140,7 +2147,8 @@ class LinuxUpdateMachine:
                 self._system_service.stop()
             raise UpdateRefused(
                 "Unfinished source update recovery failed. RCP kept the service stopped; rerun "
-                "the same command after inspecting doctor and the durable receipt."
+                "the same command after inspecting doctor and the durable receipt.",
+                fields=_caused_update_fields(exc),
             ) from exc
         raise UpdateRefused(
             f"Recovered unfinished source update as {recovered.state}. Rerun sudo rcp server "
@@ -2521,6 +2529,19 @@ class LinuxUpdateMachine:
                 os.close(descriptor)
             temporary.unlink(missing_ok=True)
         return self._read_receipt(path)
+
+
+def _caused_update_fields(exc: BaseException) -> tuple[NonsecretField, ...]:
+    """Preserve bounded operator diagnostics across cutover wrapper layers."""
+
+    current: BaseException | None = exc
+    for _depth in range(8):
+        if current is None:
+            break
+        if isinstance(current, UpdateRefused) and current.fields:
+            return current.fields
+        current = current.__cause__
+    return ()
 
 
 @dataclass(frozen=True)

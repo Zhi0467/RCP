@@ -94,15 +94,23 @@ def test_cli_previews_exact_boundary_before_confirmation(tmp_path) -> None:
     final = _execute(prepared)
 
     assert final.state == "operator_action_needed"
-    assert final.resume_argv[:5] == (
+    assert final.resume_argv[:7] == (
+        "sudo",
+        "-n",
+        "-u",
         "rcp",
+        "-H",
+        "/usr/local/bin/rcp",
         "server",
+    )
+    assert final.resume_argv[7:10] == (
         "member",
         "remove",
         bob.user_id,
     )
     assert final.resume_argv[-2] == "--confirm-boundary"
     assert final.resume_argv[-1] == coordinator.plan(bob.user_id).snapshot.boundary_sha256
+    assert final.actions[0].argv[:2] == ("/usr/local/bin/rcp", "server")
     assert control.advances == 0
     assert store.space_user(bob.user_id).removal_started_at is None
     # The console names the state it is about to change, so each state is pinned.
@@ -242,6 +250,15 @@ def test_live_task_settles_before_member_tombstone_completes(tmp_path) -> None:
     first = coordinator.advance(bob.user_id, boundary_sha256=boundary)
 
     assert first.step.state == "operator_action_needed"
+    assert first.step.resume_argv[:6] == (
+        "sudo",
+        "-n",
+        "-u",
+        "rcp",
+        "-H",
+        "/usr/local/bin/rcp",
+    )
+    assert first.step.actions[0].argv[0] == "/usr/local/bin/rcp"
     assert background.paused == [operation_id]
     assert store.agent_task(operation_id).status == "pausing"
     assert store.space_user(bob.user_id).removal_started_at is not None

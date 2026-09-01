@@ -1179,6 +1179,42 @@ def _prepare_owned_roots(layout: ServerLayout) -> None:
     os.chmod(layout.config_path.parent, 0o750)
 
 
+@pytest.mark.parametrize(
+    ("stderr", "expected"),
+    [
+        ("token=ghp_abcdefghijklmnop " + ("detail " * 500), "[REDACTED]"),
+        ("", "rollback worker exited without a diagnostic"),
+    ],
+)
+def test_rollback_worker_failure_surfaces_one_redacted_bounded_diagnostic(
+    tmp_path: Path,
+    stderr: str,
+    expected: str,
+) -> None:
+    layout = _layout(tmp_path)
+    machine = LinuxUpdateMachine(
+        layout,
+        service_runner=lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv,
+            1,
+            "",
+            stderr,
+        ),
+        service_identity=(os.getuid(), os.getgid()),
+        root_identity=(os.getuid(), os.getgid()),
+    )
+
+    with pytest.raises(UpdateRefused) as caught:
+        machine._restore_cutover_checkpoint(tmp_path / "checkpoint.json", "a" * 64, BASE)
+
+    assert caught.value.fields[0].name == "diagnostic"
+    diagnostic = caught.value.fields[0].value
+    assert isinstance(diagnostic, str)
+    assert expected in diagnostic
+    assert "ghp_abcdefghijklmnop" not in diagnostic
+    assert len(diagnostic) <= 2048
+
+
 def _run(argv: tuple[str, ...]) -> None:
     subprocess.run(argv, check=True, capture_output=True, text=True)
 

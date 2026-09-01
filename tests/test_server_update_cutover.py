@@ -316,6 +316,74 @@ def test_pre_switch_failure_reopens_old_process_without_switching(tmp_path: Path
     assert actions.calls[-2:] == [f"control:{BASE}", "abort:maintenance_closed"]
 
 
+def test_pointer_failure_before_replace_reopens_only_the_old_release(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    built, preflight = _candidate_inputs(layout)
+    actions = _CutoverActions(layout, switch_failure="before_replace")
+
+    with pytest.raises(UpdateCutoverRefused, match="before replace"):
+        UpdateCutoverCoordinator(
+            layout=layout,
+            actions=actions,
+            expected_uid=os.geteuid(),
+            expected_gid=os.getegid(),
+        ).run(built, preflight)
+
+    _path, receipt, _digest = next(
+        item for item in _all_receipts(layout) if item[1].candidate_commit == CANDIDATE
+    )
+    assert receipt.state == "aborted_before_switch"
+    assert actions.current == BASE
+    assert actions.calls[-2:] == [f"control:{BASE}", "abort:checkpoint_ready"]
+
+
+@pytest.mark.parametrize("failure", ["after_fsync", "after_readback"])
+def test_pointer_failure_after_replace_rolls_back_the_observed_candidate(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    layout = _layout(tmp_path)
+    built, preflight = _candidate_inputs(layout)
+    actions = _CutoverActions(layout, switch_failure=failure)
+
+    outcome = UpdateCutoverCoordinator(
+        layout=layout,
+        actions=actions,
+        expected_uid=os.geteuid(),
+        expected_gid=os.getegid(),
+    ).run(built, preflight)
+
+    assert outcome.operation_state == "rolled_back"
+    assert outcome.running_commit == BASE
+    assert failure in (outcome.failure or "")
+    assert "restore" in actions.calls
+    assert f"switch:{CANDIDATE}->{BASE}" in actions.calls
+
+
+def test_pointer_failure_with_unexpected_target_never_starts_or_restores_it(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    built, preflight = _candidate_inputs(layout)
+    actions = _CutoverActions(layout, switch_failure="unexpected")
+
+    with pytest.raises(UpdateCutoverRefused, match="unexpected release"):
+        UpdateCutoverCoordinator(
+            layout=layout,
+            actions=actions,
+            expected_uid=os.geteuid(),
+            expected_gid=os.getegid(),
+        ).run(built, preflight)
+
+    _path, receipt, _digest = next(
+        item for item in _all_receipts(layout) if item[1].candidate_commit == CANDIDATE
+    )
+    assert receipt.state == "repair_required"
+    assert actions.current == "c" * 40
+    assert "restore" not in actions.calls
+    assert "start" not in actions.calls
+
+
 def test_deferred_startup_failure_restarts_the_committed_candidate_normally(
     tmp_path: Path,
 ) -> None:
@@ -791,6 +859,7 @@ class _CutoverActions:
         fail_release: bool = False,
         fail_repair: bool = False,
         fail_old_release: bool = False,
+        switch_failure: str | None = None,
     ) -> None:
         self.layout = layout
         self.fail_candidate = fail_candidate
@@ -798,6 +867,7 @@ class _CutoverActions:
         self.fail_release = fail_release
         self.fail_repair = fail_repair
         self.fail_old_release = fail_old_release
+        self.switch_failure = switch_failure
         self.calls: list[str] = []
         self.current = BASE
 
@@ -872,6 +942,15 @@ class _CutoverActions:
     def switch_current(self, *, expected: Path, target: Path) -> None:
         assert expected.name == self.current
         self.calls.append(f"switch:{expected.name}->{target.name}")
+        if expected.name == BASE and target.name == CANDIDATE:
+            if self.switch_failure == "before_replace":
+                raise RuntimeError("pointer replacement failed before replace")
+            if self.switch_failure in {"after_fsync", "after_readback"}:
+                self.current = target.name
+                raise RuntimeError(f"pointer verification failed {self.switch_failure}")
+            if self.switch_failure == "unexpected":
+                self.current = "c" * 40
+                raise RuntimeError("pointer changed to an unexpected release")
         self.current = target.name
 
     def start_service(self) -> int:

@@ -4,8 +4,9 @@ Date: 2026-09-01
 Status: active. A read-only audit of `src/rcp`, `web/src`, `tests/`, and `docs/`
 on 2026-09-01 produced the findings below. Every finding was verified by reading
 the code; the few that could only be reasoned about are marked *plausible*. Plan
-step 1 is implemented and verified on the remediation branch: H4, H5, H6, H8,
-H9, and M21 are closed with focused regressions. Steps 2 through 8 remain. The
+steps 1 and 2 are implemented and verified on the remediation branch: H2 through
+H6, H8, H9, and M15 through M21 are closed with focused regressions. Steps 3
+through 8 remain. The
 human confirmed the list and asked for the remediation to land on a dedicated
 branch and pull request; implementation continues in that same PR.
 
@@ -450,7 +451,8 @@ finding has a focused regression test and the checks in the closure condition
 pass for the touched area.
 
 1. **Authority and fences — completed 2026-09-01.** H4, H5, H6, H8, H9, M21.
-2. **Recovery paths.** H2, H3, M15, M16, M17, M18, M19, M20.
+2. **Recovery paths — completed 2026-09-01.** H2, H3, M15, M16, M17, M18,
+   M19, M20.
 3. **Transition id.** H1, M27, M28, and the `_replay_branch_tail` duplication.
 4. **Event loop and transport.** M1, M2, M3, M4, M5, M6, M7, M8, H10.
 5. **Storage lifecycle.** M9, M10, M11, M12, M13, M14, M22, M23, M24, M25, M26.

@@ -911,6 +911,58 @@ class LinuxInstallMachine:
                 public_key=public_key,
             )
 
+        private_exists = private_path.exists() or private_path.is_symlink()
+        public_exists = public_path.exists() or public_path.is_symlink()
+        if private_exists or public_exists:
+            if not private_exists or not public_exists:
+                raise InstallRefused(
+                    "An interrupted source-key creation left only one key half. Preserve and "
+                    "inspect both credential paths; install will not replace either side."
+                )
+            _require_owned_file(
+                private_path,
+                uid=self._service_uid_value,
+                gid=self._service_gid_value,
+                mode=_PRIVATE_KEY_MODE,
+                label="source private key",
+            )
+            _require_owned_file(
+                public_path,
+                uid=self._service_uid_value,
+                gid=self._service_gid_value,
+                mode=_PUBLIC_KEY_MODE,
+                label="source public key",
+            )
+            public_key, fingerprint = _read_public_key(public_path)
+            installation_id = _source_key_installation_id(public_key)
+            config = create_installed_server_config(
+                installation_id=installation_id,
+                source=ServerSourceConfig(
+                    origin=repository.ssh_origin,
+                    authentication="deploy_key",
+                    public_key_fingerprint=fingerprint,
+                ),
+            )
+            validated_public_key = self._validate_source_key_pair(
+                config,
+                private_path,
+                public_path,
+            )
+            probe = self._probe_source(repository.ssh_origin, source=config.source)
+            if probe == "unavailable":
+                raise InstallRefused(
+                    "GitHub source access is unreachable from the rcp account. Restore DNS and "
+                    "network access, then rerun without changing the recovered key."
+                )
+            write_installed_server_config(config, self.layout.config_path)
+            return SourceAccess(
+                config=config,
+                repository=repository,
+                grant_needed=probe != "ready",
+                deploy_key_label=f"rcp-source:{installation_id}",
+                public_key=validated_public_key,
+            )
+
         public_probe = self._probe_source(repository.https_origin, source=None)
         if public_probe == "ready":
             config = create_installed_server_config(
@@ -1504,6 +1556,12 @@ class LinuxInstallMachine:
             label="source public key",
         )
         public_key, fingerprint = _read_public_key(public)
+        installation_id = _source_key_installation_id(public_key)
+        if installation_id != config.installation_id:
+            raise InstallRefused(
+                "The source public-key label differs from the installed configuration. Install "
+                "will not replace either side."
+            )
         if fingerprint != config.source.public_key_fingerprint:
             raise InstallRefused(
                 "The source public key fingerprint differs from the installed configuration. "
@@ -1949,6 +2007,22 @@ def _read_public_key(path: Path) -> tuple[str, str]:
     if _OPENSSH_FINGERPRINT.fullmatch(fingerprint) is None:
         raise InstallRefused("The source public-key fingerprint is not canonical.")
     return public_key, fingerprint
+
+
+def _source_key_installation_id(public_key: str) -> str:
+    parts = public_key.split()
+    if len(parts) != 3 or not parts[2].startswith("rcp-source:"):
+        raise InstallRefused(
+            "The source public key does not carry one exact RCP installation label."
+        )
+    installation_id = parts[2].removeprefix("rcp-source:")
+    try:
+        parsed = uuid.UUID(installation_id)
+    except ValueError as exc:
+        raise InstallRefused("The source public-key label has an invalid installation id.") from exc
+    if parsed.version != 4 or str(parsed) != installation_id:
+        raise InstallRefused("The source public-key label has an invalid installation id.")
+    return installation_id
 
 
 def _wrapper_text(layout: ServerLayout) -> str:

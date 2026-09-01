@@ -83,7 +83,11 @@ def prepare_member_remove_command(
             )
             return
         if snapshot.removal_started_at is None and request.member_confirmed_boundary is None:
-            resume = _resume_argv(snapshot.member_id, snapshot.boundary_sha256)
+            direct, resume = _resume_routes(
+                snapshot.member_id,
+                boundary_sha256=snapshot.boundary_sha256,
+                layout=layout,
+            )
             emitter.emit_step(
                 pending.model_copy(
                     update={
@@ -93,7 +97,10 @@ def prepare_member_remove_command(
                             "Review the exact inventory above, then run the displayed command "
                             "to confirm this member-removal boundary."
                         ),
-                        "actions": (CommandAction(argv=resume),),
+                        "actions": (
+                            CommandAction(argv=direct),
+                            CommandAction(argv=resume),
+                        ),
                         "resume_argv": resume,
                     }
                 )
@@ -143,6 +150,8 @@ class MemberRemovalCoordinator:
         store: AppStore,
         background: BackgroundAgentTasks,
         metadata: ServerMetadata,
+        *,
+        layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
     ) -> None:
         if store.space_kind != "team":
             raise ValueError("member removal requires a team space")
@@ -155,6 +164,7 @@ class MemberRemovalCoordinator:
         self.store = store
         self.background = background
         self.metadata = metadata
+        self.layout = layout
 
     def plan(self, member_id: str) -> ServerControlMemberPlanResult:
         snapshot = self._snapshot(self.store.member_removal_preview(member_id))
@@ -287,7 +297,7 @@ class MemberRemovalCoordinator:
                     "message": "Member removal completed; historical attribution remains.",
                 }
             )
-        resume = ("rcp", "server", "member", "remove", snapshot.member_id)
+        direct, resume = _resume_routes(snapshot.member_id, layout=self.layout)
         diagnostic = f" Stop attempts reported {len(errors)} bounded error(s)." if errors else ""
         return pending.model_copy(
             update={
@@ -297,7 +307,10 @@ class MemberRemovalCoordinator:
                     "Access is fenced. The exact tasks or episodes shown above are still "
                     f"settling.{diagnostic} Rerun the command to reconcile and read back."
                 ),
-                "actions": (CommandAction(argv=resume),),
+                "actions": (
+                    CommandAction(argv=direct),
+                    CommandAction(argv=resume),
+                ),
                 "resume_argv": resume,
             }
         )
@@ -363,16 +376,25 @@ def _inventory(values: tuple[str, ...]) -> str:
     return json.dumps(values, ensure_ascii=False, separators=(",", ":")) if values else "none"
 
 
-def _resume_argv(member_id: str, boundary_sha256: str) -> tuple[str, ...]:
-    return (
-        "rcp",
-        "server",
-        "member",
-        "remove",
-        member_id,
-        "--confirm-boundary",
-        boundary_sha256,
+def _resume_routes(
+    member_id: str,
+    *,
+    layout: ServerLayout,
+    boundary_sha256: str | None = None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    command = [str(layout.cli_wrapper), "server", "member", "remove", member_id]
+    if boundary_sha256 is not None:
+        command.extend(("--confirm-boundary", boundary_sha256))
+    direct = tuple(command)
+    preferred = (
+        "sudo",
+        "-n",
+        "-u",
+        layout.service_account,
+        "-H",
+        *direct,
     )
+    return direct, preferred
 
 
 __all__ = ["MemberRemovalCoordinator", "prepare_member_remove_command"]

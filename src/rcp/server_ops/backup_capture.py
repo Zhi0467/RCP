@@ -24,6 +24,7 @@ from rcp.limits import (
     BACKUP_RECEIPT_MAX_BYTES,
 )
 from rcp.projects import BackupProjectUnavailable, inspect_backup_project_registration
+from rcp.server_ops.backup_integrity import database_schema_sha256
 from rcp.server_ops.backup_models import (
     BackupAppDataCapturePlan,
     BackupCheckoutRecoveryDescriptor,
@@ -670,23 +671,7 @@ def _kept_result_view_reference(view: ResultViewRecord) -> BackupKeptResultViewR
 
 def _database_schema_sha256(store: AppStore) -> str:
     with store.connection() as connection:
-        rows = connection.execute(
-            """
-            SELECT type, name, tbl_name, sql
-            FROM sqlite_schema
-            WHERE name NOT LIKE 'sqlite_%'
-            ORDER BY type, name, tbl_name
-            """
-        ).fetchall()
-    payload = [dict(row) for row in rows]
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+        return database_schema_sha256(connection)
 
 
 def _file_sha256(path: Path) -> tuple[str, int]:

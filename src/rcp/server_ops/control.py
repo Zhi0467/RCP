@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from rcp.limits import (
     MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
@@ -39,6 +39,10 @@ from rcp.server_runtime import ServerMetadata, read_server_metadata
 logger = logging.getLogger(__name__)
 
 SERVER_CONTROL_PROTOCOL_VERSION = 9
+# Update is coordinated by the previously installed release, so the running
+# service must retain one deliberately bounded compatibility window.  Keep the
+# values explicit: widening this tuple changes the private machine protocol.
+SERVER_CONTROL_COMPATIBLE_PROTOCOL_VERSIONS = (8, SERVER_CONTROL_PROTOCOL_VERSION)
 SERVER_CONTROL_MAX_REQUEST_BYTES = 64 * 1024
 SERVER_CONTROL_MAX_RESPONSE_BYTES = 256 * 1024
 SERVER_CONTROL_SOCKET_MODE = 0o600
@@ -119,7 +123,7 @@ def _canonical_uuid4(value: str, *, label: str) -> str:
 
 
 class ServerControlRequest(_StrictModel):
-    protocol_version: Literal[SERVER_CONTROL_PROTOCOL_VERSION] = SERVER_CONTROL_PROTOCOL_VERSION
+    protocol_version: int = SERVER_CONTROL_PROTOCOL_VERSION
     request_id: str
     instance_id: str
     operation: ServerControlOperation
@@ -127,6 +131,13 @@ class ServerControlRequest(_StrictModel):
     selector_id: str | None = None
     boundary_sha256: str | None = None
     target_id: str | None = None
+
+    @field_validator("protocol_version")
+    @classmethod
+    def validate_protocol_version(cls, value: int) -> int:
+        if value not in SERVER_CONTROL_COMPATIBLE_PROTOCOL_VERSIONS:
+            raise ValueError("control protocol version is unsupported")
+        return value
 
     @model_validator(mode="after")
     def validate_ids(self) -> ServerControlRequest:
@@ -782,6 +793,16 @@ def _validate_provider_result_identity(
             raise ValueError(f"{label} must be a lowercase SHA-256 digest")
 
 
+def _requested_protocol_version(value: object) -> int:
+    """Recover a bounded integer version so even a refusal can echo its request."""
+
+    if isinstance(value, dict):
+        version = value.get("protocol_version")
+        if type(version) is int and 0 <= version <= 1_000_000:
+            return version
+    return SERVER_CONTROL_PROTOCOL_VERSION
+
+
 class ServerControlFailure(_StrictModel):
     code: Literal[
         "invalid_request",
@@ -801,7 +822,7 @@ class ServerControlFailure(_StrictModel):
 
 
 class ServerControlResponse(_StrictModel):
-    protocol_version: Literal[SERVER_CONTROL_PROTOCOL_VERSION] = SERVER_CONTROL_PROTOCOL_VERSION
+    protocol_version: int = SERVER_CONTROL_PROTOCOL_VERSION
     request_id: str | None
     instance_id: str
     ok: bool
@@ -1315,6 +1336,11 @@ class ServerControlClient:
                 "wrong_instance",
                 "The control response came from a different RCP process instance.",
             )
+        if response.protocol_version != request.protocol_version:
+            raise ServerControlError(
+                "wrong_protocol_version",
+                "The control response does not match this request's protocol version.",
+            )
         if response.request_id not in {None, request.request_id}:
             raise ServerControlError(
                 "wrong_request",
@@ -1442,6 +1468,7 @@ class ServerControlServer:
 
     def _serve_one(self, connection: socket.socket) -> None:
         request_id: str | None = None
+        protocol_version = SERVER_CONTROL_PROTOCOL_VERSION
         try:
             peer = self.peer_resolver(connection)
             if peer.uid not in {0, self.owner_uid}:
@@ -1453,21 +1480,25 @@ class ServerControlServer:
                 )
                 return
             raw = _receive_json(connection, maximum=SERVER_CONTROL_MAX_REQUEST_BYTES)
+            protocol_version = _requested_protocol_version(raw)
             try:
                 request = ServerControlRequest.model_validate(raw)
             except Exception:
                 self._send_error(
                     connection,
                     request_id=None,
+                    protocol_version=protocol_version,
                     code="invalid_request",
                     message="The control request has an unsupported shape.",
                 )
                 return
             request_id = request.request_id
+            protocol_version = request.protocol_version
             if request.instance_id != self.instance_id:
                 self._send_error(
                     connection,
                     request_id=request_id,
+                    protocol_version=protocol_version,
                     code="wrong_instance",
                     message="The control request names a different RCP process instance.",
                 )
@@ -1486,6 +1517,7 @@ class ServerControlServer:
                     self._send_error(
                         connection,
                         request_id=request_id,
+                        protocol_version=protocol_version,
                         code="operation_failed",
                         message=(
                             "The named control operation failed inside the running RCP process."
@@ -1495,6 +1527,7 @@ class ServerControlServer:
                 self._send_error(
                     connection,
                     request_id=request_id,
+                    protocol_version=protocol_version,
                     code="operation_refused",
                     message=_safe_operation_refusal(str(exc)),
                 )
@@ -1507,6 +1540,7 @@ class ServerControlServer:
                 self._send_error(
                     connection,
                     request_id=request_id,
+                    protocol_version=protocol_version,
                     code="operation_failed",
                     message="The named control operation failed inside the running RCP process.",
                 )
@@ -1514,6 +1548,7 @@ class ServerControlServer:
             _send_model(
                 connection,
                 ServerControlResponse(
+                    protocol_version=protocol_version,
                     request_id=request_id,
                     instance_id=self.instance_id,
                     ok=True,
@@ -1526,6 +1561,7 @@ class ServerControlServer:
             self._send_error(
                 connection,
                 request_id=request_id,
+                protocol_version=protocol_version,
                 code=code,
                 message=(
                     "The control request exceeds its fixed size limit."
@@ -1541,6 +1577,7 @@ class ServerControlServer:
         connection: socket.socket,
         *,
         request_id: str | None,
+        protocol_version: int = SERVER_CONTROL_PROTOCOL_VERSION,
         code: Literal[
             "invalid_request",
             "oversized_request",
@@ -1555,6 +1592,7 @@ class ServerControlServer:
             _send_model(
                 connection,
                 ServerControlResponse(
+                    protocol_version=protocol_version,
                     request_id=request_id,
                     instance_id=self.instance_id,
                     ok=False,

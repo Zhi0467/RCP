@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 import rcp.server_ops.restore as restore_code
-from rcp.__main__ import build_parser
+from rcp.__main__ import InstanceLockHeld, build_parser, instance_lock
 from rcp.api import create_app
 from rcp.core.models import AuthorizedHuman
 from rcp.server_ops.backup import (
@@ -39,6 +39,7 @@ from rcp.server_ops.restore import (
     read_restore_journal,
     restore_journal_path,
     unfinished_restore_operation,
+    write_restore_journal,
 )
 from rcp.server_ops.update import server_update_operation_lock
 from rcp.storage import (
@@ -371,14 +372,14 @@ def test_restore_builds_one_detached_offline_sqlite_candidate(tmp_path: Path) ->
     assert str(identity) not in journal_text
     assert "AGE-SECRET-KEY" not in journal_text
     assert service.stop_calls == 1
-    assert not any(layout.data_dir.iterdir())
+    assert [path.name for path in layout.data_dir.iterdir()] == ["rcp.lock"]
 
     installed = machine.install_sqlite_candidate(journal)
     verified = machine.verify_offline_candidate(installed)
 
     assert verified.phase == "sqlite_restored"
     assert service.stop_calls == 2
-    assert [path.name for path in layout.data_dir.iterdir()] == ["rcp.sqlite3"]
+    assert {path.name for path in layout.data_dir.iterdir()} == {"rcp.lock", "rcp.sqlite3"}
     target_sha256 = hashlib.sha256((layout.data_dir / "rcp.sqlite3").read_bytes()).hexdigest()
     with pytest.raises(RuntimeError, match="replacement restore is incomplete"):
         create_app(data_dir=layout.data_dir, server_layout=layout)
@@ -446,6 +447,37 @@ def test_restore_journal_serializes_update_and_backup_machine_owners(tmp_path: P
     assert journal.phase == "archive_verified"
 
 
+def test_restore_admission_owns_the_service_instance_lock(tmp_path: Path) -> None:
+    archive, _source, _manifest = _archive(tmp_path / "backup")
+    machine, layout, _service, _identity = _machine(tmp_path, archive)
+
+    with machine.admission():
+        lock = layout.data_dir / "rcp.lock"
+        info = lock.lstat()
+        assert (info.st_uid, info.st_gid) == (os.getuid(), os.getgid())
+        assert info.st_mode & 0o777 == 0o600
+        with (
+            pytest.raises(InstanceLockHeld, match="Another RCP process"),
+            instance_lock(layout.data_dir, timeout=0.0),
+        ):
+            pass
+
+    with instance_lock(layout.data_dir, timeout=0.0):
+        pass
+
+
+def test_restore_refuses_a_concurrent_instance_lock_owner(tmp_path: Path) -> None:
+    archive, _source, _manifest = _archive(tmp_path / "backup")
+    machine, layout, _service, _identity = _machine(tmp_path, archive)
+
+    with (
+        instance_lock(layout.data_dir, timeout=0.0),
+        pytest.raises(RestoreRefused, match="Another RCP process owns"),
+        machine.admission(),
+    ):
+        pass
+
+
 def test_restore_reentry_rebuilds_a_missing_candidate_with_identical_bytes(
     tmp_path: Path,
 ) -> None:
@@ -488,6 +520,50 @@ def test_restore_recovers_crash_after_database_publish_before_phase_advance(
 
     assert recovered.phase == "sqlite_restored"
     machine.verify_offline_candidate(recovered)
+
+
+def test_restore_reentry_accepts_only_phase_owned_data_roots_and_sqlite_sidecars(
+    tmp_path: Path,
+) -> None:
+    archive, _source, _manifest = _archive(tmp_path / "backup")
+    machine, layout, _service, identity = _machine(tmp_path, archive)
+    candidate = machine.stage_candidate(archive, identity, confirmed_by="root@lab uid=0")
+    journal = machine.journal_candidate(candidate, _confirmation(layout))
+    installed = machine.install_sqlite_candidate(journal)
+
+    premature = layout.data_dir / "state-cache"
+    premature.mkdir(mode=0o700)
+    with pytest.raises(RestoreRefused, match="unexpected restore state"):
+        machine.verify_offline_candidate(installed)
+    premature.rmdir()
+
+    rebinding = installed.model_copy(update={"phase": "projects_rebinding"})
+    bootstrap = layout.data_dir / "bootstrap-manifests"
+    bootstrap.mkdir(mode=0o700)
+    write_restore_journal(
+        rebinding,
+        layout,
+        uid=os.getuid(),
+        gid=os.getgid(),
+    )
+    assert machine.install_sqlite_candidate(rebinding) == rebinding
+    assert machine.verify_offline_candidate(rebinding) == rebinding
+
+    publishing = rebinding.model_copy(update={"phase": "projects_publishing"})
+    for name in ("project-sources", "state-cache"):
+        (layout.data_dir / name).mkdir(mode=0o700)
+    for suffix in ("-wal", "-shm"):
+        sidecar = layout.data_dir / f"rcp.sqlite3{suffix}"
+        sidecar.write_bytes(b"crash sidecar")
+        sidecar.chmod(0o600)
+    write_restore_journal(
+        publishing,
+        layout,
+        uid=os.getuid(),
+        gid=os.getgid(),
+    )
+    assert machine.install_sqlite_candidate(publishing) == publishing
+    assert machine.verify_offline_candidate(publishing) == publishing
 
 
 @pytest.mark.parametrize(

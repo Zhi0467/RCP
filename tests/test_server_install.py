@@ -520,7 +520,7 @@ def test_existing_source_key_must_match_recorded_public_key(monkeypatch, tmp_pat
     private.write_text("private", encoding="utf-8")
     private.chmod(0o600)
     public.write_text(
-        "ssh-ed25519 cHVibGljLWtleQ== label\n",
+        f"ssh-ed25519 cHVibGljLWtleQ== rcp-source:{INSTALLATION_ID}\n",
         encoding="utf-8",
     )
     public.chmod(0o644)
@@ -549,6 +549,91 @@ def test_existing_source_key_must_match_recorded_public_key(monkeypatch, tmp_pat
 
     with pytest.raises(InstallRefused, match="not one key pair"):
         machine._validate_source_key_pair(config, private, public)
+
+
+def test_install_adopts_exact_key_pair_after_crash_before_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    layout = _temporary_layout(tmp_path)
+    layout.credentials_root.mkdir(parents=True)
+    private = layout.credentials_root / "source_ed25519"
+    public = layout.credentials_root / "source_ed25519.pub"
+    private.write_text("private", encoding="utf-8")
+    private.chmod(0o600)
+    public_key = f"ssh-ed25519 cHVibGljLWtleQ== rcp-source:{INSTALLATION_ID}"
+    public.write_text(public_key + "\n", encoding="utf-8")
+    public.chmod(0o644)
+    written = []
+    machine = server_install.LinuxInstallMachine(layout)
+    machine._service_uid = os.getuid()
+    machine._service_gid = os.getgid()
+    monkeypatch.setattr(
+        machine,
+        "_run_as_service",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ("ssh-keygen",),
+            0,
+            "ssh-ed25519 cHVibGljLWtleQ==\n",
+            "",
+        ),
+    )
+    monkeypatch.setattr(machine, "_probe_source", lambda *_args, **_kwargs: "grant_needed")
+    monkeypatch.setattr(
+        server_install,
+        "write_installed_server_config",
+        lambda config, path: written.append((config, path)),
+    )
+
+    access = machine.prepare_source_access(REPOSITORY)
+
+    assert access.config.installation_id == INSTALLATION_ID
+    assert access.config.source.public_key_fingerprint == server_install._read_public_key(public)[1]
+    assert access.deploy_key_label == f"rcp-source:{INSTALLATION_ID}"
+    assert access.public_key == public_key
+    assert access.grant_needed is True
+    assert written == [(access.config, layout.config_path)]
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    ["partial", "private_mode", "private_symlink", "wrong_label"],
+)
+def test_install_refuses_unsafe_unconfigured_source_key_pair(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    unsafe: str,
+) -> None:
+    layout = _temporary_layout(tmp_path)
+    layout.credentials_root.mkdir(parents=True)
+    private = layout.credentials_root / "source_ed25519"
+    public = layout.credentials_root / "source_ed25519.pub"
+    if unsafe == "private_symlink":
+        target = tmp_path / "outside-private"
+        target.write_text("private", encoding="utf-8")
+        target.chmod(0o600)
+        private.symlink_to(target)
+    else:
+        private.write_text("private", encoding="utf-8")
+        private.chmod(0o644 if unsafe == "private_mode" else 0o600)
+    if unsafe != "partial":
+        label = (
+            "rcp-source:not-an-installation-id"
+            if unsafe == "wrong_label"
+            else f"rcp-source:{INSTALLATION_ID}"
+        )
+        public.write_text(
+            f"ssh-ed25519 cHVibGljLWtleQ== {label}\n",
+            encoding="utf-8",
+        )
+        public.chmod(0o644)
+    machine = server_install.LinuxInstallMachine(layout)
+    machine._service_uid = os.getuid()
+    machine._service_gid = os.getgid()
+    monkeypatch.setattr(machine, "_probe_source", lambda *_args, **_kwargs: "grant_needed")
+
+    with pytest.raises(InstallRefused):
+        machine.prepare_source_access(REPOSITORY)
 
 
 def test_source_key_creation_refuses_a_symlink_swap_before_root_mode_change(

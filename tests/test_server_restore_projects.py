@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from rcp.__main__ import instance_lock
 from rcp.config import AGENT_EXECUTION_PROFILES, load_manifest, permissions_for
 from rcp.core.models import AuthorizedHuman, GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -413,6 +414,9 @@ def _restore_case(tmp_path: Path):
         layout=layout,
     )
     sqlite_source = layout.data_dir / "rcp.sqlite3"
+    sqlite_source.chmod(0o600)
+    with instance_lock(layout.data_dir, timeout=0.0):
+        pass
     sqlite_sha = hashlib.sha256(sqlite_source.read_bytes()).hexdigest()
     sqlite_entry = BackupFileEntry(
         archive_path="database/rcp.sqlite3",
@@ -558,6 +562,8 @@ def test_restore_publishes_replays_and_reads_back_every_project_owner(tmp_path: 
         == (capture.branch_heads[0])
     )
     assert machine.publish_projects(completed) == completed
+    assert machine.install_sqlite_candidate(completed) == completed
+    assert machine.verify_offline_candidate(completed) == completed
 
 
 def test_restore_refuses_conflicting_imported_source_before_visibility(

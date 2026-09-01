@@ -519,10 +519,15 @@ def active_update_operation(
     update_root: Path,
     *,
     expected_uid: int,
+    receipts: tuple[tuple[Path, UpdateOperationReceipt, str], ...] | None = None,
 ) -> tuple[Path, UpdateOperationReceipt, str] | None:
     active = [
         item
-        for item in update_operation_receipts(update_root, expected_uid=expected_uid)
+        for item in (
+            receipts
+            if receipts is not None
+            else update_operation_receipts(update_root, expected_uid=expected_uid)
+        )
         if not item[1].terminal
     ]
     if len(active) > 1:
@@ -1139,6 +1144,7 @@ class UpdateCutoverCoordinator:
         )
         checkpoint_path: Path | None = None
         switched = False
+        pointer_incompatible = False
         try:
             entered = self.actions.enter_maintenance(
                 operation_id=operation_id,
@@ -1205,10 +1211,31 @@ class UpdateCutoverCoordinator:
             )
             self.progress("checkpoint_ready")
             self.actions.stop_service()
-            self.actions.switch_current(
-                expected=self.layout.release_dir(operation.base_commit),
-                target=self.layout.release_dir(operation.candidate_commit),
-            )
+            base_release = self.layout.release_dir(operation.base_commit)
+            candidate_release = self.layout.release_dir(operation.candidate_commit)
+            try:
+                self.actions.switch_current(
+                    expected=base_release,
+                    target=candidate_release,
+                )
+            except BaseException:
+                try:
+                    observed_release = self.actions.current_release()
+                except BaseException:
+                    pointer_incompatible = True
+                    raise
+                if observed_release == candidate_release:
+                    switched = True
+                    operation, digest = advance_update_operation(
+                        Path(operation.receipt_path),
+                        expected_uid=self.expected_uid,
+                        expected_gid=self.expected_gid,
+                        expected_sha256=digest,
+                        state="candidate_starting",
+                    )
+                elif observed_release != base_release:
+                    pointer_incompatible = True
+                raise
             switched = True
             operation, digest = advance_update_operation(
                 Path(operation.receipt_path),
@@ -1242,6 +1269,32 @@ class UpdateCutoverCoordinator:
             return self._outcome(operation, digest)
         except BaseException as exc:
             failure = _safe_failure(exc)
+            if pointer_incompatible:
+                with suppress(BaseException):
+                    self.actions.stop_service()
+                try:
+                    current, current_digest = read_update_operation(
+                        update_operation_receipt_path(
+                            operation_id,
+                            self.layout.update_checkpoints_root,
+                        ),
+                        expected_uid=self.expected_uid,
+                    )
+                    if current.state not in TERMINAL_UPDATE_STATES:
+                        advance_update_operation(
+                            Path(current.receipt_path),
+                            expected_uid=self.expected_uid,
+                            expected_gid=self.expected_gid,
+                            expected_sha256=current_digest,
+                            state="repair_required",
+                            update={"failure": failure},
+                        )
+                except BaseException:
+                    pass
+                raise UpdateCutoverRefused(
+                    "The current release pointer became unreadable or named an unexpected "
+                    "release; RCP kept the service stopped for operator repair."
+                ) from exc
             if switched:
                 current, current_digest = read_update_operation(
                     update_operation_receipt_path(

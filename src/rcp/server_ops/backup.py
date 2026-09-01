@@ -33,6 +33,7 @@ from rcp.server_ops.backup_capture import (
     BackupSQLiteCaptureReceipt,
     read_backup_sqlite_capture_receipt,
 )
+from rcp.server_ops.backup_integrity import canonical_backup_manifest_bytes
 from rcp.server_ops.backup_models import BackupArchiveManifest, BackupFileEntry
 from rcp.server_ops.backup_project_files import (
     BackupProjectFileCaptureCoordinator,
@@ -57,6 +58,7 @@ from rcp.server_ops.models import (
 
 BACKUP_ARCHIVE_FORMAT = "rcp-team-backup-tar-age-v1"
 BACKUP_ARCHIVE_RECEIPT_SCHEMA_VERSION = 1
+BACKUP_ARCHIVE_PUBLICATION_SCHEMA_VERSION = 1
 BACKUP_OUTCOME_SCHEMA_VERSION = 1
 
 _AGE_HEADER = b"age-encryption.org/v1\n"
@@ -69,6 +71,10 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 _ARCHIVE_MODE = 0o600
 _STATUS_NAME = "backup-status.json"
 _LOCK_NAME = ".backup-run.lock"
+_PUBLICATION_INTENT_NAME = re.compile(
+    r"\.rcp-backup-publication-"
+    r"([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.json"
+)
 
 
 class BackupRunRefused(RuntimeError):
@@ -189,6 +195,37 @@ class BackupArchiveReceipt(_StrictModel):
             raise ValueError("backup project counts do not match")
         if self.capture_status == "complete" and self.uncaptured_project_count:
             raise ValueError("a complete backup cannot contain an uncaptured project")
+        return self
+
+
+class BackupArchivePublicationIntent(_StrictModel):
+    """Durable exact intent spanning archive and receipt publication."""
+
+    schema_version: Literal[BACKUP_ARCHIVE_PUBLICATION_SCHEMA_VERSION] = (
+        BACKUP_ARCHIVE_PUBLICATION_SCHEMA_VERSION
+    )
+    receipt: BackupArchiveReceipt
+    receipt_sha256: str
+    temporary_name: str
+
+    @field_validator("receipt_sha256")
+    @classmethod
+    def validate_receipt_sha256(cls, value: str) -> str:
+        if _SHA256.fullmatch(value) is None:
+            raise ValueError("backup publication receipt digest must be lowercase SHA-256")
+        return value
+
+    @model_validator(mode="after")
+    def validate_intent(self) -> BackupArchivePublicationIntent:
+        expected_prefix = f".{self.receipt.archive_name}."
+        if (
+            not self.temporary_name.startswith(expected_prefix)
+            or not self.temporary_name.endswith(".partial")
+            or re.fullmatch(r"[0-9a-f]{32}", self.temporary_name[len(expected_prefix) : -8]) is None
+        ):
+            raise ValueError("backup publication temporary name is invalid")
+        if hashlib.sha256(_model_bytes(self.receipt)).hexdigest() != self.receipt_sha256:
+            raise ValueError("backup publication receipt digest does not match its bytes")
         return self
 
 
@@ -426,6 +463,10 @@ class LinuxBackupRunMachine:
         protected: ProtectedBackupArchive | None = None
         with backup_run_lock(self.layout):
             try:
+                reconcile_backup_archive_publications(
+                    installed=config,
+                    expected_uid=os.geteuid(),
+                )
                 age_version = require_age_1x(self.age_executable)
                 control = self.control or ServerControlClient.from_data_dir(
                     self.layout.data_dir,
@@ -712,23 +753,11 @@ def protect_backup_archive(
         os.close(descriptor)
         descriptor = -1
         _require_age_header(temporary_path)
-        try:
-            os.link(temporary_path, archive_path, follow_symlinks=False)
-        except FileExistsError as exc:
-            raise BackupRunRefused(
-                "The generated backup archive name already exists; no existing archive was replaced."
-            ) from exc
-        except OSError as exc:
-            raise BackupRunRefused(
-                "The backup filesystem could not atomically publish the protected archive."
-            ) from exc
-        temporary_path.unlink()
-        _fsync_directory(destination)
         archive_sha256, archive_size = _readback_ciphertext(
-            archive_path,
+            temporary_path,
             expected_uid=os.geteuid(),
         )
-        manifest_bytes = _manifest_bytes(manifest)
+        manifest_bytes = canonical_backup_manifest_bytes(manifest)
         captured_projects = sum(project.status == "captured" for project in manifest.projects)
         receipt = BackupArchiveReceipt(
             installation_id=installed.installation_id,
@@ -750,7 +779,28 @@ def protect_backup_archive(
             uncaptured_project_count=len(manifest.projects) - captured_projects,
         )
         receipt_path = destination / f"{archive_name}.receipt.json"
+        receipt_payload = _model_bytes(receipt)
+        intent = BackupArchivePublicationIntent(
+            receipt=receipt,
+            receipt_sha256=hashlib.sha256(receipt_payload).hexdigest(),
+            temporary_name=temporary_name,
+        )
+        intent_path = _publication_intent_path(destination, receipt.capture_id)
+        _publish_new_json(intent_path, intent)
+        try:
+            os.link(temporary_path, archive_path, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise BackupRunRefused(
+                "The generated backup archive name already exists; no existing archive was replaced."
+            ) from exc
+        except OSError as exc:
+            raise BackupRunRefused(
+                "The backup filesystem could not atomically publish the protected archive."
+            ) from exc
+        temporary_path.unlink()
+        _fsync_directory(destination)
         receipt_sha256 = _publish_new_json(receipt_path, receipt)
+        _clear_publication_intent(intent_path)
         return ProtectedBackupArchive(
             receipt=receipt,
             archive_path=archive_path,
@@ -778,6 +828,161 @@ def protect_backup_archive(
         temporary_path.unlink(missing_ok=True)
 
 
+def reconcile_backup_archive_publications(
+    *,
+    installed: InstalledServerConfig,
+    expected_uid: int,
+) -> tuple[ProtectedBackupArchive, ...]:
+    """Finish or discard only exact archive publications named by durable intent."""
+
+    config = installed.backup
+    if config is None:
+        raise ValueError("backup publication reconciliation requires backup configuration")
+    destination = Path(config.destination)
+    _validate_destination_boundary(destination)
+    recovered: list[ProtectedBackupArchive] = []
+    try:
+        candidates = sorted(
+            destination.glob(".rcp-backup-publication-*.json"),
+            key=lambda path: path.name,
+        )
+    except OSError as exc:
+        raise BackupRunRefused(
+            "The backup destination could not be inspected for interrupted publications."
+        ) from exc
+    for intent_path in candidates:
+        recovered_archive = _reconcile_backup_archive_publication(
+            intent_path,
+            installed=installed,
+            expected_uid=expected_uid,
+        )
+        if recovered_archive is not None:
+            recovered.append(recovered_archive)
+    return tuple(recovered)
+
+
+def _reconcile_backup_archive_publication(
+    intent_path: Path,
+    *,
+    installed: InstalledServerConfig,
+    expected_uid: int,
+) -> ProtectedBackupArchive | None:
+    destination = intent_path.parent
+    matched = _PUBLICATION_INTENT_NAME.fullmatch(intent_path.name)
+    if matched is None:
+        raise BackupRunRefused("A backup publication intent path is invalid.")
+    try:
+        payload = _read_private_file(
+            intent_path,
+            expected_uid=expected_uid,
+            maximum=BACKUP_RECEIPT_MAX_BYTES,
+        )
+        intent = BackupArchivePublicationIntent.model_validate_json(payload)
+    except (OSError, ValueError) as exc:
+        raise BackupRunRefused("A backup publication intent is invalid or unsafe.") from exc
+    receipt = intent.receipt
+    if (
+        matched.group(1) != receipt.capture_id
+        or receipt.destination != str(destination)
+        or receipt.installation_id != installed.installation_id
+    ):
+        raise BackupRunRefused("A backup publication intent belongs to another destination.")
+    archive_path = destination / receipt.archive_name
+    receipt_path = destination / f"{receipt.archive_name}.receipt.json"
+    temporary_path = destination / intent.temporary_name
+    archive_exists = os.path.lexists(archive_path)
+    receipt_exists = os.path.lexists(receipt_path)
+    if not archive_exists:
+        if receipt_exists:
+            raise BackupRunRefused(
+                "An interrupted backup publication has a receipt without its exact archive."
+            )
+        _discard_intended_temporary_archive(
+            temporary_path,
+            receipt=receipt,
+            expected_uid=expected_uid,
+        )
+        _clear_publication_intent(intent_path)
+        return None
+
+    archive_sha256, archive_size = _readback_ciphertext(
+        archive_path,
+        expected_uid=expected_uid,
+    )
+    if (archive_sha256, archive_size) != (
+        receipt.archive_sha256,
+        receipt.archive_size_bytes,
+    ):
+        raise BackupRunRefused(
+            "An interrupted backup archive differs from its exact publication intent."
+        )
+    if receipt_exists:
+        expected_payload = _model_bytes(receipt)
+        observed_payload = _read_private_file(
+            receipt_path,
+            expected_uid=expected_uid,
+            maximum=BACKUP_RECEIPT_MAX_BYTES,
+        )
+        if observed_payload != expected_payload:
+            raise BackupRunRefused(
+                "An interrupted backup receipt differs from its exact publication intent."
+            )
+        read_backup_archive_receipt(
+            receipt_path,
+            expected_destination=destination,
+            expected_installation_id=installed.installation_id,
+            expected_uid=expected_uid,
+            verify_digest=True,
+            expected_receipt_sha256=intent.receipt_sha256,
+        )
+        receipt_sha256 = intent.receipt_sha256
+    else:
+        receipt_sha256 = _publish_new_json(receipt_path, receipt)
+        if receipt_sha256 != intent.receipt_sha256:
+            raise BackupRunRefused(
+                "The recovered backup receipt differs from its publication intent."
+            )
+    _discard_intended_temporary_archive(
+        temporary_path,
+        receipt=receipt,
+        expected_uid=expected_uid,
+    )
+    _clear_publication_intent(intent_path)
+    return ProtectedBackupArchive(
+        receipt=receipt,
+        archive_path=archive_path,
+        receipt_path=receipt_path,
+        receipt_sha256=receipt_sha256,
+    )
+
+
+def _discard_intended_temporary_archive(
+    path: Path,
+    *,
+    receipt: BackupArchiveReceipt,
+    expected_uid: int,
+) -> None:
+    if not os.path.lexists(path):
+        return
+    digest, size = _readback_ciphertext(path, expected_uid=expected_uid)
+    if (digest, size) != (receipt.archive_sha256, receipt.archive_size_bytes):
+        raise BackupRunRefused(
+            "An interrupted backup temporary file differs from its publication intent."
+        )
+    path.unlink()
+    _fsync_directory(path.parent)
+
+
+def _publication_intent_path(destination: Path, capture_id: str) -> Path:
+    _canonical_uuid4(capture_id, label="backup capture identity")
+    return destination / f".rcp-backup-publication-{capture_id}.json"
+
+
+def _clear_publication_intent(path: Path) -> None:
+    path.unlink()
+    _fsync_directory(path.parent)
+
+
 def _archive_name(captured_at: datetime, sqlite: BackupFileEntry, capture_root: Path) -> str:
     capture_id = capture_root.name.removeprefix("backup-")
     _canonical_uuid4(capture_id, label="backup capture identity")
@@ -787,25 +992,12 @@ def _archive_name(captured_at: datetime, sqlite: BackupFileEntry, capture_root: 
     return f"rcp-team-backup-v1-{stamp}-{capture_id}.tar.age"
 
 
-def _manifest_bytes(manifest: BackupArchiveManifest) -> bytes:
-    return (
-        json.dumps(
-            manifest.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
-
-
 def _write_deterministic_archive(
     stream: BinaryIO,
     manifest: BackupArchiveManifest,
     capture_root: Path,
 ) -> None:
-    manifest_bytes = _manifest_bytes(manifest)
+    manifest_bytes = canonical_backup_manifest_bytes(manifest)
     with tarfile.open(fileobj=stream, mode="w|", format=tarfile.PAX_FORMAT) as archive:
         _add_bytes_to_tar(archive, "manifest.json", manifest_bytes)
         entries = (
@@ -1381,9 +1573,11 @@ def _fsync_directory(path: Path) -> None:
 
 __all__ = [
     "BACKUP_ARCHIVE_FORMAT",
+    "BACKUP_ARCHIVE_PUBLICATION_SCHEMA_VERSION",
     "BACKUP_ARCHIVE_RECEIPT_SCHEMA_VERSION",
     "BACKUP_OUTCOME_SCHEMA_VERSION",
     "BackupArchiveReceipt",
+    "BackupArchivePublicationIntent",
     "BackupRetentionPlan",
     "BackupRunMachine",
     "BackupRunOutcome",
@@ -1400,6 +1594,7 @@ __all__ = [
     "plan_backup_retention",
     "prepare_backup_run_command",
     "protect_backup_archive",
+    "reconcile_backup_archive_publications",
     "read_backup_archive_receipt",
     "read_backup_outcome",
     "require_age_1x",

@@ -33,6 +33,10 @@ from rcp.limits import (
     SERVER_RESTORE_DECRYPT_TIMEOUT_SECONDS,
 )
 from rcp.server_ops.backup import BACKUP_ARCHIVE_FORMAT, require_age_1x
+from rcp.server_ops.backup_integrity import (
+    canonical_backup_manifest_bytes,
+    database_schema_sha256,
+)
 from rcp.server_ops.backup_models import BackupArchiveManifest
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.config import (
@@ -1558,6 +1562,7 @@ class LinuxRestoreMachine:
         if self._admission_active:
             yield
             return
+        from rcp.__main__ import InstanceLockHeld, instance_lock
         from rcp.server_ops.backup import BackupRunRefused, backup_run_coordination_lock
         from rcp.server_ops.update import UpdateRefused, server_update_operation_lock
 
@@ -1574,12 +1579,26 @@ class LinuxRestoreMachine:
                     expected_uid=self.service_uid,
                     expected_gid=self.service_gid,
                 ),
+                instance_lock(
+                    self.layout.data_dir,
+                    timeout=0.0,
+                    expected_owner=(self.service_uid, self.service_gid),
+                ),
             ):
                 self._admission_active = True
                 try:
                     yield
                 finally:
                     self._admission_active = False
+        except InstanceLockHeld as exc:
+            raise RestoreRefused(
+                "Another RCP process owns the replacement data directory. Stop it before "
+                "rerunning restore."
+            ) from exc
+        except OSError as exc:
+            raise RestoreRefused(
+                "The replacement data-directory lock is unsafe or unavailable."
+            ) from exc
         except (BackupRunRefused, UpdateRefused) as exc:
             raise RestoreRefused(
                 "Another source update or protected backup owns the server machine boundary. "
@@ -1742,7 +1761,9 @@ class LinuxRestoreMachine:
             self.layout,
             expected_uid=self.service_uid,
         )
-        if existing is None and any(self.layout.data_dir.iterdir()):
+        if existing is None and {path.name for path in self.layout.data_dir.iterdir()} != {
+            "rcp.lock"
+        }:
             raise RestoreRefused(
                 "The configured RCP data directory is not fresh and empty. Restore will not "
                 "stop or replace an initialized space."
@@ -1757,7 +1778,7 @@ class LinuxRestoreMachine:
         if existing is not None:
             _require_same_candidate(existing, candidate, confirmation)
             return existing
-        _require_private_empty_directory(
+        _require_private_restore_destination(
             self.layout.data_dir,
             uid=self.service_uid,
             gid=self.service_gid,
@@ -1805,7 +1826,7 @@ class LinuxRestoreMachine:
         if digest != current.candidate_sqlite_sha256:
             raise RestoreRefused("The detached SQLite candidate changed after journal publication.")
         entries = tuple(self.layout.data_dir.iterdir())
-        if not entries:
+        if {entry.name for entry in entries} == {"rcp.lock"}:
             descriptor, temporary_name = tempfile.mkstemp(
                 prefix=".rcp.sqlite3.restore-",
                 dir=self.layout.data_dir,
@@ -3205,7 +3226,7 @@ def _extract_verified_archive(
                 raise RestoreRefused(
                     "The restore archive manifest is invalid or unsupported."
                 ) from exc
-            canonical_manifest = _manifest_bytes(manifest)
+            canonical_manifest = canonical_backup_manifest_bytes(manifest)
             if manifest_bytes != canonical_manifest:
                 raise RestoreRefused("The restore archive manifest is not canonical.")
             manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
@@ -3291,40 +3312,10 @@ def _require_regular_archive_member(member: tarfile.TarInfo) -> None:
         raise RestoreRefused("The restore archive contains an unsafe or unsupported member.")
 
 
-def _manifest_bytes(manifest: BackupArchiveManifest) -> bytes:
-    return (
-        json.dumps(
-            manifest.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
-
-
 def _database_schema_sha256(path: Path) -> str:
     uri = f"{path.resolve(strict=True).as_uri()}?mode=ro&immutable=1"
     with sqlite3.connect(uri, uri=True) as connection:
-        connection.row_factory = sqlite3.Row
-        rows = connection.execute(
-            """
-            SELECT type, name, tbl_name, sql
-            FROM sqlite_schema
-            WHERE name NOT LIKE 'sqlite_%'
-            ORDER BY type, name, tbl_name
-            """
-        ).fetchall()
-    payload = [dict(row) for row in rows]
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+        return database_schema_sha256(connection)
 
 
 def _verify_sqlite_integrity(path: Path) -> None:
@@ -3388,9 +3379,52 @@ def _require_restored_target(
     gid: int,
     require_candidate_bytes: bool = True,
 ) -> None:
-    entries = tuple(target.parent.iterdir())
-    if entries != (target,):
+    permitted = {
+        "rcp.lock",
+        target.name,
+        f"{target.name}-wal",
+        f"{target.name}-shm",
+    }
+    if journal.phase in {
+        "projects_rebinding",
+        "checkouts_reconstructed",
+        "projects_publishing",
+        "projects_published",
+        "authority_reviewed",
+        "member_roster_reviewed",
+        "activation_ready",
+        "complete",
+    }:
+        permitted.add("bootstrap-manifests")
+    if journal.phase in {
+        "projects_publishing",
+        "projects_published",
+        "authority_reviewed",
+        "member_roster_reviewed",
+        "activation_ready",
+        "complete",
+    }:
+        permitted.update({"project-sources", "state-cache"})
+    entries = {entry.name: entry for entry in target.parent.iterdir()}
+    if not set(entries).issubset(permitted):
         raise RestoreRefused("The configured data directory contains unexpected restore state.")
+    lock = entries.get("rcp.lock")
+    if lock is None:
+        raise RestoreRefused("The configured data directory lost its restore instance lock.")
+    _require_private_regular_file(lock, uid=uid, gid=gid, label="restore instance lock")
+    for suffix in ("-wal", "-shm"):
+        sidecar = entries.get(f"{target.name}{suffix}")
+        if sidecar is not None:
+            _require_private_regular_file(
+                sidecar,
+                uid=uid,
+                gid=gid,
+                label=f"restored database {suffix.removeprefix('-')}",
+            )
+    for name in ("bootstrap-manifests", "project-sources", "state-cache"):
+        root = entries.get(name)
+        if root is not None:
+            _require_private_directory(root, uid=uid, gid=gid, label=f"restored {name} root")
     info = target.lstat()
     if (
         not stat.S_ISREG(info.st_mode)
@@ -3486,13 +3520,45 @@ def _require_private_directory(path: Path, *, uid: int, gid: int, label: str) ->
         raise RestoreRefused(f"The {label} has unsafe ownership or mode.")
 
 
-def _require_private_empty_directory(path: Path, *, uid: int, gid: int, label: str) -> None:
+def _require_private_restore_destination(
+    path: Path,
+    *,
+    uid: int,
+    gid: int,
+    label: str,
+) -> None:
     _require_private_directory(path, uid=uid, gid=gid, label=label)
-    if any(path.iterdir()):
+    entries = tuple(path.iterdir())
+    if len(entries) != 1 or entries[0].name != "rcp.lock":
         raise RestoreRefused(
             "The configured RCP data directory is not fresh and empty. Restore will not replace "
             "or adopt an initialized space."
         )
+    _require_private_regular_file(
+        entries[0],
+        uid=uid,
+        gid=gid,
+        label="restore instance lock",
+    )
+
+
+def _require_private_regular_file(
+    path: Path,
+    *,
+    uid: int,
+    gid: int,
+    label: str,
+) -> None:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise RestoreRefused(f"The {label} is unavailable.") from exc
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or (info.st_uid, info.st_gid) != (uid, gid)
+        or stat.S_IMODE(info.st_mode) != RESTORE_JOURNAL_MODE
+    ):
+        raise RestoreRefused(f"The {label} has unsafe ownership or mode.")
 
 
 def _chown_tree_parents(path: Path, root: Path, uid: int, gid: int) -> None:

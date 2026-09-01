@@ -1227,6 +1227,7 @@ def create_app(
             store,
             background_tasks,
             identity,
+            layout=server_layout,
         )
     auto_research_experiment_coordinator = AutoResearchExperimentCoordinator(
         store,
