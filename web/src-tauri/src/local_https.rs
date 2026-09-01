@@ -19,8 +19,12 @@ use tauri::Manager;
 #[cfg(target_os = "macos")]
 const COOKIE_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-const IDENTITY_VERSION: u8 = 1;
+const IDENTITY_VERSION: u8 = 3;
+const LEGACY_IDENTITY_VERSIONS: &[u8] = &[1, 2];
 const IDENTITY_HEADER: &[u8] = b"RCP-LOCAL-HTTPS\0";
+const CERTIFICATE_LIFETIME_DAYS: i64 = 365;
+const CERTIFICATE_CLOCK_SKEW_DAYS: i64 = 1;
+const CERTIFICATE_RENEW_BEFORE_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_CERTIFICATE_BYTES: usize = 32 * 1024;
 const MAX_PRIVATE_KEY_BYTES: usize = 16 * 1024;
 const KEYCHAIN_SERVICE: &str = "app.researchcontrolpanel.rcp.local-https";
@@ -37,6 +41,7 @@ const AUTH_TAG_BYTES: usize = 16;
 const MAX_SEALED_IDENTITY_BYTES: u64 = (IDENTITY_HEADER.len()
     + 1
     + 8
+    + 8
     + MAX_CERTIFICATE_BYTES
     + MAX_PRIVATE_KEY_BYTES
     + SEALED_IDENTITY_PREFIX.len()
@@ -47,6 +52,7 @@ pub struct LocalHttpsIdentity {
     certificate_der: Vec<u8>,
     private_key_der: Zeroizing<Vec<u8>>,
     fingerprint_sha256: String,
+    expires_at_unix: u64,
 }
 
 impl LocalHttpsIdentity {
@@ -57,10 +63,7 @@ impl LocalHttpsIdentity {
         let key = crate::keychain::get(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
             .map_err(|error| format!("could not read the local HTTPS sealing key: {error}"))?;
         match (sealed, key) {
-            (Some(sealed), Some(key)) => {
-                let encoded = open_identity(&sealed, &key)?;
-                decode_identity(&encoded)
-            }
+            (Some(sealed), Some(key)) => load_and_migrate_identity(&path, &sealed, &key),
             (None, None) => create_and_store_identity(&path),
             (Some(_), None) => Err(
                 "the encrypted local HTTPS identity exists but its Keychain sealing key is missing"
@@ -97,17 +100,30 @@ impl LocalHttpsIdentity {
 }
 
 fn generate_identity() -> Result<LocalHttpsIdentity, String> {
-    let rcgen::CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec![
-        "localhost".to_string(),
-        "*.localhost".to_string(),
-    ])
-    .map_err(|error| format!("could not generate the local HTTPS identity: {error}"))?;
-    identity_from_parts(cert.der().to_vec(), signing_key.serialize_der())
+    let mut params =
+        rcgen::CertificateParams::new(vec!["localhost".to_string(), "*.rcp.localhost".to_string()])
+            .map_err(|error| format!("could not generate the local HTTPS identity: {error}"))?;
+    let now = time::OffsetDateTime::now_utc();
+    params.not_before = now - time::Duration::days(CERTIFICATE_CLOCK_SKEW_DAYS);
+    params.not_after = now + time::Duration::days(CERTIFICATE_LIFETIME_DAYS);
+    let expires_at_unix = u64::try_from(params.not_after.unix_timestamp())
+        .map_err(|_| "could not represent the local HTTPS identity expiration".to_string())?;
+    let signing_key = rcgen::KeyPair::generate()
+        .map_err(|error| format!("could not generate the local HTTPS identity: {error}"))?;
+    let certificate = params
+        .self_signed(&signing_key)
+        .map_err(|error| format!("could not generate the local HTTPS identity: {error}"))?;
+    identity_from_parts(
+        certificate.der().to_vec(),
+        signing_key.serialize_der(),
+        expires_at_unix,
+    )
 }
 
 fn identity_from_parts(
     certificate_der: Vec<u8>,
     private_key_der: Vec<u8>,
+    expires_at_unix: u64,
 ) -> Result<LocalHttpsIdentity, String> {
     let private_key_der = Zeroizing::new(private_key_der);
     if certificate_der.is_empty() || certificate_der.len() > MAX_CERTIFICATE_BYTES {
@@ -133,6 +149,7 @@ fn identity_from_parts(
         certificate_der,
         private_key_der,
         fingerprint_sha256,
+        expires_at_unix,
     })
 }
 
@@ -145,6 +162,7 @@ fn encode_identity(identity: &LocalHttpsIdentity) -> Result<Zeroizing<Vec<u8>>, 
         IDENTITY_HEADER.len()
             + 1
             + 8
+            + 8
             + identity.certificate_der.len()
             + identity.private_key_der.len(),
     ));
@@ -152,22 +170,37 @@ fn encode_identity(identity: &LocalHttpsIdentity) -> Result<Zeroizing<Vec<u8>>, 
     encoded.push(IDENTITY_VERSION);
     encoded.extend_from_slice(&certificate_length.to_be_bytes());
     encoded.extend_from_slice(&key_length.to_be_bytes());
+    encoded.extend_from_slice(&identity.expires_at_unix.to_be_bytes());
     encoded.extend_from_slice(&identity.certificate_der);
     encoded.extend_from_slice(&identity.private_key_der);
     Ok(encoded)
 }
 
 fn decode_identity(encoded: &[u8]) -> Result<LocalHttpsIdentity, String> {
-    let prefix = IDENTITY_HEADER.len() + 1 + 8;
+    decode_identity_version(encoded, IDENTITY_VERSION, true)
+}
+
+fn decode_identity_version(
+    encoded: &[u8],
+    expected_version: u8,
+    has_expiration: bool,
+) -> Result<LocalHttpsIdentity, String> {
+    let lengths_prefix = IDENTITY_HEADER.len() + 1 + 8;
+    let prefix = lengths_prefix + usize::from(has_expiration) * 8;
     if encoded.len() < prefix || !encoded.starts_with(IDENTITY_HEADER) {
         return Err("the local HTTPS identity record has an unsupported shape".into());
     }
-    if encoded[IDENTITY_HEADER.len()] != IDENTITY_VERSION {
+    if encoded[IDENTITY_HEADER.len()] != expected_version {
         return Err("the local HTTPS identity record has an unsupported version".into());
     }
-    let lengths = &encoded[IDENTITY_HEADER.len() + 1..prefix];
+    let lengths = &encoded[IDENTITY_HEADER.len() + 1..lengths_prefix];
     let certificate_length = u32::from_be_bytes(lengths[..4].try_into().unwrap()) as usize;
     let key_length = u32::from_be_bytes(lengths[4..].try_into().unwrap()) as usize;
+    let expires_at_unix = if has_expiration {
+        u64::from_be_bytes(encoded[lengths_prefix..prefix].try_into().unwrap())
+    } else {
+        0
+    };
     if certificate_length > MAX_CERTIFICATE_BYTES
         || key_length > MAX_PRIVATE_KEY_BYTES
         || prefix
@@ -181,7 +214,23 @@ fn decode_identity(encoded: &[u8]) -> Result<LocalHttpsIdentity, String> {
     identity_from_parts(
         encoded[prefix..certificate_end].to_vec(),
         encoded[certificate_end..].to_vec(),
+        expires_at_unix,
     )
+}
+
+fn identity_needs_rotation(identity: &LocalHttpsIdentity) -> Result<bool, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "the system clock precedes the Unix epoch".to_string())?
+        .as_secs();
+    Ok(identity.expires_at_unix <= now.saturating_add(CERTIFICATE_RENEW_BEFORE_SECONDS))
+}
+
+fn encoded_identity_version(encoded: &[u8]) -> Result<u8, String> {
+    if encoded.len() <= IDENTITY_HEADER.len() || !encoded.starts_with(IDENTITY_HEADER) {
+        return Err("the local HTTPS identity record has an unsupported shape".into());
+    }
+    Ok(encoded[IDENTITY_HEADER.len()])
 }
 
 fn lowercase_sha256(value: &[u8]) -> String {
@@ -252,6 +301,38 @@ fn create_and_store_identity(path: &Path) -> Result<LocalHttpsIdentity, String> 
             )),
         };
     }
+    Ok(identity)
+}
+
+#[cfg(target_os = "macos")]
+fn load_and_migrate_identity(
+    path: &Path,
+    sealed: &[u8],
+    key: &[u8],
+) -> Result<LocalHttpsIdentity, String> {
+    let encoded = open_identity(sealed, key)?;
+    match encoded_identity_version(&encoded)? {
+        IDENTITY_VERSION => {
+            let identity = decode_identity(&encoded)?;
+            if identity_needs_rotation(&identity)? {
+                replace_stored_identity(path, key)
+            } else {
+                Ok(identity)
+            }
+        }
+        version if LEGACY_IDENTITY_VERSIONS.contains(&version) => {
+            decode_identity_version(&encoded, version, false)?;
+            replace_stored_identity(path, key)
+        }
+        _ => Err("the local HTTPS identity record has an unsupported version".into()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn replace_stored_identity(path: &Path, key: &[u8]) -> Result<LocalHttpsIdentity, String> {
+    let identity = generate_identity()?;
+    let replacement = seal_identity(&encode_identity(&identity)?, key)?;
+    write_sealed_identity(path, &replacement)?;
     Ok(identity)
 }
 
@@ -503,6 +584,8 @@ mod tests {
         assert_eq!(decoded.certificate_der, identity.certificate_der);
         assert_eq!(decoded.private_key_der, identity.private_key_der);
         assert_eq!(decoded.fingerprint_sha256(), identity.fingerprint_sha256());
+        assert_eq!(decoded.expires_at_unix, identity.expires_at_unix);
+        assert!(!identity_needs_rotation(&decoded).unwrap());
     }
 
     #[test]
@@ -519,13 +602,59 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn legacy_identity_is_validated_and_atomically_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(SEALED_IDENTITY_FILENAME);
+        let original = generate_identity().unwrap();
+        let mut legacy = encode_identity(&original).unwrap();
+        legacy[IDENTITY_HEADER.len()] = 2;
+        legacy.drain(IDENTITY_HEADER.len() + 1 + 8..IDENTITY_HEADER.len() + 1 + 16);
+        let key = [9_u8; SEALING_KEY_BYTES];
+        let sealed = seal_identity(&legacy, &key).unwrap();
+
+        let migrated = load_and_migrate_identity(&path, &sealed, &key).unwrap();
+
+        assert_ne!(migrated.certificate_der, original.certificate_der);
+        let stored = read_sealed_identity(&path).unwrap().unwrap();
+        let encoded = open_identity(&stored, &key).unwrap();
+        assert_eq!(
+            encoded_identity_version(&encoded).unwrap(),
+            IDENTITY_VERSION
+        );
+        assert_eq!(
+            decode_identity(&encoded).unwrap().certificate_der,
+            migrated.certificate_der
+        );
+    }
+
     #[test]
     fn identity_rejects_a_certificate_and_private_key_from_different_pairs() {
         let first = generate_identity().unwrap();
         let second = generate_identity().unwrap();
-        assert!(
-            identity_from_parts(first.certificate_der, second.private_key_der.to_vec()).is_err()
-        );
+        assert!(identity_from_parts(
+            first.certificate_der,
+            second.private_key_der.to_vec(),
+            first.expires_at_unix,
+        )
+        .is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn current_identity_rotates_before_its_recorded_expiration() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(SEALED_IDENTITY_FILENAME);
+        let mut expired = generate_identity().unwrap();
+        expired.expires_at_unix = 0;
+        let key = [11_u8; SEALING_KEY_BYTES];
+        let sealed = seal_identity(&encode_identity(&expired).unwrap(), &key).unwrap();
+
+        let rotated = load_and_migrate_identity(&path, &sealed, &key).unwrap();
+
+        assert_ne!(rotated.certificate_der, expired.certificate_der);
+        assert!(!identity_needs_rotation(&rotated).unwrap());
     }
 
     #[cfg(target_os = "macos")]

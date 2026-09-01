@@ -17,21 +17,25 @@ covered_by:
   - web/src-tauri/src/server_commands.rs::tests
 invariants: [3, 4, 6, 8]
 last_checked: >-
-  2026-08-30 — the durable request, Git key/write proof, central checkout,
-  provider readiness, resumable private-control orchestration, fixed desktop
-  operator bridge, unified personal/new-team wizard, and exact human-confirmed
-  final creation plus the team deletion guard pass hermetic regressions. A
-  disposable browser and rebuilt source desktop verify the one wizard shell and
-  reload-stable setup route. Cancellation after preparation, live authenticated
-  team provisioning, direct/sudo operator launch, and the complete live drive
-  remain pending.
+  2026-09-01 — a persistent Ubuntu 22.04 team server completed the real private
+  source install, one desktop member enrollment, repository-scoped write deploy
+  key grant, empty-repository human first commit, server-local central checkout,
+  six Codex provider readiness checks, final human-confirmed project creation,
+  and completed-request readback for dark matter denoising. The drive exposed
+  and fixed same-account wizard execution, empty-repository operator-step target
+  compatibility, and installed-control error logging. Cancellation after
+  preparation, the exact visible desktop operator launch, a first provider task,
+  the SSH checkout/provider half, and the complete multi-member live drive remain
+  pending.
 ---
 
 # A human starts team setup in the app and the server CLI prepares it
 
-This scenario is human-confirmed and partially implemented. It owns the seam
-between [Durable project provisioning](../specs/projects-spaces-and-operations.md#durable-project-provisioning)
-and the [Confirmed team desktop target](../specs/api-web-and-desktop-projections.md#confirmed-team-desktop-target).
+This scenario is human-confirmed, implemented, and partially live-qualified. It
+owns the seam between
+[Durable project provisioning](../specs/projects-spaces-and-operations.md#durable-project-provisioning)
+and the
+[Confirmed team desktop target](../specs/api-web-and-desktop-projections.md#confirmed-team-desktop-target).
 
 Project setup is one visible wizard with plainly named personal, new-team, and
 personal-to-team intents, while machine work stays under server operating-system

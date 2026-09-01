@@ -113,8 +113,11 @@ logging, and verification details.
 ## Install a team server from source
 
 The server workflow below has passed source install, update/rollback, protected
-backup, and fresh-host restore on disposable Ubuntu 22.04 and 24.04 hosts. The
-complete desktop/provider/collaboration one-lab qualification is still pending.
+backup, and fresh-host restore on disposable Ubuntu 22.04 and 24.04 hosts. A
+persistent Ubuntu 22.04 lab server has also completed source install, desktop
+member enrollment, provider readiness, and creation of a real GitHub-backed team
+project. The two-member, backup/restore, and transfer closure drill is still
+pending.
 
 The supported server is Ubuntu 22.04 or 24.04 LTS on x86-64 with systemd. RCP is
 built from a GitHub `main` checkout; there is no Linux package or binary release

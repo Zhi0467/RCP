@@ -124,6 +124,16 @@ export function TeamSpaceGroups({
     await navigateDesktopToTeam(session.connection.connection_id, projectId);
   };
 
+  const openTeamSpace = async (view: TeamConnectionView) => {
+    const session = await reconcile(view.connection);
+    if (!session) return;
+    await navigateDesktopToTeam(session.connection.connection_id);
+  };
+
+  const reportConnectionError = (error: unknown) => {
+    setListError(error instanceof Error ? error.message : String(error));
+  };
+
   if (!desktop) return null;
 
   return (
@@ -146,7 +156,10 @@ export function TeamSpaceGroups({
           key={view.connection.connection_id}
           view={view}
           onReconnect={() => void reconcile(view.connection).catch(() => undefined)}
-          onOpenProject={(projectId) => void openProject(view, projectId).catch(() => undefined)}
+          onOpenSpace={() => void openTeamSpace(view).catch(reportConnectionError)}
+          onOpenProject={(projectId) =>
+            void openProject(view, projectId).catch(reportConnectionError)
+          }
         />
       ))}
 
@@ -172,10 +185,12 @@ export function TeamSpaceGroups({
 export function TeamConnectionGroup({
   view,
   onReconnect,
+  onOpenSpace,
   onOpenProject,
 }: {
   view: TeamConnectionView;
   onReconnect: () => void;
+  onOpenSpace: () => void;
   onOpenProject: (projectId: string) => void;
 }) {
   const { connection, state, error } = view;
@@ -198,6 +213,11 @@ export function TeamConnectionGroup({
         {state === "unavailable" && (
           <button type="button" onClick={onReconnect}>
             <RefreshCw size={13} aria-hidden="true" /> Reconnect
+          </button>
+        )}
+        {state === "available" && (
+          <button type="button" onClick={onOpenSpace}>
+            Open team space
           </button>
         )}
       </header>

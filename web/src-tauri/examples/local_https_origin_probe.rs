@@ -150,8 +150,8 @@ mod tests {
 
     #[test]
     fn distinct_https_aliases_have_distinct_cookie_hosts() {
-        let first = Url::parse("https://rcp-a.localhost:39131").unwrap();
-        let second = Url::parse("https://rcp-b.localhost:39132").unwrap();
+        let first = Url::parse("https://rcp-a.rcp.localhost:39131").unwrap();
+        let second = Url::parse("https://rcp-b.rcp.localhost:39132").unwrap();
         assert!(has_distinct_cookie_hosts(&first, &second));
     }
 

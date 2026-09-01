@@ -160,7 +160,8 @@ None of these operations signal or restart the remote RCP service.
 Every saved space receives a stable, distinct loopback origin. Different ports
 on the same `127.0.0.1` host are not isolation because cookies ignore ports; such
 tunnels would collide on the shared `__Host-` session-cookie name. The shell
-uses `https://rcp-<connection-id-without-hyphens>.localhost:<local-port>`.
+uses
+`https://rcp-<connection-id-without-hyphens>.rcp.localhost:<local-port>`.
 Navigation admits only exact origins derived from its validated saved-connection
 registry. The desktop stores one versioned authenticated-encrypted
 certificate/private-key file and keeps only its 32-byte sealing key in the
@@ -168,8 +169,13 @@ operating-system credential store. Source builds access that key through
 Apple's signed Keychain tool with an ACL pinned to that tool, not an ad-hoc app
 cdhash; the value never enters argv, URLs, page state, logs, or native command
 output. The desktop pins the certificate in the live WKWebView navigation
-delegate and never installs system-wide trust. A malformed, unauthenticated, or
-partial identity/key pair fails startup rather than being silently replaced.
+delegate and never installs system-wide trust. A malformed, unauthenticated,
+unknown-version, or partial identity/key pair fails startup rather than being
+silently replaced. The current identity record stores its expiration, uses a
+365-day certificate for `*.rcp.localhost`, and rotates atomically during the
+final seven days. Valid earlier identity records and the exact previously
+shipped `rcp-<id>.localhost` registry origin migrate without changing the saved
+team connection or its member credential.
 The tool ACL solves source-rebuild stability; because a same-UID process can
 invoke the same general-purpose Apple tool, it is not same-account read
 isolation. That limitation is accepted only under the current cooperative

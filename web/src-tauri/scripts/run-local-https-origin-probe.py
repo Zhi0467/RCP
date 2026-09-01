@@ -328,9 +328,9 @@ setTimeout(() => {{
 
 def _origins() -> dict[str, Origin]:
     return {
-        "a": Origin("a", f"rcp-{UUID_A}.localhost", ("127.0.0.1", "::1"), PORT_A),
-        "b": Origin("b", f"rcp-{UUID_B}.localhost", ("127.0.0.1", "::1"), PORT_B),
-        "other": Origin("other", f"rcp-{UUID_OTHER}.localhost", ("127.0.0.1", "::1"), PORT_OTHER),
+        "a": Origin("a", f"rcp-{UUID_A}.rcp.localhost", ("127.0.0.1", "::1"), PORT_A),
+        "b": Origin("b", f"rcp-{UUID_B}.rcp.localhost", ("127.0.0.1", "::1"), PORT_B),
+        "other": Origin("other", f"rcp-{UUID_OTHER}.rcp.localhost", ("127.0.0.1", "::1"), PORT_OTHER),
     }
 
 
@@ -431,10 +431,10 @@ def main() -> int:
     with holder as raw_directory:
         directory = Path(raw_directory)
         _, pinned_cert, fingerprint = _generate_certificate(
-            directory, "pinned", [origins["a"].host, origins["b"].host]
+            directory, "pinned", ["*.rcp.localhost"]
         )
         _, unpinned_cert, unpinned_fingerprint = _generate_certificate(
-            directory, "unpinned", [origins["other"].host]
+            directory, "unpinned", ["*.rcp.localhost"]
         )
         if fingerprint == unpinned_fingerprint:
             raise RuntimeError("the two probe certificates must differ")

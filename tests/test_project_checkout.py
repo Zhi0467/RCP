@@ -100,10 +100,10 @@ class _CurrentAccountRunner:
         *,
         timeout: float,
     ) -> subprocess.CompletedProcess[str]:
-        expected = ("runuser", "--user", self.account, "--")
-        assert argv[:4] == expected
+        assert argv[:2] == ("env", "-i")
+        assert f"USER={self.account}" in argv
         self.calls.append(argv)
-        return _run_process(tuple(argv[4:]), timeout=timeout)
+        return _run_process(argv, timeout=timeout)
 
 
 class _StaticCredentialManager:
@@ -435,9 +435,7 @@ def test_manager_clones_verifies_and_recovers_without_renaming(tmp_path: Path) -
         "/dev/null"
     )
     assert runner.calls
-    assert all(
-        call[:4] == ("runuser", "--user", layout.service_account, "--") for call in runner.calls
-    )
+    assert all(call[:2] == ("env", "-i") for call in runner.calls)
     git_calls = [call for call in runner.calls if "GIT_CONFIG_GLOBAL=/dev/null" in call]
     assert git_calls
     assert all("GIT_TERMINAL_PROMPT=0" in call for call in git_calls)

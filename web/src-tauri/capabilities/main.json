@@ -7,7 +7,7 @@
     "urls": [
       "http://127.0.0.1:*/*",
       "http://localhost:*/*",
-      "https://rcp-*.localhost:*/*"
+      "https://*.rcp.localhost:*/*"
     ]
   },
   "permissions": [

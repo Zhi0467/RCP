@@ -325,6 +325,32 @@ saved server route, and enroll with the one-time bootstrap code from Step 8. The
 unified project wizard can then create a team project from GitHub or move an
 existing personal RCP project into the team space.
 
+## 13. Create the first shared project
+
+From the enrolled team space, open the ordinary project wizard and choose
+**Create a shared team project**. Enter the GitHub repository, project name,
+execution machine, and provider profiles. RCP creates one durable request and
+shows its exact request id and operator command. Run that command as `rcp`, or
+use the configured desktop operator route:
+
+```bash
+sudo -u rcp -H /usr/local/bin/rcp server project provision <request-id>
+```
+
+Leave the wizard running. For each repository, GitHub setup pauses for a
+repository-scoped public deploy key. Add it to that repository with **Allow
+write access** enabled, return to the terminal, and press Enter. The server does
+not log in to a GitHub user or reuse the read-only RCP source key.
+
+If GitHub reports that the repository is empty, push the intended codebase or a
+visible first commit through the ordinary human Git workflow, then press Enter
+to resume the same request. RCP does not create a hidden initialization commit.
+After the CLI reaches **ready for review**, return to the project wizard, review
+the exact checkout, Git, machine, and provider answers, then choose **Create
+project**. RCP creates canonical `.research/` state only after this final human
+action. That state is not silently committed to the repository's human Git
+history.
+
 ## Inspect and stop the service
 
 ```bash

@@ -936,10 +936,9 @@ fn build_client(origin: &str, certificate_der: &[u8]) -> Result<Client, String> 
         .tls_built_in_root_certs(false)
         .add_root_certificate(certificate)
         .redirect(reqwest::redirect::Policy::none())
-        // The pinned desktop certificate has a *.localhost SAN, while each
-        // connection uses an immediate rcp-<id>.localhost host. rustls does not
-        // apply wildcard matching to localhost, so the exact private root is
-        // the authentication boundary and hostname matching is disabled here.
+        // The pinned desktop certificate has a *.rcp.localhost SAN. This private
+        // client still treats the exact pinned certificate as its authentication
+        // boundary, independently of platform hostname-matching differences.
         .danger_accept_invalid_hostnames(true)
         .resolve(
             host,
@@ -1321,7 +1320,7 @@ mod tests {
             ssh_target: "rcp@lab".into(),
             remote_loopback_port: 8421,
             expected_space_id: verified.space_id.clone(),
-            local_origin: "https://rcp-66666666666646668666666666666666.localhost:18421".into(),
+            local_origin: "https://rcp-66666666666646668666666666666666.rcp.localhost:18421".into(),
             minimum_shell_version: env!("CARGO_PKG_VERSION").into(),
             last_known_cards: Vec::new(),
             operator_route: None,

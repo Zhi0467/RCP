@@ -3,10 +3,11 @@
 Date: 2026-08-27
 Status: active. Design, grilling, and all planned implementation packets are
 complete. The two-release disposable server lifecycle and fresh-host restore
-qualification pass. A clean persistent lab-server reinstall and zero-member
-candidate update now pass through the continuous terminal wizard. The
-persistent desktop/SSH drive, genuine one-lab drill, and final evidence closure
-remain.
+qualification pass. A persistent Ubuntu 22.04 lab server now passes clean
+source install, continuous update, member enrollment, provider readiness, and
+real GitHub-backed project creation. The two-member desktop switching, first
+task, SSH execution target, backup/restore, transfer, and complete one-lab
+closure drive remain.
 
 ### Packet status
 
@@ -27,27 +28,26 @@ is written and passing its own tests, but still owes a drive on real hardware.
 
 What each open drive is waiting on:
 
-- **P6a** — the complete team-service and GitHub live qualification.
+- **P6a** — the reachable-SSH checkout/provider half of the composed live
+  qualification; the server-local GitHub path now passes on the persistent lab
+  server.
 - **D4a, D4b, D5** — the integrated source-built two-space desktop drive.
-- **D6** — both fixed operator routes on a server with the installed `rcp`
-  account and CLI. The reachable shared lab host was checked, but it has no
-  `rcp` Linux account, so it cannot qualify either route without changing that
-  machine.
+- **D6** — the exact source-built desktop click through both fixed operator
+  routes. The persistent lab host now has the installed `rcp` account and CLI;
+  direct operator-terminal provisioning passes, but that is not evidence for
+  the native desktop launcher.
 - **T5a, T5b** — the native relay, unified move wizard, and restart recovery are
   implemented and hermetically verified. They still need the S98 source-built
   desktop drive against two real spaces and a real SSH operator route.
 
-Status is recorded four different ways in this file: a `Status:` line in a packet
-section, a bold `**Status (date)**` block, a `— complete` heading suffix, and a
-dated entry in the implementation log. The table above is the one place to read
-it. The log records packets completed through D3; later packets record status in
-their own section.
+Older packet sections retain their dated implementation evidence. The table
+above and this opening status are the authoritative current summary.
 
 The previously planned G1 pull-request transition was rejected by the human for
 this private, single-developer pre-team-server implementation. It no longer gates
 any packet.
 
-#### 2026-09-01 — persistent lab install follow-up in progress
+#### 2026-09-01 — persistent lab install and update qualified
 
 - The first manual install on Ubuntu 22.04 x86-64 at `wth-gpu-01` completed from
   the private source repository. It created the dedicated `rcp` account, managed
@@ -79,9 +79,8 @@ any packet.
   and result path, and prints exact inspection and cleanup commands. A stale
   update confirmation restarts unconfirmed target review instead of reusing the
   stale commit.
-- Hermetic focused coverage passes. Still required before closing this follow-up:
-  ship and live-update the final warning-containment correction, then enroll the
-  replacement bootstrap member.
+- Hermetic focused coverage passes. The warning-containment correction was
+  shipped and live-updated before the replacement bootstrap member enrolled.
 - The old empty installation was stopped, captured in the operator-owned mode
   `0600` archive
   `/home/zhiwang/rcp-server-pre-clean-reinstall-20260901T0430EDT.tar.gz` with
@@ -106,8 +105,52 @@ any packet.
 - One Starlette test-client deprecation warning still escaped while the update
   coordinator imported the rehearsal module. The test client is now imported
   only inside the already-captured candidate child, with a subprocess regression
-  proving the operator-facing coordinator import does not load it. One final
-  live update remains to prove the rotating line stays clean.
+  proving the operator-facing coordinator import does not load it. The later
+  live update kept the rotating operator line clean.
+
+#### 2026-09-01 — persistent lab server and first project qualified
+
+- The clean source installation on `wth-gpu-01` is a healthy enabled team
+  service named `WTH UCSD`. The persistent source, immutable release, running
+  process, Web build, private control socket, and upstream `main` identities
+  read back aligned through `server doctor`.
+- One local desktop member named `Zhi` is enrolled through saved connection
+  `7032a85b-b1bb-4014-b820-6704fa6d219a`. Its permanent member token is in the
+  versioned Keychain service, not the connection registry, URL, logs, or server
+  source tree. The one-time bootstrap inputs were removed after exchange.
+- The server-local `rcp` account has provider-native Codex authentication and
+  all six configured provider profiles pass readiness. RCP neither created nor
+  retained a provider credential in its database; the operator used the
+  provider's native headless-account mechanism.
+- The real request `acfb2ef4-b8de-4022-842e-91ab428abdb5` completed as project
+  `dark matter denoising` (`1c2e93b5-7639-4206-afee-8d582e7f993c`) from
+  `git@github.com:Zhi0467/TIDMAD-denoising.git`. The repository was genuinely
+  empty, so the authorized human workflow created and pushed its visible root
+  commit `45fbc8056c30b1ab4e3995babbded0098e073e0a` before RCP resumed. GitHub
+  then passed the request-scoped write, readback, and cleanup proof through a
+  distinct write-enabled deploy key; RCP cloned the exact commit into its
+  `rcp`-owned central checkout and completed final member review.
+- Project finalization created canonical `.research/` state after Git readiness.
+  That state is intentionally not an RCP-authored hidden Git commit. Its
+  untracked appearance in the central checkout is therefore current project
+  state, not clone divergence and not permission to reset or delete it.
+- The drive found four RCP defects and fixed them on `main`: server-local steps
+  no longer try to `runuser` from `rcp` to `rcp`; the continuous wizard strips
+  an impossible same-user sudo prefix; an empty-repository pause retains the
+  planned machine target and reads the one briefly shipped compatible action
+  shape; and installed control failures now reach the operator log with their
+  classified error. Focused provisioning, Git-credential, CLI, and control
+  regressions pass.
+- The local HTTPS source client now uses one-label wildcard hosts below
+  `rcp.localhost`, migrates the exact previously shipped saved origin, records a
+  365-day certificate lifetime, and rotates during the last seven days. The
+  retained real WKWebView probe passes with two isolated team origins and an
+  unpinned-certificate refusal. The Mac was locked before the final exact
+  visible app click, so S105's two-space source-built UI drive remains open.
+- This closes the first persistent server/member/project slice, not V1. A first
+  real provider task, second human, reachable SSH execution account,
+  backup/restore under project state, transfer, member removal, and the exact
+  visible multi-space drive remain the next live closure work.
 
 ### Notes carried from earlier status updates
 
@@ -2198,10 +2241,10 @@ gate are deliberately future work and do not block this plan.
 
 - The Q11 experiment is accepted as production architecture rather than treated
   as concurrent work to avoid. Every saved connection now owns the deterministic
-  `https://rcp-<connection-id-without-hyphens>.localhost:<local-port>` origin;
-  registry version 2 validates that exact connection binding and rejects the
-  former HTTP shape.
-- The desktop generates one `localhost`/`*.localhost` certificate and private
+  `https://rcp-<connection-id-without-hyphens>.rcp.localhost:<local-port>`
+  origin; registry version 2 validates that exact connection binding and
+  migrates the one previously shipped HTTPS hostname without changing identity.
+- The desktop generates one `localhost`/`*.rcp.localhost` certificate and private
   key, stores their authenticated encrypted record atomically with only its
   bounded sealing key in Keychain, and fails loudly on an unreadable, malformed,
   or mismatched pair. Only the DER SHA-256
@@ -2211,7 +2254,7 @@ gate are deliberately future work and do not block this plan.
 - Main-window navigation admits only the current personal backend, Vite in
   development, or exact HTTPS origins from the validated registry. Registry
   read failure is logged and rejects all team navigation. The Tauri capability
-  permits only `rcp-*.localhost`, leaving navigation and TLS as separate fences.
+  permits only `*.rcp.localhost`, leaving navigation and TLS as separate fences.
 - Verification: all 64 Rust library tests pass. The retained real-WKWebView login
   and restart phases pass with isolated `Secure`/`HttpOnly`/`__Host-` cookies
   and refusal of a third origin with another certificate. The actual

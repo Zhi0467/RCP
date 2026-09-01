@@ -278,9 +278,24 @@ impl TeamConnectionState {
         if bytes.len() as u64 > MAX_REGISTRY_BYTES {
             return Err("the saved team connection registry is too large".into());
         }
-        let registry: TeamConnectionRegistry = serde_json::from_slice(&bytes)
+        let mut registry: TeamConnectionRegistry = serde_json::from_slice(&bytes)
             .map_err(|error| format!("saved team connections are invalid: {error}"))?;
+        let mut migrated = false;
+        if registry.version == REGISTRY_VERSION {
+            for connection in &mut registry.connections {
+                if let Some(origin) = migrate_legacy_local_origin(
+                    &connection.local_origin,
+                    &connection.connection_id,
+                )? {
+                    connection.local_origin = origin;
+                    migrated = true;
+                }
+            }
+        }
         registry.validate()?;
+        if migrated {
+            self.write_registry(&registry)?;
+        }
         Ok(registry)
     }
 
@@ -470,9 +485,27 @@ pub(crate) fn allocate_local_origin(connection_id: &str, port: u16) -> Result<St
         return Err("local team HTTPS port must be positive and non-default".into());
     }
     Ok(format!(
-        "https://rcp-{}.localhost:{port}",
+        "https://rcp-{}.rcp.localhost:{port}",
         connection_id.replace('-', "")
     ))
+}
+
+fn migrate_legacy_local_origin(value: &str, connection_id: &str) -> Result<Option<String>, String> {
+    validate_uuid4(connection_id, "team connection identity")?;
+    let Ok(url) = Url::parse(value) else {
+        return Ok(None);
+    };
+    let Some(port) = url.port() else {
+        return Ok(None);
+    };
+    let legacy = format!(
+        "https://rcp-{}.localhost:{port}",
+        connection_id.replace('-', "")
+    );
+    if value == legacy && url.origin().ascii_serialization() == value {
+        return allocate_local_origin(connection_id, port).map(Some);
+    }
+    Ok(None)
 }
 
 fn validate_local_origin(value: &str, connection_id: &str) -> Result<(), String> {
@@ -861,17 +894,48 @@ mod tests {
         assert!(allocate_local_origin(CONNECTION_ID, 0).is_err());
         assert!(allocate_local_origin(CONNECTION_ID, 443).is_err());
         for rejected in [
-            "http://rcp-11111111111141118111111111111111.localhost:18421",
+            "http://rcp-11111111111141118111111111111111.rcp.localhost:18421",
             "https://localhost:18421",
-            "https://rcp-11111111111141118111111111111111.localhost",
-            "https://rcp-22222222222242228222222222222222.localhost:18421",
-            "https://rcp-11111111111141118111111111111111.localhost:18421/path",
+            "https://rcp-11111111111141118111111111111111.rcp.localhost",
+            "https://rcp-22222222222242228222222222222222.rcp.localhost:18421",
+            "https://rcp-11111111111141118111111111111111.rcp.localhost:18421/path",
         ] {
             assert!(
                 validate_local_origin(rejected, CONNECTION_ID).is_err(),
                 "accepted {rejected}"
             );
         }
+    }
+
+    #[test]
+    fn registry_migrates_the_shipped_local_origin_without_changing_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(directory.path());
+        let mut connection = sample_connection();
+        connection.local_origin = format!(
+            "https://rcp-{}.localhost:18421",
+            CONNECTION_ID.replace('-', "")
+        );
+        fs::write(
+            &state.registry_path,
+            serde_json::to_vec_pretty(&TeamConnectionRegistry {
+                version: REGISTRY_VERSION,
+                connections: vec![connection],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let migrated = state.list().unwrap();
+
+        assert_eq!(migrated[0].connection_id, CONNECTION_ID);
+        assert_eq!(
+            migrated[0].local_origin,
+            allocate_local_origin(CONNECTION_ID, 18421).unwrap()
+        );
+        let saved = fs::read_to_string(&state.registry_path).unwrap();
+        assert!(saved.contains(".rcp.localhost:18421"));
+        assert!(!saved.contains("11111111111141118111111111111111.localhost"));
     }
 
     #[test]

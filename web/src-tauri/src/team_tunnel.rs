@@ -768,7 +768,7 @@ mod tests {
     use tokio_rustls::TlsConnector;
 
     const CONNECTION_ID: &str = "11111111-1111-4111-8111-111111111111";
-    const HOSTNAME: &str = "rcp-11111111111141118111111111111111.localhost";
+    const HOSTNAME: &str = "rcp-11111111111141118111111111111111.rcp.localhost";
 
     fn connection() -> TeamConnectionMetadata {
         TeamConnectionMetadata {

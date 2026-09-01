@@ -26,7 +26,7 @@ const connection = {
   ssh_target: "rcp@lab-server",
   remote_loopback_port: 8421,
   expected_space_id: "22222222-2222-4222-8222-222222222222",
-  local_origin: "https://rcp-11111111111141118111111111111111.localhost:18421",
+  local_origin: "https://rcp-11111111111141118111111111111111.rcp.localhost:18421",
   minimum_shell_version: "0.3.2",
   last_known_cards: [
     {
@@ -44,6 +44,7 @@ test("an available team group exposes its verified cached project", () => {
     React.createElement(TeamConnectionGroup, {
       view: { connection, state: "available", error: null },
       onReconnect() {},
+      onOpenSpace() {},
       onOpenProject() {},
     }),
   );
@@ -51,6 +52,7 @@ test("an available team group exposes its verified cached project", () => {
   assert.match(html, /Causal Systems Lab/);
   assert.match(html, /Plasticity study/);
   assert.match(html, /2 waiting/);
+  assert.match(html, /Open team space/);
   assert.doesNotMatch(html, /disabled=""/);
   assert.doesNotMatch(html, /Reconnect/);
 });
@@ -60,6 +62,7 @@ test("an unavailable team group keeps cached cards visible but inert", () => {
     React.createElement(TeamConnectionGroup, {
       view: { connection, state: "unavailable", error: "server unavailable" },
       onReconnect() {},
+      onOpenSpace() {},
       onOpenProject() {},
     }),
   );
@@ -68,6 +71,25 @@ test("an unavailable team group keeps cached cards visible but inert", () => {
   assert.match(html, /<button[^>]*>.*Reconnect/s);
   assert.match(html, /class="team-project-card"[^>]*disabled=""/);
   assert.match(html, /role="alert"[^>]*>server unavailable/);
+  assert.doesNotMatch(html, /Open team space/);
+});
+
+test("an empty available team group can open its project index", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(TeamConnectionGroup, {
+      view: {
+        connection: { ...connection, last_known_cards: [] },
+        state: "available",
+        error: null,
+      },
+      onReconnect() {},
+      onOpenSpace() {},
+      onOpenProject() {},
+    }),
+  );
+
+  assert.match(html, /Open team space/);
+  assert.match(html, /No projects yet/);
 });
 
 test("connection updates preserve saved registry order", () => {

@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn main_window_accepts_only_exact_saved_team_https_origins() {
         let saved =
-            vec!["https://rcp-11111111111141118111111111111111.localhost:18421".to_string()];
+            vec!["https://rcp-11111111111141118111111111111111.rcp.localhost:18421".to_string()];
         assert!(is_main_window_url(
             &Url::parse(&format!("{}/#/projects/a", saved[0])).unwrap(),
             None,
@@ -123,9 +123,9 @@ mod tests {
             false,
         ));
         for rejected in [
-            "https://rcp-11111111111141118111111111111111.localhost:19421/",
-            "https://rcp-22222222222242228222222222222222.localhost:18421/",
-            "http://rcp-11111111111141118111111111111111.localhost:18421/",
+            "https://rcp-11111111111141118111111111111111.rcp.localhost:19421/",
+            "https://rcp-22222222222242228222222222222222.rcp.localhost:18421/",
+            "http://rcp-11111111111141118111111111111111.rcp.localhost:18421/",
         ] {
             assert!(!is_main_window_url(
                 &Url::parse(rejected).unwrap(),

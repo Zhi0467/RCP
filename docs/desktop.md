@@ -129,9 +129,13 @@ limitation; a future public signed build must use app-bound credential access.
 Permanent team member tokens use the same bounded helper under service
 `app.researchcontrolpanel.rcp.team-member-token.source-v1`, with one
 `team-connection/<uuid>` account per saved connection.
-Saved team connections use connection-bound `rcp-<uuid>.localhost` origins;
+Saved team connections use connection-bound `rcp-<uuid>.rcp.localhost` origins;
 only their exact validated origins may enter the main window, and only the
 stored certificate fingerprint is passed to the native trust hook.
+The encrypted identity records a 365-day certificate lifetime and rotates
+atomically during the final seven days. Startup migrates valid earlier identity
+records and the exact previously shipped `rcp-<uuid>.localhost` registry origin;
+malformed or partial identity state still fails closed.
 
 The ignored D3 live test uses the same production tunnel owner with an existing
 system SSH login, forwards only the remote host's loopback SSH banner, then

@@ -4695,7 +4695,7 @@ mod tests {
             ssh_target: "member@lab-server".into(),
             remote_loopback_port: 8421,
             expected_space_id: TARGET_SPACE_ID.into(),
-            local_origin: "https://rcp-66666666666646668666666666666666.localhost:18421".into(),
+            local_origin: "https://rcp-66666666666646668666666666666666.rcp.localhost:18421".into(),
             minimum_shell_version: "0.3.2".into(),
             last_known_cards: Vec::new(),
             operator_route: None,
