@@ -793,8 +793,20 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
                         for repository in self.repositories
                         if target.service == "github.com"
                         and target.resource == repository.repository.identity
-                        and target.destination_url == repository.repository.settings_url
-                        and target.required_authority_role == "repository administrator"
+                        and (
+                            (
+                                target.destination_url == repository.repository.settings_url
+                                and target.required_authority_role == "repository administrator"
+                            )
+                            # Commit 55ff8db briefly persisted the empty-repository action
+                            # at the repository root. Accept only that exact retired shape so
+                            # the next normal resume can replace it with the planned target.
+                            or (
+                                target.destination_url
+                                == f"https://github.com/{repository.repository.identity}"
+                                and target.required_authority_role == "repository contributor"
+                            )
+                        )
                     ),
                     None,
                 )

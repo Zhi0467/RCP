@@ -32,6 +32,7 @@ from rcp.server_ops.git_credentials import (
 )
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
+from rcp.server_ops.models import ExternalServiceTarget
 from rcp.server_ops.project_checkout import (
     ProjectCheckoutRefused,
     ProjectCheckoutResult,
@@ -690,6 +691,36 @@ def test_empty_repository_persists_first_commit_action_on_the_planned_target(
     stored = store.project_provisioning_request(request.request_id)
     assert stored is not None and stored.status == "operator_action_needed"
     assert stored.operator_action == paused.step
+
+    legacy_action = paused.step.model_copy(
+        update={
+            "target": ExternalServiceTarget(
+                service="github.com",
+                resource=stored.repositories[0].repository.identity,
+                destination_url=(
+                    f"https://github.com/{stored.repositories[0].repository.identity}"
+                ),
+                required_authority_role="repository contributor",
+            )
+        }
+    )
+    with store.connection() as connection:
+        connection.execute(
+            """
+            UPDATE project_provisioning_requests
+            SET operator_action_json = ?
+            WHERE request_id = ?
+            """,
+            (legacy_action.model_dump_json(), request.request_id),
+        )
+    compatible = store.project_provisioning_request(request.request_id)
+    assert compatible is not None
+    assert compatible.operator_action == legacy_action
+
+    credentials.probe_status = "ready"
+    _advance_all(coordinator, request.request_id)
+    ready = store.project_provisioning_request(request.request_id)
+    assert ready is not None and ready.status == "ready_for_review"
 
 
 def test_unsafe_credential_path_pauses_with_exact_account_and_project_resume(
