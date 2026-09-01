@@ -937,7 +937,7 @@ def test_codex_work_uses_exact_project_permission_profile() -> None:
     assert (
         'permissions={rcp_project={workspace_roots={"/data/chat-stage"=true,'
         '"/project/repo-a"=true},filesystem={":root"="read",":workspace_roots"='
-        '{"."="write",".research"="read"}},network={enabled=true}}}'
+        '{"."="write",".git"="write",".research"="read"}},network={enabled=true}}}'
     ) in command
     assert command[command.index("--cd") + 1] == stage
     assert "--add-dir" not in command
@@ -976,6 +976,7 @@ def test_codex_profile_keeps_staged_canonical_state_readable() -> None:
 
     # The staged pointer and the policy governing it, checked against each other.
     assert f"{state_repository}/.research" in scope.protected_write_paths
+    assert '".git"="write"' in permission_profile
     assert '".research"="read"' in permission_profile
     assert "deny" not in permission_profile
 
