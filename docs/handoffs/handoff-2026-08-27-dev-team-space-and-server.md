@@ -45,9 +45,10 @@ to [the evidence archive](../archive/handoffs/handoff-2026-08-27-dev-team-space-
 on 2026-09-01; only packets with an open drive remain below. The table above and
 this opening status are the authoritative current summary.
 
-The previously planned G1 pull-request transition was rejected by the human for
-this private, single-developer pre-team-server implementation. It no longer gates
-any packet.
+The previously planned G1 pull-request transition before implementation was
+rejected by the human. Direct commits remain in force through this still-open,
+unstable server-stabilization slice. Archiving this handoff ends that exception;
+the next change uses a short-lived branch, PR CI, and explicit human merge.
 
 #### 2026-09-01 — persistent lab install and update qualified
 
@@ -297,11 +298,10 @@ The remaining seams are also concrete:
   exist. Post-setup cancellation and complete live team qualification remain
   open, including the real source-built transfer desktop/SSH drive.
 
-The repository's current `AGENTS.md` prescribes direct work on `main`, which the
-human retained for the full private pre-team-server implementation. G0 restored
-the baseline and G2 added the old-data-to-candidate upgrade gate. CI reports
-post-push `main`, but GitHub branch protection remains the explicitly deferred
-public-sharing gate described below.
+The repository's current `AGENTS.md` prescribes direct work on `main` through
+this handoff's exact closure. G0 restored the baseline and G2 added the old-data-
+to-candidate upgrade gate. CI reports post-push `main`, but GitHub branch
+protection remains the explicitly deferred public-sharing gate described below.
 
 ### Resolved repository workflow boundary
 
@@ -309,17 +309,22 @@ A read-only GitHub fact-check on 2026-08-28 confirmed that `Zhi0467/RCP` is
 private and its current plan rejects the branch-protection API with HTTP 403,
 stating that private-repository protection requires a plan upgrade or a public
 repository. The human chose not to change the repository's plan or visibility
-and explicitly retained direct work on `main` throughout this private,
-single-developer implementation. Each packet receives focused tests,
-pre-commit, and code review; full desktop/live drives occur at meaningful
-milestones. CI reports pushed failures but does not technically reject a direct
-push, and the evidence must not imply otherwise.
+and explicitly retained direct work on `main` through this first server's
+stabilization and closure. Each packet receives focused tests, pre-commit, and
+code review; full desktop/live drives occur at meaningful milestones. CI reports
+pushed failures but does not technically reject a direct push, and the evidence
+must not imply otherwise.
+
+Archiving this handoff is the workflow transition. The next change uses a short-
+lived branch, PR CI, and explicit human merge even if the repository remains
+private and the rule is still convention-only. There is no permanent `dev`
+branch, and the server continues to consume only merged `origin/main`.
 
 Before RCP is shared publicly or with external users, make the repository public
-and enable real `main` branch protection. Require pull requests and the named
-build, test, and upgrade-compatibility checks, reject direct pushes and failed or
-missing checks, and record a live enforcement proof. That public-sharing gate is
-outside this one-lab team-server slice and does not block its implementation.
+and enable real `main` branch protection. Make the already-adopted PR workflow
+technically require the named build, test, and upgrade-compatibility checks,
+reject direct pushes and failed or missing checks, and record a live enforcement
+proof. That enforcement gate is outside this one-lab team-server slice.
 
 ### Final planning-audit evidence
 
@@ -492,8 +497,8 @@ that a record already owns.
 
 - GitHub `origin/main` is the only server update channel and every commit on it
   must be deployable.
-- The full private, single-developer pre-team-server implementation stays
-  directly on local `main`; this handoff adds no short-lived-branch or PR gate.
+- This first-team-server stabilization and closure stays directly on local
+  `main`; archiving this handoff ends that bounded exception.
 - Each scoped packet receives focused tests, pre-commit, and code review for
   coverage, edge cases, and stale docs. Full source-built desktop and machine
   drives run at meaningful integration milestones rather than after every
@@ -506,13 +511,14 @@ that a record already owns.
   persistence boundary remains directly upgradeable. CI retains one immutable,
   sanitized fixture bundle per distinct schema or migration-semantics boundary;
   fixtures do not expire merely because they are old.
-- Local Web and desktop development may run any branch, but this implementation
-  remains on `main`. Emergency fixes use the same scoped verification.
+- Local Web and desktop development may run any branch, but this stabilization
+  remains on `main`. The next change after closure uses a short-lived branch,
+  PR CI, and explicit human merge. Emergency fixes use the workflow then active.
 - There is no permanent `dev` branch.
 - Before public or external sharing, make the repository public and enable real
-  branch protection that requires the named jobs and rejects direct pushes and
-  failed or missing checks. This later gate is not part of the one-lab closure
-  condition.
+  branch protection that technically requires the already-adopted PR workflow's
+  named jobs and rejects direct pushes and failed or missing checks. This later
+  enforcement gate is not part of the one-lab closure condition.
 
 ### Accounts and credentials
 
@@ -1376,13 +1382,17 @@ Close this handoff only when all of the following are true:
   chats, Paper draft/introduction, facts, referenced kept files, or the complete
   provider histories that transfer positively selected and imported;
 - machine-only operations are absent from member HTTP authority;
-- every secret and account boundary above has a negative verification; and
-- the genuine live lab drill passes and is documented without credentials.
+- every secret and account boundary above has a negative verification;
+- the genuine live lab drill passes and is documented without credentials; and
+- the workflow decision and agent instructions identify this archive commit as
+  the end of direct development on `main`.
 
 ## Suggested skills for pickup
 
-- The design grilling and final cross-document fact-check are complete. Continue
-  directly on `main` from the dependency-ready packets. Finish F6d's two-release
+- The original design grilling and cross-document fact-check are complete. The
+  reopened desktop/server compatibility boundary is under a separate grilling
+  and is not implementation authority until settled. Continue directly on
+  `main` through this handoff's closure. Finish F6d's two-release
   live workflow before starting another source-update packet; O3c and the later
   restore lane may also consume the now-complete protected-backup boundary.
   Implement remaining packets without reopening product boundaries unless
