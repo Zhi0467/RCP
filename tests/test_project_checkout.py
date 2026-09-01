@@ -431,6 +431,29 @@ def test_manager_clones_verifies_and_recovers_without_renaming(tmp_path: Path) -
     )
 
 
+def test_manager_clones_with_private_modes_under_operator_umask(tmp_path: Path) -> None:
+    origin, commit = _origin(tmp_path)
+    manager, _layout_value, machine, material, _runner = _manager(tmp_path, origin)
+
+    previous_umask = os.umask(0o002)
+    try:
+        prepared = manager.prepare(
+            machine,
+            material,
+            request_kind="create_team_project",
+            project_id=PROJECT_ID,
+            repository_alias=ALIAS,
+            state_repository=False,
+            expected_commit=commit,
+        )
+    finally:
+        os.umask(previous_umask)
+
+    git_directory = Path(prepared.repository_path) / ".git"
+    assert stat.S_IMODE(git_directory.stat().st_mode) & 0o077 == 0
+    assert stat.S_IMODE((git_directory / "config").stat().st_mode) & 0o077 == 0
+
+
 def test_manager_refuses_wrong_origin_without_rewriting_it(tmp_path: Path) -> None:
     origin, commit = _origin(tmp_path)
     manager, layout, machine, material, _runner = _manager(tmp_path, origin)

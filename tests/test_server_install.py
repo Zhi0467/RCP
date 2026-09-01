@@ -797,7 +797,7 @@ def test_new_service_account_uses_stateful_timeout_and_reports_expiry(
     monkeypatch.setattr(server_install.pwd, "getpwnam", missing_account)
     monkeypatch.setattr(server_install, "_run_process", timed_out_useradd)
 
-    with pytest.raises(InstallRefused, match="did not finish within two minutes"):
+    with pytest.raises(InstallRefused, match="did not finish within five minutes"):
         server_install.LinuxInstallMachine()._converge_account()
 
     assert calls == [

@@ -843,6 +843,9 @@ class ProjectCheckoutManager:
                 "GIT_TERMINAL_PROMPT=0",
                 "GIT_SSH_VARIANT=ssh",
                 f"GIT_SSH_COMMAND={deploy_key_ssh_command(material)}",
+                "python3",
+                "-c",
+                _remote_private_exec_source(),
                 *argv,
             ),
         )
@@ -969,6 +972,15 @@ def _remote_helper_source() -> str:
     return (
         importlib.resources.files("rcp.server_ops")
         .joinpath("remote_project_checkout.py")
+        .read_text(encoding="utf-8")
+    )
+
+
+@lru_cache(maxsize=1)
+def _remote_private_exec_source() -> str:
+    return (
+        importlib.resources.files("rcp.server_ops")
+        .joinpath("remote_private_exec.py")
         .read_text(encoding="utf-8")
     )
 

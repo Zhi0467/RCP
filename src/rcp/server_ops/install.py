@@ -1239,7 +1239,7 @@ class LinuxInstallMachine:
             if account_creation.returncode != 0:
                 if account_creation.stderr == "command timed out":
                     raise InstallRefused(
-                        "Creating the dedicated rcp account did not finish within two minutes. "
+                        "Creating the dedicated rcp account did not finish within five minutes. "
                         "Inspect useradd, NSS, and home-directory policy, then rerun."
                     ) from None
                 raise InstallRefused(
