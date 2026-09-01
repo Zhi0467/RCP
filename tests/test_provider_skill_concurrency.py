@@ -67,9 +67,7 @@ def test_concurrent_refreshes_share_one_probe(tmp_path: Path, monkeypatch) -> No
 
     def refresh_owner() -> None:
         try:
-            owner_snapshots.append(
-                manager.refresh("claude", "", "/opt/claude", _ready())
-            )
+            owner_snapshots.append(manager.refresh("claude", "", "/opt/claude", _ready()))
         except Exception as exc:
             owner_errors.append(exc)
 
