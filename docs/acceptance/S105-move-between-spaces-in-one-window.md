@@ -3,7 +3,13 @@ id: S105-move-between-spaces-in-one-window
 status: pending
 tier: live
 driver: desktop
-covered_by: none
+covered_by:
+  - tests/test_api_health.py::test_team_shell_protocol_one_fixture_matches_the_advertised_contract
+  - tests/test_team_authentication.py::test_native_team_handshake_echoes_one_protocol_and_rejects_another
+  - tests/test_server_install_live.py
+  - web/tests/api.test.mjs
+  - web/src-tauri/src/team_connections.rs::tests::registry_v2_migrates_without_changing_routing_cards_or_credential_reference
+  - web/src-tauri/src/team_session.rs::tests
 invariants: [8]
 ---
 
@@ -15,10 +21,12 @@ and [Confirmed team desktop target](../specs/api-web-and-desktop-projections.md#
 
 Every RCP backend serves its own interface. So selecting a team space points the
 application window at that team server, and the screen a member is looking at is
-always served by the backend answering it. That is what makes client/server skew
-impossible for the application. A bootstrap/invitation code or existing token is
-entered once through the controlled Add flow, cleared, and stored by the native
-shell; later navigation exchanges the stored token for an ordinary session.
+always served by the backend answering it. Ordinary Web UI skew is therefore not
+a native-shell problem. The smaller native entrance still negotiates a live
+integer protocol range before it can establish that server-served session. A
+bootstrap/invitation code or existing token is entered once through the
+controlled Add flow, cleared, and stored by the native shell; later navigation
+exchanges the stored token for an ordinary session.
 
 The index is the one screen showing more than one space at a time, so it stays
 local.
@@ -50,10 +58,15 @@ whose server can be stopped.
 8. Attempt to open a project in the stopped space.
 9. Restart that server with a *different* space and reconnect the saved
    connection.
-10. Point the app at a server whose `minimum_shell_version` exceeds the shell's.
-11. Keep both team tunnels open, authenticate both spaces, and inspect their
+10. Point the app at servers with a missing protocol range, a range wholly below
+    the shell's, and a range wholly above it. Then make a compatible server omit
+    or change the selected-version echo.
+11. Start from a shipped version-2 saved-connection registry and open the rebuilt
+    app so it automatically removes the old `minimum_shell_version` field while
+    preserving routing, cached cards, operator route, and Keychain lookup.
+12. Keep both team tunnels open, authenticate both spaces, and inspect their
     loopback origins and session cookies.
-12. Remove the connection metadata while leaving its credential-store entry,
+13. Remove the connection metadata while leaving its credential-store entry,
     then remove the credential while leaving metadata, and reconnect.
 
 ## Assert
@@ -74,7 +87,11 @@ whose server can be stopped.
 - `an_unavailable_team_space_is_reported_and_never_silently_rerouted_locally`
 - `the_local_backend_never_executes_or_applies_team_work`
 - `an_unexpected_space_id_blocks_mutations_until_the_human_reconnects`
-- `a_shell_below_the_minimum_version_is_told_to_update`
+- `the_highest_common_team_shell_protocol_is_selected_and_echoed`
+- `missing_or_disjoint_protocol_ranges_refuse_before_cookie_installation`
+- `a_missing_or_different_protocol_echo_refuses_before_navigation`
+- `the_mismatch_names_both_source_commits_and_the_side_to_update`
+- `the_version_two_registry_migrates_without_moving_its_keychain_reference`
 - `connection_metadata_and_credential_lifecycle_reconcile_without_exposing_the_token`
 
 ## UI path
@@ -129,5 +146,8 @@ launch another saved connection. A live authenticated drive passed through the
 production manager without changing the remote host. The native enrollment,
 session exchange, cookie installation, navigation, grouped index, cached
 unavailable cards, and reconnect paths now have focused Rust/Web coverage. This
-scenario remains pending because those D4-D5 paths have not yet been driven
-together through the real source-built app against the two live team spaces.
+includes protocol 1, exact response echoes and commit diagnostics, and the
+version-2 registry migration. The coordinated real server/desktop cutover
+remains part of the pending live drive. This scenario remains pending because
+those D4-D5 paths have not yet been driven together through the real source-built
+app against the two live team spaces.

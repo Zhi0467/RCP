@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from rcp.api import create_app
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import TEAM_CODE_FAILED_ATTEMPT_LIMIT, TEAM_SESSION_IDLE_DAYS
+from rcp.server_runtime import ServerMetadata
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -622,7 +623,6 @@ def test_enrollment_exchange_and_session_cookie_make_the_team_api_usable(tmp_pat
     )
     assert restarted_identity.status_code == 200
     assert restarted_identity.json()["user"]["user_id"] == member["user_id"]
-
     invitation = client.post("/api/team/invitations", json={})
     assert invitation.status_code == 200
     assert invitation.json()["space_name"] == "Team Lab"
@@ -635,6 +635,62 @@ def test_enrollment_exchange_and_session_cookie_make_the_team_api_usable(tmp_pat
     ]
     assert invitation.json()["code"] not in listed.text
     assert AppStore(store.path).space_user(member["user_id"]) is not None
+
+
+def test_native_team_handshake_echoes_one_protocol_and_rejects_another(tmp_path) -> None:
+    store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
+    metadata = ServerMetadata.create(
+        tmp_path,
+        host="127.0.0.1",
+        port=8421,
+        owner_kind="cli",
+        running_commit="a" * 40,
+        web_build_id=f"sha256:{'b' * 64}",
+    )
+    client = TestClient(
+        create_app(data_dir=tmp_path, instance_metadata=metadata),
+        base_url="https://testserver",
+    )
+    header = "RCP-Team-Shell-Protocol"
+
+    missing = client.post("/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"})
+    assert missing.status_code == 426
+    assert missing.json()["detail"]["action"].startswith("Update and rebuild RCP desktop")
+
+    mismatch = client.post(
+        "/api/team/enroll",
+        json={"code": bootstrap, "display_name": "Alice"},
+        headers={header: "2"},
+    )
+    assert mismatch.status_code == 426
+    assert mismatch.json()["detail"] == {
+        "code": "team_shell_protocol_mismatch",
+        "message": "The selected team-shell protocol is not supported by this server.",
+        "server_protocol": {"minimum": 1, "maximum": 1},
+        "action": "Update the RCP desktop or team server from current origin/main.",
+    }
+
+    enrolled = client.post(
+        "/api/team/enroll",
+        json={"code": bootstrap, "display_name": "Alice"},
+        headers={header: "1"},
+    )
+    assert enrolled.status_code == 200
+    assert enrolled.headers[header] == "1"
+    token = enrolled.json()["token"]
+
+    exchanged = client.post(
+        "/api/team/session/exchange",
+        json={"token": token},
+        headers={header: "1"},
+    )
+    assert exchanged.status_code == 200
+    assert exchanged.headers[header] == "1"
+
+    projects = client.get("/api/projects", headers={header: "1"})
+    assert projects.status_code == 200
+    assert projects.headers[header] == "1"
+    assert len(store.space_users()) == 1
 
 
 def test_revoking_an_invitation_over_http_blocks_enrollment(tmp_path) -> None:

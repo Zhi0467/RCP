@@ -1120,7 +1120,6 @@ mod tests {
                 "https://rcp-{}.rcp.localhost:{port}",
                 connection_id.replace('-', "")
             ),
-            minimum_shell_version: "0.3.2".into(),
             last_known_cards: Vec::new(),
             operator_route: None,
         }

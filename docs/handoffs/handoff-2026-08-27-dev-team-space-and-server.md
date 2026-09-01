@@ -19,7 +19,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Gates | G0, G2 | — | — |
 | Server foundation | F1, F2, F3a, F3b, F4, F5, F6a, F6b, F6c, F6d | — | — |
 | Provisioning | P1, P2, P3, P4, P5, P6b, P6c | P6a | — |
-| Desktop | D1, D2, D3 | D4a, D4b, D5, D6, D7 | — |
+| Desktop | D1, D2, D3 | D4a, D4b, D5, D6, D7, D8 | — |
 | Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c, O4d | — | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
@@ -31,7 +31,8 @@ What each open drive is waiting on:
 - **P6a** — the reachable-SSH checkout/provider half of the composed live
   qualification; the server-local GitHub path now passes on the persistent lab
   server.
-- **D4a, D4b, D5** — the integrated source-built two-space desktop drive.
+- **D4a, D4b, D5, D8** — the integrated source-built two-space desktop drive,
+  including the coordinated protocol-1 cutover.
 - **D6** — the exact source-built desktop click through both fixed operator
   routes. The persistent lab host now has the installed `rcp` account and CLI;
   direct operator-terminal provisioning passes, but that is not evidence for
@@ -431,7 +432,8 @@ decision record exists it owns the rationale and wins on any conflict:
 [install and update privilege](../decisions/2026-08-27-source-server-install-and-update-privilege.md),
 [schema compatibility](../decisions/2026-08-27-server-schema-compatibility.md),
 [transfer archive](../decisions/2026-08-27-personal-to-team-transfer-archive.md),
-and [desktop local HTTPS origins](../decisions/2026-08-30-desktop-local-https-origins.md).
+[desktop local HTTPS origins](../decisions/2026-08-30-desktop-local-https-origins.md),
+and [team-shell handshake compatibility](../decisions/2026-09-01-team-shell-handshake-compatibility.md).
 Keep the concrete matrix, account, and drive facts here; do not restate rationale
 that a record already owns.
 
@@ -645,9 +647,9 @@ that a record already owns.
   because cookies ignore ports. The exact hostname, certificate, and Keychain
   scheme are owned by
   [the desktop origins decision](../decisions/2026-08-30-desktop-local-https-origins.md).
-- The native shell owns SSH tunnel lifetime, health/`space_id`/minimum-version
-  handshake, token exchange, WebView session establishment, and origin
-  navigation.
+- The native shell owns SSH tunnel lifetime, health/`space_id` plus live
+  team-shell protocol negotiation, token exchange, WebView session
+  establishment, and origin navigation. It stores no compatibility floor.
 - The personal backend stays alive while the window views a team backend. App
   Quit stops only processes/tunnels owned by the desktop, never the remote team
   service.
@@ -1034,10 +1036,11 @@ Own:
 - Keychain calls through `web/src-tauri/src/team_connections.rs`; and
 - focused Rust tests plus one live enrollment/session test.
 
-Through the tunnel, verify health, expected `space_id`, team kind, server/running
-protocol, and minimum shell version. Support one native enrollment call for a
-bootstrap/invitation code and one storage path for an existing permanent token;
-capture any newly issued token directly into Keychain and clear the input. Then
+Through the tunnel, verify health, expected `space_id`, team kind, installed
+source identity, and the highest common team-shell protocol. Support one native
+enrollment call for a bootstrap/invitation code and one storage path for an
+existing permanent token; capture any newly issued token directly into Keychain
+and clear the input. Then
 establish the server-side HTTP-only session in the real WebView cookie store
 without logging or otherwise persisting the permanent token. Return one
 nonsecret established-session result to D4b. A mismatch blocks mutations and
@@ -1188,6 +1191,33 @@ Use one primary action and real error text. Do not add muted helper/commentary
 lines beneath primary labels. Final creation requires an explicit human review
 action. Move is shown only through T5b's complete pinned-source route; D7 does
 not show a half-built transfer state or create a separate transfer wizard.
+
+### D8 — Thin team-shell compatibility handshake
+
+**Implemented 2026-09-01; coordinated live cutover still open:** protocol 1,
+exact response echoes, commit diagnostics, the version-2 registry migration,
+and the shared cross-language contract fixture have focused coverage. S105 still
+owes the real installed-server and rebuilt-desktop drive.
+
+Own:
+
+- the protocol range and response echo in `src/rcp/api/health.py`,
+  `src/rcp/api/team.py`, and `src/rcp/api/index.py`;
+- negotiation and source-commit diagnostics in
+  `web/src-tauri/src/team_session.rs` and `web/src-tauri/build.rs`;
+- the version-2 to version-3 connection-registry migration in
+  `web/src-tauri/src/team_connections.rs` plus the Web response shape; and
+- one immutable protocol-1 fixture with focused Python, Web, and Rust checks in
+  the existing CI jobs.
+
+Negotiate the highest overlap in the compiled and advertised inclusive ranges;
+send and require the exact selected-version echo on the native enrollment,
+token-exchange, and project-card requests. Refuse missing or disjoint ranges and
+missing or different echoes before cookie installation or navigation. Report
+both exact source commits and the stale side's update action. Do not add server
+operations or feature capability discovery to this entrance. Remove the saved
+minimum shell version through an automatic migration without changing the
+Keychain reference or any routing identity.
 
 ## Transfer packets
 
@@ -1390,8 +1420,8 @@ Close this handoff only when all of the following are true:
 ## Suggested skills for pickup
 
 - The original design grilling and cross-document fact-check are complete. The
-  reopened desktop/server compatibility boundary is under a separate grilling
-  and is not implementation authority until settled. Continue directly on
+  desktop/server compatibility boundary was separately grilled and settled in
+  its active decision record. Continue directly on
   `main` through this handoff's closure. Finish F6d's two-release
   live workflow before starting another source-update packet; O3c and the later
   restore lane may also consume the now-complete protected-backup boundary.

@@ -129,12 +129,35 @@ metadata.
 
 The native shell uses the system SSH configuration and agent to hold a loopback
 tunnel to the team server. Before establishing a browser session it checks
-health, the expected `space_id`, and `minimum_shell_version`. It exchanges the
-stored member token and establishes the team server's HTTP-only session in the
-WebView before navigating to that server's own application. A changed
-`space_id` blocks mutations until the human explicitly reconnects; an
-unavailable team connection leaves personal work usable and shows its cached
-cards as unavailable.
+health and the expected `space_id`, then selects the highest overlap between its
+compiled inclusive team-shell protocol range and the server's advertised range.
+It sends that selected integer on enrollment, permanent-token exchange, and the
+bounded project-card read and requires the server to echo it exactly before it
+installs the HTTP-only cookie. A missing range, no overlap, or a missing or
+different echo refuses the connection. The error names the observed desktop and
+server source commits and tells the member which side to update or rebuild from
+current `origin/main`; Git commit ordering and application semantic versions are
+not compatibility protocols. A changed `space_id` likewise blocks mutations
+until the human explicitly reconnects. An unavailable or incompatible team
+connection leaves personal work usable and shows its cached cards as
+unavailable.
+
+The initial protocol range is `[1, 1]`. Future releases may overlap, such as a
+desktop `[1, 2]` with a server `[1, 1]`; the selected value is then `1`. A
+breaking change adds a new immutable per-version contract before either end
+advertises it. Narrowing a range is explicit retirement, not an automatic
+current-plus-previous or time-based rule. The native handshake ends after
+health/source/space identity, enrollment or token exchange, returned member
+identity, bounded project cards, and HTTP-only browser-cookie installation. It
+does not include server operations, project provisioning or transfer, provider
+work, or the ordinary server-served Web/API surface.
+
+Compatibility is negotiated live and is never durable connection authority.
+Registry version 3 removes the shipped `minimum_shell_version` field through an
+automatic version-2 migration while preserving connection identity, SSH target,
+local origin, expected space, cached cards, operator route, and the independent
+Keychain credential reference. Unknown registry versions or fields still fail
+closed.
 
 Each space serves its own project index, so leaving a project returns to the
 index of the space that project is in, by the same control and shortcut in

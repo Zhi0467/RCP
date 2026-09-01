@@ -12,6 +12,7 @@ from rcp.api.dependencies import (
     get_store,
 )
 from rcp.api.project_provisioning import project_creation_control
+from rcp.api.team_shell_protocol import team_shell_protocol_range
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore
 
@@ -53,6 +54,7 @@ async def health(
         "owner_kind": composition.instance_metadata.owner_kind,
         "running_commit": composition.instance_metadata.running_commit,
         "web_build_id": composition.instance_metadata.web_build_id,
+        "team_shell_protocol": team_shell_protocol_range(),
         "active_agent_tasks": active_agent_tasks,
         "projects": len(catalog.cards()),
         "agent_mode": composition.agent_mode,

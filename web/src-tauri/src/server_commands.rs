@@ -1023,7 +1023,6 @@ mod tests {
             remote_loopback_port: 8421,
             expected_space_id: "33333333-3333-4333-8333-333333333333".into(),
             local_origin: "https://rcp-22222222222242228222222222222222.rcp.localhost:18421".into(),
-            minimum_shell_version: "0.3.2".into(),
             last_known_cards: Vec::new(),
             operator_route: Some(route(mode)),
         }

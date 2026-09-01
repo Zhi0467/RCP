@@ -13,7 +13,8 @@ use url::{Host, Url};
 use uuid::{Uuid, Version as UuidVersion};
 use zeroize::Zeroizing;
 
-const REGISTRY_VERSION: u32 = 2;
+const PREVIOUS_REGISTRY_VERSION: u32 = 2;
+const REGISTRY_VERSION: u32 = 3;
 const REGISTRY_FILENAME: &str = "team-connections.json";
 const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
 const MAX_CONNECTIONS: usize = 64;
@@ -50,7 +51,6 @@ pub struct TeamConnectionMetadata {
     pub remote_loopback_port: u16,
     pub expected_space_id: String,
     pub local_origin: String,
-    pub minimum_shell_version: String,
     pub last_known_cards: Vec<CachedTeamProjectCard>,
     #[serde(default)]
     pub operator_route: Option<ServerOperatorRoute>,
@@ -86,6 +86,33 @@ pub(crate) struct CredentialReference {
 struct TeamConnectionRegistry {
     version: u32,
     connections: Vec<TeamConnectionMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RegistryVersion {
+    version: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TeamConnectionRegistryV2 {
+    version: u32,
+    connections: Vec<TeamConnectionMetadataV2>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TeamConnectionMetadataV2 {
+    connection_id: String,
+    display_name: String,
+    ssh_target: String,
+    remote_loopback_port: u16,
+    expected_space_id: String,
+    local_origin: String,
+    minimum_shell_version: String,
+    last_known_cards: Vec<CachedTeamProjectCard>,
+    #[serde(default)]
+    operator_route: Option<ServerOperatorRoute>,
 }
 
 impl Default for TeamConnectionRegistry {
@@ -278,18 +305,31 @@ impl TeamConnectionState {
         if bytes.len() as u64 > MAX_REGISTRY_BYTES {
             return Err("the saved team connection registry is too large".into());
         }
-        let mut registry: TeamConnectionRegistry = serde_json::from_slice(&bytes)
+        let version: RegistryVersion = serde_json::from_slice(&bytes)
             .map_err(|error| format!("saved team connections are invalid: {error}"))?;
-        let mut migrated = false;
-        if registry.version == REGISTRY_VERSION {
-            for connection in &mut registry.connections {
-                if let Some(origin) = migrate_legacy_local_origin(
-                    &connection.local_origin,
-                    &connection.connection_id,
-                )? {
-                    connection.local_origin = origin;
-                    migrated = true;
-                }
+        let (mut registry, mut migrated) = match version.version {
+            REGISTRY_VERSION => (
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("saved team connections are invalid: {error}"))?,
+                false,
+            ),
+            PREVIOUS_REGISTRY_VERSION => {
+                let previous: TeamConnectionRegistryV2 = serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("saved team connections are invalid: {error}"))?;
+                (previous.into_current()?, true)
+            }
+            unsupported => {
+                return Err(format!(
+                    "saved team connection registry version {unsupported} is unsupported"
+                ));
+            }
+        };
+        for connection in &mut registry.connections {
+            if let Some(origin) =
+                migrate_legacy_local_origin(&connection.local_origin, &connection.connection_id)?
+            {
+                connection.local_origin = origin;
+                migrated = true;
             }
         }
         registry.validate()?;
@@ -371,6 +411,51 @@ impl TeamConnectionRegistry {
     }
 }
 
+impl TeamConnectionRegistryV2 {
+    fn into_current(self) -> Result<TeamConnectionRegistry, String> {
+        if self.version != PREVIOUS_REGISTRY_VERSION {
+            return Err(format!(
+                "saved team connection registry version {} is unsupported",
+                self.version
+            ));
+        }
+        if self.connections.len() > MAX_CONNECTIONS {
+            return Err(format!(
+                "RCP desktop supports at most {MAX_CONNECTIONS} saved team connections"
+            ));
+        }
+        let connections = self
+            .connections
+            .into_iter()
+            .map(TeamConnectionMetadataV2::into_current)
+            .collect::<Result<Vec<_>, _>>()?;
+        let registry = TeamConnectionRegistry {
+            version: REGISTRY_VERSION,
+            connections,
+        };
+        registry.validate()?;
+        Ok(registry)
+    }
+}
+
+impl TeamConnectionMetadataV2 {
+    fn into_current(self) -> Result<TeamConnectionMetadata, String> {
+        validate_shell_version(&self.minimum_shell_version)?;
+        let local_origin = migrate_legacy_local_origin(&self.local_origin, &self.connection_id)?
+            .unwrap_or(self.local_origin);
+        Ok(TeamConnectionMetadata {
+            connection_id: self.connection_id,
+            display_name: self.display_name,
+            ssh_target: self.ssh_target,
+            remote_loopback_port: self.remote_loopback_port,
+            expected_space_id: self.expected_space_id,
+            local_origin,
+            last_known_cards: self.last_known_cards,
+            operator_route: self.operator_route,
+        })
+    }
+}
+
 impl TeamConnectionMetadata {
     fn validate(&self) -> Result<(), String> {
         validate_uuid4(&self.connection_id, "team connection identity")?;
@@ -386,7 +471,6 @@ impl TeamConnectionMetadata {
         }
         validate_uuid4(&self.expected_space_id, "expected team space identity")?;
         validate_local_origin(&self.local_origin, &self.connection_id)?;
-        validate_shell_version(&self.minimum_shell_version)?;
         if self.last_known_cards.len() > MAX_CACHED_CARDS {
             return Err(format!(
                 "a team connection may cache at most {MAX_CACHED_CARDS} project cards"
@@ -699,7 +783,6 @@ mod tests {
             remote_loopback_port: 8421,
             expected_space_id: SPACE_ID.into(),
             local_origin: allocate_local_origin(CONNECTION_ID, 18421).unwrap(),
-            minimum_shell_version: "0.3.2".into(),
             last_known_cards: vec![CachedTeamProjectCard {
                 id: PROJECT_ID.into(),
                 name: "Abu Dhabi".into(),
@@ -707,6 +790,21 @@ mod tests {
                 attention_count: 2,
             }],
             operator_route: None,
+        }
+    }
+
+    fn sample_connection_v2() -> TeamConnectionMetadataV2 {
+        let connection = sample_connection();
+        TeamConnectionMetadataV2 {
+            connection_id: connection.connection_id,
+            display_name: connection.display_name,
+            ssh_target: connection.ssh_target,
+            remote_loopback_port: connection.remote_loopback_port,
+            expected_space_id: connection.expected_space_id,
+            local_origin: connection.local_origin,
+            minimum_shell_version: "0.3.2".into(),
+            last_known_cards: connection.last_known_cards,
+            operator_route: connection.operator_route,
         }
     }
 
@@ -732,6 +830,7 @@ mod tests {
         let serialized = serde_json::to_string(&registry).unwrap();
         assert!(!serialized.contains("credential"));
         assert!(!serialized.contains("token"));
+        assert!(!serialized.contains("minimum_shell_version"));
         assert!(!serialized.contains(KEYCHAIN_SERVICE));
     }
 
@@ -908,18 +1007,23 @@ mod tests {
     }
 
     #[test]
-    fn registry_migrates_the_shipped_local_origin_without_changing_identity() {
+    fn registry_v2_migrates_without_changing_routing_cards_or_credential_reference() {
         let directory = tempfile::tempdir().unwrap();
         let state = state(directory.path());
-        let mut connection = sample_connection();
+        let mut connection = sample_connection_v2();
         connection.local_origin = format!(
             "https://rcp-{}.localhost:18421",
             CONNECTION_ID.replace('-', "")
         );
+        connection.operator_route = Some(ServerOperatorRoute {
+            ssh_target: "operator@lab-server".into(),
+            mode: ServerOperatorMode::SudoRcp,
+        });
+        let credential_before = credential_reference(CONNECTION_ID).unwrap();
         fs::write(
             &state.registry_path,
-            serde_json::to_vec_pretty(&TeamConnectionRegistry {
-                version: REGISTRY_VERSION,
+            serde_json::to_vec_pretty(&TeamConnectionRegistryV2 {
+                version: PREVIOUS_REGISTRY_VERSION,
                 connections: vec![connection],
             })
             .unwrap(),
@@ -933,9 +1037,23 @@ mod tests {
             migrated[0].local_origin,
             allocate_local_origin(CONNECTION_ID, 18421).unwrap()
         );
+        assert_eq!(migrated[0].last_known_cards[0].id, PROJECT_ID);
+        assert_eq!(
+            migrated[0].operator_route,
+            Some(ServerOperatorRoute {
+                ssh_target: "operator@lab-server".into(),
+                mode: ServerOperatorMode::SudoRcp,
+            })
+        );
+        assert_eq!(
+            credential_reference(CONNECTION_ID).unwrap(),
+            credential_before
+        );
         let saved = fs::read_to_string(&state.registry_path).unwrap();
+        assert!(saved.contains("\"version\": 3"));
         assert!(saved.contains(".rcp.localhost:18421"));
         assert!(!saved.contains("11111111111141118111111111111111.localhost"));
+        assert!(!saved.contains("minimum_shell_version"));
     }
 
     #[test]

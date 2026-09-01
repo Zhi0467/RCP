@@ -218,8 +218,8 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
   branch protection and retires the private-source deploy key together. Read
   `decisions/2026-08-27-main-is-the-server-update-channel.md` before any of it.
 - Two entrances are managed: the browser from `rcp serve`, and the source-built
-  desktop app. Everyone builds from source, so the frozen release bundle is not
-  a maintained target. Rebuild Tauri only when native files change.
+  desktop app. Native team changes preserve every advertised contract or add a
+  version; highest range overlap fails closed. Rebuild Tauri for native changes.
 
 ## Maintaining this file
 

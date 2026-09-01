@@ -778,7 +778,6 @@ mod tests {
             remote_loopback_port: 8421,
             expected_space_id: "33333333-3333-4333-8333-333333333333".into(),
             local_origin: format!("https://{HOSTNAME}:18421"),
-            minimum_shell_version: "0.3.2".into(),
             last_known_cards: Vec::new(),
             operator_route: None,
         }

@@ -251,11 +251,13 @@ def _enroll_live_member(
     *,
     display_name: str = "Live update operator",
 ) -> tuple[str, str, str]:
-    enrolled, _headers = _http_json(
+    enrolled, enrollment_headers = _http_json(
         "POST",
         "/api/team/enroll",
         {"code": bootstrap_code, "display_name": display_name},
+        team_shell_protocol=True,
     )
+    assert enrollment_headers.get("RCP-Team-Shell-Protocol") == "1"
     identity = enrolled.get("identity")
     token = enrolled.get("token")
     if not isinstance(identity, dict) or not isinstance(token, str):
@@ -267,7 +269,9 @@ def _enroll_live_member(
         "POST",
         "/api/team/session/exchange",
         {"token": token},
+        team_shell_protocol=True,
     )
+    assert headers.get("RCP-Team-Shell-Protocol") == "1"
     cookies = http.cookies.SimpleCookie()
     cookies.load(headers.get("Set-Cookie", ""))
     if len(cookies) != 1:
@@ -389,6 +393,7 @@ def _http_json(
     body: dict[str, object] | None = None,
     *,
     cookie: str | None = None,
+    team_shell_protocol: bool = False,
 ) -> tuple[dict[str, object] | list[object], object]:
     payload = None if body is None else json.dumps(body).encode("utf-8")
     headers = {"Accept": "application/json"}
@@ -396,6 +401,8 @@ def _http_json(
         headers["Content-Type"] = "application/json"
     if cookie is not None:
         headers["Cookie"] = cookie
+    if team_shell_protocol:
+        headers["RCP-Team-Shell-Protocol"] = "1"
     request = urllib.request.Request(
         f"http://127.0.0.1:8421{path}",
         method=method,
@@ -440,7 +447,11 @@ def _http_status(method: str, path: str, *, cookie: str | None = None) -> int:
 
 
 def _authenticated_get_json(path: str, cookie: str) -> list[dict[str, object]]:
-    value, _headers = _http_json("GET", path, cookie=cookie)
+    value, headers = _http_json(
+        "GET", path, cookie=cookie, team_shell_protocol=path == "/api/projects"
+    )
+    if path == "/api/projects":
+        assert headers.get("RCP-Team-Shell-Protocol") == "1"
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         pytest.fail("authenticated live read did not return an object list")
     return value

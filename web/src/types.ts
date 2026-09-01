@@ -33,6 +33,10 @@ export interface Health {
   owner_kind: string;
   running_commit: string | null;
   web_build_id: string | null;
+  team_shell_protocol: {
+    minimum: number;
+    maximum: number;
+  };
   active_agent_tasks: number;
   pid: number;
   projects?: number;

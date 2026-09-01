@@ -30,8 +30,13 @@ The paper introduction is human-authored and non-authoritative. Agent-created
 artifacts and reports help a researcher read work; they do not become graph
 truth. A chat artifact may be viewed, selected, questioned, kept, and revised
 through one shell, but those interactions grant no graph authority. The backend
-owns the viewer entrance, including compatibility for retained desktop clients,
-so a source update does not require a matching native rebuild to enter the shell.
+owns the viewer entrance, so ordinary server-served UI changes do not require a
+matching native rebuild. The thinner native team entrance is a separate
+boundary: before enrollment, token exchange, project-card read, or browser-cookie
+installation, the source-built desktop and team server negotiate the highest
+overlap in one inclusive integer protocol range. No overlap or a missing or
+mismatched handshake answer refuses the connection and names both source commits
+so the stale side can be updated from `origin/main`.
 
 The confirmed first team deployment is one lab using one source-built RCP server
 and desktop member clients. A dedicated Linux `rcp` account owns the control
