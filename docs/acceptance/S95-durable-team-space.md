@@ -3,15 +3,21 @@ id: S95-durable-team-space
 status: pending
 tier: live
 driver: pytest + api + ssh
-covered_by: none
+covered_by:
+  - tests/test_server_install.py
+  - tests/test_server_doctor.py
+  - tests/test_server_control.py
+  - tests/test_server_cli.py
+  - tests/test_api_server_status.py
+  - tests/test_server_install_live.py
 invariants: [6, 8]
 ---
 
 # A team space outlives every process that serves it
 
-This scenario is human-confirmed and pending implementation. Its boundaries are
-in [Spaces and durable identity](../specs/projects-spaces-and-operations.md#spaces-and-durable-identity)
-and [Confirmed first team-server target](../specs/projects-spaces-and-operations.md#confirmed-first-team-server-target).
+Its boundaries are in
+[Spaces and durable identity](../specs/projects-spaces-and-operations.md#spaces-and-durable-identity)
+and [Confirmed first team-server target](../specs/server-and-machine-operations.md#confirmed-first-team-server-target).
 
 A space is an authority domain, not an installation. Restarting, upgrading, or
 moving the server does not create a new space and does not make members enroll
@@ -31,6 +37,18 @@ server-local central checkouts; an explicit remote execution account owns any
 checkout on its SSH machine. Humans remain distinct members and do not share
 either execution login. The installed RCP version is the server checkout's exact
 GitHub `main` commit, served without source reload.
+
+## Implemented substrate
+
+F1 through F6d are implemented as of 2026-09-01. The server CLI command and
+event contract, Linux service layout, idempotent installer and unit, private
+control socket, commit identity and `server doctor`, and the complete update
+source/rehearsal/checkpoint/cutover path all have focused coverage. A first
+manual install on Ubuntu 22.04 x86-64 created the dedicated `rcp` account,
+managed checkout, immutable release, and an initialized team space, then passed
+HTTP health and `server doctor`. This scenario remains pending because the
+mismatched-space refusal and the port-change reconnection have not been driven
+end to end against a real saved desktop connection.
 
 ## Setup
 
@@ -112,7 +130,7 @@ and a saved desktop connection recording the expected `space_id`.
 
 This scenario does not promise that two *restored copies* of one space can
 detect each other. That limitation is deliberate and operator-owned under the
-[server and machine operations contract](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
+[server and machine operations contract](../specs/server-and-machine-operations.md).
 `space_id` surviving a restore is what makes the replacement the same space, and
 it is also what makes two simultaneously running copies indistinguishable.
 

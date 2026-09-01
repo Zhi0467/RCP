@@ -44,7 +44,7 @@ cleanup on both Ubuntu 22.04 and 24.04. The scenario remains pending because its
 broader live concurrent/no-pause, unreachable-SSH partial-capture, active
 lifecycle detachment, and full retained-history inspection have not yet been
 driven together. Its boundary is in
-[Server and machine operations](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
+[Server and machine operations](../specs/server-and-machine-operations.md).
 
 An earlier design had the server delay dispatch and delay applying results for
 the duration of each capture. With canonical history on remote machines that

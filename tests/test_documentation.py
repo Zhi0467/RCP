@@ -17,6 +17,7 @@ EXPECTED_SPECS = {
     "interface-and-visual-design.md",
     "paper-artifacts-and-result-views.md",
     "projects-spaces-and-operations.md",
+    "server-and-machine-operations.md",
     "providers-and-containment.md",
 }
 

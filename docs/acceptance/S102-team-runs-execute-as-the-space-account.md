@@ -3,13 +3,15 @@ id: S102-team-runs-execute-as-the-space-account
 status: pending
 tier: remote
 driver: pytest + api
-covered_by: none
+covered_by:
+  - tests/test_server_provider_readiness.py
+  - tests/test_server_provider_readiness_live.py
 invariants: [4, 4b, 5]
 ---
 
 # Team work runs only through the server's configured execution account
 
-This scenario is human-confirmed and pending implementation. Its boundary is in
+Its boundary is in
 [Team execution accounts and credentials](../specs/providers-and-containment.md#team-execution-accounts-and-credentials).
 
 Each provider resolves its own native authentication from the executing
@@ -25,6 +27,15 @@ server. It need not be named `rcp`; what matters is that the server owns the
 provider call, the account is explicit and ready, and the repositories are
 available to it. No team path silently resumes on a member laptop or personal
 checkout.
+
+## Implemented substrate
+
+P5 is implemented as of 2026-09-01. `rcp server provider check` resolves
+readiness on the configured execution account, persists exact non-secret proof,
+refuses a wrong remote account before probing the provider, and separates a
+missing native login from a missing install. This scenario remains pending
+because no drive has yet compared local `rcp` and remote-account provider
+identities on a reachable SSH execution machine.
 
 ## Setup
 

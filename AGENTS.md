@@ -89,7 +89,8 @@ grep -l "^status: \(pending\|blocked-external\)" docs/acceptance/S*.md
 
 ## Stable invariants
 
-These identifiers are cited from source and tests. Never renumber them.
+This numbered registry is cited from source, tests, and acceptance frontmatter. Never
+renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 
 1. **Canonical Patch logs are append-only.** Never edit or delete main or branch
    Patch history. Otherwise replay changes the past.
@@ -156,13 +157,12 @@ These identifiers are cited from source and tests. Never renumber them.
   child-route row exists. Missing route identity intentionally follows ordinary
   Work for compatibility; do not convert this to a new failure without a product
   decision.
-- Persisted task requests cross the compatibility decoder in
-  `storage/request_compat.py` before callers see them. Its per-kind retirement
-  allowlist is closed. Add a field only for a shipped, now-retired field whose
-  removal preserves meaning; unknown fields must remain for strict rejection.
-- Canonical Patch history carries the same duty with a worse failure: a retired
-  field on a stored operation, or one the in-memory adapter adds while retiring a
-  value, halts replay and leaves the graph read-only. Handle both in
+- Persisted task requests cross the compatibility decoder in `storage/request_compat.py`
+  before callers see them. Its per-kind retirement allowlist is closed: add a field only
+  for a shipped, now-retired field whose removal preserves meaning; unknown fields must
+  remain for strict rejection. Canonical Patch history carries the same duty with a worse
+  failure: a retired field on a stored operation, or one the in-memory adapter adds while
+  retiring a value, halts replay and leaves the graph read-only. Handle both in
   `adapt_persisted_patch_document` and in the replay branch of every field rule.
 - Permission contracts are code, not manifest configuration. Every launch names
   its capability explicitly.

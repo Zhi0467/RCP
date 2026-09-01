@@ -55,7 +55,7 @@ last_checked: >-
 # Dangerous operations need the machine, not a login
 
 This scenario is human-confirmed and partially implemented. Its boundary is in
-[Server and machine operations](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
+[Server and machine operations](../specs/server-and-machine-operations.md).
 
 Every member has equal space authority and there is no admin role. That only
 works if the operations nobody should perform casually are kept off the product

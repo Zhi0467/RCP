@@ -1,0 +1,5101 @@
+# Evidence: dev team space and source server handoff
+
+Archived 2026-09-01. This file is the dated implementation evidence and the
+completed packet specifications for
+[the active handoff](../../handoffs/handoff-2026-08-27-dev-team-space-and-server.md),
+moved here so that handoff stays an execution contract rather than a diary.
+
+This is historical evidence and never current authority. Current behavior is
+owned by [`docs/design.md`](../../design.md) and the applicable file under
+[`docs/specs/`](../../specs/). The active handoff retains the packet status
+table, the remaining work, and every packet whose drive is still open.
+
+Fifty-five completed packets follow, in their original order, after the
+implementation log.
+
+### Implementation log
+
+#### 2026-08-31 — hosted closure resumed and first real-run defects repaired
+
+- Restored hosted-runner access turned the previously unavailable gates into
+  real execution. Main CI run
+  [33401288385](https://github.com/Zhi0467/RCP/actions/runs/33401288385) passed
+  lint, Web, and old-data upgrade, then exposed two defects in both Python
+  versions: the new transfer tests invoked the macOS-only absolute Git path on
+  Ubuntu, and the project write-admission dependency used a thread-owned
+  `RLock` even though FastAPI may enter and exit a synchronous dependency on
+  different worker threads.
+- The transfer fixture now resolves Git from `PATH` and fails plainly if the
+  required executable is absent. Project admission now uses the primitive
+  cross-thread lock already supported by `KeyedLocks`; the two route-local
+  duplicate acquisitions were removed, while `ExperimentAdmission` exposes its
+  existing current-Experiment check for retry/repair callers that already hold
+  the outer lock. The removal-versus-run races still serialize, retry and repair
+  still fail closed for a removed Experiment, and the regression explicitly
+  rejects a return to thread-owned locking.
+- Live qualification run
+  [33408513981](https://github.com/Zhi0467/RCP/actions/runs/33408513981) reached
+  the actual source install/update driver on Ubuntu 22.04 and 24.04. Both
+  releases stopped at the same stale strict probe shape after production added
+  `pending_member_removals`; deploy-key revocation and temporary-route cleanup
+  passed on both. The live test now accepts exactly that new field and requires
+  an empty inventory on the clean install. Its focused disposable-host test,
+  Ruff, format check, and independent read-only audit pass locally.
+- Focused transfer tests pass (11 tests), the admission/removal races passed 20
+  consecutive repetitions, all 141 API tests pass, and the Unix-socket
+  provisioning integration passes outside the macOS sandbox. The first lock
+  repair exposed two lock-order defects during its independent audit: Sync held
+  project admission while ready watcher delivery reacquired it, and result-view
+  Resume acquired the view lock before project admission while Keep, Start, and
+  Retry used the opposite order. Sync now publishes its transition under
+  admission and delivers watchers after release; Resume now uses the same
+  project-then-view order as every other result-view mutation. The complete
+  unrestricted Python suite, all graph-watcher and result-view focused suites,
+  Ruff, format, scoped pre-commit, all 472 Web tests, and the production Web
+  build pass. The single independent correction review reports no findings.
+  At that checkpoint, pushed CI and an exact-head two-Ubuntu rerun were still
+  required; the later entries below record their closure.
+- The Mac is now unlocked and the exact source-built bundle opens to the live
+  personal index. No team enrollment, credential transmission, two-space
+  navigation, provisioning, or transfer has yet been claimed from that visible
+  check; the integrated desktop drive remains next.
+- Live run
+  [33433461784](https://github.com/Zhi0467/RCP/actions/runs/33433461784)
+  passed the complete install/update/backup/member-removal source half on both
+  supported Ubuntu releases, then exposed two fresh-host restore outcomes. On
+  24.04, the root restore coordinator launched a Git probe as `rcp` while still
+  standing inside the runner checkout; Git failed before network access because
+  `rcp` could not stat that private working directory. On 22.04, the otherwise
+  identical fresh install hit its two-minute `useradd` bound once.
+- Commit `80bdc8e` makes the shared local/SSH Git runner start every account
+  operation from the installed service home and removes the bounded diagnostic
+  added only to identify the failure. Its focused Git credential and restore
+  suites pass. Follow-up run
+  [33436734564](https://github.com/Zhi0467/RCP/actions/runs/33436734564)
+  was invalidated when `origin/main` advanced during the exact-head check: 24.04
+  correctly refused the moving update target, so restore did not run. Its 22.04
+  half completed the full six-minute source lifecycle successfully, including
+  immediate account creation, which shows the earlier isolated `useradd`
+  timeout is not deterministic. The next run must use one frozen head with no
+  pushes until both fresh restores finish.
+- Commit `86c0459` pushed the cross-platform and admission-lock repairs. Exact-
+  head CI run
+  [33414115809](https://github.com/Zhi0467/RCP/actions/runs/33414115809) passed
+  Python 3.12, lint, all Web checks, and old-data upgrade. Its sole Python 3.11
+  failure was a matrix-dependent test fixture: the candidate-release test linked
+  its fake runtime to the matrix interpreter even though production correctly
+  requires installed releases to use Python 3.12. The fixture now supplies the
+  explicit fake 3.12 version it intends to model, independent of the test runner.
+- Exact-head live run
+  [33414148518](https://github.com/Zhi0467/RCP/actions/runs/33414148518) passed
+  source setup, install, team initialization, service and SSH checks, enrollment,
+  restart, and entry into the candidate rollback death drive on Ubuntu 22.04 and
+  24.04. Both failed at the same intended post-crash fenced-service restart: the
+  named wait helper retried assertion failures but not the raw `FileNotFoundError`
+  emitted before `/run/rcp/control.sock` was republished. It now retries bounded
+  missing/refused socket states and still fails on a persistent or invalid
+  control plane. Both jobs revoked the temporary deploy key and removed temporary
+  credentials and routes. The two complete affected modules and the focused new
+  regressions pass locally; these two follow-ups change qualification fixtures,
+  not production behavior.
+- Follow-up commit `679e2dc` is clean in exact-head CI run
+  [33422136275](https://github.com/Zhi0467/RCP/actions/runs/33422136275): Python
+  3.11 and 3.12, lint and full pre-commit, all Web checks, and old-data upgrade
+  pass. Live run
+  [33422149838](https://github.com/Zhi0467/RCP/actions/runs/33422149838) then
+  advanced both Ubuntu releases past the missing-socket race. In the injected
+  rollback crash, the attempted direct systemd start may intentionally either
+  exit closed or publish only the private fenced control plane. Both services
+  exited closed, but the test sampled `active` during startup and waited only for
+  the alternate socket outcome after systemd had stopped them. The bounded wait
+  now returns successfully for an inactive service, continues probing while the
+  service remains active, and still fails on an indeterminate systemd result or
+  a persistent active service without its control socket. The full hermetic live
+  module, its two outcome regressions, Ruff, and format check pass locally. This
+  remains a live-test correction; production rollback behavior did not change.
+- Commit `ba4f1fc` is clean in exact-head CI run
+  [33422971518](https://github.com/Zhi0467/RCP/actions/runs/33422971518): Python
+  3.11 and 3.12, lint and full pre-commit, all Web checks, and old-data upgrade
+  pass. Live run
+  [33422984697](https://github.com/Zhi0467/RCP/actions/runs/33422984697) accepted
+  both safe fenced-service outcomes and completed rollback recovery on Ubuntu
+  22.04 and 24.04, then found a real pre-lock startup defect on both. The
+  installed service checked unfinished restore/update journals inside app
+  construction, after `instance_lock` had already recreated a missing data root.
+  The shared installed-replacement inspection now runs from the CLI entrypoint
+  before lock acquisition and remains reused by app construction. Focused main,
+  restore, cutover, and live-harness tests pass outside the macOS PTY sandbox;
+  the regression proves an unfinished journal is found without creating the
+  absent data directory. This production correction still needs its exact-head
+  CI and two-Ubuntu rerun.
+- Exact-head live run
+  [33424660135](https://github.com/Zhi0467/RCP/actions/runs/33424660135) passed
+  the formerly failing early rollback phases on Ubuntu 22.04, then exposed the
+  adjacent final-phase boundary. A `complete` file-restore journal can coexist
+  briefly with a still-nonterminal `rollback_restoring` update receipt before
+  the root coordinator switches `current` back to the old release. Direct
+  systemd start in that interval was allowed to create runtime lock metadata in
+  the exact restored tree, so re-entry correctly rejected the changed tree. The
+  same pre-lock inspection now keeps `rollback_restoring` and `repair_required`
+  services stopped even after file restoration completes; intentional candidate
+  and old-release starts remain admitted only in their later durable states. A
+  focused regression covers the complete-journal/pre-cutover interval without
+  creating the data root. The following exact-head rerun closes the packet.
+- Commit `566b81e` closes F6d. Exact-head CI run
+  [33425627487](https://github.com/Zhi0467/RCP/actions/runs/33425627487) passed
+  Python 3.11 and 3.12, lint and full pre-commit, all Web checks, and old-data
+  upgrade. Exact-head live run
+  [33425653252](https://github.com/Zhi0467/RCP/actions/runs/33425653252) passed the
+  complete source installation, service/SSH/enrollment/restart checks, forced
+  candidate rollback, every injected rollback-journal crash phase, exact
+  recovery readback, and cleanup on both Ubuntu 22.04 and 24.04. The production
+  pre-lock gate prevented both incomplete replacement and restored-but-not-yet-
+  cut-over state from touching the live data root. F6d is complete; later live
+  provisioning, disaster restore, operator-route, and desktop drives remain
+  separate closure work.
+- The fresh-host restore qualification then exposed four real portability and
+  re-entry defects in sequence. Restore Git probes now start from the installed
+  service home instead of the invoking runner checkout; a fresh clone seals its
+  `.git` directory to mode 0700 and `.git/config` to 0600 even under inherited
+  default ACLs; restored manifest paths beginning with `~` resolve against the
+  recorded service account rather than root; and restore re-entry requires the
+  original backup bytes only through checkout recovery. From
+  `projects_rebinding` onward, project publication and review have legitimately
+  evolved SQLite, so re-entry preserves those bytes while still requiring one
+  private service-owned database, SQLite integrity, a stopped service, and the
+  same journaled operation. Focused restore, checkout, project-publication, and
+  configuration suites cover each correction, including exact re-entry from
+  `projects_published` after a real database mutation.
+- Commit `112e0dc` closes O4d. Exact-head workflow run
+  [33456906376](https://github.com/Zhi0467/RCP/actions/runs/33456906376)
+  passed all four jobs: source install/update/forced-rollback/backup on fresh
+  Ubuntu 22.04 and 24.04 hosts, followed by protected restore on two different
+  fresh hosts. Both restore jobs installed from source, reconstructed the
+  captured Git checkout with a fresh write deploy key, resumed across the
+  old-authority and member-roster reviews, removed the deliberately stale
+  member offline, activated behind the private fence, read back healthy project
+  and member state, revoked temporary deploy keys, and removed protected inputs.
+  This is the automated disposable server and restore qualification; it does
+  not claim the still-open source-built desktop, real provider, or complete V1
+  lab workflow.
+
+#### 2026-08-31 — V2 current-tree baseline and compatibility repair complete
+
+- The full unrestricted Python suite, all 472 Web tests, production Web build,
+  all 120 native tests with one intentional live-SSH ignore, strict Clippy,
+  Ruff check and format-check, Prettier check, the clean source-built desktop
+  build, and scoped pre-commit all pass on the current tree. The source-built
+  bundle is at `web/src-tauri/target/debug/bundle/macos/RCP.app`.
+- T3e's strict UUID4 imported-provider-source owner exposed one real compatibility
+  break: degraded and pre-identity `ProjectService` instances still accept legacy
+  project ids, but attempted to construct the UUID4-only owner. The service now
+  creates that owner only for canonical lowercase UUID4 ids. Canonical projects
+  still fail loudly on missing or corrupt imported-source inventory; legacy
+  projects merely lack transferred-provider-history ownership.
+- Three stale tests were repaired without weakening production behavior: direct
+  ingestion now removes an imported-source owner through its verified `discard`
+  boundary instead of manufacturing a half-deleted corrupt directory; the typed
+  `ApiServices` field inventory includes `server_status_composition`; and restore
+  tests derive their detach time from the current test clock instead of expiring
+  on a literal date. Focused regressions and the independent read-only audit found
+  no remaining issue in this slice.
+- The clean install's `GHSA-2v37-7h3g-55p8` report was resolved separately and
+  narrowly by moving the lockfile within Vite's existing ranges to
+  `postcss@8.5.26` and `nanoid@3.3.18`; `npm audit --omit=dev` now reports zero
+  vulnerabilities. No direct dependency or application API changed, and the
+  independent lockfile audit found no unintended package change.
+- The desktop was rebuilt, but the Computer Use drive could not start because the
+  Mac was locked and automatic unlock failed. No visible desktop behavior is
+  claimed from that attempt. Main-branch CI run
+  [33401185898](https://github.com/Zhi0467/RCP/actions/runs/33401185898)
+  for `2c3f262` also failed all five jobs with empty step lists, while update
+  qualification run 33395914834 was refused before either Ubuntu job started
+  because hosted-runner spending was unavailable at that time. Hosted access
+  was later restored and run 33456906376 closed the disposable server/restore
+  gate. The reachable shared Ubuntu 22.04 host still had neither the installed
+  `rcp` account nor noninteractive sudo, so it did not substitute for the
+  remaining persistent desktop/SSH drive.
+
+#### 2026-08-31 — T5a/T5b native relay and unified transfer workflow implemented
+
+- The existing project wizard now owns the personal-to-team move. Project
+  Settings opens one URL-pinned source project; prepare writes an exact durable
+  source/target request pair before either cross-space request is created, and a
+  reload resumes only that pair. The browser renders backend/native decisions,
+  active/live answers, resolved paths, archive boundaries, operator work, and
+  final-review attribution without comparing transfer phase or status strings.
+- One final native action now drives target admission, source-side receipt
+  acceptance, a freshly revalidated source release boundary, target release
+  acceptance, restored-target re-entry, and T5a's proof relay in fixed order.
+  Receipt, proof, configuration, and archive bytes remain native-only. The
+  source is never released before a real target-admission receipt exists.
+- Cold restart re-establishes the exact saved team tunnel and permanent-member
+  session before loading, provisioning, automatic relay, Terminal relay, or
+  proof completion. Manual recovery can select an existing mode-0600 export and
+  continues only after exact request, size, and digest verification. Automatic
+  relay failure remains durable and is shown loudly with the explicit manual
+  path; it is never treated as success or selected silently.
+- Verification passed 472 Web tests, production typecheck/build, 120 native
+  tests with one explicit live-SSH ignore, strict Clippy, and scoped pre-commit.
+  The one independent audit found the missing cold-session recovery and hidden
+  nonzero relay result; both were fixed in the single correction round. The
+  real source-built two-space/SSH interruption drive remains open, so S98 is
+  still pending.
+
+#### 2026-08-31 — T4a source fence, exact export, and retirement complete
+
+- The human source-release route now holds the same per-project admission lock
+  as new HTTP work, records the release receipt, and advances one source-owned
+  state machine. Fresh root task, episode, Auto-research, direct Experiment,
+  and branch-merge admissions also check the durable fence inside their SQLite
+  write transaction. Existing watcher and episode continuations remain able to
+  settle; transfer export refuses every still-live task, episode, watcher,
+  report, child, or delivery.
+- The source state machine appends exactly one attributed home-transfer Patch,
+  recovers after a stop between that Patch and the SQLite fence receipt, exports
+  the terminal operational projection plus canonical history, transformed
+  project files, provider history, manifest provenance, and the source-release
+  proof, then seals one deterministic private archive at
+  `transfer-exports/<request-id>.rcp-transfer`.
+  Local and SSH canonical/file capture runs under the workspace transaction, so
+  remote export holds the same advisory ownership lease as ordinary canonical
+  publication.
+- Archive publication is no-overwrite and mode 0600. Every retry after final
+  publication reopens and rehashes the same request-derived path; a missing,
+  corrupt, unsafe, or receipt-mismatched archive fails loudly and is never
+  regenerated. The native authenticated GET route requires the exact pinned
+  personal-backend instance and exposes only this bound archive, with no-store
+  headers and bounded streaming chunks.
+- A matching target-activation proof completes source cleanup: it records the
+  acknowledgment, validates the still-present bound archive, consumes the raw
+  proof, retires the source catalog row, drops its loaded runtime, unlinks only
+  that revalidated request archive, and closes the request. Missing or corrupt
+  recovery bytes therefore cannot hide the source. Retries are serialized by
+  the project operation lock and idempotent across retirement, unlink, proof
+  consumption, and completion. Membership and invitation rows remain retained
+  as audit history, while active membership/catalog queries exclude the retired
+  project.
+- Focused coverage exercises final-publication-before-receipt recovery,
+  home-Patch-before-SQLite-fence restart recovery, same-byte retry, corrupt and
+  missing bound archives, transaction-held capture, storage-level fresh-work
+  refusal, authenticated exact download, proof inclusion, proof-triggered
+  retirement, and idempotent cleanup.
+  T4b owns target upload; T4c now owns decoding, T3f import invocation,
+  compound activation, and the durable target receipt. T5 still owns returning
+  the protected proof to the source.
+- The packet's one independent read-only audit found four defects: missing or
+  corrupt recovery bytes could retire the source before validation, SSH capture
+  did not hold canonical ownership, and concurrent cleanup retries could race.
+  The single correction round fixed cleanup ordering, added pre-retirement and
+  pre-unlink validation, held the workspace transaction during capture, and
+  serialized the proof route. Focused regressions cover the corrected recovery
+  and lock boundaries; no second audit was run.
+
+#### 2026-08-31 — T3f validated target import and readback complete
+
+- Added one strict target importer for an already decoded, request-scoped
+  archive stage. It checks the exact file/directory inventory, regular-file
+  safety, byte counts, digests, archive/envelope/request identities, source
+  fence, reviewed target configuration, heads, attributions, and operational
+  file references before target mutation.
+- Added one canonical operational JSON payload and a compound SQLite import
+  receipt. All selected terminal records enter through one transaction with
+  explicit event/receipt id maps; tasks are history-only, executable bindings
+  are neutralized, and neither a project row nor `writing_sessions` is created.
+- Published the rebuilt target manifest, canonical history, transformed RCP
+  chats, Paper introduction, facts, kept artifacts/views, and imported provider
+  histories through their concrete owners. The source manifest remains archive
+  provenance only. Completion requires owner readback and exact canonical head
+  agreement and stores one deterministic publication digest.
+- Crash and retry coverage now spans a mid-database fault plus the canonical,
+  project-file, provider-history, and final completion boundaries. Every case
+  keeps the project unregistered and resumes the same digest without duplicate
+  history. A post-commit completion exception re-reads the receipt before
+  cleanup, preventing removal of files already bound by a complete receipt.
+- The focused T3f/transfer suite passes. T4a subsequently completed sealed
+  source archive creation and source retirement, T4b completed the protected
+  target upload lease and inbox, and T4c completed decode/import/activation.
+  Desktop orchestration, proof return, SSH, and the live lab drive remain T5/V1.
+- The one independent read-only audit found no concrete T3f correctness or stale
+  documentation defect. No correction round was needed.
+
+#### 2026-08-31 — T3e imported provider-source lifecycle integration complete
+
+- `ImportedProviderSourceStore` is now the sole lifecycle owner for the durable
+  `<data>/project-sources/<project-id>/provider-history` tree. It inventories
+  exact project owners, captures an immutable private snapshot, atomically
+  publishes a validated snapshot, and deletes only one exact request-bound
+  inventory. Incomplete roots, unknown owners, unsafe modes, symlinks, special
+  files, extra files, size drift, and digest drift are refused.
+- O2a records one sealed imported-source inventory for every project in its
+  copied SQLite boundary and rejects orphan owner roots. O2b revalidates and
+  copies each present tree through the owner into its private capture stage;
+  absent trees remain explicit absent captures. `project-sources/` is a typed
+  captured app-data root only when it exists, so ordinary projects with no
+  imported history still produce valid complete backups.
+- The archive manifest has one closed imported-provider-history file group,
+  binds the canonical owner manifest plus every content-addressed data file,
+  includes those bytes in global uniqueness and byte totals, and streams only
+  declared members. Native provider homes, credentials, SSH state, source
+  repositories, stages, caches, and transfer inbox/export roots remain excluded.
+- Restore extraction accepts only those declared members. Project publication
+  publishes and reads back every imported inventory before making any restored
+  project reachable, refuses a conflicting existing owner, checks the complete
+  owner-id set, and records the imported capture digest/file/byte counts in the
+  crash-reentrant per-project publication receipt. A repeated matching
+  publication is idempotent.
+- Candidate update rehearsal publishes imported history only into its disposable
+  copied data directory. The local update checkpoint binds the typed captures,
+  snapshots them through the same owner, validates them in the immutable
+  payload, temporary reproduction, restored live root, and every journal
+  re-entry, and restores changed bytes by whole-root replacement rather than
+  overlay.
+- Failure cleanup remains separate from team-project deletion. The catalog
+  helper requires the exact linked incoming-transfer request, target side,
+  pre-activation phase, project identity, expected inventory, and absence of a
+  registered project before calling the owner's bounded discard. Ordinary
+  Delete still refuses at the team-space guard before any filesystem or database
+  mutation; T3f now invokes this helper from the concrete importer failure path.
+- Focused coverage proves deterministic archive membership and byte-for-byte
+  restore readback, restore idempotence and conflict refusal before visibility,
+  candidate rehearsal isolation from live provider state, update rollback and
+  unsafe-payload refusal, owner corruption rejection, pre-activation cleanup,
+  post-activation cleanup refusal, and the unchanged team Delete guard. The
+  complete focused backup/restore/update/deletion suite passes outside the
+  macOS sandbox, including its real Unix-socket tests.
+- The one independent read-only audit found two gaps and both were corrected:
+  absent per-project captures no longer require a nonexistent app-data root,
+  and update restore validates imported bytes through the concrete owner rather
+  than relying only on a generic directory comparison. No second audit round was
+  run. No live provider home, SSH host, real lab data, or off-server backup was
+  touched in this packet; the S98/S104/V1 live drives remain open.
+
+#### 2026-08-30 — D6 fixed desktop operator bridge implemented
+
+- Saved member transport and saved operator authority are now separate native
+  records. An operator route contains only a validated SSH target and one of two
+  explicit modes: direct `rcp@host`, or a named account using the exact
+  noninteractive `sudo -n -u rcp -H` boundary. No password, key, arbitrary
+  server command, or server-returned shell text enters the registry or IPC.
+- The desktop probe invokes only `/usr/local/bin/rcp server project provision`
+  with a deliberately invalid canonical request id and accepts only the fixed
+  parser refusal. A real run accepts only a validated UUID4, uses system SSH,
+  streams bounded version-1 project-provision events, validates plan order and
+  step transitions before display, and then re-exchanges the authenticated team
+  session to read the exact durable request back from its expected space.
+- Interactive SSH or sudo is never attempted inside the app. Only an explicit
+  human action opens Terminal with the fixed, shell-quoted argv for the actual
+  request. Browser code receives no native bridge capability.
+- Focused Rust tests cover exact direct/sudo argv, route validation, request
+  injection refusal, interactive quoting, the fixed probe, bounded unterminated
+  output, protocol order/state/exit agreement, event streaming, and nonsecret
+  route persistence. The final diff passes the full native suite (90 passed, one
+  opt-in live-SSH test ignored), strict clippy, all 446 Web tests, typecheck,
+  production Web build, all eight documentation tests, and all-file pre-commit.
+- The single permitted independent audit ended before returning a final report.
+  Its three concrete interim findings were still resolved: direct mode must
+  explicitly name `rcp@host`; an unterminated line is bounded before allocation;
+  and the desktop validates plan identity, ordering, state transitions, and exit
+  meaning rather than accepting shape alone. No replacement or second audit
+  round was run.
+- Live drive not done: read-only SSH preflight reached
+  `tianhaowang-gpu0.ucsd.edu` as `zhiwang`, but the exact named-operator probe
+  stopped at `sudo: unknown user rcp`. The shared host therefore cannot prove
+  either D6 route without installing the team-server account and CLI. D6 remains
+  in **Implemented, drive still open**; the implementation did not mutate that
+  server merely to manufacture a passing drive. The next meaningful desktop
+  build/Computer Use milestone remains D7's unified wizard.
+
+#### 2026-08-30 — D4-D5 implementation checkpoint and source-rebuild credential repair
+
+- D4 now verifies team health and compatibility through D3's exact tunnel,
+  supports bootstrap/invitation enrollment and existing-member tokens, stores
+  permanent tokens only through the native credential owner, exchanges them for
+  server sessions, installs the HTTP-only cookie before navigation, and returns
+  only nonsecret session state. Metadata is reserved before a one-time code is
+  consumed, so a failure after enrollment leaves a repairable saved connection
+  and credential instead of losing the issued identity. Reconnect never routes
+  a team project through the personal backend.
+- D5 replaces the old unavailable seam with the local personal-first index,
+  concurrent team reconciliation, named available/unavailable groups, bounded
+  cached inert project cards, reconnect, and one Add-team-space flow for new and
+  existing members. The Web still renders backend/native decisions rather than
+  deriving team authority. D4-D5 were checkpointed on `main` at `9be6c22`; 443
+  Web tests, typecheck/build, the native suite, and pre-commit passed. D4's one
+  independent read-only audit found and fixed an asynchronous WebView cookie
+  callback use-after-free risk; no second D4 audit round was run.
+- The first real source-built drive exposed a macOS boundary hidden by unit
+  tests: the legacy Keychain attached an ad-hoc app cdhash to a directly stored
+  secret, so every rebuild could hang before the window while requesting access
+  to the previous build's record. Removing that partition before insertion did
+  not work because `securityd` restored it. Apple's signed `/usr/bin/security`
+  tool instead receives short values over pipes as the ACL-authorized executable
+  and gives the item the stable `apple-tool:` partition. The helper starts the
+  tool in a separate session so a terminal-launched dev app cannot divert the
+  password prompt away from the pipe. Values over the tool's proved 64-byte
+  limit fail before launch rather than being truncated.
+- This is source-rebuild stability, not hostile same-account isolation: any
+  process running as the same macOS user can deliberately invoke the same
+  general-purpose Apple tool for a known service and account. That limitation
+  matches the current cooperative provider threat model. A future publicly
+  distributed signed build must replace it with stable app-bound credential
+  access.
+- The certificate/private-key record is larger than that limit. The final source
+  design stores only a random 32-byte AES-256-GCM sealing key in Keychain and
+  atomically writes the authenticated encrypted identity to
+  `local-https-identity-v1.sealed` with mode `0600`. A missing half, malformed
+  record, or authentication failure stops startup; only absence of both creates
+  a new identity. Unit coverage proves binary credential encoding, size refusal,
+  identity encryption round-trip, and tamper rejection.
+- Live proof used two clean source bundles with different binary hashes and
+  cdhashes (`2a41dd…`/`bd98…`, then `530746…`/`8372…`). Both launched from a
+  terminal and reached a healthy owned personal backend. Across the rebuild the
+  sealed identity stayed byte-for-byte identical (`efd99f…`), with the same
+  timestamp, 581-byte size, and `0600` mode; the Keychain ACL remained tool-only
+  with `apple-tool:`. Three exact obsolete experimental items
+  (`desktop-identity/source-v1`, `/source-v2`, and `/source-v3`) were deleted;
+  the original pre-experiment `desktop-identity/v1` record was not touched.
+- The D4 checkpoint's unversioned team-token service was replaced by
+  `app.researchcontrolpanel.rcp.team-member-token.source-v1`. Fact-checking found
+  neither a saved `team-connections.json` nor any item under the old service, so
+  the checkpoint never produced a live credential to migrate. The source-only
+  namespace break is explicit rather than a silent compatibility fallback.
+- The checkpoint's independent audit reported no Critical issue. Its remaining
+  findings were closed here: Keychain stdout is read through a hard bounded pipe
+  and the child is killed/reaped on overflow; the encrypted identity is opened
+  once with `O_NOFOLLOW`, validated on that handle, and read through a bounded
+  reader; obsolete Keychain wording was removed; and the same-UID limitation and
+  pre-live token namespace boundary are now explicit.
+- The exact final repair source bundle (`895dd1…`, cdhash `fdd4db…`) built from
+  this tree, launched from a terminal, and reported a healthy desktop-owned
+  personal backend. The encrypted identity remained exactly `efd99f…`, mtime
+  `1788125943`, size 581, and mode `0600`; stopping the test bundle also stopped
+  its owned backend. This final startup proof still does not substitute for the
+  pending D4-D5 enrollment/navigation drive.
+- The D5 scoped read-only audit reported no Critical or High issue. Its findings
+  are closed: unavailable groups render their native diagnostic, ordinary
+  browsers omit the native Add action, saved group order remains stable, stale
+  reconciliation attempts cannot publish or navigate, and the Add dialog traps
+  focus, handles Escape, and restores prior focus. The risk-bearing helpers and
+  browser boundary now have focused coverage; 446 Web tests, typecheck, and the
+  production build pass.
+- Still open: the Mac was locked during the integrated milestone, so D4-D5 have
+  not yet been driven through the visible app against the two disposable team
+  spaces. S105 remains pending, and no acceptance claim treats the
+  build/startup proof or audit closure as a substitute for enrollment, cookie,
+  navigation, unavailable-cache, or restart interaction.
+
+#### 2026-08-28 — G0 baseline repair complete in the working tree
+
+- Work is on local `main` from `4e6d812`. The seven known formatter changes are
+  mechanical. `_agent_task_record` now retains the persisted runtime, and the
+  active-handoff test indexes valid active work instead of requiring an empty
+  handoff directory.
+- The complete Python suite passes with 2,373 tests and one existing dependency
+  deprecation warning. The Web production build and all 434 Web tests pass.
+  Focused runtime, compatibility, instruction, and documentation tests pass;
+  `git diff --check` and all-file pre-commit are green.
+- Surprise: the extra stale compatibility test was not named in the original G0
+  inventory. It is now explicit in G0 ownership instead of being treated as an
+  unrelated failure.
+- The requested read-only review confirmed the runtime fix and formatter-only
+  files, then found a future-empty-handoff test edge, stale S60 wizard language,
+  ambiguous cross-backend move ownership, and an unsafe unspecified Git-source
+  boundary. All four are resolved in the current test and authority docs. The
+  focused follow-up then caught that external GitHub actions cannot truthfully
+  name an unknown human account; the step contract now separates responsibility
+  from typed machine and external-service targets. A final read-only check found
+  no remaining issue in this scope.
+- Not done: no desktop drive was run because G0 changes no desktop behavior. G0
+  was committed locally as `7f0d9c2`; nothing was pushed.
+
+#### 2026-08-28 — implementation authority refinements
+
+- The human retained direct work on `main` for the full private pre-team-server
+  implementation. The convention-only G1 PR transition was removed from the
+  plan and dependency map. A temporary local G0 branch created from the stale
+  instruction has no unique commit; the working edits were moved back to
+  `main`, and the unused ref was left untouched rather than deleted implicitly.
+- The human selected one unified project wizard with personal, new-team, and
+  personal-to-team intents. New-team setup uses canonical GitHub.com repository
+  identities and repository-scoped deploy keys; local-only code is pushed by the
+  human first. The CLI is the sole exhaustive machine workflow, while the wizard
+  renders its structured actions and retains human product approval. A fresh
+  install requires `--team-name`; the strict request carries it so the CLI can
+  print exact initialization argv and the future wizard can submit and render
+  that same operation rather than owning another recipe.
+- Security refinement from the G0 review: this slice is GitHub.com-only. One
+  canonical repository-reference parser rejects local, credential-bearing,
+  ambiguous, ported, or arbitrary-host inputs before persistence or side
+  effects; GitHub Enterprise requires a later trusted-origin design.
+- Not yet done: the provisioning command and progress contract now exist, but
+  its deploy-key and provisioning owner still returns an explicit unavailable
+  result. No unified-wizard code or transfer UI has been implemented or
+  runtime-verified yet.
+
+#### 2026-08-28 — F1 server CLI contract implemented in the working tree
+
+- All ten accepted `rcp server` command forms now parse into one strict request
+  model, enforce canonical UUID4 selectors, and apply the settled root-versus-
+  `rcp` entry-account matrix before a concrete handler can run. Restore accepts
+  only an absolute archive path plus protected identity-file path; transfer
+  import accepts archive bytes only through stdin.
+- The concrete-owner seam is deliberately two phase. It prepares a side-effect-
+  free complete plan, RCP validates and flushes that plan, and only then does the
+  executor receive stdin or begin machine work. Every live event is lifecycle-
+  checked, size-bounded, secret-scrubbed, flushed immediately, and rendered as
+  either plain interactive guidance or the same versioned NDJSON record. The
+  wizard can consume that record without parsing prose or owning another setup
+  recipe.
+- Each interactive plan names every step's purpose, human-versus-RCP
+  responsibility, typed target, pending state, and success condition. A human
+  pause carries ordered safe commands or external UI actions, nonsecret values,
+  and the exact recheck/resume argv. Unexpected executor errors become a generic
+  terminal failure; exception and subprocess text are never copied into the
+  event stream.
+- Focused verification passes 78 tests in `tests/test_server_cli.py` and
+  `tests/test_main.py`; adding the repository's eight documentation checks gives
+  86 passing tests. Focused Ruff and formatting checks, `git diff --check`, and
+  the final all-file pre-commit baseline pass.
+- Review surprise: the first implementation buffered a completed execution and
+  printed its nominal progress only afterward. The read-only review caught that
+  this violated both the operator workflow and real desktop progress. The seam
+  was refactored to plan-then-stream, and a regression proves the plan is visible
+  before the first simulated side effect. The same review found unguarded URL
+  query/fragment and age/provider-key channels plus representative-only account
+  tests; those are now rejected or redacted, and all ten commands exercise their
+  full privilege boundary.
+- Final self-review added a 64 KiB live-output reserve. A malformed owner can no
+  longer consume the entire one-MiB event budget and then prevent RCP from
+  emitting its generic terminal failure; the maximal secret-safe failure shape
+  is measured against that reserve in a focused regression.
+- Not done: concrete install, doctor, provider, provisioning, transfer, backup,
+  restore, member-removal, and update owners remain intentionally unavailable
+  until their packets land. F1 changes no Web or native desktop code, so no
+  desktop drive was run. No full backend suite has been run for this packet; the
+  user explicitly accepted focused packet tests plus pre-commit and one
+  independent audit. One attempted documentation-test command named stale path
+  `tests/test_docs_consistency.py` and therefore ran nothing; it was replaced by
+  the real `tests/test_documentation.py` command whose checks pass. No concrete
+  command can be live-verified until its owning packet replaces the explicit
+  unavailable result.
+
+#### 2026-08-28 — G2 old-data upgrade gate complete
+
+- CI now has one stable **old-data upgrade** job. It builds the Web assets and
+  candidate environment, then runs both the immutable historical-boundary
+  fixtures and an exact-base fixture. A dirty local tree uses current `HEAD` as
+  the base and the working tree as candidate; a committed CI checkout uses
+  `HEAD^1` as the base and the checked-out commit as candidate.
+- Six immutable boundaries cover the actual first team-server-capable merge and
+  every later stored-shape or migration-interpretation era: episode vocabulary,
+  orchestrated children/membership, graph targets, provider runtimes, and the
+  modern Experiment repair. Each sanitized bundle contains a small team
+  database, active credential and session hashes, canonical identity history,
+  one project/member relationship, and one task that was running at shutdown.
+  An external registry pins the exact set, source commits, and whole-bundle
+  digests; each bundle also inventories its payload files. The first is created
+  by the first server code and every later bundle is the preceding database
+  opened and settled by that boundary's exact source, preserving accumulated
+  migration state a fresh database would miss. Paths are fixture-relative; raw
+  bootstrap/member/session/provider/Git credentials and runtime SQLite/lock
+  sidecars are absent.
+- The candidate copies each bundle before use, runs current migrations, replays
+  canonical history with attribution required, starts the complete FastAPI
+  lifespan with provider execution disabled, and verifies health, membership,
+  project projection, startup interruption recovery, exact canonical Patch
+  filenames/bytes and revision, credential/session survival, SQLite integrity,
+  and the task projection. The focused static-boundary run passes seven checks
+  with one exact-base skip; the local CI-equivalent exact-base run passes all
+  eight checks.
+- Builder surprises found before review: the first historical build called
+  identity-aware history initialization before the old code had claimed an
+  identity; using the version-neutral initialize-then-claim order fixed it. An
+  absolute `npm --prefix` invocation against the archived checkout produced a
+  misleading lockfile failure even though `npm ci` from the Web working
+  directory succeeded, so the harness uses an explicit working directory. The
+  first bundle inventoried an ephemeral empty WAL sidecar and retained an append
+  lock; a direct SQLite inspection also proved that updating an absolute locator
+  later leaves that path in free database pages. The builder now writes relative
+  locations initially, snapshots identifiers before final checkpoint, removes
+  sidecars/locks, and hashes only the settled bundle. The exact-base harness
+  also needed to create its intermediate parent directory explicitly.
+- The one independent audit found that the first draft covered only the oldest
+  and newest data, allowed Patch changes behind `>=` revision checks, bypassed
+  credential survival, and let `fixture.json` attest to itself. All four are
+  closed by the six-boundary external registry and the exact assertions above;
+  the audit's additional SQLite integrity check is included. The history
+  inventory also fact-checked `0bb0e72` as a file split and `15824c5`/`e84b461`
+  as transaction-behavior changes with no new stored shape, so redundant
+  fixtures were not invented for them. No second audit was run, per the human's
+  one-audit-per-packet rule.
+- Final self-review caught that six separately fresh databases would label the
+  modern Experiment-repair era without exercising it. The final fixtures are a
+  real upgrade chain instead: the first-team code records a bound live legacy
+  Experiment, the episode-vocabulary boundary migrates it and then completes its
+  task, and the later pre-repair starts retain the contradictory
+  `legacy_unavailable` wrap-up beside the still-live parent. Each affected test
+  first proves that raw old row exists, then proves current migration removes it
+  without losing the episode. The last pinned source is the actual pre-repair
+  `af52e03`, not the already-fixed `650d1f0`.
+- Both final focused runs emit only the repository's existing Starlette
+  `TestClient`/httpx deprecation warning. No warning was suppressed or treated as
+  upgrade evidence.
+- The first commit attempt was correctly rejected by the repository's 500 KiB
+  staged-file guard because five immutable SQLite databases exceeded it. The
+  guard was not bypassed. Fixture databases are now stored as deterministic
+  gzip (`mtime=0`) of the exact settled historical bytes, and the candidate
+  expands only its temporary copy before migration. The external bundle digests
+  pin that representation, while the same pre-migration row assertions prove
+  that compression did not turn the fixture into a reconstructed approximation.
+- Not done: this packet has not run the new job on GitHub-hosted Ubuntu, rehearsed
+  an actual server data directory, driven the desktop, tested source update
+  rollback, or tested disaster restore. Those remain owned by F6a-F6d, O4, and
+  the milestone drives; this CI evidence is not a substitute.
+
+#### 2026-08-28 — F2 Linux layout and installed config complete
+
+- `server_ops.layout` now owns one fixed, validated path set for the `rcp`
+  account, managed source and per-commit releases, data, central repositories,
+  credentials, update checkpoints, restore journals, native provider and SSH
+  state, root configuration/current pointer, private runtime socket, stable CLI
+  wrapper, systemd unit, and journald service identity. Release paths require a
+  full lowercase Git object id; central checkout paths require canonical UUID4
+  project ids and one safe alias component. Remote repository credentials derive
+  only from the explicit absolute home reported by that execution account, not
+  `/home/<name>` or a shell environment value.
+- `/etc/rcp/server.toml` began with one closed version-1 TOML model. O3a's
+  current version-2 reader upgrades that exact first shape in memory and adds an
+  optional strict backup section; a version-1 document carrying that future
+  section is rejected. The file still records the immutable installation UUID,
+  fixed account/unit/path contract, and one GitHub `main` source using either
+  HTTPS with no credential or SSH with the dedicated deploy-key public
+  fingerprint. Unknown fields, path drift, cross-wired transport/authentication,
+  malformed fingerprints, and an explicit empty identity fail closed. No
+  private key, provider login, recovery identity, or member credential enters
+  this machine file.
+- The config writer resolves the actual root UID and `rcp` primary GID rather
+  than accepting caller-selected ownership. It rejects symlinked ancestry and
+  an existing file with the wrong owner, group, or exact `0640` mode, writes a
+  same-directory temporary with the final ownership/mode, fsyncs it, atomically
+  replaces the target, fsyncs the parent, and validates the published file. An
+  existing config may change only while retaining its installation id.
+- The shipped `rcp.service` asset runs `/usr/local/bin/rcp` as `rcp` from the
+  root-controlled current release, binds only `127.0.0.1:8421`, uses the fixed
+  data and mode-0700 runtime directories, serves the prebuilt Web bundle, and
+  has no reload path. It leaves provider homes readable and does not invent a
+  file log beside journald.
+- Focused layout/config tests and the shared server-CLI suite pass 69 checks;
+  Ruff and formatting checks pass. The one independent audit found arbitrary
+  config ownership, uncoupled source transport/authentication, falsey identity
+  regeneration, control characters in remote homes, and incomplete fixed-path
+  assertions. All five were fixed before closure, and no second audit was run.
+- A supplementary wheel probe did not reach asset inspection because the
+  repository's pre-existing Hatch configuration tries to add
+  `rcp/skills/episode-report/SKILL.md` twice. This slice intentionally does not
+  repair or depend on wheel packaging: the accepted team-server path is a clean
+  source checkout plus `uv sync --frozen`. Source resource loading of the unit
+  is covered, and F3b supplies proof from the installed source environment.
+- F2 alone changed no real Linux state; F3a/F3b now provide and live-qualify the
+  account, directory, config, wrapper, symlink, systemd, and Ubuntu readback
+  effects. No wizard flow is exposed by F2 alone.
+
+#### 2026-08-28 — F3a source-server installer implemented and audited
+
+- `rcp server install --team-name "<team name>"` now replaces the unavailable
+  install seam with one concrete nine-step operation. The strict request owns
+  the team name because a terminal-only run must print exact initialization and
+  resume argv; the future wizard submits and renders the same plan/events. Plan
+  preparation only reads the supplying checkout's credential-free GitHub origin,
+  and the complete plan is flushed before host effects begin.
+- Preflight accepts only Ubuntu 22.04/24.04 x86-64 with running systemd, Git,
+  system-wide `uv`, Node.js 24/npm, OpenSSH, and `age` 1.x. It installs no apt
+  source or general tool. After account creation it installs a missing managed
+  Python 3.12 through system-wide `uv` as `rcp`, then resolves and executes that
+  runtime again before any source work. This closes the fresh-host gap where an
+  operator was previously expected to prepare files inside an account that did
+  not exist yet. Account
+  convergence creates or strictly validates `rcp` at `/home/rcp` with
+  `/bin/bash`, exact non-locking unusable shadow value `*NP*`, its dedicated
+  non-root user/group identity, primary group, no supplemental groups, and no
+  sudo authority. The preflight proves the running systemd manager is reachable
+  before the account or filesystem can be changed.
+- All managed Git/npm/uv/SSH commands cross one `runuser` boundary with an empty
+  environment, fixed service home/PATH, no inherited SSH agent or operator
+  credential, and no shell evaluation. Source Git additionally disables system
+  and global config, credential helpers, and askpass before deciding whether the
+  repository is public. Public GitHub `main` records HTTPS and no key. A private
+  source creates one Ed25519 key labelled
+  `rcp-source:<installation-id>`, records only its public fingerprint, and pauses
+  with the exact GitHub deploy-key URL, public key, read-only checkbox rule,
+  published host-fingerprint URL, host-trust command, success signal, and exact
+  resume argv. Network failure is not misreported as a missing grant.
+- The bootstrap checkout is never adopted. Install clones the separate managed
+  checkout as `rcp`, refuses local changes and unfinished restore state, fetches
+  only the recorded `main`, and refuses to turn a newer upstream into an install
+  update. It creates one detached per-commit worktree, runs exact `npm --prefix
+  web ci`, Web build, and Python-3.12 `uv sync --frozen`, and never rebuilds an
+  active release in place. Existing source, key, release, data, wrapper, unit,
+  and current-pointer state is converged only when ownership and exact meaning
+  are proven; unknown or symlinked state fails loudly.
+- Root installs the stable data-aware wrapper, exact non-reloading unit, and
+  atomic current pointer. A fresh empty data directory is proved stopped and
+  disabled, then the CLI pauses with ordered team-init and rerun commands plus
+  their success signals. Activation and health remain the next system-owned
+  step and execute inside the resumed CLI. An initialized
+  rerun never opens SQLite: it converges systemd, reads back exact service state,
+  and uses a direct proxy-free/non-redirecting loopback HTTP connection with a
+  bounded body. It requires `status=ok` and `space_kind=team`, and proves the
+  service is stopped and disabled after a wrong-space result before saying so.
+- The packet's one independent read-only audit inspected the installer, service
+  unit, CLI/model/limits changes, tests, README, spec, and handoff. It found six
+  defensible gaps: root-valued service identity, a one-command sudo probe,
+  unchecked systemd fencing, proxy/redirect-capable health readback, ambient Git
+  credential helpers, and a filesystem-only systemd preflight. All six are now
+  fixed with focused regressions; no second audit was run, per the accepted
+  packet process.
+- Commit `638c19e17252e0e441a698e628b49449df088c81` is the exact first
+  installable source-server boundary. The next chained historical fixture is
+  `source-server-install-v7-638c19e`; its metadata names that full commit and the
+  external registry pins bundle digest
+  `3f2c9a6cac26424882a7ec64f35d0c0410ea64d86597a3e7359c2ba5951c8a69`.
+  The fixture/upgrade and documentation run passes 16 tests; the separately
+  environment-gated exact-candidate-base build is the one expected local skip.
+- Focused installer and shared CLI verification currently passes 158 tests,
+  including public/private/fresh/resumed orchestration, managed-runtime install
+  and recheck, plan-before-effect and
+  dual-renderer contracts, credential-environment clearing, Git failure
+  classification, fixed command sequences, source/update separation, build
+  order, unprivileged-account and sudo-policy checks, live-systemd preflight,
+  credential-free Git, direct loopback HTTP, fail-closed service fencing,
+  wrong-space shutdown, and unsafe data refusal.
+  Focused Ruff/format and diff checks pass. The concrete Linux branches have
+  60% statement coverage here; F3b's intentionally separate successful
+  disposable-host drive is the proof of real NSS, filesystem ownership, systemd,
+  SSH, and Ubuntu tool behavior.
+- F3a itself did not drive Ubuntu or desktop state. F3b now supplies the Ubuntu
+  22.04/24.04 installation/readback and operator guide; those facts are explicit
+  rather than inferred from the unit suite.
+
+#### 2026-08-28 — F3b guide and live drive implemented, audited, and qualified
+
+- `docs/server.md` is now the exhaustive terminal guide. It separates Ubuntu
+  22.04 and 24.04 prerequisites, pins the qualified Node.js and uv downloads,
+  gives the disposable bootstrap build, and follows the CLI's ordered GitHub,
+  initialization, activation, readback, provider-auth, and operator-route
+  boundaries. The CLI stays complete without the future wizard; the wizard may
+  only submit and render the same structured operation.
+- A clean-machine review found one F3a defect before the live drive: install
+  expected Python 3.12 to exist inside the newly created `rcp` account. The
+  installer now uses required system-wide `uv` as `rcp` to install a missing
+  managed 3.12 runtime, then resolves and executes it again. The focused server
+  suite passes 121 tests with two intentional environment-gated skips, including
+  the new install/recheck and bounded-output regressions.
+- `tests/test_server_install_live.py` is destructive only behind two explicit
+  gates. It refuses a nonempty host, accepts the private-repository
+  Administration token only from a caller-owned protected file, creates one
+  temporary read-only GitHub deploy key, verifies GitHub's published Ed25519
+  fingerprint before accepting host trust, and removes the deploy key in
+  cleanup. It builds and then deletes a separate bootstrap checkout before
+  initialization and finishes through the installed CLI.
+- The live drive checks interactive bootstrap-code isolation from journald,
+  systemd/process identity, fixed owners and modes, loopback-only port 8421,
+  health, password refusal, optional direct-key `rcp` SSH, a fresh named
+  operator's exact D6 sudo command, refusal of an unlisted command, installed
+  CLI convergence, source-key revocation, restart, and continued health.
+- `.github/workflows/server-install-live.yml` provides separate fixed
+  `ubuntu-22.04` and `ubuntu-24.04` x86-64 jobs and repeats the documented
+  prerequisite versions. It is manual and `main`-only. The private source means
+  GitHub's ordinary `GITHUB_TOKEN` is insufficient: deploy-key creation requires
+  repository Administration write. The workflow therefore expects the narrowly
+  scoped secret `RCP_LIVE_GITHUB_ADMIN_TOKEN`, materializes it as mode 0600, and
+  never passes it to RCP.
+- The packet's one independent audit found eight concrete gaps: a stale
+  four-command initialization expectation, ambiguous deploy-key cleanup after a
+  partial API failure, an unverified downloaded uv installer, temporary SSH and
+  sudo access left on the host, an incomplete clean-host fence, unbounded build
+  output capture, a decision example missing required `--team-name`, and a
+  mutable checkout action tag in the privileged workflow. The live drive now
+  follows the CLI's one human init command plus exact root resume; records the
+  nonsecret deploy-key label before creation for unconditional cleanup; installs
+  the immutable uv archive only after a pinned SHA-256 check; removes its test
+  account, authorized key, and sudoers rule; rejects a loaded service, live RCP
+  process, port 8421 listener, runtime directory, or prior test state; caps
+  subprocess output; repairs the exact decision command; and pins checkout to
+  the reviewed v7.0.0 commit. No second audit was run, per the one-audit packet
+  rule.
+- Live qualification uses the protected
+  `RCP_LIVE_GITHUB_ADMIN_TOKEN` secret on disposable GitHub-hosted runners.
+  Temporary deploy-key creation remains inside the guarded live test. Exact
+  commit `92117ccfc1190a1db2e5f4e870fa31fe708d3ba9` passed the entire
+  install/remove/readback drive and cleanup on both supported releases, and a
+  separate repository API readback found no leftover `rcp-source:` key. Because
+  install deliberately consumes
+  `origin/main`, this workflow is a post-push qualification rather than a
+  pre-merge PR gate; the current human-approved direct-main development boundary
+  makes that explicit instead of pretending otherwise.
+- Live qualification run
+  [33225665846](https://github.com/Zhi0467/RCP/actions/runs/33225665846)
+  reached both Ubuntu 22.04 and 24.04 runners but stopped in prerequisite
+  verification before building or invoking RCP. The downloaded Node.js and uv
+  archives both passed their pinned checksums; the workflow then incorrectly
+  required the complete `uv --version` line to equal `uv 0.12.7`, although the
+  upstream binary appends a build hash and date. The workflow now validates the
+  command name and semantic version fields separately. No deploy key was
+  created and no installer-owned host state was reached in this failed attempt;
+  a rerun on the corrected commit remains required.
+- Corrected run
+  [33230398233](https://github.com/Zhi0467/RCP/actions/runs/33230398233)
+  passed the Node.js and uv version checks on both releases, then exposed a
+  hosted-runner impurity before RCP was built: extracting the pinned Node.js
+  archive over GitHub's preinstalled `/usr/local/lib/node_modules/npm` retained
+  stale nested packages and made every npm command crash. The workflow now
+  removes only that exact disposable-runner npm directory before extracting the
+  pinned archive and explicitly requires `npm --version` to succeed in the
+  prerequisite step. The secret and live installer were not reached, so no
+  deploy key or RCP-owned host state was created. At that point, another
+  corrected rerun was required.
+- Corrected run
+  [33231425876](https://github.com/Zhi0467/RCP/actions/runs/33231425876)
+  passed prerequisite installation and the complete bootstrap build on both
+  releases, then found the first live-harness privilege defect: its clean-host
+  fence used ordinary-user `Path.exists()` below root-only `/etc/sudoers.d`.
+  The fence now uses bounded noninteractive-root probes for both existence and
+  symlink identity, with focused tests for a present object, broken symlink,
+  absence, and an indeterminate probe. The test failed before reading the
+  protected token or creating a deploy key, and workflow cleanup completed on
+  both runners. At that point, another corrected rerun was required.
+- Corrected run
+  [33231556482](https://github.com/Zhi0467/RCP/actions/runs/33231556482)
+  passed all clean-host gates and reached the first real root installer call on
+  both releases. That call returned 1, but a second defect masked its event and
+  stderr: root's Python import created bytecode in the operator-owned bootstrap
+  environment, then ordinary-user cleanup failed on those root-owned files.
+  The documented/bootstrap live command now fixes
+  `PYTHONDONTWRITEBYTECODE=1` before Python starts, and the installed wrapper
+  applies the same invariant to root maintenance commands and the service.
+  Live diagnostics now retain only bounded output tails, and in-process
+  deploy-key revocation precedes bootstrap cleanup. Workflow cleanup completed
+  on both runners and no deploy-key receipt was present; the next run must both
+  prove ownership-safe cleanup and expose or clear the underlying installer
+  exit.
+- Corrected run
+  [33231763674](https://github.com/Zhi0467/RCP/actions/runs/33231763674)
+  proved that the bootstrap stays ordinary-user removable and exposed the
+  underlying product failure on both releases: account creation consumed the
+  full generic 30-second read-only probe limit, then returned the generic
+  `useradd` failure event. Account creation is a stateful one-time operation,
+  so it now owns a separate bounded two-minute limit while all ordinary probes
+  remain at 30 seconds; an actual expiry is reported as such with the exact
+  operator inspections. No source-grant pause or deploy-key receipt was
+  reached, and workflow cleanup completed on both runners. A corrected rerun is
+  still required to prove whether hosted `useradd --create-home` completes
+  within that stateful boundary.
+- Corrected run
+  [33231993855](https://github.com/Zhi0467/RCP/actions/runs/33231993855)
+  proved account creation completes beyond the old probe cutoff on both
+  releases, then falsely reported that the new `rcp` account had sudo
+  authority. The first diagnosis attributed this to the root process's
+  inherited `SUDO_USER=runner`; root-owned installer subprocesses consequently
+  drop only the four inherited `SUDO_*` caller-identity variables while
+  preserving unrelated environment. Run 33232185202 below disproved that as the
+  complete cause. No source grant or deploy key was reached, and workflow
+  cleanup completed on both runners.
+- Corrected run
+  [33232185202](https://github.com/Zhi0467/RCP/actions/runs/33232185202)
+  ran exact commit `e445246c2c4936823712c1fe56a14974e6de40fd` and again reached
+  account validation on both Ubuntu 22.04 and 24.04 after caller-identity
+  variables were removed. The remaining defect is the probe itself: a root
+  process used `sudo -U rcp -l` and interpreted the query's zero exit status as
+  proof that `rcp` could use sudo. The first correction executed `sudo -n -l`
+  directly as `rcp` through the existing clean `runuser` boundary. No source
+  grant or deploy key was reached, and cleanup completed on both runners.
+- Corrected run
+  [33232456126](https://github.com/Zhi0467/RCP/actions/runs/33232456126)
+  ran exact commit `26c3317fb6c22d5a7182f061fcf8486747aad67b` and disproved the
+  direct-account query: both Ubuntu releases returned an indeterminate result
+  because listing policy as the password-disabled `rcp` account can require
+  authentication before reporting that it has no grants. The installer now
+  returns to the root-authorized `sudo -U rcp -l` policy query but evaluates its
+  C-locale result before the query caller's exit status. The explicit “not
+  allowed to run sudo” result is accepted with either observed status; a
+  successful listing without that denial is rejected as policy, and every
+  other result fails closed. Focused regressions pin all three outcomes. No
+  source grant or deploy key was reached, and cleanup completed on both
+  runners. Another corrected rerun is required.
+- Corrected run
+  [33232623180](https://github.com/Zhi0467/RCP/actions/runs/33232623180)
+  ran exact commit `908d803328b758477bf5cdb6d343f51b95bcc72a` and cleared the
+  account and sudo-policy boundary on both releases. It then failed while uv
+  installed managed Python 3.12 as `rcp`. The live path exposed that the root
+  installer inherited the operator-owned bootstrap checkout as its current
+  directory; that checkout sits below a `0700` temporary parent. The shared
+  `_run_as_account` boundary changed identity and environment but not directory,
+  so `rcp` could run cwd-independent version probes yet could not perform uv's
+  real install from that inaccessible directory. Account commands now default
+  to the account's fixed home and retain an explicitly supplied checkout cwd.
+  The uv failure message no longer assumes every failure is network-owned. No
+  source grant or deploy key was reached, and cleanup completed on both
+  runners. Another corrected rerun is required.
+- Corrected run
+  [33232916530](https://github.com/Zhi0467/RCP/actions/runs/33232916530)
+  ran exact commit `bdf51500c151349b5a5afe7528d12789a4d048d8` and proved the
+  fixed home-directory boundary: both releases installed and rediscovered the
+  managed Python, created the private-source key, paused for the read-only
+  deploy-key grant, and authenticated that key to GitHub. The harness then
+  stopped because no fingerprint prompt appeared. GitHub-hosted runners already
+  carry system-wide host trust, while RCP named only its user known-hosts file;
+  OpenSSH therefore accepted the global record without exercising the required
+  human comparison. The trust action and all later source Git operations now
+  set `GlobalKnownHostsFile=/dev/null`, leaving RCP's owned known-hosts file as
+  the sole trust source. Both temporary read-only deploy keys were revoked and
+  workflow cleanup completed. Another corrected rerun is required.
+- Corrected run
+  [33233089933](https://github.com/Zhi0467/RCP/actions/runs/33233089933)
+  ran exact commit `da2bac852eccf640ec4ad6f0d16cf620f5542333`. Both releases
+  reached the isolated GitHub trust command, which exited 255 rather than
+  producing GitHub's expected authenticated/no-shell result. The assertion
+  previously discarded the captured SSH explanation, so it now includes only
+  a bounded output tail on failure. No acceptance condition was weakened. Both
+  temporary read-only deploy keys were revoked and workflow cleanup completed;
+  a diagnostic rerun was required before choosing a fix.
+- Diagnostic run
+  [33233283009](https://github.com/Zhi0467/RCP/actions/runs/33233283009)
+  ran exact commit `c5058c3fd4c57ce6d0a8419045216c9f747022df`. Both Ubuntu
+  releases again reached the isolated trust command and returned only `Host key
+  verification failed` with status 255. This identified a live-driver defect,
+  not a source-key failure: `_run_pty` connected SSH's standard streams to a PTY
+  but did not give the child a controlling terminal. OpenSSH reads first-trust
+  confirmation from `/dev/tty`, so no human-equivalent fingerprint prompt or
+  answer could occur. The runner now uses a real controlling PTY, and a focused
+  regression opens `/dev/tty`, emits the fixed published fingerprint prompt,
+  and proves that the guarded `yes` answer reaches it. Both temporary read-only
+  deploy keys were revoked and workflow cleanup completed. At that point, a
+  corrected two-release rerun was required.
+- Corrected run
+  [33233599317](https://github.com/Zhi0467/RCP/actions/runs/33233599317)
+  ran exact commit `84ba2d89b53264295960b7e248c679e633aa9ff3`. The real
+  controlling PTY cleared GitHub first trust, both releases cloned and built the
+  exact managed source commit, and the interactive team-space command completed.
+  The resumed installer then refused the initialized SQLite file because it was
+  readable or writable outside the `rcp` account. The data-directory ancestry
+  was already `rcp`-owned mode `0700`, but the team-initialization owner must not
+  depend only on an invoking wrapper's process mask. `space init --team` now
+  restricts the database to mode `0600` before revealing its one-time bootstrap
+  code; an interrupted unclaimed initialization is restricted on recovery too.
+  Focused tests prove fresh and recovery modes. Both temporary read-only deploy
+  keys were revoked and workflow cleanup completed. At that point, a corrected
+  two-release rerun was required.
+- Corrected run
+  [33233864357](https://github.com/Zhi0467/RCP/actions/runs/33233864357)
+  ran exact commit `8df884d71deef21f7ee8cfc8eafa41df5c95b926`. The mode fix
+  cleared initialization on both releases; each resumed install enabled the
+  team service and returned the expected loopback health. The live verifier
+  then tried to inspect `/home/rcp/rcp-server` with ordinary-runner
+  `Path.stat()`. Permission denial is the correct result because `/home/rcp` is
+  mode `0700`. All remaining private/root ownership, mode, symlink-target, and
+  removal assertions now use bounded `sudo -n stat`, `readlink`, or the existing
+  exact existence probe; a focused parser test pins the GNU stat invocation and
+  result. Both temporary read-only deploy keys were revoked and workflow cleanup
+  completed. At that point, a corrected two-release rerun was required.
+- Corrected run
+  [33234155051](https://github.com/Zhi0467/RCP/actions/runs/33234155051)
+  ran exact commit `26314cf29989971d8855beec3ec6c0224c9cfecd`. Both releases
+  cleared every ownership/mode assertion, loopback-only listener proof, password
+  refusal and public-key login, narrow named-operator sudo rule, and bootstrap
+  journal exclusion. The test then revoked its deploy key, restarted the healthy
+  service, and issued one immediate `curl`; both returned connection-refused
+  status 7 during startup. The post-restart proof now uses curl's bounded
+  connection-refused retry window and still requires the exact team-health JSON.
+  Both temporary read-only deploy keys were revoked and workflow cleanup
+  completed. At that point, a corrected two-release rerun was required.
+- Successful qualification run
+  [33234365749](https://github.com/Zhi0467/RCP/actions/runs/33234365749)
+  ran exact commit `92117ccfc1190a1db2e5f4e870fa31fe708d3ba9`. Ubuntu 22.04
+  job 99052620389 and Ubuntu 24.04 job 99052620232 both passed every prerequisite,
+  source build, protected-token materialization, full install/readback drive,
+  deploy-key revocation, credential/receipt cleanup, temporary access cleanup,
+  and checkout cleanup step. The full drive includes private-source first trust,
+  source clone/build, bootstrap removal, interactive initialization, activation,
+  health, exact owners and modes, loopback bind, password refusal, explicit
+  public-key login, narrow named-operator sudo admission and denial, journal
+  exclusion, source-key revocation, restart, and continued health. A separate
+  repository API query returned no `rcp-source:` deploy key. F3b is complete.
+
+#### 2026-08-28 — P1 durable provisioning boundary implemented and audited
+
+- One strict GitHub.com parser now accepts only the two reviewed HTTPS/SCP forms,
+  stores one lowercase `owner/repository` identity, and generates every clone and
+  settings URL from that identity. Request creation performs no filesystem, DNS,
+  or network work and never persists the member's raw source string.
+- The team `AppStore` now owns durable new-project and incoming-transfer
+  preparation requests, the six exact display states, proposed project-id/path
+  reservation, machine/repository/provider checks, structured human actions,
+  final-review binding, explicit cancellation disposition, and transactional
+  idempotent step receipts. Preparation does not register a project, append
+  canonical identity, or establish a writable home.
+- Human-action persistence is request-bound: a GitHub target must name one
+  request repository and its exact settings page, a machine target must name one
+  declared execution account, and the resume argv must re-enter this exact
+  request through project provisioning or its request-scoped provider check.
+  Deploy-key labels are derived and secret-safe; ready Git checks require the
+  retained public fingerprint and the actual request-scoped write proof.
+- The packet's one independent audit found four gaps: generic actions were not
+  request-bound, deploy-key labels were not secret/line-safe, a stored review
+  digest was shape-checked but not recomputed, and receipt hashing happened
+  before diagnostic normalization. All four are fixed with focused regressions;
+  no second audit was run, per the one-audit packet rule.
+- Focused parser, request lifecycle, strict reload, installer integration, and
+  broader storage verification passes 173 tests. Focused Ruff and format checks
+  are green. Commit `227f9645e850d20cb19a49be7e944ded64309e43` is the exact
+  P1 schema boundary. Its chained `project-provisioning-v8-227f964` fixture
+  contains a live in-progress request plus one step receipt, proves the proposed
+  project remains absent, and is pinned by bundle digest
+  `59c77fd91519935483a93ab6bb6e1c5c4b5dff7f3e21496443ce12a8fb2f029d`.
+  The eight-boundary upgrade/start drive passes, so P1 is complete.
+- Not done in P1: no member HTTP route, backend UI projection, machine-side Git
+  or provider work, final project creation, CLI handler, or wizard code exists.
+  P2 through P6 and D7 retain those owners. The CLI remains the exhaustive
+  operation owner; the later unified wizard may only submit and render its
+  structured state and commands.
+
+#### 2026-08-28 — D1 desktop connection and Keychain boundary implemented and audited
+
+- The native desktop now owns one versioned `team-connections.json` registry in
+  its app-config directory. It stores only canonical connection UUID, display
+  name, one SSH argv target, remote loopback port, expected team `space_id`,
+  stable canonical loopback origin, minimum shell version, and a bounded minimal
+  project-card cache. The strict loader rejects unknown fields, duplicate
+  identities/spaces/origins/cards, noncanonical UUIDs/origins/versions, unsafe
+  SSH arguments, unsupported versions, and oversized state.
+- Registry publication uses a same-directory mode-0600 temporary file, file and
+  directory sync, and atomic replacement. Reads open one no-follow,
+  nonblocking file handle, verify that exact handle is regular, and cap the read
+  at one byte beyond the one-MiB limit. A symlink, FIFO-like special file,
+  concurrent growth, or corrupt registry fails closed without following or
+  unboundedly reading a replacement path.
+- Routing metadata can be written only by later verified native connection and
+  session owners; no raw Web command may rewrite an existing SSH target or
+  origin. The current Tauri surface lists nonsecret records, accepts one
+  permanent token only after metadata exists, and removes metadata and Keychain
+  credentials through separate idempotent commands. The token is held in a
+  zeroizing native buffer, never returned, and stored under the fixed Keychain
+  service plus an account derived solely from the canonical connection UUID.
+- Every persisted string and the final serialized bytes reject all current RCP
+  credential shapes: permanent member and browser-session tokens plus bootstrap
+  and invitation codes. The packet's one independent audit found the original
+  detector missed dotted enrollment codes and that path-check-then-read left a
+  symlink/FIFO/size race; both are fixed with focused regressions and the
+  single-handle reader above. No second audit was run.
+- Focused and full native verification passes eight new registry/reference
+  tests and all 60 desktop Rust tests. Strict `cargo fmt` and
+  `cargo clippy --all-targets -- -D warnings` pass, and command permissions are
+  generated and granted only to the main desktop window capability.
+- Not done in D1: no real member credential was written to this developer's
+  login Keychain, and no UI or desktop navigation was driven. The handoff
+  assigns the real store/read/replace/delete and missing-item proof to D4a's
+  live enrollment/session test, after D2 and D3 provide the verified origin and
+  tunnel. D3-D5 still own SSH lifetime, token retrieval/enrollment, session
+  establishment, multi-backend navigation, cached-card refresh, and the visible
+  Add-team-space flow; D2 later completed the origin and cookie boundary.
+
+#### 2026-08-28 — D2 loopback-origin spike stopped at the security boundary
+
+- A dedicated source-built Tauri example and three-server harness exercise the
+  actual WKWebView cookie store. They admit only the two exact configured
+  origins, set a `Secure; HttpOnly; __Host-rcp_session` cookie, record what each
+  server receives, and fail automatically on a missing or cross-space cookie.
+- Generated `rcp-<connection UUID>.localhost` names resolve exclusively to
+  IPv4/IPv6 loopback and were served on both. The real WKWebView requested the
+  login endpoint, received the cookie response, followed the redirect, and sent
+  no cookie on the next same-origin request. Exact `localhost` produced the same
+  result. This rules out the proposed HTTP alias mechanism before isolation or
+  restart can be claimed; it does not distinguish rejection during storage from
+  suppression during sending.
+- Distinct `127.0.0.2` and later hosts cannot be bound on the stock development
+  Mac without privileged loopback-interface mutation. No network configuration
+  was changed, and that mutation would not make an HTTP origin satisfy the
+  already-failed `Secure`-cookie gate.
+- The unbundled probe is a real Tauri WKWebView but is not exposed as a named
+  macOS application to the accessibility driver. The server request log is the
+  live behavioral evidence; no visual interaction claim is made.
+- This spike changed no production allocator, navigation rule, capability,
+  connection record, or cookie policy. It raised Q11 and stopped D2 at the
+  required boundary. The 2026-08-29 HTTPS proof and 2026-08-30 production D2
+  packet later resolved that stop; this paragraph is retained only as the
+  failed-HTTP evidence.
+
+#### 2026-08-28 — O3a backup configuration boundary implemented
+
+- `sudo rcp server backup configure` now requires one absolute destination, one
+  checksum-valid native X25519 `age1...` public recipient, explicit `--confirm`,
+  and configurable daily server-local time/archive count with defaults of
+  `02:00` and 30. The strict request rejects relative/root/non-normalized paths,
+  malformed recipients, private age identities, invalid times, nonpositive
+  retention, partial requests, and configuration fields on other commands.
+- The destination must already exist. A bounded, empty-environment helper runs
+  through `runuser` as the exact installed `rcp` account, opens the directory
+  without following its final component, creates one mode-0600 exclusive probe,
+  fsyncs and removes only that probe, and returns no path or subprocess output.
+  RCP does not classify or warn about local versus mounted storage.
+- `/etc/rcp/server.toml` is now schema version 2 with one optional strict backup
+  table. The reader upgrades the exact unconfigured version-1 shape in memory;
+  it does not let a version-1 document smuggle in backup fields. Atomic
+  publication retains installation id, source, and fixed paths and stores only
+  destination, schedule, retention, and the public recipient.
+- The source assets install one `rcp-backup.service` that invokes the future
+  service-account `backup run` command and one timer rendered from the stored
+  schedule. One root-owned `0600` advisory lock serializes configuration with
+  installer convergence. Both paths fence a previously loaded timer before
+  touching its units and prove it inactive and disabled after reload. A
+  root-owned pending config makes an interrupted timer/config publication
+  recover its exact intended policy before any later operation continues; only
+  exact config, timer-text, and systemd-state readback clears that marker. There
+  is no code path in O3a that enables the timer.
+- The one independent O3a audit found four issues, all fixed without a second
+  audit: early failures could precede the first timer fence; config and timer
+  publication lacked serialization/recovery; `PrivateTmp=true` hid otherwise
+  valid `/tmp` destinations from the future service; and the destination bound
+  exceeded the CLI event bound. Focused O3a, shared CLI, installed-config,
+  installer, and documentation verification now passes 150 tests. The internal
+  destination helper, configured-file atomic round-trip, concurrent-lock
+  refusal, and injected publication recovery were exercised against real
+  temporary files. Focused Ruff and formatting checks pass.
+- At this packet boundary no archive was captured, encrypted, integrity-read,
+  retained, or deleted, so the timer deliberately remained disabled. O3b has
+  since installed those effects and the first-run activation gate. No real
+  root-owned `/etc` file or systemd manager was changed on this Mac; the later
+  live milestone still owns the Ubuntu systemd/no-pause qualification.
+
+#### 2026-08-29 — F4 private installed-service control socket complete
+
+- The installed, CLI-owned team service now publishes protocol-v1 metadata for
+  one fixed `/run/rcp/control.sock` endpoint and starts its listener inside the
+  already-composed FastAPI lifespan. Personal, desktop, embedded, mismatched
+  data-directory, wrong-service-identity, and non-installed launches publish no
+  usable control endpoint. Direct `create_app` metadata injection remains an
+  internal composition/test seam, not a supported deployment route.
+- `ServerControlServer` verifies the owner-only mode-`0700` runtime directory,
+  creates and rechecks the owner-only mode-`0600` socket, authenticates Linux
+  peers with `SO_PEERCRED`, and admits only root or the service UID before
+  parsing. Requests and responses use strict frozen models, canonical UUID4
+  identities, one named `probe` operation, 64-KiB/256-KiB frame bounds, bounded
+  I/O, and fixed secret-safe errors. The client authenticates the server UID and
+  binds success to the request id, process instance, and kernel server PID.
+- Socket recovery refuses unsafe type/owner/group/mode or a live listener,
+  rechecks the stale inode before unlinking, and shutdown removes only the exact
+  inode created by its owning process. The non-daemon listener must reach its
+  bounded operation boundary before shutdown completes.
+- The current in-process handler returns only captured process/data/team
+  identity. It uses the application's already-open `AppStore`; the control
+  client reads strict server metadata and never opens SQLite. Neither request nor
+  response carries a member/session identity, so root/`rcp` machine authority
+  does not become product membership.
+- Focused control, runtime, main, health, layout, installer, and live-test source
+  tests pass; the complete backend suite passes with its two expected skips.
+  Repository-wide Ruff and all-file pre-commit pass. The independent Codex
+  Security diff scan `0efca9e6-6eeb-4ae0-b6ab-ebab0a883fbf` reviewed all five
+  changed source files, closed all five coverage rows, and reported no finding
+  or deferred work.
+- Live qualification run
+  [33236544453](https://github.com/Zhi0467/RCP/actions/runs/33236544453)
+  ran exact commit `9e2b676b5db62ac78dc39b1a50a22eb53ef61585`.
+  Ubuntu 24.04 job 99058407050 and Ubuntu 22.04 job 99058407140 both proved the
+  real runtime/socket owner and modes, ordinary-runner permission refusal,
+  service-account probe, exact systemd PID binding, space identity agreement
+  with HTTP health, and restart recovery with a new instance id and stable
+  space id. Every cleanup step passed, and a separate repository API readback
+  found no remaining `rcp-source:` deploy key.
+- Not done in F4: no stateful server operation is wired through the socket, and
+  no doctor, update, backup, restore, provisioning, or member-removal behavior is
+  implied. Before a future mutating request can act, its named owner must bind
+  both expected `data_dir_id` and `space_id` in addition to the existing
+  request/instance/UID/PID checks. F5 owns the first read-only production caller
+  and authoritative status projection.
+
+#### 2026-08-29 — F5 exact commit identity and installed-server doctor complete
+
+- Installed-service metadata schema 3 now captures the physical immutable
+  release commit and a deterministic SHA-256 identity of the bounded,
+  symlink-free built Web bundle before the process starts. The two values are an
+  all-or-nothing validated pair and are exposed by `/api/health`; personal,
+  desktop, and embedded launches retain explicit nulls rather than pretending to
+  be installed releases. Startup refuses a service whose working directory and
+  root-controlled `current` pointer do not resolve to the same canonical
+  per-commit release.
+- `rcp server doctor` now emits one common interactive/machine-readable
+  structured report through the existing server CLI. It names the fixed source,
+  release, and data roots; configured GitHub origin and branch; managed `main`,
+  last locally fetched `origin/main`, checkout candidate, current, and running
+  commits; current/running Web identities; systemd active/enabled/PID/reload
+  state; space, process, data, and private-control identities; dependency
+  versions/readiness; and every ownership/mode problem. It never fetches,
+  contacts GitHub, opens SQLite, changes the index, repairs state, or reveals a
+  private credential. Consequently `upstream_head` is deliberately the last
+  fetched local ref, not a network-fresh claim.
+- The report distinguishes aligned, upstream-update-available,
+  checkout-candidate-pending, restart-pending, and inconsistent states. A
+  coherent pending state succeeds with its explicit state; corruption or an
+  owned check failure returns the same complete report as a failed final step.
+  In F5, `candidate_commit` names a clean managed-checkout target that differs
+  from the running process. F6a owns the separate immutable built-candidate
+  receipt and will refine candidate build readiness without inventing a generic
+  status registry here.
+- Readback validates the fixed path owners/modes, rejects unsafe release or
+  artifact ancestry before traversal, uses Git with optional locks and ambient
+  configuration disabled, verifies release Git identity and cleanliness, and
+  bounds Web hashing by path, file count, and total bytes. It verifies the
+  on-disk service asset, systemd's loaded fragment, absence of drop-ins, and
+  `NeedDaemonReload=no`; a matching file with an overridden or stale effective
+  unit is not reported healthy. It probes only the fixed authenticated control
+  socket after metadata has matched the installed owner, data directory, and
+  socket identity.
+- The packet's one independent read-only audit reported five medium concerns.
+  Four produced focused fixes: unsafe-path traversal after reporting a bad
+  layout, probing a metadata-selected socket after an identity mismatch,
+  missing effective-systemd/drop-in verification, and unstructured Web
+  traversal errors. The fifth asked that `candidate_commit` prove a built
+  release; that is not F5 state and is deliberately assigned to F6a's required
+  built-candidate receipt. No second audit was run.
+- The first live qualification, run 33238598618 at implementation commit
+  `61d32463ba94556bb1d3a318e826877c1d1a12ce`, correctly failed on both Ubuntu
+  releases because `rcp.lock` and `rcp-server.json` had inherited the creating
+  process's umask. Interactive and service launch paths therefore did not prove
+  the private `0600` contract consistently. The concrete owners now apply
+  `fchmod(0600)` when acquiring/publishing those files, including convergence of
+  an existing permissive lock; focused regressions pin both behaviors.
+- Successful live run
+  [33238829032](https://github.com/Zhi0467/RCP/actions/runs/33238829032)
+  used exact fix commit `b63eda636ec6c3769638d476549f38cec69269e5`.
+  Ubuntu 24.04 job 99064504477 and Ubuntu 22.04 job 99064504575 both passed the
+  complete source install, initialization, activation, doctor, restart, stable
+  commit/Web/space identity, changed process instance, exact systemd readback,
+  and cleanup drive. Every cleanup step passed, and a separate repository API
+  readback found no remaining `rcp-source:` deploy key.
+- Focused doctor/runtime/health/CLI/live-driver regressions, the complete backend
+  suite with its two expected skips, 434 Web tests, the production Web build,
+  Ruff, formatting, and repository-wide pre-commit all pass. This CLI/server
+  packet made no desktop UI promise, so the disposable installed Ubuntu service
+  is the relevant user-visible runtime proof.
+- Not done in F5: no source fetch, fast-forward, build receipt, rehearsal,
+  cutover, rollback, provider summary, or backup summary existed. F6a and P5
+  have since supplied the candidate build and provider summary, and O3b now
+  supplies the backup summary through its concrete owner state. F6b through
+  F6d still own rehearsal, cutover, rollback, and recovery.
+
+#### 2026-08-29 — F6a source update and immutable candidate build complete
+
+- `sudo rcp server update` now emits its complete seven-step source/build plan
+  before resolving the service account or taking an update lock. It admits only
+  the installed configured source, refuses unfinished restore or unknown update
+  maintenance, and serializes preparation with one nonblocking root-owned lock.
+  It never opens SQLite or any live project state.
+- The first invocation performs a credential-isolated fetch, prints the exact
+  fetched 40-character `origin/main` commit, and stops with the exact
+  `--confirm-target <commit>` resume command. A confirmed invocation fetches
+  again and refuses if the target changed; an explicit stale confirmation is
+  also refused when the newly fetched target already matches the running
+  release. A public source uses no credential, and a private source uses only
+  the installed read-only source key and pinned known-hosts file. Git hooks,
+  ambient helpers, prompts, askpass, and operator credentials remain disabled.
+- After confirmation, the updater requires the configured `main` branch, exact
+  configured origin, a clean source tree, and a fast-forward relationship. It
+  advances the managed checkout with `git merge --ff-only`, creates or validates
+  one detached per-commit worktree from that managed repository, and runs the
+  fixed `npm ci`, production Web build, and frozen Python sync as `rcp`.
+  Existing candidates are reused only after their Git commit, detached state,
+  cleanliness, executable Python 3.12 environment, and bounded symlink-free Web
+  bytes are revalidated.
+- A successful build publishes one private, service-owned, non-overwritten
+  built-candidate receipt. It binds the installation and configured source; the
+  exact base current/running commits, process instance and PID; the candidate
+  commit and release path; and the deterministic Web-bundle hash. Publication
+  re-reads all identities and the built bytes. Any difference fails loudly and
+  preserves the old `current` pointer and process.
+- Failure reporting reads the actual post-failure managed, candidate, current,
+  and running identities even when doctor itself blocks further update. The
+  updater never resets, cleans, stashes, force-pulls, switches `current`, calls
+  systemd, or substitutes a package path. Machine construction and every
+  possible effect occur only after the structured plan is visible.
+- The packet's one independent read-only audit raised four points. The valid
+  attached-worktree gap is fixed with an explicit detached-HEAD proof. Receipt
+  Web-byte binding was already present and now has a race regression. The claim
+  that uv's normal symlinked `.venv/bin/python` was rejected was a misread—the
+  code intentionally validates the entry point and executes the interpreter
+  symlink—and a real-worktree regression now proves that behavior. The remaining
+  concern was that source/build execution as `rcp` can read the service account's
+  provider and repository credentials. That is the settled source-update trust
+  boundary, not a same-UID hostile-code sandbox: `origin/main` is trusted host
+  code, and the later rehearsal fence prevents accidental application effects,
+  not a malicious or compromised source commit. This boundary is now explicit
+  in the spec; public sharing still requires protected human-reviewed `main`.
+  No second audit was run.
+- Focused CLI/update tests include a real local bare origin, clean
+  fast-forward, detached worktree, ordinary symlinked Python runtime, build
+  ordering, credential isolation, concurrent admission, stale confirmation,
+  exact failure identities, immutable receipt modes, and changed-Web refusal.
+- Final verification passes: the focused update/CLI suite, all 2,619 backend
+  tests with the two expected skips, Ruff across `src` and `tests`, all 434 Web
+  tests, the production Web build, and repository-wide pre-commit over the
+  complete staged packet.
+- Not done in F6a: no copied-state rehearsal, migration/replay proof, external-
+  effect fence, rollback checkpoint, `current` switch, systemd restart, post-
+  switch verification, or rollback exists. F6b through F6d own those boundaries;
+  V1 owns their installed-host update drive.
+
+#### 2026-08-29 — P2 provisioning API and backend projection complete
+
+- The team backend now exposes member-authorized create/list/read/cancel routes
+  at `/api/project-provisioning/requests`. Creation accepts only strict new-team
+  machine, canonical GitHub repository, and provider-check intents. It requires
+  a named authenticated team member, records that exact human authorizer, and
+  creates only P1's durable request. It performs no DNS, Git, provider,
+  filesystem, catalog, or canonical-project effect.
+- Every authenticated member of the team may read the shared preparation state.
+  Only the exact authorizing member may cancel a direct new-project request, and
+  only before server setup starts. That inert cancellation records
+  `nothing_to_remove` and is idempotent. Once setup starts, the member route
+  fails loudly until the later machine owner can record the exact checkout/key
+  cleanup or reuse disposition.
+- The response projection owns all status and check labels, exact next action,
+  `can_run_setup`, `can_review`, `can_cancel`, canonical clone/settings URLs,
+  intended and resolved paths, readiness counts, retryable diagnostic,
+  structured operator action, fixed safe CLI argv, and final-review binding.
+  Regressions cover waiting, setup in progress, operator action needed, ready
+  for review, completed, and cancelled behavior. No project or catalog row was
+  created at ready-for-review or completed state at the P2 boundary; P6b now
+  supplies the sole separately validated finalizer.
+- `/api/health` now publishes the three explicit project-creation intents with
+  backend-owned eligibility, preselection, primary label, required fields,
+  pinned source identity, and unavailable reason. The Web restates the response
+  once, seals the complete provisioning/check/step vocabularies as opaque types,
+  and provides exact API calls without deriving lifecycle policy.
+- All ordinary existing-checkout entry routes are now personal-only:
+  `/api/projects`, `/api/project-setup/preflight`, and
+  `/api/project-setup/create` reject a team request before body/path
+  interpretation or any setup/catalog effect. The guard deliberately remains
+  at the public route boundary rather than weakening `ProjectCatalog.register`,
+  which startup and P6b's separately validated internal finalizer both need.
+- P2's one independent read-only audit found that the old generic
+  `/api/projects` route initially bypassed provisioning and that downstream team
+  membership/invitation fixtures still entered through the newly closed setup
+  route. The bypass is fenced, and those fixtures now establish their downstream
+  prerequisite through the internal setup owner. The audit's requested
+  projection-branch coverage is also present. No second audit was run.
+- Verification passes: 66 focused backend/documentation tests, all 2,626
+  backend tests with two expected skips, Ruff, all 436 Web tests, Web typecheck,
+  and the production Web build. A disposable real team server then enrolled a
+  named member, returned 409 from the old registration route with `/` as the
+  untrusted locator, created and read a durable request with the exact projected
+  controls, restarted, and read the same request again. The disposable server
+  and data were removed after clean shutdown.
+- Not done in P2: no deploy key is generated, checkout cloned, provider probed,
+  operator command executed, project finalized, wizard rendered, or personal
+  project transferred. P3 through P6, D6/D7, and T2 onward retain those owners.
+
+#### 2026-08-29 — P3 deploy-key lifecycle complete
+
+- `GitCredentialManager` now creates, inspects, and fingerprint-binds one
+  Ed25519 key for each canonical project/repository alias on the exact local or
+  SSH checkout account. The fixed shipped helper validates the effective uid,
+  passwd home, normalized derived paths, ownership, directory/file modes, and
+  private/public pairing. Its protocol returns only the public key,
+  fingerprint, deterministic `rcp:<space-id>:<project-id>:<alias>` label, and
+  nonsecret path identity; private bytes never return to the coordinator.
+- Local execution crosses the installed `rcp` account boundary. Remote
+  execution crosses that same service account's strict OpenSSH route and then
+  runs as the saved remote account. Git uses only P1's canonical GitHub.com SSH
+  URL, the exact derived private-key path, empty ambient Git configuration,
+  disabled prompts, and strict execution-host and GitHub-host verification.
+- The write proof reads exactly `HEAD`, fetches that commit into one
+  request-owned bare probe directory with templates disabled, proves the
+  request ref absent, pushes and reads back the exact commit, deletes the exact
+  ref, and proves absence. Empty repositories, missing GitHub grants/host trust,
+  network failure, preexisting refs, and unproved cleanup are explicit states;
+  only the latter leaves an exact operator-cleanup action.
+- Final diff review closed the remaining ref race: creation uses an atomic
+  empty-ref lease, deletion uses an exact-commit lease, and a failed push never
+  guesses that a subsequently observed ref is still RCP-owned. Ambiguous
+  outcomes leave the one exact ref visible for operator inspection instead of
+  overwriting or deleting another writer's work. Invalid readback still runs
+  the lease-protected cleanup path, and local probe-directory cleanup failures
+  cannot hide the original error.
+- Key removal is bound to the expected public fingerprint and deletes only the
+  exact pair plus now-empty derived parents. The helper also rejects any
+  lexical overlap between the credential root and the intended repository
+  checkout path. P4 has since closed the real existing-root ownership, symlink,
+  special-file, and resolved-path proof before cloning.
+- The packet's one Codex Security diff scan
+  (`fbb7dc80-61da-401c-baa5-c04b9c665c12`) reported one low-severity issue: the
+  nominal Git-output bound ran after `subprocess.run` had already captured
+  arbitrary output. The default runner now reads both pipes incrementally,
+  kills on the first byte over the bound, and retains the timeout even when a
+  child closes its pipes before hanging. Focused real-process regressions prove
+  ordinary exit/output, pre-capture overflow termination, and that closed-pipe
+  timeout. The scan's deferred checkout/credential overlap concern was narrowed
+  by the lexical guard and P4's later filesystem-resolution proof. No second
+  audit was run.
+- Twenty-nine focused P3 unit/helper tests pass, with the external live drive
+  skipped by its explicit gate. The separately gated live test
+  also verifies GitHub's published Ed25519 host fingerprint, exact write deploy-
+  key creation, push/readback/delete, exact ref/key cleanup, and local private-
+  key removal. Its ambiguous-POST cleanup now re-identifies only the exact label
+  and public key if GitHub may have created the key before returning an invalid
+  response.
+- The remaining live gate passed on 2026-08-29 against the new private,
+  explicitly named `zhi0467/rcp-git-credentials-live-test` sandbox. The existing
+  GitHub CLI credential was supplied only to the gated process and was not
+  written into RCP state, output, or the repository. The drive created one write
+  deploy key, proved push/readback/delete of its exact request ref, removed the
+  exact key, and removed the local private key. A separate GitHub API readback
+  then reported zero deploy keys and HTTP 404 for the exact temporary ref. The
+  initialized sandbox remains intentionally available for repeatable live
+  qualification; no ordinary repository was repurposed.
+- P3 is complete and unblocks P4. P6a has since supplied durable orchestration
+  receipts and invocation of these primitives. Post-setup cancellation
+  disposition and final project creation remain open, and no HTTP/member route
+  can call the machine primitives directly.
+- Final local verification passes all 2,655 backend tests with the three
+  expected skips, all 436 Web tests, focused Ruff, and the documentation suite.
+  The first backend run was intentionally discarded as evidence because the
+  restricted sandbox denied the suite's Unix sockets, PTYs, broker subprocesses,
+  and real-home check; the canonical unsandboxed `uv run pytest` is the passing
+  result above.
+
+#### 2026-08-29 — P5 exact-account provider readiness complete
+
+- `rcp server provider check --request <id>` now resolves only P1's durable
+  intended profiles; `--project <id>` resolves only the six profiles in an
+  existing team project's manifest. There is still no host, account, provider,
+  executable, runtime, model, or provider-home override in the CLI. A remote
+  project must record `machines[].os_account`; the server-local team account is
+  `rcp`, including for an older local manifest without that field.
+- The service, not the CLI, owns resolution and effects through the private
+  control socket. P5 introduced control protocol v2 for the exact probe, plan,
+  and check operations; P6a has since extended it as protocol v3 with project
+  plan/step operations. A read-only provider plan binds the request
+  revision/status or project profiles and target ids; each check revalidates the
+  digest before any subprocess. A concurrent change returns one safe visible
+  refusal rather than probing a stale target. The effectful check has its own
+  bounded 60-second client timeout instead of inheriting the five-second
+  probe/plan timeout, and `server doctor` reports whether both provider
+  operations are installed.
+- The shared launcher first proves the exact local effective account or the
+  account reached by the existing OpenSSH route. It then uses the ordinary
+  provider readiness implementation for the exact executable, bounded version,
+  provider-native authentication, provider-owned runtime, explicit model and
+  reasoning catalog, and the same minimum version enforced by a real
+  orchestrator launch. An unavailable catalog cannot approve an explicit model,
+  and an unexpected launcher error fails loudly instead of being recast as an
+  install problem.
+- Successful request checks persist only the absolute executable, provider
+  version, durable runtime id, observed OS account, and check time. Later checks
+  reuse that executable rather than rediscovering `PATH`. The backend and Web
+  response shape expose those nonsecret proof fields for final review. Failure
+  clears ready proof, retains a bounded diagnostic, and publishes an exact
+  install, configuration, OpenSSH, or provider-native login action plus the
+  request-bound resume command. RCP never invokes login, changes `HOME`, stores
+  credentials, or falls back to another account, laptop, provider, or runtime.
+- Multi-profile persistence is target-bound: success for one profile cannot
+  clear another profile's operator action. Initial waiting requests may enter
+  operator action directly, every mutation retains an idempotent step receipt,
+  and a proof or action from another durable revision is rejected.
+- Focused provider, launcher, CLI, control, doctor, storage, API, config, and
+  app-socket regressions pass. The real read-only live gate also passes both
+  branches without changing authentication: local Claude at
+  `/Users/zhiwang/.local/bin/claude` was naturally unauthenticated, while the
+  existing SSH route to `tianhaowang-gpu0.ucsd.edu` reached OS account
+  `zhiwang` and proved authenticated Codex readiness at the discovered remote
+  executable. Local account probing, remote account mismatch, native login
+  guidance, model/runtime/version refusal, stale boundaries, exact-path reuse,
+  and CLI-to-socket-to-storage publication all have focused regressions.
+- Not done in P5: it does not clone a checkout, create/revoke a deploy key,
+  orchestrate all preparation steps, create a team project, render the unified
+  wizard, or expose machine authority through HTTP. P4 has since supplied the
+  checkout primitive; P6 and D7 retain orchestration, finalization, and the
+  unified app flow.
+
+#### 2026-08-29 — P4 central checkout preparation complete
+
+- `ProjectCheckoutManager` now prepares one exact
+  `<central-root>/<project-id>/repositories/<alias>` checkout through P3's
+  reviewed local or SSH account transport. A shipped account-local helper
+  verifies the effective uid and passwd home, traverses path components without
+  following symlinks, refuses unsafe types/ownership/modes, proves the root is
+  writable, and reports whether the exact checkout was request-created or
+  reused. The SSH default root is deliberately unresolved in the member request
+  until the helper proves the account home.
+- Clone and recovery use only the canonical GitHub SSH URL and exact repository
+  deploy key, with empty ambient Git configuration, prompts and submodules off,
+  hooks disabled, bounded output, and the inherited strict host-key policy. A
+  reused checkout must be the exact clean non-bare worktree with only canonical
+  `origin`, no unsafe local Git execution or URL rewrites, and the same local and
+  GitHub HEAD. RCP never resets, cleans, stashes, rewrites, or recursively
+  removes conflicting work.
+- The state-repository check reads retained `.research` and bounded Patch
+  identity through the same account-local helper. Direct creation stops with the
+  **Move to team space** action when research is retained; incoming transfer
+  reports the retained identity for its later matching-history owner instead of
+  adopting it here.
+- P1's request now durably retains the project name, state repository, project
+  and default-run truth scopes, and Auto-research ceiling needed by P6b's final
+  manifest. The nullable additive column preserves older requests, including
+  old reviewable rows, while every newly configured request must carry one
+  complete internally consistent configuration. Checkout receipts also retain
+  the resolved path and explicit created/reused disposition.
+- Focused helper, Git-conflict, retained-state, API, storage, upgrade, and Web
+  regressions pass. The separately gated live drive passed against the disposable
+  private GitHub repository for both a local checkout and the reachable SSH
+  account, including exact write-key use, clone, idempotent reuse, and cleanup;
+  GitHub readback showed no retained key and the remote disposable roots were
+  absent afterward.
+- The reachable SSH account's persistent `~/.local` ancestry is currently group-
+  writable. P3 correctly refuses to place a durable private key below that
+  unsafe ancestry. P4's SSH checkout primitive was therefore qualified with a
+  disposable exact-account key/root under `/tmp`, not by weakening the path
+  check or changing the human's account. P6a now surfaces that production
+  credential-path precondition as an exact-account operator action.
+- P4 itself exposes no member HTTP route and creates no canonical team project.
+  P6a has since supplied the durable P3-P5 sequence, and P6b now owns final
+  creation.
+
+#### 2026-08-29 — O1 backup manifest and read-only capture plan complete
+
+- Backup format v1 is now one strict, frozen schema. It records the team space,
+  exact RCP source and database-schema digests, capture time, SQLite snapshot
+  entry, public-recipient fingerprint, installation/source-key revocation
+  pointers, exact per-file hashes and sizes, per-project main and branch heads,
+  canonical/chat/Paper/fact/kept-file groups, and either one complete nonsecret
+  checkout recovery descriptor or an unavailable reason and time. Validation
+  rejects unknown fields and newer schemas, materialized graph outputs, source
+  Git or stage paths, duplicate paths/heads/projects, inconsistent totals,
+  cross-space projects, and a false complete/partial claim.
+- `inspect_backup_project_registration` is a read-only bridge for O2. It accepts
+  explicit project and provisioning records rather than reading a later live
+  catalog, requires exactly one completed matching request and current review
+  digest, compares the raw canonical manifest with P6b's concrete renderer,
+  rechecks catalog state placement, and emits only repository identities,
+  aliases, route/account/path references, public deploy-key fingerprints, and
+  canonical configuration. It does not refresh remote state, read a provider
+  home, or retain private key/authentication material.
+- The canonical inventory reuses the existing retained-history walker. It
+  observes main Patch revision, typed graph-branch metadata/head, immutable
+  branch Patches and merge receipts, and exact observed sizes without taking a
+  publication/append/refresh lock. Chats, Paper, and facts remain delegated to
+  their O2b owners. Materializations, locks, `.publish`, interrupted batches,
+  and local unconfirmed-Patch/branch quarantine are named exclusions; an
+  unknown direct `.research` root makes the plan incomplete.
+- The app-data inventory is likewise closed: the live database is only an O2a
+  online-snapshot input; known runtime, cache, locator, attachment, stage, and
+  transfer roots are explicit exclusions; T3e now classifies
+  `project-sources/` through its concrete owner; every other direct child makes
+  capture partial. Unsafe
+  database symlinks or special files are refused rather than followed.
+- Ten new O1 regressions plus the affected transport, remote-script, and
+  graph-branch suites pass (151 tests total). Focused Ruff and formatting pass.
+  Review caught that
+  `load_manifest` expands local provider-history roots, so the recovery proof
+  now binds the raw canonical TOML meaning; it also caught that existing
+  unconfirmed branch/Patch quarantine needed an explicit exclusion before the
+  retained walker could safely serve backup.
+- O1 itself creates no SQLite snapshot, stable file copy, archive, encryption,
+  retention, timer activation, status projection, or restore effect. O2a/O2b
+  have since supplied the captures and O3b has supplied archive protection,
+  status, retention, and timer activation. O4 retains restore responsibility,
+  and S104 remains pending its live no-pause/partial-capture/restore drive.
+
+#### 2026-08-29 — O2a online SQLite capture and typed inventory complete
+
+- The installed team service now owns one private control operation that uses
+  SQLite's online backup API against the live database. It creates an exclusive
+  service-account-only capture directory, copies in bounded page steps without
+  taking an RCP project or application-wide lock, runs `quick_check`, changes
+  the completed snapshot to mode `0400`, and opens only that copy through an
+  immutable read-only `AppStore` with no migrations or write authority.
+- All project inventory comes from that copied database. New storage-owner
+  queries expose the complete project task set, completed provisioning proofs,
+  and kept result-view rows. The capture validates task artifact descriptors,
+  records only typed kept artifact/view filenames, and requires their operation
+  ids to belong to the same captured project task set. It binds the unchanged
+  completed provisioning proof through O1's exact manifest inspection rather
+  than consulting a later live project list.
+- One malformed artifact, cross-project kept-view reference, wrong project home,
+  or invalid recovery proof makes only that project **uncaptured**. The receipt
+  remains useful for healthy projects and reports `partial`; a project added
+  after the SQLite copy is absent. The O1 final manifest can now preserve the
+  observed home/locator of an uncaptured row without weakening the requirements
+  for a captured project or recovery descriptor.
+- The service publishes a strict frozen `sqlite-capture.json` receipt plus its
+  digest and small typed control result. The receipt binds the source commit,
+  database schema digest, snapshot hash/size/path, app-data classification, and
+  sorted per-project inventory to one capture id. The reader rechecks size,
+  inode/mtime stability, digest, schema, and exact capture-directory identity;
+  the app-data roots are reinspected before publication so a changed database
+  boundary cannot be claimed.
+- The capture intentionally leaves failed private staging directories for later
+  diagnosis and cleanup; nothing in O2a enables `backup run` or the systemd
+  timer. It does not open a project checkout, copy canonical/chat/Paper/fact or
+  kept-file bytes, build or encrypt an archive, apply retention, publish backup
+  status, or restore anything. O2b has since supplied the project-file copy and
+  O3b has supplied archive, status, retention, and timer effects; O4 still owns
+  restore.
+- Focused backup, control, storage, provisioning, and result-view regressions
+  pass (157 tests), including a concurrent writer that commits through the
+  snapshot, a late project excluded from the copied database, per-project
+  malformed/cross-home isolation, immutable readback/tamper checks, and a real
+  TestClient service plus Unix control-socket call. S104 remains pending its
+  full live dispatch/Apply, remote partial-capture, encrypted-archive, and
+  restore drive.
+
+#### 2026-08-29 — O2b optimistic project-file capture complete
+
+- `BackupProjectFileCaptureCoordinator` consumes the immutable O2a receipt and
+  revalidates its digest, exact data-directory/capture binding, SQLite bytes,
+  schema, and team identity. It never asks the later live database which
+  projects, tasks, artifacts, or result views exist.
+- Each capturable project reloads and compares its canonical manifest with the
+  captured recovery descriptor, then verifies the exact local or SSH account,
+  central checkout path, Git `origin`/optional push URL, and retained
+  provisioning commit without fetching or reading credentials. One bad or
+  unreachable project becomes **uncaptured** without spoiling healthy projects.
+- Canonical main and branch heads use the existing retained-history inventory.
+  The copy includes only manifest/scope base, retained main and branch Patches,
+  branch metadata and merge receipts, typed canonical chats, the optional Paper
+  introduction, bounded safe facts, and the O2a-referenced kept files. It never
+  walks source repositories, `.git`, provider homes, arbitrary artifact/view
+  directories, materializations, caches, locks, or staging roots.
+- SSH capture first classifies the direct remote `.research` root, exports only
+  canonical/delegated roots through filtered `rsync`, excludes branch
+  materializations and quarantine, and requires the direct-root inventory to be
+  unchanged after export. It takes no refresh/publication/append/chat lock.
+- Chats are streamed only through their observed complete JSONL prefix and stop
+  before the first task absent from the SQLite snapshot. Paper, facts, canonical
+  files, artifacts, and views use bounded stable reads; atomic replacement
+  yields old or new whole bytes, while continued churn removes only that
+  project's staging and records a generic nonsecret failure with time.
+- The immutable `project-files.json` receipt binds the O2a receipt and SQLite
+  digest, captured heads, per-file groups/hashes/sizes, recovery descriptors,
+  per-project failures, and complete/partial status. O2b itself does not build
+  or encrypt an archive, enable the timer, publish long-lived backup status,
+  apply retention, or restore data. O3b has since supplied the first four
+  effects; O4 still owns restore.
+- Focused O2b and affected owner suites pass, including real local Git identity,
+  main/branch canonical capture, materialization and unreferenced-file
+  exclusion, post-boundary and post-snapshot chat truncation, remote filtering,
+  unavailable-host isolation, and a real concurrent atomic fact replacement.
+  S104 remains pending its full live Linux/SSH no-pause, encrypted readback, and
+  restore drive.
+
+#### 2026-08-29 — O3b protected archive, retention, status, and timer complete
+
+- `rcp server backup run` now composes the installed service's exact O2a SQLite
+  capture with O2b's immutable project-file receipt under one nonblocking backup
+  lock. It rejects missing/mismatched configuration, requires upstream `age`
+  1.x, builds the final typed manifest from those receipts, and never accepts a
+  private recovery identity or consults a later live project list.
+- The archive writer emits one deterministic streaming PAX tar containing only
+  `manifest.json` and the manifest's verified regular files. Every source is
+  rechecked for inode, size, timestamps, byte count, and SHA-256 while streaming
+  directly into `age --encrypt --recipient`; plaintext is never assembled into
+  another archive file or loaded wholesale into memory.
+- Ciphertext first lands in an exclusive mode-0600 hidden partial. RCP fsyncs it,
+  validates the age-v1 header, publishes with a same-directory no-overwrite hard
+  link, fully hashes and sizes the published bytes, and writes an immutable
+  adjacent receipt bound to installation, space, capture, destination, recipient
+  fingerprint, manifest digest, project counts, and complete/partial status. A
+  bounded mode-0600 `backup-status.json` outside the backed-up data directory
+  records the last protected, partial, or failed run without secret text.
+- Retention inventories only strict same-installation receipts and ignores every
+  foreign, malformed, owner/mode-mismatched, or unreceipted file. It keeps the
+  configured newest count plus the newest complete archive, exposes exact
+  deletion names in a typed plan, and fully revalidates and rehashes each target
+  immediately before unlink. The private plaintext capture stage is removed only
+  after archive/receipt publication and retention complete; failures preserve it
+  for diagnosis.
+- Backup configuration now runs one real protected backup while the systemd
+  timer remains fenced, enables the timer only after success, and reads back both
+  active and enabled state before clearing the pending configuration. Installer
+  re-entry restores an existing configured timer through the same first-run
+  proof. Doctor reports configured policy, timer state, recipient fingerprint,
+  last outcome, archive path/bytes/project counts, and receipt agreement through
+  bounded nonsecret fields.
+- The focused configuration/encryption/retention/doctor suite passes with 56
+  tests and one environment skip. A separately downloaded official `age` 1.3.1
+  binary passed a real encrypt/decrypt archive drive. The complete backend suite
+  passes with 2,764 tests and eight expected environment skips; 437 Web tests,
+  the production Web build, and Ruff also pass. A complete Codex Security diff
+  scan reviewed every changed production surface and reported no finding.
+- Not done: O3b does not decrypt or restore an archive, reconstruct a checkout,
+  classify pre-restore lifecycle state, or prove the timer/no-pause behavior on
+  Ubuntu. O3c/O3d and O4 own restore safety, and S104 remains pending its full
+  Linux/SSH/systemd live drive.
+
+#### 2026-08-29 — F6b copied-state candidate rehearsal complete
+
+- The running release, not the candidate, now owns rehearsal orchestration and
+  judgment. It revalidates F6a's immutable build receipt, asks the installed
+  service for one online O2a/O2b capture, constructs the expected current graph
+  and startup-recovery read models itself, and gives the candidate only two
+  bounded subprocess phases: migrate the copied database twice, then start and
+  answer reads behind the startup-effect fence.
+- The private typed overlay streams and rechecks copied bytes instead of loading
+  them wholesale. It rebinds every local project locator, task/result/episode
+  stage, watcher cwd/log, and partial or complete transfer-inbox path to an
+  overlay-owned or known-absent path. Remote paths remain inert data. Unknown
+  future database path/root columns fail the rehearsal after candidate migration
+  instead of escaping the inventory.
+- Candidate verification acquires the copied data directory's real instance
+  lock and exercises health, the union of every enrolled member's project list,
+  every project detail, task history, watcher history, and exact startup
+  recovery plan. Locally captured projects must match the current release's
+  canonical graph revision and digest. Only an SSH transport failure already
+  observed by the current release may remain explicitly unavailable, and its
+  project card must match exactly; reachable or unclassified capture failures
+  still block the update.
+- One `StartupEffectFence` now gates startup recovery, task dispatch and
+  continuation, watcher polling/delivery, report and Auto-research recovery, and
+  every background launch entrypoint. Fenced startup publishes its read model
+  without starting owners. Releasing that same object starts the deferred
+  runtime exactly once, which is the seam F6d will use after post-switch
+  verification.
+- Success publishes one private immutable receipt named by candidate commit and
+  capture UUID and bound to the copied SQLite and project-file digests. No prior
+  rehearsal receipt is reused. The operation overlay is removed only after
+  receipt readback; failures retain their evidence, and update maintenance
+  rejects retained rehearsal roots. F6d must still match its final closed-
+  admission boundary to this receipt and rerun rehearsal if live state changed;
+  matching only process, PID, or commit is insufficient.
+- The independent review's trust-boundary findings are closed: the old release
+  owns expected answers, candidate migrations precede path inventory, reads
+  cover all members rather than an arbitrary principal, graph/recovery answers
+  are exact, receipts are capture-specific, fence release starts the deferred
+  owners, and the real instance lock is exercised. Tests also trap reads and
+  metadata probes into live data, checkout, stage, provider-home, transfer, and
+  remote-effect sentinels and cross a real candidate subprocess boundary.
+- Focused rehearsal/update/backup/background/API tests pass. The complete
+  backend suite passes with 2,774 tests and eight expected environment skips;
+  all 437 Web tests, the production build, Ruff, documentation checks, and
+  all-file pre-commit also pass. The earlier failures were reproduced as
+  sandbox denial of the suite's local Unix-socket broker, not a product
+  regression.
+- Not done: F6b never closes live admission, captures the final rollback
+  checkpoint, switches `current`, restarts systemd, or decides rollback. F6c
+  owns the coherent checkpoint and crash-safe replacement inputs; F6d owns the
+  short maintenance barrier, cutover, post-switch verification, fence release,
+  loud rollback, and live systemd failure drive.
+
+#### 2026-08-29 — F6c coherent local update rollback checkpoint complete
+
+- `update_checkpoint.py` now binds one final O2a SQLite receipt, O2b project-file
+  receipt, matching capture-specific F6b receipt, previous immutable release,
+  and candidate release into one private checkpoint. It refuses another data
+  directory, capture UUID, space, source commit, project inventory, project-file
+  digest, or candidate receipt; a failed copy never publishes `checkpoint.json`
+  and therefore cannot authorize cutover.
+- The app-data replacement payload contains the online SQLite snapshot, every
+  present ledger-referenced local task/Experiment/wrap-up/result-view stage,
+  every structurally complete attachment set, and local bootstrap manifests.
+  Missing stages fail only while an active task, episode, or wrap-up still needs
+  them; retention-swept historical references are known-absent rather than a
+  permanent update blocker. It explicitly excludes remote stages, provider/SSH
+  homes, credentials, source
+  and project checkouts, locks, runtime metadata, and rebuildable caches. T3e
+  now binds and owner-validates `project-sources` in this same replacement
+  payload. Nonempty transfer inbox/export roots still fail closed until their typed receipt owners
+  can distinguish complete durable files from partial work.
+- Every captured project remains in the proof inventory. Server-local state
+  repositories additionally become exact `.research` replacement roots;
+  reachable SSH project captures remain proof-only and are never written
+  locally, while only an already-proven SSH-unreachable project may retain the
+  explicit `remote_unreachable` exclusion. Repository-level kept artifacts and
+  views remain in the capture proof but outside startup-owned replacement.
+- Checkpoint files are stable-streamed with no-follow opens, byte counts,
+  SHA-256, inode/timestamp rechecks, private modes, and fsync. The exact O2a,
+  O2b, and candidate receipt bytes are read once, chained by digest, and copied
+  as those same bytes. Before publication the coordinator rebuilds every
+  replacement root plus every retained project file into a temporary
+  verification root and verifies bytes, file modes, directory modes, and owner
+  identity exactly. It also preflights every live root and its atomic sibling
+  quarantine before declaring the checkpoint verified.
+- Rollback is replacement, not overlay. A mode-0600 fsynced journal is written
+  before the first move; candidate app data and each local `.research` root are
+  atomically moved to checkpoint-specific sibling quarantines, rebuilt from the
+  immutable payload, reverified, and finalized through monotonic `prepared`,
+  `quarantined`, `restored`, `verified`, and `complete` phases. Quarantines are
+  retained. Re-entry tolerates a crash between individual root moves/restores
+  and never chooses an unjournaled path.
+- The narrow update-machine seam invokes checkpoint creation through the
+  current release as the `rcp` account. F6c does not close admission, retain a
+  final F6b capture, stop/restart systemd, switch `current`, restore the release
+  pointer, or reopen work; F6d must fresh-rehearse and checkpoint the same
+  closed-admission capture, then own those steps and unfinished-journal routing
+  through update/install/doctor.
+- Seventeen focused checkpoint tests cover all five crash phases, exact
+  app-data and local-project replacement, permission-only drift, candidate-only
+  root quarantine, attachment and bootstrap retention, active-versus-historical
+  stage handling, receipt and journal binding, transfer fail-closed behavior,
+  parent-directory durability, and payload tamper rejection. The complete
+  backend suite, all 437 Web tests, the production Web build, and Ruff pass.
+  The independent audit's seven findings are closed here: five in this core,
+  unfinished-journal entry wiring in F6d, and typed-root extensions now owned by
+  T3e for imported sources and later by T4b for completed transfer entries.
+
+#### 2026-08-29 — F6d cutover and loud rollback implemented; live rerun externally blocked
+
+- `update_cutover.py` now owns one fsynced operation receipt from maintenance
+  closure through candidate verification, commit, rollback, or pre-switch
+  abort. It binds the F6a build receipt, F6b capture-specific rehearsal receipt,
+  F6c checkpoint path and SHA-256, exact base/candidate process identities, and
+  separate candidate-versus-selected-runtime failures. Illegal transitions,
+  ambiguous active operations, changed digests, and mismatched running releases
+  fail closed.
+- The installed service exposes four root-only update operations over the
+  existing private control socket. Maintenance fences every HTTP method and
+  other machine operation, closes provider/background admission, stops watcher
+  poll and retry owners, joins already-scheduled provider/reconciliation work,
+  rechecks worker idleness, and only then captures the final boundary. The root
+  update lock holds the protected-backup flock throughout the admitted command,
+  so an active backup finishes first and no new backup overlaps cutover.
+- Root performs only service stop/start and the atomic `current` pointer switch.
+  Both candidate and restored old service start behind F6b's effect fence. The
+  service replays the final read model and process/data/space identity before
+  the decision. Fence release first records a nonterminal point-of-no-return
+  state; only successful deferred runtime startup records `committed` or
+  `rolled_back`. Re-entry normally restarts the already-selected release and
+  never reverses a completed rollback decision.
+- Any post-switch failure stops the candidate, restores only the digest-bound
+  F6c checkpoint, switches back, verifies the old release while still fenced,
+  and retains the candidate-created data and local `.research` entries only in
+  operation-specific quarantine. CLI output and doctor keep both the failed
+  candidate and restored base explicit. A normal rollback remains healthy but
+  loud; failure to restart the selected release is a distinct recoverable
+  runtime fault.
+- Startup now checks unfinished restore journals before constructing `AppStore`,
+  so systemd cannot recreate a missing live root or open SQLite during partial
+  replacement. Update recovery consumes one unambiguous operation; install
+  refuses activation and routes to it, while doctor reports without mutation.
+  The CLI deliberately returns a
+  recovery-only nonzero result after success and requires a fresh invocation
+  before another source update.
+- The focused cutover/control/checkpoint/doctor/install/backup suite passes, and
+  the complete backend suite passes with expected environment skips. The live
+  disposable-host test now performs one uninterrupted forced candidate rollback
+  and a second five-phase drive. At each `prepared`, `quarantined`, `restored`,
+  `verified`, and `complete` journal boundary it stops the restore child, kills
+  the root coordinator process group, attempts direct systemd startup, proves
+  normal HTTP cannot serve, then re-enters through ordinary `rcp server update`
+  and requires exact `rolled_back`/`complete` receipts, no partial root, exact
+  pre-cutover project reads, and quarantine-only candidate markers.
+- One independent read-only audit found and then closed four code blockers:
+  GET-like mutating routes now share the HTTP fence; late watcher/retry launches
+  receive the post-join idle check; selected-release startup has a durable
+  preterminal state; and restore consumes the recorded checkpoint digest. Its
+  final review reports no remaining blocker or High finding.
+- The implementation landed through `6427077`, with integration corrections in
+  `19cb720`, `a2b1fd7`, `62a3fd9`, and `029831c`. The live drive exposed and
+  closed two harness-only process-boundary defects in `7974254` and `75fcafc`:
+  hardened Linux `/tmp` ownership for the root-written crash marker, and
+  privileged termination of the mixed root/`rcp` stopped process group.
+  Production rollback and old-release readback passed before those later
+  injected-crash checks. Run
+  [33278422722](https://github.com/Zhi0467/RCP/actions/runs/33278422722)
+  reached the first `prepared` crash boundary on both Ubuntu versions; its
+  failure was the now-fixed harness termination issue.
+- The exact-head rerun for `75fcafc`, run
+  [33278678760](https://github.com/Zhi0467/RCP/actions/runs/33278678760),
+  started no workflow steps on either matrix job because GitHub rejected hosted
+  runner use for the account's payment/spending-limit state. The complete local
+  backend suite, Ruff, production Web build, all 437 Web tests, the focused live
+  harness suite, and commit hooks pass. Do not mark F6d complete or rely on its
+  live qualification until one exact-head Ubuntu 22.04/24.04 run passes and is
+  recorded here.
+
+#### 2026-08-30 — D2 production local HTTPS boundary complete
+
+- The Q11 experiment is accepted as production architecture rather than treated
+  as concurrent work to avoid. Every saved connection now owns the deterministic
+  `https://rcp-<connection-id-without-hyphens>.rcp.localhost:<local-port>`
+  origin; registry version 2 validates that exact connection binding and
+  migrates the one previously shipped HTTPS hostname without changing identity.
+- The desktop generates one `localhost`/`*.rcp.localhost` certificate and private
+  key, stores their authenticated encrypted record atomically with only its
+  bounded sealing key in Keychain, and fails loudly on an unreadable, malformed,
+  or mismatched pair. Only the DER SHA-256
+  reaches the live WebView trust hook. The hook detects selector ownership,
+  reattaches wry's live delegate, accepts only the stored pin, and installs no
+  system trust.
+- Main-window navigation admits only the current personal backend, Vite in
+  development, or exact HTTPS origins from the validated registry. Registry
+  read failure is logged and rejects all team navigation. The Tauri capability
+  permits only `*.rcp.localhost`, leaving navigation and TLS as separate fences.
+- Verification: all 64 Rust library tests pass. The retained real-WKWebView login
+  and restart phases pass with isolated `Secure`/`HttpOnly`/`__Host-` cookies
+  and refusal of a third origin with another certificate. The actual
+  source-built `RCP.app` builds and opens against the checkout. The later
+  source-rebuild repair replaced this checkpoint's direct identity record with
+  the encrypted-file/sealing-key pair described above. That live drive also found
+  and fixed an asynchronous probe diagnostic that retained a borrowed C string.
+- The packet's one independent audit found no Critical or High issue. It caught
+  default HTTPS port normalization, missing certificate/private-key pairing
+  validation, and late private-key zeroization; all three are fixed with focused
+  coverage. Clippy with warnings denied, documentation tests, and full
+  pre-commit pass.
+- Not done at D2 completion: opening SSH, terminating TLS around a forwarded
+  connection, exchanging a team member token, and navigating to a team backend.
+  D3 has since closed the SSH/TLS portion; D4-D5 implement the session and
+  navigation work but retain the integrated live drive. The source-built app
+  was checked on this one macOS host; a second Mac and
+  signed packaged app remain later compatibility qualification, not blockers for
+  the accepted source-built client. The app build/open drive preceded the final
+  audit-only port, pair-validation, and zeroization cleanups; those changes
+  compile and pass the native suite, but the bundle was not rebuilt a second time
+  because they do not change the driven startup or WebView path.
+
+#### 2026-08-30 — D3 SSH tunnel and local TLS proxy complete
+
+- `team_tunnel.rs` owns one direct `/usr/bin/ssh` process group per saved
+  connection. It uses argv rather than a shell, batch authentication through the
+  member's existing SSH config/agent, no remote command or terminal,
+  exit-on-forward-failure, a bounded connect/readiness window, keepalives, and
+  one explicit ephemeral loopback forward to the configured remote RCP port.
+  SSH control sharing, persistence, and post-authentication backgrounding are
+  disabled so the spawned process group necessarily owns that forward.
+- The saved D2 port is bound on both IPv4 and IPv6 before SSH starts. A rustls
+  listener presents the D2 desktop identity and forwards only to the private
+  SSH listener. A healthy route is reused only while origin, SSH target, and
+  remote port all still match. A dead or changed route waits through the short
+  reconnect backoff before replacement, and a failed start refuses immediate
+  retry instead of hot-looping.
+- Removing connection metadata retires the ID under the same admission lock,
+  stops that connection, and only then removes its row. Quit and update close
+  admission and drain all tunnels before stopping the personal backend; only an
+  explicitly failed lifecycle operation reopens it. Unconfirmed cleanup retains
+  its child supervisor and process record for a retry while the supervisor is
+  live and for diagnostics otherwise. Quit refuses to exit while such a record
+  remains. The manager signals only its exact local process groups and never
+  sends a command or lifecycle signal to the remote RCP service. This
+  coupling stays in `lib.rs` and `updates.rs`; `backend.rs` remains the concrete
+  personal-backend owner rather than absorbing a second process kind.
+- The connect command accepts the personal origin or the exact origin belonging
+  to the requested saved connection; one team origin cannot launch another
+  connection's SSH process. Focused tests prove this caller fence, the exact SSH
+  argv, route-change replacement identity, retained failed-cleanup ownership,
+  admission closure, the forced-SIGKILL descendant process-group path, dual-stack
+  TLS termination, and bidirectional byte forwarding. The ignored live test
+  passed through the production manager using the existing authenticated system
+  SSH route to
+  `tianhaowang-gpu0.ucsd.edu`, reused the tunnel, read the remote loopback SSH
+  banner through local TLS, and cleaned up without starting or stopping anything
+  remotely.
+- Surprise closed: the first live argv used `ClearAllForwardings=yes`, which
+  also erased RCP's own explicit `-L`; SSH stayed alive with no listener until
+  the readiness bound expired. The option was removed, the exact focused test
+  was corrected, and the same live drive then passed. The system SSH config is
+  intentionally still authoritative for host, user, proxy, and key behavior.
+- The packet's one independent read-only audit found four High lifecycle/
+  ownership issues and two Medium coverage/authorization issues. All are closed:
+  saved-row lookup moved inside admission, removal/Quit/update gained fences,
+  unconfirmed children stay retained, reuse covers the complete route,
+  multiplexing/backgrounding are disabled, caller origin is enforced, and the
+  process-group test now includes a stubborn descendant and the forced path. No
+  second audit was run. The final native suite has 71 passing tests and one
+  ignored live test; strict clippy, documentation tests, and full pre-commit pass.
+- Not done: D3 does not verify RCP health/space/protocol identity, retrieve or
+  enroll a member credential, establish a WebView session, or navigate the app.
+  Those remain D4-D5. No full desktop bundle rebuild or Computer Use drive was
+  run for D3; the next meaningful UI milestone is the integrated D4-D5 flow.
+
+### G0 — Restore the current `main` CI baseline
+
+Own:
+
+- formatting-only normalization of `src/rcp/api/tasks.py`,
+  `src/rcp/runs/chat.py`, `tests/test_api.py`, `tests/test_episode_api.py`,
+  `tests/test_unified_artifacts.py`, `web/src/rootRecovery.tsx`, and
+  `web/tests/rootRecovery.test.mjs`;
+- `src/rcp/storage/rows.py` and the focused runtime regression in
+  `tests/test_background.py`, plus the superseded forward-column assertion in
+  `tests/test_stored_request_compat.py`; and
+- the active-handoff assertion in `tests/test_agent_instructions.py`.
+
+Start directly from clean `main` commit `4e6d812`; its code is the `c0909b6`
+baseline plus the planning-doc commit. This is a baseline repair, not team-server
+feature work. Apply the repository's configured formatters mechanically to the
+seven named files without changing their behavior. Replace the stale
+documentation assertion that says there can be no active implementation handoff
+with an assertion that distinguishes the archived closed backend-refactor
+handoff from valid indexed active work.
+
+Repair the real runtime projection regression rather than weakening its test.
+`checkpoint_agent_task_runtime` currently writes the selected runtime and its
+receipt, but `_agent_task_record` removes `runtime_id` before model validation;
+the read model therefore silently reports the legacy Codex exec runtime even
+after app-server was selected. Remove that obsolete pre-runtime compatibility
+path and prove the runtime event is still read back before the provider-session
+checkpoint. Do not change runtime selection, fallback, or provider-auth policy.
+
+Before closing G0 on `main`, run the complete current lint/Python/Web
+CI-equivalent baseline, including `uv run pytest` and
+`uv run pre-commit run --all-files`, and read the diff to prove formatter output
+did not hide semantic edits. G0 must be green before dependent packets begin.
+
+### G2 — Old-data upgrade CI gate
+
+Own:
+
+- new `tests/test_server_upgrade.py` and its focused harness;
+- upgrade/startup smoke helpers beside their concrete owners;
+- a stable named job in `.github/workflows/ci.yml`; and
+- immutable sanitized fixture bundles under
+  `tests/fixtures/server_upgrade/<boundary>/` for every server-era persistence
+  boundary, beginning with the first team-server-capable commit.
+
+Build the exact candidate base, create representative prior data, then build the
+candidate, upgrade a copy, start the complete backend with external/provider
+effects disabled, and verify health, replay, startup recovery, and key
+projections. For direct local work the base is current `main` and the candidate
+is the working tree; for committed CI the base is the candidate's first parent.
+Exercise every historical boundary fixture as well as that exact base. A
+fixture contains the small SQLite database and any canonical history needed for
+realistic replay/recovery, is produced while its boundary is current, and is
+never regenerated by newer code. New persistence changes add a boundary fixture
+before the old shape leaves `main`. Fixtures have no rolling expiry; dropping a
+boundary requires a separately approved migration path. The check must pass
+before a persistence-changing slice is recorded or pushed and test the exact
+candidate. The later public branch-protection gate makes it GitHub-required.
+
+The on-server actual-data rehearsal and update-local restore boundary remain in
+F6a–F6d, while disaster restore remains in O4; CI evidence never substitutes for
+that server-specific preflight.
+
+### F1 — Server CLI command and event contract
+
+Status: complete in the working tree on 2026-08-28. Its one independent audit
+found buffered rather than live progress, secret-channel gaps, incomplete
+privilege-matrix coverage, and stale status prose; all four were resolved before
+closure. Concrete operations intentionally remain owned by later packets.
+
+Own:
+
+- new `src/rcp/server_ops/__init__.py` defining the package boundary;
+- `src/rcp/__main__.py`;
+- new `src/rcp/server_ops/cli.py` and `src/rcp/server_ops/models.py`; and
+- focused parser/serialization tests in `tests/test_main.py` or
+  `tests/test_server_cli.py`.
+
+Deliver:
+
+- `rcp server install`, `doctor`, `provider check`, `project provision`,
+  `project transfer-import`, `backup configure`, `backup run`, `restore`,
+  `member remove`, and `update`;
+- exact provider-check selectors:
+  `provider check (--request <request-id> | --project <project-id>)`, with one
+  and only one selector and no arbitrary host/account/path override;
+- a versioned bounded ordered-step record with command, step number and title,
+  purpose, `performed_by` (`system` or `human`), phase, state, expected success,
+  message, timestamp, optional nonsecret fields, and a discriminated target: a
+  machine target has host and OS account; an external-service target has service,
+  resource, destination URL, and required authority role but no invented user
+  identity; an operator-action record also has ordered safe argv or external UI
+  actions, nonsecret values, plain success signals, and exact recheck or resume
+  argv;
+- interactive and `--machine-readable` renderers over the same command result;
+- an initial plan event followed by one event when each step starts, succeeds,
+  fails, or pauses, so an interactive user and the wizard see the same complete
+  workflow rather than reverse-engineering it from diagnostics; and
+- strict argument validation, canonical UUID parsing, no shell string execution,
+  and no command that exists only for desktop.
+
+`restore` accepts an absolute archive path and an off-server recovery identity
+only through a protected identity file (or inherited descriptor/stdin form
+owned by O4a); it never accepts raw identity text in argv, environment, or
+machine-readable progress. Its destination is the installed server's displayed
+and configured `RCP_DATA_DIR`, which must be fresh/empty for this first restore
+contract. It is not an arbitrary second data-root selector.
+
+Enforce the settled entry-identity matrix: root coordinator for `install`,
+`backup configure`, `restore`, and `update`; service account for `doctor`,
+`provider check`, `project provision`, `project transfer-import`, `backup run`,
+and `member remove`. Root entry never causes provider/Git/build work to inherit
+root's home. A wrong calling identity fails before durable work.
+
+`project transfer-import <request-id>` is also a service-account command. Its
+contract accepts the archive only on stdin and accepts no archive path, host,
+account, or destination override. This packet owns canonical request-id parsing,
+bounded input/event shapes, and the concrete-handler seam only. T4b owns the
+upload lease and protected inbox; T4c owns request revalidation, import, and
+activation; T5a owns the one native caller. An arbitrary file, byte stream, or
+request id grants no import authority.
+
+Prove parser behavior, secret redaction, bounded output, and equal durable calls
+from both renderers. Do not implement the concrete operations in this packet.
+Prove the interactive renderer and structured event contain the same operator
+action without making the desktop parse prose or invent a missing command.
+
+### F2 — Linux service layout and explicit paths
+
+Status: complete in the working tree on 2026-08-28. The fixed layout, strict
+machine config, systemd asset, and focused regressions are implemented; F3a and
+F3b provide the concrete installer and successful two-Ubuntu live proof.
+
+Own:
+
+- new `src/rcp/server_ops/layout.py`;
+- new `src/rcp/server_ops/config.py` for strict installed-server configuration;
+- new `src/rcp/server_ops/assets/rcp.service`;
+- `tests/test_server_layout.py`.
+
+Deliver one validated layout for the managed Git checkout, per-commit release
+directories and environments, root-owned `current` pointer, private service
+home, `RCP_DATA_DIR`, central checkouts, credentials, backup config,
+runtime/socket path, logs, and installed CLI wrapper. Paths are absolute,
+non-overlapping, and recorded by install; Linux operation never relies on the
+macOS `default_data_dir()` fallback.
+
+Use these accepted paths:
+
+- `/home/rcp/rcp-server/source` for the managed `main` checkout;
+- `/home/rcp/rcp-server/releases/<commit>` for clean built releases;
+- `/home/rcp/rcp-server/data` for `RCP_DATA_DIR`;
+- `/home/rcp/rcp-server/projects/<project-id>/repositories/<alias>` for each
+  server-local central checkout;
+- `/home/rcp/rcp-server/credentials` for the source key and server-local project
+  keys;
+- `/home/rcp/rcp-server/update-checkpoints` for cutover rollback state;
+- `/home/rcp/rcp-server/restore-operations` for crash-safe restore journals and
+  protected temporary candidates;
+- `/etc/rcp/server.toml` for root-owned versioned machine configuration;
+- `/etc/rcp/current` for the root-owned current-release pointer;
+- `/run/rcp/control.sock` for the private runtime socket; and
+- `/usr/local/bin/rcp`, systemd units, and journald for system integration.
+
+Leave every provider's native state at its ordinary per-account home path
+(currently `/home/rcp/.codex` and `/home/rcp/.claude`) and SSH state at
+`/home/rcp/.ssh`. A later provider keeps its own native path. RCP probes provider
+authentication there but never relocates or manages it. The explicit backup
+destination may be outside `/home/rcp/rcp-server`.
+
+The layout includes one strict versioned installed-server config file, owned by
+root and readable by `rcp`. Machine configuration that systemd, doctor, update,
+backup, or restore must read without a healthy application database belongs
+there. Write it by validated atomic replacement through its concrete CLI owner;
+do not turn it into a second project manifest or store private keys in it.
+Mint and retain one immutable nonsecret `installation_id` there. It identifies
+this machine installation and its source-fetch grant; it is not a member,
+`space_id`, credential, or replacement for either identity.
+
+`restore-operations/` is machine recovery state, not project or backup content.
+Exclude it from encrypted backup, transfer, update rehearsal, and update
+checkpoints. An unfinished entry blocks install/update activation and is resumed
+only by O4. After O4d records the durable restore receipt and final readback, the
+restore owner may remove only that exact operation's candidate and completed
+journal; no command recursively cleans the root or treats an unfinished entry as
+disposable.
+
+A project checkout on an SSH machine keeps its repository key on that same
+configured execution account under the absolute home-derived root
+`<remote-home>/.local/share/rcp/credentials/`. P3 resolves `<remote-home>` by a
+fixed shipped helper running as the configured account and verifies its uid,
+ownership, and modes; it does not assume `/home/<name>`, trust a shell `$HOME`,
+accept a project-manifest override, or copy the private key back to the server.
+
+Use conservative ownership/modes. Credentials may not be below a backup source
+or project write root. Runtime paths must be recreated safely after reboot.
+The dedicated account has fixed home `/home/rcp`, a real `/bin/bash` login shell,
+and no usable password. To preserve the optional public-key SSH route, its
+Ubuntu shadow entry must use an unusable non-locking value such as the
+OpenSSH-documented `*NP*`, not a leading `!` account lock that `sshd` can reject
+before public-key authentication. It is still a service identity, not a shared
+human login.
+The installer neither enables password SSH nor edits global `sshd_config`;
+direct `rcp@server` access exists only when the operator deliberately installs a
+public key for that route. Otherwise operators use their named SSH accounts and
+the narrow sudo command. Validate that `rcp` has no general sudo or supplemental
+privileged group membership.
+
+### F3a — Idempotent installer and service unit
+
+Status: complete. The audited installer is commit `638c19e`; the immutable
+chained fixture `source-server-install-v7-638c19e` names that exact commit and is
+pinned by the G2 registry. F3b supplies the successful live Ubuntu qualification,
+not another installer implementation.
+
+Own:
+
+- new `src/rcp/server_ops/install.py`;
+- `src/rcp/server_ops/assets/rcp.service`;
+- `tests/test_server_install.py`; and
+- the first immutable server-era fixture under
+  `tests/fixtures/server_upgrade/<first-server-boundary>/`, produced by the
+  exact first installable team-server commit through G2's harness.
+
+Deliver an explicit root/operator installation that:
+
+1. validates x86-64, systemd, Git, `uv`, Node.js 24/npm, SSH, and `age
+   >=1.0.0,<2.0.0`, then installs or validates the `uv`-managed Python 3.12
+   service runtime as `rcp`, without changing apt sources or installing general
+   system tools;
+2. creates or validates the dedicated no-usable-password `rcp` account with
+   exact `/home/rcp` home, `/bin/bash` shell, a non-locking shadow value that
+   permits public-key SSH, no general sudo/privileged groups, and the accepted
+   layout, without changing global SSH policy;
+3. creates a separate managed Git checkout plus a clean release directory for
+   the exact commit rather than adopting the bootstrap checkout, records the
+   configured GitHub origin and `main` branch, and proves `rcp` can fetch it
+   without borrowing the invoking operator's credential;
+4. for a private source origin, guides setup of a distinct read-only source
+   deploy key labelled `rcp-source:<installation-id>` and records only its public
+   fingerprint; for a public origin, stores no source credential;
+5. runs managed Git/npm/Web/uv work as `rcp`, revalidates/rebuilds the managed
+   checkout with `npm --prefix web ci`, `npm --prefix web run build`, then
+   `uv sync --frozen` before service activation;
+6. installs a stable CLI wrapper and non-reloading systemd unit, but on a fresh
+   data directory leaves that unit stopped and disabled;
+7. prints the existing interactive
+   `sudo -u rcp -H /usr/local/bin/rcp space init --team --name ...` command and
+   exact installer resume command, then exits with the fresh service stopped.
+   The installed wrapper resolves the configured `RCP_DATA_DIR`; the operator
+   runs initialization in that terminal so neither another process nor a
+   service log receives the one-time bootstrap code; and
+8. only after successful initialization does the resumed root CLI enable/start
+   systemd and read back process and HTTP health without widening the loopback
+   bind. F5 later makes the printed `server doctor` readback authoritative. A
+   rerun against an already initialized owned team data directory may converge
+   the service to running.
+
+`--team-name` is a required strict install-request field. It exists so the CLI
+can independently print exact `space init` and resume argv. The future wizard
+submits that same request and renders the same structured plan/events; it never
+owns a private setup branch or fills in omitted machine instructions.
+
+Root performs only the OS changes needed for the account, directories, wrapper,
+and systemd. Re-running install must converge or refuse an exact incompatible
+state. It must not replace a data directory, source checkout, or account it
+cannot prove it owns. Removing the bootstrap checkout after success must not
+affect doctor, update, service restart, or team-space operation. No install or
+initialization path opens SQLite beside a running service.
+
+### F3b — Ubuntu operator guide and live install proof
+
+Status: complete. Run 33234365749 passed the full drive and cleanup on Ubuntu
+22.04 and 24.04 at exact commit `92117ccfc1190a1db2e5f4e870fa31fe708d3ba9`;
+repository readback found no remaining temporary deploy key.
+
+Own:
+
+- new `docs/server.md`;
+- the concise team-server install/run/update commands in `README.md`; and
+- `tests/test_server_install_live.py`; and
+- `.github/workflows/server-install-live.yml` for the fixed two-release drive.
+
+Document tested prerequisite commands separately for Ubuntu 22.04 and 24.04,
+then the one fresh-clone bootstrap needed before the CLI exists: a normal
+operator runs `npm --prefix web ci`, `npm --prefix web run build`, then `uv
+sync` after prerequisites, followed by the absolute bootstrap `.venv/bin/rcp
+server install` path under `sudo`.
+
+Drive that exact sequence on disposable x86-64 hosts for both Ubuntu releases.
+Initialize interactively as `rcp`, prove the bootstrap code never enters service
+logs, activate systemd, read back process/HTTP health, remove the bootstrap
+checkout, rerun the installer, and verify ownership, modes, loopback-only bind,
+password authentication refusal, optional public-key `rcp` login with the
+non-locking shadow value, and continued service. This packet may report a
+focused F3a defect for repair;
+it does not grow a second installer in test or documentation code.
+
+The operator guide also gives two explicit, separately auditable access setups:
+installing a key for optional direct `rcp@server`, and a root-owned,
+`visudo`-validated narrow rule for a named operator to invoke only the installed
+service-account command family through `sudo -n -u rcp -H`. RCP does not infer
+an operator account or edit sudo policy silently. The live drive proves the
+documented rule permits D6's fixed provisioning command and refuses an
+unlisted command.
+
+### F4 — Private machine-local control socket
+
+Status: complete. Commit `9e2b676b5db62ac78dc39b1a50a22eb53ef61585`
+implements the probe-only transport. Security scan
+`0efca9e6-6eeb-4ae0-b6ab-ebab0a883fbf` found no reportable issue or deferred
+row, and live run 33236544453 passed on Ubuntu 22.04 and 24.04 with clean
+credential cleanup.
+
+Own:
+
+- new `src/rcp/server_ops/control.py`;
+- `src/rcp/api/app.py` lifespan/composition wiring;
+- `src/rcp/server_runtime.py` metadata needed to locate the socket; and
+- `tests/test_server_control.py`.
+
+Deliver a versioned Unix-domain request/response protocol available only for a
+team service installation. The socket is owned by `rcp`, mode-restricted,
+size-bounded, validates peer/request shape, exposes only named server operations,
+and is removed only by its owning process. Commands that mutate durable state
+call the existing concrete owners in-process; they do not create a second
+`AppStore` or a generic admin HTTP router.
+
+Prove a second process cannot open SQLite, an unauthorized OS account cannot use
+the socket, malformed/oversized requests fail, restart recovers the socket, and
+root/`rcp` authority does not become an RCP member identity.
+
+### F5 — Commit identity and `server doctor`
+
+Status: complete. Implementation commit
+`61d32463ba94556bb1d3a318e826877c1d1a12ce` plus focused runtime-mode repair
+`b63eda636ec6c3769638d476549f38cec69269e5` provide the exact readback. Live
+run 33238829032 passed Ubuntu 22.04 and 24.04 with clean credential cleanup.
+
+Own:
+
+- new `src/rcp/server_ops/doctor.py`;
+- health/server metadata projections in `src/rcp/api/health.py` and
+  `src/rcp/server_runtime.py`;
+- dispatch in `src/rcp/server_ops/cli.py`; and
+- `tests/test_server_doctor.py`.
+
+Report source/release roots, configured origin/branch, managed-main HEAD,
+upstream HEAD, candidate/current/running commits, service/reload state,
+space/process/data identities, ownership and mode problems, control-socket
+health, Web bundle build identity, and installed dependency readiness without
+revealing secrets. P5 and O3b have added their concrete provider and backup
+summaries through the same report; F5 did not invent placeholders or a generic
+status registry for owners that had not landed.
+
+Distinguish “checkout updated but old process still running” from corruption.
+Doctor is read-only and works interactively and as one structured document.
+
+### F6a — Update source and candidate build
+
+Status: complete and pushed at `fff75c3` on 2026-08-29. Its one independent audit
+is closed: the detached-worktree and receipt-race concerns have regressions, the
+Python-symlink report was disproven by a real-worktree regression, and the
+trusted-`origin/main`/same-UID build boundary is explicit. F6b was unblocked when
+O2b completed; it will consume the now-complete P2 projection rather than
+duplicating that owner.
+
+Own:
+
+- new `src/rcp/server_ops/update.py`;
+- command dispatch in `src/rcp/server_ops/cli.py` plus read-only calls into
+  `src/rcp/server_ops/doctor.py`; and
+- `tests/test_server_update_prepare.py` plus a live local-origin Git fixture.
+
+Implement the source/build half of the exact settled order:
+
+1. require the authorized `sudo rcp server update` operator entrypoint, retain a
+   narrow root coordinator, and run all remaining source/build steps as `rcp`;
+2. acquire one update admission lock and inspect active maintenance;
+3. require configured origin, checked-out `main`, clean tree, and fast-forward
+   relationship, and prove fetch uses only the configured source identity;
+4. fetch and show current/target commits; prompt unless explicitly confirmed;
+5. fast-forward the managed `main` checkout to `origin/main`;
+6. create or validate one clean release directory for the exact target commit;
+7. run `npm --prefix web ci`, `npm --prefix web run build`, and `uv sync
+   --frozen` inside that release as `rcp`, without changing the current release
+   or environment.
+
+If fetch/build/sync fails, report the exact managed-main,
+candidate/current/running commits and leave the old release serving unchanged.
+Never reset, force-pull, auto-stash, choose another branch, or call a packaged
+updater. F6a produces one immutable built-candidate receipt consumed by F6b; it
+cannot open live app data, switch `current`, or restart systemd.
+
+### F6b — Candidate rehearsal against copied real state
+
+Status: complete on 2026-08-29. The current release owns
+capture, expected answers, orchestration, and the immutable receipt; the
+candidate owns only idempotent migration of the copied database and fenced
+representative reads. Its one independent audit is closed as recorded in the
+implementation log above. F6c and F6d must consume this boundary rather than
+adding another copy implementation or a second startup-effect list.
+
+Own:
+
+- new `src/rcp/server_ops/rehearsal.py`;
+- one explicit startup-effect fence in `src/rcp/api/app.py` and
+  `src/rcp/background.py`, consumed by both rehearsal and F6d's cutover
+  verification;
+- narrow orchestration through `src/rcp/server_ops/update.py`; and
+- `tests/test_server_update_rehearsal.py` with copied real-state fixtures and
+  attempted-effect probes.
+
+Consume F6a's built-candidate receipt and reuse O2a/O2b's concrete online SQLite and
+project-file capture primitive; do not add a second copy implementation. Capture
+a consistent rehearsal copy, then rehearse migration,
+startup, ownership, replay/recovery planning, and representative API reads
+without opening the live data directory from a second process.
+
+Before the candidate starts, build one typed rehearsal overlay from that capture.
+In the copied database, rebind every project locator and every RCP-owned local
+stage/file pointer to request-owned temporary roots; construct inert temporary
+repository roots where a normal read path requires one, while retaining the
+original nonsecret descriptors only for comparison. An active task whose local
+stage was not part of the backup capture is explicitly plan-only and points to a
+known-absent overlay path, never back to its live absolute stage. Remote paths
+remain data only while the effect fence is active. Validate the complete copied
+locator/path inventory before launch and fail rehearsal if any candidate-resolved
+app-data, canonical-state, checkout, attachment, or stage path escapes the
+overlay. Candidate source/release reads are the sole intentional exception.
+Tests place sentinels in the live data, checkout, stage, provider-home, and
+remote-effect paths and prove not even a metadata read or cleanup reaches them.
+
+Treat `transfer-inbox/` as another live effect surface, not as an incidental
+file under app data. Rebind every copied incoming-transfer lease and path to a
+request-owned known-absent overlay entry, including a request whose live upload
+already reached a complete verified inbox file. Candidate recovery may plan or
+render the missing-file disposition inside the copy, but it cannot read,
+complete, import, rename, or clean up the live inbox. Sentinels prove both a
+partial and a complete live inbox are untouched. F6c may later capture an exact
+complete inbox entry only after F6d closes admission and the upload reaches its
+durable boundary.
+
+Inventory every project from the copied database. A project whose only capture
+failure is an already-unreachable configured SSH host may remain explicitly
+**not replay-verified for this update**: the candidate must preserve its catalog
+identity, return the same unavailable/degraded projection as the current release,
+and perform no remote or canonical effect. That one condition does not hold the
+whole lab's source update hostage. A reachable project that cannot be captured
+or replayed, a new candidate-only failure, an unsafe file, or an unknown reason
+still fails rehearsal. The receipt names every verified and unavailable project;
+it never turns partial coverage into a complete-replay claim.
+
+The explicit fence starts no provider turn or capability warm, watcher poll or
+delivery, scheduled operation, remote-stage cleanup, Git write, recovery
+dispatch, or other external effect. Rehearsal treats an attempted effect as a
+failure rather than letting it escape to the live world. F6d reuses the same
+fence while the switched candidate is being verified; do not build a second
+partial maintenance-mode list. A rehearsal failure leaves the old release
+serving and reports the candidate/current/running commits. Success produces one
+immutable verified-candidate receipt consumed by F6d; this packet cannot switch
+`current` or restart systemd.
+
+The receipt is deliberately capture-specific. F6d cannot treat a prior success
+for the same candidate, process, or commit as authority after admission closes:
+it must compare the final checkpoint boundary with the receipt's capture UUID,
+SQLite digest, and project-file digests, or run a fresh rehearsal under the
+closed admission boundary before switching.
+
+### F6c — Coherent update rollback checkpoint
+
+Status: current-owner checkpoint core complete on 2026-08-29. F6d consumes the
+verified local replacement and journal mechanism. T3e added typed imported
+provider-source capture and owner readback through this boundary; T4b now admits
+only exact receipt-backed complete transfer archives and rejects every other
+inbox entry.
+
+Own:
+
+- new `src/rcp/server_ops/update_checkpoint.py` for the explicit local rollback
+  inventory;
+- narrow recovery-critical-root inventory helpers in `src/rcp/runs/shared.py`
+  and `src/rcp/attachments.py`, so the update owner never guesses their paths;
+- narrow checkpoint orchestration through `src/rcp/server_ops/update.py`; and
+- `tests/test_server_update_checkpoint.py` with crash-boundary and complete-root
+  inventory fixtures.
+
+Compose O2a/O2b's local SQLite/project-file capture with an explicit snapshot of
+recovery-critical app-data roots, including local run stages and temporary
+attachment sets, to make one coherent rollback checkpoint of every RCP-owned
+state surface candidate startup may change. Exclude source/project checkouts,
+credentials, provider homes, caches, locks, and runtime metadata. The
+checkpoint is created only after the caller has closed admission and all
+in-flight owners named by F6d have reached a durable boundary; this packet does
+not itself close admission, switch a release, or restart systemd.
+
+The checkpoint manifest records the exact database snapshot, per-project file
+capture, recovery-critical roots, current release, and candidate receipt. A
+failed or partial capture is unusable and cannot authorize a switch. Restoration
+into a temporary verification root must reproduce every included byte before
+F6d consumes it. Rollback is replacement, not an overlay: after the candidate is
+stopped, its app-data root and each candidate-touched server-local `.research`
+root are atomically moved to an operation-specific quarantine, then rebuilt from
+the checkpoint's SQLite, retained canonical/chat/Paper/facts inputs, local
+stages, complete attachment sets, bootstrap manifests, T3e's project-owned
+imported sources through typed owner inventories, and T4b's exact receipt-backed
+complete transfer archives. Partial, invalidated, missing, corrupt, or extra
+transfer inbox entries fail closed.
+Materialized outputs and caches are regenerated by the previous release. This
+removes candidate-created unknown roots instead of
+leaving them beside restored state; the quarantine remains for diagnosis until
+explicit safe cleanup. The startup-effect fence forbids remote canonical writes,
+so rollback never pretends to replace a remote root it did not snapshot.
+Persist a small fsynced rollback journal beside the checkpoint, outside the
+live app-data and project roots, before the first move. It records the exact
+checkpoint, previous release, quarantine paths, and replacement phase. Every
+move, restore, verification, and finalization is idempotent. F6c exposes strict
+unfinished-journal discovery and exact re-entry; F6d wires `install`, `update`,
+and `doctor` to keep the service stopped, resume the previous state, and refuse
+ambiguous maintenance instead of starting a release or deleting an uncertain
+path. Inject a coordinator crash after every journaled phase and prove re-entry
+restores the same pre-cutover bytes exactly once.
+This update-local checkpoint is separate from O1-O4 encrypted backup and
+disaster restore.
+
+### F6d — Update cutover, verification, and loud rollback
+
+Status: complete on `main` through `566b81e` on 2026-08-31. Exact-head run
+33425653252 passed the complete install/update/forced-rollback and five-phase
+crash-recovery drive on Ubuntu 22.04 and 24.04 with successful cleanup. Exact-
+head CI run 33425627487 also passed. The preceding failed runs and production
+startup-order corrections are recorded in the implementation log.
+
+Own:
+
+- new `src/rcp/server_ops/update_cutover.py`;
+- narrow dispatch in `src/rcp/server_ops/control.py` and the F3a system-service
+  restart/readback seam in `src/rcp/server_ops/install.py`;
+- the durable update receipt and read model in this update owner;
+- narrow receipt integration in `src/rcp/server_ops/doctor.py`;
+- centralized unfinished-update journal routing from install, update, and
+  doctor into F6c's strict re-entry path; and
+- `tests/test_server_update_cutover.py` plus the live systemd failure drive.
+
+Consume and revalidate F6b's verified-candidate receipt, then implement the
+short maintenance half of the settled order. After admission closes and the
+durable boundary is reached, invoke F6c and require its verified rollback
+checkpoint before switching:
+
+9. close mutation and machine-operation admission; wait for in-flight provider
+   turns, mutations, backups, provisioning steps, and transfer uploads to reach
+   their durable boundary; leave durable watchers recoverable; enter a short
+   maintenance window; and require the switched process to start behind F6b's
+   startup-effect fence;
+10. invoke F6c after the durable boundary and require its complete verified
+    rollback checkpoint before any release switch;
+11. use the narrow root coordinator to atomically switch `current` and restart
+    systemd with normal work still closed;
+12. read back the running commit and repeat the startup, ownership,
+    replay/recovery, and representative API checks, including the unchanged
+    degraded projection for each explicitly unavailable project; and
+13. only after those checks pass, release the one startup-effect fence, start
+    the deferred background/maintenance owners, and reopen normal work.
+
+The fenced candidate cannot touch remote run stages, provider homes, watchers,
+or other external state before the rollback decision, so those surfaces are not
+pretended into a local checkpoint. Local run stages and attachment sets still
+belong in the checkpoint because they are RCP-owned recovery inputs and current
+startup cleanup can mutate them. Cache and materialized snapshot roots remain
+rebuildable exclusions.
+
+If any post-switch check fails, stop the candidate, restore the checkpoint and
+previous release pointer, start and verify the previous release, and only then
+reopen service. Report the failed target and restored commit through CLI output,
+server status, and a durable operation receipt. Never roll back silently, reset,
+force-pull, auto-stash, choose another branch, call a packaged updater, or give
+`rcp` general sudo/systemd control. F6c's local checkpoint remains separate from
+O1-O4 encrypted backup and disaster restore.
+The failure drive makes the candidate create an otherwise unknown app-data entry
+and server-local `.research` entry before failing, and proves both survive only
+inside quarantine while the restored old service reads the exact pre-cutover
+state. A second failure drive kills the root coordinator after every rollback
+journal phase and proves startup cannot bypass or duplicate the pending
+restoration.
+
+### P1 — Durable provisioning records and state machine
+
+Own:
+
+- new `src/rcp/server_ops/github.py` and
+  `tests/test_github_repository_ref.py` for the single GitHub.com source parser;
+- `src/rcp/storage/models.py`;
+- schema/migration additions in `src/rcp/storage/base.py`;
+- new `src/rcp/storage/provisioning.py` mixed into `AppStore`; and
+- `tests/test_project_provisioning_storage.py`.
+
+Model one request id, kind (`create_team_project` or incoming transfer), target
+space, human authorizer, proposed canonical project id, canonical
+`GitHubRepositoryRef` values, the fixed local central root or one explicit/null-
+default SSH central-root intent, project name, state repository, project and
+default-run truth scopes, Auto-research ceiling, intended/resolved paths, Git
+and provider checks, timestamps, retryable diagnostic, final-review digest, and
+explicit checkout/cancellation dispositions. A default SSH checkout path stays
+unresolved until the exact remote account home is proved. A new
+project request mints one random proposed `project_id` when the request is
+created; an incoming transfer uses the source project's existing id. This
+reserves a collision-resistant path namespace only. It does not append project
+identity, register a project, or establish a writable home before final human
+review.
+
+Accept only `https://github.com/<owner>/<repository>[.git]` and
+`git@github.com:<owner>/<repository>[.git]`. Normalize them through the shared
+parser before storage. Its accepted owner has 1–39 alphanumeric-or-hyphen
+characters and begins and ends alphanumeric. Its repository has 1–100
+characters from `A-Z`, `a-z`, `0-9`, `.`, `_`, and `-`, other than `.` or `..`.
+Strip one exact optional `.git` suffix and store a lowercase
+`owner/repository` identity. Reject
+credentials/userinfo, query/fragment text, percent-encoding, traversal, local or
+`file://` paths, `ssh://`, arbitrary hosts, ports, and extra path components
+before a row, filesystem access, DNS lookup, or other network call.
+Generate fixed clone and repository-settings URLs from the canonical identity;
+no later owner consumes the member's raw string.
+
+An **operator action needed** transition stores a bounded structured action,
+not arbitrary shell prose: `performed_by`, the same typed machine or
+external-service target, ordered safe command tokens or external UI steps,
+nonsecret values, expected success, and exact resume command. It may include a
+GitHub deploy public key but never a private key, provider token, SSH secret, or
+member credential. A GitHub action targets `github.com`, canonical repository,
+settings URL, and repository-administrator role; it does not claim to know that
+administrator's account.
+
+Persist the six backend display states exactly. State transitions are guarded in
+one transaction and idempotent by step receipt. A CLI reconnect resumes; it does
+not create a second request. A request id grants no machine authority. Do not put
+private keys, provider tokens, SSH material, or arbitrary command text in the
+record.
+
+### P2 — Provisioning API and backend projection
+
+Status: complete in the current packet on 2026-08-29. Its one independent audit
+is closed: the old generic project-registration bypass is fenced before request
+validation, downstream membership fixtures now use the internal setup owner,
+and every published nonterminal and terminal control branch has a regression.
+
+Own:
+
+- new `src/rcp/api/project_provisioning.py`;
+- composition and existing member/project dependencies in
+  `src/rcp/api/app.py`;
+- the backend-owned project-creation control in `src/rcp/api/health.py` and the
+  public ordinary-setup guard in `src/rcp/api/index.py`;
+- response models in `web/src/types.ts` and calls in `web/src/api.ts`; and
+- `tests/test_project_provisioning_api.py`, focused team-space cases in
+  `tests/test_setup.py`, and response-shape Web tests.
+
+Deliver member-authorized create/read/cancel routes plus the final-review
+projection and request shape. P6b has since added the one confirmation mutation
+through its concrete finalizer. The preparation routes create or change only
+durable product requests; they do not perform machine work. The
+projection owns status label, exact next action, `can_run_setup`, `can_review`,
+`can_cancel`, resolved paths, readiness summaries, and safe operator argv tokens.
+Seal any complete lifecycle vocabulary in the Web response type so the browser
+cannot branch on strings.
+
+The health/index projection also owns one `project_creation` answer containing
+that backend's product eligibility, preselection, primary action label, required
+fields, and any pinned source identity. The three possible visible intents are
+**Use an existing checkout personally**, **Create a shared team project**, and
+**Move an existing personal project to a team**. D7 separately consumes the
+native bridge's relay capability and authenticated saved targets. It offers move
+only when the personal backend permits export, the selected team backend permits
+import, and that native capability can connect them. A browser has no native
+answer and cannot offer move. Both the index action and direct
+`#/projects/new` navigation render explicit answers rather than branching on
+`space_kind` or paths.
+Personal setup, durable provisioning, and linked transfer keep their separate
+APIs and authority despite sharing one wizard.
+
+The existing `/api/projects`, `/api/project-setup/preflight`, and
+`/api/project-setup/create` routes are personal-space entry points. On a team
+backend, each must reject before calling `ProjectCatalog.register` or
+`ProjectSetupManager`, inspecting a submitted path, writing a cache or filesystem
+entry, or mutating the catalog. Do not guard
+`ProjectCatalog.register` globally: P6b's separately validated internal
+finalizer and normal startup reopening both need the existing owner. P6b is the
+only new team-project entrance into that owner.
+
+### P3 — Repository-scoped deploy-key lifecycle
+
+Status: complete on 2026-08-29. Implementation, focused regressions, the
+one-audit fixes, and the guarded disposable-GitHub-repository live drive pass.
+The primitive is not wired to member HTTP authority. P4 has since supplied the
+checkout consumer, P6a the durable composition, and P6b finalization.
+
+Own:
+
+- new `src/rcp/server_ops/git_credentials.py`;
+- secret-path resolution through `src/rcp/server_ops/layout.py`;
+- `tests/test_git_credentials.py`; and
+- a disposable GitHub repository live drive.
+
+Generate one key per target GitHub repository on the account that owns its local
+or remote checkout, show only the public key and fingerprint, derive the
+protected private-key path without persisting its bytes, and give exact GitHub
+instructions including one deterministic nonsecret
+`rcp:<space-id>:<project-id>:<repository-alias>` label and **Allow write
+access**. Verify both the execution host and GitHub host keys explicitly; do not
+disable either check. The stable label and persisted public fingerprint let
+restore name the old GitHub grant that an operator must revoke without backing
+up key material.
+
+Consume only P1's canonical `GitHubRepositoryRef`. Derive the fixed
+`git@github.com:<owner>/<repository>.git` clone URL and
+`https://github.com/<owner>/<repository>/settings/keys` operator URL from that
+identity; never pass a request-supplied URL to Git or use it as an SSH host.
+
+The deploy key is the checkout's GitHub identity; RCP never needs a GitHub user
+login on the server. Before the grant exists, publish one structured operator
+action containing the exact repository settings destination, label, public key,
+write checkbox, expected probe, and `project provision` resume command. A human
+with repository-administration authority installs it through GitHub. Interactive
+CLI output renders the same action; desktop output does not add private steps.
+
+For a server-local checkout, place the key below F2's server-local credential
+root. For an SSH checkout, run key generation and Git only as the exact saved
+remote execution account and place the key below its verified
+`<remote-home>/.local/share/rcp/credentials/` root. Use one shipped remote helper
+for uid/home/path/mode validation; never expand `~` in a shell string, use the
+server's credential root for a remote checkout, or transfer a remote private key
+through stdout, structured progress, a temporary server file, or SQLite.
+
+Prove write using a request-scoped temporary ref that points to an existing
+commit, read it back, and remove it. A failed cleanup remains **operator action
+needed**. An empty repository remains **operator action needed** with the exact
+instruction for the human to push their local-only code through their ordinary
+GitHub workflow and the command to recheck; RCP does not create a GitHub
+repository, upload/adopt a member checkout, take a GitHub token, or invent a
+hidden initialization commit in this slice. Never place a private key in SQLite,
+the manifest, logs, structured output, prompts, or backups.
+
+Both local and remote credential roots are explicit backup, restore, update
+checkpoint, and transfer exclusions. A cancelled provisioning request may
+delete only the exact request-owned key after P1's recorded cleanup disposition;
+it never walks the credential root. If the public key was already installed at
+GitHub, cancellation names its label/fingerprint and remains **operator action
+needed** until the operator confirms that grant was revoked or explicitly keeps
+the prepared request for reuse; deleting a private key is not presented as
+GitHub cleanup. An activated team project's key remains machine state and is
+protected from the ordinary member Delete-project path by P6c's backend-owned
+guard until a future operator-owned deprovision workflow is designed.
+
+### P4 — Central checkout preparation
+
+Status: complete on 2026-08-29. The local/SSH exact-account helper and checkout
+manager, safe Git recovery, retained-research boundary, durable path/disposition
+receipts, backward-compatible configuration persistence, focused regressions,
+and gated local plus reachable-SSH live drive pass. P6a has since sequenced this
+primitive with P3 and P5 and publishes each durable step.
+
+Own:
+
+- new `src/rcp/server_ops/project_checkout.py`;
+- exact Git subprocess helpers local to that module;
+- `tests/test_project_checkout.py`; and
+- step receipts through `src/rcp/storage/provisioning.py`.
+
+Resolve a project directory only under the configured central root on the
+selected local or SSH machine, refuse symlinks/special files/unowned existing
+directories, clone or verify the exact Git remote, bind the P3 key without
+changing global SSH config, and prove the state and truth-scope repository paths.
+Reuse the existing SSH transport construction rather than creating a local-only
+provisioning path. The remote route must authenticate through the `rcp`
+account's existing OpenSSH state; a missing or changed account/host key becomes
+**operator action needed**, never a member-key prompt or alternate login. All
+subprocesses use argv, bounded output, and timeouts.
+
+The server-local root is F2's fixed path. For SSH, resolve the account home with
+P3's shipped helper and default to
+`<remote-home>/.local/share/rcp/projects`; P1 may instead carry one explicitly
+requested absolute central root for lab storage. Treat it as untrusted
+nonsecret input: require the exact remote account to own and write it, reject
+symlink/special ancestry and `/`, and show it to the machine operator and final
+human reviewer. The CLI does not accept a path override outside the durable
+request.
+
+Use P1's proposed canonical project id in the accepted
+`projects/<project-id>/repositories/<alias>` path from the first preparation
+step. Do not provision under a request-id path and rename a live checkout during
+final confirmation.
+
+Cancellation never recursively deletes an unproven directory. Record one
+explicit reuse, operator-cleanup, or safe-created-empty disposition.
+
+For `create_team_project`, inspect retained `.research` before declaring the
+checkout prepared. Any existing canonical project identity or Patch history is
+**operator action needed**, not material to adopt, overwrite, archive, or assign
+the request's proposed id. If it belongs to a personal project, direct the human
+to **Move to team space**; any other identity/history conflict requires an
+explicitly cleaned or different repository outside this request. The later
+transfer configuration packet owns the separate matching-history rule for an
+incoming transfer.
+
+### P5 — Provider readiness on the execution account
+
+Status: complete in the working tree on 2026-08-29. The command, versioned
+private-control operations, exact-account local/SSH probe, request proof
+persistence, existing-project resolver, doctor readback, and focused/live
+regressions are implemented. P6a has since composed P3–P5 into one
+project-provisioning command; P5 itself creates no project and exposes no
+member machine-authority route.
+
+Own:
+
+- new `src/rcp/server_ops/provider_readiness.py`;
+- existing `src/rcp/providers.py`, `src/rcp/agents/launcher.py`, and
+  `src/rcp/transport/ssh.py` only where the shared probe needs extension;
+- narrow command/control registration in `src/rcp/server_ops/cli.py` and
+  `src/rcp/server_ops/control.py`, plus its concrete summary in
+  `src/rcp/server_ops/doctor.py`;
+- `tests/test_server_provider_readiness.py`; and
+- local plus reachable-SSH live probes.
+
+Use the existing provider profile/runtime implementation to check executable,
+version, provider-reported authentication status, model/runtime, and exact OS
+execution account. `--request` resolves only the intended profiles in P1's
+durable provisioning request; `--project` resolves only the existing project's
+stored profiles. The CLI cannot construct an ad hoc provider target. RCP does
+not invoke login, store credentials, refresh them, create an alternate provider
+home, or choose among provider identities. When the check fails, publish
+**operator action needed** with the provider-native command the operator must run
+directly as that local or remote account, the expected readiness signal, and the
+exact `provider check` or `project provision` command to resume. Interactive and
+machine-readable modes carry the same structured action. Persist only nonsecret
+readiness results and configuration references.
+
+Codex exec, Codex app-server, and Claude retain their own provider specs behind
+one call abstraction. Local and SSH use the same selected profile contract. A
+failed account never falls back to a member laptop, different account, or other
+runtime except the already specified pre-prompt Codex runtime fallback on the
+same machine.
+
+### P6b — Final human project creation
+
+Status: complete hermetically on 2026-08-29. The named-member completion route,
+exact manifest renderer, reserved-id identity claim, first-member audit,
+retained-history fence, idempotent catalog registration, and crash recovery at
+every durable product boundary are implemented. S128's combined real
+team-service/GitHub/SSH/browser/desktop drive remains pending and is not implied
+by these regressions.
+
+Own:
+
+- final-review completion wiring in `src/rcp/api/project_provisioning.py`;
+- project setup service seams in `src/rcp/setup.py` and `src/rcp/projects.py`;
+  and
+- final-creation and idempotency coverage in
+  `tests/test_team_project_provisioning.py`.
+
+The member-authorized P2 route revalidates the final-review digest, paths,
+Git/provider readiness, current membership, human identity, and unchanged
+request before using the existing setup/transition owners to create and register
+the project. It never reruns P3–P5 or performs another preparation effect;
+read-only local/SSH state checks revalidate every reviewed checkout path and the
+selected canonical state before the identity append.
+
+Recheck that no retained canonical identity or Patch appeared after machine
+preparation. A direct team-project creation never adopts or archives existing
+research; it fails back to review with the transfer/clean-repository action.
+
+Final creation extends the existing identity-claim owner to append exactly the
+request's proposed id after revalidation; it never mints a second id. The
+durable order is manifest, exact identity Patch, catalog row, first-member seat,
+then completed request. A retry reads those boundaries back, accepts only
+the exact request-owned partial identity, and returns the same project and
+request. Parameterized regressions crash after every boundary and prove one
+Patch, one catalog project, one completion receipt, and one reviewed identity.
+
+### P6c — Team-project deletion guard
+
+Status: complete on 2026-08-29. Team cards publish the backend-owned decision,
+the Web omits ordinary Delete, the API and catalog refuse independently before
+cleanup, personal deletion stays unchanged, and the last-member action now says
+to add another member. Focused backend/Web regressions and a disposable rendered
+team-browser drive pass without console or application errors.
+
+Own:
+
+- the backend-owned project-card decision and catalog deletion guard in
+  `src/rcp/projects.py`;
+- the exact rejection response in `src/rcp/api/index.py`;
+- response typing and action rendering in `web/src/types.ts` and
+  `web/src/views/ProjectLanding.tsx`; and
+- new `tests/test_team_project_deletion_guard.py` plus the existing S26
+  regressions in `tests/test_project_deletion.py` and
+  `tests/test_project_delete_api.py`, and the S122 last-member refusal copy and
+  browser coverage.
+
+Add `can_delete` and `delete_unavailable_reason` to every project card. A
+personal project keeps `can_delete=true`. A team project publishes
+`can_delete=false` with an exact operator-owned-deprovision reason; the Web omits
+the ordinary **Delete project** action from that card and does not derive the
+decision from space, path, or checkout state.
+
+The API and `ProjectCatalog.delete` independently re-read the space kind and
+refuse a direct deletion request for a team project before removing any task,
+cache, snapshot, stage, or database record. Prove the managed checkout, deploy
+key, canonical project, imported sources, and app records are unchanged after
+the UI exposes no ordinary action and after a direct API attempt. Preserve
+S26's personal-project behavior unchanged. Update the last-project-member
+refusal to say another member must be added; it must not retain the now-invalid
+team suggestion to delete the project, and S122 is re-driven.
+
+This packet does not implement team-project deprovisioning. T4a's source
+retirement is a request-bound transfer transition with its own fence and receipt,
+not an alternate entrance to ordinary project deletion.
+
+### D1 — Saved connection metadata and macOS credential storage
+
+Own:
+
+- new `web/src-tauri/src/team_connections.rs`;
+- target-specific credential dependency/config in `web/src-tauri/Cargo.toml`;
+- registration in `web/src-tauri/src/commands.rs` and
+  `web/src-tauri/src/lib.rs`, with the matching
+  `web/src-tauri/capabilities/main.json` and generated permission entries; and
+- Rust tests for serialization and credential references.
+
+Store nonsecret connection id, display name, SSH target, remote loopback port,
+expected `space_id`, stable assigned local origin, minimum shell protocol, and
+last-known cards in the app config directory. Store the permanent token in macOS
+Keychain under a stable service/account key. The one controlled secret input may
+cross the Tauri IPC needed to store or enroll it, then must be cleared. No
+localStorage, sessionStorage, retained Web state, Rust log, command result, URL,
+or connection file contains the token.
+
+Removing metadata and removing a credential are explicit, reconcilable actions.
+Do not claim Linux desktop credential support in this slice.
+
+### D2 — Distinct-loopback-origin and cookie proof
+
+Own:
+
+- candidate loopback alias/address allocation in
+  `web/src-tauri/src/team_connections.rs`;
+- `web/src-tauri/src/navigation.rs`; and
+- `web/src-tauri/capabilities/main.json` for the exact origins that survive the
+  spike; and
+- a small live two-server harness under desktop tests/scripts.
+
+Prove two simultaneous tunnel origins have different cookie hosts, each server's
+`__Host-` session remains isolated, Secure-cookie behavior works in the real
+WKWebView, the origin is stable across restart, and arbitrary loopback origins
+remain rejected.
+
+Do not proceed by assigning two ports on `127.0.0.1`; cookies ignore ports. If
+neither verified loopback aliases nor loopback addresses work with WKWebView's
+Secure-cookie rules, stop this packet with evidence and request a design decision
+instead of weakening session security.
+
+**Historical spike result:** stopped at that condition on 2026-08-28. The reproducible
+real-WKWebView probe is retained under `web/src-tauri/examples/` and
+`web/src-tauri/scripts/`. Both generated `.localhost` aliases and exact
+`localhost` failed to return the required `Secure` cookie to the server over
+HTTP; the extra-address path could not reach WKWebView because stock macOS could
+not bind those addresses without privileged network mutation. That stop was
+resolved by the local-HTTPS evidence below.
+
+**Local HTTPS spike, 2026-08-29:** the mechanism later accepted as the
+candidate now has live evidence. A second probe under the same directories
+(`local_https_origin_probe.rs`, `https_trust.m`,
+`run-local-https-origin-probe.py`, behind the `https-trust-probe` Cargo feature)
+serves two local HTTPS origins with a self-generated certificate and pins one
+DER SHA-256 in a server-trust challenge added to the live navigation delegate.
+Both phases pass: the `Secure`/`HttpOnly`/`__Host-` cookie survives the redirect
+that HTTP lost, the two spaces never see each other's cookie, the session
+survives an application restart, JavaScript cannot read it, and an allowlisted
+third origin carrying a different certificate is refused at the TLS layer. Each
+run first asserts the host does not already trust the certificate, so nothing
+system-wide is installed or implied. Two mechanics belong to D3-D5: WKWebView
+caches which delegate methods exist at assignment time, so an added handler
+needs the delegate reattached; and wry's delegate class name is
+version-qualified, so the hook reads it off the live `WKWebView`.
+
+**Production completion, 2026-08-30:** D2 now owns the canonical allocator,
+versioned sealed identity and Keychain sealing key, production trust-hook
+linkage, exact registry-backed navigation rule, and bounded Tauri capability.
+The two-phase probe and actual source-built app pass on this host, including
+reuse across two different ad-hoc build hashes. D3 has since closed TLS through
+the real SSH proxy; D4-D5 are implemented but their integrated team-space drive
+remains open. A second Mac and signed packaged app are later compatibility
+qualification.
+
+### D3 — SSH tunnel lifecycle
+
+Own:
+
+- new `web/src-tauri/src/team_tunnel.rs`;
+- lifecycle integration in `web/src-tauri/src/lib.rs` and
+  `web/src-tauri/src/updates.rs`;
+- command and permission integration in `web/src-tauri/src/commands.rs` and
+  `web/src-tauri/capabilities/main.json`; and
+- Rust unit plus live SSH tests.
+
+Launch system `ssh` with argv, configured host alias, explicit local bind, remote
+`127.0.0.1:8421` target, exit-on-forward-failure, bounded readiness, and owned
+child lifecycle. Reuse one healthy tunnel per connection, reconnect with backoff,
+and stop only desktop-owned tunnels on Quit. Never kill a remote RCP service or
+accept a tunnel that resolves to an unsaved origin.
+
+**Completed 2026-08-30:** the production owner, command permission, saved-row
+lookup, direct system-SSH child, local rustls proxy, reuse/backoff, metadata-
+removal cleanup, Quit/update cleanup, focused tests, and authenticated live
+forward drive all pass. Admission and retirement fence launch against cleanup,
+unconfirmed cleanup retains ownership, route reuse is exact, and system SSH
+cannot multiplex or background the owned forward. D4 consumes this owner; it
+must not introduce another transport path.
+
+### O1 — Versioned backup manifest and capture plan
+
+Status: complete hermetically on 2026-08-29. The strict format, exact closed
+root classifications, nonsecret reconstruction proof, and lock-free retained
+history/head plan have focused coverage. No archive bytes are copied or called
+protected by this packet; S104's concurrent capture and live restore remain with
+O2-O4.
+
+Own:
+
+- new `src/rcp/server_ops/backup_models.py`;
+- backup-specific inventory, retry, and diagnostic bounds in
+  `src/rcp/limits.py`;
+- read-only project/head inventory helpers in `src/rcp/projects.py` and
+  `src/rcp/transport/state.py`; and
+- `tests/test_backup_manifest.py`.
+
+Define a strict versioned archive manifest with space identity, RCP source
+commit/schema, capture time, SQLite snapshot hash, encryption recipient
+fingerprint, and per-project project/home ids, locator, recorded canonical head,
+captured main and graph-branch canonical commit files/heads, RCP chat files,
+optional canonical Paper introduction, `.research/facts/` files, referenced kept
+artifact and legacy kept-result-view files/hashes, one nonsecret checkout
+recovery descriptor, or unavailable reason/time. The recovery descriptor binds
+the captured provisioning record's repository sources/aliases, resolved local or
+SSH central paths, machine/route references, canonical manifest configuration,
+and deploy-key labels/fingerprints. It carries no private key or provider/SSH
+secret. A missing, stale, credential-bearing, or internally inconsistent
+descriptor makes that project uncaptured.
+Immutable branch metadata, Patches, and merge receipts are canonical inputs;
+main or branch materialized outputs are explicitly forbidden. The SQLite
+snapshot already carries the current Paper draft and same-space writing-session
+rows; the manifest links that snapshot to the separately captured canonical
+introduction rather than pretending Paper is only one file.
+
+Record the old server's nonsecret `installation_id` and optional
+`rcp-source:<installation-id>` public fingerprint in the manifest, plus the
+project deploy-key labels/fingerprints already present in provisioning receipts.
+These are revocation pointers only; no private key, SSH credential, or provider
+auth material enters the capture.
+
+T3e adds the explicit imported-provider-history file group through this same
+manifest owner; O1's other classifications remain closed.
+
+The plan is read-only and does not pause dispatch. It must distinguish a project
+captured through head N from a project merely present in SQLite. Enumerate the
+known direct `.research` roots and the explicit app-data/repository groups:
+future unclassified durable roots, unknown chat/Paper entries, or unsafe
+symlink/special entries make that project uncaptured until policy is added.
+The current app-data classification is exact: capture `rcp.sqlite3` only through
+O2a's online snapshot; T3e captures `project-sources/`; exclude raw SQLite
+WAL/shared-memory files, `rcp.lock`, `rcp-server.json`, `bootstrap-manifests/`,
+`project-snapshots/`, `paper-snapshots/`, `state-cache/`, `project-caches/`, the
+legacy `source-cache/` and `session-slices/`, `chat-attachments/`, `run-stage/`,
+`transfer-inbox/`, and `transfer-exports/`. Bootstrap manifests are local
+locator copies reconstructed from the captured recovery descriptor, project and
+Paper snapshots plus source/state caches are derived, lock/server metadata is
+one-process runtime state, attachment/run/inbox roots are temporary execution
+state, and a sealed personal source export is protected by its transfer receipt
+rather than copied into a team-server backup. Known `.publish`, local mirror
+quarantine, materialized outputs, and other explicitly rebuildable/temporary
+groups remain named exclusions rather than accidental omissions. Any unknown
+direct app-data child makes the archive partial until its concrete owner
+classifies it; do not silently generalize that list into a root registry.
+
+Record exact per-entry and total byte counts before archive streaming. Archive
+content is not silently truncated or given an arbitrary product-size cutoff:
+copying uses fixed-size buffers, while retry counts and diagnostic count/text
+bounds are fixed code policy in `limits.py`. Insufficient staging or destination
+capacity fails or makes the affected capture partial before any archive is
+called protected; no implementation may load an entire project archive into
+memory.
+
+### O2a — Online SQLite snapshot and typed project inventory
+
+Status: complete hermetically on 2026-08-29. The installed-service online
+snapshot, copied-database-only inventory, per-project failure isolation, and
+immutable handoff receipt have focused coverage. O2b consumes that receipt and
+captures project files; O2a itself still does neither. O3b now composes both
+captures into the active protected-backup workflow.
+
+Own:
+
+- new `src/rcp/server_ops/backup_capture.py`;
+- a narrow SQLite online-snapshot method in `src/rcp/storage/base.py` invoked
+  through `src/rcp/server_ops/control.py`;
+- read-only snapshot queries through O1's concrete project/storage owners; and
+- `tests/test_backup_sqlite_capture.py` with concurrent writers and
+  registration/provisioning boundary fixtures.
+
+Use SQLite's online backup API in the lock-owning process. For each project,
+derive the project id, home, and locator inventory from that captured database,
+so a later registration is absent rather than half-added. Resolve its completed
+provisioning record, project-linked task set, and referenced kept-file names from
+that same snapshot; do not infer a clone source from a path or a member checkout.
+Open the copied database read-only, validate task artifact descriptors with
+`AgentArtifactDescriptor` and kept view rows with the existing storage model,
+and bind that typed inventory into O1's manifest. A malformed or cross-project
+reference makes that project uncaptured.
+
+Publish one immutable database-snapshot/inventory receipt for O2b. This packet
+does not open a canonical project repository, copy project files, or acquire a
+project lock.
+
+### O2b — Optimistic canonical and project-file capture
+
+Status: complete hermetically on 2026-08-29. The immutable O2a-to-O2b handoff,
+local/SSH checkout proof, filtered remote export, typed source selection,
+bounded stable reads, per-project failure isolation, and immutable project-file
+receipt have focused coverage. O3b now consumes this receipt for archive
+encryption, readback, status, retention, and timer activation. The full live
+S104 drive remains pending.
+
+Own:
+
+- O2a's `src/rcp/server_ops/backup_capture.py` plus
+  `src/rcp/server_ops/backup_project_files.py`,
+  `src/rcp/server_ops/backup_project_io.py`, and
+  `src/rcp/server_ops/backup_checkout.py` for receipt orchestration, bounded
+  copy mechanics, and checkout verification;
+- retained canonical-history export helpers in `src/rcp/transport/state.py`
+  plus shipped stdlib-only remote inspection helpers in
+  `src/rcp/transport/remote_backup_checkout.py` and
+  `src/rcp/transport/remote_backup_inventory.py`;
+- narrow typed readers beside the chat owner in `src/rcp/service.py` and Paper
+  owner in `src/rcp/paper/service.py`; and
+- `tests/test_backup_capture.py` with concurrent file writers and remote
+  unavailable hosts.
+
+Consume and revalidate O2a's receipt. Verify each live checkout's repository
+identities against the captured nonsecret recovery descriptor. Record the
+accepted main head and each retained branch head, then copy only the
+bounded retained-history inputs required to replay them: main manifest/Patches,
+branch metadata/Patches/merge receipts. Reuse the existing retained-history
+inventory in `src/rcp/transport/state.py`; do not create a second branch walker.
+Separately capture every valid canonical RCP chat JSONL file through the chat
+owner, the optional canonical Paper introduction through `PaperService`, opaque
+safe regular `.research/facts/` files through a bounded facts inventory, and
+only kept artifact/result-view names referenced by the SQLite snapshot through
+the existing workspace readers. Use only O2a's typed names, never a later live
+store query. Do not walk all of repository `artifacts/` or `views/`.
+
+Do not acquire the canonical publication, append, chat, or remote refresh lock:
+backup must not delay dispatch or Apply. Use bounded optimistic stable reads.
+For an append-only chat, record an observed byte boundary and accept only a
+complete, typed-valid JSONL prefix through that boundary. A non-null operation
+binding must resolve to the same project's captured SQLite task set; the first
+record whose operation was created after the database snapshot, and its suffix,
+are absent rather than dangling. Legacy null operation bindings remain readable
+but never prove native Resume. For mutable Paper, facts, or kept files, validate safe regular-file
+identity and stable bytes/metadata across the read, retry a bounded number of
+times, then mark the project uncaptured on continued churn. Atomic replacement
+therefore yields the old or new whole file, never a mixed claim. An
+unknown/malformed/symlink/special required entry or missing referenced kept file
+makes that project uncaptured rather than silently omitted. Remote failure
+marks that project uncaptured while preserving other captures. T3e adds its
+explicit imported-provider-history file group through this same capture owner;
+O2b still never guesses at another directory. Never walk or copy the live
+execution account's provider home.
+
+Never walk whole repository roots or include source, credentials, `.git`,
+materialization, temporary attachment/stage/transfer-inbox data, caches, or
+arbitrary symlink targets.
+
+### O3a — Backup configuration and systemd timer
+
+Status: complete on 2026-08-28. Focused verification and the one independent
+audit are complete. O3b now supplies every archive side effect and owns the
+verified transition that enables this packet's configured timer.
+
+Own:
+
+- new `src/rcp/server_ops/backup_config.py`;
+- the backup section of `src/rcp/server_ops/config.py`;
+- new `src/rcp/server_ops/assets/rcp-backup.timer` and
+  `src/rcp/server_ops/assets/rcp-backup.service`;
+- narrow root-command and unit-installation wiring in
+  `src/rcp/server_ops/cli.py` and `src/rcp/server_ops/install.py`; and
+- `tests/test_backup_configuration.py`.
+
+`backup configure` explicitly records a destination, schedule,
+retention, and `age` public recipient. It never accepts or stores the private
+identity.
+
+Persist those four values in F2's versioned installed-server config, not SQLite,
+using root-owned atomic replacement. Propose daily at 02:00 server local time,
+retain the newest 30 integrity-readback archives, and additionally retain the
+newest complete archive when it is older than that window. Require explicit
+confirmation or edited values before enabling the systemd timer. Render and
+read back the timer from the same resolved schedule so configuration cannot
+drift from execution.
+
+Serialize install and configuration through one stable root-owned lock. Fence
+an existing loaded timer before unit mutation and again after reload. Journal
+the complete intended public config before mutation, recover that exact record
+after interruption, and clear it only after exact config/timer/systemd
+readback. The service must see every accepted destination, including `/tmp` and
+`/var/tmp`; do not add a private temporary namespace that changes path meaning.
+
+The original O3a-only commit rendered the unit and persisted validated
+configuration while leaving the timer disabled. O3b now supplies the command,
+first protected run, and final readback that make enabling the configured timer
+safe; no intermediate `main` commit scheduled a missing command.
+
+The destination is one writable filesystem directory and may be local or
+mounted. Do not add S3, SSH upload, cloud-sync, filesystem-topology detection, or
+an on-server/off-server warning.
+
+Scheduled execution invokes O3b's same `backup run` command. O3a stores the
+retention policy; O3b alone applies it.
+
+### O3b — `age` encryption, readback, retention, and status
+
+Status: complete hermetically on 2026-08-29. The concrete command, deterministic
+encrypted archive, immutable readback receipt, durable last-run outcome,
+proof-before-delete retention, doctor projection, and first-run timer activation
+are implemented. The real `age` encrypt/decrypt drive passed with upstream
+`age` 1.3.1. The full Ubuntu systemd/no-pause/remote-partial S104 drive and all
+restore behavior remain pending.
+
+Own:
+
+- new `src/rcp/server_ops/backup.py`;
+- the durable backup outcome receipt and read model in that module;
+- narrow `backup run` dispatch through `src/rcp/server_ops/cli.py` and
+  `src/rcp/server_ops/control.py`;
+- narrow backup-summary integration in `src/rcp/server_ops/doctor.py`; and
+- `tests/test_backup_encryption.py` and `tests/test_backup_retention.py` plus a
+  real encrypt/decrypt drive.
+
+`backup run` consumes O1/O2a/O2b's capture and O3a's resolved configuration, streams a
+deterministic archive through the version-checked upstream `age` CLI
+(`>=1.0.0,<2.0.0`) with one validated native X25519 `age1...` recipient into an
+atomic destination filename, then read-checks metadata and records
+protected/partial/failure status. It never accepts or stores the private
+identity. Do not accept plugin, SSH, passphrase, or post-quantum recipients in
+this first format; that would make the Ubuntu 22.04 and 24.04 restore contract
+version-dependent. Retention deletes only archives whose format, destination,
+ownership, and successful readback are proven; preview exact targets before any
+manual destructive cleanup.
+
+Status describes captured bytes and projects, not the physical durability of
+the operator's storage.
+
+After its command and readback are installed, converge the O3a timer to the
+confirmed enabled state. A failed first run or unit readback leaves it disabled
+with an exact diagnostic rather than installing a schedule that cannot produce
+an archive.
+
+### O3c — History-only task and native-session fence
+
+Status: complete hermetically on 2026-08-29. Terminal task rows now have one
+durable history-only marker, one transaction removes their executable
+continuation indexes without rewriting historical task or chat evidence, and
+backend projection and admission agree that no Pause, Resume, Retry, graph
+repair, or native-session continuation remains. The pre-change `db3173b`
+database shape is pinned as an immutable G2 upgrade fixture. Applying this fence
+to a restored or imported population remains with O3d-a and T3b-export; this
+packet does not itself perform restore or transfer.
+
+Own:
+
+- the durable `history_only` task marker and migration in
+  `src/rcp/storage/base.py`;
+- the bounded native-session-detachment transaction and control admission in
+  the existing task/session owner `src/rcp/storage/agent_tasks.py`, with lifecycle
+  projection in `src/rcp/storage/rows.py`;
+- an API-only artifact response projection and matching route admission in
+  `src/rcp/api/tasks.py`, leaving the stored `AgentArtifactDescriptor` as
+  provenance rather than persisting derived availability;
+- the canonical-chat response seam in `src/rcp/service.py`; and
+- `tests/test_history_only_tasks.py` with chat, Paper-coach, Resume, Retry, and
+  graph-repair coverage.
+
+Keep a history-only task's honest status, answer, receipts, usage, attribution,
+and native-session id in durable history, but export no executable continuation
+binding from it. Its API projection publishes `history_only=true`, returns
+`native_session_id=null`, and forces `can_pause = can_resume = can_retry = false`.
+The backend rejects every direct control or repair attempt and excludes
+history-only rows from native-chat-origin proof. Canonical chat reads preserve the stored JSONL
+bytes but expose a message's native-session id only when its operation still has
+a non-history-only continuation binding. The Web therefore starts a fresh
+provider session in the same RCP chat after restore or import without deriving
+that decision or rewriting the old transcript.
+
+Task/artifact projection also separates historical metadata from readable
+bytes. Publish `available`, `unavailable_reason`, `can_open`, `can_download`,
+`can_keep`, and `can_revise` for every task artifact. A referenced kept artifact
+is available through its repository owner with Open and Download enabled, but
+Keep and revision through the detached native session disabled. An unkept
+artifact whose excluded stage bytes no longer exist is unavailable with every
+`can_*` false. Content, viewer, download, Keep, and artifact-context admission
+recheck those facts and never resolve an unavailable stage. The generated viewer
+receives no Keep or chat-context action that admission would reject.
+
+Provide one transaction that marks selected existing tasks history-only and
+deletes their `writing_sessions` and `chat_session_contexts` rows. Those two
+tables are provider-native Resume/prompt indexes, not the Paper draft, task
+answer, or RCP chat text. O3d-a applies that transaction to restored history;
+T3b-export uses the same marker at import. This packet adds no restore or transfer
+orchestration. Its schema change owns the corresponding G2 upgrade fixture
+before it lands.
+
+### O3c-ui — Render backend-owned historical artifact decisions
+
+Status: complete hermetically on 2026-08-29. Every projected task artifact now
+carries backend-owned availability and action decisions. The Web renders those
+answers without constructing or preflighting a forbidden route, while a route
+that becomes unavailable after projection still fails visibly. Kept historical
+artifacts retain read/download access through canonical storage; unkept stage
+artifacts are visibly unavailable; neither case can revise through a detached
+native session. The existing interactive Experiment-report viewer remains
+unchanged because it is not a detached task artifact.
+
+Verification passed the complete Python suite, all 440 Web tests, the production
+Web build, Ruff, documentation tests, every immutable server-upgrade boundary,
+and all-file pre-commit. A disposable served-app browser drive opened the real
+Chats surface: the historical chat offered a fresh session, the kept artifact
+showed only Open and Download, the unkept artifact showed the backend-owned
+unavailable reason with no actions, and the browser console remained clean. No
+human data directory or desktop trust state was used or changed by that drive.
+
+Own:
+
+- the task-artifact response restatement in `web/src/types.ts`;
+- artifact URL construction and transcript reconciliation in
+  `web/src/agentTasks.ts`;
+- artifact-card actions in `web/src/components/NodeChat.tsx`; and
+- focused Web tests for kept and unavailable history-only artifacts.
+
+Render only the decisions O3c publishes. A kept history-only artifact shows Open
+and Download, but neither Keep nor native-session revision. An unavailable
+artifact shows its backend reason and no action. Do not derive availability or
+an action from `history_only`, `kept_filename`, media type, or a failed request;
+do not construct, preflight, image-load, or probe a content/viewer/download URL
+when its corresponding `can_*` answer is false. Keep the existing runtime error
+surface for a route that becomes unavailable after projection, but do not use
+that failure as ordinary lifecycle discovery.
+
+### O3d-a — Restored task, Experiment, session, and code detachment
+
+Status: complete hermetically on 2026-08-29. The task, episode/report, and
+space-authentication owners now expose transaction-required, idempotent restore
+helpers. Together they interrupt and mark every captured task history-only,
+stop nonterminal Experiment episodes with skipped wrap-up receipts, fail
+in-flight report attempts, clear native report/Experiment restart bindings,
+delete restored browser sessions, and lock unused bootstrap/invitation codes.
+Focused fixtures prove completed tasks, reports, answers, receipts, attribution,
+consumed codes, and permanent member-token hashes remain intact. O3d-b still
+owns the single offline composition transaction and the Auto-research, watcher,
+recovery, child-admission, and startup-effect fence; O4 still owns restore
+orchestration. The complete Python suite, focused task/episode/authentication
+owners, Ruff, documentation tests, and all-file pre-commit are green.
+
+Own:
+
+- narrow connection-scoped transition helpers beside the concrete owners in
+  `src/rcp/storage/agent_tasks.py`, `src/rcp/storage/episodes.py`, and
+  `src/rcp/storage/spaces.py`; and
+- `tests/test_restore_task_episode_detachment.py` with idempotent task,
+  Experiment, report, browser-session, and enrollment-code fixtures.
+
+Provide idempotent connection-scoped helpers for the parts of a restored
+database owned by tasks, Experiment episodes, reports, and space
+authentication. Use O3c to interrupt and mark every pre-restore task
+history-only. Stop every nonterminal Experiment-loop episode with a restore
+diagnostic and skipped wrap-up; fail any queued/running report attempt; and
+clear native session/stage bindings from `experiment_episode_state` and
+unfinished `episode_wrapups`. Preserve completed tasks, episodes, reports,
+answers, receipts, messages, and attribution as history.
+
+The same helper deletes every restored `team_sessions` row and revokes every
+unconsumed bootstrap or team-enrollment invitation code. Those are ephemeral
+browser/enrollment capabilities and must not come back from an old snapshot.
+Preserve the snapshot's active permanent member-token hashes: they are durable
+RCP reconnect credentials already held in member Keychains, not provider
+credentials. This packet supplies helpers only; O3d-b composes the one offline
+transaction and O4d owns the roster review before serving.
+
+### O3d-b — Restored Auto-research, watcher, and recovery detachment
+
+Status: complete hermetically on 2026-08-29. `AppStore` now exposes one
+immediate offline transaction that composes every O3d-a helper with the
+Auto-research, child-route, lifecycle-notice, watcher, and recovery owners. It
+records the operator confirmer in restored interruption/ending diagnostics,
+watcher stop reasons, and lifecycle acknowledgements; blocks pending automatic
+recoveries; stops live Auto-research parents with skipped wrap-up receipts;
+cancels pending/running child Experiment routes and accepted admissions; and
+retires every watcher that could still check or deliver. Completed episodes,
+terminal routes, delivered watchers, existing acknowledgements, checks,
+answers, messages, receipts, and attribution remain history. The focused
+fixture proves owner-transaction requirements, whole-transaction rollback,
+exact idempotence, empty startup-recovery projections, and a real ordinary app
+lifespan that leaves all operational rows unchanged. The complete backend suite,
+the focused lifecycle-owner suites, 440 Web tests, the Web build, Ruff, and
+documentation checks are green. O4a owns archive validation and the
+stopped-service SQLite candidate, and O4b now owns fresh-key checkout
+reconstruction and stopped catalog rebinding. O4c-O4d now supply publication,
+authority review, and fenced activation.
+
+Own:
+
+- new `src/rcp/storage/restore_detachment.py`, mixed into `AppStore` through
+  `src/rcp/storage/__init__.py`, as the one offline restore transaction;
+- narrow connection-scoped transition helpers beside the concrete owners in
+  `src/rcp/storage/auto_research.py`,
+  `src/rcp/storage/auto_research_children.py`, and
+  `src/rcp/storage/watchers.py`; and
+- `tests/test_restore_lifecycle_detachment.py` with full startup-effect
+  assertions.
+
+A database snapshot can contain far more resumable work than a running task.
+Before a restored database is eligible for ordinary startup, perform one
+idempotent offline detachment over every pre-restore row. Compose O3d-a's
+helpers in that transaction. Stop every active/degraded or
+completed-undelivered external or graph watcher, mark it notified, and clear
+its next check without launching a delivery. Block pending Auto-research
+recovery records, cancel pending/running Auto-research episodes, child
+experiments, and accepted child admissions, and acknowledge or cancel any
+pending lifecycle wake that could create another task. Preserve completed
+episodes, watcher checks, answers, receipts, messages, and attribution as
+history.
+
+The operator's restore confirmation is the human stop authority for these
+continuations; record that fact and the restore reason rather than pretending
+the provider, watcher, or loop ended normally. Re-running the transaction must
+change nothing. Then invoke the real startup recovery/reconciliation path under
+the existing external-effect-disabled harness and prove it creates no provider
+turn, watcher check/delivery, report retry, child admission, or automatic graph
+mutation from pre-restore state. This packet owns lifecycle detachment only;
+O4a-O4d own archive validation, checkout reconstruction, project publication,
+authority review, and service activation.
+
+### O4a — Archive validation and offline restored-state candidate
+
+**Status (2026-08-29): implemented and verified.** `rcp server restore` now uses
+a two-call exact-data-directory confirmation, decrypts
+through upstream `age` without persisting the recovery
+identity, verifies the canonical archive manifest and every declared byte,
+rejects unsupported schema/source boundaries before target mutation, and runs
+O3d's lifecycle detachment on a protected service-owned SQLite candidate. It
+then takes the existing update and backup machine locks, proves the configured
+data directory fresh and empty, stops and disables systemd, fsyncs an
+archive-bound journal outside the target, atomically installs only
+`rcp.sqlite3`, and verifies SQLite integrity while leaving the service stopped.
+
+The journal is also an admission fence: direct installed-app startup, install,
+update, protected backup, and doctor all detect pending or unsafe restore state.
+A lost protected candidate is reproducibly rebuilt only from the journal's same
+archive, identity, original detachment time, and confirmer. Crash tests cover
+the boundary after target publication but before the phase update, so re-entry
+reads back the exact bytes instead of replacing or duplicating them.
+
+Restored nonterminal provisioning requests retain their intent and completed
+receipts but lose path, checkout, Git-key, provider-check, and final-review
+claims; they return to a structured explicit CLI re-entry action. Backup and
+update operations are machine-local state excluded from the backup archive, so
+there is no archived mid-step lease to detach. O4a instead records that those
+operations were not restored, serializes against any live owner before
+journaling, and blocks either operation after the journal exists. O4c-O4d now
+complete those remaining boundaries before the restored server can serve.
+
+Own:
+
+- new `src/rcp/server_ops/restore.py`;
+- root-entry and stopped-service integration in `src/rcp/server_ops/cli.py` and
+  the installed systemd controller in `src/rcp/server_ops/install.py`;
+- unfinished-restore detection in `src/rcp/server_ops/doctor.py` and
+  `src/rcp/server_ops/update.py`;
+- restored machine-step invalidation in
+  `src/rcp/storage/provisioning.py` and `src/rcp/server_ops/backup.py`; and
+- `tests/test_server_restore_state.py` with archive, service-ownership,
+  detachment, and machine-lease fixtures.
+
+Require an explicit archive, an off-server `age` identity supplied for this run
+through a protected file/descriptor rather than raw argv or environment text,
+and the installed server's configured `RCP_DATA_DIR` in fresh/empty state.
+Display and confirm that destination; this first contract does not redirect
+systemd to an arbitrary alternate data root. Record that this is a replacement
+restore, but leave the concrete old-authority and member-roster confirmations to
+O4d before serving. Decrypt to a protected temporary directory and verify every
+hash/schema before changing the target. Restore the SQLite candidate and apply
+O3d-b's complete task/episode/watcher/recovery detachment, including O3c's
+history-only session fence, but do not publish project files into an empty
+future checkout path or start the service.
+
+The running restore release must explicitly support the archive format and
+recorded persistence boundary. An archive from unknown newer code fails before
+target mutation and names the required update/compatible commit; restore never
+tries a best-effort downgrade or asks an older binary to interpret future rows.
+
+Before the first target-data or checkout mutation, fsync one request journal
+under F2's `restore-operations/` root, outside every target named by the restore.
+Bind the exact archive digest, configured target, candidate hashes,
+checkout/publication inventory, durable human-confirmation receipts, and current
+phase; never persist the recovery identity. Every O4a-O4d step is idempotent.
+Installed startup, `install`, `update`, and protected backup reject an unfinished
+journal; the mutating server commands also fence systemd stopped and disabled,
+while read-only `doctor` reports the same requirement. Only re-entering `restore`
+may advance it. If a protected temporary candidate disappeared, require the same
+archive and identity again, reverify it, and resume the recorded phase. Crash
+after every journal transition and prove no partial project or database becomes
+serveable.
+
+Invalidate every snapshotted in-progress provisioning lease before startup.
+Preserve completed receipts as history, but move unfinished P1
+requests to **operator action needed**, clear their old machine-step claims, and
+require explicit CLI re-entry against the replacement paths and keys. An update
+or backup run is not part of the archive's durable boundary: serialize against
+any live machine owner before the journal, record that machine-local operations
+were not restored, and block new update or backup admission while the restore
+journal remains unfinished.
+
+This packet produces one stopped-service, validated restored-state candidate.
+It cannot create repository credentials, reconstruct checkouts, publish project
+files, make a project visible, or activate the service.
+
+### O4b — Fresh keys and central-checkout reconstruction
+
+**Status (2026-08-29): implemented and verified.** Restore now extends its
+durable journal through per-repository `key_started`, `key_ready`, and
+`checkout_ready` receipts, then through catalog rebinding. It proves the
+deterministic key path absent before generation, refuses reuse of the archived
+fingerprint, renders the fresh public key and exact GitHub write-grant action,
+and resumes the same operation without regenerating the key. Local and SSH
+targets share the existing P3/P4 exact-account helpers. The Git write proof
+selects current GitHub HEAD for reconstruction, while the archived provisioning
+commit remains a separate retained-object anchor that must still resolve.
+
+The shipped checkout helper now inventories retained `.research` through
+no-follow directory descriptors, exact ownership/modes, a closed durable-root
+policy, bounded pagination, and streamed hashes. Recovery accepts only observed
+files whose digest and size match the validated archive; extra, changed,
+symlinked, or unclassified durable input fails without reset or deletion. Once
+every checkout is revalidated, `src/rcp/projects.py` reproduces the archived
+manifest configuration, regenerates a protected local bootstrap locator when
+the state checkout is remote, and `src/rcp/storage/projects.py` transactionally
+rebinds the restored row as unavailable. Crash re-entry reuses journaled key,
+checkout, and project receipts and revalidates checkout bytes before rebinding.
+
+Focused verification covers the fresh-key preflight, grant pause/resume, exact
+retained-state comparison, local and SSH reconstruction, idempotent rebind, and
+conflict refusal. The complete restore/credential/checkout focused suite and the
+broader backup, restore-detachment, install, doctor, and update integration suite
+pass. At the O4b boundary no archived `.research`, chats, Paper, facts, or kept
+files are published and no project is made visible. O4c has since completed that
+publication boundary; systemd remains stopped for O4d.
+
+Own:
+
+- narrow orchestration in `src/rcp/server_ops/restore.py`;
+- explicit recovery-mode seams in P3/P4's
+  `src/rcp/server_ops/git_credentials.py` and
+  `src/rcp/server_ops/project_checkout.py`;
+- catalog rebinding and locator regeneration through `src/rcp/projects.py`; and
+- `tests/test_server_restore_checkouts.py` with local, SSH, empty-root, and
+  conflict fixtures.
+
+For every captured project, read its recovery descriptor and reuse P3/P4 in an
+explicit restore mode to generate a fresh repository-scoped key and reconstruct
+the exact local or SSH central checkout from Git. This is machine recovery, not
+a new product provisioning request or another human project-creation review. A
+remote target requires the same configured OS account and a re-established,
+verified SSH route. If clone/fetch produces retained `.research` input, accept
+only files that are byte-identical to archive entries and no canonical commit
+beyond the captured heads; an unknown or conflicting durable entry fails
+without overwriting it. Regenerate any local `bootstrap-manifests/` locator from
+the validated descriptor and atomically rebind the restored catalog row to that
+replacement checkout; never restore a stale locator file or trust an old
+absolute path merely because SQLite named it.
+
+This packet stops after every captured checkout has been reconstructed and
+rebound. It does not publish archived `.research` or project-owned files into
+those checkouts, make a project visible, or start the service.
+
+### O4c — Canonical publication and replay verification
+
+**Status (2026-08-29): implemented and verified.** Restore now advances from
+`checkouts_reconstructed` through `projects_publishing` to
+`projects_published`, with one capture-digest-bound receipt per protected
+project. `src/rcp/transport/state.py` owns conflict-refusing exact-byte
+publication for local and SSH canonical paths plus exact kept artifact/view
+names; its shipped remote lock holder validates the staged digest and size,
+uses no-follow descriptor traversal, accepts only absent or identical targets,
+and never replaces different bytes. `src/rcp/history/manager.py` accepts only
+the closed canonical manifest/scope/main/branch/merge inventory, publishes it in
+replay order, regenerates derived outputs, proves the transition-aware main and
+branch heads, and validates every retained merge receipt against both histories.
+
+Canonical chat restore in `src/rcp/service.py` re-runs the typed JSONL,
+conversation-identity, path, and task-project checks before publication. Paper
+re-runs the UTF-8/NUL validation in its service; facts and referenced kept files
+remain workspace-owned. After a remote refresh, restore hashes every internal
+destination and reads back every external kept file against the archive
+manifest before `src/rcp/projects.py` transactionally changes the stopped row
+from publication-pending to reachable. A crash before either the catalog effect
+or its journal receipt safely re-enters the same exact writes and replay.
+Explicitly uncaptured projects remain cataloged with their archive diagnostic
+and do not block protected projects. Source checkouts, derived archive outputs,
+attachments, stages, provider/SSH homes or credentials, and caches are never
+selected for extraction. This publication phase still leaves systemd stopped;
+O4d now owns the subsequent old-authority/member review, activation, final live
+readback, and journal completion.
+
+Focused verification covers main and branch replay, chat, Paper, nested facts,
+kept artifact and legacy-view readback, conflicting-byte refusal, journal
+re-entry, explicitly uncaptured projects, and the shipped remote exact-write
+protocol in `tests/test_server_restore_projects.py` and
+`tests/test_remote_scripts.py`. The broader history, branch, Paper, transport,
+restore-state, checkout, and lifecycle-detachment suite also passes. The full
+backend test suite and Ruff checks pass, all 440 Web tests pass, and the Web
+production build succeeds. The repository-wide pre-commit suite passes after
+its formatting hook normalized the three affected O4c source files.
+
+Own:
+
+- narrow orchestration in `src/rcp/server_ops/restore.py`;
+- canonical replay and branch verification through
+  `src/rcp/history/manager.py`;
+- canonical RCP chat publication through `src/rcp/service.py`;
+- Paper publication through `src/rcp/paper/service.py`;
+- facts and referenced kept-file publication through
+  `src/rcp/transport/state.py`;
+- project visibility/readback integration in `src/rcp/projects.py`; and
+- `tests/test_server_restore_projects.py` with main, branch, chat, Paper, facts,
+  kept-file, unavailable-project, and byte-readback fixtures.
+
+Publish captured main/branch histories, canonical RCP chat JSONL, Paper
+introduction, facts, and referenced kept artifact/result-view files through
+their concrete atomic owners. Replay each captured main head, validate every
+retained branch head and merge receipt, and verify every manifest byte before
+making the project visible. Restore explicitly kept artifacts and legacy kept
+result views through their workspace owner; canonical chats, Paper, and facts
+stay under their canonical owners. Projects that the archive explicitly marked
+uncaptured remain visible and unavailable rather than blocking restoration of
+protected projects.
+
+Do not extract source checkouts, other materialized outputs, temporary input
+attachments, live provider homes/logs, old Git/provider/SSH credentials, or
+caches from the archive. Source checkouts are reconstructed from Git and fresh
+machine credentials. This packet proves restored project data and replay; it
+does not activate the server.
+
+### O4d — Old-authority review and replacement activation
+
+**Status (2026-08-31): complete.** The implementation and hermetic suite pass,
+and exact-head workflow run
+[33456906376](https://github.com/Zhi0467/RCP/actions/runs/33456906376)
+completed protected source-host backup and fresh-host restore/activation on both
+Ubuntu 22.04 and 24.04. Restore extends the existing archive-bound journal through
+`authority_reviewed`, `member_roster_reviewed`, `activation_ready`, and
+`complete`. The console renders the archive time, protected journal path,
+credential/route counts, the exact authority digest, and separate commands for
+a destroyed old machine or a fully fenced/revoked one. It then renders the exact
+active-member/permanent-token-id roster in bounded chunks. A known-stale member
+is removed only through O5's existing atomic fence and completion transition
+while the service remains stopped; the last-member/project guards still apply,
+and removal always forces a new roster digest and confirmation.
+
+Activation first persists the reviewed boundary and proves systemd stopped and
+disabled. The replacement starts while the unit remains disabled, with HTTP and
+background admission closed and the shared startup-effect fence active. Only
+the root-authenticated private control operation can verify the exact journal
+digest, space, running commit, captured project reachability/revisions,
+explicitly unavailable projects, and an empty startup-recovery plan. It durably
+writes the activation readback before opening deferred runtime and HTTP
+admission, and only then enables the
+already-running unit. If the root coordinator disappears before that commit, a
+bounded startup timer exits cleanly; the disabled `Restart=on-failure` unit stays
+stopped for exact re-entry. Any failed handshake stops and disables systemd; an
+overlapping update journal refuses startup. Completed restore state is no longer
+an unfinished-operation blocker, while the exact journal/readback remains
+available for idempotent CLI re-entry and audit.
+
+Focused coverage is in `tests/test_server_restore_activation.py`, alongside the
+existing CLI, control, restore-state, checkout, publication, member-removal, and
+update-cutover suites. The integration tests start a real app lifespan behind
+closed HTTP, traverse the actual Unix control socket as root, prove systemd is
+started before and enabled only after the durable private commit, and only then
+receive healthy HTTP. They also prove an uncommitted replacement requests clean
+termination at the bounded timeout. The same file proves changed authority
+confirmation fails and stale-member removal produces a new exact roster. The
+live drive additionally proves fresh Git-key reconstruction, old-authority and
+member-roster resume, offline stale-member removal, fenced activation, final
+HTTP/project/member readback, and credential cleanup on both supported Ubuntu
+releases. S104 remains pending only for its broader concurrent/no-pause,
+unreachable-SSH, and complete retained-history fixture; O4d's fresh-host server
+restore drive itself is complete.
+
+Own:
+
+- final review, activation, and readback orchestration in
+  `src/rcp/server_ops/restore.py`;
+- interactive and machine-readable confirmation in
+  `src/rcp/server_ops/cli.py`;
+- stopped-to-running service coordination through
+  `src/rcp/server_ops/control.py`; and
+- `tests/test_server_restore_activation.py` plus the fresh-host live restore
+  drill.
+
+Before serving, render and require confirmation of the concrete old-authority
+checklist: destroy or fence the old server data; revoke the old source and
+per-repository Git deploy-key labels/fingerprints; revoke or replace any old
+server-to-remote SSH authorization; and revoke old provider-native login state
+if the old machine could still use it. RCP does not perform those provider/SSH
+revocations or accept their secrets. A proven-destroyed old machine may satisfy
+the machine-local items, but the operator must record which disposition applies.
+
+Also show the archive capture time and exact active-member roster whose
+permanent token hashes will remain valid. The operator confirms that this
+snapshot-time credential state is acceptable; restored HTTP sessions and unused
+enrollment codes are always invalidated regardless. If a known token was
+revoked or rotated after the captured snapshot, do not expose the restored
+service until the operator has selected a safe newer archive or, when another
+active enrolled member remains, explicitly removed the affected member through
+restore's offline console step. That step reuses O5a's transaction and O5b's
+completion check under the stopped-service ownership lock after O3d-b has
+detached all live work; it is not a second member-removal policy. If the
+known-stale token belongs to the only active member, member removal is correctly
+refused and restore remains stopped for a
+separate human-identity recovery design outside this slice. The machine
+operator cannot mint a replacement member credential or impersonate that
+person. Never silently claim that a point-in-time archive contains revocations
+made later.
+
+T3e adds the explicit imported-provider-history entry and byte-for-byte
+readback through O4c's publication owner and this packet's final readback. The
+restored RCP chats, task answers, and Paper content remain readable, but no
+pre-restore task, chat turn, or writing-session row can Resume, Retry, repair,
+or claim that an excluded native provider session still exists. Continuing an
+old RCP chat starts a fresh checked provider session after readiness succeeds.
+The replacement may serve restored history after every captured checkout and
+canonical replay plus the old-authority and member-roster reviews, even when
+provider-native authentication is absent. In that case backend readiness keeps
+dispatch and chat continuation unavailable with the exact provider-native login
+action; RCP neither performs that login nor treats it as failed data restore.
+Only after every O4a-O4c check and both explicit reviews pass may this packet
+start the disabled replacement service, verify its space/commit/project
+readback, open admission, and enable the unit. That readback is the only
+transition that completes the restore journal. A crash before it leaves the
+service stopped after the bounded startup timeout and the same operation
+resumable; a retry cannot skip either review, duplicate publication, or create a
+second space.
+
+### O5a — Durable member-removal fence and identity tombstone — complete
+
+Implemented on 2026-08-29. The exact consequence boundary is hashed from the
+coherent member, project, live-work, permanent-access, browser-session, and
+invitation inventory. Confirmation re-reads that boundary under one immediate
+transaction before fencing access. The additive migration is covered by
+`pre-member-removal-v11-27c9682`, generated with the exact `27c9682` source and
+registered immutably in the G2 chain. The current and prior database schema
+digests remain accepted by restore.
+
+Own:
+
+- the additive `removal_started_at` and `removed_at` member fields,
+  bootstrap/space-invite `revoked_at`, and project-invite `revoked` response
+  migration in `src/rcp/storage/base.py` and `src/rcp/storage/models.py`;
+- member-removal transaction and active-member queries in
+  `src/rcp/storage/spaces.py`;
+- the existing self-service credential endpoint in `src/rcp/api/team.py` only
+  for the last-credential and sole-project-member guards;
+- pending project-invitation invalidation inside the same concrete
+  `src/rcp/storage/spaces.py` transaction; and
+- `tests/test_server_member_removal_storage.py`, focused cases in
+  `tests/test_team_authentication.py`, and the corresponding G2 schema-boundary
+  fixture.
+
+Preview the exact member, active tasks plus Auto-research and Experiment
+episodes, project memberships, permanent-access records, browser sessions, and unconsumed
+space/project invitations before confirmation. A row with no issued member
+credential is preprovisioned, not an enrolled replacement. Refuse before
+mutation if removing the target would leave no other active member who has
+completed enrollment; a pending invitation or preprovisioned name is not a
+replacement. Also refuse if the target is the only active member of any project,
+name each project, and require a current project member to add another enrolled
+member through the ordinary product flow first. Machine authority never assigns
+project membership as a side effect of removal.
+The existing self-service permanent-token revocation also refuses if it would
+remove the sole live token of the last active enrolled member or leave any
+project with no member who can still authenticate. Atomic rotation remains
+available because it commits the replacement token before invalidating the old
+one. This prevents RCP's own UI/API from stranding the space or a project without
+granting the machine operator a member-impersonation or credential-reset path.
+
+On confirmation, re-read the preview and perform one transaction that sets
+`removal_started_at`, revokes every member token, ends every browser session,
+marks every unconsumed space invitation authored by the target revoked, marks
+every pending project invitation authored by or addressed to the target revoked
+without pretending the invitee declined it, and removes all active project
+memberships. Every admission and identity lookup treats
+`removal_started_at` as inactive immediately. Keep the immutable `space_users`
+row, display name, creation time, and user id as a tombstone so old tasks,
+canonical receipts, invitations, and attribution remain intelligible. Never
+physically delete the durable human identity or reuse that id for a later
+enrollment.
+
+The transaction is idempotent. `removed_at` is set only after O5b proves the
+member's active work has reached its required stop boundary. A crash between
+those states leaves an explicit removal-in-progress row that startup and CLI
+re-entry can reconcile; it never silently restores access.
+
+### O5b — Member work stop and crash-safe reconciliation — complete
+
+Implemented on 2026-08-29. `rcp server member remove <member-id>` first emits a
+non-mutating exact inventory and a boundary-pinned resume command. The running
+service owns confirmation through control protocol v6. It fences new identity
+and project access, asks the existing task and episode owners to stop, never
+kills an in-flight provider turn, and tombstones only after no authorized work
+remains live. Startup and command re-entry reconcile a crash after the fence;
+`server doctor` names every still-live task and episode. Focused storage, CLI,
+control, installed-service startup, crash, and no-provider-kill regressions plus
+the complete Web build and 440 Web tests passed before packet integration.
+
+Own:
+
+- new `src/rcp/server_ops/members.py`;
+- task pausing through `src/rcp/background.py`, episode fencing through
+  `src/rcp/runs/membership_fence.py`, and startup reconciliation composition in
+  `src/rcp/api/app.py`;
+- command dispatch through `src/rcp/server_ops/cli.py` and
+  `src/rcp/server_ops/control.py`; and
+- `tests/test_server_member_removal.py`.
+
+After O5a's access fence commits, use the existing graceful task, Auto-research,
+and Experiment-loop stop owners for every still-live operation authorized by the
+target. Do not kill a provider turn already in flight: it settles honestly, its
+Apply rechecks the removed project membership and is refused, and then the
+normal stop owner terminalizes the enclosing work. Once readback proves no live
+authorized work remains, set `removed_at` idempotently and publish the completed
+CLI result.
+
+Startup and command re-entry scan only members with `removal_started_at` and no
+`removed_at`, repeat the same named stop operations, and complete the tombstone.
+Inject a crash after the access fence, after each stop request, and before final
+completion; none may restore a token/session/membership, spend through a lost
+episode fence indefinitely, or duplicate a stop/receipt. A persistent stop
+failure remains visible to `doctor` and CLI readback as removal in progress with
+the exact work that has not reached its boundary.
+
+Do not reuse self-service token revocation as fake removal and do not invent a
+member administrator rank or operator-issued member credential.
+
+### O6 — Read-only Server Settings projection — complete
+
+**Status (2026-08-30): implemented, audited once, and live browser-verified.**
+
+The authenticated team-only `GET /api/server-status` projection now composes
+the existing server doctor report, newest retained protected-backup receipt,
+and completed-restore journal. It publishes backend-owned labels and tones for
+release/update state, backup state, restore-drill age, installed machine tools,
+and provider-check availability. Personal spaces receive 404 and any unsafe
+doctor, backup-receipt, restore, or clock read fails visibly with 503. No
+generic status store or HTTP mutation was added.
+
+The team project Settings page now renders a compact source/release commit rail,
+protected-backup and restore facts, execution readiness, current problems, and
+the complete fixed ten-command console family. Refresh performs only the same
+authenticated GET. Missing backup facts remain `Not recorded`; a failed refresh
+removes the prior unqualified status rather than leaving a stale healthy panel.
+The provider wording is deliberately limited to **provider checks are
+available**: the concrete doctor result does not prove every provider account is
+currently authenticated.
+
+One implementation surprise required a small extension to the existing backup
+owner. The mutable last-run outcome is replaced by every attempt, so a failed
+attempt cannot answer when the latest independently protected archive was made.
+`latest_protected_backup_receipt` therefore reads the immutable retained archive
+receipts, while the doctor continues to report the latest attempt and its
+failure. The status reader is strict: any retained receipt that cannot be read
+safely makes the API fail rather than silently showing an older archive.
+
+Verification completed on 2026-08-30:
+
+- focused server-status, backup, route-inventory, health, and team-auth tests;
+- Ruff on every touched Python owner, a production Web build, all 459 Web tests,
+  and diff hygiene;
+- one independent read-only audit, whose four findings were fixed: strict backup
+  receipt inspection, honest missing counts, clearing stale status after a
+  failed refresh, and the two missing fixed console commands; and
+- a disposable live team service opened in the in-app browser. The full panel
+  rendered, manual Refresh produced a second `GET /api/server-status`, no
+  server mutation request appeared, and the browser console had no warnings or
+  errors.
+
+O6 itself is closed. S103 remains pending for its broader fresh-Ubuntu install,
+update, backup, restore, member-removal, and remote qualification drive; that
+live machine work is not a Server Settings implementation gap.
+
+Own:
+
+- new `src/rcp/api/server_status.py` plus composition in
+  `src/rcp/api/app.py`;
+- new `web/src/components/ServerSettings.tsx` plus the required
+  `web/src/types.ts`, `web/src/api.ts`, and `web/src/App.tsx` routing additions;
+  and
+- browser tests.
+
+Show service/running/upstream commits, update readiness, last backup and failure,
+protected/uncaptured projects, restore drill age, provider/machine readiness, and
+operator command names. Compose those answers from F5/F6d, P5, O3b, and O4d's
+concrete read models; do not create a parallel generic server-status store.
+Expose no HTTP mutation for update, backup, restore, Git credential setup,
+provisioning execution, or member removal. The D6 desktop bridge remains a
+native SSH action, not an admin API.
+
+### T1 — Append-only canonical home-transfer schema and replay — complete
+
+**Status (2026-08-31): implemented, focused-tested, and independently audited
+once.** The canonical `identity` Patch kind now carries exactly one of the
+immutable initial `ProjectIdentity` nameplate or a `ProjectHomeTransfer`. A home
+transfer records the unchanged project id, distinct previous and new space ids,
+and independently space-bound source-release and target-admission humans. It is
+system-produced, cannot carry graph operations or agent authorship, and appends
+under the existing synchronous workspace transaction and append lock.
+
+`HistoryManager` reduces accepted identity records in order. A transfer before
+the nameplate, a different project id, or a previous home that is not the
+currently derived home halts project identity replay. After a committed move,
+the former home fails the existing guarded write admission while the new home
+can write. Exact retries return the committed record without another revision;
+different or stale retries fail closed, including under concurrent calls.
+Historical replay depends only on the recorded space-scoped actors and never on
+current membership.
+
+The implementation deliberately did not add a second graph state, generic
+transition store, or another Patch kind. Project home is derived beside the
+existing identity reducer rather than materialized into `GraphState`.
+`transition_models.py` remains unchanged because its models describe graph
+operation traces; the only transition-envelope change is allowing the new
+canonical field through `transitions.py`. Existing identity Patch files without
+the new optional field are read without rewriting their bytes.
+
+Coverage proves valid and ordered moves, mismatched replay rejection, source
+fencing and target admission, actor-space validation without cross-space user-id
+equivalence, agent-authoring rejection, exact retry/concurrency behavior,
+revision summaries, and old Patch JSON compatibility. T1 does **not** create the
+linked cross-space request or human-confirmation protocol, export/import an
+archive, prepare or relay checkouts, activate a target catalog, clean up a
+source, or expose transfer UI. Those responsibilities are implemented across
+T2a through T5b; S98 stays pending until its live two-space drive passes.
+
+The one read-only audit found two release-blocking compatibility edges, both
+fixed before commit. First, nullable Patch defaults participate in the durable
+transition-id envelope even when their serialized field did not exist in old
+history. `project_home_transfer` is therefore explicitly omitted from that
+envelope when null, and a regression pins a literal pre-field transition hash,
+replays JSON with the field absent, and proves the file is not rewritten.
+Second, comparing a later nameplate to the derived current home would have
+accepted `Identity(P, A) -> Transfer(A, B) -> Identity(P, B)`. Replay now keeps
+the immutable initial identity separate from the derived current identity, so
+every later nameplate is compared only with the initial one while transfers
+advance only the current home. A target-home second-nameplate regression proves
+that sequence remains a conflict. No further audit round was requested or run.
+
+Own:
+
+- `src/rcp/core/models.py`;
+- `src/rcp/core/validation/patch.py`,
+  `src/rcp/core/transition_models.py`, and `src/rcp/core/transitions.py`;
+- `src/rcp/history/manager.py` and `src/rcp/history/delta.py`; and
+- persisted Patch compatibility/replay coverage plus new
+  `tests/test_project_home_transfer.py`.
+
+Do not append a second `ProjectIdentity`: current replay correctly calls two
+different nameplates a conflict. Keep the initial `project_id` nameplate
+immutable and add one system-produced, human-authorized ordered home-transfer
+record containing project id, previous home, new home, and source human
+attribution. Replay reduces accepted transfers in order and halts if project id
+or previous home does not match the current derived home.
+
+The record carries the source-release and target-admission actors with their
+respective space ids; it never treats their local user ids as one namespace.
+Agents cannot author this record. One synchronous backend transition appends it
+or nothing. Historical replay never consults current membership. Existing old
+identity Patches remain byte-compatible.
+
+### T2a — Linked transfer request storage and protocol state — complete
+
+**Status (2026-08-30): implemented, focused-tested, and independently audited
+once.** Two additive SQLite tables now own the public request state and the
+protected proof bytes. The source and target each retain one request row, one
+side-local random 256-bit proof, the other side's commitment, exact revisions,
+and independent target-admission and source-release receipts. Raw proofs are
+stored only as protected BLOBs; they never appear in the public JSON record.
+
+The target creates one strict link receipt and the source accepts that exact
+receipt rather than reconstructing a partial link from separate arguments. It
+binds both request ids, the unchanged project id, both space ids, the source
+configuration digest, the exact target GitHub repository identity for every
+source alias, the accepted schema generation and archive codec, and both proof
+commitments. Machine aliases may differ across spaces, but repository aliases
+and canonical GitHub identities may not. Link attempts with another project,
+repository, space, version, codec, request, or commitment fail before any
+authority changes.
+
+Target admission is still only a human-authored preparation receipt: it records
+the target actor, reviewed provisioning revision and digest, and resolved
+central paths without creating a project. Source release is separately
+authenticated in the personal space and revalidates the source configuration
+and canonical head. Exact receipt retries are checked after authenticating the
+same actor but before consulting mutable preparation or catalog state, so a
+completed call remains retryable after its prerequisites naturally advance.
+User ids are never compared across the two spaces.
+
+The proof sequence is now unskippable: expose, bind the source archive or
+activate the target, record proof acknowledgment, record cleanup
+acknowledgment, erase the raw proof, then complete. Source archive binding also
+rehashes the still-present exposed proof, so an acknowledged or erased secret
+cannot be claimed as included in a later archive. Completion retains the public
+commitment and acknowledgment digest while the raw BLOB is null. The source
+release head remains distinct from the later post-home-transfer fence head; the
+latter must advance the former and is what the archive binds.
+
+The single read-only audit found two release-blocking gaps, both fixed before
+commit: the original partial link did not prove that both sides named the same
+project and GitHub repositories, and the source proof could be erased before an
+archive containing it was bound. It also found that exact admission/release
+retries consulted mutable prerequisites too early; those retries now authorize
+the actor and return the already-recorded exact receipt first. Coverage includes
+all three regressions, independent raw-secret storage, no-common-codec and
+source-drift failures, exact retries, archive mismatch, legal proof erasure, and
+loud rejection of corrupt public/protected state. No second audit round was
+requested or run.
+
+T2a deliberately does **not** expose HTTP endpoints, classify restored requests,
+define or write archive bytes, run checkout preparation, append T1's home
+transfer, activate or clean either catalog, or add desktop UI. Those
+responsibilities are implemented across T2b through T5b; S98 stays pending for
+its live drive.
+
+Own:
+
+- transfer-kind records in `src/rcp/storage/provisioning.py`; and
+- `tests/test_project_transfer_request_storage.py`.
+
+Model the linked personal-source and team-target requests, independent human
+confirmation receipts, source-configuration/version negotiation, archive digest
+binding, and one-time transition-proof lifecycle. The personal source records
+intent and target `space_id`; the team target records the linked incoming
+request and can later run ordinary P3–P5 preparation.
+
+Before target preparation, the source request binds one checksummed nonsecret
+configuration summary: source RCP/schema and supported transfer-codec versions,
+repository source URLs and repository/machine aliases, state repository,
+truth-scope provenance, and the source-manifest digest. The target records the
+exact accepted version and reviewed target-preparation revision without treating
+source paths, provider homes, or credentials as target configuration. No source
+fence can become admissible unless a common codec/schema path was recorded and
+the later source owner revalidates that summary.
+
+At link creation the source stores one random 256-bit source-release proof and
+the target stores an independent random 256-bit target-activation proof. Each
+protected request row retains its own raw value and only the other side's SHA-256
+commitment. Model exact states for unexposed, exposed at its legal transition,
+acknowledged, and consumed; after consumption retain only the hash/receipt.
+Every state change is idempotent and bound to the exact spaces, requests,
+project, preparation revision/head, proof commitments, and eventual archive
+digest. A stale or mismatched identity fails closed. These are request-scoped
+transition proofs, not RCP member, provider, Git, or SSH credentials.
+
+The target-admission receipt records the authenticated actor, reviewed
+preparation revision, resolved central paths, and both proof commitments without
+creating a canonical project or granting machine authority. The source-release
+receipt remains a distinct source-space actor record. Storage never assumes the
+personal and team user ids share a namespace.
+
+### T2b — Authenticated transfer APIs and proof exchange — complete
+
+**Status (2026-08-30): implemented, focused-tested, and independently audited
+once.** Both spaces now expose durable create/list/read/link/confirmation and
+archive-binding calls over their ordinary authenticated APIs. The first source
+and incoming-target calls accept desktop-generated request ids, return the same
+record after a lost response and exact retry, and reject reuse for changed
+intent. The target request already uses the incoming provisioning id as its
+stable identity, so its creation and link are exact-retry safe as well.
+
+The personal backend now constructs the source summary itself. It opens the
+registered project, refreshes and replays canonical state, hashes the live
+manifest bytes, reads each local or SSH checkout's actual GitHub `origin`, and
+publishes the current RCP/schema/codec facts. Source request creation no longer
+accepts a caller-authored configuration. Source release accepts only expected
+digest/head concurrency values, rereads the live source and exact main head,
+and fails before the durable receipt if either value changed.
+
+The target-activation proof exchange is outside Web state in both directions.
+The exact target confirmer retrieves the 32 raw bytes through one bearer-token
+native GET; cookie-only, pre-activation, revoked-token, and other-member calls
+fail. The desktop then sends those bytes directly to the personal backend's
+fixed binary native POST. The source verifies the stored commitment and returns
+one typed acknowledgment bound to both requests and spaces, project, both proof
+commitments, archive digest, and fenced head. Only that typed receipt, submitted
+to a native bearer-token target endpoint by the same confirmer, can atomically
+erase the target proof and complete its request. Wrong proofs, forged receipts,
+wrong members, and retries are covered; permanent-token validation creates no
+browser session. Both native routes are absent from OpenAPI, raw responses are
+`no-store`, and raw proof bytes never appear in public records.
+
+The audit found four release blockers and this was the single correction round:
+caller-authored source state, cleanup without source verification, target
+archive poisoning by another member, and non-idempotent initial POSTs. All four
+were fixed. Target archive binding now requires the original admitting member;
+the source remains the one-owner personal space. The focused provisioning,
+transfer, team-authentication, and frozen-route suites pass. No second audit
+round was run.
+
+T2b deliberately does not create or fence canonical project authority, build or
+stream an archive, import files/rows, activate the target catalog, retire the
+source catalog/recovery archive, or drive the desktop workflow. Those are T2c
+through T5b. Source proof acknowledgment is retained after target-proof
+verification, but its raw source proof and recovery state are not consumed
+until the source-retirement owner completes.
+
+Own:
+
+- source/target request, link, confirmation, proof-retrieval, and cleanup-ack
+  endpoints in `src/rcp/api/project_provisioning.py`;
+- concrete live source-state capture in `src/rcp/project_transfer.py`; and
+- `tests/test_project_transfer_request_api.py`.
+
+Expose T2a only through each space's ordinary authenticated request API. The
+desktop relays nonsecret configuration/version summaries and proof commitments,
+then completes the idempotent cross-link before either final confirmation. Raw
+proofs never enter Web state, URLs, logs, command arguments, or the other backend
+before their committed boundary.
+
+One final desktop review action calls target admission first and source release
+second through two separate authenticated sessions. Each backend records its own
+actor and receives no credential for the other space. A crash between calls
+leaves target admission visible and resumable while the source remains writable;
+the target is not a canonical project yet. The linked requests identify exactly
+one T3a archive. After T4a exports it, both APIs bind the same concrete digest and
+source/target/project identities rather than defining another archive format.
+
+The raw source-release proof appears only inside T4a's already-fenced sealed
+archive and T4c must verify its commitment before import. The raw
+target-activation proof becomes retrievable only after T4c commits activation.
+Its fixed native-only route requires the saved permanent team-member token, the
+exact target confirmer, and the completed linked request; a cookie-only Web
+session, another member, or a pre-activation caller cannot read it. T5a passes
+that value directly to the pinned source backend, which verifies its stored
+commitment before T4a retires the source row or sealed archive. Only the public
+cleanup acknowledgment lets the target erase its raw proof; retry beforehand
+returns the same request-bound value to the same member. API progress and errors
+remain bounded and never reveal either raw value.
+
+### T2c — Restored transfer-request classification — complete
+
+**Status (2026-08-31): implemented, focused-tested, and independently audited
+once.** The stopped-service restore worker now classifies every unfinished
+target transfer as **operator action needed** in the same transaction that
+detaches the other captured lifecycle owners. The public record retains an
+explicit `restore_resume_phase`, a bounded restore diagnostic, and every prior
+receipt, identity, archive commitment, revision boundary, and public proof
+state. The protected proof row is not rewritten. Completed target transfers
+remain unchanged, and a second identical detachment is a no-op.
+
+The concrete policy lives beside transfer storage in
+`src/rcp/storage/provisioning.py` and is invoked by the existing composition in
+`src/rcp/storage/restore_detachment.py`; `src/rcp/server_ops/restore.py` remains
+the stopped-service entry point instead of gaining a duplicate record-writing
+path. The focused test drives that real entry point through linked,
+target-admitted, source-released, archive-bound, target-activated, and
+cleanup-acknowledged states. It proves no restore can expose the target proof,
+move the independent personal source request, or mutate a completed transfer.
+
+The drive exposed one earlier integration omission: T2a's transfer tables had
+changed the current SQLite schema fingerprint without adding it to the restore
+compatibility registry. The current fingerprint is now accepted while every
+older immutable fingerprint remains accepted; the complete restore-state suite
+passes again.
+
+T4b now invalidates both active and complete upload receipts through this same
+detachment owner. T4c adds the machine-import/activation receipt and a reviewed
+`archive_bound` storage re-entry that binds the restored revision, rebuilt final
+review, exact target confirmer, archive, and fresh upload lease. It fails closed
+on `operator_action_needed` until T5b revalidates both backends and invokes that
+boundary; T5b now performs that reviewed re-entry. Later restored proof/cleanup
+phases remain frozen for their owning recovery steps. No fallback path is
+inferred from old machine authority.
+
+Own:
+
+- restored-request classification in `src/rcp/server_ops/restore.py`; and
+- `tests/test_project_transfer_request_restore.py`.
+
+Classify every T2a state under O4's stopped-service restore path. A restored
+nonterminal target request loses any old upload lease and in-progress machine
+step, becomes **operator action needed**, and accepts only a fresh relay of its
+already bound request/digest after both backends are revalidated. A source
+request whose canonical home change already committed remains fenced; restore
+never fabricates a release reversal or a second writable home. Re-entry is
+idempotent and cannot expose a proof earlier than the original protocol state.
+
+### T3a — Transfer archive manifest and explicit inventory — complete
+
+**Status (2026-08-31): implemented, focused-tested, and independently audited
+once.** `src/rcp/transfer/` now owns a frozen
+`rcp-transfer-v1` manifest and external seal contract. The manifest binds both
+spaces and linked requests, project identity, source configuration/schema/RCP
+version, exact main and retained branch heads, a one-to-one historical actor
+mapping, bounded nonsecret warnings, sorted unique entry paths, and the exact
+payload byte total. Canonical Patch inventories must be contiguous through each
+declared head.
+
+The source `manifest.toml` is a required checksummed provenance entry under its
+own group, never a canonical-history or target-configuration entry. The raw
+source-release proof is the one required 32-byte control entry and its digest
+must equal T2a's commitment. The target-activation commitment is retained, but
+there is no group or valid path for its raw proof. Separate groups reserve the
+later typed operational records, rewritten RCP chats, Paper introduction, facts,
+kept artifacts, legacy kept views, and content-addressed provider histories
+without making any of them live execution state.
+
+Two read-only guards close the source inventory before byte capture. Direct
+app-data and `.research` root classifiers report unknown entries instead of
+following them, and their tests are checked against the existing concrete
+backup/canonical root owners. A SQLite schema walk starts at explicit project-id
+columns and follows foreign-key children; its exact 40-table result is frozen in
+the test. The complete SQLite schema is partitioned between that project-linked
+set and an explicit seven-table global set, so a differently named later table
+also appears as unclassified. T3b must consume the project inventory into its
+positive/excluded typed-record policy rather than copy raw rows.
+
+The audit found one high and four medium issues in its single round: shallow
+nested mutability, weak attribution-space validation, provider filenames that
+only looked content-addressed, incomplete whole-schema closure, and a duplicate
+codec literal. The manifest now snapshots graph heads and actors into frozen
+transfer-owned values, accepts historical actors only from the source or target
+space (the home-change record deliberately attributes both humans), requires
+provider filenames to equal their content digest, closes the entire schema, and
+uses the archive codec constant as the negotiation source of truth. The external
+seal can also reverify its manifest before relay. No second audit was run.
+
+Transfer-specific count, diagnostic, manifest, and fixed streaming-buffer
+bounds now live in `limits.py`. There is deliberately no aggregate scientific
+payload ceiling: an overlarge inventory/manifest fails visibly, while later
+capture and relay stream the exact declared bytes. The external envelope records
+the encoded archive digest/size after sealing without creating a self-hash inside
+the manifest.
+
+This packet does not query provider homes, export database rows, transform or
+copy project files, encode an archive, mutate either catalog, or publish target
+configuration. T3a-config, T3b/T3b-files, T3c, T4a, and T3f retain those owners.
+
+Own:
+
+- new `src/rcp/transfer/__init__.py` defining the package boundary;
+- new `src/rcp/transfer/archive.py` containing the versioned manifest
+  and checksummed envelope models;
+- transfer-specific diagnostic and streaming bounds in `src/rcp/limits.py`;
+- a read-only inventory over current project/canonical/storage owners; and
+- `tests/test_transfer_archive_manifest.py`.
+
+Name every included record/file group and every excluded live binding before
+copying bytes. The manifest carries project/source/target/request identity,
+main and retained graph-branch canonical heads, schema/version, per-entry
+size/hash, attribution mapping, and bounded diagnostics. Include immutable main
+scope provenance/Patches and branch metadata/Patches/merge receipts through the
+existing retained-history inventory. Carry the source `manifest.toml` as a
+checksummed, non-published configuration-provenance entry; it is not immutable
+canonical history and must never become the target execution manifest. Define
+separate manifest groups for transformed RCP
+chat JSONL, canonical Paper introduction, opaque `.research/facts/`, referenced
+kept artifacts, and referenced legacy kept result views; exclude main and branch
+materializations. Strip live resumption bindings, reusable stages, host/root
+bindings, live continuations, temporary input attachment bytes, scratch/cache
+pointers, credentials, and machine configuration. A test enumerates
+project-scoped tables and durable file roots so a later schema addition fails
+visibly until transfer policy classifies it.
+
+The envelope has one control entry for T2a's raw source-release proof, bound to
+the same source/target/request/project identity and included in the archive
+digest. It is available only after T4a's source fence, is consumed by T4c before
+project publication, and never becomes imported project history. The target's
+raw activation proof is never an archive entry.
+
+The manifest fixes an exact total size before transport, so upload and retained
+failure copies are request-bounded without truncating scientific history or
+inventing an arbitrary archive-size ceiling. Use fixed-size streaming buffers
+and bounded diagnostic/query output from `limits.py`; preflight staging and
+destination capacity, and never assemble the archive in browser memory or one
+Python byte string.
+
+This packet defines the codec and inventory only. It does not query provider
+homes, copy operational records, or mutate the target.
+
+### T3a-config — Rebuild target manifest without carrying source execution — complete
+
+`build_transfer_target_configuration` now binds the ready incoming
+provisioning review, the source configuration digest, the cross-space link, and
+the archive manifest before constructing anything. It parses the checksummed
+source manifest only as provenance, requires its complete machine-alias
+inventory plus repository aliases and bindings to match the source summary, and
+requires its scope to match the linked source summary. It renders the live
+manifest solely from reviewed target checkout paths, hosts/accounts, provider
+readiness proofs, profiles, and permissions. Native provider source roots use
+the target-account conventions already owned by manifest rendering; they are
+not copied from the source. Target repository identities, historical
+machine/repository aliases, and transferred state/truth-scope aliases must
+remain exact.
+
+Before publication, the validator accepts either no retained `.research` or a
+source manifest plus canonical main/branch inputs that are byte-identical to a
+contiguous prefix of the archive. Unknown paths, special files, missing scope or
+identity, changed bytes, and archive-external revisions stop without mutation.
+It then restores the complete archive into an isolated local `StateWorkspace`
+with the rebuilt target manifest and proves the main head, every branch head,
+merge receipts, project id, and final target home by semantic replay. The
+resulting immutable receipt binds the exact provisioning final-review and
+archive-manifest digests alongside the target manifest digest/size, source
+digests, format, heads, and retained-prefix fingerprint for T3f.
+
+A real nonzero-base branch fixture exposed and fixed T3a's old assumption that
+branch Patch filenames begin at revision 1. The archive now accepts one
+contiguous tail ending at the declared head; semantic replay proves its actual
+base. Opening transferred branches likewise accepts the authorizer from the
+canonical project home at that branch's exact immutable main base, while
+current write authority still belongs only to the final home. This packet does
+not publish the manifest or project files,
+insert database rows, or activate the target.
+
+The single read-only audit found four High and five Medium issues. The one
+correction pass bound the exact review and archive, carried the full historical
+machine-alias inventory, required branch authority from the exact base home,
+made retained branch heads true prefixes, rejected unsafe retained top-level
+entries, made restore reads no-follow/nonblocking and size-bounded, reused one
+main snapshot across branch-list checks, rechecked codec negotiation, and
+corrected the provider-root authority wording. No second audit was run.
+
+Own:
+
+- new `src/rcp/transfer/configuration.py` as the transfer-specific
+  source/target configuration validator;
+- narrow target-manifest construction through `src/rcp/setup.py` and existing
+  `src/rcp/config.py` models; and
+- `tests/test_transfer_project_configuration.py` with alias, path, provider,
+  retained-history, and replay fixtures.
+
+The source manifest is evidence about the history being transferred, not a file
+to publish on the team checkout. Preserve every repository and machine alias
+needed by historical Patches and `SourceRef`s, plus the canonical state
+repository and initial/current truth-scope provenance. Rebind repository paths,
+machine hosts/accounts, provider executables, profile `run_on` choices, and
+other execution settings exclusively from the reviewed target provisioning
+request. Native-source roots follow target-account provider conventions. Source
+absolute paths and provider homes may appear only in the non-published
+provenance entry and bounded transfer diagnostics.
+
+For an incoming transfer, inspect any retained `.research` already present in
+the prepared Git checkout. Accept it only when its project id, source home,
+canonical heads, scope provenance, Patches, branch metadata, and merge receipts
+are byte-identical to a prefix or the exact entries in the bound archive; no
+archive-external canonical commit is permitted. An empty checkout is valid. A
+different identity, renamed/missing historical alias, later head, unknown
+durable entry, or byte conflict stops before mutation and is never archived,
+overwritten, or treated as a new project.
+
+Build the final target `manifest.toml` from that validated history plus the
+reviewed target configuration and replay main and every retained branch against
+it. Require the archive's source manifest and schema/codec to match T2a's bound
+summary exactly. Produce one immutable configuration/readback receipt for T3f. This packet
+does not publish files, insert rows, or activate the target.
+
+### T3b — Finished operational record schema — complete
+
+The versioned transfer-record bundle is now a strict, deeply immutable typed
+format. It closes the current project-linked schema into 28 represented tables
+and 12 explicit exclusions; a later table fails the inventory test until it is
+classified. Only succeeded/failed/interrupted tasks, completed/stopped
+watchers, terminal episodes and report attempts, and settled Auto-research
+children, admissions, recoveries, notices, and receipts are representable.
+Every retained foreign key is resolved inside the bundle. Globally unique
+operational ids remain stable, while SQLite-local event and receipt integers
+receive explicit archive UUID mappings; the later target import still owes a
+pre-mutation collision check against rows already in the target database.
+
+Persisted task requests pass through one task-kind-aware historical projection.
+It retains human intent, graph/episode lineage, provider/model labels, and
+selected workflow/skill names, but has no native session, source `run_on`,
+stage, attachment capability, result-view binding, watcher wake list, or
+retry/repair decision. Generic retained JSON also rejects those executable
+field names recursively. Watcher shell checks and delivery state are absent,
+and terminal rows carry the literal `history_only` marker. Prompt and contract
+text remains exact inert historical evidence even when it mentions an old
+source path; it is never target configuration or execution authority.
+
+Artifact display metadata is separate from retained bytes. An unkept artifact
+may honestly have no size or content digest; a kept artifact requires a safe
+direct filename and keep time, while the later file/archive packet computes and
+binds the byte digest. Paper draft content, base hash, ancestor content, and
+cursor state are preserved. Assistant output distinguishes exact labelled answers/traces
+from `legacy_unlabelled_lines`: current source rows combine provider message and
+answer events in one result array, so T3b-export must preserve those lines
+without guessing that the last one is an answer. A future source row with an
+exact label can use the labelled fields without changing the archive version.
+
+The single independent audit found two High and three substantive Medium
+issues: generic requests leaked native/machine/retry fields, bundle foreign keys
+were not closed, unkept artifacts required unavailable hashes, kept filenames
+accepted paths, and the Paper-coach fixture invented a final-answer label the
+source does not store. The one correction pass replaced raw requests with the
+typed sanitizer, closed all bundle identities and relationships, separated
+artifact metadata from retained content, enforced direct filenames, and added
+the honest legacy assistant representation. No second audit was run.
+
+This packet remains format-only. It does not query a live store, settle source
+work, export rows, add exact answer labels to current task persistence, check
+target-database collisions, insert history-only rows, or import files. Those
+operations remain with T3b-export, T3b-files, and T3f.
+
+Own:
+
+- new `src/rcp/transfer/records.py`;
+- the explicit positive/excluded table classification consumed by T3a's schema
+  inventory check; and
+- `tests/test_transfer_record_models.py`.
+
+Define typed transfer records rather than a format that mirrors raw SQLite rows.
+Map project id, human
+attribution, attachment and kept-file references, timestamps, attempt lineage,
+and foreign keys deliberately. Preserve immutable ids when globally safe and
+record an explicit mapping where space-local ids can collide. Preserve the
+current Paper draft, its base/ancestor content, and completed Paper-coach task
+answers. Do not export `writing_sessions`: those bounded rows are native-session
+Resume shortcuts, not the human-authored Paper or durable coach answer. Do not
+export `chat_session_contexts` or another prompt/session checkpoint. No active
+task, episode, watcher, provider stage, or executable retry/resume binding
+enters the projection.
+
+For the schema present when this handoff was fact-checked, the positive database
+inventory is explicit:
+
+- terminal `graph_runs` plus their `agent_usage`, events, receipts, outputs, and
+  prompt/contract records;
+- stopped or completed `watchers` and their displayed diagnostics, with no next
+  check, delivery, continuation, or other executable wake binding;
+- stopped `episodes`, sanitized `experiment_episode_state`, invocation rows,
+  terminal report attempts, sanitized wrap-up rows, and completed reports;
+- finished Auto-research episode metadata, invocations, messages, terminal
+  recoveries, child Work attempts, terminal/cancelled child Experiments,
+  experiment invocations, reflected/cancelled child admissions, acknowledged
+  lifecycle notices, inbox/finish receipts, Apply results, and inert command
+  records; and
+- the current `paper_drafts` row, including ancestor/base conflict content.
+
+Every later project-linked table fails T3a's schema-inventory test until this
+packet classifies it as represented by a typed record or explicitly excluded.
+This packet defines the format and classification only; it does not query a live
+store, settle work, mark a target row history-only, or import anything.
+
+### T3b-export — Finished operational database export — complete
+
+`AppStore.export_project_transfer_records` now takes one explicit SQLite read
+snapshot, validates T3b's closed 28-table positive policy, and projects the
+complete terminal project corpus into the typed transfer bundle. It writes
+nothing to the source. Repeated export of unchanged source rows is byte-stable,
+SQLite-local event and receipt ids use deterministic UUID5 mappings, and every
+exported task is marked `history_only` in the transfer record while its source
+row remains ordinary and unchanged.
+
+The settlement fence rejects active tasks, live or undelivered watchers,
+nonterminal episodes and report attempts, pending Auto-research recovery or
+child work, accepted admissions, unacknowledged notices, and undelivered
+messages. A relational preflight also rejects direct project ids that disagree
+with their owning task or episode. Experiment state is required instead of
+being synthesized, and episode, report-attempt, wrap-up, and report state,
+ending, digest, and allocation lineage must agree before any bundle is built.
+Auto-research lifecycle notice kinds are closed to the four values production
+emits and each source resolves to a retained worker, task, or child episode.
+
+Task-kind request records retain intent and provider labels but not native
+sessions, runtimes, source machines/stages, attachments, disposable result
+views, retry decisions, watcher lists, shell/log/cwd fields, delivery task ids,
+or accepted hand-off bindings. The same execution-field policy recursively
+sanitizes retained event, receipt, usage, graph-update, wrap-up, and
+Auto-research JSON; the one source-digest-bound Finish result instead refuses a
+forbidden field rather than changing its signed content. Legacy task result
+lines remain explicitly unlabelled; there is no last-line answer inference.
+Human attribution resolves by immutable
+source space/user identity, so a display-name change cannot make old history
+unexportable; the archive actor supplies the imported display name.
+
+The single independent audit found one High and five Medium issues: generic
+JSON leaked watcher/delivery bindings; four represented tables did not prove
+their direct project id against their parent; lifecycle notice sources were
+open and unresolved; missing Experiment state was silently replaced with an
+empty record; report and wrap-up lineage could disagree; and display-name
+changes broke attribution lookup. The one correction pass closed all six and
+added real Experiment, Auto-research, Paper, actor-rename, project-mismatch,
+sanitization, and corrupted-report fixtures. No second audit was run.
+
+This packet still does not read kept artifact bytes, capture canonical files or
+facts, build an archive, settle source work by mutation, inspect target-row
+collisions, insert imported rows, or publish target authority. Kept artifact
+digests remain deliberately absent until T3b-files reads and binds the exact
+bytes. Those responsibilities remain with T3b-files, T3f, and T4.
+
+Own:
+
+- new `src/rcp/storage/transfer.py`, mixed into `AppStore` through
+  `src/rcp/storage/__init__.py`, as the one typed read-only project export over
+  T3b's records;
+- O3c's persisted `history_only` task marker and native-session fence; and
+- `tests/test_transfer_records.py`.
+
+Source transfer must first settle or terminalize any pending delivery,
+recovery, child admission, report attempt, or watcher; it cannot omit the row or
+copy it as runnable. Native-session ids, stage host/roots, execution authority,
+pending wake fields, and wrap-up output paths are cleared even when the remaining
+text is kept as historical display. Space users/tokens/sessions/invitations,
+project membership/invitations/catalog aliases, provider-skill inventories,
+`writing_sessions`, `chat_session_contexts`, disposable `result_views`, graph
+watcher reconciliation watermarks, and any source-space provisioning or
+machine-operation lease are not project history and do not transfer. The query
+must match T3b's closed positive/excluded classification exactly.
+
+Preserve safe artifact name/type/size/expiry metadata in the terminal task
+record, but keep bytes only for descriptors with a validated `kept_filename`.
+O3c's backend projection makes every other imported artifact visibly unavailable
+without a stage URL or Open/Download/Keep/Revise action. Do not retain a source
+stage binding merely to keep an artifact card looking live.
+
+Imported terminal tasks are marked `history_only` in the target database through
+O3c. The task projection publishes no executable continuation decision, and
+every control endpoint rechecks the durable marker instead of trusting a client
+or stale projection. Keep their honest succeeded/failed/interrupted status and
+answers; do not relabel failure as success or synthesize an abandonment receipt.
+Starting a new target task or a fresh provider session creates an ordinary new
+row.
+Keep the compound project query in the transfer storage owner rather than
+teaching every existing lifecycle mixin a one-off archive API.
+
+### T3b-files — Canonical human files, facts, and kept bytes — complete
+
+`capture_project_transfer_files` now builds one new private capture tree from
+T3b-export's exact record bundle. It rewrites typed canonical RCP chats at their
+observed complete JSONL boundary, strips source native-session and execution
+machine fields, preserves stable display history, and retains only operation
+bindings that resolve to exported terminal tasks. A concurrent append after
+inventory is deliberately outside that boundary rather than a transfer error.
+The canonical Paper introduction and every safe opaque fact are copied through
+their concrete owners. Facts are inventoried and read through held no-follow
+directory descriptors, so swapping any parent for a symlink cannot escape the
+facts tree; the server-backup owner now reuses the same safe seam.
+
+Kept task artifacts are selected only from transferred terminal descriptors,
+read twice through the workspace's named local/SSH owner, checked against any
+stored size or digest, and rebound to the exact captured digest. Referenced
+legacy kept result views now carry a strict inert
+`TransferLegacyKeptResultView` record with their stable view/chat/Experiment,
+provider display, lifecycle, and byte-binding metadata. Source `run_on`, native
+session, stage host/root, and revision authority are absent. Each view record
+must bind to transferred terminal tasks and exactly one checksummed captured
+file, leaving T3f enough information to restore a readable history-only view.
+
+The focused suite covers local capture, a real `SSHStateWorkspace` command/read
+boundary, missing remote bytes, chat appends before and during capture, parent
+directory replacement, source-file failures, record/file mismatches, and
+partial-root cleanup. The single independent audit found two High issues
+(anonymous legacy-view bytes and a facts parent-symlink race), two Medium issues
+(append rejection and a fake remote fixture), and one documentation mismatch.
+This correction pass closed all five; no second audit was run.
+
+Own:
+
+- new `src/rcp/transfer/project_files.py` as the transfer-only capture
+  orchestrator;
+- narrow typed export/read seams beside the existing chat owner in
+  `src/rcp/service.py`, Paper owner in `src/rcp/paper/service.py`, and facts
+  layout owner in `src/rcp/history/manager.py`;
+- the existing named kept-artifact and kept-result-view readers in
+  `src/rcp/transport/state.py` without adding a repository-directory walker;
+  and
+- `tests/test_transfer_project_files.py` with local and reachable-SSH state
+  fixtures.
+
+Parse each recognized canonical `.research/chat/*.jsonl` transcript and emit a
+typed target transcript. Preserve stable RCP chat/message ids, human and agent
+text, timestamps, provider/model/reasoning labels, graph-update receipts, and
+display-only attachment name/type/size/expiry. Clear native provider session
+ids and execution-machine/cwd fields, and deliberately remap only operation ids
+whose terminal records come from T3b-export. The imported chat remains readable
+and can start a fresh target-account provider session, but it cannot resume the
+source session. Temporary attachment bytes and `chat_session_contexts` remain
+absent.
+
+Copy the optional canonical `paper/introduction.md` byte-for-byte, including a
+version that differs from T3b-export's preserved draft. Copy every bounded safe regular
+file under `.research/facts/` byte-for-byte as opaque project input. Resolve
+kept filenames only from T3b-export's captured descriptors/rows, then read exactly
+those artifacts and legacy result views through the workspace's named readers;
+unreferenced human repository files remain ordinary checkout content and do not
+enter the archive. A malformed canonical chat, unknown Paper entry, unsafe
+facts entry, or missing/unsafe referenced kept file blocks transfer rather than
+silently losing selected project history.
+
+This packet captures transfer entries and typed legacy-view bindings only. It
+does not build/seal the complete archive, capture provider-native history, relay
+bytes, mutate either project home, or import target records. T3f owns target
+publication through the same concrete owners, including inserting inert
+history-only result-view rows from the sanitized bindings.
+
+### T3c — Provider-native selection and archive capture — complete
+
+`capture_provider_history` now asks `ConversationIndexer` for the native
+conversations positively matched to the project's declared repositories,
+excludes `app_chat`, snapshots each original through the exact indexed local or
+SSH account, and writes the unchanged bytes under
+`provider-history/<provider>/<sha256>`. The indexer enumerates roots from every
+registered `ProviderProfile.session_roots` contract rather than a second
+Codex/Claude root list. Its public original-source seam rechecks the indexed
+identity for local files, always refetches remote originals through the saved
+SSH host/account, refuses non-regular remote results, and never returns a native
+provider path as archive authority.
+
+After copying, the indexer reparses the captured bytes and reruns its existing
+repository matcher. A changed working path, malformed or unreadable original,
+unmatched file, or unavailable configured source is omitted best-effort with
+bounded aggregate counts and safe diagnostics. Matching files remain complete
+raw provider histories; no cursor slicing or lossy normalized transcript enters
+the transfer. Identical bytes for one provider share their content-addressed
+entry. The capture model counts admitted source files separately from unique
+content entries, while binding the exact unique payload byte total.
+
+Focused tests cover byte-exact Codex and Claude capture, app-chat exclusion,
+unmatched/malformed summaries, one disappearing selected file without losing
+the rest, a post-index working-path rewrite with no partial bytes, registry root
+enumeration through a fixture provider, and the actual index/refetch SSH
+command boundary under an explicit remote account. This packet does not publish
+target provider sources or change Seed/Refresh; T3d and T3d-ssh retain those
+owners.
+
+The packet's sole read-only audit found one high-severity publication boundary
+bug and two medium accounting gaps. The correction now lets local/SSH source
+read or reparse failures remain best-effort omissions, but any destination
+write, replace, or fsync failure aborts and removes the entire new capture root.
+Remote indexing returns explicit unmatched/malformed counts, and identical
+source files increment the selected-file count even when their payload bytes
+deduplicate. Focused regressions inject a destination fsync failure, duplicate
+content, and remote malformed/unmatched files. No second audit round was run.
+
+Own:
+
+- new `src/rcp/transfer/provider_history.py`;
+- a narrow public original-source read seam and registry-driven root enumeration
+  in `src/rcp/sources/indexer.py`, consuming the existing
+  `ProviderProfile.session_roots` contract in `src/rcp/providers.py`; and
+- `tests/test_transfer_provider_history_selection.py` with Codex, Claude, and
+  local/reachable-SSH fixture provider samples, plus focused source-indexer
+  regression coverage.
+
+Reuse `ConversationIndexer` as the one existing owner of native-session
+discovery, project-path matching, and local/SSH original retrieval. Select its
+positively matched Codex/Claude sessions for the project's declared repository
+aliases, explicitly excluding `app_chat` because T3b-files already carries RCP chats.
+Copy each original native transcript file byte-for-byte into T3a's archive
+entries and revalidate the copied file's recorded working path against the same
+declared repository before admitting it, so a source rewrite between inventory
+and copy cannot smuggle in another project. The transfer module must not
+duplicate provider parsing, root traversal, SSH/rsync construction, or add a
+provider-name branch.
+
+Record bounded selected, skipped, unreadable, and byte counts. Unmatched,
+rewritten, or unreadable files do not block transfer, and this packet adds
+neither historical-checkout inference nor a human conversation-classification
+workflow. Never slice at `last_refresh_at`; preserve that value only as the
+target agent's overlap boundary. Do not feed raw files through the existing
+lossy record normalizer or invent a provider-neutral transcript schema. This
+packet reads provider homes for export but does not publish target files or
+change Seed/Refresh. Discovery and copying execute on each saved source
+profile's exact local or SSH machine/account through the indexer's existing
+transport; they never read a different account's provider home, accept an ad
+hoc host/path, or fall back to the desktop.
+
+### T3d — Imported provider-source owner and local discovery — complete
+
+`ImportedProviderSourceStore` now owns the exact target path
+`project-sources/<project-id>/provider-history`, publishes a complete staged
+directory with one atomic rename, and seals its project id, sorted provider/file
+inventory, byte total, and fingerprint in a private read-only manifest. It
+accepts only known providers and T3c's content-addressed `provider_history`
+entries. Exact repeated publication is idempotent; another inventory is refused.
+
+Every discovery rereads the sealed inventory and checks the complete directory,
+regular-file/read-only mode, size, and content digest. Missing, rewritten,
+writable, symlinked, special, unknown, or extra entries are corruption and fail
+before Seed/Refresh begins. `RunContext` keeps native and imported root maps in
+separate fields, while the launch contract combines their readable locations
+only at the final prompt/read-scope boundary. The ordinary conversation index
+continues to enumerate native provider homes only, so imported bytes cannot
+become a provider Resume/Retry session.
+
+Focused tests cover exact and idempotent publication, injected pre-publication
+failure and equal-publication-race cleanup, required directory/file modes,
+missing, rewritten, writable, symlinked, and FIFO entries, local Seed/Refresh
+discovery, the native/imported type boundary, negative native-session
+discovery, and Resume/Retry fingerprint revalidation. The correction pass also
+moved inventory hashing out of the async canonical-state lock and made remote
+Seed/Refresh fail visibly before any desktop-local path can reach an SSH run.
+This packet does not stage imported bytes to an SSH run, include them in
+lifecycle backup/update/delete paths, or orchestrate transfer import; T3d-ssh,
+T3e, and T3f retain those owners.
+
+Own:
+
+- new `src/rcp/sources/imported.py` as the sole safe-path, atomic-publication,
+  and read-only discovery owner for durable imported provider sources;
+- typed native-versus-imported source-root assembly in
+  `src/rcp/agents/context.py` and `src/rcp/service.py`; and
+- `tests/test_imported_provider_sources.py` with publication, local discovery,
+  and negative Resume/Retry coverage.
+
+The target stores imported bytes under the RCP-owned app-data root
+`<RCP_DATA_DIR>/project-sources/<project-id>/provider-history/<provider>/`, with
+content-addressed filenames and read-only modes. This is durable project source
+data, not canonical `.research`, a Git checkout, a rebuildable cache, or a native
+provider home. Seed and Refresh receive this root alongside the configured live
+provider roots when they execute locally. Preserve a typed distinction between
+native roots and imported project-owned roots inside the run context; do not
+collapse them into an unlabelled list that T3d-ssh could accidentally copy from
+a live provider home. T3f and lifecycle owners call this concrete owner rather
+than walking the directory independently. Passive session ids, original paths,
+and tool output inside the raw file remain historical bytes; prove that no file
+is discoverable by provider Resume or Retry. This packet owns publication and
+read-only discovery primitives, not transfer import orchestration or remote
+staging.
+
+Best-effort applies only to source-side selection before the archive is sealed.
+Once a selected file is imported, a missing file, content-address mismatch,
+symlink, special file, or unreadable owned root is durable project-source
+corruption: Seed/Refresh must fail visibly rather than omit that source and
+continue with a falsely incomplete corpus.
+
+### T3d-ssh — Imported provider-source staging for remote Seed/Refresh — complete
+
+Remote Seed/Refresh now reads T3d's validated inventory before the canonical
+run lock, copies only those content-addressed project-owned files into the
+existing remote input batch, and replaces only `RunContext`'s imported roots
+with the immutable stage paths. Native roots remain the configured execution-
+account paths. The transport accepts the concrete `ImportedProviderSourceStore`
+rather than an arbitrary source directory, opens only inventory-named files,
+rechecks their private parents and read-only modes, and hashes every copied file
+against the sealed inventory.
+
+Before the first provider launch, RCP commits the ordinary batched inputs and
+runs the exact shipped remote verifier against the staged directory. The
+verifier uses no-follow/nonblocking descriptors, rejects writable, missing,
+extra, symlink, special, size-mismatched, or digest-mismatched entries, and
+recomputes the project-bound inventory fingerprint. The task receipt records
+only that fingerprint, file count, byte count, and whether a prior checkpoint
+was reused. Conversation contents and native provider paths are absent.
+
+Prepared remote contexts bind their imported roots to the exact retained stage.
+Native Resume verifies that stage before continuing. Clean Retry reuses a prior
+prepared context only after the same readback; if the stage is missing or
+changed, existing context reuse is rejected and the retry rebuilds from the
+currently validated durable inventory. Local Seed/Refresh is unchanged and
+continues reading the durable project-owned roots directly.
+
+Focused coverage drives fresh staging, exact remote finalize/readback,
+interrupted native Resume, corrupt-checkpoint refusal, clean-retry context
+rebuild, local discovery, ordinary graph context/retry behavior, transport
+batching, and the source-file identity of the shipped remote program. The 144
+focused tests and scoped pre-commit hooks pass. No real SSH account was used in
+this packet; the remote program and SSH transport boundary were executed
+hermetically against local disposable stages. The later S98/V1 live drive still
+owes one reachable-SSH Refresh with interruption and removed-stage retry.
+
+The single read-only audit found one High clean-retry ownership defect, two
+Medium transport/performance issues, and one Low outage-classification issue.
+The one correction pass now stages and rebinds the exact same inventory into
+every new remote retry stage, and proves that a Resume of that retry reads its
+own checkpoint. The verifier receives its bounded inventory over stdin instead
+of an argv-sized JSON value. Imported copying runs in a worker thread and no
+longer repeats the durable store's full inventory walk; SSH unavailability now
+propagates separately, while a proved missing or changed stage enters clean
+Retry. The exact staging copy still occurs while the graph run owns its normal
+canonical-state lease, so the reachable-SSH drive should include a realistically
+large imported corpus when assessing run-start latency. No second audit round
+was run.
+
+Own:
+
+- narrow imported-source staging and effective-context rebinding in
+  `src/rcp/runs/tasks/graph.py`;
+- `src/rcp/transport/run_stage.py` only for the bounded immutable-directory
+  fingerprint/readback seam the current stage owner lacks, with the exact
+  shipped verifier in `src/rcp/transport/remote_verify_imported_sources.py`; and
+- `tests/test_imported_provider_source_remote_staging.py` with fresh,
+  interrupted, resumed, and clean-retry SSH drives, plus the shipped-source
+  identity check in `tests/test_remote_scripts.py`.
+
+When Seed or Refresh executes over SSH, copy only T3d's validated project-owned
+imported-source inventory into that task's existing remote `inputs` stage before
+the prompt and read-scope are finalized, then bind the effective imported roots
+to those remote stage paths. Keep the configured remote provider-native roots in
+place; never copy a local or remote live provider home, accept an arbitrary
+source path, or create another SSH transport. Local execution continues to read
+T3d's durable roots directly.
+
+The staged directory is immutable task input, is fingerprinted against T3d's
+bounded regular-file inventory, and follows the existing stage checkpoint and
+retention lifecycle. Resume reuses and verifies the same staged bytes. A missing
+or changed checkpoint fails visibly into the existing clean-retry path rather
+than silently dropping imported history or recopying a different source. Record
+the staged file/byte digest in the task receipt without exposing conversation
+content or native provider paths. Preflight native and imported roots through
+their separate typed owners; never send a server-local imported path to a remote
+native-root probe or downgrade imported-source corruption into a provider-root
+warning.
+
+### T3e — Imported provider-source lifecycle integration
+
+Status: complete hermetically on 2026-08-31. Backup, archive, restore
+publication/readback, candidate rehearsal, local update checkpoint/rollback,
+and bounded pre-activation cleanup all use T3d's concrete owner. T3f now owns
+the target-import call site; S98/S104/V1 retain the live drives.
+
+Own:
+
+- explicit manifest/capture/readback integration in
+  `src/rcp/server_ops/backup_models.py`,
+  `src/rcp/server_ops/backup_capture.py`, and `src/rcp/server_ops/restore.py`;
+- explicit rehearsal/checkpoint classification in
+  `src/rcp/server_ops/update_checkpoint.py`;
+- bounded cancelled/import-failure cleanup integration plus P6c guard
+  preservation in `src/rcp/projects.py`; and
+- `tests/test_imported_provider_source_lifecycle.py`.
+
+Use T3d's concrete owner for every read, restore publication, and deletion. Add
+the imported source root explicitly to encrypted backup/restore and the local
+update checkpoint policy; do not walk a guessed directory or add a generic root
+registry. Prove byte-for-byte backup/restore readback, candidate rehearsal and
+rollback preservation, exact request-owned cleanup before activation, continued
+ordinary-Delete refusal after team activation, and rejection of symlink or
+special-file entries. Live provider homes remain excluded. This packet never
+turns failure cleanup into a team-project deprovision path.
+
+### T3f — Validated atomic target import and readback
+
+Status: complete hermetically on 2026-08-31. The importer consumes a previously
+decoded, request-scoped archive staging tree. T4a owns sealed source-archive
+creation and source retirement; T4b owns the protected target upload boundary;
+and T4c now owns codec decoding, import invocation, compound activation, and the
+durable target receipt. T5 owns proof return and source-cleanup orchestration.
+
+Own:
+
+- new `src/rcp/transfer/importer.py`;
+- T3b-export's `src/rcp/storage/transfer.py` for the compound import transaction;
+- atomic publication through `src/rcp/transport/state.py` and
+  `src/rcp/sources/imported.py`; and
+- `tests/test_transfer_import.py` with crash injection at every boundary.
+
+Validate the complete T3a manifest, all T3b/T3b-export/T3b-files/T3c bytes and references,
+T3a-config's target-manifest/readback receipt, canonical replay, and
+excluded-field rules before target mutation. Stage files,
+insert all selected rows in one SQLite transaction, publish each canonical,
+kept, and provider-history group through its concrete atomic owner, including transformed RCP chats,
+Paper introduction, facts, kept artifacts, legacy kept result views, and T3d's
+imported provider sources. Publish only T3a-config's reviewed target manifest;
+retain the source manifest as archive provenance, never as live configuration.
+Never publish a raw source chat or create a target
+`writing_sessions` row from transferred metadata. Record idempotent receipts,
+and permit T4c activation only after database and every file-group readback.
+Failure leaves one non-active repairable request and no partially visible
+project.
+
+The implemented importer validates the exact staging-tree inventory and every
+declared digest before mutation, parses one canonical operational payload, and
+requires exact archive, request, provisioning-review, target-manifest, identity,
+head, attribution, and file-entry agreement. One SQLite transaction imports the
+selected 28-table terminal projection, records source-to-target event/receipt id
+maps, marks tasks history-only, removes native task/session/stage bindings, and
+does not create either a project row or a writing session. Imported kept result
+views remain kept and non-revisable; their non-null legacy runtime columns carry
+inert values that are never projected as executable authority.
+
+File publication uses the existing concrete owners for the reviewed target
+manifest and canonical history, transformed RCP chats, Paper introduction,
+facts, kept artifacts, legacy kept views, and imported provider histories. Each
+owner verifies the declared digest and size; completion additionally replays the
+canonical head and binds the archive, target-manifest, operational-payload, file
+entry, head, and observed provider-inventory receipts into one publication
+digest. Publication is intentionally repairable rather than a global
+filesystem/SQLite transaction: an interrupted request stays unregistered and
+invisible, matching files are idempotently read back or republished on the same
+digest, and imported-provider cleanup is restricted to the exact unactivated
+request inventory. A completion that committed before the caller observed its
+return is re-read before cleanup, so a complete receipt never loses its imported
+provider files.
+
+Focused coverage proves the full storage projection, no project registration or
+writing-session import, target-manifest rather than source-manifest publication,
+exact Paper/fact/artifact/view/provider bytes, kept-view non-revision, idempotent
+retry, undeclared staging-entry refusal before mutation, SQLite rollback after a
+mid-transaction fault, and same-archive repair after canonical, project-file,
+provider-history, and completion boundary failures. No real archive relay,
+desktop, SSH host, or activation was exercised here; those remain T5/V1 after
+T4b's hermetic local service upload drive.
+The one independent read-only audit reported no concrete finding, so no audit
+correction round was run.
+
+### T4a — Source fence, exact export, and retirement receipt — complete
+
+Own:
+
+- new `src/rcp/transfer/source.py` plus narrow calls into
+  `src/rcp/projects.py` concrete owners;
+- source-confirmation, request-bound export, and target-receipt routes in
+  `src/rcp/api/project_provisioning.py`;
+- T1 transition invocation and T3a, T3b-export, T3b-files, and T3c export orchestration;
+  and
+- `tests/test_transfer_source.py` with crash injection at every source boundary.
+
+Implemented as the source-owned state machine in `rcp.transfer.source`. Release
+revalidates the reviewed configuration and head under the project operation
+lock, persists one idempotent human receipt, and makes the durable
+`source_released` phase the database admission fence. Fresh human-root work is
+refused in the same SQLite transaction that would create it; already-authorized
+continuations can settle. Terminal operational export is the quiescence check.
+
+The state machine appends T1's home transfer with both human actors, records the
+post-transfer head, and captures the exact terminal operational records,
+canonical history, project files, provider histories, source manifest
+provenance, and raw source-release proof. It atomically seals a deterministic
+mode-0600 archive at
+`<RCP_DATA_DIR>/transfer-exports/<request-id>.rcp-transfer`, then binds its digest
+and size. A final file left before its receipt is reused; after the receipt,
+every retry reads and rehashes the same file. Missing, corrupt, unsafe, or
+mismatched bytes fail loudly without regeneration. The authenticated native
+source route requires the exact pinned personal-backend instance and streams
+only that exact request archive in bounded chunks.
+
+After the matching T4c target-activation proof arrives, serialized cleanup first
+validates the still-present bound archive and consumes the raw proof. It then
+retires the source project row, removes runtime visibility, revalidates and
+unlinks only that archive, and completes the request. Missing or corrupt bytes
+cannot retire the source. The sequence is idempotent across every step. Retired
+projects disappear from catalog and active membership queries, but membership
+and invitation rows remain retained for audit. T4a performs no target upload,
+decode, import, registration, or SSH transport; T4b now owns upload, while the
+remaining transport and protected proof return stay in T5 after T4c activation.
+
+### T4b — Protected target upload lease and inbox — complete
+
+**Status (2026-08-31): implemented, focused-tested, and independently audited
+once.** The running team service now owns a durable active, complete, or
+invalidated upload record bound to one target request, archive digest, exact
+size, and lease boundary. Control protocol v8 exposes only typed plan and
+completion continuations. The stdin-only CLI never opens SQLite: it takes the
+server's confirmed boundary, holds a request-scoped OS lock, writes one flat
+mode-0600 digest-specific partial file below the mode-0700 `transfer-inbox/`,
+verifies the exact byte count and hash, and publishes the request-derived final
+without overwrite. Exact retries consume and verify stdin against the existing
+final; crash recovery can remove only the known request/digest partial.
+
+Completion re-hashes the final through the running service before publishing
+its typed receipt. Restore invalidates active and complete receipts for every
+nonterminal target request. Update maintenance refuses immediately while any
+upload is active, without closing admission, so that same control loop can
+accept the completion continuation; the rollback checkpoint accepts only exact
+receipt-backed complete inbox files and rejects partial, extra, missing,
+corrupt, unsafe, or untyped entries. Transfer history excludes the upload
+table, and the current SQLite fingerprint is registered for stopped-service
+restore compatibility. The full T4b focused set passes 195 tests after the
+correction. Its one high-severity audit finding was the same-loop maintenance
+deadlock; the single correction round added the immediate-refusal regression,
+and no second audit was run. T4b does not decode the codec, import or activate a
+project, return cleanup proof, or drive desktop/SSH transport. T4c now owns the
+first three target lifecycle steps; T5 still owns desktop/SSH transport and proof
+return.
+
+Own:
+
+- new `src/rcp/transfer/target.py` for the bounded upload owner;
+- F1's `project transfer-import` implementation in
+  `src/rcp/server_ops/cli.py` and `src/rcp/server_ops/control.py`;
+- explicit transfer-inbox classification in
+  `src/rcp/server_ops/update_checkpoint.py`;
+- and `tests/test_transfer_target_upload.py` with lease, size/hash, restart, and
+partial-file crash injection.
+
+T4c subsequently extends this closed lifecycle with `consumed` and promotes the
+control protocol to v9; the T4b description above records the boundary as it was
+audited, not a second current-state vocabulary.
+
+The service-account CLI asks the lock-owning server for the request's expected
+digest, size, and one bounded upload lease. It accepts bytes only on stdin,
+writes the request-derived mode-0600 same-directory `.partial` under
+`<RCP_DATA_DIR>/transfer-inbox/`, publishes it without overwrite through a
+same-filesystem hard link, and removes the partial only after size/hash
+verification. It accepts no archive path. Lease recovery is request/digest
+specific; it may discard only that request's known incomplete `.partial`, never
+walk or clean the inbox generally. The CLI never opens SQLite and a successful
+upload is not project authority. This packet stops at one verified durable inbox
+file and cannot import records, register a checkout, or activate a project.
+
+### T4c — Target import, activation, and source receipt — complete
+
+**Status (2026-08-31): implemented, focused-tested, and independently audited
+once.** The audit found one high-risk import-retry defect: a crash after partial
+publication could cause retry to inspect already-mutated target state. The one
+correction round now stores the exact pre-publication target configuration and
+retained-history evidence in the import transaction and reuses it on retry;
+focused crash-boundary regressions cover canonical and project-file publication.
+No second audit was run. The target running service now
+owns codec decode, retained-history inspection, T3f import invocation, replay,
+catalog preparation, and the compound activation boundary. Control protocol v9
+adds a separate `project_transfer_activate` operation; upload completion remains
+byte durability and never becomes project authority. The same fixed stdin-only
+CLI reports success only after both upload and activation complete.
+
+Own:
+
+- T4b's `src/rcp/transfer/target.py` for request revalidation and activation;
+- narrow finalization calls into `src/rcp/setup.py` and
+  `src/rcp/projects.py` concrete owners;
+- T3f import/readback orchestration; and
+- `tests/test_transfer_target.py` with confirmation, import, activation, and
+  receipt crash injection.
+
+Before import, the server revalidates the target member's admission
+confirmation, the source owner's human release receipt, the later source-fence
+receipt, their common linked request and archive identities, unchanged target
+readiness, ownership, mode, both proof commitments, and T4b's complete upload.
+It verifies the external archive envelope and every declared payload entry,
+including the raw source-release proof's precommitted digest, before import
+mutation; the reserved archive manifest and raw proof are never published into
+the target project. The import transaction stores the exact reviewed target
+configuration receipt and retained-history evidence before any file publication;
+an exact retry after a partial publication reuses that receipt and does not
+reinterpret the mutated live target. Retained canonical history is inspected through the concrete
+local or SSH `StateWorkspace`; an absent SSH research root is accepted only
+after two consistent exact-account inventories, while transport or permission
+errors remain loud. A successful CLI invocation is never a substitute for either
+human confirmation.
+
+After T3f readback, the catalog owner replays under the target `space_id` and
+prepares—but does not publish—the exact reviewed registration. One SQLite
+transaction then inserts the project row, seats the admitting target member,
+completes provisioning with a typed step receipt, stores an immutable activation
+receipt, advances the transfer to `target_activated`, and changes the exact
+upload from `complete` to `consumed`. The activation receipt binds both request
+ids and spaces, project/archive/fence identities, both proof commitments, the
+upload lease, every import digest, the reviewed provisioning digest, registered
+project, first member, and timestamps. Only after that transaction commits may
+the target disclose its raw activation proof through T2b's permanent-member-token
+native route to the exact target confirmer. The proof never appears in CLI
+progress, control results, or browser-session responses.
+
+Decode and retained-history stages are request-scoped and removed on every exit.
+Before the compound transaction, failures retain the exact completed inbox file
+and an unregistered repairable import. After commit, a retry reads and validates
+the same activation receipt, refreshes process-local catalog state, and removes
+only an exact verified leftover inbox file. The upload's terminal `consumed`
+record retains its completion receipt. Update checkpoints now copy only
+receipt-backed `complete` inbox files, ignore `consumed` rows, and still fail on
+any consumed leftover or unknown inbox entry. The current SQLite schema digest
+is registered for restore compatibility.
+
+Stopped-service restore keeps nonterminal targets at `operator_action_needed`.
+For an `archive_bound` request, the storage owner now requires the exact restored
+revision, rebuilt ready-for-review digest, original current target confirmer,
+archive identity, and invalidated upload before it atomically returns to
+`archive_bound` with a fresh lease and typed re-entry receipt. No proof is exposed
+by re-entry. T5b now invokes this reviewed recovery path in the product; later
+restored proof/cleanup phases remain frozen for their owning recovery steps.
+
+The source accepts the eventual native proof return and retires its recovery copy
+only when that proof hashes to the precommitted target value. T5a owns that native
+proof relay and T5b owns the user-visible drive. Never activate before the source
+home transfer commits. An arbitrary file, byte stream, request id, serialized
+receipt, or CLI exit grants no import authority.

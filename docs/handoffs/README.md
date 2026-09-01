@@ -12,6 +12,9 @@ Active:
   imported-provider-history lifecycle support; archive relay/decode, activation,
   cleanup, UI, and the live lab drill remain.
   Read the handoff's packet status table for the current state of any packet.
+  Its dated implementation log and completed packet sections were archived to
+  [the evidence file](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-evidence.md)
+  on 2026-09-01; the handoff itself retains only work with an open drive.
 
 This directory contains only human-confirmed work that is ready to implement and
 not yet complete. A handoff is an execution contract, not a chronological diary.

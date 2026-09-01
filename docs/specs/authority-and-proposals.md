@@ -5,6 +5,38 @@ permission gates, protected-belief Proposals, human judgment, and durable
 authorization lineage. Runtime filesystem capability is specified separately in
 [Providers and containment](providers-and-containment.md).
 
+## Product authority and machine authority
+
+RCP has two disjoint authority kinds, and neither can reach the other.
+
+**Product authority** is everything below: authenticated members, agent
+profiles, task contracts, and project membership. It governs graph actions,
+conversations, episodes, and ordinary membership. RCP has equal members and no
+administrator product role, so no member token is more powerful than another.
+
+**Machine authority** is operating-system authority on the server host. It
+governs installing, updating, restoring, configuring machine credentials,
+provisioning a central checkout, and removing a member. Those operations live
+under `rcp server ...` and are reached only from a console or SSH session with
+the required OS account, never from a member session or an API route. A member
+token cannot perform any of them, and no product role grants them.
+
+The separation is structural rather than cooperative. The backend runs under a
+dedicated operating-system account that owns its data directory and the
+singleton lock, so an ordinary shell on the lab machine cannot read the control
+plane, append to canonical history, or become the authority. A running-server
+CLI command never opens SQLite beside the lock owner; it uses that account's
+private control socket. `install`, `backup configure`, `restore`, and `update`
+additionally need root because they change accounts, `/etc`, systemd, or
+stopped-service state, and each drops back to the service account for ordinary
+source and data work.
+
+Machine authority never substitutes for human product judgment. An operator with
+root cannot approve a Proposal, change project truth membership, or authorize an
+episode through a machine command; those remain the protected human actions
+below. The behavior of each server operation is specified in
+[Server and machine operations](server-and-machine-operations.md).
+
 ## Four separate boundaries
 
 RCP keeps these questions independent:

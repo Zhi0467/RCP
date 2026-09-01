@@ -33,7 +33,7 @@ last_checked: >-
 
 This scenario is human-confirmed, implemented, and partially live-qualified. It
 owns the seam between
-[Durable project provisioning](../specs/projects-spaces-and-operations.md#durable-project-provisioning)
+[Durable project provisioning](../specs/server-and-machine-operations.md#durable-project-provisioning)
 and the
 [Confirmed team desktop target](../specs/api-web-and-desktop-projections.md#confirmed-team-desktop-target).
 

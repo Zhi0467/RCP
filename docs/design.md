@@ -50,51 +50,58 @@ explicit pending acceptance work.
 
 ## Cross-cutting invariants
 
-1. **Canonical history is append-only.** Main and Auto-research branch Patch
-   logs are never edited or compacted. Materialized graph, research, glossary,
-   Proposal, control, and branch outputs are derived and replaceable.
-2. **Graph changes have one typed channel.** Agents write one strict
-   `patch.json` in RCP-owned scratch. Typed operations preserve the persisted
-   JSON shape. RCP never parses graph authority from an answer, artifact,
-   command trace, or repository edit.
-3. **One transition owns one mutation.** Human Sync, agent Apply, branch Apply,
-   and branch merge all pass through the synchronous backend transition manager.
-   Deterministic generated effects, validation, final graph, control, guidance,
-   and events either commit as one revision or do not commit.
-4. **Replay records; it does not re-decide.** Replay applies the expanded
-   operations already committed in each transition. It does not rerun historical
-   rules or consult current users, memberships, provider settings, or SQLite
-   operational state.
-5. **Humans retain the protected authority boundary.** Only humans set ordinary
-   belief standing, resolve Proposals, change project truth membership, authorize
-   a bounded episode, or dispatch a branch merge. Agents may assert new work and
-   must propose changes to an existing ResearchQuestion or Hypothesis. The one
-   deliberate Decision exception is the human-authorized Auto-research
-   orchestrator: on its branch, and during its human-dispatched merge, it may
-   choose Decisions directly. No agent may approve a Proposal.
-6. **Operational capability and graph authority are separate.** A task's fixed
-   surface, provider profile, graph action, project target, current state, and
-   budget all have to admit an effect. Work-like providers use native unattended
-   write containment for the exact task stage and admitted project repository
-   roots. This is an accidental-write guardrail for cooperative users, not a
-   hostile-user security boundary or a read-confidentiality claim.
-7. **Canonical state has one home.** A project has one durable id, one home
-   space, and one local or remote canonical state repository. Main and graph
-   branch namespaces live inside that repository. Routes never write canonical
-   files directly; state workspaces own locks, atomic publication, and remote
-   recovery.
-8. **Operational state follows canonical events.** SQLite owns tasks, episodes,
-   watchers, membership, and other mutable control-plane records. Stable
-   transition event ids and target-specific watermarks reconcile a canonical
-   commit into those projections idempotently after crashes.
-9. **One episode means one authority boundary and native session.** Experiment
-   and Auto-research episodes pin their human authorization, graph target,
-   provider session, execution host, exact reusable stage, and budget. Stop is a
-   durable admission fence; every already-authorized turn settles honestly.
-10. **The browser renders one revision at a time.** A committed project response
-    carries graph, graph-derived control, guidance validity, and head from the
-    same transition. The client replaces that snapshot atomically. It never
-    computes transition rules or splices a new graph into old control state.
+These are the repository-wide promises every module keeps. They are stated here
+as principles; the permanent numbered identifiers that acceptance frontmatter,
+source comments, and tests cite (`4b`, `10g`, and the rest) are registered in
+[`AGENTS.md`](../AGENTS.md) under "Stable invariants" and are never renumbered.
+The two lists decompose the same promises at different grain, so do not read a
+number here.
+
+- **Canonical history is append-only.** Main and Auto-research branch Patch
+  logs are never edited or compacted. Materialized graph, research, glossary,
+  Proposal, control, and branch outputs are derived and replaceable.
+- **Graph changes have one typed channel.** Agents write one strict
+  `patch.json` in RCP-owned scratch. Typed operations preserve the persisted
+  JSON shape. RCP never parses graph authority from an answer, artifact,
+  command trace, or repository edit.
+- **One transition owns one mutation.** Human Sync, agent Apply, branch Apply,
+  and branch merge all pass through the synchronous backend transition manager.
+  Deterministic generated effects, validation, final graph, control, guidance,
+  and events either commit as one revision or do not commit.
+- **Replay records; it does not re-decide.** Replay applies the expanded
+  operations already committed in each transition. It does not rerun historical
+  rules or consult current users, memberships, provider settings, or SQLite
+  operational state.
+- **Humans retain the protected authority boundary.** Only humans set ordinary
+  belief standing, resolve Proposals, change project truth membership, authorize
+  a bounded episode, or dispatch a branch merge. Agents may assert new work and
+  must propose changes to an existing ResearchQuestion or Hypothesis. The one
+  deliberate Decision exception is the human-authorized Auto-research
+  orchestrator: on its branch, and during its human-dispatched merge, it may
+  choose Decisions directly. No agent may approve a Proposal.
+- **Operational capability and graph authority are separate.** A task's fixed
+  surface, provider profile, graph action, project target, current state, and
+  budget all have to admit an effect. Work-like providers use native unattended
+  write containment for the exact task stage and admitted project repository
+  roots. This is an accidental-write guardrail for cooperative users, not a
+  hostile-user security boundary or a read-confidentiality claim.
+- **Canonical state has one home.** A project has one durable id, one home
+  space, and one local or remote canonical state repository. Main and graph
+  branch namespaces live inside that repository. Routes never write canonical
+  files directly; state workspaces own locks, atomic publication, and remote
+  recovery.
+- **Operational state follows canonical events.** SQLite owns tasks, episodes,
+  watchers, membership, and other mutable control-plane records. Stable
+  transition event ids and target-specific watermarks reconcile a canonical
+  commit into those projections idempotently after crashes.
+- **One episode means one authority boundary and native session.** Experiment
+  and Auto-research episodes pin their human authorization, graph target,
+  provider session, execution host, exact reusable stage, and budget. Stop is a
+  durable admission fence; every already-authorized turn settles honestly.
+- **The browser renders one revision at a time.** A committed project response
+  carries graph, graph-derived control, guidance validity, and head from the
+  same transition. The client replaces that snapshot atomically. It never
+  computes transition rules or splices a new graph into old control state.
 
 ## Terminology
 
@@ -137,6 +144,13 @@ Current sources have this precedence:
    may not silently change current design.
 6. [`archive/`](archive/) is historical and non-authoritative.
 
+[`server.md`](server.md) and [`desktop.md`](desktop.md) are operator and
+developer guides. They own the exact procedure an operator runs and the native
+build, verification, and release steps, so a scenario may cite one for a manual
+path. They are subordinate to specifications and never define product behavior:
+when a guide and a specification disagree, the specification wins and the guide
+is the defect.
+
 [`open-questions.md`](open-questions.md) records unresolved questions. A
 contradiction among current sources is a documentation defect; do not choose a
 winner by timestamp or silently implement around it.
@@ -161,6 +175,9 @@ winner by timestamp or silently implement around it.
 - [Projects, spaces, and operations](specs/projects-spaces-and-operations.md) —
   durable identity, team enrollment, membership, project homes, setup, caches,
   and process ownership.
+- [Server and machine operations](specs/server-and-machine-operations.md) — the
+  source-built team server, machine authority, version and update lifecycle,
+  central checkouts, provisioning, transfer, and backup and restore.
 - [API, Web, and desktop projections](specs/api-web-and-desktop-projections.md) —
   mutation envelopes, current application surfaces, revision reconciliation,
   tabs, and shell lifecycle.

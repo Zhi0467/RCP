@@ -72,7 +72,7 @@ homes, protected through backup/restore/update, and validated for local and SSH
 Seed/Refresh. The reachable-SSH interruption/removal drive in step 11 remains
 pending. Current boundaries are in
 [Project identity and home](../specs/projects-spaces-and-operations.md#project-identity-and-home)
-and [Personal-to-team transfer archive](../specs/projects-spaces-and-operations.md#personal-to-team-transfer-archive).
+and [Personal-to-team transfer archive](../specs/server-and-machine-operations.md#personal-to-team-transfer-archive).
 
 Transfer is personal space → team space, one way. The team server prepares a
 separate central checkout set, with each checkout owned by `rcp` locally or by

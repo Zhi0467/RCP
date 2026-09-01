@@ -21,6 +21,10 @@ and every applicable active scenario, not a scenario invented after the code.
 - `tier`: `hermetic`, `live`, `remote`, or `packaged`.
 - `driver`: `pytest`, `api`, `browser`, or `desktop`, combined where needed.
 - `covered_by`: exact repeatable checks already defending the promise.
+- `invariants`: identifiers from the "Stable invariants" registry in
+  [`AGENTS.md`](../../AGENTS.md), including its suffixed entries such as `4b`
+  and `10g`. These are not the principle order in [`design.md`](../design.md),
+  which is deliberately unnumbered.
 - `last_passed`: the last complete API/browser/desktop drive. `last_checked`
   may record a partial check and is never presented as a pass.
 
