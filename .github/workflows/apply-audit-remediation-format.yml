@@ -1,0 +1,33 @@
+name: Apply audit remediation formatting
+
+on:
+  push:
+    branches:
+      - audit-remediation-2026-09-01
+    paths:
+      - .github/audit-remediation-format.trigger
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit-remediation-2026-09-01
+          fetch-depth: 0
+      - name: Verify and apply formatter output
+        run: |
+          echo "fc521ae9fd73ef60d77bc78fb26746ff7a512ebf4f2af153811af2695dac4260  .github/audit-remediation-format.patch" | sha256sum -c -
+          git apply --check .github/audit-remediation-format.patch
+          git apply --index .github/audit-remediation-format.patch
+          rm -f .github/audit-remediation-format.patch
+          rm -f .github/audit-remediation-format.trigger
+          rm -f .github/workflows/apply-audit-remediation-format.yml
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "style: apply formatter output"
+          git push origin HEAD:audit-remediation-2026-09-01
