@@ -21,7 +21,6 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, Protocol
 
 import tomlkit
-from fastapi.testclient import TestClient
 from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator, model_validator
 
 from rcp.api import create_app
@@ -1221,6 +1220,12 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
             trusted_principal_resolver=rehearsal_principal,
             startup_effect_fence=fence,
         )
+        # Keep the test-client compatibility layer inside the captured candidate
+        # child. Importing this module is part of the operator-facing update
+        # coordinator, where dependency warnings would corrupt the rotating CLI
+        # status line.
+        from fastapi.testclient import TestClient
+
         reads: list[str] = []
         results: list[CandidateProjectVerification] = []
         with TestClient(app) as client:

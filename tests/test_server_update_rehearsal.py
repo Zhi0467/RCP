@@ -73,6 +73,25 @@ WEB_BUILD_ID = "sha256:" + ("c" * 64)
 FINGERPRINT = "SHA256:" + ("A" * 43)
 
 
+def test_rehearsal_coordinator_import_does_not_load_the_test_client() -> None:
+    completed = subprocess.run(
+        (
+            sys.executable,
+            "-c",
+            (
+                "import sys; import rcp.server_ops.rehearsal; "
+                "raise SystemExit('fastapi.testclient' in sys.modules)"
+            ),
+        ),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def _git(repository: Path, *arguments: str) -> str:
     completed = subprocess.run(
         ("git", "-C", str(repository), *arguments),

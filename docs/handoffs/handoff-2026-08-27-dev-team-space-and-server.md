@@ -3,11 +3,10 @@
 Date: 2026-08-27
 Status: active. Design, grilling, and all planned implementation packets are
 complete. The two-release disposable server lifecycle and fresh-host restore
-qualification pass. A first persistent lab-server install exposed one fresh-team
-update-rehearsal defect and excessive CLI friction; both are corrected in the
-current implementation, with a clean live reinstall/update rehearsal now
-required. The persistent desktop/SSH drive, genuine one-lab drill,
-and final evidence closure remain.
+qualification pass. A clean persistent lab-server reinstall and zero-member
+candidate update now pass through the continuous terminal wizard. The
+persistent desktop/SSH drive, genuine one-lab drill, and final evidence closure
+remain.
 
 ### Packet status
 
@@ -81,8 +80,8 @@ any packet.
   update confirmation restarts unconfirmed target review instead of reusing the
   stale commit.
 - Hermetic focused coverage passes. Still required before closing this follow-up:
-  run a real update through candidate rehearsal and final readback, then enroll
-  the replacement bootstrap member.
+  ship and live-update the final warning-containment correction, then enroll the
+  replacement bootstrap member.
 - The old empty installation was stopped, captured in the operator-owned mode
   `0600` archive
   `/home/zhiwang/rcp-server-pre-clean-reinstall-20260901T0430EDT.tar.gz` with
@@ -98,6 +97,17 @@ any packet.
   qualified system Node 24 before the disposable bootstrap build. The setup
   guide now renews the fixed system PATH again at the build step and verifies
   `node --version` before npm runs.
+- The same zero-member team then updated from `792f14f` to `2a13e0d` through
+  the real TTY flow. Exact-target confirmation resumed in place; the copied-state
+  rehearsal passed with no enrolled user and no project, the rollback boundary
+  was verified, systemd cut over, and normal `server doctor` reported healthy
+  while keeping its final field list bounded. This closes the original
+  fresh-team rehearsal defect on persistent hardware.
+- One Starlette test-client deprecation warning still escaped while the update
+  coordinator imported the rehearsal module. The test client is now imported
+  only inside the already-captured candidate child, with a subprocess regression
+  proving the operator-facing coordinator import does not load it. One final
+  live update remains to prove the rotating line stays clean.
 
 ### Notes carried from earlier status updates
 
