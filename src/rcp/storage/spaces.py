@@ -88,6 +88,11 @@ from rcp.storage.models import (  # noqa: F401
     watcher_next_check_at,
 )
 
+_TEAM_INVITATION_COLUMNS = (
+    "invitation_id, created_by, created_at, expires_at, "
+    "consumed_at, consumed_by, failed_attempts, locked_at, revoked_at"
+)
+
 
 def _bounded_removal_values(rows, column: str, *, label: str) -> tuple[str, ...]:
     values = tuple(sorted({str(row[column]) for row in rows}))
@@ -687,16 +692,56 @@ class SpaceStoreMixin:
         with self.connection() as connection:
             self._require_team_member_from_connection(connection, created_by)
             rows = connection.execute(
-                """
-                SELECT invitation_id, created_by, created_at, expires_at,
-                       consumed_at, consumed_by, failed_attempts, locked_at, revoked_at
+                f"""
+                SELECT {_TEAM_INVITATION_COLUMNS}
                 FROM team_invitations
                 WHERE created_by = ?
                 ORDER BY created_at DESC, invitation_id
-                """,
+                """,  # noqa: S608
                 (created_by,),
             ).fetchall()
         return [TeamInvitationRecord.model_validate(dict(row)) for row in rows]
+
+    def revoke_team_invitation(
+        self,
+        invitation_id: str,
+        created_by: str,
+    ) -> TeamInvitationRecord:
+        """Withdraw an unused invitation you created.
+
+        A code that reached the wrong place is otherwise redeemable until it
+        expires, and nothing else in the product can stop it. Only the creator
+        may revoke, matching who can see it. A consumed invitation stays
+        consumed: the member it already minted is removed through member
+        removal, not by editing the credential that made them.
+        """
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_team_member_from_connection(connection, created_by)
+            row = connection.execute(
+                f"SELECT {_TEAM_INVITATION_COLUMNS} FROM team_invitations "  # noqa: S608
+                "WHERE invitation_id = ? AND created_by = ?",
+                (invitation_id, created_by),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"{invitation_id} is not an invitation you created.")
+            if row["consumed_at"] is not None:
+                raise ValueError(
+                    "This invitation has already been used. Remove the member instead."
+                )
+            if row["revoked_at"] is None:
+                connection.execute(
+                    "UPDATE team_invitations SET revoked_at = ? WHERE invitation_id = ?",
+                    (now, invitation_id),
+                )
+                row = connection.execute(
+                    f"SELECT {_TEAM_INVITATION_COLUMNS} FROM team_invitations "  # noqa: S608
+                    "WHERE invitation_id = ?",
+                    (invitation_id,),
+                ).fetchone()
+        return TeamInvitationRecord.model_validate(dict(row))
 
     def create_team_session(self, token: str) -> tuple[str, SpaceUserRecord]:
         if (

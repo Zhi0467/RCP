@@ -160,6 +160,25 @@ def create_team_invitation(
     }
 
 
+@router.post("/api/team/invitations/{invitation_id}/revoke")
+def revoke_team_invitation(
+    request: Request,
+    invitation_id: str,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+) -> dict[str, object]:
+    identity_access.require_team_space()
+    member = identity_access.acting_user(request)
+    try:
+        invitation = store.revoke_team_invitation(invitation_id, member.user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="That invitation was not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return invitation.model_dump(mode="json")
+
+
 @router.post("/api/team/credential/rotate")
 def rotate_team_credential(
     request: Request,

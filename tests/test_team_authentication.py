@@ -114,6 +114,48 @@ def test_invitations_are_creator_private_expiring_single_use_credentials(tmp_pat
     assert expired.value.code == "enrollment_code_expired"
 
 
+def test_revoking_an_invitation_stops_the_code_without_touching_others(tmp_path) -> None:
+    store, _bootstrap, alice, _alice_token = _claimed_team(tmp_path)
+    leaked, leaked_code = store.create_team_invitation(alice.user_id)
+    kept, kept_code = store.create_team_invitation(alice.user_id)
+
+    revoked = store.revoke_team_invitation(leaked.invitation_id, alice.user_id)
+    assert revoked.revoked_at is not None
+    assert revoked.consumed_at is None
+
+    with pytest.raises(TeamAuthenticationError) as refused:
+        store.enroll_team_member(leaked_code, "Stranger")
+    assert refused.value.code == "enrollment_code_invalid"
+
+    still_valid, _token = store.enroll_team_member(kept_code, "Bob")
+    assert still_valid.display_name == "Bob"
+    assert kept.invitation_id != leaked.invitation_id
+
+
+def test_revoking_is_idempotent_and_keeps_the_first_revocation_time(tmp_path) -> None:
+    store, _bootstrap, alice, _alice_token = _claimed_team(tmp_path)
+    invitation, _code = store.create_team_invitation(alice.user_id)
+
+    first = store.revoke_team_invitation(invitation.invitation_id, alice.user_id)
+    second = store.revoke_team_invitation(invitation.invitation_id, alice.user_id)
+    assert first.revoked_at == second.revoked_at
+
+
+def test_only_the_creator_may_revoke_and_a_used_invitation_is_not_revocable(tmp_path) -> None:
+    store, _bootstrap, alice, _alice_token = _claimed_team(tmp_path)
+    _invitation, _code, bob, _bob_token = _enroll_invited_member(store, alice.user_id, "Bob")
+    bob_invitation, _bob_code = store.create_team_invitation(bob.user_id)
+
+    # Equal members: Alice cannot reach an invitation she cannot see.
+    with pytest.raises(KeyError):
+        store.revoke_team_invitation(bob_invitation.invitation_id, alice.user_id)
+
+    consumed, consumed_code = store.create_team_invitation(alice.user_id)
+    store.enroll_team_member(consumed_code, "Carol")
+    with pytest.raises(ValueError, match="already been used"):
+        store.revoke_team_invitation(consumed.invitation_id, alice.user_id)
+
+
 def test_wrong_attempts_lock_only_the_target_invitation_code(tmp_path) -> None:
     store, _bootstrap, alice, _alice_token = _claimed_team(tmp_path)
     _target, target_code = store.create_team_invitation(alice.user_id)
@@ -570,6 +612,35 @@ def test_enrollment_exchange_and_session_cookie_make_the_team_api_usable(tmp_pat
     ]
     assert invitation.json()["code"] not in listed.text
     assert AppStore(store.path).space_user(member["user_id"]) is not None
+
+
+def test_revoking_an_invitation_over_http_blocks_enrollment(tmp_path) -> None:
+    store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
+    app = create_app(data_dir=tmp_path)
+    alice = TestClient(app, base_url="https://testserver")
+    bob = TestClient(app, base_url="https://testserver")
+    alice_token = alice.post(
+        "/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"}
+    ).json()["token"]
+    assert alice.post("/api/team/session/exchange", json={"token": alice_token}).status_code == 200
+    issued = alice.post("/api/team/invitations", json={}).json()
+    invitation_id = issued["invitation"]["invitation_id"]
+
+    revoked = alice.post(f"/api/team/invitations/{invitation_id}/revoke", json={})
+    assert revoked.status_code == 200
+    assert revoked.json()["revoked_at"] is not None
+
+    refused = bob.post(
+        "/api/team/enroll", json={"code": issued["code"], "display_name": "Stranger"}
+    )
+    assert refused.status_code == 401
+    assert (
+        store.team_invitations(alice.get("/api/identity").json()["user"]["user_id"])[0].revoked_at
+        is not None
+    )
+
+    missing = alice.post(f"/api/team/invitations/{uuid.uuid4()}/revoke", json={})
+    assert missing.status_code == 404
 
 
 def test_team_members_see_only_their_invitations_and_cannot_target_credentials(

@@ -1,6 +1,6 @@
 import { Check, ChevronDown, Copy, Link2, Pencil, UserPlus, UserRound } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import { createTeamInvitation, loadTeamInvitations } from "../api";
+import { createTeamInvitation, loadTeamInvitations, revokeTeamInvitation } from "../api";
 import type { IdentityResponse, TeamInvitation, TeamInvitationIssue } from "../types";
 
 interface Props {
@@ -209,6 +209,23 @@ export function TeamInvitationPanel({
     }
   };
 
+  const revokeInvitation = async (invitationId: string) => {
+    setError(null);
+    try {
+      const revoked = await revokeTeamInvitation(invitationId);
+      setInvitations((current) =>
+        current.map((invitation) =>
+          invitation.invitation_id === revoked.invitation_id ? revoked : invitation,
+        ),
+      );
+      // The panel still holds the raw code it just showed; drop it so a
+      // revoked code cannot be copied out of a stale card.
+      setIssued((current) => (current?.invitation.invitation_id === invitationId ? null : current));
+    } catch {
+      setError("That invitation could not be revoked. Try opening this panel again.");
+    }
+  };
+
   const copyInvitation = async () => {
     if (!issued) return;
     try {
@@ -267,7 +284,11 @@ export function TeamInvitationPanel({
         </p>
       )}
 
-      <TeamInvitationLedger invitations={invitations} loading={loading} />
+      <TeamInvitationLedger
+        invitations={invitations}
+        loading={loading}
+        onRevoke={revokeInvitation}
+      />
     </section>
   );
 }
@@ -275,9 +296,11 @@ export function TeamInvitationPanel({
 export function TeamInvitationLedger({
   invitations,
   loading = false,
+  onRevoke,
 }: {
   invitations: TeamInvitation[];
   loading?: boolean;
+  onRevoke?: (invitationId: string) => void | Promise<void>;
 }) {
   return (
     <div className="landing-team-invitation-ledger" aria-busy={loading}>
@@ -291,11 +314,32 @@ export function TeamInvitationLedger({
               <time dateTime={invitation.expires_at}>
                 Expires {formatInvitationTime(invitation.expires_at)}
               </time>
+              {onRevoke && invitationIsRevocable(invitation) && (
+                <button
+                  type="button"
+                  onClick={() => void onRevoke(invitation.invitation_id)}
+                  aria-label={`Revoke invitation expiring ${formatInvitationTime(
+                    invitation.expires_at,
+                  )}`}
+                >
+                  Revoke
+                </button>
+              )}
             </li>
           ))}
         </ul>
       )}
     </div>
+  );
+}
+
+function invitationIsRevocable(invitation: TeamInvitation): boolean {
+  // A used invitation is not revocable: the member it minted is removed
+  // through member removal. An expired or already-revoked one is inert.
+  return (
+    invitation.consumed_at === null &&
+    invitation.revoked_at === null &&
+    new Date(invitation.expires_at).getTime() > Date.now()
   );
 }
 
@@ -305,6 +349,7 @@ export function invitationCopyBlock(issue: TeamInvitationIssue): string {
 
 function invitationStatus(invitation: TeamInvitation): string {
   if (invitation.consumed_at) return "Used";
+  if (invitation.revoked_at) return "Revoked";
   if (invitation.locked_at) return "Locked";
   if (new Date(invitation.expires_at).getTime() <= Date.now()) return "Expired";
   return "Available";

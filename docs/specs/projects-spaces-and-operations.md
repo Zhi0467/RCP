@@ -44,6 +44,15 @@ single-use invitations created by any existing member. Repeated invalid guesses
 lock only that code. Invitation copy text names the nonsecret space and expiry,
 shows the code once, and never embeds it in a URL.
 
+An invitation's creator may revoke it while it is still live, because a code
+that reached the wrong place is otherwise redeemable until it expires. Only the
+creator may revoke, matching who can see it, and a revoked code is refused as
+invalid rather than as revoked. Revocation is idempotent and keeps the first
+revocation time. A consumed invitation is not revocable: the member it already
+minted is removed through member removal, not by editing the credential that
+made them. Restoring a backup and removing a member both revoke that member's
+outstanding invitations.
+
 Enrollment issues one permanent, high-entropy `rcp_`-prefixed token for that
 human. RCP stores only an indexed SHA-256 hash and constant-time compares it.
 Raw tokens are accepted only by the controlled exchange endpoint and are absent

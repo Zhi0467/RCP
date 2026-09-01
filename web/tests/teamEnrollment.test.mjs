@@ -46,6 +46,7 @@ const invitation = {
   consumed_by: null,
   failed_attempts: 0,
   locked_at: null,
+  revoked_at: null,
 };
 
 test("team login uses a focused secret field without a URL or storage seam", () => {
@@ -111,4 +112,48 @@ test("invitation metadata is visible without retaining raw codes in the ledger",
   assert.match(copyBlock, /Causal Systems Lab/);
   assert.match(copyBlock, new RegExp(rawCode));
   assert.match(copyBlock, /Expires/);
+});
+
+test("only a live invitation offers revocation, and a revoked one says so", () => {
+  const revoked = {
+    ...invitation,
+    invitation_id: "invite-revoked",
+    revoked_at: new Date(Date.now() - DAY_MS).toISOString(),
+  };
+  const used = {
+    ...invitation,
+    invitation_id: "invite-used",
+    consumed_at: new Date(Date.now() - DAY_MS).toISOString(),
+    consumed_by: teamIdentity.user.user_id,
+  };
+  const expired = {
+    ...invitation,
+    invitation_id: "invite-expired",
+    expires_at: new Date(Date.now() - DAY_MS).toISOString(),
+  };
+
+  const live = renderToStaticMarkup(
+    React.createElement(TeamInvitationLedger, {
+      invitations: [invitation],
+      onRevoke() {},
+    }),
+  );
+  assert.match(live, /<button[^>]*>Revoke<\/button>/);
+
+  const inert = renderToStaticMarkup(
+    React.createElement(TeamInvitationLedger, {
+      invitations: [revoked, used, expired],
+      onRevoke() {},
+    }),
+  );
+  assert.match(inert, /Revoked/);
+  assert.match(inert, /Used/);
+  assert.match(inert, /Expired/);
+  assert.doesNotMatch(inert, /<button/);
+
+  // A ledger with no handler stays read-only.
+  const readOnly = renderToStaticMarkup(
+    React.createElement(TeamInvitationLedger, { invitations: [invitation] }),
+  );
+  assert.doesNotMatch(readOnly, /<button/);
 });

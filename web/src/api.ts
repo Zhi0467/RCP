@@ -109,6 +109,13 @@ export function createTeamInvitation(): Promise<TeamInvitationIssue> {
   });
 }
 
+export function revokeTeamInvitation(invitationId: string): Promise<TeamInvitation> {
+  return api<TeamInvitation>(`/api/team/invitations/${encodeURIComponent(invitationId)}/revoke`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export function createTeamProjectProvisioning(
   body: ProjectProvisioningCreateRequest,
 ): Promise<ProjectProvisioningResponse> {

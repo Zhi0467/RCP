@@ -30,6 +30,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/team/session/logout"),
     (("GET",), "/api/team/invitations"),
     (("POST",), "/api/team/invitations"),
+    (("POST",), "/api/team/invitations/{invitation_id}/revoke"),
     (("POST",), "/api/team/credential/rotate"),
     (("POST",), "/api/team/credential/revoke"),
     (("PATCH",), "/api/team/space"),
@@ -183,6 +184,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "create_paper": "src/rcp/api/paper.py",
     "create_project": "src/rcp/api/index.py",
     "create_team_invitation": "src/rcp/api/team.py",
+    "revoke_team_invitation": "src/rcp/api/team.py",
     "delete_project": "src/rcp/api/index.py",
     "download_agent_artifact": "src/rcp/api/tasks.py",
     "enroll_team_member": "src/rcp/api/team.py",
@@ -291,15 +293,15 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 118
-    assert len(_FROZEN_ROUTE_INVENTORY) == 118
+    assert len(entries) == 119
+    assert len(_FROZEN_ROUTE_INVENTORY) == 119
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 114
+    assert sum(isinstance(route, APIRoute) for route in routes) == 115
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4
 
 
@@ -314,5 +316,5 @@ def test_handler_module_map_is_separate_and_current(route_app: FastAPI) -> None:
         assert source is not None
         observed[endpoint.__name__] = str(Path(source).resolve().relative_to(repository_root))
 
-    assert len(observed) == 107
+    assert len(observed) == 108
     assert observed == _HANDLER_MODULE_MAP
