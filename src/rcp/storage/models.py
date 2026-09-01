@@ -793,8 +793,17 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
                         for repository in self.repositories
                         if target.service == "github.com"
                         and target.resource == repository.repository.identity
-                        and target.destination_url == repository.repository.settings_url
-                        and target.required_authority_role == "repository administrator"
+                        and (
+                            (
+                                target.destination_url == repository.repository.settings_url
+                                and target.required_authority_role == "repository administrator"
+                            )
+                            or (
+                                target.destination_url
+                                == f"https://github.com/{repository.repository.identity}"
+                                and target.required_authority_role == "repository contributor"
+                            )
+                        )
                     ),
                     None,
                 )

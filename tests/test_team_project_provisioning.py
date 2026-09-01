@@ -139,6 +139,13 @@ class _Credentials:
                     "The request-scoped Git write probe passed and its temporary ref is gone."
                 ),
             )
+        if self.probe_status == "empty_repository":
+            return GitWriteProbe(
+                status="empty_repository",
+                commit=None,
+                temporary_ref=None,
+                diagnostic="The GitHub repository has no commit.",
+            )
         return GitWriteProbe(
             status="github_grant_needed",
             commit="a" * 40,
@@ -651,6 +658,39 @@ def test_missing_github_grant_persists_exact_project_resume_then_completes(
     _advance_all(coordinator, request.request_id)
     ready = store.project_provisioning_request(request.request_id)
     assert ready is not None and ready.status == "ready_for_review"
+
+
+def test_empty_repository_persists_first_commit_action_on_the_planned_target(
+    tmp_path: Path,
+) -> None:
+    store, request = _store_and_request(tmp_path)
+    credentials = _Credentials(probe_status="empty_repository")
+    coordinator, _, _ = _coordinator(store, tmp_path, credentials=credentials)
+    plan = coordinator.plan(request.request_id)
+    boundary = plan.boundary_sha256
+
+    for target in plan.targets[:2]:
+        result = coordinator.advance(
+            request.request_id,
+            boundary_sha256=boundary,
+            target_id=target.target_id,
+        )
+        assert result.step.state == "succeeded"
+        boundary = result.next_boundary_sha256
+
+    paused = coordinator.advance(
+        request.request_id,
+        boundary_sha256=boundary,
+        target_id=plan.targets[2].target_id,
+    )
+
+    assert paused.step.state == "operator_action_needed"
+    assert paused.step.target.resource == plan.targets[2].step.target.resource
+    assert paused.step.target.destination_url.endswith("/openai/rcp-1")
+    assert "first real commit" in paused.step.actions[0].instruction
+    stored = store.project_provisioning_request(request.request_id)
+    assert stored is not None and stored.status == "operator_action_needed"
+    assert stored.operator_action == paused.step
 
 
 def test_unsafe_credential_path_pauses_with_exact_account_and_project_resume(

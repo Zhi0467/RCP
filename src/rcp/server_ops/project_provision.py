@@ -9,6 +9,7 @@ import socket
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import BinaryIO, Literal, Protocol
+from urllib.parse import urlsplit
 
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.control import (
@@ -1222,16 +1223,27 @@ class ProjectProvisionCoordinator:
 
     @staticmethod
     def _copy_operator_contract(pending: ServerStep, source: ServerStep) -> ServerStep:
+        same_target = source.target == pending.target
+        if isinstance(source.target, ExternalServiceTarget) and isinstance(
+            pending.target, ExternalServiceTarget
+        ):
+            same_target = (
+                source.target.service == pending.target.service
+                and source.target.resource == pending.target.resource
+                and urlsplit(source.target.destination_url).hostname
+                == urlsplit(pending.target.destination_url).hostname
+            )
         if (
             source.state != "operator_action_needed"
             or source.performed_by != "human"
-            or source.target != pending.target
+            or not same_target
         ):
             raise ValueError("project operator action must retain the planned typed target")
         return pending.model_copy(
             update={
                 "state": "operator_action_needed",
                 "performed_by": source.performed_by,
+                "target": source.target,
                 "message": source.message,
                 "actions": source.actions,
                 "fields": source.fields,
