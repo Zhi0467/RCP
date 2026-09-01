@@ -148,10 +148,12 @@ any packet.
   365-day certificate lifetime, and rotates during the last seven days. The
   version-4 leaf explicitly carries the server-certificate extensions WKWebView
   requires; startup atomically reissues the earlier extension-less version-3
-  identity. The retained real WKWebView probe passes with two isolated team
-  origins and an unpinned-certificate refusal, and the installed source-built
-  app visibly loads the enrolled team card and opens its real project. S105's
-  exact two-team-space switching drive remains open.
+  identity. The installed bundle grants manual trust only for `rcp.localhost`
+  subdomains; exact saved-origin navigation and the evaluated certificate pin
+  remain separate fences. The retained real WKWebView probe passes with two
+  isolated team origins and an unpinned-certificate refusal, and the installed
+  source-built app visibly loads the enrolled team card and opens its real
+  project. S105's exact two-team-space switching drive remains open.
 - This closes the first persistent server/member/project slice, not V1. A first
   real provider task, second human, reachable SSH execution account,
   backup/restore under project state, transfer, member removal, and the exact

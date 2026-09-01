@@ -106,6 +106,15 @@ The app is written to:
 web/src-tauri/target/debug/bundle/macos/RCP.app
 ```
 
+Launch that exact bundle. If you keep a Dock/Finder copy at
+`/Applications/RCP.app`, rebuilding does not update it: quit RCP with Cmd+Q,
+then replace the installed copy before reopening it:
+
+```bash
+ditto web/src-tauri/target/debug/bundle/macos/RCP.app /Applications/RCP.app
+open /Applications/RCP.app
+```
+
 Closing the red window hides RCP. Use **Quit RCP** or Cmd+Q to end the
 desktop-owned backend. See [docs/desktop.md](docs/desktop.md) for native build,
 logging, and verification details.

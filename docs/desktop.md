@@ -54,6 +54,13 @@ web/src-tauri/target/debug/bundle/macos/RCP.app
 
 `RCP.app` records the checkout and absolute `uv` executable in its `Info.plist` and
 launches the backend from source. Rebuild it after Rust or Tauri configuration changes.
+An older `/Applications/RCP.app` is a separate copy and is not changed by that build.
+Quit RCP with Cmd+Q before replacing and reopening that copy:
+
+```bash
+ditto web/src-tauri/target/debug/bundle/macos/RCP.app /Applications/RCP.app
+open /Applications/RCP.app
+```
 
 ### Only the menu Quit stops the backend
 
@@ -132,10 +139,16 @@ Permanent team member tokens use the same bounded helper under service
 Saved team connections use connection-bound `rcp-<uuid>.rcp.localhost` origins;
 only their exact validated origins may enter the main window, and only the
 stored certificate fingerprint is passed to the native trust hook.
-The encrypted identity records a 365-day certificate lifetime and rotates
-atomically during the final seven days. Startup migrates valid earlier identity
-records and the exact previously shipped `rcp-<uuid>.localhost` registry origin;
-malformed or partial identity state still fails closed.
+The encrypted version-4 identity records a 365-day certificate lifetime and
+rotates atomically during the final seven days. Its leaf explicitly carries
+`CA:FALSE`, TLS server-auth usage, and the key usages required by WKWebView.
+Startup reissues valid earlier identity records and migrates the exact previously
+shipped `rcp-<uuid>.localhost` registry origin; malformed or partial identity
+state still fails closed. Both macOS bundle plists grant the manual-trust ATS
+exception only to `rcp.localhost` and its direct connection subdomains. That
+exception does not authorize HTTP: the native navigation owner still admits
+only exact saved HTTPS origins and the trust handler still requires the pinned
+certificate to pass hostname, validity, and server-use evaluation.
 
 The ignored D3 live test uses the same production tunnel owner with an existing
 system SSH login, forwards only the remote host's loopback SSH banner, then

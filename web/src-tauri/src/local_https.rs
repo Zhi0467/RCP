@@ -19,8 +19,9 @@ use tauri::Manager;
 #[cfg(target_os = "macos")]
 const COOKIE_INSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-const IDENTITY_VERSION: u8 = 3;
-const LEGACY_IDENTITY_VERSIONS: &[u8] = &[1, 2];
+const IDENTITY_VERSION: u8 = 4;
+const LEGACY_IDENTITY_VERSIONS_WITHOUT_EXPIRATION: &[u8] = &[1, 2];
+const LEGACY_IDENTITY_VERSION_WITH_EXPIRATION: u8 = 3;
 const IDENTITY_HEADER: &[u8] = b"RCP-LOCAL-HTTPS\0";
 const CERTIFICATE_LIFETIME_DAYS: i64 = 365;
 const CERTIFICATE_CLOCK_SKEW_DAYS: i64 = 1;
@@ -100,12 +101,7 @@ impl LocalHttpsIdentity {
 }
 
 fn generate_identity() -> Result<LocalHttpsIdentity, String> {
-    let mut params =
-        rcgen::CertificateParams::new(vec!["localhost".to_string(), "*.rcp.localhost".to_string()])
-            .map_err(|error| format!("could not generate the local HTTPS identity: {error}"))?;
-    let now = time::OffsetDateTime::now_utc();
-    params.not_before = now - time::Duration::days(CERTIFICATE_CLOCK_SKEW_DAYS);
-    params.not_after = now + time::Duration::days(CERTIFICATE_LIFETIME_DAYS);
+    let params = certificate_params()?;
     let expires_at_unix = u64::try_from(params.not_after.unix_timestamp())
         .map_err(|_| "could not represent the local HTTPS identity expiration".to_string())?;
     let signing_key = rcgen::KeyPair::generate()
@@ -118,6 +114,22 @@ fn generate_identity() -> Result<LocalHttpsIdentity, String> {
         signing_key.serialize_der(),
         expires_at_unix,
     )
+}
+
+fn certificate_params() -> Result<rcgen::CertificateParams, String> {
+    let mut params =
+        rcgen::CertificateParams::new(vec!["localhost".to_string(), "*.rcp.localhost".to_string()])
+            .map_err(|error| format!("could not generate the local HTTPS identity: {error}"))?;
+    params.is_ca = rcgen::IsCa::ExplicitNoCa;
+    params.key_usages = vec![
+        rcgen::KeyUsagePurpose::DigitalSignature,
+        rcgen::KeyUsagePurpose::KeyEncipherment,
+    ];
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+    let now = time::OffsetDateTime::now_utc();
+    params.not_before = now - time::Duration::days(CERTIFICATE_CLOCK_SKEW_DAYS);
+    params.not_after = now + time::Duration::days(CERTIFICATE_LIFETIME_DAYS);
+    Ok(params)
 }
 
 fn identity_from_parts(
@@ -320,7 +332,11 @@ fn load_and_migrate_identity(
                 Ok(identity)
             }
         }
-        version if LEGACY_IDENTITY_VERSIONS.contains(&version) => {
+        LEGACY_IDENTITY_VERSION_WITH_EXPIRATION => {
+            decode_identity_version(&encoded, LEGACY_IDENTITY_VERSION_WITH_EXPIRATION, true)?;
+            replace_stored_identity(path, key)
+        }
+        version if LEGACY_IDENTITY_VERSIONS_WITHOUT_EXPIRATION.contains(&version) => {
             decode_identity_version(&encoded, version, false)?;
             replace_stored_identity(path, key)
         }
@@ -572,6 +588,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn macos_bundles_allow_manual_trust_only_for_team_origin_family() {
+        for plist in [
+            include_str!("../Info.plist"),
+            include_str!("../Info.dev.template.plist"),
+        ] {
+            assert!(plist.contains("<key>NSExceptionDomains</key>"));
+            assert!(plist.contains("<key>rcp.localhost</key>"));
+            assert!(plist.contains("<key>NSIncludesSubdomains</key>"));
+            assert!(plist.contains("<key>NSExceptionAllowsInsecureHTTPLoads</key>"));
+            assert!(!plist.contains("<key>NSAllowsArbitraryLoads</key>"));
+            assert!(!plist.contains("<key>NSAllowsArbitraryLoadsInWebContent</key>"));
+        }
+    }
+
+    #[test]
+    fn generated_identity_is_an_explicit_tls_server_leaf() {
+        let params = certificate_params().unwrap();
+        assert_eq!(params.is_ca, rcgen::IsCa::ExplicitNoCa);
+        assert_eq!(
+            params.key_usages,
+            vec![
+                rcgen::KeyUsagePurpose::DigitalSignature,
+                rcgen::KeyUsagePurpose::KeyEncipherment,
+            ]
+        );
+        assert_eq!(
+            params.extended_key_usages,
+            vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth]
+        );
+    }
+
+    #[test]
     fn generated_identity_round_trips_as_one_bounded_payload() {
         let identity = generate_identity().unwrap();
         assert_eq!(identity.fingerprint_sha256.len(), 64);
@@ -626,6 +674,28 @@ mod tests {
         assert_eq!(
             decode_identity(&encoded).unwrap().certificate_der,
             migrated.certificate_der
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn version_three_identity_is_atomically_reissued_as_a_server_leaf() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(SEALED_IDENTITY_FILENAME);
+        let original = generate_identity().unwrap();
+        let mut version_three = encode_identity(&original).unwrap();
+        version_three[IDENTITY_HEADER.len()] = LEGACY_IDENTITY_VERSION_WITH_EXPIRATION;
+        let key = [10_u8; SEALING_KEY_BYTES];
+        let sealed = seal_identity(&version_three, &key).unwrap();
+
+        let migrated = load_and_migrate_identity(&path, &sealed, &key).unwrap();
+
+        assert_ne!(migrated.certificate_der, original.certificate_der);
+        let stored = read_sealed_identity(&path).unwrap().unwrap();
+        let encoded = open_identity(&stored, &key).unwrap();
+        assert_eq!(
+            encoded_identity_version(&encoded).unwrap(),
+            IDENTITY_VERSION
         );
     }
 

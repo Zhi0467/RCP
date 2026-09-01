@@ -1,7 +1,7 @@
 # Team spaces use desktop-owned pinned local HTTPS origins
 
-**Status:** accepted on 2026-08-30 after the Q11 live WKWebView drive; hostname
-and certificate-lifecycle repair verified on 2026-09-01.
+**Status:** accepted on 2026-08-30 after the Q11 live WKWebView drive; hostname,
+certificate lifecycle, and installed-app navigation verified on 2026-09-01.
 
 ## Decision
 
@@ -23,6 +23,15 @@ saved-connection registry. The Tauri capability names the bounded
 `*.rcp.localhost` family, but that capability is not navigation authority. The
 saved-origin check and the certificate pin are independent fences.
 
+The macOS bundle's App Transport Security configuration names only
+`rcp.localhost`, includes its direct connection subdomains, and enables the
+per-domain exception Apple requires before an app may loosen server trust for a
+self-signed HTTPS server. It does not create an HTTP entrance: the local proxy
+speaks TLS, the main-window navigation owner admits only exact saved HTTPS
+origins, and the challenge handler accepts only the pinned leaf after normal
+hostname, validity, and server-use evaluation. No app-wide or Web-content-wide
+ATS exception is enabled.
+
 A malformed, unreadable, or unauthenticated encrypted identity fails app
 startup. So does either half of a partial record: an identity without its exact
 Keychain sealing key, or a key without its identity file. RCP generates a new
@@ -39,11 +48,13 @@ server identity, or member credential. Earlier registry formats still have no
 production writer and remain rejected rather than guessed through an
 unverified origin rule.
 
-The encrypted identity record is version 3. It records certificate expiration,
-uses a 365-day self-signed leaf, and rotates atomically during startup in the
-last seven days before expiry. Valid version 1 and version 2 identity records
-are replaced through the same authenticated storage owner; malformed,
-unauthenticated, unknown-version, or partial records still fail closed.
+The encrypted identity record is version 4. It records certificate expiration,
+uses a 365-day self-signed leaf that explicitly carries `CA:FALSE`, TLS
+server-auth extended usage, and digital-signature/key-encipherment usage, and
+rotates atomically during startup in the last seven days before expiry. Valid
+version 1 through version 3 identity records are reissued through the same
+authenticated storage owner; malformed, unauthenticated, unknown-version, or
+partial records still fail closed.
 
 This source-mode ACL is a rebuild-stability boundary, not same-account process
 isolation. Because it authorizes the general-purpose `/usr/bin/security`
@@ -93,10 +104,12 @@ team server.
 D3 now terminates this HTTPS endpoint over the desktop-owned real SSH tunnel.
 The retained real WKWebView probe passes login and restart with the repaired
 wildcard hostname, preserves two isolated cookies, and refuses a second
-certificate. D4-D5 are implemented and hermetically verified, and one real team
-member connection is enrolled and stored, but the exact visible source-built
-two-team-space switching drive remains open. Three differently hashed source
-bundles reused the same encrypted identity and Keychain sealing key without a
-prompt or unintended rotation. A second macOS machine and signed packaged app
+certificate. The production leaf profile and narrow per-domain ATS exception
+were then verified by opening the real enrolled team project from the installed
+source-built app. The unbundled probe did not expose that the installed app's
+default ATS policy still blocked its otherwise accepted manual trust decision.
+D4-D5 are implemented and hermetically verified, and one real team member
+connection is enrolled and stored, but the exact visible two-team-space
+switching drive remains open. A second macOS machine and signed packaged app
 remain later compatibility qualification; they do not reopen this source-built
 client decision.

@@ -50,6 +50,48 @@ static NSString *RcpLeafFingerprint(SecTrustRef trust) {
   return result;
 }
 
+// Pinning identifies the only certificate this app may trust, but WebKit still
+// expects a successful server-trust evaluation. Make that exact leaf the sole
+// anchor, then retain the platform's hostname, validity, and server-use checks.
+static BOOL RcpEvaluatePinnedLeaf(SecTrustRef trust) {
+  if (trust == NULL) {
+    return NO;
+  }
+  CFArrayRef chain = SecTrustCopyCertificateChain(trust);
+  if (chain == NULL || CFArrayGetCount(chain) == 0) {
+    if (chain != NULL) {
+      CFRelease(chain);
+    }
+    return NO;
+  }
+  SecCertificateRef leaf = (SecCertificateRef)CFArrayGetValueAtIndex(chain, 0);
+  const void *values[] = {leaf};
+  CFArrayRef anchors =
+      CFArrayCreate(kCFAllocatorDefault, values, 1, &kCFTypeArrayCallBacks);
+  OSStatus anchor_status = SecTrustSetAnchorCertificates(trust, anchors);
+  OSStatus only_status =
+      anchor_status == errSecSuccess ? SecTrustSetAnchorCertificatesOnly(trust, true)
+                                    : anchor_status;
+  CFRelease(anchors);
+  CFRelease(chain);
+  if (anchor_status != errSecSuccess || only_status != errSecSuccess) {
+    fprintf(stderr, "[https-trust] could not constrain pinned trust anchors (%d, %d)\n",
+            (int)anchor_status, (int)only_status);
+    return NO;
+  }
+
+  CFErrorRef trust_error = NULL;
+  BOOL trusted = SecTrustEvaluateWithError(trust, &trust_error);
+  if (!trusted) {
+    NSError *error = CFBridgingRelease(trust_error);
+    fprintf(stderr, "[https-trust] pinned certificate failed server trust: %s\n",
+            error.localizedDescription.UTF8String ?: "<unknown>");
+  } else if (trust_error != NULL) {
+    CFRelease(trust_error);
+  }
+  return trusted;
+}
+
 static void RcpHandleChallenge(id self, SEL _cmd, id webView,
                                NSURLAuthenticationChallenge *challenge,
                                RcpChallengeCompletion completionHandler) {
@@ -66,7 +108,8 @@ static void RcpHandleChallenge(id self, SEL _cmd, id webView,
   SecTrustRef trust = space.serverTrust;
   NSString *observed = RcpLeafFingerprint(trust);
   if (observed != nil && gPinnedFingerprint != nil &&
-      [observed caseInsensitiveCompare:gPinnedFingerprint] == NSOrderedSame) {
+      [observed caseInsensitiveCompare:gPinnedFingerprint] == NSOrderedSame &&
+      RcpEvaluatePinnedLeaf(trust)) {
     gAccepted += 1;
     fprintf(stderr, "[https-trust] accepted pinned certificate for %s\n",
             space.host.UTF8String ?: "<unknown>");

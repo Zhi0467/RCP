@@ -171,11 +171,17 @@ cdhash; the value never enters argv, URLs, page state, logs, or native command
 output. The desktop pins the certificate in the live WKWebView navigation
 delegate and never installs system-wide trust. A malformed, unauthenticated,
 unknown-version, or partial identity/key pair fails startup rather than being
-silently replaced. The current identity record stores its expiration, uses a
-365-day certificate for `*.rcp.localhost`, and rotates atomically during the
-final seven days. Valid earlier identity records and the exact previously
-shipped `rcp-<id>.localhost` registry origin migrate without changing the saved
-team connection or its member credential.
+silently replaced. The current version-4 identity record stores its expiration,
+uses a 365-day explicit non-CA leaf for `*.rcp.localhost` with TLS server-auth
+and key-usage extensions, and rotates atomically during the final seven days.
+Valid earlier identity records are reissued through the authenticated identity
+owner, while the exact previously shipped `rcp-<id>.localhost` registry origin
+migrates without changing the saved team connection or its member credential.
+The macOS bundle makes the narrow ATS exception required for manual server-trust
+evaluation only for `rcp.localhost` and its direct subdomains. This does not
+permit HTTP application navigation: the proxy speaks TLS, navigation still
+requires one exact saved HTTPS origin, and the native handler accepts only the
+pinned leaf after hostname, validity, and server-use evaluation.
 The tool ACL solves source-rebuild stability; because a same-UID process can
 invoke the same general-purpose Apple tool, it is not same-account read
 isolation. That limitation is accepted only under the current cooperative
