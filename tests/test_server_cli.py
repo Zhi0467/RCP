@@ -807,6 +807,55 @@ def test_operator_pause_continues_in_one_tty_wizard(
     assert "press Enter to continue" in output.getvalue()
 
 
+def test_service_account_wizard_does_not_sudo_back_into_its_own_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TERM", "xterm-256color")
+    execution = _operator_execution()
+    plan = execution.events[0]
+    paused_event = execution.events[-1]
+    assert isinstance(plan, ServerPlanEvent)
+    assert isinstance(paused_event, ServerStepEvent)
+    action = ("sudo", "-n", "-u", "rcp", "-H", "ssh", "-T", "git@github.com")
+    resume = (
+        "sudo",
+        "-n",
+        "-u",
+        "rcp",
+        "-H",
+        "rcp",
+        "server",
+        "project",
+        "provision",
+        REQUEST_ID,
+    )
+    paused = paused_event.step.model_copy(
+        update={"actions": (CommandAction(argv=action),), "resume_argv": resume}
+    )
+
+    def handler(_request, _identity):
+        def execute(emitter, _input_stream) -> None:
+            emitter.emit_step(paused, timestamp=NOW)
+
+        return PreparedServerCommand(plan=plan, execute=execute)
+
+    commands: list[tuple[str, ...]] = []
+    exit_code = run_server_command(
+        _parse("server", "project", "provision", REQUEST_ID),
+        handler=handler,
+        identity=CallerIdentity(uid=1014, username="rcp", host="lab.example"),
+        stream=_TTYStringIO(),
+        wizard_input=_TTYStringIO("\n"),
+        wizard_runner=lambda argv: commands.append(argv) or 0,
+    )
+
+    assert exit_code == 0
+    assert commands == [
+        ("ssh", "-T", "git@github.com"),
+        ("rcp", "server", "project", "provision", REQUEST_ID),
+    ]
+
+
 def test_team_init_wizard_waits_for_the_one_time_code_to_be_saved(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -481,6 +481,7 @@ def run_server_command(
     ):
         return _continue_interactive_wizard(
             execution,
+            identity=resolved_identity,
             input_stream=prompt_input,
             output_stream=output,
             runner=wizard_runner or _run_wizard_command,
@@ -491,6 +492,7 @@ def run_server_command(
 def _continue_interactive_wizard(
     execution: ServerCommandExecution,
     *,
+    identity: CallerIdentity,
     input_stream: TextIO,
     output_stream: TextIO,
     runner: WizardCommandRunner,
@@ -512,7 +514,7 @@ def _continue_interactive_wizard(
     commands = [action.argv for action in step.actions if action.kind == "command"]
     for command in commands:
         if command != resume:
-            runner(command)
+            runner(_wizard_command_for_identity(command, identity))
     if step.phase == "team_space_init" and commands:
         output_stream.write("Save the one-time enrollment code, then press Enter to continue: ")
         output_stream.flush()
@@ -525,7 +527,17 @@ def _continue_interactive_wizard(
             return execution.exit_code
     if not resume:
         return execution.exit_code
-    return runner(resume)
+    return runner(_wizard_command_for_identity(resume, identity))
+
+
+def _wizard_command_for_identity(
+    argv: tuple[str, ...],
+    identity: CallerIdentity,
+) -> tuple[str, ...]:
+    own_account_prefix = ("sudo", "-n", "-u", identity.username, "-H")
+    if identity.uid != 0 and argv[: len(own_account_prefix)] == own_account_prefix:
+        return argv[len(own_account_prefix) :]
+    return argv
 
 
 def _run_wizard_command(argv: tuple[str, ...]) -> int:
