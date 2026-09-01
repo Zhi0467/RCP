@@ -307,16 +307,77 @@ does not change global `sshd_config`.
 
 RCP does not log in to Codex, Claude, or a later provider. Authenticate with the
 provider's native command under the operating-system account that will execute
-it. For server-local execution that is `rcp`:
+it. For server-local execution that account is `rcp`.
+
+Stay in the ordinary operator SSH session. You do not need to log in directly as
+`rcp`, enable its password, or open an interactive shell as it. Prefix each
+provider command with `sudo -u rcp -H`; `-H` makes the provider store its binary,
+settings, sessions, and credential under `/home/rcp` instead of the operator's
+home.
+
+### Codex
+
+If `codex` is not already installed for the service account, use OpenAI's
+standalone installer:
 
 ```bash
-sudo -u rcp -H /bin/bash
+sudo -u rcp -H /bin/bash -lc \
+  'curl -fsSL https://chatgpt.com/codex/install.sh | sh'
 ```
 
-Run the provider's own install and login instructions in that shell, exit it,
-then use the exact `rcp server provider check ...` command printed by project
-setup. RCP checks and uses provider-native state; it does not copy a member's
-personal provider directory or store the credential itself.
+On a remote or headless server, use device-code login. Open the displayed URL in
+the operator's local browser and enter the displayed one-time code there:
+
+```bash
+sudo -u rcp -H /bin/bash -lc 'codex login --device-auth'
+```
+
+Confirm that the credential belongs to `rcp` and is usable:
+
+```bash
+sudo -u rcp -H /bin/bash -lc 'command -v codex && codex login status'
+```
+
+### Claude Code
+
+Install Anthropic's recommended native build into `/home/rcp/.local`:
+
+```bash
+sudo -u rcp -H /bin/bash -lc \
+  'curl -fsSL https://claude.ai/install.sh | bash'
+```
+
+Start the Claude subscription login. Open the displayed URL in the operator's
+local browser. If Claude asks for a returned code, paste it only into this
+terminal prompt:
+
+```bash
+sudo -u rcp -H /bin/bash -lc 'claude auth login --claudeai'
+```
+
+Confirm the installed binary and authentication state:
+
+```bash
+sudo -u rcp -H /bin/bash -lc \
+  'command -v claude && claude --version && claude auth status'
+```
+
+The login commands may be rerun safely if the SSH connection closes before the
+browser flow finishes. Never paste a provider token, returned login code, or a
+provider credential file into RCP, a command argument, a log, an issue, or chat.
+RCP only invokes the provider-native executable and checks its native status.
+
+After the project wizard names its project id, run the exact readiness command
+it prints:
+
+```bash
+sudo -u rcp -H /usr/local/bin/rcp server provider check --project <project-id>
+```
+
+Installing or authenticating a provider does not silently add it to an existing
+project. Select that provider for an agent profile in project setup, then run the
+printed check. RCP does not copy a member's personal provider directory or store
+the credential itself.
 
 ## 12. Add the team space in the desktop app
 
