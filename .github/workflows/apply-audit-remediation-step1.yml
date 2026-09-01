@@ -1,0 +1,32 @@
+name: Apply audit remediation step 1
+
+on:
+  push:
+    branches:
+      - audit-remediation-2026-09-01
+    paths:
+      - .github/audit-remediation-step1.patch
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audit-remediation-2026-09-01
+          fetch-depth: 0
+      - name: Verify and apply patch
+        run: |
+          echo "cca4d4aa1298e9fff9657d7eea9e9e95663648d8ae59f17f49703758e0ce8041  .github/audit-remediation-step1.patch" | sha256sum -c -
+          git apply --check .github/audit-remediation-step1.patch
+          git apply --index .github/audit-remediation-step1.patch
+          rm -f .github/audit-remediation-step1.patch
+          rm -f .github/workflows/apply-audit-remediation-step1.yml
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix: enforce authority and auto-research fences"
+          git push origin HEAD:audit-remediation-2026-09-01
