@@ -44,6 +44,30 @@ GUIDANCE_RULE_ID = "experiment.guidance-validity.v1"
 STATUS_EVENT_RULE_ID = "lifecycle.status-events.v1"
 DEFAULT_MAX_RULE_FIRINGS = 128
 
+# Transition identity deliberately names its complete provenance contract. New
+# optional Patch fields do not become durable identity inputs by accident.
+_TRANSITION_PROVENANCE_FIELDS = (
+    "schema_generation",
+    "kind",
+    "author",
+    "producer",
+    "run_truth_scope",
+    "repositories_read",
+    "processed_cursors",
+    "source_operation_id",
+    "source_effect_id",
+    "source_effect_sha256",
+    "experiment_control_node_id",
+    "experiment_decision_bundle",
+    "project_identity",
+    "project_home_transfer",
+    "authorized_by",
+    "profile",
+    "task_id",
+    "episode_id",
+    "branch_merge",
+)
+
 
 @dataclass(frozen=True)
 class TransitionRule:
@@ -187,12 +211,12 @@ class GraphTransitionManager:
         source_actions: list[tuple[Patch, GraphOperation]] = []
         groups: list[TransitionInitiatingGroup] = []
         for group_index, patch in enumerate(patches):
+            if not patch.ops:
+                raise ValueError("every initiating patch must contain a semantic operation")
             indexes: list[int] = []
             for operation in patch.ops:
                 indexes.append(len(source_actions))
                 source_actions.append((patch, operation))
-            if not indexes:
-                continue
             groups.append(
                 TransitionInitiatingGroup(
                     group_id=f"group-{group_index + 1}",
@@ -327,6 +351,10 @@ class GraphTransitionManager:
             "episode_id",
             "experiment_control_node_id",
             "experiment_decision_bundle",
+            "run_truth_scope",
+            "repositories_read",
+            "processed_cursors",
+            "branch_merge",
         )
         for patch in patches[1:]:
             mismatched = [
@@ -827,25 +855,12 @@ def _transition_id(
     envelopes = []
     for patch in patches:
         document = patch.model_dump(mode="json")
-        # T1 added this optional canonical identity payload after transition ids
-        # were already durable.  It is not valid on a transition-producing
-        # patch, so its model default must not change historical hashes.
+        envelope = {field: document[field] for field in _TRANSITION_PROVENANCE_FIELDS}
+        # T1 predates the explicit allowlist and already established this
+        # historical omission for its default value.
         if document.get("project_home_transfer") is None:
-            document.pop("project_home_transfer", None)
-        for field in (
-            "revision",
-            "created_at",
-            "summary",
-            "change_summary",
-            "ops",
-            "admission",
-            "admission_messages",
-            "human_action",
-            "agent_action",
-            "transition",
-        ):
-            document.pop(field, None)
-        envelopes.append(document)
+            envelope.pop("project_home_transfer")
+        envelopes.append(envelope)
     return _sha256(
         {
             "pre_head": pre_head.model_dump(mode="json"),

@@ -177,10 +177,12 @@ def test_proposal_approval_uses_the_declared_intent_standing_target(
 
     state = service.decide_proposal(
         proposal_id,
-        ProposalDecisionRequest(decision="approved"),
+        ProposalDecisionRequest(decision="approved", reason="The proposal is sound."),
     )
 
     assert state.proposals[proposal_id].status == "approved"
+    assert state.proposals[proposal_id].resolution_reason == "The proposal is sound."
+    assert state.proposals[proposal_id].rejection_reason is None
     expected_standing = {
         "content_change": ("accepted", "contested", "contested"),
         "removal": ("contested", None, "contested"),
@@ -222,10 +224,12 @@ def test_proposal_rejection_resolves_only_and_leaves_graph_exactly_unchanged(
 
     state = service.decide_proposal(
         proposal_id,
-        ProposalDecisionRequest(decision="rejected"),
+        ProposalDecisionRequest(decision="rejected", reason="The evidence is insufficient."),
     )
 
     assert state.proposals[proposal_id].status == "rejected"
+    assert state.proposals[proposal_id].resolution_reason == "The evidence is insufficient."
+    assert state.proposals[proposal_id].rejection_reason == "The evidence is insufficient."
     assert state.nodes == before.nodes
     assert state.edges == before.edges
 

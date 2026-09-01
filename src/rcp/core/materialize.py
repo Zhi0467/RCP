@@ -49,6 +49,7 @@ from rcp.core.validation import (
     proposal_dependencies,
     validate_patch,
 )
+from rcp.core.validation.constants import LEGACY_COMPATIBILITY_UPDATE_FIELDS
 
 NODE_ADAPTER = TypeAdapter(ProjectNode)
 AcceptedPatchObserver = Callable[[GraphState, Patch, GraphState], None]
@@ -74,12 +75,36 @@ def materialize_patches(
 ) -> MaterializationResult:
     """Replay patches, optionally observing successful applications through a read-only callback."""
 
-    replayed_patches = list(patches)
     initial_scope = list(initial_truth_scope)
     state = GraphState(project_truth_scope=initial_scope)
     state.coverage = state.coverage.model_copy(
         update={"repositories_never_seen": sorted(initial_scope)}
     )
+    return materialize_patches_from_state(
+        patches,
+        initial_state=state,
+        repository_aliases=repository_aliases,
+        machine_aliases=machine_aliases,
+        default_run_truth_scope=default_run_truth_scope,
+        state_repository=state_repository,
+        accepted_patch_observer=accepted_patch_observer,
+    )
+
+
+def materialize_patches_from_state(
+    patches: Iterable[Patch],
+    *,
+    initial_state: GraphState,
+    repository_aliases: Iterable[str] | None = None,
+    machine_aliases: Iterable[str] | None = None,
+    default_run_truth_scope: Iterable[str] | None = None,
+    state_repository: str | None = None,
+    accepted_patch_observer: AcceptedPatchObserver | None = None,
+) -> MaterializationResult:
+    """Replay a tail from an already materialized immutable graph state."""
+
+    replayed_patches = list(patches)
+    state = initial_state
     reports: dict[int, ValidationReport] = {}
     descriptors: list[dict[str, str]] = []
     processed_cursors: dict[str, str] = {}
@@ -326,11 +351,7 @@ def _apply_patch(
                 changes = update.changes
                 immutable_fields = IMMUTABLE_NODE_UPDATE_FIELDS
                 if patch.schema_generation == 1:
-                    immutable_fields = immutable_fields - {
-                        "legacy_strength",
-                        "current_summary_stale",
-                        "next_action_stale",
-                    }
+                    immutable_fields = immutable_fields - LEGACY_COMPATIBILITY_UPDATE_FIELDS
                 elif operation_index in generated_operation_indexes:
                     immutable_fields = immutable_fields - {
                         "current_summary_stale",
@@ -483,7 +504,9 @@ def _apply_patch(
                         "resolved_by": "human" if patch.author == "human" else "agent",
                         "resolved_by_operation_id": patch.source_operation_id,
                         "resolution_reason": resolution.reason,
-                        "rejection_reason": resolution.reason,
+                        "rejection_reason": (
+                            resolution.reason if resolution.status == "rejected" else None
+                        ),
                     }
                 )
         elif isinstance(op, WithdrawProposalsOperation):
