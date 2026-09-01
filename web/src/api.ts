@@ -190,10 +190,9 @@ export function clearProjectCaches(apiBase: string): Promise<ProjectCacheMetrics
 }
 
 export function clearAllProjectCaches(projectId: string): Promise<ProjectCacheMetrics> {
-  return api<ProjectCacheMetrics>(
-    `/api/projects/${encodeURIComponent(projectId)}/caches/all`,
-    { method: "DELETE" },
-  );
+  return api<ProjectCacheMetrics>(`/api/projects/${encodeURIComponent(projectId)}/caches/all`, {
+    method: "DELETE",
+  });
 }
 
 export function loadProjectReadiness(

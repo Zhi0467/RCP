@@ -902,6 +902,7 @@ def test_late_child_work_watcher_delivery_is_fenced_by_parent_episode(tmp_path) 
     assert stopped.status == "stopped"
     assert stopped.notified is True
 
+
 def test_resume_uses_the_latest_leaf_exact_session_without_spending_another_unit(
     tmp_path,
 ) -> None:
