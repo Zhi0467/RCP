@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import json
+import logging
 import os
 import socket
 import stat
@@ -34,6 +35,8 @@ from rcp.limits import (
 from rcp.server_ops.models import SERVER_CLI_MAX_STEPS, ServerStep, redact_server_text
 from rcp.server_ops.update_cutover import TERMINAL_UPDATE_STATES, UpdateOperationState
 from rcp.server_runtime import ServerMetadata, read_server_metadata
+
+logger = logging.getLogger(__name__)
 
 SERVER_CONTROL_PROTOCOL_VERSION = 9
 SERVER_CONTROL_MAX_REQUEST_BYTES = 64 * 1024
@@ -1492,6 +1495,10 @@ class ServerControlServer:
                 )
                 return
             except Exception:
+                logger.exception(
+                    "Installed-server control operation %s failed after request validation.",
+                    request.operation,
+                )
                 self._send_error(
                     connection,
                     request_id=request_id,
