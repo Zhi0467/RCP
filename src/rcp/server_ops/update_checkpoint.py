@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -38,7 +38,6 @@ from rcp.server_ops.backup_models import (
 from rcp.server_ops.backup_project_files import (
     BackupProjectFileCaptureReceipt,
 )
-from rcp.server_ops.rehearsal import VerifiedCandidateReceipt
 from rcp.sources.imported import (
     ImportedProviderSourceInventory,
     ImportedProviderSourceStore,
@@ -46,6 +45,9 @@ from rcp.sources.imported import (
 from rcp.storage import AppStore
 from rcp.storage.models import ProjectTransferUploadRecord
 from rcp.transfer.target import target_transfer_archive_path
+
+if TYPE_CHECKING:
+    from rcp.server_ops.rehearsal import VerifiedCandidateReceipt
 
 UPDATE_CHECKPOINT_SCHEMA_VERSION = 1
 ROLLBACK_JOURNAL_SCHEMA_VERSION = 1
@@ -439,6 +441,8 @@ def _read_candidate_receipt(
     expected_uid: int,
     expected_sha256: str,
 ) -> tuple[VerifiedCandidateReceipt, bytes]:
+    from rcp.server_ops.rehearsal import VerifiedCandidateReceipt
+
     if _SHA256.fullmatch(expected_sha256) is None:
         raise ValueError("the expected verified-candidate receipt digest is invalid")
     payload = _read_private_file(path, expected_uid=expected_uid, expected_mode=_RECEIPT_MODE)

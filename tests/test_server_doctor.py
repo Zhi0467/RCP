@@ -5,6 +5,7 @@ import os
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import uuid
 from dataclasses import replace
@@ -303,6 +304,25 @@ def test_doctor_reports_a_selected_release_that_needs_runtime_restart(
     assert problems == [
         "selected source release needs safe runtime restart via sudo rcp server update"
     ]
+
+
+def test_doctor_update_inspection_does_not_load_the_rehearsal_test_client() -> None:
+    result = subprocess.run(
+        (
+            sys.executable,
+            "-W",
+            "error",
+            "-c",
+            "import sys; import rcp.server_ops.update_checkpoint; "
+            "assert 'rcp.server_ops.rehearsal' not in sys.modules; "
+            "assert 'fastapi.testclient' not in sys.modules",
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_running_release_identity_and_health_are_exact(tmp_path: Path) -> None:
