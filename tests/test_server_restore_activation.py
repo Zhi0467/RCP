@@ -323,6 +323,41 @@ def test_root_restore_starts_disabled_then_enables_after_private_commit(
         shutil.rmtree(layout.runtime_dir)
 
 
+def test_restore_reentry_preserves_evolved_database_after_project_publication(
+    tmp_path: Path,
+) -> None:
+    layout, ready = _activation_ready(tmp_path)
+    published = ready.model_copy(
+        update={
+            "phase": "projects_published",
+            "old_authority_review": None,
+            "member_roster_review": None,
+        }
+    )
+    write_restore_journal(published, layout, uid=os.geteuid(), gid=os.getegid())
+
+    restored_database = layout.data_dir / "rcp.sqlite3"
+    restored_database.chmod(0o600)
+    store = AppStore(restored_database)
+    first = store.active_team_member_authority()[0]
+    store.create_team_invitation(first.member_id)
+    assert (
+        hashlib.sha256(restored_database.read_bytes()).hexdigest()
+        != published.candidate_sqlite_sha256
+    )
+
+    machine = _ReviewMachine(
+        layout,
+        config_loader=lambda _path: None,  # type: ignore[arg-type]
+        service_control=_StoppedService(),  # type: ignore[arg-type]
+        service_identity=(os.geteuid(), os.getegid()),
+        root_identity=(os.geteuid(), os.getegid()),
+        clock=lambda: NOW,
+    )
+    assert machine.install_sqlite_candidate(published) == published
+    assert machine.verify_offline_candidate(published) == published
+
+
 def test_restore_reviews_old_authority_then_removes_stale_member_offline(
     tmp_path: Path,
 ) -> None:

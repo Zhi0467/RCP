@@ -77,6 +77,13 @@ RESTORE_JOURNAL_NAME = "restore.json"
 RESTORE_JOURNAL_MODE = 0o600
 RESTORE_DIRECTORY_MODE = 0o700
 RESTORE_ARCHIVE_FORMAT = BACKUP_ARCHIVE_FORMAT
+_CANDIDATE_BYTE_EXACT_PHASES = frozenset(
+    {
+        "sqlite_restored",
+        "checkouts_recovering",
+        "checkouts_ready",
+    }
+)
 
 # Every schema era accepted by the immutable server-upgrade harness, plus the
 # current schema. A later schema change must deliberately extend this set before
@@ -1785,7 +1792,13 @@ class LinuxRestoreMachine:
             raise RestoreRefused("The durable restore operation changed before database install.")
         target = self.layout.data_dir / "rcp.sqlite3"
         if current.phase != "archive_verified":
-            _require_restored_target(current, target, uid=self.service_uid, gid=self.service_gid)
+            _require_restored_target(
+                current,
+                target,
+                uid=self.service_uid,
+                gid=self.service_gid,
+                require_candidate_bytes=current.phase in _CANDIDATE_BYTE_EXACT_PHASES,
+            )
             return current
         candidate = Path(current.candidate_sqlite_path)
         digest, _ = _hash_regular_file(candidate, expected_uid=self.service_uid)
@@ -1832,7 +1845,13 @@ class LinuxRestoreMachine:
         if current.operation_id != journal.operation_id or current.phase == "archive_verified":
             raise RestoreRefused("The restore journal has not reached the offline SQLite boundary.")
         target = self.layout.data_dir / "rcp.sqlite3"
-        _require_restored_target(current, target, uid=self.service_uid, gid=self.service_gid)
+        _require_restored_target(
+            current,
+            target,
+            uid=self.service_uid,
+            gid=self.service_gid,
+            require_candidate_bytes=current.phase in _CANDIDATE_BYTE_EXACT_PHASES,
+        )
         _verify_sqlite_integrity(target)
         try:
             self.service_control.fence_stopped_disabled()
@@ -3367,6 +3386,7 @@ def _require_restored_target(
     *,
     uid: int,
     gid: int,
+    require_candidate_bytes: bool = True,
 ) -> None:
     entries = tuple(target.parent.iterdir())
     if entries != (target,):
@@ -3378,9 +3398,10 @@ def _require_restored_target(
         or stat.S_IMODE(info.st_mode) != RESTORE_JOURNAL_MODE
     ):
         raise RestoreRefused("The restored database has unsafe ownership or mode.")
-    digest, _ = _hash_regular_file(target, expected_uid=uid)
-    if digest != journal.candidate_sqlite_sha256:
-        raise RestoreRefused("The restored database differs from the journaled candidate.")
+    if require_candidate_bytes:
+        digest, _ = _hash_regular_file(target, expected_uid=uid)
+        if digest != journal.candidate_sqlite_sha256:
+            raise RestoreRefused("The restored database differs from the journaled candidate.")
 
 
 def _require_protected_identity(path: Path, *, root_uid: int) -> None:
