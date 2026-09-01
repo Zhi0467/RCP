@@ -11,6 +11,7 @@ It takes the engine because admission ends in ordinary task creation and launch.
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
@@ -50,6 +51,9 @@ from rcp.transport import RemoteRunStage
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -928,9 +932,9 @@ def stop_auto_research_child_work(
 ) -> AgentTaskRecord:
     """Durably stop one route and gracefully pause its current live attempt."""
 
-    route, current = auto_research_child_work_task(tasks, episode_id, worker_id)
-    tasks.store.request_auto_research_child_work_stop(route.worker_id)
-    current = tasks._require_operation(current.operation_id)
+    route, _current = auto_research_child_work_task(tasks, episode_id, worker_id)
+    route = tasks.store.request_auto_research_child_work_stop(route.worker_id)
+    current = tasks._require_operation(route.current_operation_id)
     if current.status in {"queued", "running"}:
         return tasks.pause(current.operation_id)
     if current.status == "pausing":
@@ -1562,8 +1566,13 @@ def auto_research_admission_exhausted(tasks: BackgroundAgentTasks, episode: Epis
                 level="warning",
             )
     if tasks.on_auto_research_admission_exhausted is not None:
-        with suppress(Exception):
+        try:
             tasks.on_auto_research_admission_exhausted(current)
+        except Exception:
+            logger.exception(
+                "Auto-research admission-exhaustion hook failed for episode %s.",
+                current.episode_id,
+            )
 
 
 def _validate_existing_auto_research_wake(

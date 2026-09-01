@@ -101,8 +101,13 @@ def _project_scoped_routes(app: FastAPI) -> list[APIRoute]:
         nested = getattr(route, "original_router", None)
         if nested is not None:
             pending.extend(nested.routes)
-        elif isinstance(route, APIRoute) and "{project_id}" in route.path:
-            found.append(route)
+        elif isinstance(route, APIRoute):
+            has_project_path = "{project_id}" in route.path
+            has_project_query = any(
+                parameter.name == "project_id" for parameter in route.dependant.query_params
+            )
+            if has_project_path or has_project_query:
+                found.append(route)
     return found
 
 
@@ -349,6 +354,11 @@ def test_an_exact_non_member_project_id_answers_404_and_never_403(manifest, tmp_
     ):
         assert client.get(path).status_code == 404, path
 
+    refused_clear = client.delete(f"/api/projects/{project_id}/caches/all")
+    unknown_clear = client.delete("/api/projects/no-such-project-at-all/caches/all")
+    assert refused_clear.status_code == unknown_clear.status_code == 404
+    assert refused_clear.json() == unknown_clear.json() == {"detail": "Project not found"}
+
 
 def test_a_non_member_dispatch_never_launches_a_provider(manifest, tmp_path) -> None:
     app, client, store, people, acting = _team_app(tmp_path)
@@ -426,6 +436,18 @@ def test_a_project_scoped_route_declared_outside_the_router_fails_the_route_test
         return {"project_id": project_id}
 
     assert _routes_missing_membership(app) == ["['GET'] /api/projects/{project_id}/smuggled"]
+
+
+def test_a_project_id_query_parameter_declared_outside_the_router_fails_the_route_test(
+    manifest, tmp_path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "personal")
+
+    @app.delete("/api/smuggled-cache")
+    def smuggled_cache(project_id: str) -> dict[str, str]:  # pragma: no cover - never called
+        return {"project_id": project_id}
+
+    assert _routes_missing_membership(app) == ["['DELETE'] /api/smuggled-cache"]
 
 
 # --- membership is operational, never canonical ------------------------------

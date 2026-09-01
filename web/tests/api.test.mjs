@@ -71,7 +71,7 @@ test("clearAllProjectCaches returns authoritative zero metrics for the open proj
   };
   try {
     assert.deepEqual(await clearAllProjectCaches("project/with spaces"), clearedMetrics);
-    assert.equal(request.path, "/api/caches?project_id=project%2Fwith%20spaces");
+    assert.equal(request.path, "/api/projects/project%2Fwith%20spaces/caches/all");
     assert.equal(request.init.method, "DELETE");
   } finally {
     globalThis.fetch = originalFetch;

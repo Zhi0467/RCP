@@ -396,6 +396,18 @@ def _clear_stale_turn_handoffs(
     clear_turn_handoff_files(mailbox)
 
 
+def _prepare_local_chat_workspace(stage: Path) -> Path:
+    """Return the writable child of a local stage without admitting staged inputs."""
+
+    workspace = stage / "workspace"
+    if os.path.lexists(workspace):
+        if workspace.is_symlink() or not workspace.is_dir():
+            raise ValueError("local chat workspace is unsafe")
+    else:
+        workspace.mkdir(mode=0o700)
+    return workspace
+
+
 def _prepare_local_artifact_directory(
     stage: Path,
     scope_id: str,
@@ -935,6 +947,8 @@ def _chat_read_dirs(
     remote_stage: RemoteRunStage | None,
     service: ProjectService,
     execution_machine: str,
+    *,
+    local_stage: Path | None = None,
 ) -> list[Path]:
     """Provider-generic graph and exact repository roots outside chat scratch."""
     read_dirs = [
@@ -950,6 +964,10 @@ def _chat_read_dirs(
                 read_dirs.append(state_root)
         return read_dirs
     read_dirs = [item for item in read_dirs if item.exists()]
+    if local_stage is not None:
+        inputs = local_stage / "inputs"
+        if inputs.exists():
+            read_dirs.append(inputs)
     read_dirs.append(service.manifest.research_dir)
     return read_dirs
 
@@ -965,6 +983,7 @@ def _project_write_scope(
     execution: AgentTaskExecution | None,
     capability: AgentCapability,
     stage_only: bool = False,
+    local_stage: Path | None = None,
 ) -> ProjectWriteScope:
     """Resolve one durable provider-neutral scope from project-owned authority."""
 
@@ -992,7 +1011,7 @@ def _project_write_scope(
     stage_root = (
         str(remote_stage.root)
         if remote_stage is not None and remote_stage.root is not None
-        else str(workspace)
+        else str(local_stage or workspace)
     )
     return resolve_project_write_scope(
         manifest=service.manifest,

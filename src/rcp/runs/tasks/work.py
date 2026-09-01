@@ -51,6 +51,7 @@ from rcp.runs.chat import (
     _logical_chat_turn_operation_id,
     _prepare_chat_prompt_state,
     _prepare_local_artifact_directory,
+    _prepare_local_chat_workspace,
     _project_write_scope,
     _read_chat_patch,
     _read_watch_request,
@@ -162,6 +163,29 @@ class _WorkValidatorMailboxLifecycle:
             execution=self.execution,
             primary_error=primary_error,
         )
+
+
+_WORK_CLEAR_HANDOFF_CONTINUATIONS = frozenset(
+    {
+        "fresh",
+        "handoff",
+        "watcher_wake",
+        "graph_condition_wake",
+        "message_wake",
+        "lifecycle_wake",
+    }
+)
+_WORK_PRESERVE_HANDOFF_CONTINUATIONS = frozenset({"resume", "retry", "graph_repair"})
+
+
+def _work_turn_clears_handoffs(continuation: AgentTaskContinuation) -> bool:
+    """Classify every Work continuation explicitly so invariant 10c fails closed."""
+
+    if continuation in _WORK_CLEAR_HANDOFF_CONTINUATIONS:
+        return True
+    if continuation in _WORK_PRESERVE_HANDOFF_CONTINUATIONS:
+        return False
+    raise ValueError(f"Work does not support continuation {continuation!r}.")
 
 
 @dataclass
@@ -439,9 +463,8 @@ async def _stage_work_turn(
 ) -> tuple[WorkTurn, _StagedWorkInputs]:
     request = resolved.request
     continuation = execution.continuation if execution is not None else "fresh"
-    reusing_checkpoint = bool(execution is not None and execution.reuses_native_checkpoint)
     resuming = continuation == "resume"
-    waking = continuation == "watcher_wake"
+    clear_handoffs = _work_turn_clears_handoffs(continuation)
     local_stage: Path | None = None
     remote_stage: RemoteRunStage | None = None
     patch_inputs: _ChatPatchInputs | None = None
@@ -489,7 +512,7 @@ async def _stage_work_turn(
                 local_stage.mkdir(parents=True, exist_ok=True)
             if execution is not None:
                 execution.checkpoint_stage("", str(local_stage))
-            workspace = local_stage
+            workspace = _prepare_local_chat_workspace(local_stage)
         _roll_result_view_retention(request, execution, local_stage, remote_stage)
         token = _task_token(execution)
         patch_inputs = _stage_chat_patch_inputs(
@@ -507,7 +530,7 @@ async def _stage_work_turn(
             budget=validator_budget,
             run_truth_scope=context.run_truth_scope,
         )
-        if not reusing_checkpoint or waking:
+        if clear_handoffs:
             _clear_stale_turn_handoffs(workspace, remote_stage)
         artifact_scope_id = (
             _logical_chat_turn_operation_id(execution.store, execution.operation_id)
@@ -533,7 +556,7 @@ async def _stage_work_turn(
         else:
             assert local_stage is not None
             artifact_directory = _prepare_local_artifact_directory(
-                local_stage,
+                workspace,
                 artifact_scope_id,
                 reuse=resuming,
             )
@@ -542,6 +565,7 @@ async def _stage_work_turn(
             remote_stage,
             service,
             resolved.execution_machine_alias,
+            local_stage=local_stage,
         )
         write_scope = _project_write_scope(
             context,
@@ -552,6 +576,7 @@ async def _stage_work_turn(
             data_dir=data_dir,
             execution=execution,
             capability="work_auto",
+            local_stage=local_stage,
         )
         write_dirs = [Path(item) for item in write_scope.repository_roots]
         experiment_resources = await stage_chat_experiment_watcher_resources(
@@ -561,7 +586,7 @@ async def _stage_work_turn(
             remote_stage,
             workspace=workspace,
             token=token,
-            clear_stale=not reusing_checkpoint or waking,
+            clear_stale=clear_handoffs,
         )
         experiment_resource_pointers = [item.prompt_value() for item in experiment_resources]
         skill_selection = service.resolve_skill_selection(request)
@@ -1186,7 +1211,7 @@ async def _validate_watch_deliverable(
             origin_task_kind=turn.surface,
             chat_id=turn.request.chat_id or "",
             node_id=turn.request.node_id,
-            episode_id=None,
+            episode_id=origin_task.episode_id,
             graph_target=origin_task.graph_target,
             execution_host=turn.execution_host,
             continuation=_watcher_continuation(turn, staged),
@@ -2042,7 +2067,7 @@ async def _stream_work_graph_repair(
         else:
             expected_stage = _swept_stage_root(data_dir) / stage_name
             local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
-            workspace = local_stage
+            workspace = _prepare_local_chat_workspace(local_stage)
         token = _task_token(execution)
         patch_inputs = _stage_chat_patch_inputs(
             local_stage,
@@ -2065,6 +2090,7 @@ async def _stream_work_graph_repair(
             remote_stage,
             service,
             execution_machine.alias,
+            local_stage=local_stage,
         )
         write_scope = _project_write_scope(
             context,
@@ -2075,6 +2101,7 @@ async def _stream_work_graph_repair(
             data_dir=data_dir,
             execution=execution,
             capability="work_auto",
+            local_stage=local_stage,
         )
         write_dirs = [Path(item) for item in write_scope.repository_roots]
         assert validator_lifecycle is not None

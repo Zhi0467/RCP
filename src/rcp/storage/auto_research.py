@@ -37,6 +37,7 @@ from rcp.storage.models import (
     EpisodeRecord,
     EpisodeReportConflict,
     EpisodeWrapupRecord,
+    StoredWatcherRecord,
     _required_timestamp,
 )
 
@@ -1557,11 +1558,85 @@ class AutoResearchStoreMixin:
                 stopped_by = COALESCE(stopped_by, 'loop'),
                 stop_reason = COALESCE(stop_reason, ?),
                 stopped_at = COALESCE(stopped_at, ?)
-            WHERE episode_id = ? AND origin_task_kind = 'auto_research'
+            WHERE (
+                    episode_id = ?
+                    OR origin_operation_id IN (
+                        SELECT attempt.operation_id
+                        FROM auto_research_child_work_attempts AS attempt
+                        JOIN auto_research_child_work AS route
+                          ON route.worker_id = attempt.worker_id
+                        WHERE route.episode_id = ?
+                    )
+                  )
               AND status IN ('active', 'degraded', 'completed')
             """,
-            (reason, stopped_at, episode_id),
+            (reason, stopped_at, episode_id, episode_id),
         ).rowcount
+
+    def _stop_closed_auto_research_child_watcher_delivery(
+        self,
+        connection: sqlite3.Connection,
+        watchers: list[StoredWatcherRecord],
+    ) -> bool:
+        """Stop a late child-Work watcher delivery after its parent episode closed."""
+
+        operation_ids = sorted({watcher.origin_operation_id for watcher in watchers})
+        if not operation_ids:
+            return False
+        placeholders = ",".join("?" for _ in operation_ids)
+        rows = connection.execute(
+            f"""
+            SELECT attempt.operation_id, episode.episode_id, episode.status, episode.ending,
+                   episode.stop_requested_at, episode.updated_at
+            FROM auto_research_child_work_attempts AS attempt
+            JOIN auto_research_child_work AS route ON route.worker_id = attempt.worker_id
+            JOIN episodes AS episode ON episode.episode_id = route.episode_id
+            WHERE attempt.operation_id IN ({placeholders})
+            """,
+            operation_ids,
+        ).fetchall()
+        matched_operations = {str(row["operation_id"]) for row in rows}
+        if not matched_operations:
+            return False
+        if matched_operations != set(operation_ids):
+            raise ValueError(
+                "one watcher delivery cannot mix Auto-research child Work lineage "
+                "with unrelated watchers"
+            )
+        episode_ids = {str(row["episode_id"]) for row in rows}
+        if len(episode_ids) != 1:
+            raise ValueError("one watcher delivery cannot cross Auto-research episodes")
+        episode = rows[0]
+        if (
+            episode["status"] == "running"
+            and episode["ending"] is None
+            and episode["stop_requested_at"] is None
+        ):
+            return False
+
+        watcher_ids = sorted({watcher.watcher_id for watcher in watchers})
+        watcher_placeholders = ",".join("?" for _ in watcher_ids)
+        stopped_at = episode["stop_requested_at"] or episode["updated_at"] or self.now()
+        if episode["stop_requested_at"] is not None:
+            reason = "Auto-research episode stopped."
+        elif episode["ending"] is not None:
+            reason = f"Auto-research episode ended ({episode['ending']})."
+        else:
+            reason = "Auto-research episode is no longer running."
+        connection.execute(
+            f"""
+            UPDATE watchers
+            SET status = 'stopped', notified = 1, next_check_at = NULL,
+                stopped_by = COALESCE(stopped_by, 'loop'),
+                stop_reason = COALESCE(stop_reason, ?),
+                stopped_at = COALESCE(stopped_at, ?)
+            WHERE watcher_id IN ({watcher_placeholders})
+              AND status IN ('active', 'degraded', 'completed')
+              AND notification_operation_id IS NULL
+            """,
+            (reason, stopped_at, *watcher_ids),
+        )
+        return True
 
     def auto_research_is_quiescent(self, episode_id: str) -> bool:
         """Whether all mode tasks are settled enough for the generic ending manager."""

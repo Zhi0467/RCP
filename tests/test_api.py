@@ -436,6 +436,15 @@ def test_stale_instance_guard_rejects_mutation_before_side_effect(manifest, tmp_
     assert any(item["id"] == project_id for item in client.get("/api/projects").json())
 
 
+def _staged_inputs_for_workspace(workspace: Path) -> Path:
+    """Resolve immutable stage inputs for both legacy and split local layouts."""
+
+    split_inputs = workspace.parent / "inputs"
+    if workspace.name == "workspace" and split_inputs.is_dir():
+        return split_inputs
+    return workspace / "inputs"
+
+
 class ScriptedLauncher:
     """Provider stub that writes files into the run's scratch folder.
 
@@ -465,7 +474,7 @@ class ScriptedLauncher:
         self.launch_kwargs.append(kwargs)
         workspace = Path(kwargs["cwd"])
         self.workspaces.append(workspace)
-        inputs = workspace / "inputs"
+        inputs = _staged_inputs_for_workspace(workspace)
         self.input_snapshots.append(
             {
                 item.name: item.read_text(encoding="utf-8")
@@ -1307,14 +1316,14 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
     assert refused.status_code == 409
     assert cached.read_text(encoding="utf-8") == "project-a-source-again"
 
-    global_refused = client.delete(f"/api/caches?project_id={project_id}")
+    global_refused = client.delete(f"/api/projects/{project_id}/caches/all")
     assert global_refused.status_code == 409
     assert cached.exists()
     assert b_cached.exists()
     assert legacy_cached.exists()
 
     store.fail_agent_task("this-project-cache-reader", "finished for test")
-    all_cleared = client.delete(f"/api/caches?project_id={project_id}")
+    all_cleared = client.delete(f"/api/projects/{project_id}/caches/all")
     assert all_cleared.status_code == 200
     assert all_cleared.json()["remote_sources"]["count"] == 0
     assert all_cleared.json()["remote_sources"]["bytes"] == 0
@@ -4489,6 +4498,10 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
     )
     workspace = first.workspaces[0]
     assert workspace.is_dir()
+    assert workspace.name == "workspace"
+    assert (workspace.parent / "inputs").is_dir()
+    assert not (workspace / "inputs").exists()
+    assert first.input_snapshots[0]
 
     # Turn two writes no patch at all, in the same folder, and must not inherit one.
     second = ScriptedLauncher([{}], message="Second answer.")

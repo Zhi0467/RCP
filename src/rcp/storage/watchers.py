@@ -1193,6 +1193,11 @@ class WatcherStoreMixin:
                 self._validate_watcher_notification_scope(connection, record, watchers)
                 if self._experiment_wake_is_stopped(connection, record):
                     return None
+                if self._stop_closed_auto_research_child_watcher_delivery(
+                    connection,
+                    watchers,
+                ):
+                    return None
                 if self._has_active_chat_overlap(connection, record):
                     return None
                 if record.kind == "auto_research":

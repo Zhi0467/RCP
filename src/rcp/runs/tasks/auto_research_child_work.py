@@ -44,6 +44,7 @@ from rcp.runs.chat import (
     _clear_stale_turn_handoffs,
     _logical_chat_turn_operation_id,
     _prepare_local_artifact_directory,
+    _prepare_local_chat_workspace,
     _project_write_scope,
     _record_chat_context_receipt,
     _stage_chat_patch_inputs,
@@ -79,6 +80,7 @@ from rcp.runs.tasks.work import (
     _StagedWorkInputs,
     _stream_work_graph_repair,
     _validate_work_patch_live,
+    _work_turn_clears_handoffs,
     _WorkValidatorMailboxLifecycle,
 )
 from rcp.service import ProjectService, RunRequest
@@ -335,6 +337,7 @@ async def _stage_auto_research_child_work_turn(
     continuation = execution.continuation
     reusing_checkpoint = execution.reuses_native_checkpoint
     resuming = continuation == "resume"
+    clear_handoffs = _work_turn_clears_handoffs(continuation)
     if reusing_checkpoint and not request.session_id:
         raise ValueError(
             "The continued Work turn has no native agent session; retry it from a clean attempt "
@@ -382,7 +385,7 @@ async def _stage_auto_research_child_work_turn(
                 local_stage = expected_stage
                 local_stage.mkdir(parents=True, exist_ok=True)
             execution.checkpoint_stage("", str(local_stage))
-            workspace = local_stage
+            workspace = _prepare_local_chat_workspace(local_stage)
         token = _task_token(execution)
         _roll_result_view_retention(request, execution, local_stage, remote_stage)
         patch_inputs = _stage_chat_patch_inputs(
@@ -418,7 +421,7 @@ async def _stage_auto_research_child_work_turn(
             budget=validator_budget,
             run_truth_scope=context.run_truth_scope,
         )
-        if not reusing_checkpoint or continuation == "message_wake":
+        if clear_handoffs:
             _prepare_auto_research_child_work_handoffs(
                 execution,
                 workspace=workspace,
@@ -427,7 +430,7 @@ async def _stage_auto_research_child_work_turn(
         mail_path = _stage_auto_research_child_work_mail(
             execution,
             route,
-            local_stage=local_stage,
+            local_stage=workspace if local_stage is not None else None,
             remote_stage=remote_stage,
             continuation=continuation,
         )
@@ -453,7 +456,7 @@ async def _stage_auto_research_child_work_turn(
         else:
             assert local_stage is not None
             artifact_directory = _prepare_local_artifact_directory(
-                local_stage,
+                workspace,
                 artifact_scope_id,
                 reuse=resuming,
             )
@@ -462,6 +465,7 @@ async def _stage_auto_research_child_work_turn(
             remote_stage,
             service,
             resolved.execution_machine_alias,
+            local_stage=local_stage,
         )
         write_scope = _project_write_scope(
             context,
@@ -472,6 +476,7 @@ async def _stage_auto_research_child_work_turn(
             data_dir=data_dir,
             execution=execution,
             capability="work_auto",
+            local_stage=local_stage,
         )
         skill_selection = service.resolve_skill_selection(request)
         skill_pointers = stage_skill_selection(
@@ -949,7 +954,8 @@ async def stream_auto_research_child_work_run(
     if maintenance_paused:
         return
     mailbox = RunStageMailbox.for_stage(
-        local_stage=turn.local_stage, remote_stage=turn.remote_stage
+        local_stage=turn.workspace if turn.local_stage is not None else None,
+        remote_stage=turn.remote_stage,
     )
     mailbox.remove("watch.json")
     execution.store.record_agent_task_receipt(
