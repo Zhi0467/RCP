@@ -51,23 +51,31 @@ class ProjectInviteRequest(BaseModel):
     user_id: str
 
 
-@router.get("/api/projects/{project_id}")
-async def project(
+class _ProjectSnapshotNotFound(Exception):
+    pass
+
+
+class _ProjectSnapshotUnavailable(Exception):
+    pass
+
+
+def _project_snapshot(
     project_id: str,
-    *,
-    project_display_cache: DisplayCacheDependency,
-    catalog: CatalogDependency,
+    project_display_cache: ProjectDisplayCache,
+    catalog: ProjectCatalog,
 ) -> dict[str, object]:
+    """Resolve and refresh one project snapshot away from the event loop."""
+
     cached = project_display_cache.cached_project_snapshot(project_id)
     if cached is not None:
         return cached
     try:
         generation = catalog.reserve_cached_snapshot_generation(project_id)
-        service, snapshot = await asyncio.to_thread(project_display_cache.open_snapshot, project_id)
+        service, snapshot = project_display_cache.open_snapshot(project_id)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Project not found") from exc
+        raise _ProjectSnapshotNotFound from exc
     except (FileNotFoundError, OSError, ValueError, StateUnavailable) as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise _ProjectSnapshotUnavailable(str(exc)) from exc
     try:
         committed = catalog.commit_cached_snapshot(
             project_id,
@@ -76,7 +84,7 @@ async def project(
             patch_log_head=service.history.workspace.cached_patch_log_head(),
         )
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Project not found") from exc
+        raise _ProjectSnapshotNotFound from exc
     except (OSError, TypeError, ValueError) as exc:
         logger.warning("Could not update display snapshot for %s: %s", project_id, exc)
     else:
@@ -85,6 +93,26 @@ async def project(
             if latest is not None:
                 return latest
     return snapshot
+
+
+@router.get("/api/projects/{project_id}")
+async def project(
+    project_id: str,
+    *,
+    project_display_cache: DisplayCacheDependency,
+    catalog: CatalogDependency,
+) -> dict[str, object]:
+    try:
+        return await asyncio.to_thread(
+            _project_snapshot,
+            project_id,
+            project_display_cache,
+            catalog,
+        )
+    except _ProjectSnapshotNotFound as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except _ProjectSnapshotUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/api/projects/{project_id}/members")

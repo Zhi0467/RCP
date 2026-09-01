@@ -1009,22 +1009,17 @@ class WatcherDelivery:
                                     lifecycle_events=lifecycle_events,
                                 )
                             )
-                        reconciled = self._retry.run_for_generation(
-                            retry_generation,
-                            lambda accepted_boundaries=accepted_boundaries, target=target, replay=replay: (
-                                self._reconcile_graph_boundaries(
-                                    self._store,
-                                    project_id,
-                                    accepted_boundaries,
-                                    current_head=GraphHeadRef(
-                                        target=target,
-                                        revision=replay.state.revision,
-                                    ),
-                                )
+                        if not self._retry.generation_is_current(retry_generation):
+                            return
+                        self._reconcile_graph_boundaries(
+                            self._store,
+                            project_id,
+                            accepted_boundaries,
+                            current_head=GraphHeadRef(
+                                target=target,
+                                revision=replay.state.revision,
                             ),
                         )
-                        if not reconciled:
-                            return
         except _GraphWatcherReplayDegraded as exc:
             if not self._retry.run_for_generation(
                 retry_generation,

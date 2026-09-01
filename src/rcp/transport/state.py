@@ -1455,10 +1455,47 @@ def _terminate_lock_holder(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS)
 
 
-def _lock_holder_error(process: subprocess.Popen[str], status: str) -> str:
+class _HolderStderr:
+    """Continuously drain one holder's diagnostic stream into a fixed bound."""
+
+    _MAX_CHARS = 1000
+
+    def __init__(self, process: subprocess.Popen[str]) -> None:
+        self._process = process
+        self._guard = threading.Lock()
+        self._chunks: list[str] = []
+        self._size = 0
+        self._reader = threading.Thread(target=self._pump, daemon=True)
+        self._reader.start()
+
+    def _pump(self) -> None:
+        stream = self._process.stderr
+        try:
+            if stream is None:
+                return
+            while chunk := stream.read(4096):
+                with self._guard:
+                    remaining = self._MAX_CHARS - self._size
+                    if remaining > 0:
+                        kept = chunk[:remaining]
+                        self._chunks.append(kept)
+                        self._size += len(kept)
+        except (OSError, ValueError):
+            pass
+
+    def detail(self) -> str:
+        self._reader.join(timeout=STATE_LOCK_POLL_INTERVAL_SECONDS)
+        with self._guard:
+            return "".join(self._chunks).strip()
+
+
+def _lock_holder_error(
+    process: subprocess.Popen[str],
+    stderr: _HolderStderr,
+    status: str,
+) -> str:
     _terminate_lock_holder(process)
-    stderr = process.stderr.read().strip() if process.stderr is not None else ""
-    return stderr[:1000] or f"unexpected holder status {status!r}"
+    return stderr.detail() or f"unexpected holder status {status!r}"
 
 
 def _raise_lock_cancelled(process: subprocess.Popen[str], *, acquired: bool = False) -> None:
@@ -1515,18 +1552,18 @@ class _HolderLines:
 def _wait_for_lock_holder(
     process: subprocess.Popen[str],
     lines: _HolderLines,
+    stderr: _HolderStderr,
     location: str,
     *,
     on_wait: Callable[[str], None] | None,
     cancelled: Callable[[], bool] | None,
 ) -> None:
     deadline = time.monotonic() + STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS
-    contended = False
     waiting_reported = False
     while True:
         if cancelled is not None and cancelled():
             _raise_lock_cancelled(process)
-        if not contended and time.monotonic() >= deadline:
+        if time.monotonic() >= deadline:
             _terminate_lock_holder(process)
             raise StateUnavailable(
                 f"Timed out after {STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS:g} seconds while checking "
@@ -1538,14 +1575,13 @@ def _wait_for_lock_holder(
         if status == "":
             if cancelled is not None and cancelled():
                 _raise_lock_cancelled(process)
-            detail = _lock_holder_error(process, "holder exited without a status")
+            detail = _lock_holder_error(process, stderr, "holder exited without a status")
             raise StateUnavailable(
                 f"Could not establish canonical-state lock ownership at {location}: {detail}"
             )
         if cancelled is not None and cancelled():
             _raise_lock_cancelled(process, acquired=status == _LOCK_ACQUIRED)
         if status == _LOCK_CONTENDED:
-            contended = True
             if not waiting_reported and on_wait is not None:
                 on_wait("Waiting for another graph-writing run to release canonical state.")
                 waiting_reported = True
@@ -1566,7 +1602,7 @@ def _wait_for_lock_holder(
                 "because replacing a directory, symlink, or special file cannot be proved safe. "
                 "Inspect the project or deployment that created it, then use Retry in RCP."
             )
-        detail = _lock_holder_error(process, status)
+        detail = _lock_holder_error(process, stderr, status)
         raise StateUnavailable(
             f"Could not establish canonical-state lock ownership at {location}: {detail}"
         )
@@ -1684,10 +1720,12 @@ def _process_advisory_lock(
         _terminate_lock_holder(holder)
         raise StateUnavailable(f"Lock holder for {location} did not expose an ownership signal.")
     lines = _HolderLines(holder)
+    stderr = _HolderStderr(holder)
     try:
         _wait_for_lock_holder(
             holder,
             lines,
+            stderr,
             location,
             on_wait=on_wait,
             cancelled=cancelled,
@@ -1861,6 +1899,8 @@ class SSHStateWorkspace(StateWorkspace):
                 "--delete",
                 "--exclude=.refresh.lock",
                 "--exclude=.agent-run.lock",
+                "--exclude=.append.lock",
+                "--exclude=.chat.lock",
                 "--exclude=.publish",
                 *rsync_ssh_arguments(),
                 remote,

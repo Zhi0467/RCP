@@ -1915,6 +1915,65 @@ def test_retry_worker_keeps_the_watcher_poller_nonblocking(tmp_path) -> None:
         worker.stop()
 
 
+def test_retry_worker_lifecycle_stays_bounded_during_reconciliation(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.services.store
+    delivery = app.state.services.watcher_delivery
+    store.create_watchers(
+        [
+            _graph_record(
+                "slow-reconciliation",
+                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
+            ).model_copy(update={"project_id": project_id, "armed_revision": 0})
+        ]
+    )
+    delivery._retry.schedule(project_id)
+    original_reconcile = delivery._reconcile_graph_boundaries
+    reconciliation_started = threading.Event()
+    release_reconciliation = threading.Event()
+
+    def blocked_reconciliation(*args, **kwargs):
+        reconciliation_started.set()
+        assert release_reconciliation.wait(timeout=3)
+        return original_reconcile(*args, **kwargs)
+
+    monkeypatch.setattr(delivery, "_reconcile_graph_boundaries", blocked_reconciliation)
+    worker = app.state.graph_watcher_retry_worker
+    worker.start()
+    worker.signal()
+    assert reconciliation_started.wait(1), "retry reconciliation did not start"
+
+    signal_finished = threading.Event()
+    stop_finished = threading.Event()
+    signal_thread = threading.Thread(
+        target=lambda: (worker.signal(), signal_finished.set()),
+        name="signal-during-watcher-reconciliation",
+    )
+    stop_thread = threading.Thread(
+        target=lambda: (worker.stop(timeout=0.01), stop_finished.set()),
+        name="stop-during-watcher-reconciliation",
+    )
+    signal_thread.start()
+    stop_thread.start()
+    try:
+        signal_was_bounded = signal_finished.wait(0.2)
+        stop_was_bounded = stop_finished.wait(0.2)
+    finally:
+        release_reconciliation.set()
+        signal_thread.join(timeout=1)
+        stop_thread.join(timeout=1)
+        worker.stop()
+
+    assert signal_was_bounded, "signal waited for graph reconciliation"
+    assert stop_was_bounded, "stop(timeout=) waited for graph reconciliation"
+
+
 def test_retry_worker_stop_then_start_invalidates_the_slow_prior_generation() -> None:
     first_started = threading.Event()
     release_first = threading.Event()
