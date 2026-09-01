@@ -858,6 +858,51 @@ def test_candidate_child_refuses_when_overlay_ownership_is_already_held(tmp_path
     assert "Another RCP process" in result["diagnostic"]
 
 
+def test_candidate_child_accepts_a_fresh_team_waiting_for_first_enrollment(
+    tmp_path: Path,
+) -> None:
+    operation_root = tmp_path / "operation"
+    data_dir = operation_root / "overlay" / "data"
+    data_dir.mkdir(parents=True, mode=0o700)
+    store, _bootstrap = AppStore.initialize_team_space(
+        data_dir / "rcp.sqlite3",
+        "Fresh Rehearsal Lab",
+    )
+    overlay = RehearsalOverlay(
+        root=str(operation_root / "overlay"),
+        data_dir=str(data_dir),
+        database_path=str(data_dir / "rcp.sqlite3"),
+        capture_id=str(uuid.uuid4()),
+        sqlite_receipt_sha256="1" * 64,
+        sqlite_snapshot_sha256="2" * 64,
+        project_receipt_sha256="3" * 64,
+        space_id=store.space_id,
+        expected_startup_recovery=StartupRecoveryReadModel(
+            active_operation_ids=(),
+            stopping_experiment_operation_ids=(),
+            report_episode_ids=(),
+            auto_research_recovery_operation_ids=(),
+            active_watcher_ids=(),
+        ),
+        projects=(),
+        transfer_inbox_entries=(),
+    )
+    overlay_path = operation_root / "overlay.json"
+    result_path = operation_root / "result.json"
+    overlay_path.write_text(overlay.model_dump_json(), encoding="utf-8")
+    overlay_path.chmod(0o600)
+
+    exit_code = run_candidate_child(overlay_path, result_path)
+    assert exit_code == 0, result_path.read_text(encoding="utf-8")
+
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["status"] == "verified"
+    assert result["space_id"] == store.space_id
+    assert result["reads"] == ["/api/health", "/api/projects"]
+    assert result["projects"] == []
+    assert result["attempted_effects"] == []
+
+
 def test_candidate_migration_and_reads_cross_the_real_subprocess_boundary(tmp_path: Path) -> None:
     operation_root = tmp_path / "operation"
     data_dir = operation_root / "overlay" / "data"

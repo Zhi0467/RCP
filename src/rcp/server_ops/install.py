@@ -445,6 +445,14 @@ def _execute_install(
     if not isinstance(planned, ServerPlanEvent):  # pragma: no cover - emitter owns this
         raise AssertionError("install execution requires its plan")
     steps = planned.steps
+    retry = (
+        "sudo",
+        str(bootstrap_executable),
+        "server",
+        "install",
+        "--team-name",
+        request.team_name,
+    )
     try:
         facts = _run_step(
             emitter,
@@ -457,6 +465,7 @@ def _execute_install(
                 NonsecretField(name="architecture", value=value.architecture),
                 NonsecretField(name="node_major", value=value.node_major),
             ),
+            recovery_argv=retry,
         )
         _run_step(
             emitter,
@@ -467,6 +476,7 @@ def _execute_install(
                 "The dedicated rcp account and fixed server directories are present with the "
                 "required ownership and modes."
             ),
+            recovery_argv=retry,
         )
         access = _run_step(
             emitter,
@@ -481,6 +491,7 @@ def _execute_install(
                     name="source_authentication", value=value.config.source.authentication
                 ),
             ),
+            recovery_argv=retry,
         )
         if access.grant_needed:
             _emit_source_grant_pause(
@@ -510,6 +521,7 @@ def _execute_install(
             operation=lambda: machine.converge_source_checkout(access),
             succeeded="The managed checkout is clean at the exact install commit.",
             fields=lambda value: (NonsecretField(name="release_commit", value=value.commit),),
+            recovery_argv=retry,
         )
         release = _run_step(
             emitter,
@@ -521,6 +533,7 @@ def _execute_install(
             operation=lambda: machine.build_release(checkout),
             succeeded="The immutable per-commit Web and Python release is ready.",
             fields=lambda value: (NonsecretField(name="release_path", value=str(value)),),
+            recovery_argv=retry,
         )
         service_state = _run_step(
             emitter,
@@ -532,6 +545,7 @@ def _execute_install(
                 NonsecretField(name="data_state", value=value.data_state),
                 NonsecretField(name="service_state", value=value.service_state),
             ),
+            recovery_argv=retry,
         )
         if service_state.data_state == "fresh":
             _emit_team_init_pause(emitter, steps[7], request.team_name)
@@ -554,6 +568,7 @@ def _execute_install(
                 NonsecretField(name="space_kind", value=value.space_kind),
                 NonsecretField(name="space_name", value=value.space_name),
             ),
+            recovery_argv=retry,
         )
         _ = facts
     except _ReportedInstallFailure:
@@ -571,12 +586,35 @@ def _run_step(
     operation,
     succeeded: str,
     fields=lambda _value: (),
+    recovery_argv: tuple[str, ...] = (),
 ) -> _T:
     emitter.emit_step(planned.model_copy(update={"state": "running", "message": running}))
     try:
         value = operation()
     except InstallRefused as exc:
-        emitter.emit_step(planned.model_copy(update={"state": "failed", "message": str(exc)}))
+        recovery_actions: tuple[CommandAction | ExternalAction, ...] = ()
+        if recovery_argv:
+            recovery_actions = (
+                ExternalAction(
+                    instruction=(
+                        "Read the failure above and correct that cause. The diagnostic command "
+                        "below reruns the same convergent install with the complete bounded event "
+                        "record; the Continue command retries the normal wizard."
+                    )
+                ),
+                CommandAction(argv=(*recovery_argv, "--machine-readable")),
+                CommandAction(argv=recovery_argv),
+            )
+        emitter.emit_step(
+            planned.model_copy(
+                update={
+                    "state": "failed",
+                    "message": str(exc),
+                    "actions": recovery_actions,
+                    "resume_argv": recovery_argv,
+                }
+            )
+        )
         raise _ReportedInstallFailure from exc
     emitter.emit_step(
         planned.model_copy(
@@ -932,7 +970,7 @@ class LinuxInstallMachine:
                 ),
                 environment=environment,
                 timeout=SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
-                capture_output=False,
+                capture_output=True,
                 error=(
                     "The managed source clone failed. Confirm the recorded GitHub source grant "
                     "and network access, then rerun."
@@ -1025,7 +1063,7 @@ class LinuxInstallMachine:
                     checkout.commit,
                 ),
                 timeout=SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
-                capture_output=False,
+                capture_output=True,
                 error="Creating the clean per-commit release worktree failed. Inspect Git and rerun.",
             )
         if checkout.is_current_release:
@@ -1035,14 +1073,14 @@ class LinuxInstallMachine:
             ("npm", "--prefix", "web", "ci"),
             cwd=release,
             timeout=SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
-            capture_output=False,
+            capture_output=True,
             error="npm --prefix web ci failed in the managed release. Fix the source and rerun.",
         )
         self._run_as_service(
             ("npm", "--prefix", "web", "run", "build"),
             cwd=release,
             timeout=SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
-            capture_output=False,
+            capture_output=True,
             error="npm --prefix web run build failed in the managed release. Fix the source and rerun.",
         )
         self._run_as_service(
@@ -1050,7 +1088,7 @@ class LinuxInstallMachine:
             cwd=release,
             environment={"UV_MANAGED_PYTHON": "1", "UV_PYTHON": "3.12"},
             timeout=SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
-            capture_output=False,
+            capture_output=True,
             error="uv sync --frozen failed in the managed release. Fix the lock or runtime and rerun.",
         )
         self._validate_release_artifacts(release)
@@ -1348,7 +1386,7 @@ class LinuxInstallMachine:
                 account,
                 ("uv", "python", "install", "--managed-python", "--no-progress", "3.12"),
                 timeout=SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
-                capture_output=False,
+                capture_output=True,
             )
             if installed.returncode != 0:
                 raise InstallRefused(
@@ -1427,7 +1465,7 @@ class LinuxInstallMachine:
         self._run_as_service(
             ("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", label, "-f", str(private)),
             timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
-            capture_output=False,
+            capture_output=True,
             error="Creating the dedicated source key failed. Inspect the credential path and rerun.",
         )
         os.chmod(private, _PRIVATE_KEY_MODE)
@@ -1511,7 +1549,7 @@ class LinuxInstallMachine:
             ("git", "-C", str(root), *argv),
             environment=environment,
             timeout=timeout,
-            capture_output=False,
+            capture_output=True,
             error=error,
         )
 

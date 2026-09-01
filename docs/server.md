@@ -8,12 +8,15 @@ x86-64 with systemd.
 The root [README](../README.md#install-a-team-server-from-source) points here;
 this document is the single complete server setup and operations procedure.
 
-The `rcp server` CLI is the complete machine workflow. It prints its full plan
-before doing work. At a human boundary it names the machine or external service,
-prints ordered copyable actions, explains the success signal, and prints the
-exact command to resume. `--machine-readable` emits the same plan and actions as
-bounded JSON Lines for the desktop wizard; the wizard does not own another
-setup procedure.
+The `rcp server` CLI is the complete machine workflow and is itself a continuous
+terminal wizard. It keeps one current-step line on screen instead of dumping its
+internal plan or every completed step. At a human boundary it names the machine
+or external service, gives the required action and success signal, and waits;
+pressing Enter runs declared terminal actions and continues the same operation.
+Every stop also prints an exact command that can continue later. Failures print
+bounded diagnosis and exact diagnostic/recovery commands instead of raw command
+output. `--machine-readable` is the noninteractive append-only JSON event stream;
+it never prompts or runs a human action.
 
 ## 1. Connect as the ordinary server operator
 
@@ -153,37 +156,38 @@ sudo /usr/bin/env PYTHONDONTWRITEBYTECODE=1 "$PWD/.venv/bin/rcp" server install 
 The fixed environment flag prevents a root invocation from leaving root-owned
 Python cache files in the operator-owned disposable checkout.
 
-RCP first prints all nine steps. It then validates the host, creates or checks
-the dedicated unprivileged `rcp` account, installs its managed Python 3.12, and
-prepares isolated source access.
+Leave this command running. RCP shows one current step while it validates the
+host, creates or checks the dedicated unprivileged `rcp` account, installs its
+managed Python 3.12, and prepares isolated source access.
 
 For a public source repository, RCP continues without a GitHub credential and
-Step 7 does not occur.
+does not stop for a source deploy key.
 
-## 7. Private source only: grant read access and resume
+## 7. Private source only: grant read access in the running wizard
 
-While the RCP source repository is private, the installer stops with exit status
-3 and prints:
+While the RCP source repository is private, the running wizard pauses and shows:
 
 - the exact GitHub deploy-key settings page;
 - the title `rcp-source:<installation-id>`;
 - the generated public key and fingerprint;
 - an SSH host-trust command to run as `rcp`;
 - the requirement to leave **Allow write access** unchecked; and
-- the exact `server install` command to resume.
+- the exact command that can continue later if this terminal is closed.
 
 Add only that public key as a read-only deploy key. Before accepting the SSH
 host key, compare the displayed Ed25519 fingerprint with [GitHub's published
 fingerprints](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints).
-Run the printed SSH command by itself. When it pauses at `Are you sure you want
-to continue connecting?`, compare the fingerprint first, then type `yes` in
-that same server terminal and press Enter. Do not paste the resume command until
-SSH has returned to the shell prompt. GitHub's successful authentication message
-still comes with SSH exit status 1 because GitHub does not provide shell access.
-At this pause, success is exit status 3 with the exact source deploy-key and
-resume instructions; the managed checkout and installed service do not exist
-yet. Run the printed actions in order, then run the printed resume command
-exactly. Success after that rerun is a separate clean checkout under
+After adding the key in GitHub, return to the still-running wizard and press
+Enter. RCP runs the displayed SSH trust command as `rcp`. When SSH asks `Are you
+sure you want to continue connecting?`, compare the fingerprint first, then type
+`yes` in that same terminal and press Enter. GitHub's successful authentication
+message still has SSH exit status 1 because GitHub does not provide shell
+access; the wizard understands that result and continues by rechecking source
+access. Do not copy or reconstruct another installer command.
+
+If you intentionally type `q` or close the terminal, no later installation step
+runs. Return later with the exact Continue command the wizard printed. Success
+after the wizard continues is a separate clean checkout under
 `/home/rcp/rcp-server/source`, an immutable built release, a stable
 `/usr/local/bin/rcp`, and a fresh service that is still stopped and disabled.
 
@@ -198,33 +202,35 @@ sudo /usr/bin/env PYTHONDONTWRITEBYTECODE=1 "$PWD/.venv/bin/rcp" server install 
 ```
 
 Every line is one validated JSON event. Exit status 3 means the final event is
-an intentional human-action boundary, not an installation failure. Exit status
-0 means the final service readback succeeded.
+an intentional human-action boundary for an external driver; no prompt or
+action runs in this mode. Exit status 0 means final service readback succeeded.
 
-## 8. Initialize the team space
+## 8. Save the code when the running wizard asks
 
-On a fresh installation, the CLI prints this command with the chosen name:
+On a fresh installation, the same wizard pauses before activation and shows the
+team initialization command it is about to run. Press Enter. RCP runs the
+equivalent of:
 
 ```bash
 sudo -u rcp -H /usr/local/bin/rcp space init --team --name "My lab"
 ```
 
-The first command must run in an interactive terminal. It prints one bootstrap
-code once. Store that code outside logs and command history; the service never
-needs it.
+The command prints one bootstrap enrollment code once. Store that code outside
+logs and command history; the service never needs it. The wizard then waits a
+second time specifically for you to confirm that the code is saved. Press Enter
+only after saving it. RCP re-enters installation, enables and starts the service,
+and verifies health without returning you to a shell between those steps.
 
 ## 9. Finish installation and verify the service
 
-Run the exact installer resume command, equivalent to:
+When the original installer command exits successfully, verify its result:
 
 ```bash
-sudo /usr/local/bin/rcp server install --team-name "My lab"
 curl --fail --silent http://127.0.0.1:8421/api/health
 sudo -u rcp -H /usr/local/bin/rcp server doctor
 ```
 
-The final installer rerun performs the system-owned enable/start and HTTP
-readback. Health must identify `status` as `ok`, `space_kind` as `team`, and the
+Health must identify `status` as `ok`, `space_kind` as `team`, and the
 expected `space_name`; doctor must report a healthy installed release.
 
 After that final success, remove the bootstrap checkout. The installed checkout
@@ -323,6 +329,31 @@ sudo systemctl start rcp.service
 
 The listener is intentionally loopback-only. Team desktops reach it through an
 SSH tunnel; opening port 8421 publicly is not a supported deployment.
+
+## Update the source-built server
+
+Run one command and leave it open:
+
+```bash
+sudo /usr/local/bin/rcp server update
+```
+
+RCP fetches `origin/main` with the installed source identity, shows the exact
+current and target commits, and waits for review. Press Enter to bind that exact
+target and continue in the same wizard. RCP then builds a separate release,
+rehearses it against copied server state with external effects closed, performs
+the guarded switch, and reads back the running commit. A team space that has
+been initialized but has no enrolled member yet is valid; rehearsal proves that
+unauthenticated project access is still closed instead of rejecting that empty
+membership state.
+
+If any step fails, the old release remains serving or is restored before the
+wizard reports failure. Read the displayed cause. The wizard prints a complete
+`--machine-readable` diagnostic rerun and a normal Continue command. A copied-
+state rehearsal failure also prints the exact retained `candidate-result.json`,
+a bounded inspection command, and the exact failed rehearsal/capture paths that
+may be deleted after the cause is fixed. Never delete a broader checkpoint or
+data directory.
 
 ## Restore a protected archive
 

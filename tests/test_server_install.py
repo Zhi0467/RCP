@@ -302,6 +302,16 @@ def test_known_refusal_is_exact_and_stops_before_later_steps() -> None:
     assert events[-1]["step"]["message"] == (
         "Focused refusal in build_release; correct it and rerun install."
     )
+    assert events[-1]["step"]["resume_argv"] == [
+        "sudo",
+        str(BOOTSTRAP_EXECUTABLE),
+        "server",
+        "install",
+        "--team-name",
+        "Systems Lab",
+    ]
+    assert events[-1]["step"]["actions"][-2]["argv"][-1] == "--machine-readable"
+    assert events[-1]["step"]["actions"][-1]["argv"] == events[-1]["step"]["resume_argv"]
 
 
 def test_preparation_is_side_effect_free_and_one_plan_serves_both_renderers() -> None:
@@ -347,7 +357,7 @@ def test_preparation_is_side_effect_free_and_one_plan_serves_both_renderers() ->
     _, interactive = _run_install(interactive_machine, machine_readable=False)
     assert "Needs: repository administrator" in interactive
     assert "Allow write access unchecked" in interactive
-    assert "Done when: rcp can read origin/main" in interactive
+    assert "Continue when: rcp can read origin/main" in interactive
     assert (
         "sudo /srv/bootstrap/.venv/bin/rcp server install --team-name 'Systems Lab'" in interactive
     )
@@ -897,7 +907,7 @@ def test_service_tooling_installs_and_rechecks_managed_python_for_fresh_account(
         "--no-progress",
         "3.12",
     )
-    assert install_call[1]["capture_output"] is False
+    assert install_call[1]["capture_output"] is True
 
 
 @pytest.mark.parametrize("private", [False, True])

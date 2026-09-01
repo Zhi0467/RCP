@@ -26,6 +26,8 @@ from rcp.server_ops.layout import ServerLayout
 from rcp.server_ops.models import ServerCommandRequest
 from rcp.server_ops.rehearsal import (
     CandidateProjectVerification,
+    CandidateRehearsalResult,
+    RehearsalOverlay,
     StartupRecoveryReadModel,
     VerifiedCandidateReceipt,
     verified_candidate_receipt_path,
@@ -423,6 +425,16 @@ def test_build_failure_reports_exact_post_fast_forward_and_unchanged_live_state(
     }
     assert machine.calls[-3:] == ["build_candidate", "status", "admission_exit"]
     assert "finalize_candidate" not in machine.calls
+    assert events[-1]["step"]["resume_argv"] == [
+        "sudo",
+        str(layout.cli_wrapper),
+        "server",
+        "update",
+        "--confirm-target",
+        TARGET,
+    ]
+    assert events[-1]["step"]["actions"][-2]["argv"][-1] == "--machine-readable"
+    assert events[-1]["step"]["actions"][-1]["argv"] == events[-1]["step"]["resume_argv"]
 
 
 def test_fetch_failure_reports_known_identities_without_inventing_a_candidate(
@@ -441,6 +453,96 @@ def test_fetch_failure_reports_known_identities_without_inventing_a_candidate(
         "candidate_commit": "unavailable",
     }
     assert machine.calls == ["admission_enter", "inspect", "fetch", "admission_exit"]
+
+
+def test_stale_confirmation_restarts_the_wizard_without_reusing_stale_approval(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    machine = FakeUpdateMachine(layout, target_commit=NEWER)
+
+    _exit_code, events = _run_update(layout, machine, confirmed=TARGET)
+
+    assert events[-1]["step"]["resume_argv"] == [
+        "sudo",
+        str(layout.cli_wrapper),
+        "server",
+        "update",
+    ]
+
+
+def test_failed_rehearsal_names_only_its_exact_diagnostics_and_cleanup(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    _prepare_owned_roots(layout)
+    operation_root = layout.update_checkpoints_root / f"rehearsal-{TARGET}-{'1' * 32}"
+    operation_root.mkdir(mode=0o700)
+    overlay_root = operation_root / "overlay"
+    overlay = RehearsalOverlay(
+        root=str(overlay_root),
+        data_dir=str(overlay_root / "data"),
+        database_path=str(overlay_root / "data" / "rcp.sqlite3"),
+        capture_id=INSTANCE_ID,
+        sqlite_receipt_sha256="1" * 64,
+        sqlite_snapshot_sha256="2" * 64,
+        project_receipt_sha256="3" * 64,
+        space_id=INSTALLATION_ID,
+        expected_startup_recovery=StartupRecoveryReadModel(
+            active_operation_ids=(),
+            stopping_experiment_operation_ids=(),
+            report_episode_ids=(),
+            auto_research_recovery_operation_ids=(),
+            active_watcher_ids=(),
+        ),
+        projects=(),
+        transfer_inbox_entries=(),
+    )
+    result = CandidateRehearsalResult(
+        status="failed",
+        diagnostic="The copied team space failed a focused check.",
+    )
+    result_path = operation_root / "candidate-result.json"
+    overlay_path = operation_root / "overlay.json"
+    result_path.write_text(result.model_dump_json(), encoding="utf-8")
+    overlay_path.write_text(overlay.model_dump_json(), encoding="utf-8")
+    result_path.chmod(0o600)
+    overlay_path.chmod(0o600)
+    machine = LinuxUpdateMachine(
+        layout,
+        service_identity=(os.getuid(), os.getgid()),
+        root_identity=(os.getuid(), os.getgid()),
+    )
+    target = UpdateTarget(inspection=_inspection(layout), target_commit=TARGET)
+
+    refusal = machine._failed_rehearsal_refusal(
+        target,
+        subprocess.CompletedProcess(("candidate",), 1, "", "child failed"),
+        prior_roots=frozenset(),
+    )
+
+    fields = {field.name: field.value for field in refusal.fields}
+    assert fields == {
+        "diagnostic": "The copied team space failed a focused check.",
+        "rehearsal_root": str(operation_root),
+        "result_path": str(result_path),
+        "capture_root": str(layout.data_dir / "run-stage" / f"backup-{INSTANCE_ID}"),
+    }
+    assert refusal.actions[0].kind == "command"
+    assert refusal.actions[0].argv[-1] == str(result_path)
+    assert refusal.actions[-1].kind == "command"
+    assert refusal.actions[-1].argv[-2:] == (
+        str(operation_root),
+        str(layout.data_dir / "run-stage" / f"backup-{INSTANCE_ID}"),
+    )
+    assert refusal.resume_argv == (
+        "sudo",
+        str(layout.cli_wrapper),
+        "server",
+        "update",
+        "--confirm-target",
+        TARGET,
+    )
 
 
 def test_update_build_command_order_and_environment_are_fixed(

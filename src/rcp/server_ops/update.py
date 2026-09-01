@@ -52,6 +52,7 @@ from rcp.server_ops.models import (
     ServerCommandRequest,
     ServerPlanEvent,
     ServerStep,
+    redact_server_text,
 )
 from rcp.server_runtime import ServerMetadataError, web_build_identity
 
@@ -79,6 +80,19 @@ _MAX_VERIFIED_RECEIPT_BYTES = 4 * 1024 * 1024
 
 class UpdateRefused(RuntimeError):
     """One safe update refusal whose text may enter the operator event stream."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        fields: tuple[NonsecretField, ...] = (),
+        actions: tuple[CommandAction | ExternalAction, ...] = (),
+        resume_argv: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.fields = fields
+        self.actions = actions
+        self.resume_argv = resume_argv
 
 
 class _ReportedUpdateFailure(RuntimeError):
@@ -473,6 +487,7 @@ def _execute_update(
     if not isinstance(planned, ServerPlanEvent):  # pragma: no cover - emitter owns this
         raise AssertionError("update execution requires its plan")
     steps = planned.steps
+    retry = _update_argv(resume_executable, request.update_confirmed_commit)
     emitter.emit_step(
         steps[0].model_copy(
             update={
@@ -486,8 +501,17 @@ def _execute_update(
             try:
                 inspection = machine.inspect()
             except UpdateRefused as exc:
+                fields, actions, resume = _failure_recovery(exc, retry)
                 emitter.emit_step(
-                    steps[0].model_copy(update={"state": "failed", "message": str(exc)})
+                    steps[0].model_copy(
+                        update={
+                            "state": "failed",
+                            "message": str(exc),
+                            "fields": fields,
+                            "actions": actions,
+                            "resume_argv": resume,
+                        }
+                    )
                 )
                 return
             emitter.emit_step(
@@ -508,7 +532,18 @@ def _execute_update(
                 resume_executable=resume_executable,
             )
     except UpdateRefused as exc:
-        emitter.emit_step(steps[0].model_copy(update={"state": "failed", "message": str(exc)}))
+        fields, actions, resume = _failure_recovery(exc, retry)
+        emitter.emit_step(
+            steps[0].model_copy(
+                update={
+                    "state": "failed",
+                    "message": str(exc),
+                    "fields": fields,
+                    "actions": actions,
+                    "resume_argv": resume,
+                }
+            )
+        )
     except _ReportedUpdateFailure:
         return
 
@@ -522,6 +557,11 @@ def _execute_admitted_update(
     steps: tuple[ServerStep, ...],
     resume_executable: Path,
 ) -> None:
+    unconfirmed_retry = _update_argv(resume_executable, None)
+    confirmed_retry = _update_argv(
+        resume_executable,
+        request.update_confirmed_commit,
+    )
     target = _run_step(
         emitter,
         steps[1],
@@ -530,6 +570,7 @@ def _execute_admitted_update(
         succeeded="The managed checkout and fetched target have one safe fast-forward relationship.",
         fields=lambda value: _target_fields(value),
         failure_fields=lambda: _fetch_failure_fields(inspection),
+        recovery_argv=confirmed_retry,
     )
     if request.update_confirmed_commit is None:
         if target.already_current:
@@ -552,6 +593,7 @@ def _execute_admitted_update(
             NonsecretField(name="confirmed_commit", value=target.target_commit),
         ),
         failure_fields=lambda: _target_fields(target),
+        recovery_argv=unconfirmed_retry,
     )
     if target.already_current:
         _complete_already_current(emitter, steps[3:], target, confirmation_completed=True)
@@ -564,6 +606,7 @@ def _execute_admitted_update(
         succeeded="Managed main is clean at the confirmed target commit.",
         fields=lambda _value: _status_fields(target, managed=target.target_commit),
         failure_fields=lambda: _failure_status_fields(machine, target),
+        recovery_argv=confirmed_retry,
     )
     release = _run_step(
         emitter,
@@ -576,6 +619,7 @@ def _execute_admitted_update(
             NonsecretField(name="release_path", value=str(value)),
         ),
         failure_fields=lambda: _failure_status_fields(machine, target),
+        recovery_argv=confirmed_retry,
     )
     build = _run_step(
         emitter,
@@ -589,6 +633,7 @@ def _execute_admitted_update(
             NonsecretField(name="reused_receipt", value=value.reused_receipt),
         ),
         failure_fields=lambda: _failure_status_fields(machine, target),
+        recovery_argv=confirmed_retry,
     )
     built = _run_step(
         emitter,
@@ -605,6 +650,7 @@ def _execute_admitted_update(
             NonsecretField(name="receipt_path", value=value.receipt_path),
         ),
         failure_fields=lambda: _failure_status_fields(machine, target),
+        recovery_argv=confirmed_retry,
     )
     preflight = _run_step(
         emitter,
@@ -634,6 +680,7 @@ def _execute_admitted_update(
             NonsecretField(name="receipt_path", value=value.receipt_path),
         ),
         failure_fields=lambda: _failure_status_fields(machine, target),
+        recovery_argv=confirmed_retry,
     )
     _run_cutover_steps(
         emitter,
@@ -642,6 +689,7 @@ def _execute_admitted_update(
         target,
         built,
         preflight,
+        recovery_argv=confirmed_retry,
     )
 
 
@@ -652,6 +700,8 @@ def _run_cutover_steps(
     target: UpdateTarget,
     built: BuiltCandidateReceipt,
     preflight: VerifiedCandidateReceipt,
+    *,
+    recovery_argv: tuple[str, ...],
 ) -> None:
     phases = (
         "maintenance_closed",
@@ -706,17 +756,27 @@ def _run_cutover_steps(
             progress=progress,
         )
     except UpdateRefused as exc:
+        exc_fields, actions, resume = _failure_recovery(exc, recovery_argv)
         emitter.emit_step(
             steps[index].model_copy(
                 update={
                     "state": "failed",
                     "message": str(exc),
-                    "fields": _failure_status_fields(machine, target),
+                    "fields": (*_failure_status_fields(machine, target), *exc_fields),
+                    "actions": actions,
+                    "resume_argv": resume,
                 }
             )
         )
         raise _ReportedUpdateFailure from exc
     if outcome.operation_state == "rolled_back":
+        recovery_exc = UpdateRefused(
+            "The failed candidate was rolled back safely.",
+        )
+        _recovery_fields, actions, resume = _failure_recovery(
+            recovery_exc,
+            recovery_argv,
+        )
         emitter.emit_step(
             steps[index].model_copy(
                 update={
@@ -737,6 +797,8 @@ def _run_cutover_steps(
                             name="failure", value=outcome.failure or "verification failed"
                         ),
                     ),
+                    "actions": actions,
+                    "resume_argv": resume,
                 }
             )
         )
@@ -792,17 +854,21 @@ def _run_step(
     succeeded: str,
     fields: Callable[[_T], tuple[NonsecretField, ...]] = lambda _value: (),
     failure_fields: Callable[[], tuple[NonsecretField, ...]] = lambda: (),
+    recovery_argv: tuple[str, ...] = (),
 ) -> _T:
     emitter.emit_step(planned.model_copy(update={"state": "running", "message": running}))
     try:
         value = operation()
     except UpdateRefused as exc:
+        exc_fields, actions, resume = _failure_recovery(exc, recovery_argv)
         emitter.emit_step(
             planned.model_copy(
                 update={
                     "state": "failed",
                     "message": str(exc),
-                    "fields": failure_fields(),
+                    "fields": (*failure_fields(), *exc_fields),
+                    "actions": actions,
+                    "resume_argv": resume,
                 }
             )
         )
@@ -817,6 +883,38 @@ def _run_step(
         )
     )
     return value
+
+
+def _update_argv(executable: Path, confirmed_commit: str | None) -> tuple[str, ...]:
+    argv = ["sudo", str(executable), "server", "update"]
+    if confirmed_commit is not None:
+        argv.extend(("--confirm-target", confirmed_commit))
+    return tuple(argv)
+
+
+def _failure_recovery(
+    refusal: UpdateRefused,
+    fallback_resume: tuple[str, ...],
+) -> tuple[
+    tuple[NonsecretField, ...],
+    tuple[CommandAction | ExternalAction, ...],
+    tuple[str, ...],
+]:
+    resume = refusal.resume_argv or fallback_resume
+    if refusal.actions or not resume:
+        return refusal.fields, refusal.actions, resume
+    actions: tuple[CommandAction | ExternalAction, ...] = (
+        ExternalAction(
+            instruction=(
+                "Read the failure and status fields above and correct that cause. The diagnostic "
+                "command below reruns the same safe update with the complete bounded event record; "
+                "the Continue command retries the normal wizard."
+            )
+        ),
+        CommandAction(argv=(*resume, "--machine-readable")),
+        CommandAction(argv=resume),
+    )
+    return refusal.fields, actions, resume
 
 
 def _emit_confirmation_pause(
@@ -1268,7 +1366,7 @@ class LinuxUpdateMachine:
                 target.target_commit,
             ),
             timeout=SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
-            capture_output=False,
+            capture_output=True,
             error="Creating the clean per-commit candidate worktree failed. Inspect Git and rerun.",
         )
         _require_owned_directory(
@@ -1319,7 +1417,7 @@ class LinuxUpdateMachine:
                 cwd=release,
                 environment=environment,
                 timeout=SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
-                capture_output=False,
+                capture_output=True,
                 error=error,
             )
         web_identity = self._validate_built_release(release, target.target_commit)
@@ -1402,7 +1500,8 @@ class LinuxUpdateMachine:
         current_python = (
             self.layout.release_dir(built.base_running_commit) / ".venv" / "bin" / "python"
         )
-        completed = self._run_service_checked(
+        prior_roots = self._rehearsal_roots(target.target_commit)
+        completed = self._run_service(
             (
                 str(current_python),
                 "-m",
@@ -1415,11 +1514,14 @@ class LinuxUpdateMachine:
             cwd=self.layout.release_dir(built.base_running_commit),
             environment={"PYTHONDONTWRITEBYTECODE": "1"},
             timeout=SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
-            error=(
-                "Candidate copied-state rehearsal failed. The current release is unchanged; "
-                "inspect the retained rehearsal and backup capture before retrying."
-            ),
+            capture_output=True,
         )
+        if completed.returncode != 0:
+            raise self._failed_rehearsal_refusal(
+                target,
+                completed,
+                prior_roots=prior_roots,
+            )
         receipt_lines = completed.stdout.splitlines()
         if len(receipt_lines) != 1:
             raise UpdateRefused(
@@ -1473,6 +1575,147 @@ class LinuxUpdateMachine:
                 "not switched; inspect server doctor before continuing."
             )
         return receipt
+
+    def _failed_rehearsal_refusal(
+        self,
+        target: UpdateTarget,
+        completed: subprocess.CompletedProcess[str],
+        *,
+        prior_roots: frozenset[Path],
+    ) -> UpdateRefused:
+        from rcp.server_ops.rehearsal import CandidateRehearsalResult, RehearsalOverlay
+
+        diagnostic = redact_server_text(f"{completed.stdout}\n{completed.stderr}").strip()
+        roots = self._rehearsal_roots(target.target_commit) - prior_roots
+        fields: list[NonsecretField] = []
+        actions: list[CommandAction | ExternalAction] = []
+        if len(roots) == 1:
+            root = next(iter(roots))
+            _require_owned_directory(
+                root,
+                uid=self._service_uid,
+                gid=self._service_gid,
+                mode=_DIRECTORY_MODE,
+                label="failed candidate rehearsal",
+            )
+            result_path = root / "candidate-result.json"
+            overlay_path = root / "overlay.json"
+            try:
+                result = CandidateRehearsalResult.model_validate_json(
+                    _owned_file_bytes(
+                        result_path,
+                        uid=self._service_uid,
+                        gid=self._service_gid,
+                        mode=_RECEIPT_MODE,
+                        maximum=_MAX_VERIFIED_RECEIPT_BYTES,
+                        label="candidate rehearsal result",
+                    )
+                )
+                overlay = RehearsalOverlay.model_validate_json(
+                    _owned_file_bytes(
+                        overlay_path,
+                        uid=self._service_uid,
+                        gid=self._service_gid,
+                        mode=_RECEIPT_MODE,
+                        maximum=_MAX_VERIFIED_RECEIPT_BYTES,
+                        label="candidate rehearsal overlay",
+                    )
+                )
+            except (ValueError, UpdateRefused):
+                result = None
+                overlay = None
+            if result is not None and result.diagnostic:
+                diagnostic = result.diagnostic
+            diagnostic = " ".join(redact_server_text(diagnostic).split())
+            diagnostic = diagnostic[:2048] or "rehearsal failed"
+            fields.extend(
+                (
+                    NonsecretField(name="diagnostic", value=diagnostic),
+                    NonsecretField(name="rehearsal_root", value=str(root)),
+                    NonsecretField(name="result_path", value=str(result_path)),
+                )
+            )
+            actions.append(
+                CommandAction(
+                    argv=(
+                        "sudo",
+                        "-u",
+                        "rcp",
+                        "-H",
+                        "/usr/bin/sed",
+                        "-n",
+                        "1,160p",
+                        str(result_path),
+                    )
+                )
+            )
+            cleanup_paths = [str(root)]
+            if overlay is not None:
+                capture_root = self.layout.data_dir / "run-stage" / f"backup-{overlay.capture_id}"
+                fields.append(NonsecretField(name="capture_root", value=str(capture_root)))
+                cleanup_paths.append(str(capture_root))
+            actions.extend(
+                (
+                    ExternalAction(
+                        instruction=(
+                            "Correct the reported cause first. Then delete only the exact retained "
+                            "failed rehearsal and capture with the next command before retrying."
+                        )
+                    ),
+                    CommandAction(
+                        argv=(
+                            "sudo",
+                            "-u",
+                            "rcp",
+                            "-H",
+                            "/usr/bin/rm",
+                            "-rf",
+                            "--",
+                            *cleanup_paths,
+                        )
+                    ),
+                )
+            )
+        else:
+            diagnostic = " ".join(redact_server_text(diagnostic).split())
+            diagnostic = diagnostic[:2048] or "rehearsal failed"
+            fields.append(NonsecretField(name="diagnostic", value=diagnostic))
+            actions.append(
+                ExternalAction(
+                    instruction=(
+                        "Inspect /home/rcp/rcp-server/update-checkpoints as rcp. RCP could not "
+                        "identify exactly one retained rehearsal, so it will not suggest deletion."
+                    )
+                )
+            )
+        resume = (
+            "sudo",
+            str(self.layout.cli_wrapper),
+            "server",
+            "update",
+            "--confirm-target",
+            target.target_commit,
+        )
+        return UpdateRefused(
+            "Candidate copied-state rehearsal failed; the previous release is still serving.",
+            fields=tuple(fields),
+            actions=tuple(actions),
+            resume_argv=resume,
+        )
+
+    def _rehearsal_roots(self, target_commit: str) -> frozenset[Path]:
+        try:
+            entries = tuple(self.layout.update_checkpoints_root.iterdir())
+        except OSError as exc:
+            raise UpdateRefused("The update checkpoints root is unreadable.") from exc
+        return frozenset(
+            entry
+            for entry in entries
+            if (
+                (matched := _REHEARSAL_ROOT_NAME.fullmatch(entry.name)) is not None
+                and matched.group(1) == target_commit
+            )
+        )
 
     def create_rollback_checkpoint(
         self,
@@ -2083,7 +2326,7 @@ class LinuxUpdateMachine:
             ("git", "-C", str(root), *argv),
             environment=environment,
             timeout=timeout,
-            capture_output=False,
+            capture_output=True,
             error=error,
         )
 
@@ -2493,6 +2736,48 @@ def _owned_file_sha256(
         if descriptor >= 0:
             os.close(descriptor)
     return hashlib.sha256(content).hexdigest()
+
+
+def _owned_file_bytes(
+    path: Path,
+    *,
+    uid: int,
+    gid: int,
+    mode: int,
+    maximum: int,
+    label: str,
+) -> bytes:
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+        )
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or (info.st_uid, info.st_gid) != (uid, gid)
+            or stat.S_IMODE(info.st_mode) != mode
+            or info.st_size > maximum
+        ):
+            raise ValueError("unsafe file")
+        content = os.read(descriptor, maximum + 1)
+        final = os.fstat(descriptor)
+        path_final = path.lstat()
+        stable = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if (
+            len(content) > maximum
+            or len(content) != info.st_size
+            or any(getattr(info, name) != getattr(final, name) for name in stable)
+            or any(getattr(final, name) != getattr(path_final, name) for name in stable)
+        ):
+            raise ValueError("unstable file")
+        return content
+    except (OSError, ValueError) as exc:
+        raise UpdateRefused(f"The {label} has unsafe identity or bytes.") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def _fsync_directory(path: Path) -> None:

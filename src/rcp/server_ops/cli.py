@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import socket
+import subprocess
 import sys
 import textwrap
 from collections.abc import Callable
@@ -29,6 +30,7 @@ from rcp.server_ops.config import (
 from rcp.server_ops.models import (
     SERVER_CLI_MAX_EXECUTION_BYTES,
     MachineTarget,
+    NonsecretField,
     ServerCommandExecution,
     ServerCommandName,
     ServerCommandRequest,
@@ -46,6 +48,7 @@ SERVER_CLI_EXIT_OPERATOR_ACTION = 3
 SERVER_CLI_EXIT_UNAVAILABLE = 69
 SERVER_CLI_EXIT_WRONG_IDENTITY = 77
 SERVER_CLI_TERMINAL_RESERVE_BYTES = 64 * 1024
+SERVER_CLI_INTERACTIVE_FIELD_LIMIT = 8
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 
 _ANSI_RESET = "\x1b[0m"
@@ -84,6 +87,7 @@ class CallerIdentity:
 
 
 ServerCommandExecutor = Callable[["ServerEventEmitter", BinaryIO], None]
+WizardCommandRunner = Callable[[tuple[str, ...]], int]
 
 
 @dataclass(frozen=True)
@@ -428,6 +432,8 @@ def run_server_command(
     identity: CallerIdentity | None = None,
     input_stream: BinaryIO | None = None,
     stream: TextIO | None = None,
+    wizard_input: TextIO | None = None,
+    wizard_runner: WizardCommandRunner | None = None,
 ) -> int:
     """Validate identity, emit the plan, then begin concrete machine work."""
 
@@ -466,7 +472,69 @@ def run_server_command(
     except Exception:
         emitter.fail_unexpected()
     execution = emitter.finish(failed_exit_code=prepared.failed_exit_code)
+    prompt_input = wizard_input if wizard_input is not None else sys.stdin
+    if (
+        execution.exit_code == SERVER_CLI_EXIT_OPERATOR_ACTION
+        and not bool(getattr(args, "machine_readable", False))
+        and _supports_live_updates(output)
+        and _supports_terminal_input(prompt_input)
+    ):
+        return _continue_interactive_wizard(
+            execution,
+            input_stream=prompt_input,
+            output_stream=output,
+            runner=wizard_runner or _run_wizard_command,
+        )
     return execution.exit_code
+
+
+def _continue_interactive_wizard(
+    execution: ServerCommandExecution,
+    *,
+    input_stream: TextIO,
+    output_stream: TextIO,
+    runner: WizardCommandRunner,
+) -> int:
+    final = execution.events[-1]
+    if not isinstance(final, ServerStepEvent):  # pragma: no cover - execution owns this
+        return execution.exit_code
+    step = final.step
+    output_stream.write("\nComplete the step above, then press Enter to continue (q quits): ")
+    output_stream.flush()
+    answer = input_stream.readline()
+    if not answer or answer.strip().lower() == "q":
+        print(
+            "Setup paused safely. Run the shown continue command when you are ready.",
+            file=output_stream,
+        )
+        return execution.exit_code
+    resume = step.resume_argv
+    commands = [action.argv for action in step.actions if action.kind == "command"]
+    for command in commands:
+        if command != resume:
+            runner(command)
+    if step.phase == "team_space_init" and commands:
+        output_stream.write("Save the one-time enrollment code, then press Enter to continue: ")
+        output_stream.flush()
+        answer = input_stream.readline()
+        if not answer or answer.strip().lower() == "q":
+            print(
+                "Setup paused safely. Run the shown continue command after saving the code.",
+                file=output_stream,
+            )
+            return execution.exit_code
+    if not resume:
+        return execution.exit_code
+    return runner(resume)
+
+
+def _run_wizard_command(argv: tuple[str, ...]) -> int:
+    return subprocess.run(argv, check=False).returncode
+
+
+def _supports_terminal_input(stream: TextIO) -> bool:
+    is_terminal = getattr(stream, "isatty", lambda: False)
+    return bool(is_terminal())
 
 
 def _identity_matches(identity: CallerIdentity, required_account: str) -> bool:
@@ -649,6 +717,14 @@ class ServerEventEmitter:
         self._events: list[ServerPlanEvent | ServerStepEvent] = [validated]
         self._machine_readable = machine_readable
         self._stream = stream
+        self._interactive_renderer = (
+            None
+            if machine_readable
+            else _InteractiveServerRenderer(
+                plan_size=len(validated.steps),
+                stream=stream,
+            )
+        )
         self._render(validated)
 
     @property
@@ -740,12 +816,11 @@ class ServerEventEmitter:
         return ServerCommandExecution(events=tuple(self._events), exit_code=exit_code)
 
     def _render(self, event: ServerPlanEvent | ServerStepEvent) -> None:
-        _render_event(
-            event,
-            machine_readable=self._machine_readable,
-            plan_size=len(self._plan.steps),
-            stream=self._stream,
-        )
+        if self._machine_readable:
+            print(event.model_dump_json(), file=self._stream)
+        else:
+            assert self._interactive_renderer is not None
+            self._interactive_renderer.render(event)
         self._stream.flush()
 
     def _is_terminal_event(self, event: ServerStepEvent) -> bool:
@@ -772,97 +847,119 @@ def render_server_execution(
     plan = validated.events[0]
     if not isinstance(plan, ServerPlanEvent):  # pragma: no cover - model owns this invariant
         raise ValueError("the first server CLI event must be the complete plan")
+    interactive_renderer = (
+        None
+        if machine_readable
+        else _InteractiveServerRenderer(plan_size=len(plan.steps), stream=stream)
+    )
     for event in validated.events:
-        _render_event(
-            event,
-            machine_readable=machine_readable,
-            plan_size=len(plan.steps),
-            stream=stream,
-        )
+        if machine_readable:
+            print(event.model_dump_json(), file=stream)
+        else:
+            assert interactive_renderer is not None
+            interactive_renderer.render(event)
         stream.flush()
 
 
-def _render_event(
-    event: ServerPlanEvent | ServerStepEvent,
-    *,
-    machine_readable: bool,
-    plan_size: int,
-    stream: TextIO,
-) -> None:
-    if machine_readable:
-        print(event.model_dump_json(), file=stream)
-    elif isinstance(event, ServerPlanEvent):
-        _render_plan(event, stream)
-    else:
-        _render_step_event(event, plan_size, stream)
+class _InteractiveServerRenderer:
+    """Keep normal terminal output bounded to one live step plus terminal guidance."""
 
+    def __init__(self, *, plan_size: int, stream: TextIO) -> None:
+        self.plan_size = plan_size
+        self.stream = stream
+        self.color = _supports_color(stream)
+        self.live_updates = _supports_live_updates(stream)
 
-def _render_plan(event: ServerPlanEvent, stream: TextIO) -> None:
-    color = _supports_color(stream)
-    heading = _style(f"RCP  rcp {event.command}", _ANSI_BOLD, _ANSI_CYAN, color=color)
-    step_word = "step" if len(event.steps) == 1 else "steps"
-    print(heading, file=stream)
-    print(
-        f"{len(event.steps)} {step_word}. RCP pauses whenever you need to take over.",
-        file=stream,
-    )
-    print(file=stream)
-    for step in event.steps:
-        if step.performed_by == "system":
-            performer = _style("RCP", _ANSI_CYAN, color=color)
+    def render(self, event: ServerPlanEvent | ServerStepEvent) -> None:
+        if isinstance(event, ServerPlanEvent):
+            heading = _style(
+                f"RCP  {event.command}",
+                _ANSI_BOLD,
+                _ANSI_CYAN,
+                color=self.color,
+            )
+            print(heading, file=self.stream)
+            print(file=self.stream)
+            return
+        step = event.step
+        label, ansi = _step_status(step.state)
+        status = _style(label, _ANSI_BOLD, ansi, color=self.color)
+        headline = f"{status}  {step.number}/{self.plan_size}  {step.title}"
+        if step.state == "running":
+            self._current_line(headline, finish=False)
+            return
+        terminal = step.state in {"failed", "operator_action_needed", "unavailable"}
+        final_success = step.state == "succeeded" and step.number == self.plan_size
+        self._current_line(headline, finish=terminal or final_success)
+        if not terminal and not final_success:
+            return
+        _print_wrapped(step.message, self.stream, indent="  ")
+        if terminal:
+            self._render_stop(step)
+        self._render_fields(step.fields)
+        if terminal:
+            self._render_actions(step)
+
+    def _current_line(self, text: str, *, finish: bool) -> None:
+        if self.live_updates:
+            self.stream.write(f"\r\x1b[2K{text}")
+            if finish:
+                self.stream.write("\n")
+            return
+        print(text, file=self.stream)
+
+    def _render_stop(self, step: ServerStep) -> None:
+        if isinstance(step.target, MachineTarget):
+            print(f"  On: {step.target.host} (as {step.target.os_account})", file=self.stream)
         else:
-            performer = _style("YOU", _ANSI_BOLD, _ANSI_YELLOW, color=color)
-        print(f"  {step.number:>2}. {step.title}  [{performer}]", file=stream)
-        _print_wrapped(step.purpose, stream, indent="      ")
-        if step.performed_by == "human" and not isinstance(step.target, MachineTarget):
-            print(f"      Needs: {step.target.required_authority_role}", file=stream)
-            print(f"      Open:  {step.target.destination_url}", file=stream)
-    print(file=stream)
-
-
-def _render_step_event(event: ServerStepEvent, plan_size: int, stream: TextIO) -> None:
-    step = event.step
-    color = _supports_color(stream)
-    label, ansi = _step_status(step.state)
-    status = _style(label, _ANSI_BOLD, ansi, color=color)
-    print(file=stream)
-    print(f"{status}  {step.number}/{plan_size}  {step.title}", file=stream)
-    _print_wrapped(step.message, stream, indent="  ")
-    if isinstance(step.target, MachineTarget):
-        print(f"  On: {step.target.host} (as {step.target.os_account})", file=stream)
-    else:
-        print(f"  Responsibility: You — {step.target.required_authority_role}", file=stream)
-        print(f"  Open: {step.target.destination_url}", file=stream)
-    if step.state in {"failed", "operator_action_needed", "unavailable"}:
+            print(f"  Needs: {step.target.required_authority_role}", file=self.stream)
+            print(f"  Open: {step.target.destination_url}", file=self.stream)
         _print_wrapped(
             step.expected_success,
-            stream,
-            indent="  Done when: ",
-            subsequent_indent="             ",
+            self.stream,
+            indent="  Continue when: ",
+            subsequent_indent="                 ",
         )
-    if step.fields:
-        print(file=stream)
-        print(_style("  Details", _ANSI_BOLD, color=color), file=stream)
-        for field in step.fields:
-            print(f"    {field.name.replace('_', ' ')}: {field.value}", file=stream)
-    if step.actions:
-        print(file=stream)
-        print(_style("  What to do", _ANSI_BOLD, _ANSI_YELLOW, color=color), file=stream)
-        for index, action in enumerate(step.actions, start=1):
-            if action.kind == "command":
-                print(f"    {index}. Run:", file=stream)
-                print(f"       $ {shlex.join(action.argv)}", file=stream)
-            else:
-                _print_wrapped(
-                    action.instruction,
-                    stream,
-                    indent=f"    {index}. ",
-                    subsequent_indent="       ",
-                )
-    if step.resume_argv:
-        print(file=stream)
-        print(_style("  Then resume", _ANSI_BOLD, color=color), file=stream)
-        print(f"    $ {shlex.join(step.resume_argv)}", file=stream)
+
+    def _render_fields(self, fields: tuple[NonsecretField, ...]) -> None:
+        if not fields:
+            return
+        print(file=self.stream)
+        shown = fields[:SERVER_CLI_INTERACTIVE_FIELD_LIMIT]
+        for field in shown:
+            print(f"  {field.name.replace('_', ' ')}: {field.value}", file=self.stream)
+        hidden = len(fields) - len(shown)
+        if hidden:
+            print(
+                f"  … {hidden} more field(s); use --machine-readable for the complete record.",
+                file=self.stream,
+            )
+
+    def _render_actions(self, step: ServerStep) -> None:
+        if step.actions:
+            print(file=self.stream)
+            print(_style("Next", _ANSI_BOLD, _ANSI_YELLOW, color=self.color), file=self.stream)
+            for index, action in enumerate(step.actions, start=1):
+                if action.kind == "command":
+                    if action.argv == step.resume_argv:
+                        continue
+                    print(f"  {index}. $ {shlex.join(action.argv)}", file=self.stream)
+                else:
+                    _print_wrapped(
+                        action.instruction,
+                        self.stream,
+                        indent=f"  {index}. ",
+                        subsequent_indent="     ",
+                    )
+        if step.resume_argv:
+            print(file=self.stream)
+            print("Continue:", file=self.stream)
+            print(f"  $ {shlex.join(step.resume_argv)}", file=self.stream)
+
+
+def _supports_live_updates(stream: TextIO) -> bool:
+    is_terminal = getattr(stream, "isatty", lambda: False)
+    return bool(is_terminal()) and os.environ.get("TERM") != "dumb"
 
 
 def _supports_color(stream: TextIO) -> bool:

@@ -22,7 +22,7 @@ covered_by:
   - web/tests/serverSettings.test.mjs
 invariants: [1, 8]
 last_checked: >-
-  2026-08-30 — install, update preparation, copied-state candidate rehearsal,
+  2026-09-01 — install, update preparation, copied-state candidate rehearsal,
   coherent local rollback checkpoint/re-entry, cutover, loud old-service
   rollback, provider readiness, and project machine preparation have concrete
   OS-authority/private-control regressions. Live run 33278422722 reached the
@@ -34,7 +34,14 @@ last_checked: >-
   access-fence, graceful-drain, crash-reentry, and installed-service startup
   reconciliation coverage. A passing 22.04/24.04 update rerun, the live restore
   and member-removal drives, the complete remote drive, and the full scenario
-  remain pending. Restore activation is now hermetically implemented: exact
+  remain pending. Interactive TTY coverage now proves one rotating current-step
+  line, same-process continuation across command actions and re-entry, a distinct
+  save boundary for the one-time enrollment code, no prompting in structured
+  mode, and exact diagnostic/recovery commands on install/update failure. A
+  freshly initialized team with zero enrolled members now passes copied-state
+  rehearsal while unauthenticated project access remains forbidden. The live
+  clean-install wizard rehearsal on the lab server remains pending. Restore
+  activation is now hermetically implemented: exact
   authority/member confirmation, offline stale-member removal, closed startup,
   root-only private activation, and durable readback pass focused integration
   coverage. Server Settings now has one authenticated GET-only projection over
@@ -117,8 +124,12 @@ member running a long task plus active Auto-research and Experiment episodes.
    before continuing. Keep a separate configured SSH project unreachable throughout one
    successful rehearsal and cutover, then inspect its update receipt and
    unavailable project projection.
-9. Run one command interactively and through its structured-output mode and
-   compare the resulting durable state.
+9. Run install and update through a real TTY. Prove normal output rotates one
+   bounded current-step line, external and one-time-code boundaries continue in
+   the same wizard, every stop prints exact recovery/debug commands, and a fresh
+   initialized team with no enrolled member survives candidate rehearsal. Run
+   the equivalent structured-output operations and prove they emit the same
+   durable plan/actions without prompting or executing human actions.
 
 ## Assert
 
@@ -166,6 +177,7 @@ member running a long task plus active Auto-research and Experiment episodes.
 - `the_switched_candidate_remains_behind_the_same_external_effect_fence_until_verified`
 - `a_rollback_restores_local_stages_and_attachments_without_touching_remote_stages`
 - `a_failed_candidate_leaves_the_old_release_serving_unchanged`
+- `a_fresh_team_waiting_for_first_enrollment_passes_candidate_rehearsal`
 - `cutover_waits_for_mutations_and_machine_operations_before_its_final_checkpoint`
 - `durable_watchers_survive_the_short_update_maintenance_window`
 - `a_failed_post_switch_start_restores_and_verifies_the_previous_release_loudly`
@@ -173,6 +185,10 @@ member running a long task plus active Auto-research and Experiment episodes.
 - `rollback_reentry_idempotently_restores_the_exact_pre_cutover_bytes`
 - `update_never_resets_changes_force_pulls_or_substitutes_a_package`
 - `interactive_and_structured_cli_modes_drive_the_same_command_implementation`
+- `interactive_progress_rotates_one_bounded_current_step_instead_of_dumping_events`
+- `interactive_human_boundaries_continue_inside_one_terminal_wizard`
+- `every_install_or_update_failure_prints_exact_diagnostic_and_recovery_commands`
+- `machine_readable_server_operations_never_prompt_or_execute_human_actions`
 
 ## UI path
 

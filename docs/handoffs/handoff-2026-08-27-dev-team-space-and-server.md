@@ -2,9 +2,12 @@
 
 Date: 2026-08-27
 Status: active. Design, grilling, and all planned implementation packets are
-complete on `main`. The two-release disposable server lifecycle and fresh-host
-restore qualification now pass; the persistent lab-like desktop/SSH drive,
-genuine one-lab drill, and final evidence closure remain.
+complete. The two-release disposable server lifecycle and fresh-host restore
+qualification pass. A first persistent lab-server install exposed one fresh-team
+update-rehearsal defect and excessive CLI friction; both are corrected in the
+current implementation, with a clean live reinstall/update rehearsal now
+required. The persistent desktop/SSH drive, genuine one-lab drill,
+and final evidence closure remain.
 
 ### Packet status
 
@@ -44,6 +47,44 @@ their own section.
 The previously planned G1 pull-request transition was rejected by the human for
 this private, single-developer pre-team-server implementation. It no longer gates
 any packet.
+
+#### 2026-09-01 — persistent lab install follow-up in progress
+
+- The first manual install on Ubuntu 22.04 x86-64 at `wth-gpu-01` completed from
+  the private source repository. It created the dedicated `rcp` account, managed
+  checkout and immutable release, initialized team space `WTH UCSD`, enabled the
+  loopback service, and passed HTTP health plus `server doctor` with zero
+  projects and no active work.
+- Updating that fresh server from `e1ffb9a` to `fba88c4` failed safely during
+  copied-state candidate rehearsal. The retained result said the copied database
+  was not a usable enrolled team space. The old release remained active and
+  unchanged.
+- This was an RCP defect, not bad server data. Team initialization intentionally
+  creates a valid space before the first member enrolls, while rehearsal
+  incorrectly required an enrolled user. Candidate rehearsal now accepts this
+  state, proves health, proves unauthenticated project access remains forbidden,
+  and verifies the empty project inventory. It still refuses a non-team space or
+  any captured project without a usable member principal.
+- The ordinary terminal renderer no longer dumps the complete plan or one block
+  for every running and completed step. A TTY keeps one colored current-step
+  line and expands only a stop/final result; child build/source output is
+  captured. `--machine-readable` retains the complete bounded JSON event stream.
+- Operator boundaries now form one continuous CLI wizard. Enter runs declared
+  command actions and exact re-entry in the same terminal; `q` or EOF pauses
+  safely with the printed Continue command. Team initialization has a distinct
+  second pause so the one-time enrollment code is saved before activation.
+  Structured mode never prompts or executes those actions.
+- Install/update failures now carry explicit correction guidance, an exact
+  diagnostic rerun, and the exact normal retry. Failed candidate rehearsal also
+  resolves only the new retained rehearsal root, surfaces its bounded diagnostic
+  and result path, and prints exact inspection and cleanup commands. A stale
+  update confirmation restarts unconfirmed target review instead of reusing the
+  stale commit.
+- Hermetic focused coverage passes. Still required before closing this follow-up:
+  preserve then remove the existing empty lab installation, install again from a
+  fresh machine state through the real TTY wizard, enroll the replacement
+  bootstrap member, and run a real update through candidate rehearsal and final
+  readback.
 
 ### Notes carried from earlier status updates
 

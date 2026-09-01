@@ -1190,10 +1190,8 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
         lock_acquired = True
         opened = AppStore(Path(overlay.database_path))
         users = opened.space_users()
-        if opened.space_kind != "team" or not users:
-            raise CandidateRehearsalRefused(
-                "The copied database is not one usable enrolled team space."
-            )
+        if opened.space_kind != "team":
+            raise CandidateRehearsalRefused("The copied database is not one team space.")
         users_by_id = {user.user_id: user for user in users if user.identity_kind == "team_member"}
         project_principals: dict[str, str] = {}
         for project in overlay.projects:
@@ -1211,12 +1209,10 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                 )
             project_principals[project.project_id] = principal
         default_user_id = next(iter(users_by_id), None)
-        if default_user_id is None:
-            raise CandidateRehearsalRefused("The copied team space has no enrolled member.")
 
         def rehearsal_principal(request, store):
             requested = request.headers.get("x-rcp-rehearsal-user", default_user_id)
-            if requested not in users_by_id:
+            if requested is None or requested not in users_by_id:
                 return None
             return store.space_user(requested)
 
@@ -1239,22 +1235,29 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                 raise CandidateRehearsalRefused("Candidate health changed copied space identity.")
             reads.append("/api/health")
             cards: dict[str, dict[str, object]] = {}
-            for principal in sorted(users_by_id):
-                listing = client.get(
-                    "/api/projects",
-                    headers={"x-rcp-rehearsal-user": principal},
-                )
-                if listing.status_code != 200:
-                    raise CandidateRehearsalRefused("Candidate project inventory read failed.")
-                for raw_card in listing.json():
-                    card = dict(raw_card)
-                    project_id = str(card["id"])
-                    existing = cards.get(project_id)
-                    if existing is not None and existing != card:
-                        raise CandidateRehearsalRefused(
-                            "Candidate project inventory changed between member reads."
-                        )
-                    cards[project_id] = card
+            if users_by_id:
+                for principal in sorted(users_by_id):
+                    listing = client.get(
+                        "/api/projects",
+                        headers={"x-rcp-rehearsal-user": principal},
+                    )
+                    if listing.status_code != 200:
+                        raise CandidateRehearsalRefused("Candidate project inventory read failed.")
+                    for raw_card in listing.json():
+                        card = dict(raw_card)
+                        project_id = str(card["id"])
+                        existing = cards.get(project_id)
+                        if existing is not None and existing != card:
+                            raise CandidateRehearsalRefused(
+                                "Candidate project inventory changed between member reads."
+                            )
+                        cards[project_id] = card
+            else:
+                listing = client.get("/api/projects")
+                if listing.status_code != 403:
+                    raise CandidateRehearsalRefused(
+                        "Candidate pre-enrollment project inventory did not stay protected."
+                    )
             if set(cards) != {project.project_id for project in overlay.projects}:
                 raise CandidateRehearsalRefused(
                     "Candidate project inventory omitted or substituted a project."

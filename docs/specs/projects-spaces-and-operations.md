@@ -375,25 +375,30 @@ command takes `/home/rcp` with it, which is where the team space, project
 checkouts, and deploy keys live; deploy keys stay registered with GitHub until
 they are revoked there.
 
-Interactive output is the complete, plain-language operator workflow, not a
-terse diagnostic that assumes the wizard will explain the missing step. Before
-doing work, the CLI prints the numbered plan and distinguishes steps RCP will
-perform from steps a human must perform. At every step it names the step,
-purpose, `performed_by` responsibility, typed target, current state, and success
-signal. A machine target contains host and operating-system account. An external
-service target instead contains service, resource, destination URL, and required
-authority role; it never invents a user identity RCP does not know. Whenever the
-CLI stops for operator action, it additionally gives ordered safe commands or UI
-actions, the nonsecret value needed, a plain success signal, and the exact
-command to recheck or resume. System-owned steps run those internal commands
-themselves; the operator never has to reconstruct a missing human command from a
-status message.
-Secret values never appear in those instructions. Machine-readable output
-carries the same ordered step and bounded action fields so the wizard can render
-them without parsing terminal prose. For team machine preparation, the wizard is
-the graphical presentation of that same CLI-owned operation; the CLI remains a
-complete step-by-step workflow without it, and there is no wizard-only machine
-procedure.
+Interactive TTY output is a continuous, plain-language wizard. The CLI validates
+the complete operation plan before doing work, but normal output does not dump
+that internal plan or append a running/succeeded block for every step. It keeps
+one colored current-step line, replaces that line as work advances, captures
+bounded subprocess output, and expands only the final result or a stop that
+needs attention. Redirected terminal output remains readable bounded status
+lines; `--machine-readable` remains the complete append-only JSON event record.
+
+A human stop names the typed machine or external-service target, responsible
+authority, nonsecret values, ordered safe actions, plain success signal, and
+exact continue command. In an interactive terminal, Enter runs the declared
+command actions and exact re-entry command inside the same wizard; `q`, EOF, or
+a closed terminal pauses safely and leaves that continue command usable later.
+The one-time team enrollment code gets a second explicit save confirmation
+before activation continues. Machine-readable mode never prompts or executes
+an action. Secret values never enter either renderer.
+
+A failure is also a usable breakpoint, not a raw subprocess dump. It retains the
+old serving state, names the bounded cause and safe state fields, gives explicit
+recovery guidance, gives an exact `--machine-readable` diagnostic rerun when the
+operation is convergent, and prints the normal continue command. Candidate
+rehearsal failure additionally names the exact retained result and capture,
+prints a bounded inspection command, and names only the exact paths eligible for
+cleanup before retry. The operator never reconstructs a command from prose.
 
 Privilege is fixed per command rather than inferred from what happens to work on
 one machine. `install`, `backup configure`, `restore`, and `update` enter through
@@ -426,12 +431,14 @@ owns every later fetch/build/sync/switch/restart. This bootstrap is not a second
 server-operations implementation.
 
 For a fresh data directory, install leaves the unit stopped and disabled, then
-prints the exact `sudo -u rcp -H /usr/local/bin/rcp space init --team --name ...`
-and `sudo /usr/local/bin/rcp server install --team-name ...` resume commands.
-The wrapper resolves the installed `RCP_DATA_DIR`. The operator receives the
-one-time code in that terminal; the resumed root CLI then enables/starts and
-reads back the service itself. Re-running install against an already initialized
-owned team space may converge the service to running.
+offers the exact `sudo -u rcp -H /usr/local/bin/rcp space init --team --name ...`
+action. In the normal interactive flow, Enter runs it, the operator saves the
+one-time code, and a second Enter re-enters install so the same wizard enables,
+starts, and reads back the service. If the terminal is closed or the operator
+chooses `q`, the exact `sudo /usr/local/bin/rcp server install --team-name ...`
+continue command remains printed and independently usable. The wrapper resolves
+the installed `RCP_DATA_DIR`. Re-running install against an already initialized
+owned team space converges the service to running.
 Before showing that one-time code, team initialization restricts `rcp.sqlite3`
 to owner-only mode; recovery of an interrupted unclaimed initialization repeats
 that restriction, and resumed installation refuses a wider database mode.
@@ -504,10 +511,13 @@ not a claim that its immutable release has already been built.
 
 An authorized machine operator invokes `sudo rcp server update`. Its coordinator
 first acquires one update-admission lock and refuses unfinished restore or
-unknown update maintenance. It fetches with only the configured source identity,
-shows the exact current and fetched 40-character commits, and stops with an exact
-`--confirm-target <commit>` resume command. A confirmed invocation fetches again
-and refuses a changed or stale target. It then fast-forwards the managed checkout
+unknown update maintenance. It fetches with only the configured source identity
+and shows the exact current and fetched 40-character commits. In a TTY, the
+operator reviews them and presses Enter; the same wizard re-enters with the exact
+`--confirm-target <commit>` binding. The printed command remains usable after an
+intentional pause. A confirmed invocation fetches again and refuses a changed or
+stale target; stale approval restarts the unconfirmed review instead of inviting
+reuse. It then fast-forwards the managed checkout
 to `origin/main`, creates or validates a separate clean detached per-commit
 worktree, and runs `npm --prefix web ci`, `npm --prefix web run build`, and `uv
 sync --frozen` there as `rcp`. Candidate preparation never opens live app data,
@@ -548,7 +558,12 @@ answers, and final judgment. It revalidates the built receipt, obtains one
 online SQLite/project-file capture, and computes the expected canonical graph
 and startup-recovery models with current code. The candidate receives only the
 copied database: first it runs its migration twice to prove idempotence, then it
-starts behind the fence and serves bounded reads. Path inventory and escape
+starts behind the fence, opens the copied team space, and serves bounded reads.
+A freshly initialized team space waiting for its first enrollment is valid
+server state: rehearsal requires team identity and a closed unauthenticated
+boundary, but it must not invent an enrolled member requirement. In that state
+the health read succeeds, an unauthenticated project read remains forbidden,
+and the empty project inventory verifies normally. Path inventory and escape
 validation happen after candidate migration, so a new unclassified durable path
 column fails before startup.
 

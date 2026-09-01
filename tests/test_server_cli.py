@@ -668,7 +668,7 @@ def test_renderer_selection_never_changes_the_command_handler_call() -> None:
     assert first == second == 0
     assert len(calls) == 2
     assert calls[0] == calls[1]
-    assert interactive.getvalue().startswith("RCP  rcp server doctor")
+    assert interactive.getvalue().startswith("RCP  server doctor")
     assert json.loads(machine.getvalue().splitlines()[0])["event"] == "plan"
 
 
@@ -681,7 +681,7 @@ def test_plan_is_visible_before_the_executor_can_perform_work() -> None:
         prepared = _successful_command(request, caller)
 
         def execute(emitter, input_stream) -> None:
-            assert output.getvalue().startswith("RCP  rcp server doctor")
+            assert output.getvalue().startswith("RCP  server doctor")
             side_effects.append("machine work began")
             prepared.execute(emitter, input_stream)
 
@@ -711,6 +711,167 @@ def test_interactive_renderer_uses_color_only_for_a_terminal(
 
     assert "\x1b[" in terminal.getvalue()
     assert "\x1b[" not in redirected.getvalue()
+
+
+def test_tty_renderer_rotates_progress_without_printing_one_block_per_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TERM", "xterm-256color")
+    target = MachineTarget(host="lab.example", os_account="root")
+    pending = tuple(
+        ServerStep(
+            number=number,
+            title=f"Operation {number}",
+            purpose=f"Perform operation {number} without dumping subprocess output.",
+            performed_by="system",
+            target=target,
+            phase=f"operation_{number}",
+            state="pending",
+            expected_success=f"Operation {number} succeeds.",
+            message=f"Operation {number} will run.",
+        )
+        for number in range(1, 6)
+    )
+    events: list[ServerPlanEvent | ServerStepEvent] = [
+        ServerPlanEvent(command="server install", timestamp=NOW, steps=pending)
+    ]
+    for step in pending:
+        events.extend(
+            (
+                ServerStepEvent(
+                    command="server install",
+                    timestamp=NOW,
+                    step=step.model_copy(
+                        update={"state": "running", "message": f"Operation {step.number} runs."}
+                    ),
+                ),
+                ServerStepEvent(
+                    command="server install",
+                    timestamp=NOW,
+                    step=step.model_copy(
+                        update={
+                            "state": "succeeded",
+                            "message": f"Operation {step.number} succeeded.",
+                        }
+                    ),
+                ),
+            )
+        )
+    terminal = _TTYStringIO()
+
+    render_server_execution(
+        ServerCommandExecution(events=tuple(events), exit_code=0),
+        machine_readable=False,
+        stream=terminal,
+    )
+
+    rendered = terminal.getvalue()
+    assert rendered.count("\r\x1b[2K") == 10
+    assert rendered.count("\n") == 4
+    assert "Perform operation" not in rendered
+
+
+def test_operator_pause_continues_in_one_tty_wizard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TERM", "xterm-256color")
+    execution = _operator_execution()
+    plan = execution.events[0]
+    paused_event = execution.events[-1]
+    assert isinstance(plan, ServerPlanEvent)
+    assert isinstance(paused_event, ServerStepEvent)
+    action = ("ssh", "-T", "git@github.com")
+    paused = paused_event.step.model_copy(
+        update={"actions": (*paused_event.step.actions, CommandAction(argv=action))}
+    )
+
+    def handler(_request, _identity):
+        def execute(emitter, _input_stream) -> None:
+            emitter.emit_step(paused, timestamp=NOW)
+
+        return PreparedServerCommand(plan=plan, execute=execute)
+
+    commands: list[tuple[str, ...]] = []
+    output = _TTYStringIO()
+    exit_code = run_server_command(
+        _parse("server", "project", "provision", REQUEST_ID),
+        handler=handler,
+        identity=CallerIdentity(uid=501, username="rcp", host="lab.example"),
+        stream=output,
+        wizard_input=_TTYStringIO("\n"),
+        wizard_runner=lambda argv: commands.append(argv) or 0,
+    )
+
+    assert exit_code == 0
+    assert commands == [action, paused.resume_argv]
+    assert "press Enter to continue" in output.getvalue()
+
+
+def test_team_init_wizard_waits_for_the_one_time_code_to_be_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TERM", "xterm-256color")
+    execution = _operator_execution()
+    plan = execution.events[0]
+    paused_event = execution.events[-1]
+    assert isinstance(plan, ServerPlanEvent)
+    assert isinstance(paused_event, ServerStepEvent)
+    init = ("sudo", "-u", "rcp", "rcp", "space", "init", "--team", "--name", "Lab")
+    paused = paused_event.step.model_copy(
+        update={
+            "phase": "team_space_init",
+            "actions": (CommandAction(argv=init), *paused_event.step.actions),
+        }
+    )
+    plan = plan.model_copy(
+        update={"steps": (plan.steps[0].model_copy(update={"phase": "team_space_init"}),)}
+    )
+
+    def handler(_request, _identity):
+        def execute(emitter, _input_stream) -> None:
+            emitter.emit_step(paused, timestamp=NOW)
+
+        return PreparedServerCommand(plan=plan, execute=execute)
+
+    commands: list[tuple[str, ...]] = []
+    output = _TTYStringIO()
+    exit_code = run_server_command(
+        _parse("server", "project", "provision", REQUEST_ID),
+        handler=handler,
+        identity=CallerIdentity(uid=501, username="rcp", host="lab.example"),
+        stream=output,
+        wizard_input=_TTYStringIO("\n\n"),
+        wizard_runner=lambda argv: commands.append(argv) or 0,
+    )
+
+    assert exit_code == 0
+    assert commands == [init, paused.resume_argv]
+    assert "Save the one-time enrollment code" in output.getvalue()
+
+
+def test_machine_readable_operator_pause_never_prompts_or_runs_commands() -> None:
+    execution = _operator_execution()
+    plan = execution.events[0]
+    paused_event = execution.events[-1]
+    assert isinstance(plan, ServerPlanEvent)
+    assert isinstance(paused_event, ServerStepEvent)
+
+    def handler(_request, _identity):
+        def execute(emitter, _input_stream) -> None:
+            emitter.emit_step(paused_event.step, timestamp=NOW)
+
+        return PreparedServerCommand(plan=plan, execute=execute)
+
+    exit_code = run_server_command(
+        _parse("server", "project", "provision", REQUEST_ID, "--machine-readable"),
+        handler=handler,
+        identity=CallerIdentity(uid=501, username="rcp", host="lab.example"),
+        stream=_TTYStringIO(),
+        wizard_input=_TTYStringIO("\n"),
+        wizard_runner=lambda _argv: pytest.fail("machine output entered the interactive wizard"),
+    )
+
+    assert exit_code == SERVER_CLI_EXIT_OPERATOR_ACTION
 
 
 def test_executor_exception_becomes_a_secret_safe_terminal_event() -> None:

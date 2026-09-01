@@ -500,8 +500,15 @@ class ServerStep(_StrictModel):
                 raise ValueError("operator-action steps must be performed by a human")
             if not self.actions or not self.resume_argv:
                 raise ValueError("operator-action steps require actions and resume argv")
+        elif self.state in {"failed", "unavailable"}:
+            if bool(self.actions) != bool(self.resume_argv):
+                raise ValueError(
+                    "failure recovery requires both ordered actions and exact resume argv"
+                )
         elif has_operator_contract:
-            raise ValueError("only operator-action steps may carry actions or resume argv")
+            raise ValueError(
+                "only operator-action or stopped steps may carry actions or resume argv"
+            )
         return self
 
 
