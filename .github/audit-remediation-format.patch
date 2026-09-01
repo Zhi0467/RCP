@@ -1,0 +1,30 @@
+diff --git a/tests/test_auto_research_effects.py b/tests/test_auto_research_effects.py
+index 93bde3d..c171e4b 100644
+--- a/tests/test_auto_research_effects.py
++++ b/tests/test_auto_research_effects.py
+@@ -902,6 +902,7 @@ def test_late_child_work_watcher_delivery_is_fenced_by_parent_episode(tmp_path)
+     assert stopped.status == "stopped"
+     assert stopped.notified is True
+ 
++
+ def test_resume_uses_the_latest_leaf_exact_session_without_spending_another_unit(
+     tmp_path,
+ ) -> None:
+diff --git a/web/src/api.ts b/web/src/api.ts
+index 2e79071..b1bd551 100644
+--- a/web/src/api.ts
++++ b/web/src/api.ts
+@@ -190,10 +190,9 @@ export function clearProjectCaches(apiBase: string): Promise<ProjectCacheMetrics
+ }
+ 
+ export function clearAllProjectCaches(projectId: string): Promise<ProjectCacheMetrics> {
+-  return api<ProjectCacheMetrics>(
+-    `/api/projects/${encodeURIComponent(projectId)}/caches/all`,
+-    { method: "DELETE" },
+-  );
++  return api<ProjectCacheMetrics>(`/api/projects/${encodeURIComponent(projectId)}/caches/all`, {
++    method: "DELETE",
++  });
+ }
+ 
+ export function loadProjectReadiness(
