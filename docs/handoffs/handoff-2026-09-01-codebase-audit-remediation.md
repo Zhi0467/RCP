@@ -23,6 +23,22 @@ Settled decisions:
 - No invariant is renumbered and no `AGENTS.md` rule is added by this work. If a
   rule must change, an equal number of lines is removed.
 
+Guiding principle for every fix in this handoff: **a fact has one owner, and a
+check consumes the owner's answer instead of restating it.** Almost every high
+finding below is the same fact stated twice by careful code. The transition id
+hashes fields by an exclusion list while the compatibility check uses an
+inclusion list. Restore asserts "exactly one file" while its own later phases
+write three more. The Stop fence filters on one task kind while child Work arms
+watchers under another. The old release pins a protocol version the new one
+moved past. Backup and restore each serialize the manifest and compare bytes.
+The frontend recomputes `can_stop` on top of the backend's `can_stop`. Sixteen
+files each own `_fsync_directory`. Tests hardcode the status set `models.py`
+defines. None of that was careless; each check was added to be safe. A check
+that restates a fact is a second source of truth, and the second copy is where
+the drift lives. So before adding a guard, name the fact's owner and make the
+guard call it. If there is no owner, create one and route both producer and
+checker through it. If neither is possible, do not add the guard.
+
 Closure condition: every High and Medium finding is fixed with a focused
 regression test or explicitly closed as rejected in this file, the
 over-engineering and design sections are resolved or reduced to a closed list
