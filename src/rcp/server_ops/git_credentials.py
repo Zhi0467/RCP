@@ -1042,8 +1042,8 @@ def empty_repository_operator_step(
         target=ExternalServiceTarget(
             service="github.com",
             resource=material.repository.identity,
-            destination_url=repository_url,
-            required_authority_role="repository contributor",
+            destination_url=material.repository.settings_url,
+            required_authority_role="repository administrator",
         ),
         phase="github_initial_commit",
         state="operator_action_needed",

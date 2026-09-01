@@ -685,8 +685,7 @@ def test_empty_repository_persists_first_commit_action_on_the_planned_target(
     )
 
     assert paused.step.state == "operator_action_needed"
-    assert paused.step.target.resource == plan.targets[2].step.target.resource
-    assert paused.step.target.destination_url.endswith("/openai/rcp-1")
+    assert paused.step.target == plan.targets[2].step.target
     assert "first real commit" in paused.step.actions[0].instruction
     stored = store.project_provisioning_request(request.request_id)
     assert stored is not None and stored.status == "operator_action_needed"
