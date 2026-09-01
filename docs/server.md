@@ -5,9 +5,8 @@ written for the machine operator who has `sudo` on a disposable or dedicated
 Ubuntu host. The supported host is Ubuntu 22.04 LTS or Ubuntu 24.04 LTS on
 x86-64 with systemd.
 
-The root [README](../README.md#install-a-team-server-from-source) contains the
-complete numbered installation sequence. This guide expands its security,
-operator-route, recovery, and maintainer details.
+The root [README](../README.md#install-a-team-server-from-source) points here;
+this document is the single complete server setup and operations procedure.
 
 The `rcp server` CLI is the complete machine workflow. It prints its full plan
 before doing work. At a human boundary it names the machine or external service,
@@ -16,7 +15,19 @@ exact command to resume. `--machine-readable` emits the same plan and actions as
 bounded JSON Lines for the desktop wizard; the wizard does not own another
 setup procedure.
 
-## 1. Confirm the host
+## 1. Connect as the ordinary server operator
+
+The operator needs SSH access and `sudo`. Do not log in as `rcp` or create that
+account yourself; RCP's installer owns it.
+
+```bash
+ssh operator@server.example
+sudo -v
+```
+
+Keep this SSH session open while following the remaining steps.
+
+## 2. Confirm the host
 
 Run these as the ordinary named operator, not as `rcp`:
 
@@ -31,21 +42,9 @@ Success is `x86_64`, then either `ubuntu 22.04` or `ubuntu 24.04`, followed by a
 nonempty systemd version. Do not continue on a container without a running
 systemd manager.
 
-## 2. Install Ubuntu 22.04 prerequisites
+## 3. Install Ubuntu prerequisites
 
-On Ubuntu 22.04 only, run:
-
-```bash
-sudo apt-get update
-sudo apt-get install --yes age ca-certificates curl git iproute2 libc-bin openssh-client openssh-server passwd sudo util-linux xz-utils
-```
-
-Success is an exit status of zero. Then continue with the shared Node.js and
-`uv` commands below.
-
-## 3. Install Ubuntu 24.04 prerequisites
-
-On Ubuntu 24.04 only, run:
+The same prerequisite command applies to both supported Ubuntu releases:
 
 ```bash
 sudo apt-get update
@@ -57,9 +56,15 @@ Success is an exit status of zero. Then continue with the shared Node.js and
 
 ## 4. Install Node.js 24 and system-wide uv
 
-The following commands install the selected Node.js 24 patch from
-the official archive after checking its published SHA-256 digest. The subshell
-keeps the operator's working directory unchanged for the later bootstrap clone:
+The supported server contract is any system-wide Node.js `24.x`. RCP does not
+use an operator's NVM/asdf installation because production builds run as the
+separate `rcp` account with a clean system PATH. Node 18 is also too old for the
+current Vite dependency, which requires Node 20.19+ or 22.12+.
+
+If `/usr/local/bin/node --version` already reports `v24.x`, keep that installation
+and skip the Node download. Otherwise install the exact patch qualified by the
+two-Ubuntu live matrix from its checksummed upstream archive. The subshell keeps
+the operator's working directory unchanged for the later bootstrap clone:
 
 ```bash
 (
@@ -72,11 +77,16 @@ keeps the operator's working directory unchanged for the later bootstrap clone:
   grep " ${RCP_NODE_ARCHIVE}$" SHASUMS256.txt | sha256sum --check --strict
   sudo tar --extract --xz --file "$RCP_NODE_ARCHIVE" --directory /usr/local --strip-components=1 --no-same-owner
 )
+export PATH="/usr/local/bin:/usr/bin:/bin"
+hash -r
 node --version
 npm --version
 ```
 
-Success is `v24.20.0` from `node --version` and a nonempty npm version.
+The PATH change applies only to this SSH session. It prevents a personal NVM
+version from leaking into the bootstrap build without changing the operator's
+shell profile. Success is Node.js major `24` and a nonempty npm version; the
+documented archive reports `v24.20.0`.
 
 Install the selected `uv` release into `/usr/local/bin` without
 changing a user's shell profile. The archive digest is pinned from the immutable
@@ -147,8 +157,13 @@ RCP first prints all nine steps. It then validates the host, creates or checks
 the dedicated unprivileged `rcp` account, installs its managed Python 3.12, and
 prepares isolated source access.
 
-For a public source repository, RCP continues without a GitHub credential. For
-a private repository, it stops with exit status 3 and prints:
+For a public source repository, RCP continues without a GitHub credential and
+Step 7 does not occur.
+
+## 7. Private source only: grant read access and resume
+
+While the RCP source repository is private, the installer stops with exit status
+3 and prints:
 
 - the exact GitHub deploy-key settings page;
 - the title `rcp-source:<installation-id>`;
@@ -167,6 +182,10 @@ exactly. Success after that rerun is a separate clean checkout under
 `/home/rcp/rcp-server/source`, an immutable built release, a stable
 `/usr/local/bin/rcp`, and a fresh service that is still stopped and disabled.
 
+This read-only source key is unrelated to the write-enabled deploy key each team
+project receives. When RCP becomes public, the source-key pause, key material,
+and this entire step are removed together.
+
 For structured output, place `--machine-readable` after `install`:
 
 ```bash
@@ -177,20 +196,31 @@ Every line is one validated JSON event. Exit status 3 means the final event is
 an intentional human-action boundary, not an installation failure. Exit status
 0 means the final service readback succeeded.
 
-## 7. Initialize and activate the team space
+## 8. Initialize the team space
 
-On a fresh installation, the CLI prints these commands with the chosen name:
+On a fresh installation, the CLI prints this command with the chosen name:
 
 ```bash
 sudo -u rcp -H /usr/local/bin/rcp space init --team --name "My lab"
-sudo /usr/local/bin/rcp server install --team-name "My lab"
 ```
 
 The first command must run in an interactive terminal. It prints one bootstrap
 code once. Store that code outside logs and command history; the service never
-needs it. The final installer rerun performs the system-owned enable/start and
-HTTP readback itself. Its last success must identify `status` as `ok`,
-`space_kind` as `team`, and the expected `space_name`.
+needs it.
+
+## 9. Finish installation and verify the service
+
+Run the exact installer resume command, equivalent to:
+
+```bash
+sudo /usr/local/bin/rcp server install --team-name "My lab"
+curl --fail --silent http://127.0.0.1:8421/api/health
+sudo -u rcp -H /usr/local/bin/rcp server doctor
+```
+
+The final installer rerun performs the system-owned enable/start and HTTP
+readback. Health must identify `status` as `ok`, `space_kind` as `team`, and the
+expected `space_name`; doctor must report a healthy installed release.
 
 After that final success, remove the bootstrap checkout. The installed checkout
 and release are separate:
@@ -205,7 +235,7 @@ curl --fail --silent http://127.0.0.1:8421/api/health
 Only remove the exact disposable directory you just created. Do not use a home
 directory, workspace root, variable, or wildcard as the removal target.
 
-## 8. Configure one operator route
+## 10. Configure one operator route
 
 RCP does not enable SSH password authentication, create a human Linux account,
 or edit sudo policy. Choose one route deliberately.
@@ -254,7 +284,7 @@ review and merge keys with `sudoedit -u rcp` instead. Password login remains
 impossible because the account has the exact unusable `*NP*` shadow value. RCP
 does not change global `sshd_config`.
 
-## 9. Provider authentication
+## 11. Provider authentication
 
 RCP does not log in to Codex, Claude, or a later provider. Authenticate with the
 provider's native command under the operating-system account that will execute
@@ -269,7 +299,14 @@ then use the exact `rcp server provider check ...` command printed by project
 setup. RCP checks and uses provider-native state; it does not copy a member's
 personal provider directory or store the credential itself.
 
-## 10. Inspect and stop the service
+## 12. Add the team space in the desktop app
+
+In the source-built desktop app, choose **Add team space**, select SSH, enter the
+saved server route, and enroll with the one-time bootstrap code from Step 8. The
+unified project wizard can then create a team project from GitHub or move an
+existing personal RCP project into the team space.
+
+## Inspect and stop the service
 
 ```bash
 sudo systemctl status --no-pager rcp.service
@@ -282,7 +319,7 @@ sudo systemctl start rcp.service
 The listener is intentionally loopback-only. Team desktops reach it through an
 SSH tunnel; opening port 8421 publicly is not a supported deployment.
 
-## 11. Restore a protected archive
+## Restore a protected archive
 
 Restore requires a fresh installed server whose configured data directory is
 empty. Keep the native `age` recovery identity off-server until the restore and
