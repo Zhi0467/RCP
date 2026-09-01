@@ -45,6 +45,7 @@ class ProviderSkillInventoryManager:
         self._lock = threading.Lock()
         self._refreshes: dict[tuple[str, str, str], threading.Event] = {}
         self._refresh_deadlines: dict[tuple[str, str, str], float] = {}
+        self._active_refreshes: set[tuple[str, str, str]] = set()
 
     def mark_refreshing(
         self,
@@ -52,16 +53,8 @@ class ProviderSkillInventoryManager:
         host: str,
         configured_binary: str | None,
     ) -> ProviderSkillInventorySnapshot:
-        key = self._key(provider, host, configured_binary)
         with self._lock:
-            self._refreshes[key] = threading.Event()
-            self._refresh_deadlines[key] = time.monotonic() + self.timeout + 5
-        self.store.mark_provider_skill_inventory_refreshing(
-            provider,
-            host,
-            configured_binary,
-            updated_at=_now(),
-        )
+            self._pending_refresh_locked(provider, host, configured_binary)
         return self.snapshot(provider, host, configured_binary, host or "local")
 
     def refresh(
@@ -73,13 +66,16 @@ class ProviderSkillInventoryManager:
     ) -> ProviderSkillInventorySnapshot:
         key = self._key(provider, host, configured_binary)
         with self._lock:
-            event = self._refreshes.get(key)
-        if event is None or event.is_set():
-            self.mark_refreshing(provider, host, configured_binary)
-            with self._lock:
-                event = self._refreshes[key]
+            event, deadline = self._pending_refresh_locked(provider, host, configured_binary)
+            owns_refresh = key not in self._active_refreshes
+            if owns_refresh:
+                self._active_refreshes.add(key)
 
         machine = host or "local"
+        if not owns_refresh:
+            event.wait(timeout=max(0.0, deadline - time.monotonic()))
+            return self.snapshot(provider, host, configured_binary, machine)
+
         try:
             if not readiness.installed or not readiness.authenticated or not readiness.binary_path:
                 raise ValueError(readiness.reason or "Provider is not ready for skill discovery.")
@@ -117,7 +113,9 @@ class ProviderSkillInventoryManager:
                 updated_at=_now(),
             )
         finally:
-            event.set()
+            with self._lock:
+                event.set()
+                self._active_refreshes.discard(key)
         return self.snapshot(provider, host, configured_binary, machine)
 
     def snapshot(
@@ -189,6 +187,29 @@ class ProviderSkillInventoryManager:
             )
             for name in names
         ]
+
+    def _pending_refresh_locked(
+        self,
+        provider: str,
+        host: str,
+        configured_binary: str | None,
+    ) -> tuple[threading.Event, float]:
+        key = self._key(provider, host, configured_binary)
+        event = self._refreshes.get(key)
+        if event is not None and not event.is_set():
+            return event, self._refresh_deadlines[key]
+
+        event = threading.Event()
+        deadline = time.monotonic() + self.timeout + 5
+        self.store.mark_provider_skill_inventory_refreshing(
+            provider,
+            host,
+            configured_binary,
+            updated_at=_now(),
+        )
+        self._refreshes[key] = event
+        self._refresh_deadlines[key] = deadline
+        return event, deadline
 
     def _run_probe(
         self,

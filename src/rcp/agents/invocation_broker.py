@@ -71,9 +71,9 @@ class ProviderInvocationGate:
         )
         assert process.stdin is not None
         assert process.stdout is not None
-        process.stdin.write(self.bootstrap(b""))
-        await process.stdin.drain()
         try:
+            process.stdin.write(self.bootstrap(b""))
+            await process.stdin.drain()
             line = await asyncio.wait_for(process.stdout.readline(), timeout=timeout_seconds)
             if line.decode("utf-8", errors="replace").rstrip() != self.ready_line:
                 stderr = b""
