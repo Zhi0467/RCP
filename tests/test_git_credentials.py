@@ -543,6 +543,29 @@ def test_manager_ships_one_helper_through_strict_local_and_ssh_account_boundarie
     assert default_material.central_root == "/srv/accounts/alice/.local/share/rcp/projects"
 
 
+def test_target_account_command_runs_directly_when_service_already_owns_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _layout(tmp_path)
+    monkeypatch.setattr(server_git_credentials.os, "geteuid", lambda: 1014)
+    monkeypatch.setattr(
+        server_git_credentials.pwd,
+        "getpwuid",
+        lambda _uid: type("Account", (), {"pw_name": "rcp"})(),
+    )
+
+    argv = server_git_credentials.target_account_argv(
+        layout,
+        _local_machine(layout),
+        ("printf", "ok"),
+    )
+
+    assert argv[:2] == ("env", "-i")
+    assert f"HOME={layout.service_home}" in argv
+    assert argv[-2:] == ("printf", "ok")
+
+
 def test_manager_rejects_a_local_machine_for_another_project_root(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     machine = ProjectProvisioningMachineIntent.model_construct(

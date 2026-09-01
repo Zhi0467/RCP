@@ -6,6 +6,7 @@ import contextlib
 import importlib.resources
 import json
 import os
+import pwd
 import re
 import selectors
 import shlex
@@ -1146,11 +1147,7 @@ def _require_restore_resume(resume_argv: tuple[str, ...]) -> None:
 
 
 def _runuser_argv(layout: ServerLayout, command: tuple[str, ...]) -> tuple[str, ...]:
-    return (
-        "runuser",
-        "--user",
-        layout.service_account,
-        "--",
+    isolated = (
         "env",
         "-i",
         f"HOME={layout.service_home}",
@@ -1161,6 +1158,13 @@ def _runuser_argv(layout: ServerLayout, command: tuple[str, ...]) -> tuple[str, 
         "LC_ALL=C.UTF-8",
         *command,
     )
+    try:
+        current_account = pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:
+        current_account = ""
+    if current_account == layout.service_account:
+        return isolated
+    return ("runuser", "--user", layout.service_account, "--", *isolated)
 
 
 def _strict_ssh_arguments(host: str, command: str) -> list[str]:
