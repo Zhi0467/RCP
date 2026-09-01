@@ -315,11 +315,12 @@ The private RCP source repository requires one repository Actions secret named
 `RCP_LIVE_GITHUB_ADMIN_TOKEN`. Use a fine-grained token scoped only to
 `Zhi0467/RCP` with repository **Administration: write**, which is the GitHub
 permission required to create and remove deploy keys. The workflow writes it to
-a mode-0600 temporary file, the test creates one read-only key, and cleanup
-removes both the key and file. A protected receipt records the generated key's
-nonsecret label before the API call, so the workflow's unconditional cleanup can
-revoke it even if pytest is interrupted. The token never enters RCP CLI argv,
-event output, or the installed service environment.
+a mode-0600 temporary file. The tests create temporary read-only source keys and
+write-enabled project keys where each workflow requires them, and unconditional
+cleanup removes those keys and protected files. A protected receipt records each
+generated key's nonsecret label before the API call, so cleanup can revoke it
+even if pytest is interrupted. The token never enters RCP CLI argv, event
+output, or the installed service environment.
 
 The live test refuses a reused host, requires an explicit destructive-test
 confirmation, removes its disposable bootstrap checkout, and checks the
@@ -329,6 +330,17 @@ It bounds every subprocess stream and removes the temporary direct-login key,
 sudoers rule, and named test operator after checking them. Do not point it at a
 real lab server.
 
+Exact-head run
+[33456906376](https://github.com/Zhi0467/RCP/actions/runs/33456906376)
+passed on Ubuntu 22.04 and 24.04. Its install jobs exercised source installation,
+service/SSH/doctor readback, forced update rollback, protected backup, and
+member removal. Separate fresh hosts then installed from source, reconstructed
+the captured repository using fresh write deploy keys, resumed the protected
+restore through old-authority and member-roster review, activated the service,
+and completed health/project/member and cleanup readback. This is automated
+disposable-host evidence, not the complete desktop/provider/collaboration lab
+drill.
+
 ## Current implementation boundary
 
 The terminal owners for install, doctor, provider readiness, project
@@ -336,8 +348,9 @@ provisioning, backup, restore, update, and member removal are concrete. Their
 live qualification status is tracked in the active team-server handoff and
 acceptance scenarios. The unified desktop wizard, fixed operator bridge,
 personal-to-team transfer import, native archive relay, and crash-recovery
-coordinator are implemented and hermetically verified. The remaining work is
-the source-built desktop/SSH drive against real team spaces and the genuine
-one-lab install, collaboration, update, backup, restore, member-removal, and
-transfer qualification. Do not substitute manual Git pulls, service-file
-edits, or direct database access for any owner.
+coordinator are implemented and hermetically verified. The disposable two-
+release server lifecycle and fresh-host restore drive pass. The remaining work
+is the source-built desktop/SSH drive against real team spaces and the genuine
+one-lab collaboration, provider execution, concurrent/partial backup, and
+transfer qualification. Do not substitute manual Git pulls, service-file edits,
+or direct database access for any owner.

@@ -2,7 +2,9 @@
 
 Date: 2026-08-27
 Status: active. Design, grilling, and all planned implementation packets are
-complete on `main`. The genuine one-lab drive and final evidence closure remain.
+complete on `main`. The two-release disposable server lifecycle and fresh-host
+restore qualification now pass; the persistent lab-like desktop/SSH drive,
+genuine one-lab drill, and final evidence closure remain.
 
 ### Packet status
 
@@ -15,7 +17,7 @@ is written and passing its own tests, but still owes a drive on real hardware.
 | Server foundation | F1, F2, F3a, F3b, F4, F5, F6a, F6b, F6c, F6d | — | — |
 | Provisioning | P1, P2, P3, P4, P5, P6b, P6c | P6a | — |
 | Desktop | D1, D2, D3 | D4a, D4b, D5, D6, D7 | — |
-| Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c | O4d | — |
+| Backup and restore | O1, O2a, O2b, O3a, O3b, O3c, O3c-ui, O3d-a, O3d-b, O4a, O4b, O4c, O4d | — | — |
 | Member removal | O5a, O5b | — | — |
 | Server settings | O6 | — | — |
 | Transfer | T1, T2a, T2b, T2c, T3a, T3a-config, T3b, T3b-export, T3b-files, T3c, T3d, T3d-ssh, T3e, T3f, T4a, T4b, T4c | T5a, T5b | — |
@@ -24,7 +26,6 @@ is written and passing its own tests, but still owes a drive on real hardware.
 What each open drive is waiting on:
 
 - **P6a** — the complete team-service and GitHub live qualification.
-- **O4d** — the fresh-host Ubuntu restore drive.
 - **D4a, D4b, D5** — the integrated source-built two-space desktop drive.
 - **D6** — both fixed operator routes on a server with the installed `rcp`
   account and CLI. The reachable shared lab host was checked, but it has no
@@ -51,7 +52,8 @@ desktop: one sealed identity with its short key in Keychain, canonical
 connection-bound origins, an app-scoped WKWebView pin, and exact saved-origin
 navigation are implemented and live-verified on this host. D3 adds the real
 system-SSH forward, local TLS proxy, reuse/backoff, and owned-child cleanup.
-The live Ubuntu 22.04/24.04 install and doctor drives remain recorded below.
+The passing live Ubuntu 22.04/24.04 install, doctor, update, backup, and
+fresh-host restore drives are recorded below.
 F6a is pushed at `fff75c3` with exact-target confirmation, an immutable
 built-candidate receipt, and an unchanged live-service boundary. P2 now
 provides the member-authorized provisioning API, backend-owned project-creation
@@ -153,14 +155,14 @@ The remaining seams are also concrete:
   run/configuration/status/retention path, online SQLite capture, optimistic
   project-file capture, copied-state update rehearsal, and the coherent local
   update rollback checkpoint now exist; cutover/post-switch rollback
-  coordination and recovery are implemented pending their live Ubuntu drive;
+  coordination and recovery passed their live Ubuntu drive;
   restore now validates and installs one stopped, detached SQLite candidate,
   creates fresh per-repository keys, reconstructs exact local or SSH checkouts,
   rebinds the stopped catalog, and publishes/replay-verifies protected project
   state, requires digest-bound old-authority and retained-member reviews, and
   activates only through a root-only private handshake behind closed HTTP,
-  background, and startup-effect gates. Its fresh-host Ubuntu drive remains
-  open.
+  background, and startup-effect gates. Its fresh-host Ubuntu 22.04/24.04 drive
+  passes at the exact current implementation boundary recorded below.
   Member removal now provides an exact confirmed inventory, one atomic access
   fence, graceful task/episode draining, durable tombstones, and startup/CLI
   reconciliation;
@@ -271,8 +273,8 @@ gate are deliberately future work and do not block this plan.
   unrestricted Python suite, all graph-watcher and result-view focused suites,
   Ruff, format, scoped pre-commit, all 472 Web tests, and the production Web
   build pass. The single independent correction review reports no findings.
-  Pushed CI and the exact-head two-Ubuntu qualification rerun are still required
-  before this checkpoint can close F6d or V2.
+  At that checkpoint, pushed CI and an exact-head two-Ubuntu rerun were still
+  required; the later entries below record their closure.
 - The Mac is now unlocked and the exact source-built bundle opens to the live
   personal index. No team enrollment, credential transmission, two-space
   navigation, provisioning, or transfer has yet been claimed from that visible
@@ -371,6 +373,31 @@ gate are deliberately future work and do not block this plan.
   cut-over state from touching the live data root. F6d is complete; later live
   provisioning, disaster restore, operator-route, and desktop drives remain
   separate closure work.
+- The fresh-host restore qualification then exposed four real portability and
+  re-entry defects in sequence. Restore Git probes now start from the installed
+  service home instead of the invoking runner checkout; a fresh clone seals its
+  `.git` directory to mode 0700 and `.git/config` to 0600 even under inherited
+  default ACLs; restored manifest paths beginning with `~` resolve against the
+  recorded service account rather than root; and restore re-entry requires the
+  original backup bytes only through checkout recovery. From
+  `projects_rebinding` onward, project publication and review have legitimately
+  evolved SQLite, so re-entry preserves those bytes while still requiring one
+  private service-owned database, SQLite integrity, a stopped service, and the
+  same journaled operation. Focused restore, checkout, project-publication, and
+  configuration suites cover each correction, including exact re-entry from
+  `projects_published` after a real database mutation.
+- Commit `112e0dc` closes O4d. Exact-head workflow run
+  [33456906376](https://github.com/Zhi0467/RCP/actions/runs/33456906376)
+  passed all four jobs: source install/update/forced-rollback/backup on fresh
+  Ubuntu 22.04 and 24.04 hosts, followed by protected restore on two different
+  fresh hosts. Both restore jobs installed from source, reconstructed the
+  captured Git checkout with a fresh write deploy key, resumed across the
+  old-authority and member-roster reviews, removed the deliberately stale
+  member offline, activated behind the private fence, read back healthy project
+  and member state, revoked temporary deploy keys, and removed protected inputs.
+  This is the automated disposable server and restore qualification; it does
+  not claim the still-open source-built desktop, real provider, or complete V1
+  lab workflow.
 
 #### 2026-08-31 — V2 current-tree baseline and compatibility repair complete
 
@@ -402,10 +429,12 @@ gate are deliberately future work and do not block this plan.
   claimed from that attempt. Main-branch CI run
   [33401185898](https://github.com/Zhi0467/RCP/actions/runs/33401185898)
   for `2c3f262` also failed all five jobs with empty step lists, while update
-  qualification run 33395914834 remains refused before either Ubuntu job starts;
-  hosted-runner spending is unavailable. The reachable shared Ubuntu 22.04 host
-  has neither the installed `rcp` account nor noninteractive sudo. Those are the
-  remaining live-environment gates, not local test failures.
+  qualification run 33395914834 was refused before either Ubuntu job started
+  because hosted-runner spending was unavailable at that time. Hosted access
+  was later restored and run 33456906376 closed the disposable server/restore
+  gate. The reachable shared Ubuntu 22.04 host still had neither the installed
+  `rcp` account nor noninteractive sudo, so it did not substitute for the
+  remaining persistent desktop/SSH drive.
 
 #### 2026-08-31 — T5a/T5b native relay and unified transfer workflow implemented
 
@@ -2198,11 +2227,12 @@ gate are deliberately future work and do not block this plan.
 
 ## What remains
 
-The planned code paths are implemented and hermetically verified. Closure still
-requires real-environment evidence:
+The planned code paths are implemented, and the disposable two-release server
+lifecycle plus fresh-host restore now have live evidence. Closure still
+requires the remaining real-environment evidence:
 
-1. extend retained live evidence through provisioning, backup/restore, member
-   removal, and both fixed operator routes;
+1. extend retained live evidence through the complete provisioning command,
+   S104's concurrent/partial SSH backup cases, and both fixed operator routes;
 2. drive the unlocked rebuilt source desktop through two distinct member
    identities, personal/team switching, Keychain readback, SSH/TLS isolation,
    new team project setup, and personal-to-team transfer/restart recovery; and
@@ -2219,16 +2249,16 @@ workaround without explicit human approval.
 
 ### Order
 
-1. **Hosted CI first.** The Ubuntu 22.04/24.04 matrix in
+1. **Hosted CI first — complete at `112e0dc`.** The Ubuntu 22.04/24.04 matrix in
    [`server-install-live.yml`](../../.github/workflows/server-install-live.yml)
-   proves the Linux server lifecycle without anyone's hardware: install,
-   service, update, forced rollback, deploy keys. O4d's fresh-host restore
-   belongs here too, because a hosted runner is a fresh host. Do not stack new
-   live work on a red matrix.
-2. **Then one disposable Linux host.** This unblocks D6's probe, then D7 and D5,
-   then P6a's SSH half. Bootstrap it before V1, not during: five desktop packets
-   are stacked on an operator bridge no real server has answered, and F6d showed
-   what hermetic tests miss.
+   now proves the Linux source install, service, update, forced rollback, deploy
+   keys, protected backup, and O4d fresh-host restore without using anyone's
+   hardware. Run 33456906376 is green on both supported releases. Do not stack
+   new live work on a later red matrix.
+2. **Then one named persistent disposable or dedicated Linux host.** Hosted
+   runners cannot stay reachable from the source-built Mac desktop long enough
+   to qualify D6, D7, D5, or P6a's real SSH/provider half. Bootstrap that host
+   before V1, not during.
 3. **Then V1** as one coherent drill, then **V2** baselines and archive.
 
 ### Authorization during live work
@@ -4676,8 +4706,11 @@ does not activate the server.
 
 ### O4d — Old-authority review and replacement activation
 
-**Status (2026-08-29): implemented and verified hermetically; fresh-host live
-drive pending.** Restore now extends the existing archive-bound journal through
+**Status (2026-08-31): complete.** The implementation and hermetic suite pass,
+and exact-head workflow run
+[33456906376](https://github.com/Zhi0467/RCP/actions/runs/33456906376)
+completed protected source-host backup and fresh-host restore/activation on both
+Ubuntu 22.04 and 24.04. Restore extends the existing archive-bound journal through
 `authority_reviewed`, `member_roster_reviewed`, `activation_ready`, and
 `complete`. The console renders the archive time, protected journal path,
 credential/route counts, the exact authority digest, and separate commands for
@@ -4709,10 +4742,13 @@ closed HTTP, traverse the actual Unix control socket as root, prove systemd is
 started before and enabled only after the durable private commit, and only then
 receive healthy HTTP. They also prove an uncommitted replacement requests clean
 termination at the bounded timeout. The same file proves changed authority
-confirmation fails and stale-member removal produces a new exact roster. A real
-source-built Ubuntu restore remains required by S104. The complete backend
-suite, 440 Web tests, Web production build, repository Ruff check, and full
-pre-commit baseline are green on this packet and the current desktop groundwork.
+confirmation fails and stale-member removal produces a new exact roster. The
+live drive additionally proves fresh Git-key reconstruction, old-authority and
+member-roster resume, offline stale-member removal, fenced activation, final
+HTTP/project/member readback, and credential cleanup on both supported Ubuntu
+releases. S104 remains pending only for its broader concurrent/no-pause,
+unreachable-SSH, and complete retained-history fixture; O4d's fresh-host server
+restore drive itself is complete.
 
 Own:
 

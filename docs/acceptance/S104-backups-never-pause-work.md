@@ -15,6 +15,8 @@ covered_by:
   - tests/test_server_restore_checkouts.py
   - tests/test_server_restore_projects.py
   - tests/test_server_restore_activation.py
+  - tests/test_server_install_live.py
+  - tests/test_server_restore_live.py
 invariants: [1, 2, 7]
 ---
 
@@ -34,8 +36,14 @@ also covered hermetically, including one real upstream `age` 1.3.1
 encrypt/decrypt drive. Replacement restore is also complete hermetically through
 archive verification, lifecycle detachment, fresh checkout reconstruction,
 canonical publication/replay, exact authority/member review, offline stale-member
-removal, and fenced durable activation. The full live Linux/SSH/systemd no-pause
-and fresh-host restore drives remain pending. Its boundary is in
+removal, and fenced durable activation. Exact-head workflow run
+[33456906376](https://github.com/Zhi0467/RCP/actions/runs/33456906376) now proves
+source-host protected backup followed by fresh-host Git reconstruction,
+old-authority/member review, offline stale-member removal, activation, and
+cleanup on both Ubuntu 22.04 and 24.04. The scenario remains pending because its
+broader live concurrent/no-pause, unreachable-SSH partial-capture, active
+lifecycle detachment, and full retained-history inspection have not yet been
+driven together. Its boundary is in
 [Server and machine operations](../specs/projects-spaces-and-operations.md#server-and-machine-operations).
 
 An earlier design had the server delay dispatch and delay applying results for
