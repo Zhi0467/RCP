@@ -135,10 +135,18 @@ inherit it.
 ```bash
 git clone git@github.com:Zhi0467/RCP.git rcp-bootstrap
 cd rcp-bootstrap
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+hash -r
+node --version
 npm --prefix web ci
 npm --prefix web run build
 UV_MANAGED_PYTHON=1 UV_PYTHON=3.12 uv sync --frozen
 ```
+
+Repeat the PATH assignment here even if Step 4 already set it. This makes the
+bootstrap safe after opening a new shell or tmux session whose NVM/asdf setup
+would otherwise put an older personal Node.js ahead of the qualified system
+Node.js. Continue only when `node --version` reports `v24.x`.
 
 If this operator uses GitHub HTTPS instead, use the credential-free repository
 URL and the operator's normal Git credential mechanism. Never put a token in

@@ -81,10 +81,23 @@ any packet.
   update confirmation restarts unconfirmed target review instead of reusing the
   stale commit.
 - Hermetic focused coverage passes. Still required before closing this follow-up:
-  preserve then remove the existing empty lab installation, install again from a
-  fresh machine state through the real TTY wizard, enroll the replacement
-  bootstrap member, and run a real update through candidate rehearsal and final
-  readback.
+  run a real update through candidate rehearsal and final readback, then enroll
+  the replacement bootstrap member.
+- The old empty installation was stopped, captured in the operator-owned mode
+  `0600` archive
+  `/home/zhiwang/rcp-server-pre-clean-reinstall-20260901T0430EDT.tar.gz` with
+  SHA-256
+  `af8848541ec7ff1b2df7bf49f6ea88ae6e2d1bcfd315acfcceca4ca5171f4190`,
+  and removed. A clean real-TTY install at `792f14f` then completed on
+  `wth-gpu-01`: the continuous wizard paused for the read-only private-source
+  grant, verified GitHub host trust, resumed in place, built the immutable
+  release, initialized the new zero-member `WTH UCSD` team space, enabled the
+  service, and read back HTTP health with zero projects and zero active tasks.
+- That drive also exposed a documentation seam rather than a server-runtime
+  defect: a newly opened operator tmux shell restored NVM Node 18 ahead of the
+  qualified system Node 24 before the disposable bootstrap build. The setup
+  guide now renews the fixed system PATH again at the build step and verifies
+  `node --version` before npm runs.
 
 ### Notes carried from earlier status updates
 

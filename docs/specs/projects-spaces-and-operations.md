@@ -412,7 +412,9 @@ never become provider/Git/build state.
 
 A completely fresh source clone has one documented bootstrap before that CLI is
 available. A normal machine operator clones it under their own account, installs
-the declared system prerequisites, runs `npm --prefix web ci`,
+the declared system prerequisites, renews the fixed system PATH at the build
+step so a new shell cannot substitute an operator-managed Node.js, runs
+`npm --prefix web ci`,
 `npm --prefix web run build`, and `uv sync` in the repository-required order.
 The first privileged RCP invocation is the bootstrap checkout's absolute
 `.venv/bin/rcp server install --team-name "<team name>"` path under `sudo`; the

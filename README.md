@@ -139,10 +139,11 @@ The CLI owns server updates from GitHub `main`:
 sudo /usr/local/bin/rcp server update
 ```
 
-Review the fetched immutable commit, then run the exact
-`--confirm-target <40-character-commit>` command RCP prints. The confirmed
-update builds and rehearses a detached candidate before systemd cutover, and
-keeps a durable rollback/recovery boundary.
+Review the fetched immutable commit when the wizard pauses. Press Enter to let
+the same command confirm that exact commit and continue. The confirmed update
+builds and rehearses a detached candidate before systemd cutover, and keeps a
+durable rollback/recovery boundary. If the terminal closes, RCP also prints the
+exact `--confirm-target <40-character-commit>` recovery command.
 
 The same console interface owns health, project provisioning, provider checks,
 backup, restore, and member removal:
@@ -161,9 +162,12 @@ sudo /usr/local/bin/rcp server restore /absolute/path/lab.tar.age \
 sudo -u rcp -H /usr/local/bin/rcp server member remove <member-id>
 ```
 
-Each command prints its full plan, human-action boundaries, success checks, and
-exact resume command. Use [docs/server.md](docs/server.md) for prerequisite,
-deploy-key, operator-route, backup/restore, update, and recovery procedures.
+Interactive commands show one colored current step, pause at human-action
+boundaries, and continue in the same terminal. A stop or failure expands into
+bounded details plus exact diagnostic, recovery, and resume commands. Use
+[docs/server.md](docs/server.md) for prerequisite, deploy-key, operator-route,
+backup/restore, update, and recovery procedures; use `--machine-readable` when
+the complete structured event stream is needed.
 
 ## Verify a checkout
 
