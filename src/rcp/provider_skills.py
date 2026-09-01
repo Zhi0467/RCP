@@ -6,6 +6,7 @@ import queue
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -15,6 +16,8 @@ from rcp.agents.launcher import AgentLauncher, ProviderReadiness
 from rcp.providers import ProviderSkill, ProviderSkillReference, profile_for
 from rcp.storage import AppStore, ProviderSkillInventoryRecord
 from rcp.transport.ssh import ssh_arguments
+
+_REFRESH_COMPLETION_GRACE_SECONDS = 5.0
 
 
 class ProviderSkillInventorySnapshot(BaseModel):
@@ -36,6 +39,14 @@ class ProviderSkillInventorySnapshot(BaseModel):
     refreshed_at: str | None = None
 
 
+@dataclass(slots=True)
+class _PendingRefresh:
+    event: threading.Event
+    deadline: float
+    owned: bool = False
+    result: ProviderSkillInventorySnapshot | None = None
+
+
 class ProviderSkillInventoryManager:
     """Refresh and resolve durable provider-owned skill inventories."""
 
@@ -43,9 +54,7 @@ class ProviderSkillInventoryManager:
         self.store = store
         self.timeout = timeout
         self._lock = threading.Lock()
-        self._refreshes: dict[tuple[str, str, str], threading.Event] = {}
-        self._refresh_deadlines: dict[tuple[str, str, str], float] = {}
-        self._active_refreshes: set[tuple[str, str, str]] = set()
+        self._pending_refreshes: dict[tuple[str, str, str], _PendingRefresh] = {}
 
     def mark_refreshing(
         self,
@@ -64,59 +73,90 @@ class ProviderSkillInventoryManager:
         configured_binary: str | None,
         readiness: ProviderReadiness,
     ) -> ProviderSkillInventorySnapshot:
+        """Refresh once per generation and let concurrent callers join its owner.
+
+        The first caller owns both its readiness verdict and the provider probe.
+        Followers deliberately ignore their own readiness, wait for that owner,
+        and receive the same terminal snapshot.
+        """
+
         key = self._key(provider, host, configured_binary)
         with self._lock:
-            event, deadline = self._pending_refresh_locked(provider, host, configured_binary)
-            owns_refresh = key not in self._active_refreshes
+            pending = self._pending_refresh_locked(provider, host, configured_binary)
+            owns_refresh = not pending.owned
             if owns_refresh:
-                self._active_refreshes.add(key)
+                pending.owned = True
+                pending.deadline = (
+                    time.monotonic() + self.timeout + _REFRESH_COMPLETION_GRACE_SECONDS
+                )
 
         machine = host or "local"
-        if not owns_refresh:
-            event.wait(timeout=max(0.0, deadline - time.monotonic()))
-            return self.snapshot(provider, host, configured_binary, machine)
+        result: ProviderSkillInventorySnapshot | None = None
+        if owns_refresh:
+            try:
+                try:
+                    if (
+                        not readiness.installed
+                        or not readiness.authenticated
+                        or not readiness.binary_path
+                    ):
+                        raise ValueError(
+                            readiness.reason or "Provider is not ready for skill discovery."
+                        )
+                    if readiness.path_state not in {"resolved", "unconfigured"}:
+                        raise ValueError(
+                            readiness.reason or "Provider executable path is unresolved."
+                        )
+                    if not readiness.version:
+                        raise ValueError("Provider did not report a version during readiness.")
 
-        try:
-            if not readiness.installed or not readiness.authenticated or not readiness.binary_path:
-                raise ValueError(readiness.reason or "Provider is not ready for skill discovery.")
-            if readiness.path_state not in {"resolved", "unconfigured"}:
-                raise ValueError(readiness.reason or "Provider executable path is unresolved.")
-            if not readiness.version:
-                raise ValueError("Provider did not report a version during readiness.")
-
-            profile = profile_for(provider)
-            probe = profile.skill_probe(readiness.binary_path)
-            payload = self._run_probe(host, probe.command, probe.protocol)
-            skills = sorted(
-                profile.parse_skills(payload), key=lambda item: (item.name, item.path or "")
-            )
-            inventory_hash = _inventory_hash(skills)
-            refreshed_at = _now()
-            self.store.save_provider_skill_inventory_success(
-                provider,
-                host,
-                configured_binary,
-                resolved_binary=readiness.binary_path,
-                provider_version=readiness.version,
-                command=probe.command,
-                protocol=probe.protocol,
-                skills=skills,
-                inventory_hash=inventory_hash,
-                refreshed_at=refreshed_at,
-            )
-        except Exception as exc:
-            self.store.save_provider_skill_inventory_failure(
-                provider,
-                host,
-                configured_binary,
-                diagnostic=str(exc),
-                updated_at=_now(),
-            )
-        finally:
+                    profile = profile_for(provider)
+                    probe = profile.skill_probe(readiness.binary_path)
+                    payload = self._run_probe(host, probe.command, probe.protocol)
+                    skills = sorted(
+                        profile.parse_skills(payload), key=lambda item: (item.name, item.path or "")
+                    )
+                    inventory_hash = _inventory_hash(skills)
+                    refreshed_at = _now()
+                    self.store.save_provider_skill_inventory_success(
+                        provider,
+                        host,
+                        configured_binary,
+                        resolved_binary=readiness.binary_path,
+                        provider_version=readiness.version,
+                        command=probe.command,
+                        protocol=probe.protocol,
+                        skills=skills,
+                        inventory_hash=inventory_hash,
+                        refreshed_at=refreshed_at,
+                    )
+                except Exception as exc:
+                    self.store.save_provider_skill_inventory_failure(
+                        provider,
+                        host,
+                        configured_binary,
+                        diagnostic=str(exc),
+                        updated_at=_now(),
+                    )
+                result = self.snapshot(provider, host, configured_binary, machine)
+            finally:
+                with self._lock:
+                    pending.result = result
+                    pending.owned = False
+                    pending.event.set()
+        else:
+            if not self._wait_for_pending(pending):
+                raise TimeoutError(
+                    f"Timed out waiting for provider skill refresh for {provider} on {machine}."
+                )
             with self._lock:
-                event.set()
-                self._active_refreshes.discard(key)
-        return self.snapshot(provider, host, configured_binary, machine)
+                result = pending.result
+
+        if result is None:
+            raise RuntimeError(
+                f"Provider skill refresh for {provider} on {machine} ended without a terminal snapshot."
+            )
+        return result.model_copy(deep=True)
 
     def snapshot(
         self,
@@ -143,13 +183,10 @@ class ProviderSkillInventoryManager:
         configured_binary: str | None,
     ) -> bool:
         with self._lock:
-            key = self._key(provider, host, configured_binary)
-            event = self._refreshes.get(key)
-            deadline = self._refresh_deadlines.get(key)
-        if event is None:
+            pending = self._pending_refreshes.get(self._key(provider, host, configured_binary))
+        if pending is None:
             return True
-        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-        return event.wait(timeout=remaining)
+        return self._wait_for_pending(pending)
 
     def resolve(
         self,
@@ -193,23 +230,38 @@ class ProviderSkillInventoryManager:
         provider: str,
         host: str,
         configured_binary: str | None,
-    ) -> tuple[threading.Event, float]:
+    ) -> _PendingRefresh:
         key = self._key(provider, host, configured_binary)
-        event = self._refreshes.get(key)
-        if event is not None and not event.is_set():
-            return event, self._refresh_deadlines[key]
+        pending = self._pending_refreshes.get(key)
+        if pending is not None and not pending.event.is_set():
+            return pending
 
-        event = threading.Event()
-        deadline = time.monotonic() + self.timeout + 5
+        pending = _PendingRefresh(
+            event=threading.Event(),
+            deadline=time.monotonic() + self.timeout + _REFRESH_COMPLETION_GRACE_SECONDS,
+        )
+        # Keep this upsert under the manager lock. Otherwise a late refreshing
+        # write can land after the owner's terminal write and strand the cache.
         self.store.mark_provider_skill_inventory_refreshing(
             provider,
             host,
             configured_binary,
             updated_at=_now(),
         )
-        self._refreshes[key] = event
-        self._refresh_deadlines[key] = deadline
-        return event, deadline
+        self._pending_refreshes[key] = pending
+        return pending
+
+    def _wait_for_pending(self, pending: _PendingRefresh) -> bool:
+        while True:
+            with self._lock:
+                deadline = pending.deadline
+            if pending.event.wait(timeout=max(0.0, deadline - time.monotonic())):
+                return True
+            with self._lock:
+                if pending.event.is_set():
+                    return True
+                if pending.deadline <= deadline:
+                    return False
 
     def _run_probe(
         self,
