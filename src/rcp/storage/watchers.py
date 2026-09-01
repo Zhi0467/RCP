@@ -1193,6 +1193,8 @@ class WatcherStoreMixin:
                 self._validate_watcher_notification_scope(connection, record, watchers)
                 if self._experiment_wake_is_stopped(connection, record):
                     return None
+                if self._auto_research_wake_is_stopped(connection, record):
+                    return None
                 if self._has_active_chat_overlap(connection, record):
                     return None
                 if record.kind == "auto_research":
@@ -1232,6 +1234,26 @@ class WatcherStoreMixin:
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
+
+    @staticmethod
+    def _auto_research_wake_is_stopped(
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+    ) -> bool:
+        """Refuse a watcher wake after its Auto-research ending fence wins."""
+
+        if record.episode_id is None:
+            return False
+        row = connection.execute(
+            "SELECT status, ending, stop_requested_at FROM episodes "
+            "WHERE episode_id = ? AND mode = 'auto_research'",
+            (record.episode_id,),
+        ).fetchone()
+        return row is not None and (
+            row["status"] != "running"
+            or row["ending"] is not None
+            or row["stop_requested_at"] is not None
+        )
 
     def resolve_watcher_delivery_authorizer(
         self,

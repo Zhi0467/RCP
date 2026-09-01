@@ -172,6 +172,7 @@ def stage_command_mailbox(
     *,
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
+    local_input_stage: Path | None = None,
     episode_id: str | None,
     task_id: str,
     turn_id: str,
@@ -181,7 +182,14 @@ def stage_command_mailbox(
 
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("command client timeout must be a positive finite number")
+    if remote_stage is not None and local_input_stage is not None:
+        raise ValueError("a remote command mailbox cannot use a local input stage")
     mailbox = RunStageMailbox.for_stage(local_stage=local_stage, remote_stage=remote_stage)
+    input_mailbox = (
+        RunStageMailbox.for_stage(local_stage=local_input_stage, remote_stage=None)
+        if local_input_stage is not None
+        else mailbox
+    )
     prepare_command_mailbox(mailbox=mailbox)
     identity = CommandTurnIdentity(episode_id=episode_id, task_id=task_id, turn_id=turn_id)
     credential = CommandTurnCredential.issue(identity)
@@ -190,7 +198,7 @@ def stage_command_mailbox(
     try:
         source = staged_command_client_source()
         source_digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
-        client_path = mailbox.stage_text_input(
+        client_path = input_mailbox.stage_text_input(
             f"rcp-agent-client-{credential.mailbox_id}-{source_digest}.py",
             source,
         )
@@ -204,7 +212,7 @@ def stage_command_mailbox(
         else:
             broker_source = staged_command_broker_source()
             broker_digest = hashlib.sha256(broker_source.encode("utf-8")).hexdigest()[:16]
-            broker_path = mailbox.stage_text_input(
+            broker_path = input_mailbox.stage_text_input(
                 f"rcp-command-broker-{credential.mailbox_id}-{broker_digest}.py",
                 broker_source,
             )

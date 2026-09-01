@@ -33,11 +33,13 @@ class _RecordingLauncher:
         self.prompts: list[str] = []
         self.workspaces: list[Path] = []
         self.sessions: list[str | None] = []
+        self.launch_kwargs: list[dict[str, object]] = []
 
     async def stream(self, _provider, prompt, **kwargs):
         self.prompts.append(prompt)
         self.workspaces.append(Path(kwargs["cwd"]))
         self.sessions.append(kwargs.get("session_id"))
+        self.launch_kwargs.append(kwargs)
         yield AgentEvent(event="session", session_id=self.native_session_id)
         yield AgentEvent(event="answer", text="Discuss answered.")
         yield AgentEvent(event="done")
@@ -237,6 +239,7 @@ async def test_fresh_discuss_bootstraps_one_master_with_both_mode_contracts(
     assert "named in the envelope" in master
     assert "Invoked for this turn —" not in master
     assert not (launcher.workspaces[0] / "current-turn.json").exists()
+    assert launcher.workspaces[0].parent / "inputs" in launcher.launch_kwargs[0]["read_dirs"]
     inputs = master_path.parent
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1
     assert len(list(inputs.glob("chat-patch-schema-*.json"))) == 1
@@ -425,8 +428,9 @@ def test_ordinary_resumed_discuss_sends_only_marker_message_without_unchanged_co
     assert "Invoked for this turn" not in launcher.prompts[2]
 
 
+@pytest.mark.parametrize("legacy_layout", [False, True])
 def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settings(
-    manifest, tmp_path
+    manifest, tmp_path, legacy_layout: bool
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -464,6 +468,11 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
     assert wait_for_task_response(client, project_id, first.json()["operation_id"])["status"] == (
         "succeeded"
     )
+    if legacy_layout:
+        with app.state.background_tasks.store.connection() as connection:
+            connection.execute(
+                "DELETE FROM graph_run_receipts WHERE category = 'chat_stage_layout'"
+            )
 
     work_message = "/graph-audit Keep this slash invocation unchanged."
     second = client.post(
@@ -483,7 +492,10 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
     assert wait_for_task_response(client, project_id, second_id)["status"] == "succeeded"
 
     assert launcher.sessions == [None, session_id]
-    assert launcher.workspaces[0] == launcher.workspaces[1]
+    if legacy_layout:
+        assert launcher.workspaces[1] == launcher.workspaces[0].parent
+    else:
+        assert launcher.workspaces[0] == launcher.workspaces[1]
     work_artifacts = launcher.workspaces[1] / "turns" / second_id / "artifacts"
     assert launcher.prompts[1].startswith(
         f"This is a Work turn.\nArtifact directory for this turn: {work_artifacts}"

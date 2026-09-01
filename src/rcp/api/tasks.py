@@ -43,7 +43,7 @@ from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchRunRequest
-from rcp.runs.chat import _logical_chat_turn_operation_id
+from rcp.runs.chat import _local_chat_artifact_directory, _logical_chat_turn_operation_id
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _resolved_coach_request
 from rcp.service import CoachRequest, ProjectService, RunRequest
@@ -808,9 +808,8 @@ def _load_agent_artifact(
                 max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
             )
         else:
-            directory = Path(record.stage_root) / "turns" / scope_id / "artifacts"
             data = read_local_regular_file(
-                directory,
+                _local_chat_artifact_directory(store, record, scope_id),
                 descriptor.name,
                 max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
             )

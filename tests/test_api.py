@@ -37,6 +37,7 @@ from rcp.providers import ProviderSkill
 from rcp.runs.chat import (
     _chat_stage_name,
     _discover_chat_artifacts,
+    _local_chat_artifact_directory,
     _prepare_local_artifact_directory,
     _project_write_scope,
 )
@@ -465,7 +466,7 @@ class ScriptedLauncher:
         self.launch_kwargs.append(kwargs)
         workspace = Path(kwargs["cwd"])
         self.workspaces.append(workspace)
-        inputs = workspace / "inputs"
+        inputs = Path(prompt.splitlines()[1]).parent
         self.input_snapshots.append(
             {
                 item.name: item.read_text(encoding="utf-8")
@@ -1307,14 +1308,14 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
     assert refused.status_code == 409
     assert cached.read_text(encoding="utf-8") == "project-a-source-again"
 
-    global_refused = client.delete(f"/api/caches?project_id={project_id}")
+    global_refused = client.delete(f"/api/projects/{project_id}/caches/all")
     assert global_refused.status_code == 409
     assert cached.exists()
     assert b_cached.exists()
     assert legacy_cached.exists()
 
     store.fail_agent_task("this-project-cache-reader", "finished for test")
-    all_cleared = client.delete(f"/api/caches?project_id={project_id}")
+    all_cleared = client.delete(f"/api/projects/{project_id}/caches/all")
     assert all_cleared.status_code == 200
     assert all_cleared.json()["remote_sources"]["count"] == 0
     assert all_cleared.json()["remote_sources"]["bytes"] == 0
@@ -3383,8 +3384,9 @@ def test_new_chat_turn_refuses_resumable_paused_attempt(manifest, tmp_path) -> N
     )
 
 
+@pytest.mark.parametrize("legacy_layout", [False, True])
 def test_chat_artifacts_are_bounded_sandboxed_and_independent(
-    manifest, tmp_path, monkeypatch
+    manifest, tmp_path, monkeypatch, legacy_layout: bool
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -3450,6 +3452,15 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
         "unsupported.svg",
     ]
     assert all("path" not in item and "host" not in item for item in artifacts)
+    if legacy_layout:
+        persisted = app.state.background_tasks.store.agent_task(completed["operation_id"])
+        assert persisted is not None and persisted.stage_root
+        stage = Path(persisted.stage_root)
+        (stage / "workspace" / "turns").rename(stage / "turns")
+        with app.state.background_tasks.store.connection() as connection:
+            connection.execute(
+                "DELETE FROM graph_run_receipts WHERE category = 'chat_stage_layout'"
+            )
 
     by_name = {item["name"]: item for item in artifacts}
     base = f"/api/projects/{project_id}/tasks/{completed['operation_id']}/artifacts"
@@ -3584,10 +3595,11 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     persisted_before = app.state.background_tasks.store.agent_task(completed["operation_id"])
     assert persisted_before is not None and persisted_before.stage_root
     artifact_file = (
-        Path(persisted_before.stage_root)
-        / "turns"
-        / completed["operation_id"]
-        / "artifacts"
+        _local_chat_artifact_directory(
+            app.state.background_tasks.store,
+            persisted_before,
+            completed["operation_id"],
+        )
         / "preview.html"
     )
     artifact_file.unlink()
@@ -3835,9 +3847,12 @@ async def test_same_chat_id_uses_distinct_stages_for_distinct_projects(manifest,
     first_workspace = Path(first_launcher.last_kwargs["cwd"])
     second_workspace = Path(second_launcher.last_kwargs["cwd"])
     assert first_workspace != second_workspace
-    assert first_workspace.parent == second_workspace.parent == shared_data / "run-stage"
-    assert chat_id in first_workspace.name
-    assert chat_id in second_workspace.name
+    assert first_workspace.name == second_workspace.name == "workspace"
+    assert (
+        first_workspace.parent.parent == second_workspace.parent.parent == shared_data / "run-stage"
+    )
+    assert chat_id in first_workspace.parent.name
+    assert chat_id in second_workspace.parent.name
 
 
 @pytest.mark.asyncio

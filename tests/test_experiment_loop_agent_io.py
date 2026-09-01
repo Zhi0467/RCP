@@ -25,6 +25,8 @@ from rcp.runs.shared import _parent_task_contract_path
 from rcp.runs.tasks.experiment_loop import (
     _apply_work_patch,
     _required_work_continuation_session_id,
+    _resolve_work_execution,
+    _stage_work_turn,
     stream_experiment_loop_task,
 )
 from rcp.runs.tasks.experiment_watcher_maintenance import (
@@ -260,12 +262,18 @@ class _LoopLauncher:
         self.patch_payload: dict[str, object] | None = None
         self.contracts: list[str] = []
         self.sessions: list[str | None] = []
+        self.workspaces: list[Path] = []
+        self.write_scopes: list[ProjectWriteScope] = []
+        self.read_dirs: list[list[Path]] = []
 
     async def stream(self, _provider, prompt, **kwargs):
         contract_path = Path(prompt.splitlines()[1])
         self.contracts.append(contract_path.read_text(encoding="utf-8"))
         self.sessions.append(kwargs.get("session_id"))
         workspace = Path(kwargs["cwd"])
+        self.workspaces.append(workspace)
+        self.write_scopes.append(kwargs["write_scope"])
+        self.read_dirs.append(kwargs["read_dirs"])
         if self.write_handoff:
             (workspace / "watch.json").write_text(
                 json.dumps(
@@ -297,6 +305,77 @@ async def _events(stream) -> list[AgentEvent]:
     async for frame in stream:
         events.append(AgentEvent.model_validate_json(frame.removeprefix("data: ").strip()))
     return events
+
+
+@pytest.mark.asyncio
+async def test_experiment_message_wake_clears_stale_handoffs_in_split_workspace(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store: AppStore = app.state.background_tasks.store
+    request = _loop_request(
+        "00000000-0000-4000-8000-000000000061",
+        "chat-message-wake-containment",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    root = _execution(store, project_id, "loop-before-message-wake", request)
+    root_turn, _staged = await _stage_work_turn(
+        service,
+        _resolve_work_execution(service, request, root),
+        data_dir,
+        root,
+    )
+    await root_turn.validator_lifecycle.close(primary_error=None)
+    assert root.stage_root is not None
+    stage = Path(root.stage_root)
+    workspace = stage / "workspace"
+    store.checkpoint_agent_task(
+        root.operation_id,
+        native_session_id="message-wake-native-session",
+        stage_root=root.stage_root,
+    )
+    store.fail_agent_task(root.operation_id, "Interrupted before the message wake.")
+    (workspace / "patch.json").write_text("stale patch", encoding="utf-8")
+    (workspace / "watch.json").write_text("stale watch", encoding="utf-8")
+
+    wake_request = request.model_copy(
+        update={
+            "session_id": "message-wake-native-session",
+            "message": "Continue with the new human message.",
+        }
+    )
+    wake = _execution(
+        store,
+        project_id,
+        "loop-message-wake",
+        wake_request,
+        continuation="message_wake",
+        stage_root=root.stage_root,
+        parent_operation_id=root.operation_id,
+    )
+    wake_turn, _wake_staged = await _stage_work_turn(
+        service,
+        _resolve_work_execution(service, wake_request, wake),
+        data_dir,
+        wake,
+    )
+    try:
+        assert not (workspace / "patch.json").exists()
+        assert not (workspace / "watch.json").exists()
+        assert wake_turn.workspace == workspace
+        assert wake_turn.write_scope.stage_root == str(stage)
+        assert wake_turn.write_scope.workspace_root == str(workspace)
+        assert str(stage / "inputs") not in wake_turn.write_scope.writable_roots
+    finally:
+        await wake_turn.validator_lifecycle.close(primary_error=None)
 
 
 def test_experiment_watcher_wake_requires_its_exact_saved_native_session(tmp_path: Path) -> None:
@@ -856,6 +935,16 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     )
     assert not [event for event in initial_events if event.event == "error"]
     assert launcher.contracts[0].startswith("# RCP Experiment-loop task contract")
+    assert initial_execution.stage_root is not None
+    initial_stage = Path(initial_execution.stage_root)
+    initial_workspace = initial_stage / "workspace"
+    assert launcher.workspaces[0] == initial_workspace
+    assert launcher.write_scopes[0].stage_root == str(initial_stage)
+    assert launcher.write_scopes[0].workspace_root == str(initial_workspace)
+    assert str(initial_stage / "inputs") not in launcher.write_scopes[0].writable_roots
+    assert initial_stage / "inputs" in launcher.read_dirs[0]
+    assert (initial_stage / "inputs").is_dir()
+    assert not (initial_workspace / "inputs").exists()
     episode = store.experiment_episode(episode_id)
     assert episode is not None
     assert episode.last_turn_operation_id == "loop-initial"
@@ -908,7 +997,7 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
         stage_root=episode.stage_root,
     )
     assert wake_execution.stage_root is not None
-    stale_workspace = Path(wake_execution.stage_root)
+    stale_workspace = Path(wake_execution.stage_root) / "workspace"
     (stale_workspace / "patch.json").write_text("stale Patch", encoding="utf-8")
     (stale_workspace / "watch.json").write_text("stale watcher", encoding="utf-8")
     # This schema-valid deliverable cannot update an unknown graph node. The
@@ -1258,6 +1347,14 @@ async def test_manual_graph_repair_updates_the_episode_handoff_summary(
         )
     )
     assert not [event for event in repair_events if event.event == "error"]
+    assert repair_execution.stage_root is not None
+    repair_stage = Path(repair_execution.stage_root)
+    repair_workspace = repair_stage / "workspace"
+    assert repair_launcher.workspaces == [repair_workspace]
+    assert repair_launcher.write_scopes[0].stage_root == str(repair_stage)
+    assert repair_launcher.write_scopes[0].workspace_root == str(repair_workspace)
+    assert str(repair_stage / "inputs") not in repair_launcher.write_scopes[0].writable_roots
+    assert repair_stage / "inputs" in repair_launcher.read_dirs[0]
     applied_graph = _graph_update_from_events(repair_events)
     assert applied_graph["status"] == "applied"
     applied_patch = service.history.load_patches()[-1]
@@ -1426,9 +1523,9 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
     )
     assert any("injected compound handoff failure" in (event.text or "") for event in root_events)
     assert root.stage_root is not None
-    stage = Path(root.stage_root)
-    patch_before = (stage / "patch.json").read_bytes()
-    watch_before = (stage / "watch.json").read_bytes()
+    workspace = Path(root.stage_root) / "workspace"
+    patch_before = (workspace / "patch.json").read_bytes()
+    watch_before = (workspace / "watch.json").read_bytes()
     store.checkpoint_agent_task(
         root.operation_id,
         native_session_id=native_session_id,
@@ -1446,7 +1543,8 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
         stage_root=root.stage_root,
         parent_operation_id=root.operation_id,
     )
-    retry_launcher = _LoopLauncher(native_session_id, tmp_path, write_handoff=False)
+    retry_launcher = _LoopLauncher(native_session_id, tmp_path, write_handoff=True)
+    retry_launcher.patch_payload = patch_payload
     retry_events = await _events(
         stream_experiment_loop_task(
             service,
@@ -1459,8 +1557,8 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
 
     assert not [event for event in retry_events if event.event == "error"]
     assert retry_launcher.sessions == [native_session_id]
-    assert (stage / "patch.json").read_bytes() == patch_before
-    assert (stage / "watch.json").read_bytes() == watch_before
+    assert (workspace / "patch.json").read_bytes() == patch_before
+    assert (workspace / "watch.json").read_bytes() == watch_before
     loop_patches = [
         item
         for item in service.history.load_patches()

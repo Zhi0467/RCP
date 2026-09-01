@@ -404,7 +404,7 @@ def create_project(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.delete("/api/caches")
+@membership_router.delete("/api/projects/{project_id}/caches/all")
 def clear_all_rebuildable_caches(
     project_id: str,
     *,

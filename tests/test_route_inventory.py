@@ -82,7 +82,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
         ("GET",),
         "/api/native/project-transfers/target-requests/{request_id}/activation-proof",
     ),
-    (("DELETE",), "/api/caches"),
+    (("DELETE",), "/api/projects/{project_id}/caches/all"),
     (("GET",), "/api/skills/{kind}/{package_id}"),
     (("DELETE",), "/api/projects/{project_id}"),
     (("GET",), "/api/projects/{project_id}"),

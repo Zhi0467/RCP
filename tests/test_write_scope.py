@@ -11,13 +11,15 @@ from typing import Any
 
 import pytest
 
-from rcp.agents import AgentLauncher
+from rcp.agents import AgentLauncher, AgentProcessControl
 from rcp.agents.context import ChatContext, RepositoryPointer
 from rcp.agents.write_scope import (
+    ProjectWriteScope,
     RegisteredRepositoryRoot,
     registered_repository_roots,
     resolve_project_write_scope,
 )
+from rcp.background import AgentTaskExecution
 from rcp.config import Manifest
 from rcp.projects import ProjectCatalog
 from rcp.runs.shared import _stage_context_paths
@@ -828,3 +830,48 @@ def test_continuation_scope_binding_rejects_mismatch_on_same_stage(tmp_path: Pat
             stage_root="/tmp/rcp-run.scope",
             fingerprint="b" * 64,
         )
+
+
+def test_legacy_local_chat_scope_can_add_only_its_missing_inputs_protection(
+    tmp_path: Path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    stage = "/tmp/rcp-run.legacy-chat"
+    old_scope = ProjectWriteScope.create(
+        project_id="project",
+        execution_machine="local",
+        execution_host="",
+        capability="work_auto",
+        stage_root=stage,
+        workspace_root=stage,
+        repositories=[],
+        protected_write_paths=[],
+    )
+    new_scope = ProjectWriteScope.create(
+        project_id="project",
+        execution_machine="local",
+        execution_host="",
+        capability="work_auto",
+        stage_root=stage,
+        workspace_root=stage,
+        repositories=[],
+        protected_write_paths=[f"{stage}/inputs"],
+    )
+    _create_scoped_task(store, "legacy", stage_root=stage, kind="project_chat")
+    _create_scoped_task(store, "continuation", stage_root=stage, kind="project_chat")
+    store.bind_agent_task_write_scope(
+        "legacy",
+        project_id="project",
+        stage_host="",
+        stage_root=stage,
+        fingerprint=old_scope.fingerprint,
+    )
+
+    AgentTaskExecution(
+        operation_id="continuation",
+        store=store,
+        control=AgentProcessControl(),
+        stage_root=stage,
+    ).bind_write_scope(new_scope)
+
+    assert store.agent_task("continuation").write_scope_fingerprint == new_scope.fingerprint

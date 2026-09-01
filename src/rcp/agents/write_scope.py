@@ -136,6 +136,7 @@ def resolve_project_write_scope(
     remote_stage: RemoteRunStage | None,
     app_data_dir: Path | None,
     repository_inventory: list[RegisteredRepositoryRoot],
+    additional_protected_write_paths: list[str] | None = None,
 ) -> ProjectWriteScope:
     """Resolve and verify one exact Work-like scope on its execution machine."""
 
@@ -170,7 +171,8 @@ def resolve_project_write_scope(
         for alias in aliases
         if manifest.repository_map[alias].machine == execution_machine
     ]
-    declared_paths: list[str] = [stage_root, workspace_root]
+    explicit_protected = list(additional_protected_write_paths or [])
+    declared_paths: list[str] = [stage_root, workspace_root, *explicit_protected]
     for repository in eligible:
         pointer = pointers.get(repository.alias)
         if pointer is None:
@@ -264,6 +266,8 @@ def resolve_project_write_scope(
     state_repository = manifest.repository_map[manifest.state.repository]
     state_research_declared = str(PurePosixPath(state_repository.path) / ".research")
     protected = [str(PurePosixPath(item.path) / ".research") for item in repository_roots]
+    protected.extend(explicit_protected)
+    protected.extend(canonical[path] for path in explicit_protected)
     try:
         state_canonical, _unused_home = _canonical_directories(
             [state_research_declared],

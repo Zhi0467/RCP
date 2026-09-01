@@ -8,7 +8,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Protocol, cast, get_args
 
 from rcp.agents import AgentEvent, AgentProcessControl
@@ -223,12 +223,33 @@ class AgentTaskExecution:
             raise ValueError(
                 "agent task must checkpoint its exact stage before write-scope binding"
             )
+        legacy_inputs = str(PurePosixPath(scope.stage_root) / "inputs")
+        compatible_previous_fingerprint = None
+        if (
+            scope.workspace_root == scope.stage_root
+            and legacy_inputs in scope.protected_write_paths
+        ):
+            # A legacy local stage used its root as cwd and bound this otherwise-
+            # identical scope before inputs had an explicit deny.
+            compatible_previous_fingerprint = ProjectWriteScope.create(
+                project_id=scope.project_id,
+                execution_machine=scope.execution_machine,
+                execution_host=scope.execution_host,
+                capability=scope.capability,
+                stage_root=scope.stage_root,
+                workspace_root=scope.workspace_root,
+                repositories=scope.repositories,
+                protected_write_paths=[
+                    path for path in scope.protected_write_paths if path != legacy_inputs
+                ],
+            ).fingerprint
         self.store.bind_agent_task_write_scope(
             self.operation_id,
             project_id=scope.project_id,
             stage_host=self.stage_host or "",
             stage_root=scope.stage_root,
             fingerprint=scope.fingerprint,
+            compatible_previous_fingerprint=compatible_previous_fingerprint,
         )
         self.write_scope_fingerprint = scope.fingerprint
 
@@ -1369,6 +1390,9 @@ class BackgroundAgentTasks:
         if current is None:
             self._forget_control(operation_id)
             return
+        # Admission may have inherited a durable conversation-stage binding.
+        # Launch only from that stored record, never the caller's pre-insert model.
+        record = current
         if current.status == "pausing" or control.pause_requested.is_set():
             self.store.pause_agent_task(operation_id)
             execution = AgentTaskExecution(

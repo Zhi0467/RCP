@@ -389,8 +389,9 @@ def test_claimed_inbound_mail_is_staged_as_one_exact_hearsay_only_batch(tmp_path
 
 
 def test_ordinary_child_work_stages_and_reuses_only_its_exact_claimed_mail(tmp_path) -> None:
-    workspace = tmp_path / "ordinary-child-stage"
-    workspace.mkdir()
+    stage = tmp_path / "ordinary-child-stage"
+    inputs = stage / "inputs"
+    inputs.mkdir(parents=True)
     message = AutoResearchMessageRecord(
         message_id="ordinary-child-message",
         episode_id="auto_research",
@@ -463,24 +464,25 @@ def test_ordinary_child_work_stages_and_reuses_only_its_exact_claimed_mail(tmp_p
                 continuation="fresh",
             ),
             route.model_copy(update={"current_operation_id": "child-initial"}),
-            local_stage=workspace,
+            local_stage=stage,
             remote_stage=None,
             continuation="fresh",
         )
         is None
     )
-    assert not (workspace / "messages.json").exists()
+    assert not (stage / "messages.json").exists()
+    assert not (inputs / "messages.json").exists()
     first = _stage_auto_research_child_work_mail(
         execution,
         route,
-        local_stage=workspace,
+        local_stage=stage,
         remote_stage=None,
         continuation="message_wake",
     )
     second = _stage_auto_research_child_work_mail(
         execution,
         route,
-        local_stage=workspace,
+        local_stage=stage,
         remote_stage=None,
         continuation="message_wake",
     )
@@ -492,14 +494,14 @@ def test_ordinary_child_work_stages_and_reuses_only_its_exact_claimed_mail(tmp_p
             continuation="resume",
         ),
         route.model_copy(update={"current_operation_id": "child-mail-resume"}),
-        local_stage=workspace,
+        local_stage=stage,
         remote_stage=None,
         continuation="resume",
     )
 
-    assert first == second == resumed == str(workspace / "messages.json")
+    assert first == second == resumed == str(inputs / "messages.json")
     retained = parse_auto_research_mail_delivery(
-        (workspace / "messages.json").read_text(encoding="utf-8")
+        (inputs / "messages.json").read_text(encoding="utf-8")
     )
     assert retained.recipient_task_id == route.worker_id
     assert retained.delivery_operation_id == execution.operation_id
@@ -623,9 +625,13 @@ def test_claim_prefix_stops_at_the_shared_count_and_exact_wire_boundary(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_layout", [False, True])
+@pytest.mark.parametrize("provider", ["codex", "claude"])
 async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_authority(
     manifest,
     tmp_path,
+    legacy_layout: bool,
+    provider: str,
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -667,7 +673,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
         app.state.default_project_id,
         AutoResearchStartRequest(
             invocation_ceiling=5,
-            provider="codex",
+            provider=provider,
             run_on="laptop",
             run_truth_scope=["repo-a"],
         ),
@@ -684,7 +690,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
         background,
         episode.episode_id,
         RunRequest(
-            provider="codex",
+            provider=provider,
             run_on="laptop",
             run_truth_scope=["repo-a"],
             chat_scope="node",
@@ -710,11 +716,36 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert "Do not invoke `apply`, `status`, `spawn`" in initial_master
     assert "Do not write `watch.json`" in initial_master
     assert launcher.launch_kwargs[0]["invocation_gate"] is not None
+    workspace = launcher.workspaces[0]
+    stage = workspace.parent
+    assert workspace.name == "workspace"
+    assert not (workspace / "inputs").exists()
+    input_names = {item.name for item in (stage / "inputs").iterdir()}
+    assert any(name.startswith("chat-master-v") for name in input_names)
+    assert any(name.startswith("rcp-agent-client-") for name in input_names)
+    assert stage / "inputs" in launcher.launch_kwargs[0]["read_dirs"]
+    launch = next(
+        receipt
+        for receipt in store.agent_task_receipts(child.operation_id)
+        if receipt.category == "agent_launch"
+    )
+    assert launch.payload["canonical_write_roots"][0] == str(workspace)
     assert not (launcher.workspaces[0] / "watch.json").exists()
     assert any(
         receipt.category == "auto_research_child_watcher_output_discarded"
         for receipt in store.agent_task_receipts(child.operation_id)
     )
+    if legacy_layout:
+        with store.connection() as connection:
+            connection.execute(
+                "DELETE FROM graph_run_receipts "
+                "WHERE operation_id = ? AND category = 'chat_stage_layout'",
+                (child.operation_id,),
+            )
+            connection.execute(
+                "UPDATE graph_runs SET write_scope_fingerprint = NULL WHERE operation_id = ?",
+                (child.operation_id,),
+            )
 
     message = record_auto_research_message(
         store,
@@ -743,11 +774,23 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert launcher.resumed_sessions == [None, launcher.native_session_id]
     assert launcher.launch_kwargs[1]["invocation_gate"] is not None
     staged_mail = parse_auto_research_mail_delivery(
-        (launcher.workspaces[1] / "messages.json").read_text(encoding="utf-8")
+        (stage / "inputs" / "messages.json").read_text(encoding="utf-8")
     )
     assert staged_mail.delivery_operation_id == wake.operation_id
     assert staged_mail.message_ids == [message.message_id]
     assert not (launcher.workspaces[1] / "watch.json").exists()
+    assert not (stage / "messages.json").exists()
+    assert launcher.workspaces[1] == (stage if legacy_layout else workspace)
+    assert stage / "inputs" in launcher.launch_kwargs[1]["read_dirs"]
+    wake_launch = next(
+        receipt
+        for receipt in store.agent_task_receipts(wake.operation_id)
+        if receipt.category == "agent_launch"
+    )
+    assert wake_launch.payload["provider"] == provider
+    assert str(stage / "inputs") not in wake_launch.payload["canonical_write_roots"]
+    if legacy_layout:
+        assert str(stage / "inputs") in wake_launch.payload["protected_write_paths"]
     assert store.agent_task(wake.operation_id).native_session_id == "child-session"  # type: ignore[union-attr]
     assert any(
         receipt.category == "continuation_context_unavailable"

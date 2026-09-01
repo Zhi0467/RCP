@@ -22,6 +22,7 @@ from rcp.core.authority import require_apply, require_dispatch
 from rcp.history import HistoryManager
 from rcp.projects import ProjectCatalog
 from rcp.setup import ProjectSetupRequest
+from rcp.sources import project_cache_roots
 from rcp.storage import AppStore
 
 from .helpers import seed_patch
@@ -87,7 +88,7 @@ def _create_project(
 
 
 def _project_scoped_routes(app: FastAPI) -> list[APIRoute]:
-    """Every project-scoped route, whether FastAPI flattened the router or nested it.
+    """Every route that declares a project id, including legacy query forms.
 
     `include_router` may leave an opaque `_IncludedRouter` in `app.routes`
     instead of merging its routes, so a flat walk would silently find none —
@@ -101,7 +102,10 @@ def _project_scoped_routes(app: FastAPI) -> list[APIRoute]:
         nested = getattr(route, "original_router", None)
         if nested is not None:
             pending.extend(nested.routes)
-        elif isinstance(route, APIRoute) and "{project_id}" in route.path:
+        elif isinstance(route, APIRoute) and (
+            "{project_id}" in route.path
+            or any(parameter.name == "project_id" for parameter in route.dependant.query_params)
+        ):
             found.append(route)
     return found
 
@@ -363,6 +367,24 @@ def test_a_non_member_dispatch_never_launches_a_provider(manifest, tmp_path) -> 
     assert store.agent_tasks(project_id) == []
 
 
+def test_a_non_member_cannot_clear_all_project_caches(manifest, tmp_path) -> None:
+    app, client, _store, people, acting = _team_app(tmp_path)
+    creator, outsider = people
+    project_id = _create_project(client, tmp_path / "repo", seat_member=creator.user_id)
+    source_root, _slice_root = project_cache_roots(app.state.catalog.data_dir, project_id)
+    cached = source_root / "remote" / "codex" / "source.jsonl"
+    cached.parent.mkdir(parents=True)
+    cached.write_text("project source", encoding="utf-8")
+
+    acting[0] = outsider.user_id
+    refused = client.delete(f"/api/projects/{project_id}/caches/all")
+    unknown = client.delete("/api/projects/no-such-project-at-all/caches/all")
+
+    assert refused.status_code == 404
+    assert refused.json() == unknown.json() == {"detail": "Project not found"}
+    assert cached.read_text(encoding="utf-8") == "project source"
+
+
 def test_a_non_member_patch_is_refused_at_apply_under_the_append_lock(manifest, tmp_path) -> None:
     """Apply reads membership live, so losing it while a task runs still refuses."""
 
@@ -425,7 +447,14 @@ def test_a_project_scoped_route_declared_outside_the_router_fails_the_route_test
     def smuggled(project_id: str) -> dict[str, str]:  # pragma: no cover - never called
         return {"project_id": project_id}
 
-    assert _routes_missing_membership(app) == ["['GET'] /api/projects/{project_id}/smuggled"]
+    @app.get("/api/query-smuggled")
+    def query_smuggled(project_id: str) -> dict[str, str]:  # pragma: no cover - never called
+        return {"project_id": project_id}
+
+    assert sorted(_routes_missing_membership(app)) == [
+        "['GET'] /api/projects/{project_id}/smuggled",
+        "['GET'] /api/query-smuggled",
+    ]
 
 
 # --- membership is operational, never canonical ------------------------------

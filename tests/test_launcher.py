@@ -937,7 +937,8 @@ def test_codex_work_uses_exact_project_permission_profile() -> None:
     assert (
         'permissions={rcp_project={workspace_roots={"/data/chat-stage"=true,'
         '"/project/repo-a"=true},filesystem={":root"="read",":workspace_roots"='
-        '{"."="write",".research"="read"}},network={enabled=true}}}'
+        '{"."="write",".research"="read"},'
+        '"/project/repo-a/.research"="read"},network={enabled=true}}}'
     ) in command
     assert command[command.index("--cd") + 1] == stage
     assert "--add-dir" not in command
@@ -977,6 +978,7 @@ def test_codex_profile_keeps_staged_canonical_state_readable() -> None:
     # The staged pointer and the policy governing it, checked against each other.
     assert f"{state_repository}/.research" in scope.protected_write_paths
     assert '".research"="read"' in permission_profile
+    assert all(f'"{path}"="read"' in permission_profile for path in scope.protected_write_paths)
     assert "deny" not in permission_profile
 
 
@@ -1279,6 +1281,50 @@ def test_claude_work_uses_exact_sandbox_and_tool_allowlists() -> None:
     assert command[command.index("--mcp-config") + 1] == '{"mcpServers":{}}'
     add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
     assert add_dirs == ["/data/chat-stage/inputs", "/project/repo-a"]
+
+
+def test_claude_split_chat_reads_outer_inputs_without_write_authority() -> None:
+    stage = "/data/chat-stage"
+    workspace = f"{stage}/workspace"
+    inputs = f"{stage}/inputs"
+    repository = WritableRepositoryRoot(
+        alias="repo-a",
+        machine="local",
+        path="/project/repo-a",
+    )
+    scope = ProjectWriteScope.create(
+        project_id="project-1",
+        execution_machine="local",
+        execution_host="",
+        capability="work_auto",
+        stage_root=stage,
+        workspace_root=workspace,
+        repositories=[repository],
+        protected_write_paths=["/project/repo-a/.research"],
+    )
+
+    command = AgentLauncher._command(
+        "claude",
+        "run the experiment",
+        cwd=Path(workspace),
+        model=None,
+        reasoning=None,
+        session_id=None,
+        read_dirs=[Path(inputs)],
+        write_dirs=[Path(repository.path)],
+        write_scope=scope,
+        capability="work_auto",
+        provider_version="2.1.233",
+    )
+
+    add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
+    assert inputs in add_dirs
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings["sandbox"]["filesystem"]["allowWrite"] == [
+        workspace,
+        repository.path,
+    ]
+    assert inputs not in scope.writable_roots
 
 
 def test_claude_orchestrate_allows_only_its_resolved_project_roots() -> None:

@@ -254,6 +254,7 @@ async def stream_auto_research_orchestrator_run(
             )
             read_dirs = _chat_read_dirs(
                 context,
+                stage.local,
                 stage.remote,
                 service,
                 turn.request.run_on or "",
@@ -262,6 +263,7 @@ async def stream_auto_research_orchestrator_run(
                 context,
                 service,
                 turn.request.run_on or "",
+                local_stage=stage.local,
                 workspace=stage.workspace,
                 remote_stage=stage.remote,
                 data_dir=data_dir,
@@ -500,6 +502,7 @@ async def stream_auto_research_worker_run(
             )
             read_dirs = _chat_read_dirs(
                 context,
+                stage.local,
                 stage.remote,
                 service,
                 turn.request.run_on or "",
@@ -508,6 +511,7 @@ async def stream_auto_research_worker_run(
                 context,
                 service,
                 turn.request.run_on or "",
+                local_stage=stage.local,
                 workspace=stage.workspace,
                 remote_stage=stage.remote,
                 data_dir=data_dir,

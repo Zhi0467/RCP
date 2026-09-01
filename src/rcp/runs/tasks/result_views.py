@@ -13,6 +13,7 @@ from typing import Literal
 from rcp.artifacts import validate_artifact_bytes, validate_result_view_id
 from rcp.background import AgentTaskExecution
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES, RUN_STAGE_RETENTION_DAYS
+from rcp.runs.shared import _touch_local_stage
 from rcp.service import RunRequest
 from rcp.storage import ResultViewRecord
 from rcp.transport.run_stage import RemoteRunStage
@@ -75,11 +76,7 @@ def prepare_local_result_view_slot(stage: Path, view_id: str, *, reuse: bool) ->
 
 def touch_local_conversation_stage(stage: Path) -> None:
     """Refresh a reused local conversation stage without changing its cwd."""
-    root_fd = _open_stage_root(stage)
-    try:
-        os.utime(root_fd, None)
-    finally:
-        os.close(root_fd)
+    _touch_local_stage(stage)
 
 
 def touch_conversation_stage(

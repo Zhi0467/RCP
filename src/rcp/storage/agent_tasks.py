@@ -7,6 +7,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import PurePosixPath
 from statistics import median
 from typing import Literal
 
@@ -686,6 +687,160 @@ class AgentTaskStoreMixin:
         saved_host, saved_root = next(iter(bindings))
         record.stage_host = saved_host or None
         record.stage_root = saved_root
+
+    def chat_stage_layout(
+        self,
+        *,
+        project_id: str,
+        kind: Literal["node_chat", "project_chat"],
+        chat_id: str,
+        stage_host: str,
+        stage_root: str,
+    ) -> Literal["split-v1"] | None:
+        """Return the one immutable local-chat stage-layout marker for a binding."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT receipt.payload_json
+                FROM graph_run_receipts AS receipt
+                JOIN graph_runs AS run ON run.operation_id = receipt.operation_id
+                WHERE receipt.category = 'chat_stage_layout'
+                  AND run.project_id = ? AND run.kind = ?
+                  AND json_extract(run.request_json, '$.chat_id') = ?
+                  AND json_extract(receipt.payload_json, '$.stage_host') = ?
+                  AND json_extract(receipt.payload_json, '$.stage_root') = ?
+                ORDER BY receipt.receipt_id ASC
+                """,
+                (
+                    project_id,
+                    kind,
+                    chat_id,
+                    stage_host,
+                    stage_root,
+                ),
+            ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ValueError("The conversation stage has multiple layout markers.")
+        try:
+            payload = json.loads(rows[0]["payload_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("The conversation stage layout marker is malformed.") from exc
+        expected = {
+            "layout": "split-v1",
+            "stage_host": stage_host,
+            "stage_root": stage_root,
+            "workspace_root": str(PurePosixPath(stage_root) / "workspace"),
+        }
+        if payload != expected:
+            raise ValueError("The conversation stage layout marker conflicts with its binding.")
+        return "split-v1"
+
+    def chat_stage_has_prior_binding(
+        self,
+        *,
+        operation_id: str,
+        project_id: str,
+        kind: Literal["node_chat", "project_chat"],
+        chat_id: str,
+        stage_host: str,
+        stage_root: str,
+    ) -> bool:
+        """Return whether another task durably bound this exact conversation stage."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE operation_id != ? AND project_id = ? AND kind = ?
+                  AND json_extract(request_json, '$.chat_id') = ?
+                  AND COALESCE(stage_host, '') = ? AND stage_root = ?
+                LIMIT 1
+                """,
+                (operation_id, project_id, kind, chat_id, stage_host, stage_root),
+            ).fetchone()
+        return row is not None
+
+    def record_chat_stage_layout(
+        self,
+        operation_id: str,
+        *,
+        stage_root: str,
+        workspace_root: str,
+    ) -> None:
+        """Record one idempotent split-layout marker before stage checkpointing."""
+
+        with self.connection() as connection:
+            task = connection.execute(
+                """
+                SELECT project_id, kind, json_extract(request_json, '$.chat_id') AS chat_id
+                FROM graph_runs WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if (
+                task is None
+                or task["kind"] not in {"node_chat", "project_chat"}
+                or not task["chat_id"]
+            ):
+                raise ValueError("The agent task has no durable chat stage binding.")
+            payload = {
+                "layout": "split-v1",
+                "stage_host": "",
+                "stage_root": stage_root,
+                "workspace_root": workspace_root,
+            }
+            payload_json = self._bounded_receipt_payload(payload)
+            rows = connection.execute(
+                """
+                SELECT receipt.payload_json
+                FROM graph_run_receipts AS receipt
+                JOIN graph_runs AS run ON run.operation_id = receipt.operation_id
+                WHERE receipt.category = 'chat_stage_layout'
+                  AND run.project_id = ? AND run.kind = ?
+                  AND json_extract(run.request_json, '$.chat_id') = ?
+                  AND json_extract(receipt.payload_json, '$.stage_host') = ''
+                  AND json_extract(receipt.payload_json, '$.stage_root') = ?
+                ORDER BY receipt.receipt_id ASC
+                """,
+                (task["project_id"], task["kind"], task["chat_id"], stage_root),
+            ).fetchall()
+            if len(rows) > 1:
+                raise ValueError("The conversation stage has multiple layout markers.")
+            if rows:
+                if rows[0]["payload_json"] != payload_json:
+                    raise ValueError(
+                        "The conversation stage layout marker conflicts with its stage."
+                    )
+                return
+            legacy = connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE operation_id != ? AND project_id = ? AND kind = ?
+                  AND json_extract(request_json, '$.chat_id') = ?
+                  AND COALESCE(stage_host, '') = '' AND stage_root = ?
+                LIMIT 1
+                """,
+                (
+                    operation_id,
+                    task["project_id"],
+                    task["kind"],
+                    task["chat_id"],
+                    stage_root,
+                ),
+            ).fetchone()
+            if legacy is not None:
+                raise ValueError("A legacy conversation stage cannot acquire a split layout.")
+            self._insert_agent_task_receipt(
+                connection,
+                operation_id,
+                "chat_stage_layout",
+                payload_json,
+                tier="summary",
+                created_at=self.now(),
+            )
 
     @staticmethod
     def _has_active_chat_overlap(
@@ -2045,7 +2200,8 @@ class AgentTaskStoreMixin:
                     'operation_dispatch_attempt',
                     'operation_dispatch_failed_before_start',
                     'operation_dispatch_started',
-                    'operation_dispatch_reset'
+                    'operation_dispatch_reset',
+                    'chat_stage_layout'
                   )
                 """,
                 (operation_id, tier),
@@ -2061,17 +2217,19 @@ class AgentTaskStoreMixin:
                 'operation_dispatch_attempt',
                 'operation_dispatch_failed_before_start',
                 'operation_dispatch_started',
-                'operation_dispatch_reset'
+                'operation_dispatch_reset',
+                'chat_stage_layout'
               )
               AND receipt_id NOT IN (
                 SELECT receipt_id FROM graph_run_receipts
                 WHERE operation_id = ? AND tier = ?
                   AND category NOT IN (
-                  'operation_admitted',
-                  'operation_dispatch_attempt',
-                  'operation_dispatch_failed_before_start',
-                  'operation_dispatch_started',
-                  'operation_dispatch_reset'
+                    'operation_admitted',
+                    'operation_dispatch_attempt',
+                    'operation_dispatch_failed_before_start',
+                    'operation_dispatch_started',
+                    'operation_dispatch_reset',
+                    'chat_stage_layout'
                   )
                 ORDER BY receipt_id DESC
                 LIMIT ?
@@ -2678,6 +2836,7 @@ class AgentTaskStoreMixin:
         stage_host: str,
         stage_root: str,
         fingerprint: str,
+        compatible_previous_fingerprint: str | None = None,
     ) -> None:
         """Compare-and-set the durable filesystem scope before provider launch."""
 
@@ -2702,7 +2861,7 @@ class AgentTaskStoreMixin:
             if row["stage_host"] != normalized_host or row["stage_root"] != stage_root:
                 raise ValueError("agent task write scope does not match its saved execution stage")
             existing = row["write_scope_fingerprint"]
-            if existing is not None and existing != fingerprint:
+            if existing not in {None, fingerprint, compatible_previous_fingerprint}:
                 raise ValueError("agent task write scope changed after it was durably bound")
 
             clauses = ["(COALESCE(stage_host, '') = ? AND stage_root = ?)"]
@@ -2722,7 +2881,8 @@ class AgentTaskStoreMixin:
                 (operation_id, row["kind"], *values),
             ).fetchall()
             inherited = {item["write_scope_fingerprint"] for item in related}
-            if inherited and inherited != {fingerprint}:
+            incompatible = inherited - {fingerprint}
+            if incompatible - {compatible_previous_fingerprint}:
                 raise ValueError(
                     "agent task continuation conflicts with its saved project write scope"
                 )
@@ -2731,9 +2891,9 @@ class AgentTaskStoreMixin:
                 UPDATE graph_runs
                 SET write_scope_fingerprint = ?, updated_at = ?
                 WHERE operation_id = ?
-                  AND (write_scope_fingerprint IS NULL OR write_scope_fingerprint = ?)
+                  AND write_scope_fingerprint IS ?
                 """,
-                (fingerprint, self.now(), operation_id, fingerprint),
+                (fingerprint, self.now(), operation_id, existing),
             ).rowcount
             if updated != 1:
                 raise ValueError("agent task write scope changed while it was being bound")

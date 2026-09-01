@@ -928,9 +928,9 @@ def stop_auto_research_child_work(
 ) -> AgentTaskRecord:
     """Durably stop one route and gracefully pause its current live attempt."""
 
-    route, current = auto_research_child_work_task(tasks, episode_id, worker_id)
+    route, _ = auto_research_child_work_task(tasks, episode_id, worker_id)
     tasks.store.request_auto_research_child_work_stop(route.worker_id)
-    current = tasks._require_operation(current.operation_id)
+    _, current = auto_research_child_work_task(tasks, episode_id, worker_id)
     if current.status in {"queued", "running"}:
         return tasks.pause(current.operation_id)
     if current.status == "pausing":
@@ -1562,8 +1562,17 @@ def auto_research_admission_exhausted(tasks: BackgroundAgentTasks, episode: Epis
                 level="warning",
             )
     if tasks.on_auto_research_admission_exhausted is not None:
-        with suppress(Exception):
+        try:
             tasks.on_auto_research_admission_exhausted(current)
+        except Exception as exc:
+            if current.root_operation_id is not None:
+                with suppress(Exception):
+                    tasks.store.record_agent_task_receipt(
+                        current.root_operation_id,
+                        "auto_research_admission_exhausted_callback_failed",
+                        {"exception_type": type(exc).__name__},
+                        tier="diagnostic",
+                    )
 
 
 def _validate_existing_auto_research_wake(

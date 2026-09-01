@@ -471,6 +471,8 @@ class AutoResearchChildrenStoreMixin:
             route = self._child_work_record(route_row)
             episode = self._load_auto_research_episode(connection, route.episode_id)
             self._validate_auto_research_parent_admission(episode)
+            if route.stop_requested_at is not None:
+                raise EpisodeNotRunning("the child Work route is stopping")
             current = connection.execute(
                 "SELECT * FROM graph_runs WHERE operation_id = ?",
                 (route.current_operation_id,),
@@ -531,6 +533,7 @@ class AutoResearchChildrenStoreMixin:
                 UPDATE auto_research_child_work
                 SET current_operation_id = ?, updated_at = ?
                 WHERE worker_id = ? AND current_operation_id = ?
+                  AND stop_requested_at IS NULL
                 """,
                 (task.operation_id, task.created_at, worker_id, current_task.operation_id),
             )

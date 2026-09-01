@@ -49,6 +49,7 @@ from rcp.runs.chat import (
     _discover_chat_artifacts,
     _logical_chat_turn_operation_id,
     _prepare_local_artifact_directory,
+    _prepare_local_chat_workspace,
     _project_write_scope,
     _read_chat_patch,
     _read_watch_request,
@@ -100,6 +101,7 @@ from rcp.runs.tasks.work import (
     _AppliedWorkTurn,
     _bounded_graph_messages,
     _capture_retry_deliverable_baseline,
+    _clears_stale_turn_handoffs,
     _close_work_validator_mailbox,
     _ComposedWorkPrompt,
     _DeliverableFailure,
@@ -234,9 +236,8 @@ async def _stage_work_turn(
 ) -> tuple[WorkTurn, _StagedWorkInputs]:
     request = resolved.request
     continuation = execution.continuation if execution is not None else "fresh"
-    reusing_checkpoint = bool(execution is not None and execution.reuses_native_checkpoint)
+    clear_stale_handoffs = _clears_stale_turn_handoffs(continuation)
     resuming = continuation == "resume"
-    waking = continuation == "watcher_wake"
     local_stage: Path | None = None
     remote_stage: RemoteRunStage | None = None
     patch_inputs: _ChatPatchInputs | None = None
@@ -282,9 +283,13 @@ async def _stage_work_turn(
             else:
                 local_stage = expected_stage
                 local_stage.mkdir(parents=True, exist_ok=True)
+            workspace = _prepare_local_chat_workspace(
+                local_stage,
+                execution=execution,
+                saved_stage=saved_stage,
+            )
             if execution is not None:
                 execution.checkpoint_stage("", str(local_stage))
-            workspace = local_stage
         token = _task_token(execution)
         patch_inputs = _stage_chat_patch_inputs(
             local_stage,
@@ -303,7 +308,7 @@ async def _stage_work_turn(
             control_node_id=request.control_node_id,
             control_decision_bundle=request.control_decision_bundle,
         )
-        if not reusing_checkpoint or waking:
+        if clear_stale_handoffs:
             _clear_stale_turn_handoffs(workspace, remote_stage)
         artifact_scope_id = (
             _logical_chat_turn_operation_id(execution.store, execution.operation_id)
@@ -320,12 +325,13 @@ async def _stage_work_turn(
         else:
             assert local_stage is not None
             artifact_directory = _prepare_local_artifact_directory(
-                local_stage,
+                workspace,
                 artifact_scope_id,
                 reuse=resuming,
             )
         read_dirs = _chat_read_dirs(
             context,
+            local_stage,
             remote_stage,
             service,
             resolved.execution_machine_alias,
@@ -334,6 +340,7 @@ async def _stage_work_turn(
             context,
             service,
             resolved.execution_machine_alias,
+            local_stage=local_stage,
             workspace=workspace,
             remote_stage=remote_stage,
             data_dir=data_dir,
@@ -1867,7 +1874,11 @@ async def _stream_work_graph_repair(
         else:
             expected_stage = _swept_stage_root(data_dir) / stage_name
             local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
-            workspace = local_stage
+            workspace = _prepare_local_chat_workspace(
+                local_stage,
+                execution=execution,
+                saved_stage=True,
+            )
         token = _task_token(execution)
         patch_inputs = _stage_chat_patch_inputs(
             local_stage,
@@ -1889,6 +1900,7 @@ async def _stream_work_graph_repair(
         patch_path = patch_inputs.patch_path
         read_dirs = _chat_read_dirs(
             context,
+            local_stage,
             remote_stage,
             service,
             execution_machine.alias,
@@ -1897,6 +1909,7 @@ async def _stream_work_graph_repair(
             context,
             service,
             execution_machine.alias,
+            local_stage=local_stage,
             workspace=workspace,
             remote_stage=remote_stage,
             data_dir=data_dir,

@@ -612,8 +612,9 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
 
         worker_route, worker = _wait_for_child_work(store, episode_id)
         worker_stage = _wait_for_task_stage(store, worker.operation_id)
-        worker_active_path = worker_stage / ".rcp-acceptance-campaign-worker-active"
-        worker_release_path = worker_stage / ".rcp-acceptance-campaign-worker-release"
+        worker_workspace = worker_stage / "workspace"
+        worker_active_path = worker_workspace / ".rcp-acceptance-campaign-worker-active"
+        worker_release_path = worker_workspace / ".rcp-acceptance-campaign-worker-release"
         _wait_for_path(worker_active_path)
         root = store.agent_task(root_operation_id)
         current_worker = store.agent_task(worker.operation_id)

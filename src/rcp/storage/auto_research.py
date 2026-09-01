@@ -1557,10 +1557,17 @@ class AutoResearchStoreMixin:
                 stopped_by = COALESCE(stopped_by, 'loop'),
                 stop_reason = COALESCE(stop_reason, ?),
                 stopped_at = COALESCE(stopped_at, ?)
-            WHERE episode_id = ? AND origin_task_kind = 'auto_research'
-              AND status IN ('active', 'degraded', 'completed')
+            WHERE status IN ('active', 'degraded', 'completed')
+              AND (
+                  episode_id = ?
+                  OR EXISTS (
+                      SELECT 1 FROM graph_runs AS origin
+                      WHERE origin.operation_id = watchers.origin_operation_id
+                        AND origin.episode_id = ?
+                  )
+              )
             """,
-            (reason, stopped_at, episode_id),
+            (reason, stopped_at, episode_id, episode_id),
         ).rowcount
 
     def auto_research_is_quiescent(self, episode_id: str) -> bool:

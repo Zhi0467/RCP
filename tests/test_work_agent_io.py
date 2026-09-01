@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import uuid
 from pathlib import Path
@@ -209,7 +210,13 @@ async def test_manual_graph_repair_preserves_post_stage_failure_over_mailbox_fai
     )
     stage = tmp_path / "data" / "run-stage" / "chat-manual-repair-failure"
     stage.mkdir(parents=True)
-    execution.stage_root = str(stage)
+    (stage / "workspace").mkdir()
+    execution.store.record_chat_stage_layout(
+        execution.operation_id,
+        stage_root=str(stage),
+        workspace_root=str(stage / "workspace"),
+    )
+    execution.checkpoint_stage("", str(stage))
     execution.continuation = "graph_repair"
     staged_mailboxes: list[StagedCommandMailbox] = []
     started: list[str] = []
@@ -278,6 +285,145 @@ async def test_manual_graph_repair_preserves_post_stage_failure_over_mailbox_fai
     ]
     assert any("secondary manual repair serve failure" in message for message in warnings)
     assert any("secondary manual repair cleanup failure" in message for message in warnings)
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    [
+        "fresh",
+        "retry",
+        "handoff",
+        "watcher_wake",
+        "message_wake",
+        "graph_condition_wake",
+        "lifecycle_wake",
+    ],
+)
+def test_new_logical_work_continuations_clear_stale_handoffs(continuation: str) -> None:
+    assert work_module._clears_stale_turn_handoffs(continuation) is True  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("continuation", ["resume", "graph_repair"])
+def test_same_logical_work_continuations_preserve_handoffs(continuation: str) -> None:
+    assert work_module._clears_stale_turn_handoffs(continuation) is False  # type: ignore[arg-type]
+
+
+def test_non_work_checkpoint_continuation_fails_closed() -> None:
+    with pytest.raises(ValueError, match="Unsupported Work continuation"):
+        work_module._clears_stale_turn_handoffs("auto_research_continuation")
+
+
+@pytest.mark.asyncio
+async def test_local_work_keeps_rcp_inputs_outside_provider_workspace(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    request = _request()
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="work-contained-inputs",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    launcher = ScriptedLauncher([{}], message="The local Work turn completed.")
+
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
+
+    assert not any('"event":"error"' in frame for frame in frames)
+    workspace = launcher.workspaces[0]
+    stage = workspace.parent
+    assert workspace.name == "workspace"
+    assert execution.stage_root == str(stage)
+    assert not (workspace / "inputs").exists()
+    input_names = {item.name for item in (stage / "inputs").iterdir()}
+    assert any(name.startswith("chat-master-v") for name in input_names)
+    assert any(name.startswith("chat-patch-schema-") for name in input_names)
+    assert any(name.startswith("rcp-agent-client-") for name in input_names)
+    assert stage / "inputs" in launcher.launch_kwargs[0]["read_dirs"]
+    launch = next(
+        receipt
+        for receipt in execution.store.agent_task_receipts(execution.operation_id)
+        if receipt.category == "agent_launch"
+    )
+    assert launch.payload["canonical_write_roots"][0] == str(workspace)
+
+
+@pytest.mark.asyncio
+async def test_work_watcher_binding_keeps_originating_episode_lineage(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    request = _request()
+    execution = _chat_task_execution(
+        app.state.background_tasks.store,
+        operation_id="work-episode-watcher-binding",
+        project_id=app.state.default_project_id,
+        request=request,
+    )
+    episode_id = "auto-research-episode"
+    original_agent_task = execution.store.agent_task
+
+    def episode_bound_task(operation_id: str):
+        task = original_agent_task(operation_id)
+        return (
+            task.model_copy(update={"episode_id": episode_id})
+            if task is not None and operation_id == execution.operation_id
+            else task
+        )
+
+    monkeypatch.setattr(execution.store, "agent_task", episode_bound_task)
+    bindings = []
+
+    def capture_binding(_store, _specs, binding, **_kwargs):
+        bindings.append(binding)
+        return []
+
+    monkeypatch.setattr(work_module, "arm_watchers", capture_binding)
+    launcher = ScriptedLauncher(
+        [
+            {
+                "watch.json": json.dumps(
+                    {
+                        "external": [
+                            {
+                                "check_command": "false",
+                                "log_path": str(tmp_path / "work.log"),
+                                "cwd": str(tmp_path),
+                            }
+                        ],
+                        "graph": [],
+                    }
+                )
+            }
+        ],
+        message="Detached work is still running.",
+    )
+
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        )
+    ]
+
+    assert not any('"event":"error"' in frame for frame in frames)
+    assert len(bindings) == 1
+    assert bindings[0].episode_id == episode_id
 
 
 @pytest.mark.asyncio

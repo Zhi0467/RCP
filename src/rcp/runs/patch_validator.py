@@ -48,6 +48,7 @@ def stage_patch_validation_mailbox(
     *,
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
+    local_input_stage: Path | None = None,
     task_id: str,
     turn_id: str,
     timeout_seconds: float,
@@ -57,6 +58,7 @@ def stage_patch_validation_mailbox(
     return stage_command_mailbox(
         local_stage=local_stage,
         remote_stage=remote_stage,
+        local_input_stage=local_input_stage,
         episode_id=None,
         task_id=task_id,
         turn_id=turn_id,
