@@ -80,7 +80,6 @@ class ProviderSkillInventoryManager:
         and receive the same terminal snapshot.
         """
 
-        key = self._key(provider, host, configured_binary)
         with self._lock:
             pending = self._pending_refresh_locked(provider, host, configured_binary)
             owns_refresh = not pending.owned
