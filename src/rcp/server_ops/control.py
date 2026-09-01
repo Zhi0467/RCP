@@ -1478,6 +1478,11 @@ class ServerControlServer:
                     raise ValueError("control handler returned a different process instance")
             except ServerControlError as exc:
                 if exc.code != "operation_refused":
+                    logger.exception(
+                        "Installed-server control operation %s failed with code %s.",
+                        request.operation,
+                        exc.code,
+                    )
                     self._send_error(
                         connection,
                         request_id=request_id,
