@@ -136,7 +136,7 @@ def test_doctor_renders_one_complete_report_through_both_cli_modes() -> None:
     assert interactive_code == 0
     assert interactive_calls == 1
     for name, value in fields.items():
-        assert f"{name}: {value}" in interactive
+        assert f"{name.replace('_', ' ')}: {value}" in interactive
 
 
 def test_doctor_returns_a_complete_failed_report_for_owned_problems() -> None:

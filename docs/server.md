@@ -77,7 +77,7 @@ the operator's working directory unchanged for the later bootstrap clone:
   grep " ${RCP_NODE_ARCHIVE}$" SHASUMS256.txt | sha256sum --check --strict
   sudo tar --extract --xz --file "$RCP_NODE_ARCHIVE" --directory /usr/local --strip-components=1 --no-same-owner
 )
-export PATH="/usr/local/bin:/usr/bin:/bin"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 hash -r
 node --version
 npm --version

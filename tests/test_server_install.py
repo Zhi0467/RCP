@@ -343,9 +343,9 @@ def test_preparation_is_side_effect_free_and_one_plan_serves_both_renderers() ->
         ),
     )
     _, interactive = _run_install(interactive_machine, machine_readable=False)
-    assert "Performed by: human operator" in interactive
+    assert "Needs: repository administrator" in interactive
     assert "Allow write access unchecked" in interactive
-    assert "Success: rcp can read origin/main" in interactive
+    assert "Done when: rcp can read origin/main" in interactive
     assert (
         "sudo /srv/bootstrap/.venv/bin/rcp server install --team-name 'Systems Lab'" in interactive
     )

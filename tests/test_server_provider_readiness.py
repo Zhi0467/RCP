@@ -681,7 +681,7 @@ def test_cli_returns_operator_action_exit_for_native_login(tmp_path: Path) -> No
     )
 
     assert exit_code == SERVER_CLI_EXIT_OPERATOR_ACTION
-    assert "operator action needed" in output.getvalue().lower()
+    assert "action required" in output.getvalue().lower()
     assert "/usr/local/bin/codex login" in output.getvalue()
 
 

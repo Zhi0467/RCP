@@ -43,6 +43,13 @@ PROJECT_ID = "123e4567-e89b-42d3-b456-426614174001"
 MEMBER_ID = "123e4567-e89b-42d3-8456-426614174002"
 UPDATE_COMMIT = "a" * 40
 NOW = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
+
+
+class _TTYStringIO(StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
 AGE_RECIPIENT = "age1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusqmwn7f2"
 BACKUP_CONFIGURE_ARGV = (
     "server",
@@ -622,10 +629,12 @@ def test_interactive_and_machine_renderers_use_the_same_external_action() -> Non
     interactive_text = interactive.getvalue()
     machine_lines = machine.getvalue().splitlines()
     assert "repository administrator" in interactive_text
-    assert "Performed by: human operator" in interactive_text
-    assert "State: pending" in interactive_text
+    assert "Needs: repository administrator" in interactive_text
+    assert "ACTION REQUIRED" in interactive_text
     assert "https://github.com/openai/rcp/settings/keys" in interactive_text
     assert f"rcp server project provision {REQUEST_ID}" in interactive_text
+    assert "`" not in interactive_text
+    assert "[https://" not in interactive_text
     assert len(machine_lines) == len(execution.events)
     adapter = TypeAdapter(ServerCommandEvent)
     parsed = [adapter.validate_json(line) for line in machine_lines]
@@ -659,7 +668,7 @@ def test_renderer_selection_never_changes_the_command_handler_call() -> None:
     assert first == second == 0
     assert len(calls) == 2
     assert calls[0] == calls[1]
-    assert interactive.getvalue().startswith("Plan for `rcp server doctor`")
+    assert interactive.getvalue().startswith("RCP  rcp server doctor")
     assert json.loads(machine.getvalue().splitlines()[0])["event"] == "plan"
 
 
@@ -672,7 +681,7 @@ def test_plan_is_visible_before_the_executor_can_perform_work() -> None:
         prepared = _successful_command(request, caller)
 
         def execute(emitter, input_stream) -> None:
-            assert output.getvalue().startswith("Plan for `rcp server doctor`")
+            assert output.getvalue().startswith("RCP  rcp server doctor")
             side_effects.append("machine work began")
             prepared.execute(emitter, input_stream)
 
@@ -687,6 +696,21 @@ def test_plan_is_visible_before_the_executor_can_perform_work() -> None:
 
     assert exit_code == 0
     assert side_effects == ["machine work began"]
+
+
+def test_interactive_renderer_uses_color_only_for_a_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    terminal = _TTYStringIO()
+    redirected = StringIO()
+
+    render_server_execution(_operator_execution(), machine_readable=False, stream=terminal)
+    render_server_execution(_operator_execution(), machine_readable=False, stream=redirected)
+
+    assert "\x1b[" in terminal.getvalue()
+    assert "\x1b[" not in redirected.getvalue()
 
 
 def test_executor_exception_becomes_a_secret_safe_terminal_event() -> None:

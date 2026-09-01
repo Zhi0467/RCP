@@ -7,8 +7,10 @@ import os
 import pwd
 import re
 import shlex
+import shutil
 import socket
 import sys
+import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -45,6 +47,14 @@ SERVER_CLI_EXIT_UNAVAILABLE = 69
 SERVER_CLI_EXIT_WRONG_IDENTITY = 77
 SERVER_CLI_TERMINAL_RESERVE_BYTES = 64 * 1024
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
+
+_ANSI_RESET = "\x1b[0m"
+_ANSI_BOLD = "1"
+_ANSI_DIM = "2"
+_ANSI_RED = "31"
+_ANSI_GREEN = "32"
+_ANSI_YELLOW = "33"
+_ANSI_CYAN = "36"
 
 _ROOT_COMMANDS: frozenset[ServerCommandName] = frozenset(
     {
@@ -788,46 +798,114 @@ def _render_event(
 
 
 def _render_plan(event: ServerPlanEvent, stream: TextIO) -> None:
-    print(f"Plan for `rcp {event.command}` ({len(event.steps)} step(s)):", file=stream)
+    color = _supports_color(stream)
+    heading = _style(f"RCP  rcp {event.command}", _ANSI_BOLD, _ANSI_CYAN, color=color)
+    step_word = "step" if len(event.steps) == 1 else "steps"
+    print(heading, file=stream)
+    print(
+        f"{len(event.steps)} {step_word}. RCP pauses whenever you need to take over.",
+        file=stream,
+    )
+    print(file=stream)
     for step in event.steps:
-        print(f"  {step.number}. {step.title}", file=stream)
-        print(f"     Purpose: {step.purpose}", file=stream)
-        performer = "RCP" if step.performed_by == "system" else "human operator"
-        print(f"     Performed by: {performer}", file=stream)
-        print(f"     Target: {_target_label(step.target)}", file=stream)
-        print(f"     State: {step.state}", file=stream)
-        print(f"     Success: {step.expected_success}", file=stream)
+        if step.performed_by == "system":
+            performer = _style("RCP", _ANSI_CYAN, color=color)
+        else:
+            performer = _style("YOU", _ANSI_BOLD, _ANSI_YELLOW, color=color)
+        print(f"  {step.number:>2}. {step.title}  [{performer}]", file=stream)
+        _print_wrapped(step.purpose, stream, indent="      ")
+        if step.performed_by == "human" and not isinstance(step.target, MachineTarget):
+            print(f"      Needs: {step.target.required_authority_role}", file=stream)
+            print(f"      Open:  {step.target.destination_url}", file=stream)
+    print(file=stream)
 
 
 def _render_step_event(event: ServerStepEvent, plan_size: int, stream: TextIO) -> None:
     step = event.step
-    state = step.state.replace("_", " ")
-    print(f"Step {step.number}/{plan_size}: {step.title} — {state}", file=stream)
-    print(f"  Target: {_target_label(step.target)}", file=stream)
-    print(f"  {step.message}", file=stream)
-    print(f"  Success: {step.expected_success}", file=stream)
+    color = _supports_color(stream)
+    label, ansi = _step_status(step.state)
+    status = _style(label, _ANSI_BOLD, ansi, color=color)
+    print(file=stream)
+    print(f"{status}  {step.number}/{plan_size}  {step.title}", file=stream)
+    _print_wrapped(step.message, stream, indent="  ")
+    if isinstance(step.target, MachineTarget):
+        print(f"  On: {step.target.host} (as {step.target.os_account})", file=stream)
+    else:
+        print(f"  Responsibility: You — {step.target.required_authority_role}", file=stream)
+        print(f"  Open: {step.target.destination_url}", file=stream)
+    if step.state in {"failed", "operator_action_needed", "unavailable"}:
+        _print_wrapped(
+            step.expected_success,
+            stream,
+            indent="  Done when: ",
+            subsequent_indent="             ",
+        )
     if step.fields:
-        print("  Details:", file=stream)
+        print(file=stream)
+        print(_style("  Details", _ANSI_BOLD, color=color), file=stream)
         for field in step.fields:
-            print(f"    {field.name}: {field.value}", file=stream)
+            print(f"    {field.name.replace('_', ' ')}: {field.value}", file=stream)
     if step.actions:
-        print("  Required actions:", file=stream)
+        print(file=stream)
+        print(_style("  What to do", _ANSI_BOLD, _ANSI_YELLOW, color=color), file=stream)
         for index, action in enumerate(step.actions, start=1):
             if action.kind == "command":
-                detail = f"Run `{shlex.join(action.argv)}`"
+                print(f"    {index}. Run:", file=stream)
+                print(f"       $ {shlex.join(action.argv)}", file=stream)
             else:
-                detail = action.instruction
-            print(f"    {index}. {detail}", file=stream)
+                _print_wrapped(
+                    action.instruction,
+                    stream,
+                    indent=f"    {index}. ",
+                    subsequent_indent="       ",
+                )
     if step.resume_argv:
-        print(f"  Recheck or resume: `{shlex.join(step.resume_argv)}`", file=stream)
+        print(file=stream)
+        print(_style("  Then resume", _ANSI_BOLD, color=color), file=stream)
+        print(f"    $ {shlex.join(step.resume_argv)}", file=stream)
 
 
-def _target_label(target) -> str:
-    if isinstance(target, MachineTarget):
-        return f"machine {target.host} as OS account {target.os_account}"
-    return (
-        f"{target.service} resource {target.resource}; requires "
-        f"{target.required_authority_role}; {target.destination_url}"
+def _supports_color(stream: TextIO) -> bool:
+    is_terminal = getattr(stream, "isatty", lambda: False)
+    return bool(is_terminal()) and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+
+
+def _style(text: str, *codes: str, color: bool) -> str:
+    if not color or not codes:
+        return text
+    return f"\x1b[{';'.join(codes)}m{text}{_ANSI_RESET}"
+
+
+def _step_status(state: str) -> tuple[str, str]:
+    return {
+        "pending": ("PENDING", _ANSI_DIM),
+        "running": ("RUNNING", _ANSI_CYAN),
+        "succeeded": ("DONE", _ANSI_GREEN),
+        "failed": ("FAILED", _ANSI_RED),
+        "operator_action_needed": ("ACTION REQUIRED", _ANSI_YELLOW),
+        "unavailable": ("UNAVAILABLE", _ANSI_RED),
+    }[state]
+
+
+def _print_wrapped(
+    text: str,
+    stream: TextIO,
+    *,
+    indent: str,
+    subsequent_indent: str | None = None,
+) -> None:
+    terminal_width = shutil.get_terminal_size(fallback=(100, 24)).columns
+    width = max(60, min(terminal_width, 120))
+    print(
+        textwrap.fill(
+            text,
+            width=width,
+            initial_indent=indent,
+            subsequent_indent=subsequent_indent or indent,
+            break_long_words=False,
+            break_on_hyphens=False,
+        ),
+        file=stream,
     )
 
 
