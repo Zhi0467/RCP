@@ -157,6 +157,13 @@ listener. One healthy connection is reused only while origin, SSH target, and
 remote port still match; an ended, changed, or failed connection observes a
 short backoff before replacement.
 
+The team backend's mutation-origin check recognizes that one exact boundary: a
+request received over the private HTTP side of the tunnel may carry the matching
+generated `https://rcp-<connection-id>.rcp.localhost:<port>` origin. It does not
+accept any other HTTP-to-HTTPS origin substitution. This keeps browser mutation
+protection aligned with the desktop TLS terminator instead of rejecting the
+desktop's own invitation and team-control requests.
+
 Tunnel admission owns saved-row lookup and closes before removal, Quit, or
 desktop update drains children. A failed lifecycle operation explicitly reopens
 admission only when the app returns to service. A cleanup failure keeps the
@@ -215,10 +222,11 @@ supported client for this slice; a packaged Linux client is not required.
 Project creation and transfer use one visible project wizard. Its three named
 intents are **Use an existing checkout personally**, **Create a shared team
 project**, and **Move an existing personal project to a team**. An entry point
-may preselect an intent, and Project Settings deep-links to the move intent, but
-the user does not encounter separate personal, provisioning, and transfer
-wizards. Each backend exports only its own product eligibility, preselection,
-required fields, and any pinned source identity. The desktop-native bridge
+may preselect an intent, and both the personal project card menu and Project
+Settings deep-link to the move intent, but the user does not encounter separate
+personal, provisioning, and transfer wizards. Each backend exports only its own
+product eligibility, preselection, required fields, and any pinned source
+identity. The desktop-native bridge
 separately exports relay capability and its authenticated saved team targets.
 The wizard offers move only by intersecting explicit permission from the
 personal backend, explicit admission from the selected team backend, and that

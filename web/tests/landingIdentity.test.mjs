@@ -91,7 +91,7 @@ test("the project index starts with covers and exposes the named identity with i
   assert.match(html, /data-identity-record="provenance-slip"/);
 });
 
-test("the project menu renders Delete only from the backend-owned card decision", () => {
+test("the project menu renders only the actions supplied for that project and space", () => {
   const personal = {
     id: "project-1",
     home_space_id: identity.space_id,
@@ -118,13 +118,19 @@ test("the project menu renders Delete only from the backend-owned card decision"
   };
 
   const personalMenu = renderToStaticMarkup(
-    React.createElement(ProjectActionsMenu, { ...props, project: personal }),
+    React.createElement(ProjectActionsMenu, {
+      ...props,
+      project: personal,
+      onMoveToTeam() {},
+    }),
   );
   const teamMenu = renderToStaticMarkup(
     React.createElement(ProjectActionsMenu, { ...props, project: team }),
   );
 
+  assert.match(personalMenu, />Move to team space</);
   assert.match(personalMenu, />Delete project</);
+  assert.doesNotMatch(teamMenu, /Move to team space/);
   assert.doesNotMatch(teamMenu, /Delete project/);
   assert.match(teamMenu, />Cover</);
   assert.doesNotMatch(teamMenu, /server operator|deploy key/i);

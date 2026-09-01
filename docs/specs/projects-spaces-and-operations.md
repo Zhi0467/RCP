@@ -192,8 +192,9 @@ RCP exposes one visible project wizard with three backend-authorized intents:
 **Use an existing checkout personally**, **Create a shared team project**, and
 **Move an existing personal project to a team**. Entry context may preselect an
 intent, but the heading, review, and progress always name it plainly. Project
-Settings opens the same wizard with the move intent and source project already
-selected; RCP does not grow a second transfer or team-setup wizard.
+Settings and the personal project card menu open the same wizard with the move
+intent and source project already selected; RCP does not grow a second transfer
+or team-setup wizard.
 
 Personal setup keeps the current path-based local/SSH fields. New team setup
 accepts GitHub.com repository URLs and execution placement, then derives the

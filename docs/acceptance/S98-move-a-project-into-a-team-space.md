@@ -107,10 +107,10 @@ Patch byte.
 
 ## Drive
 
-1. Open the project in the personal space, choose **Move to team space**, and
-   confirm the shared project wizard opens with **Move an existing personal
-   project to a team** preselected and the source project pinned. Select a saved
-   team connection.
+1. From the personal project card menu or Project Settings, choose **Move to team
+   space**, and confirm the shared project wizard opens with **Move an existing
+   personal project to a team** preselected and the source project pinned. Select
+   a saved team connection.
 2. Inspect the durable target provisioning request and its intended central
    paths before any project authority changes. Inspect both linked requests'
    independent source-release and target-activation proof commitments, bound
@@ -263,9 +263,10 @@ Patch byte.
 
 ## UI path
 
-**Move to team space** lives in Project Settings in the personal space, next to
-the project's home information. It deep-links into the same project wizard used
-for personal and new-team setup; it does not mount a separate transfer wizard.
+**Move to team space** lives in the personal project card menu and in Project
+Settings next to the project's home information. Both entry points deep-link
+into the same project wizard used for personal and new-team setup; neither mounts
+a separate transfer wizard.
 The intent is offered only when the personal backend permits export, the
 selected team backend permits import, and the desktop-native bridge reports an
 authenticated relay route between them. Choosing it first creates the target's

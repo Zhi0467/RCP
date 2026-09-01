@@ -263,6 +263,12 @@ operator to do it outside RCP. Provider credentials never enter a project
 manifest, provisioning request, prompt, backup, or member's desktop credential
 store.
 
+For execution on the server itself, provider discovery first uses the service
+process `PATH`, then the executing account's conventional
+`~/.local/bin/<provider>` location. This covers provider-native per-user installs
+without borrowing another Linux user's shell configuration. A successful check
+still records and later invokes the resolved absolute executable path.
+
 The check always resolves an existing configuration boundary:
 `rcp server provider check --request <request-id>` checks the intended profiles
 of one provisioning request, while `--project <project-id>` checks the stored

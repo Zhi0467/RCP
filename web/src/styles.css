@@ -1256,12 +1256,12 @@ button:disabled {
 .project-cover-option[aria-checked="true"] .project-cover-option-label {
   color: var(--landing-ink);
 }
-.project-delete-action {
+.project-cover-menu-action {
   align-items: center;
   background: transparent;
   border: 0;
   border-top: 1px solid #ddd0c0;
-  color: var(--red);
+  color: var(--landing-ink);
   display: flex;
   font-size: 10px;
   font-weight: 700;
@@ -1270,6 +1270,12 @@ button:disabled {
   padding: 10px 2px 2px;
   text-align: left;
   width: 100%;
+}
+.project-move-action:hover {
+  color: var(--teal);
+}
+.project-delete-action {
+  color: var(--red);
 }
 .project-delete-action:hover {
   color: color-mix(in srgb, var(--red) 78%, black);

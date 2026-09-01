@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -356,6 +357,21 @@ class _LazyProjectService:
 
     def __setattr__(self, name: str, value) -> None:
         setattr(self._resolve(), name, value)
+
+
+_DESKTOP_TEAM_HOST = re.compile(r"rcp-[0-9a-f]{32}\.rcp\.localhost:(?P<port>[0-9]{1,5})")
+
+
+def _team_mutation_origin_matches(request: Request, origin: str) -> bool:
+    host = request.headers.get("host", "")
+    normalized_origin = origin.rstrip("/")
+    if normalized_origin == f"{request.url.scheme}://{host}".rstrip("/"):
+        return True
+    match = _DESKTOP_TEAM_HOST.fullmatch(host)
+    if request.url.scheme != "http" or match is None:
+        return False
+    port = int(match.group("port"))
+    return 0 < port <= 65_535 and normalized_origin == f"https://{host}"
 
 
 def create_app(
@@ -1932,8 +1948,7 @@ def create_app(
                 "OPTIONS",
             }:
                 origin = request.headers.get("origin")
-                expected_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
-                if origin is not None and origin.rstrip("/") != expected_origin.rstrip("/"):
+                if origin is not None and not _team_mutation_origin_matches(request, origin):
                     return JSONResponse(
                         status_code=403,
                         content={

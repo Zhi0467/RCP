@@ -250,6 +250,20 @@ class _PrePromptRuntimeFailure(RuntimeError):
     """A provider runtime ended before it could have accepted RCP's prompt."""
 
 
+def _discover_local_provider(provider: str) -> str | None:
+    discovered = shutil.which(provider)
+    if discovered:
+        return str(Path(discovered).resolve())
+    try:
+        account_home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
+    except KeyError:
+        return None
+    candidate = account_home / ".local" / "bin" / provider
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate.resolve())
+    return None
+
+
 class AgentLauncher:
     # Consume pipes in small chunks so asyncio never has to buffer one complete
     # provider event. Final graph patches may be large, but tool/read events
@@ -408,8 +422,7 @@ class AgentLauncher:
             candidate = discovered[-1] if installed_probe.returncode == 0 and discovered else None
             installed = bool(candidate and PurePosixPath(candidate).is_absolute())
         else:
-            discovered = shutil.which(provider)
-            candidate = str(Path(discovered).resolve()) if discovered else None
+            candidate = _discover_local_provider(provider)
             installed = candidate is not None
         if not installed or candidate is None:
             where = f" on {host}" if host else ""

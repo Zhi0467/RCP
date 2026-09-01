@@ -364,6 +364,40 @@ def test_failed_version_command_does_not_publish_stderr_as_a_version(
     assert readiness.version is None
 
 
+def test_local_provider_discovery_includes_the_execution_accounts_local_bin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rcp.agents.launcher as launcher_module
+
+    home = tmp_path / "service-home"
+    binary = home / ".local" / "bin" / "claude"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    class Account:
+        pw_dir = str(home)
+
+    monkeypatch.setattr(shutil, "which", lambda _provider: None)
+    monkeypatch.setattr(launcher_module.pwd, "getpwuid", lambda _uid: Account())
+
+    def probe(_host: str, command: list[str], **_kwargs):
+        if command[-1] == "--version":
+            return _result("2.1.252")
+        if command[-2:] == ["auth", "status"]:
+            return _result(json.dumps({"loggedIn": True}))
+        return _result()
+
+    monkeypatch.setattr(AgentLauncher, "_probe", staticmethod(probe))
+
+    readiness = AgentLauncher().readiness("claude")
+
+    assert readiness.binary_path == str(binary)
+    assert readiness.installed is True
+    assert readiness.authenticated is True
+
+
 def test_provider_commands_use_the_recorded_binary_as_argv_zero() -> None:
     from rcp.agents.launcher import AgentLauncher
 

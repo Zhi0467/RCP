@@ -519,6 +519,29 @@ def test_authenticated_team_mutations_reject_forms_and_cross_origin_json(tmp_pat
     assert len(store.space_users()) == 1
 
 
+def test_authenticated_team_mutation_accepts_the_desktop_https_origin_over_its_tunnel(
+    tmp_path,
+) -> None:
+    store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
+    host = "rcp-11111111111141118111111111111111.rcp.localhost:57276"
+    client = TestClient(create_app(data_dir=tmp_path), base_url=f"http://{host}")
+    token = client.post(
+        "/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"}
+    ).json()["token"]
+    exchange = client.post("/api/team/session/exchange", json={"token": token})
+    cookie = exchange.headers["set-cookie"].partition(";")[0]
+
+    invitation = client.post(
+        "/api/team/invitations",
+        json={},
+        headers={"Cookie": cookie, "Origin": f"https://{host}"},
+    )
+
+    assert invitation.status_code == 200
+    assert invitation.json()["space_name"] == "Team Lab"
+    assert len(store.team_invitations(invitation.json()["invitation"]["created_by"])) == 1
+
+
 def test_authenticated_team_attachment_upload_keeps_its_bounded_multipart_contract(
     manifest, tmp_path
 ) -> None:

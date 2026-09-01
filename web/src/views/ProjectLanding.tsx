@@ -24,6 +24,7 @@ interface Props {
   onOpenExperiment: (projectId: string, experimentRoute: string) => void;
   onCreate: () => void;
   projectCreation: ProjectCreationControl;
+  onMovePersonalProjectToTeam?: (projectId: string) => void;
   onDelete: (projectId: string) => Promise<void> | void;
   openProjectTabs: ProjectTab[];
   onActivateProjectTab: (projectId: string) => void;
@@ -61,6 +62,7 @@ interface ProjectActionsMenuProps {
   project: ProjectCard;
   cover: CoverStyle;
   onChooseCover: (cover: CoverStyle) => void;
+  onMoveToTeam?: () => void;
   onDelete: () => void;
 }
 
@@ -68,6 +70,7 @@ export function ProjectActionsMenu({
   project,
   cover,
   onChooseCover,
+  onMoveToTeam,
   onDelete,
 }: ProjectActionsMenuProps) {
   return (
@@ -95,8 +98,24 @@ export function ProjectActionsMenu({
           </button>
         ))}
       </div>
+      {onMoveToTeam && (
+        <button
+          className="project-cover-menu-action project-move-action"
+          type="button"
+          role="menuitem"
+          onClick={onMoveToTeam}
+        >
+          <Server size={13} aria-hidden="true" />
+          Move to team space
+        </button>
+      )}
       {project.can_delete && (
-        <button className="project-delete-action" type="button" role="menuitem" onClick={onDelete}>
+        <button
+          className="project-cover-menu-action project-delete-action"
+          type="button"
+          role="menuitem"
+          onClick={onDelete}
+        >
           <Trash2 size={13} aria-hidden="true" />
           Delete project
         </button>
@@ -114,6 +133,7 @@ export function ProjectLanding({
   onOpenExperiment,
   onCreate,
   projectCreation,
+  onMovePersonalProjectToTeam,
   onDelete,
   openProjectTabs,
   onActivateProjectTab,
@@ -285,6 +305,14 @@ export function ProjectLanding({
                       setCovers((current) => ({ ...current, [project.id]: style }));
                       setOpenMenuProject(null);
                     }}
+                    onMoveToTeam={
+                      onMovePersonalProjectToTeam
+                        ? () => {
+                            setOpenMenuProject(null);
+                            onMovePersonalProjectToTeam(project.id);
+                          }
+                        : undefined
+                    }
                     onDelete={() => {
                       setOpenMenuProject(null);
                       setDeleteError(null);

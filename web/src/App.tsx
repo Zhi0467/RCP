@@ -2935,6 +2935,14 @@ export default function App() {
     await reconnectDesktopBackend(reportIdentityIssue);
   };
 
+  const movePersonalProjectToTeam =
+    desktop &&
+    verifiedHealth?.space_kind === "personal" &&
+    verifiedHealth.project_creation.intents.some(
+      (intent) => intent.intent === "move_personal_project_to_team" && intent.eligible,
+    )
+      ? openMoveProjectSetup
+      : undefined;
   const updateHasActiveWork =
     Boolean(activeTask) ||
     (desktopUpdate?.active_agent_tasks ?? verifiedHealth?.active_agent_tasks ?? 0) > 0;
@@ -3143,6 +3151,7 @@ export default function App() {
           onOpenExperiment={openProject}
           onCreate={openSetup}
           projectCreation={verifiedHealth!.project_creation}
+          onMovePersonalProjectToTeam={movePersonalProjectToTeam}
           onDelete={deleteProject}
           openProjectTabs={openProjectTabs}
           onActivateProjectTab={activateProjectTab}
@@ -3771,15 +3780,7 @@ export default function App() {
               textScale={textScale}
               onTextScaleChange={changeAppTextScale}
               onRefreshReadiness={refreshReadiness}
-              onMovePersonalProjectToTeam={
-                desktop &&
-                verifiedHealth?.space_kind === "personal" &&
-                verifiedHealth.project_creation.intents.some(
-                  (intent) => intent.intent === "move_personal_project_to_team" && intent.eligible,
-                )
-                  ? openMoveProjectSetup
-                  : undefined
-              }
+              onMovePersonalProjectToTeam={movePersonalProjectToTeam}
               onCacheMetricsChange={(cacheMetrics) => {
                 updateProject((current) =>
                   current ? { ...current, cache_metrics: cacheMetrics } : current,
