@@ -660,15 +660,18 @@ def _emit_source_grant_pause(
                             "unchecked."
                         )
                     ),
-                    CommandAction(argv=trust_command),
                     ExternalAction(
                         instruction=(
-                            "Accept the GitHub host key only after comparing its fingerprint with "
+                            "Open "
                             "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/"
-                            "githubs-ssh-key-fingerprints. GitHub then says the key authenticated "
-                            "successfully; ssh exit status 1 is expected."
+                            "githubs-ssh-key-fingerprints first. Run the next command by itself. "
+                            "When it pauses, compare the displayed Ed25519 fingerprint with "
+                            "GitHub's page; if it matches exactly, type yes in that same terminal "
+                            "and press Enter. GitHub then says the key authenticated successfully; "
+                            "ssh exit status 1 is expected."
                         )
                     ),
+                    CommandAction(argv=trust_command),
                 ),
                 "fields": (
                     NonsecretField(name="deploy_key_label", value=access.deploy_key_label),

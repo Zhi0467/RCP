@@ -249,7 +249,9 @@ def test_private_source_stops_before_checkout_with_complete_read_only_grant_step
     assert paused["phase"] == "source_grant"
     assert paused["target"]["destination_url"] == REPOSITORY.deploy_keys_url
     assert "leave Allow write access unchecked" in paused["actions"][0]["instruction"]
-    assert paused["actions"][1]["argv"] == [
+    assert "Run the next command by itself" in paused["actions"][1]["instruction"]
+    assert "type yes in that same terminal" in paused["actions"][1]["instruction"]
+    assert paused["actions"][2]["argv"] == [
         "sudo",
         "-u",
         "rcp",

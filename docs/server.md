@@ -175,6 +175,11 @@ While the RCP source repository is private, the installer stops with exit status
 Add only that public key as a read-only deploy key. Before accepting the SSH
 host key, compare the displayed Ed25519 fingerprint with [GitHub's published
 fingerprints](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints).
+Run the printed SSH command by itself. When it pauses at `Are you sure you want
+to continue connecting?`, compare the fingerprint first, then type `yes` in
+that same server terminal and press Enter. Do not paste the resume command until
+SSH has returned to the shell prompt. GitHub's successful authentication message
+still comes with SSH exit status 1 because GitHub does not provide shell access.
 At this pause, success is exit status 3 with the exact source deploy-key and
 resume instructions; the managed checkout and installed service do not exist
 yet. Run the printed actions in order, then run the printed resume command
