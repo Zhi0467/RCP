@@ -90,5 +90,6 @@ class ProviderInvocationGate:
             try:
                 await asyncio.wait_for(process.wait(), timeout=5)
             except TimeoutError:
-                process.kill()
+                with suppress(ProcessLookupError):
+                    process.kill()
                 await process.wait()
