@@ -5,6 +5,10 @@ written for the machine operator who has `sudo` on a disposable or dedicated
 Ubuntu host. The supported host is Ubuntu 22.04 LTS or Ubuntu 24.04 LTS on
 x86-64 with systemd.
 
+The root [README](../README.md#install-a-team-server-from-source) contains the
+complete numbered installation sequence. This guide expands its security,
+operator-route, recovery, and maintainer details.
+
 The `rcp server` CLI is the complete machine workflow. It prints its full plan
 before doing work. At a human boundary it names the machine or external service,
 prints ordered copyable actions, explains the success signal, and prints the
@@ -54,17 +58,20 @@ Success is an exit status of zero. Then continue with the shared Node.js and
 ## 4. Install Node.js 24 and system-wide uv
 
 The following commands install the selected Node.js 24 patch from
-the official archive after checking its published SHA-256 digest:
+the official archive after checking its published SHA-256 digest. The subshell
+keeps the operator's working directory unchanged for the later bootstrap clone:
 
 ```bash
-RCP_NODE_VERSION="v24.20.0"
-RCP_NODE_ARCHIVE="node-${RCP_NODE_VERSION}-linux-x64.tar.xz"
-RCP_NODE_DOWNLOAD_DIR="$(mktemp -d)"
-cd "$RCP_NODE_DOWNLOAD_DIR"
-curl --fail --show-error --location --remote-name "https://nodejs.org/dist/${RCP_NODE_VERSION}/${RCP_NODE_ARCHIVE}"
-curl --fail --show-error --location --remote-name "https://nodejs.org/dist/${RCP_NODE_VERSION}/SHASUMS256.txt"
-grep " ${RCP_NODE_ARCHIVE}$" SHASUMS256.txt | sha256sum --check --strict
-sudo tar --extract --xz --file "$RCP_NODE_ARCHIVE" --directory /usr/local --strip-components=1 --no-same-owner
+(
+  RCP_NODE_VERSION="v24.20.0"
+  RCP_NODE_ARCHIVE="node-${RCP_NODE_VERSION}-linux-x64.tar.xz"
+  RCP_NODE_DOWNLOAD_DIR="$(mktemp -d)"
+  cd "$RCP_NODE_DOWNLOAD_DIR"
+  curl --fail --show-error --location --remote-name "https://nodejs.org/dist/${RCP_NODE_VERSION}/${RCP_NODE_ARCHIVE}"
+  curl --fail --show-error --location --remote-name "https://nodejs.org/dist/${RCP_NODE_VERSION}/SHASUMS256.txt"
+  grep " ${RCP_NODE_ARCHIVE}$" SHASUMS256.txt | sha256sum --check --strict
+  sudo tar --extract --xz --file "$RCP_NODE_ARCHIVE" --directory /usr/local --strip-components=1 --no-same-owner
+)
 node --version
 npm --version
 ```
@@ -76,15 +83,17 @@ changing a user's shell profile. The archive digest is pinned from the immutable
 upstream 0.12.7 release rather than trusting a downloaded installer script:
 
 ```bash
-RCP_UV_VERSION="0.12.7"
-RCP_UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"
-RCP_UV_SHA256="788f18abea7c5f55d6216e4f5613fd89d4d59b631efeec117b2b07fe72f1da21"
-RCP_UV_DOWNLOAD_DIR="$(mktemp -d)"
-cd "$RCP_UV_DOWNLOAD_DIR"
-curl --fail --show-error --location --remote-name "https://releases.astral.sh/github/uv/releases/download/${RCP_UV_VERSION}/${RCP_UV_ARCHIVE}"
-printf '%s  %s\n' "$RCP_UV_SHA256" "$RCP_UV_ARCHIVE" | sha256sum --check --strict
-tar --extract --gzip --file "$RCP_UV_ARCHIVE"
-sudo install --owner=root --group=root --mode=0755 "uv-x86_64-unknown-linux-gnu/uv" /usr/local/bin/uv
+(
+  RCP_UV_VERSION="0.12.7"
+  RCP_UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"
+  RCP_UV_SHA256="788f18abea7c5f55d6216e4f5613fd89d4d59b631efeec117b2b07fe72f1da21"
+  RCP_UV_DOWNLOAD_DIR="$(mktemp -d)"
+  cd "$RCP_UV_DOWNLOAD_DIR"
+  curl --fail --show-error --location --remote-name "https://releases.astral.sh/github/uv/releases/download/${RCP_UV_VERSION}/${RCP_UV_ARCHIVE}"
+  printf '%s  %s\n' "$RCP_UV_SHA256" "$RCP_UV_ARCHIVE" | sha256sum --check --strict
+  tar --extract --gzip --file "$RCP_UV_ARCHIVE"
+  sudo install --owner=root --group=root --mode=0755 "uv-x86_64-unknown-linux-gnu/uv" /usr/local/bin/uv
+)
 uv --version
 ```
 

@@ -121,9 +121,97 @@ built from a GitHub `main` checkout; there is no Linux package or binary release
 channel. The service runs under a dedicated `rcp` Linux account and listens only
 on server loopback. Source-built desktop apps connect through SSH.
 
-Install the pinned Node.js 24, `uv`, Git, OpenSSH, `age`, and other prerequisites
-from the exact commands in [docs/server.md](docs/server.md). Then create a
-temporary bootstrap checkout under the ordinary operator account:
+Run Steps 1–6 and 8–12 for every installation. Step 7 is required only while the
+RCP source repository is private; the public-source transition removes that
+pause and its read-only source key. Project repositories retain their separate
+write deploy keys.
+
+### 1. Connect as the ordinary server operator
+
+The operator needs SSH access and `sudo`; do not log in as `rcp` or create that
+account yourself. RCP's installer owns it.
+
+```bash
+ssh operator@server.example
+sudo -v
+```
+
+### 2. Confirm the supported host
+
+```bash
+uname -m
+. /etc/os-release
+printf '%s %s\n' "$ID" "$VERSION_ID"
+systemctl show --property=Version --value
+```
+
+Continue only for `x86_64`, Ubuntu `22.04` or `24.04`, and a nonempty systemd
+version.
+
+### 3. Install the Ubuntu prerequisites
+
+The same command applies to both supported Ubuntu releases:
+
+```bash
+sudo apt-get update
+sudo apt-get install --yes age ca-certificates curl git iproute2 libc-bin openssh-client openssh-server passwd sudo util-linux xz-utils
+```
+
+### 4. Install the pinned Node.js and `uv`
+
+Install Node.js 24 from its checksummed upstream archive:
+
+```bash
+(
+  RCP_NODE_VERSION="v24.20.0"
+  RCP_NODE_ARCHIVE="node-${RCP_NODE_VERSION}-linux-x64.tar.xz"
+  RCP_NODE_DOWNLOAD_DIR="$(mktemp -d)"
+  cd "$RCP_NODE_DOWNLOAD_DIR"
+  curl --fail --show-error --location --remote-name \
+    "https://nodejs.org/dist/${RCP_NODE_VERSION}/${RCP_NODE_ARCHIVE}"
+  curl --fail --show-error --location --remote-name \
+    "https://nodejs.org/dist/${RCP_NODE_VERSION}/SHASUMS256.txt"
+  grep " ${RCP_NODE_ARCHIVE}$" SHASUMS256.txt | sha256sum --check --strict
+  sudo tar --extract --xz --file "$RCP_NODE_ARCHIVE" \
+    --directory /usr/local --strip-components=1 --no-same-owner
+)
+node --version
+npm --version
+```
+
+Success is Node.js `v24.20.0` and a nonempty npm version. Then install the pinned
+system-wide `uv` binary:
+
+```bash
+(
+  RCP_UV_VERSION="0.12.7"
+  RCP_UV_ARCHIVE="uv-x86_64-unknown-linux-gnu.tar.gz"
+  RCP_UV_SHA256="788f18abea7c5f55d6216e4f5613fd89d4d59b631efeec117b2b07fe72f1da21"
+  RCP_UV_DOWNLOAD_DIR="$(mktemp -d)"
+  cd "$RCP_UV_DOWNLOAD_DIR"
+  curl --fail --show-error --location --remote-name \
+    "https://releases.astral.sh/github/uv/releases/download/${RCP_UV_VERSION}/${RCP_UV_ARCHIVE}"
+  printf '%s  %s\n' "$RCP_UV_SHA256" "$RCP_UV_ARCHIVE" | \
+    sha256sum --check --strict
+  tar --extract --gzip --file "$RCP_UV_ARCHIVE"
+  sudo install --owner=root --group=root --mode=0755 \
+    "uv-x86_64-unknown-linux-gnu/uv" /usr/local/bin/uv
+)
+uv --version
+```
+
+Success begins with `uv 0.12.7`. Confirm the remaining executables:
+
+```bash
+git --version
+ssh -V
+age --version
+command -v age curl getent git node npm runuser ssh ssh-keygen sudo systemctl useradd uv
+```
+
+### 5. Build a temporary bootstrap checkout
+
+Run this as the ordinary operator, not with `sudo`:
 
 ```bash
 git clone https://github.com/Zhi0467/RCP.git rcp-bootstrap
@@ -133,27 +221,60 @@ npm --prefix web run build
 UV_MANAGED_PYTHON=1 UV_PYTHON=3.12 uv sync --frozen
 ```
 
-Run the first RCP command as root from that checkout:
+The bootstrap uses the operator's existing GitHub access only for this clone;
+credentials are not copied into the installed service account.
+
+### 6. Start the installer
 
 ```bash
 sudo /usr/bin/env PYTHONDONTWRITEBYTECODE=1 \
   "$PWD/.venv/bin/rcp" server install --team-name "My lab"
 ```
 
-The CLI prints its complete plan and pauses whenever a human must act, and you
-resume each time by rerunning the same command. While this repository is
-private, the first pause asks for a read-only deploy key so the `rcp` account
-can pull `main` for later updates; a public origin skips that pause entirely.
-The next pause creates the team space, because only a human may create one:
+Replace `My lab` consistently throughout the remaining commands. The installer
+prints all steps before mutation, creates the dedicated `rcp` Linux account, and
+pauses whenever human action is required.
+
+### 7. Private source only: grant read access and resume
+
+Skip this step when the RCP source repository is public. While it is private,
+the installer exits with status 3 and prints a source public key, fingerprint,
+GitHub settings page, host-trust action, and exact resume command. Add that key
+to the RCP source repository as a deploy key with **Allow write access** left
+unchecked. Run the printed host-trust action, then rerun the exact installer
+command it prints.
+
+This source key is only for pulling RCP `main`. It is unrelated to the
+write-enabled deploy key each team project receives. When RCP goes public, the
+source-key pause, key material, and this README step are removed together.
+
+### 8. Initialize the team space
+
+After source installation, the CLI pauses again because only a human may create
+the team space. Run the exact command it prints, equivalent to:
 
 ```bash
 sudo -u rcp -H /usr/local/bin/rcp space init --team --name "My lab"
-sudo /usr/local/bin/rcp server install --team-name "My lab"
 ```
 
-The final installer run enables and starts the non-reloading systemd service and
-verifies its team-space health. The bootstrap checkout is not the production
-checkout and may then be removed.
+Save the one-time bootstrap enrollment code outside logs and shell history.
+
+### 9. Finish installation and verify the service
+
+Rerun the installer as instructed:
+
+```bash
+sudo /usr/local/bin/rcp server install --team-name "My lab"
+curl --fail --silent http://127.0.0.1:8421/api/health
+sudo -u rcp -H /usr/local/bin/rcp server doctor
+```
+
+The final installer run enables and starts the non-reloading systemd service.
+Health must report `status: ok`, `space_kind: team`, and the selected team name;
+doctor must report a healthy installed release. The temporary bootstrap checkout
+is not the production checkout and may now be removed.
+
+### 10. Authenticate providers as their execution account
 
 RCP does not log in to providers. For server-local execution, enter the service
 account and use each provider's own installation/login flow:
@@ -162,9 +283,21 @@ account and use each provider's own installation/login flow:
 sudo -u rcp -H /bin/bash
 ```
 
-Configure either the documented narrow named-operator sudo route or the
-development-only direct key route, then use **Add team space** in the desktop
-app. The unified project wizard can create a team project from GitHub or move an
+Exit that shell after the provider's native login succeeds. RCP stores no
+provider credential; project setup later checks whatever that account has
+authenticated.
+
+### 11. Configure the desktop's SSH operator route
+
+Use the narrow named-operator route in [docs/server.md](docs/server.md#8-configure-one-operator-route).
+The development-only alternative is direct public-key SSH to `rcp`. Do not open
+RCP's loopback port 8421 publicly.
+
+### 12. Add the team space in the desktop app
+
+In the source-built desktop app, choose **Add team space**, select SSH, enter the
+saved server route, and enroll with the one-time bootstrap code from Step 8. The
+unified project wizard can then create a team project from GitHub or move an
 existing personal RCP project into the team space.
 
 ## Update and operate the team server
