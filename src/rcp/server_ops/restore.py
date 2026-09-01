@@ -2176,6 +2176,7 @@ class LinuxRestoreMachine:
                         capture,
                         archived_manifest=self._project_archive_source(current, manifests[0]),
                         data_dir=self.layout.data_dir,
+                        local_home=self.layout.service_home,
                     )
                     canonical = {
                         item.source_relative_path.removeprefix(".research/"): (

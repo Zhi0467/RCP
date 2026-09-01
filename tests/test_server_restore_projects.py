@@ -83,7 +83,7 @@ def _layout(root: Path) -> ServerLayout:
     )
 
 
-def _configuration(repository: Path) -> BackupManifestConfiguration:
+def _configuration(repository: Path, service_home: Path) -> BackupManifestConfiguration:
     return BackupManifestConfiguration(
         name="Restored project",
         machines=(
@@ -115,8 +115,8 @@ def _configuration(repository: Path) -> BackupManifestConfiguration:
             for profile in AGENT_EXECUTION_PROFILES
         ),
         sources=BackupManifestSources(
-            claude_roots=(str(Path.home() / ".claude" / "projects"),),
-            codex_roots=(str(Path.home() / ".codex" / "sessions"),),
+            claude_roots=(str(service_home / ".claude" / "projects"),),
+            codex_roots=(str(service_home / ".codex" / "sessions"),),
             remote_claude_roots=("~/.claude/projects",),
             remote_codex_roots=("~/.codex/sessions",),
         ),
@@ -205,7 +205,7 @@ def _captured_project(
     project_id = str(uuid.uuid4())
     repository = layout.projects_root / project_id / "repositories" / "paper"
     repository.mkdir(parents=True)
-    configuration = _configuration(repository)
+    configuration = _configuration(repository, layout.service_home)
     recovery = BackupCheckoutRecoveryDescriptor(
         request_id=str(uuid.uuid4()),
         project_id=project_id,
@@ -238,11 +238,19 @@ def _captured_project(
     authoring = root / "authoring" / project_id / ".research"
     authoring.mkdir(parents=True)
     manifest_path = authoring / "manifest.toml"
-    manifest_path.write_text(
-        _render_restored_manifest(configuration, {"paper": str(repository)}),
-        encoding="utf-8",
+    manifest_content = _render_restored_manifest(configuration, {"paper": str(repository)})
+    manifest_content = manifest_content.replace(
+        f'claude_roots = ["{layout.service_home}/.claude/projects"]',
+        'claude_roots = ["~/.claude/projects"]',
+    ).replace(
+        f'codex_roots = ["{layout.service_home}/.codex/sessions"]',
+        'codex_roots = ["~/.codex/sessions"]',
     )
-    history = HistoryManager(load_manifest(manifest_path), expected_space_id=store.space_id)
+    manifest_path.write_text(manifest_content, encoding="utf-8")
+    history = HistoryManager(
+        load_manifest(manifest_path, local_home=layout.service_home),
+        expected_space_id=store.space_id,
+    )
     history.claim_project_identity("created", project_id=project_id)
     branch_id = str(uuid.uuid4())
     main_head = history.head_ref()
@@ -502,6 +510,13 @@ def _restore_case(tmp_path: Path):
 
 def test_restore_publishes_replays_and_reads_back_every_project_owner(tmp_path: Path) -> None:
     machine, journal, capture, repository, store = _restore_case(tmp_path)
+    archived_manifest = next(
+        item for item in capture.files if item.source_relative_path == ".research/manifest.toml"
+    )
+    archived_manifest_path = (
+        Path(journal.candidate_root) / "payload" / archived_manifest.archive_path
+    )
+    assert "~/.codex/sessions" in archived_manifest_path.read_text(encoding="utf-8")
 
     completed = machine.publish_projects(journal)
 
@@ -528,7 +543,15 @@ def test_restore_publishes_replays_and_reads_back_every_project_owner(tmp_path: 
     assert (research / "facts" / "nested" / "evidence.json").read_text() == ('{"result": true}\n')
     assert (repository / "artifacts" / "kept-result.html").read_text() == ("<p>artifact</p>\n")
     assert (repository / "views" / "legacy-result.html").read_text() == "<p>legacy</p>\n"
-    restored = HistoryManager(load_manifest(research / "manifest.toml"))
+    restored_manifest = load_manifest(
+        research / "manifest.toml",
+        local_home=machine.layout.service_home,
+    )
+    assert restored_manifest.sources.codex_roots == [
+        str(machine.layout.service_home / ".codex" / "sessions")
+    ]
+    assert "~/.codex/sessions" in (research / "manifest.toml").read_text(encoding="utf-8")
+    restored = HistoryManager(restored_manifest)
     assert restored.head_ref().revision == capture.main_head.revision
     assert (
         restored.branch(capture.branch_heads[0].target.branch_id).head_ref()

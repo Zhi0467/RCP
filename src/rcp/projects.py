@@ -364,6 +364,7 @@ def restored_project_owners(
     *,
     archived_manifest: Path,
     data_dir: Path,
+    local_home: Path,
 ) -> RestoredProjectOwners:
     """Construct the concrete canonical owners before a restored project is visible."""
 
@@ -372,7 +373,7 @@ def restored_project_owners(
     if capture.status != "captured" or recovery is None or record is None:
         raise RestoredProjectPublicationRefused("Only one captured restored project can publish.")
     try:
-        manifest = load_manifest(archived_manifest)
+        manifest = load_manifest(archived_manifest, local_home=local_home)
     except (OSError, ValueError) as exc:
         raise RestoredProjectPublicationRefused(
             "The archived canonical manifest is unavailable or invalid."

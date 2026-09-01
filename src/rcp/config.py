@@ -370,8 +370,12 @@ def permissions_for(target: AgentExecutionProfile | AgentCapability) -> AgentPer
     raise ValueError(f"Unknown agent capability: {capability!r}")
 
 
-def resolve_manifest_path(value: str | os.PathLike[str]) -> Path:
-    path = Path(value).expanduser().resolve()
+def resolve_manifest_path(
+    value: str | os.PathLike[str],
+    *,
+    local_home: Path | None = None,
+) -> Path:
+    path = _expand_local_user_path(str(value), local_home=local_home).resolve()
     if path.is_file():
         return path
     direct = path / "manifest.toml"
@@ -383,21 +387,27 @@ def resolve_manifest_path(value: str | os.PathLike[str]) -> Path:
     raise FileNotFoundError(f"No manifest.toml found at {path}")
 
 
-def load_manifest(value: str | os.PathLike[str]) -> Manifest:
-    path = resolve_manifest_path(value)
+def load_manifest(
+    value: str | os.PathLike[str],
+    *,
+    local_home: Path | None = None,
+) -> Manifest:
+    path = resolve_manifest_path(value, local_home=local_home)
     data = tomlkit.parse(path.read_text(encoding="utf-8"))
     manifest = Manifest.model_validate(data.unwrap())
     manifest._path = path
     project_root = path.parent.parent
     for repository in manifest.repositories:
-        repository_path = Path(repository.path).expanduser()
+        repository_path = _expand_local_user_path(repository.path, local_home=local_home)
         if not repository_path.is_absolute() and not manifest.machine_map[repository.machine].host:
             repository.path = str((project_root / repository_path).resolve())
     manifest.sources.claude_roots = [
-        _resolve_local_source_root(project_root, root) for root in manifest.sources.claude_roots
+        _resolve_local_source_root(project_root, root, local_home=local_home)
+        for root in manifest.sources.claude_roots
     ]
     manifest.sources.codex_roots = [
-        _resolve_local_source_root(project_root, root) for root in manifest.sources.codex_roots
+        _resolve_local_source_root(project_root, root, local_home=local_home)
+        for root in manifest.sources.codex_roots
     ]
     return manifest
 
@@ -556,8 +566,21 @@ def _atomic_write(path: Path, content: str) -> None:
     os.replace(temp, path)
 
 
-def _resolve_local_source_root(project_root: Path, value: str) -> str:
-    path = Path(value).expanduser()
+def _expand_local_user_path(value: str, *, local_home: Path | None) -> Path:
+    if local_home is not None and (value == "~" or value.startswith("~/")):
+        if not local_home.is_absolute():
+            raise ValueError("local manifest home must be absolute")
+        return local_home if value == "~" else local_home / value[2:]
+    return Path(value).expanduser()
+
+
+def _resolve_local_source_root(
+    project_root: Path,
+    value: str,
+    *,
+    local_home: Path | None,
+) -> str:
+    path = _expand_local_user_path(value, local_home=local_home)
     if path.is_absolute() or value.startswith("~"):
         return str(path)
     return str((project_root / path).resolve())
