@@ -116,8 +116,11 @@ member running a long task plus active Auto-research and Experiment episodes.
    the final maintenance barrier, restart, and read back the running commit.
    Fail npm once before the release switch and fail startup once after it.
    Inspect the rollback checkpoint, both release directories, the current
-   pointer, deferred startup-effect owners, every subprocess account, and the
-   operator/service account's sudo and systemd permissions. Seed one retained
+   pointer, the installed and loaded service unit, deferred startup-effect
+   owners, every subprocess account, and the operator/service account's sudo
+   and systemd permissions. Interrupt once after the candidate unit is installed
+   but before the pointer changes; prove re-entry reloads the old unit before
+   restarting it. Seed one retained
    local and remote run stage plus partial and complete transfer-inbox sentinels
    before rehearsal; prove the candidate touches none of those live paths, then
    inspect both stages after forced rollback. Kill the root coordinator after
@@ -174,6 +177,7 @@ member running a long task plus active Auto-research and Experiment episodes.
 - `update_fast_forwards_origin_main_builds_syncs_restarts_and_reads_back_the_commit`
 - `update_uses_only_the_dedicated_source_fetch_identity`
 - `update_runs_source_and_build_steps_as_rcp_and_only_restart_coordination_as_root`
+- `update_cutover_and_rollback_load_the_exact_selected_release_service_unit`
 - `the_rcp_account_has_no_general_sudo_or_systemd_control_permission`
 - `the_named_operator_rule_allows_only_the_documented_service_account_commands`
 - `a_candidate_build_never_changes_the_current_or_running_release`

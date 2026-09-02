@@ -704,6 +704,8 @@ class RootCutoverActions(Protocol):
 
     def stop_service(self) -> None: ...
 
+    def converge_system_integration(self, release: Path) -> None: ...
+
     def switch_current(self, *, expected: Path, target: Path) -> None: ...
 
     def start_service(self) -> int: ...
@@ -1210,6 +1212,7 @@ class UpdateCutoverCoordinator:
             self.actions.stop_service()
             base_release = self.layout.release_dir(operation.base_commit)
             candidate_release = self.layout.release_dir(operation.candidate_commit)
+            self.actions.converge_system_integration(candidate_release)
             try:
                 self.actions.switch_current(
                     expected=base_release,
@@ -1380,6 +1383,7 @@ class UpdateCutoverCoordinator:
                         or "Deferred runtime startup was interrupted after release selection."
                     },
                 )
+            self.actions.converge_system_integration(self.layout.release_dir(selected_commit))
             self.actions.start_service()
             control = self.actions.control_for_running(selected_commit)
             probe = control.probe()
@@ -1482,6 +1486,9 @@ class UpdateCutoverCoordinator:
                     raise UpdateCutoverRefused(
                         "Rollback found an unexpected installed current release."
                     )
+                self.actions.converge_system_integration(
+                    self.layout.release_dir(operation.base_commit)
+                )
                 operation, digest = advance_update_operation(
                     path,
                     expected_uid=self.expected_uid,
@@ -1679,6 +1686,7 @@ class UpdateCutoverCoordinator:
     def _restart_fenced(self, commit: str) -> UpdateControlClient:
         with suppress(BaseException):
             self.actions.stop_service()
+        self.actions.converge_system_integration(self.layout.release_dir(commit))
         self.actions.start_service()
         return self.actions.control_for_running(commit)
 
@@ -1687,6 +1695,9 @@ class UpdateCutoverCoordinator:
         try:
             operation, digest = read_update_operation(path, expected_uid=self.expected_uid)
             if operation.state == "checkpoint_ready":
+                self.actions.converge_system_integration(
+                    self.layout.release_dir(operation.base_commit)
+                )
                 with suppress(BaseException):
                     self.actions.start_service()
                 control = self.actions.control_for_running(operation.base_commit)

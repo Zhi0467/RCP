@@ -311,8 +311,13 @@ operation is fenced. Watchers remain durable, but their polling and retry owners
 are stopped; after those owners join, provider-worker idleness and already
 scheduled reconciliation reads are checked again before capture. The updater
 takes a final local rollback checkpoint of all RCP-owned state the candidate
-startup may change, then the narrow root portion switches `current` and restarts systemd
-with normal work still closed and the same external-effect fence still active.
+startup may change, then the narrow root portion atomically installs and reloads
+the candidate release's exact `rcp.service`, switches `current`, and restarts
+systemd with normal work still closed and the same external-effect fence still
+active. Pre-switch abort and post-switch rollback converge and reload the
+previous release's unit before restarting it. Re-entry performs the same
+selected-release convergence, so an interruption cannot leave a new unit paired
+with the old release or vice versa.
 Provider capability warming, watcher poll/delivery, timers, recovery dispatch,
 remote-stage cleanup, Git writes, and every other external effect remain
 deferred while the switched candidate is eligible for rollback.

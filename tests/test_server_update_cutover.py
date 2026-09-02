@@ -265,6 +265,7 @@ def test_cutover_commits_or_loudly_restores_one_receipt(
             "final_rehearsal",
             "checkpoint",
             "stop",
+            f"integration:{CANDIDATE}",
             f"switch:{BASE}->{CANDIDATE}",
             "start",
             f"control:{CANDIDATE}",
@@ -281,10 +282,11 @@ def test_cutover_commits_or_loudly_restores_one_receipt(
         assert outcome.operation_state == receipt.state == "rolled_back"
         assert outcome.running_commit == BASE
         assert "candidate verification fixture failed" in (outcome.failure or "")
-        assert actions.calls[-7:] == [
+        assert actions.calls[-8:] == [
             "stop",
             "restore",
             f"switch:{CANDIDATE}->{BASE}",
+            f"integration:{BASE}",
             "start",
             f"control:{BASE}",
             "verify:old_release_starting",
@@ -334,6 +336,7 @@ def test_pointer_failure_before_replace_reopens_only_the_old_release(tmp_path: P
     )
     assert receipt.state == "aborted_before_switch"
     assert actions.current == BASE
+    assert actions.integration == BASE
     assert actions.calls[-2:] == [f"control:{BASE}", "abort:checkpoint_ready"]
 
 
@@ -407,8 +410,9 @@ def test_deferred_startup_failure_restarts_the_committed_candidate_normally(
     assert receipt.failure is None
     assert receipt.runtime_failure is None
     assert receipt.candidate_instance_id == REPAIRED_INSTANCE_ID
-    assert actions.calls[-5:] == [
+    assert actions.calls[-6:] == [
         "stop",
+        f"integration:{CANDIDATE}",
         "start",
         f"control:{CANDIDATE}",
         f"probe:{CANDIDATE}",
@@ -561,8 +565,9 @@ def test_failed_rollback_restart_repairs_the_selected_old_release(
     assert "candidate verification fixture failed" in (receipt.failure or "")
     assert receipt.runtime_failure is None
     assert receipt.restored_instance_id == REPAIRED_INSTANCE_ID
-    assert actions.calls[-5:] == [
+    assert actions.calls[-6:] == [
         "stop",
+        f"integration:{BASE}",
         "start",
         f"control:{BASE}",
         f"probe:{BASE}",
@@ -634,11 +639,34 @@ def test_recovery_finishes_a_candidate_switched_before_its_receipt_advanced(
     )
     assert actions.calls == [
         "stop",
+        f"integration:{CANDIDATE}",
         "start",
         f"control:{CANDIDATE}",
         "verify:candidate_starting",
         "release:candidate_verified",
     ]
+
+
+def test_recovery_restores_base_integration_if_pointer_never_switched(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    actions = _CutoverActions(layout)
+    operation, digest = _checkpoint_ready_operation(layout, actions)
+    actions.integration = CANDIDATE
+    actions.calls.clear()
+
+    recovered, _recovered_digest = UpdateCutoverCoordinator(
+        layout=layout,
+        actions=actions,
+        expected_uid=os.geteuid(),
+        expected_gid=os.getegid(),
+    ).recover(operation, digest)
+
+    assert recovered.state == "aborted_before_switch"
+    assert actions.current == BASE
+    assert actions.integration == BASE
+    assert actions.calls[:3] == ["stop", f"integration:{BASE}", "start"]
 
 
 def test_candidate_recovery_repairs_a_failure_after_commit(tmp_path: Path) -> None:
@@ -665,8 +693,9 @@ def test_candidate_recovery_repairs_a_failure_after_commit(tmp_path: Path) -> No
         )[0]
         == recovered
     )
-    assert actions.calls[-5:] == [
+    assert actions.calls[-6:] == [
         "stop",
+        f"integration:{CANDIDATE}",
         "start",
         f"control:{CANDIDATE}",
         f"probe:{CANDIDATE}",
@@ -791,6 +820,38 @@ def test_system_service_seam_proves_stop_pointer_switch_and_start(tmp_path: Path
     assert calls[-3] == ("systemctl", "start", layout.service_unit_name)
 
 
+def test_system_service_seam_atomically_converges_selected_release_unit(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    base_unit = layout.release_dir(BASE) / "src/rcp/server_ops/assets/rcp.service"
+    candidate_unit = layout.release_dir(CANDIDATE) / "src/rcp/server_ops/assets/rcp.service"
+    base_unit.parent.mkdir(parents=True)
+    candidate_unit.parent.mkdir(parents=True)
+    base_unit.write_text("[Service]\nEnvironment=BASE=1\n", encoding="utf-8")
+    candidate_unit.write_text("[Service]\nEnvironment=CANDIDATE=1\n", encoding="utf-8")
+    layout.systemd_unit.write_text(base_unit.read_text(encoding="utf-8"), encoding="utf-8")
+    layout.systemd_unit.chmod(0o644)
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    controller = InstalledSystemServiceController(
+        layout,
+        runner=runner,
+        root_identity=(os.geteuid(), os.getegid()),
+    )
+
+    controller.converge_service_unit(layout.release_dir(CANDIDATE))
+
+    assert layout.systemd_unit.read_text(encoding="utf-8") == candidate_unit.read_text(
+        encoding="utf-8"
+    )
+    assert calls == [("systemctl", "daemon-reload")]
+
+
 def test_system_service_seam_proves_restore_stop_and_disable(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     state = {"active": "active", "pid": "41", "enabled": "enabled"}
@@ -870,6 +931,7 @@ class _CutoverActions:
         self.switch_failure = switch_failure
         self.calls: list[str] = []
         self.current = BASE
+        self.integration = BASE
 
     def enter_maintenance(self, *, operation_id: str, receipt_sha256: str):
         self.calls.append("enter")
@@ -938,6 +1000,10 @@ class _CutoverActions:
 
     def stop_service(self) -> None:
         self.calls.append("stop")
+
+    def converge_system_integration(self, release: Path) -> None:
+        self.integration = release.name
+        self.calls.append(f"integration:{release.name}")
 
     def switch_current(self, *, expected: Path, target: Path) -> None:
         assert expected.name == self.current

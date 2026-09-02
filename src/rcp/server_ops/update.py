@@ -2590,6 +2590,9 @@ class _LinuxCutoverActions:
     def stop_service(self) -> None:
         self.machine._system_service.stop()
 
+    def converge_system_integration(self, release: Path) -> None:
+        self.machine._system_service.converge_service_unit(release)
+
     def switch_current(self, *, expected: Path, target: Path) -> None:
         self.machine._system_service.switch_current(expected=expected, target=target)
 
@@ -2617,6 +2620,9 @@ class _LinuxRecoveryActions:
 
     def stop_service(self) -> None:
         self.machine._system_service.stop()
+
+    def converge_system_integration(self, release: Path) -> None:
+        self.machine._system_service.converge_service_unit(release)
 
     def switch_current(self, *, expected: Path, target: Path) -> None:
         self.machine._system_service.switch_current(expected=expected, target=target)

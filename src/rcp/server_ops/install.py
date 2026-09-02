@@ -2039,7 +2039,9 @@ def _install_root_file(
     *,
     mode: int,
     replace_existing: bool = False,
+    owner_identity: tuple[int, int] = (0, 0),
 ) -> None:
+    owner_uid, owner_gid = owner_identity
     _reject_symlink_ancestry(path.parent)
     if path.is_symlink():
         raise InstallRefused(f"Root-managed file {path} is a symlink; install will not replace it.")
@@ -2047,7 +2049,7 @@ def _install_root_file(
         if not path.is_file():
             raise InstallRefused(f"Root-managed path {path} is not a regular file.")
         info = path.stat()
-        if (info.st_uid, info.st_gid) != (0, 0):
+        if (info.st_uid, info.st_gid) != owner_identity:
             raise InstallRefused(f"Root-managed file {path} has unexpected ownership.")
         encoded_size = len(content.encode("utf-8"))
         differs = (
@@ -2065,7 +2067,7 @@ def _install_root_file(
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
-        os.fchown(descriptor, 0, 0)
+        os.fchown(descriptor, owner_uid, owner_gid)
         os.fchmod(descriptor, mode)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             descriptor = -1
@@ -2217,6 +2219,56 @@ class InstalledSystemServiceController:
             raise InstalledServiceControlRefused(
                 "systemd did not prove the RCP service stopped with no main process."
             )
+
+    def converge_service_unit(self, release: Path) -> None:
+        """Install and load the exact service unit shipped by one release."""
+
+        release = release.resolve(strict=False)
+        unit_source = release / "src" / "rcp" / "server_ops" / "assets" / "rcp.service"
+        try:
+            if (
+                self.layout.release_dir(release.name) != release
+                or not stat.S_ISDIR(release.lstat().st_mode)
+                or release.is_symlink()
+            ):
+                raise ValueError
+            source_info = unit_source.lstat()
+            if (
+                not stat.S_ISREG(source_info.st_mode)
+                or unit_source.is_symlink()
+                or source_info.st_size > 64 * 1024
+            ):
+                raise ValueError
+            content = unit_source.read_text(encoding="utf-8")
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise InstalledServiceControlRefused(
+                "The selected release does not contain one safe RCP service unit."
+            ) from exc
+        try:
+            _install_root_file(
+                self.layout.systemd_unit,
+                content,
+                mode=_UNIT_MODE,
+                replace_existing=True,
+                owner_identity=(self.root_uid, self.root_gid),
+            )
+        except InstallRefused as exc:
+            raise InstalledServiceControlRefused(str(exc)) from exc
+        self._command(("systemctl", "daemon-reload"))
+        try:
+            installed = self.layout.systemd_unit.stat()
+            if (
+                not self.layout.systemd_unit.is_file()
+                or self.layout.systemd_unit.is_symlink()
+                or (installed.st_uid, installed.st_gid) != (self.root_uid, self.root_gid)
+                or stat.S_IMODE(installed.st_mode) != _UNIT_MODE
+                or self.layout.systemd_unit.read_text(encoding="utf-8") != content
+            ):
+                raise ValueError
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise InstalledServiceControlRefused(
+                "The loaded RCP service unit differs from the selected release."
+            ) from exc
 
     def fence_stopped_disabled(self) -> None:
         self._command(("systemctl", "disable", "--now", self.layout.service_unit_name))

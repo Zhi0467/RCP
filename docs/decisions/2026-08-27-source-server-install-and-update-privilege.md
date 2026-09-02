@@ -114,9 +114,12 @@ the replacement process. With no new mutation admitted, the coordinator takes a
 final local rollback checkpoint of every RCP-owned state surface the candidate
 startup may change.
 
-The narrow root portion switches the service's `current` release pointer and
-starts the candidate with normal work and all startup external effects still
-closed behind the rehearsal's same fence. In particular, provider warming,
+The narrow root portion atomically installs and reloads the candidate's exact
+service unit, switches the service's `current` release pointer, and starts the
+candidate with normal work and all startup external effects still closed behind
+the rehearsal's same fence. Abort, rollback, and recovery converge the selected
+release's unit before restart, so root integration and the selected source
+release cannot drift across an interruption. In particular, provider warming,
 watcher activity, timers, recovery dispatch, remote-stage cleanup, and Git work
 remain deferred while rollback is possible. It reads back the running commit
 and verifies startup, ownership, replay/recovery, and representative API reads
