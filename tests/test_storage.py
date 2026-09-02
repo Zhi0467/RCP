@@ -129,6 +129,97 @@ def test_current_storage_schema_validator_rejects_corruption(tmp_path) -> None:
         AppStore(path)
 
 
+def test_legacy_project_transfer_uploads_schema_converges(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE project_transfer_uploads")
+        connection.execute(
+            """
+            CREATE TABLE project_transfer_uploads (
+                request_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                archive_sha256 TEXT NOT NULL,
+                archive_size_bytes INTEGER NOT NULL CHECK(archive_size_bytes >= 1),
+                lease_boundary_sha256 TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('active', 'complete', 'invalidated')),
+                receipt_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                invalidated_at TEXT,
+                FOREIGN KEY(request_id) REFERENCES project_transfer_requests(request_id),
+                CHECK(
+                    (status = 'active' AND receipt_json IS NULL AND invalidated_at IS NULL)
+                    OR (status = 'complete' AND receipt_json IS NOT NULL
+                        AND invalidated_at IS NULL)
+                    OR (status = 'invalidated' AND receipt_json IS NULL
+                        AND invalidated_at IS NOT NULL)
+                )
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO project_transfer_requests (
+                request_id, side, phase, project_id, source_space_id,
+                target_space_id, record_json, revision, created_at, updated_at
+            ) VALUES (?, 'target', 'archive_bound', ?, ?, ?, '{}', 0, ?, ?)
+            """,
+            (
+                "legacy-upload",
+                "project",
+                "source-space",
+                "target-space",
+                "2026-08-31T00:00:00+00:00",
+                "2026-08-31T00:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO project_transfer_uploads (
+                request_id, project_id, archive_sha256, archive_size_bytes,
+                lease_boundary_sha256, status, receipt_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'complete', ?, ?, ?)
+            """,
+            (
+                "legacy-upload",
+                "project",
+                "a" * 64,
+                1,
+                "b" * 64,
+                '{"status":"complete"}',
+                "2026-08-31T00:00:00+00:00",
+                "2026-08-31T00:00:00+00:00",
+            ),
+        )
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 5")
+        assert connection.execute(
+            "SELECT migration_version FROM storage_schema_migrations ORDER BY migration_version"
+        ).fetchall() == [(1,), (2,), (3,), (4,)]
+
+    reopened = AppStore(path)
+
+    with reopened.connection() as connection:
+        row = connection.execute(
+            """
+            SELECT project_id, status, receipt_json
+            FROM project_transfer_uploads WHERE request_id = 'legacy-upload'
+            """
+        ).fetchone()
+        assert tuple(row) == ("project", "complete", '{"status":"complete"}')
+        connection.execute(
+            "UPDATE project_transfer_uploads SET status = 'consumed' "
+            "WHERE request_id = 'legacy-upload'"
+        )
+        assert (
+            connection.execute(
+                "SELECT status FROM project_transfer_uploads WHERE request_id = 'legacy-upload'"
+            ).fetchone()[0]
+            == "consumed"
+        )
+        reopened._validate_storage_schema(connection)
+
+
 def test_failed_storage_migration_rolls_back_without_marker_and_retries(
     tmp_path, monkeypatch
 ) -> None:

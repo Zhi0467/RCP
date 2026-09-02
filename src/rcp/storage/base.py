@@ -54,6 +54,7 @@ class AppStoreBase:
             "paper_drafts",
             "project_invitations",
             "project_provisioning_requests",
+            "project_transfer_uploads",
             "projects",
             "result_views",
             "space_users",
