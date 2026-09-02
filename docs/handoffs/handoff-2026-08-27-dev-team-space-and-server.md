@@ -991,7 +991,7 @@ its live gate is available.
 | V1 | F6d, P6b, D7, O4d, O5b, O6, T5b | genuine one-lab environment |
 | V2 | V1 | every required local/remote baseline environment |
 
-G0 starts directly on `main`. After it is green, G2, F1, and D1 can proceed,
+G0 started directly on `main`. After it is green, G2, F1, and D1 can proceed,
 subject to the shared-file mutexes below. After F1 and G2, P1 can proceed
 alongside F2 and the desktop chain. T2a and T2b are deliberately ordered by
 their storage and API boundaries; T2c also waits for O4a's concrete restore
