@@ -10,6 +10,7 @@ import type {
   ProjectProvisioningResponse,
   ProjectSnapshot,
   ServerStatus,
+  SpaceUserSummary,
   StartEpisodeRequest,
   TeamInvitation,
   TeamInvitationIssue,
@@ -106,6 +107,10 @@ export function exchangeTeamSession(token: string): Promise<IdentityResponse> {
 
 export function loadTeamInvitations(): Promise<TeamInvitation[]> {
   return api<TeamInvitation[]>("/api/team/invitations");
+}
+
+export function loadSpaceUsers(): Promise<SpaceUserSummary[]> {
+  return api<SpaceUserSummary[]>("/api/space/users");
 }
 
 export function createTeamInvitation(): Promise<TeamInvitationIssue> {

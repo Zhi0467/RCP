@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -14,6 +14,7 @@ from rcp.limits import (
     TEAM_MEMBER_TOKEN_MAX_LENGTH,
 )
 from rcp.storage import SPACE_NAME_MAX_LENGTH, AppStore, normalize_space_name
+from rcp.storage.models import TeamInvitationRecord
 
 router = APIRouter()
 
@@ -59,6 +60,75 @@ class TeamSpaceUpdateRequest(BaseModel):
     @classmethod
     def normalize_name(cls, value: str) -> str:
         return normalize_space_name(value)
+
+
+TeamInvitationStatus = Literal["waiting", "joined", "revoked", "locked", "expired"]
+
+
+class TeamInvitationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    invitation_id: str
+    created_by: str
+    created_at: str
+    expires_at: str
+    consumed_at: str | None
+    consumed_by: str | None
+    failed_attempts: int
+    locked_at: str | None
+    revoked_at: str | None
+    status: TeamInvitationStatus
+    status_label: str
+    can_revoke: bool
+
+
+def _team_invitation_response(
+    invitation: TeamInvitationRecord,
+    *,
+    member_names: dict[str, str | None],
+    now: str,
+) -> TeamInvitationResponse:
+    if invitation.consumed_at is not None:
+        status: TeamInvitationStatus = "joined"
+        name = member_names.get(invitation.consumed_by or "")
+        status_label = f"{name or 'A member'} joined"
+    elif invitation.revoked_at is not None:
+        status = "revoked"
+        status_label = "Revoked"
+    elif invitation.locked_at is not None:
+        status = "locked"
+        status_label = "Locked after failed attempts"
+    elif invitation.expires_at <= now:
+        status = "expired"
+        status_label = "Expired"
+    else:
+        status = "waiting"
+        status_label = "Waiting for someone to join"
+    # Deliberately narrower than the store, which also accepts revoking expired,
+    # unconsumed invitations; this frontend decision only offers live ones.
+    can_revoke = (
+        invitation.consumed_at is None
+        and invitation.revoked_at is None
+        and invitation.expires_at > now
+    )
+    return TeamInvitationResponse(
+        **invitation.model_dump(),
+        status=status,
+        status_label=status_label,
+        can_revoke=can_revoke,
+    )
+
+
+def _team_invitation_payload(
+    store: AppStore,
+    invitation: TeamInvitationRecord,
+) -> dict[str, object]:
+    member_names = {user.user_id: user.display_name for user in store.space_users()}
+    return _team_invitation_response(
+        invitation,
+        member_names=member_names,
+        now=store.now(),
+    ).model_dump(mode="json")
 
 
 @router.get("/api/identity")
@@ -141,8 +211,16 @@ def team_invitations(
 ) -> list[dict[str, object]]:
     identity_access.require_team_space()
     member = identity_access.acting_user(request)
+    invitations = store.team_invitations(member.user_id)
+    member_names = {user.user_id: user.display_name for user in store.space_users()}
+    now = store.now()
     return [
-        invitation.model_dump(mode="json") for invitation in store.team_invitations(member.user_id)
+        _team_invitation_response(
+            invitation,
+            member_names=member_names,
+            now=now,
+        ).model_dump(mode="json")
+        for invitation in invitations
     ]
 
 
@@ -160,7 +238,7 @@ def create_team_invitation(
     if space_name is None:  # pragma: no cover - named team initialization is required
         raise HTTPException(status_code=500, detail="Team space name is missing.")
     return {
-        "invitation": invitation.model_dump(mode="json"),
+        "invitation": _team_invitation_payload(store, invitation),
         "code": code,
         "space_name": space_name,
     }
@@ -182,7 +260,7 @@ def revoke_team_invitation(
         raise HTTPException(status_code=404, detail="That invitation was not found.") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return invitation.model_dump(mode="json")
+    return _team_invitation_payload(store, invitation)
 
 
 @router.post("/api/team/credential/rotate")
@@ -240,6 +318,7 @@ def update_team_space(
 __all__ = [
     "SpaceIdentityUpdateRequest",
     "TeamEnrollmentRequest",
+    "TeamInvitationResponse",
     "TeamSessionExchangeRequest",
     "TeamSpaceUpdateRequest",
     "create_team_invitation",

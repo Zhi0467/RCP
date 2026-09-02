@@ -467,12 +467,9 @@ it is not a sandbox against a malicious or compromised source commit executing
 as the same Linux user. Before external sharing, protected human-reviewed
 `main` is therefore required as part of this trust boundary.
 
-`origin/main` is the single server update channel. Work remains directly on
-`main` only through the active first-team-server stabilization handoff; scoped
-tests, pre-commit, and code review precede recording or pushing a change, while
-full desktop/live drives occur at meaningful milestones. Archiving that handoff
-ends the exception: subsequent development uses short-lived branches, PR CI,
-and explicit human merge, while servers still consume only merged `main`.
+`origin/main` is the single server update channel. Development uses short-lived
+branches, PR CI, and explicit human merge. The direct-`main` stabilization
+exception ended on 2026-09-02. Servers consume only merged `main`.
 Before public or external sharing, the repository becomes public and branch
 protection technically requires that already-adopted workflow's named jobs and
 rejects direct pushes and failed or missing checks. Until then the PR rule is a

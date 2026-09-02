@@ -181,6 +181,12 @@ class TeamInvitationRecord(BaseModel):
     locked_at: str | None = None
     revoked_at: str | None = None
 
+    @model_validator(mode="after")
+    def consumption_and_revocation_are_exclusive(self) -> TeamInvitationRecord:
+        if self.consumed_at is not None and self.revoked_at is not None:
+            raise ValueError("a team invitation cannot be both consumed and revoked")
+        return self
+
 
 class ProjectMemberRecord(BaseModel):
     """One person's membership of one project.

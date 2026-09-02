@@ -15,7 +15,7 @@ const { ApiError } = await server.ssrLoadModule("/src/api.ts");
 const { TeamLoginBoundary, teamLoginFailureMessage } = await server.ssrLoadModule(
   "/src/components/TeamLoginBoundary.tsx",
 );
-const { IdentityProvenanceSlip, TeamInvitationLedger, invitationCopyBlock } =
+const { IdentityProvenanceSlip, TeamInvitationLedger, TeamMemberRoster, invitationCopyBlock } =
   await server.ssrLoadModule("/src/components/LandingIdentityMenu.tsx");
 
 after(() => server.close());
@@ -47,6 +47,9 @@ const invitation = {
   failed_attempts: 0,
   locked_at: null,
   revoked_at: null,
+  status: "waiting",
+  status_label: "Waiting for someone to join",
+  can_revoke: true,
 };
 
 test("team login uses a focused secret field without a URL or storage seam", () => {
@@ -106,7 +109,7 @@ test("invitation metadata is visible without retaining raw codes in the ledger",
   });
 
   assert.match(ledger, /Created by you/);
-  assert.match(ledger, /Available/);
+  assert.match(ledger, /Waiting for someone to join/);
   assert.match(ledger, /Expires/);
   assert.doesNotMatch(ledger, new RegExp(rawCode));
   assert.match(copyBlock, /Causal Systems Lab/);
@@ -119,17 +122,26 @@ test("only a live invitation offers revocation, and a revoked one says so", () =
     ...invitation,
     invitation_id: "invite-revoked",
     revoked_at: new Date(Date.now() - DAY_MS).toISOString(),
+    status: "revoked",
+    status_label: "Revoked",
+    can_revoke: false,
   };
   const used = {
     ...invitation,
     invitation_id: "invite-used",
     consumed_at: new Date(Date.now() - DAY_MS).toISOString(),
     consumed_by: teamIdentity.user.user_id,
+    status: "joined",
+    status_label: "Ada Researcher joined",
+    can_revoke: false,
   };
   const expired = {
     ...invitation,
     invitation_id: "invite-expired",
     expires_at: new Date(Date.now() - DAY_MS).toISOString(),
+    status: "expired",
+    status_label: "Expired",
+    can_revoke: false,
   };
 
   const live = renderToStaticMarkup(
@@ -147,7 +159,7 @@ test("only a live invitation offers revocation, and a revoked one says so", () =
     }),
   );
   assert.match(inert, /Revoked/);
-  assert.match(inert, /Used/);
+  assert.match(inert, /Ada Researcher joined/);
   assert.match(inert, /Expired/);
   assert.doesNotMatch(inert, /<button/);
 
@@ -156,4 +168,28 @@ test("only a live invitation offers revocation, and a revoked one says so", () =
     React.createElement(TeamInvitationLedger, { invitations: [invitation] }),
   );
   assert.doesNotMatch(readOnly, /<button/);
+});
+
+test("the team roster stays quiet while naming every enrolled member and the current user", () => {
+  const roster = renderToStaticMarkup(
+    React.createElement(TeamMemberRoster, {
+      currentUserId: teamIdentity.user.user_id,
+      members: [
+        {
+          user_id: teamIdentity.user.user_id,
+          display_name: teamIdentity.user.display_name,
+        },
+        {
+          user_id: "123e4567-e89b-42d3-a456-426614174002",
+          display_name: "Grace Collaborator",
+        },
+      ],
+    }),
+  );
+
+  assert.match(roster, /Team members/);
+  assert.match(roster, />2</);
+  assert.match(roster, /Ada Researcher \(you\)/);
+  assert.match(roster, /Grace Collaborator/);
+  assert.doesNotMatch(roster, /123e4567-e89b-42d3-a456-426614174002/);
 });

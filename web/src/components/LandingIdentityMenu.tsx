@@ -1,8 +1,27 @@
-import { Check, ChevronDown, Copy, Link2, Pencil, UserPlus, UserRound } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  Copy,
+  Link2,
+  Pencil,
+  RefreshCw,
+  UserPlus,
+  UserRound,
+} from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import { createTeamInvitation, loadTeamInvitations, revokeTeamInvitation } from "../api";
+import {
+  createTeamInvitation,
+  loadSpaceUsers,
+  loadTeamInvitations,
+  revokeTeamInvitation,
+} from "../api";
 import { listDesktopTeamConnections, type TeamConnectionMetadata } from "../desktopRuntime";
-import type { IdentityResponse, TeamInvitation, TeamInvitationIssue } from "../types";
+import type {
+  IdentityResponse,
+  SpaceUserSummary,
+  TeamInvitation,
+  TeamInvitationIssue,
+} from "../types";
 
 interface Props {
   identity: IdentityResponse | null;
@@ -176,9 +195,11 @@ export function TeamInvitationPanel({
   active?: boolean;
 }) {
   const [invitations, setInvitations] = useState<TeamInvitation[]>([]);
+  const [members, setMembers] = useState<SpaceUserSummary[] | null>(null);
   const [issued, setIssued] = useState<TeamInvitationIssue | null>(null);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const titleId = useId();
@@ -194,12 +215,15 @@ export function TeamInvitationPanel({
     let stopped = false;
     setLoading(true);
     setError(null);
-    void loadTeamInvitations()
-      .then((next) => {
-        if (!stopped) setInvitations(next);
+    void Promise.all([loadTeamInvitations(), loadSpaceUsers()])
+      .then(([nextInvitations, nextMembers]) => {
+        if (!stopped) {
+          setInvitations(nextInvitations);
+          setMembers(nextMembers);
+        }
       })
       .catch(() => {
-        if (!stopped) setError("Invitations could not be loaded. Try opening this panel again.");
+        if (!stopped) setError("Team members and invitations could not be refreshed.");
       })
       .finally(() => {
         if (!stopped) setLoading(false);
@@ -207,7 +231,7 @@ export function TeamInvitationPanel({
     return () => {
       stopped = true;
     };
-  }, [active, identity.user.user_id]);
+  }, [active, identity.user.user_id, refreshVersion]);
 
   const createInvitation = async () => {
     if (creating) return;
@@ -258,58 +282,106 @@ export function TeamInvitationPanel({
   };
 
   return (
-    <section className="landing-team-invitations" aria-labelledby={titleId}>
-      <header>
-        <span id={titleId}>Team invitations</span>
-        <span>{identity.space_name || "Team space"}</span>
-      </header>
-      <button
-        className="landing-team-invite-action"
-        type="button"
-        disabled={creating}
-        onClick={() => void createInvitation()}
-      >
-        <UserPlus size={13} aria-hidden="true" />
-        {creating ? "Creating" : "Invite member"}
-      </button>
+    <>
+      {members && (
+        <TeamMemberRoster
+          members={members}
+          currentUserId={identity.user.user_id}
+          loading={loading}
+        />
+      )}
+      <section className="landing-team-invitations" aria-labelledby={titleId}>
+        <header>
+          <span id={titleId}>Team invitations</span>
+          <span className="landing-team-invitation-tools">
+            <span>{identity.space_name || "Team space"}</span>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => setRefreshVersion((current) => current + 1)}
+            >
+              <RefreshCw size={10} aria-hidden="true" />
+              Refresh
+            </button>
+          </span>
+        </header>
+        <button
+          className="landing-team-invite-action"
+          type="button"
+          disabled={creating}
+          onClick={() => void createInvitation()}
+        >
+          <UserPlus size={13} aria-hidden="true" />
+          {creating ? "Creating" : "Invite member"}
+        </button>
 
-      {issued && (
-        <div className="landing-team-invitation-code" aria-live="polite">
-          <div>
-            <span>Invitation for</span>
-            <strong>{issued.space_name}</strong>
-          </div>
-          <code tabIndex={0} aria-label={`Invitation code ${issued.code}`}>
-            {issued.code}
-          </code>
-          <div className="landing-team-invitation-expiry">
-            Expires {formatInvitationTime(issued.invitation.expires_at)}
-          </div>
-          <button type="button" onClick={() => void copyInvitation()}>
-            {copyStatus === "copied" ? (
-              <Check size={12} aria-hidden="true" />
-            ) : (
-              <Copy size={12} aria-hidden="true" />
+        {issued && (
+          <div className="landing-team-invitation-code" aria-live="polite">
+            <div>
+              <span>Invitation for</span>
+              <strong>{issued.space_name}</strong>
+            </div>
+            <code tabIndex={0} aria-label={`Invitation code ${issued.code}`}>
+              {issued.code}
+            </code>
+            <div className="landing-team-invitation-expiry">
+              Expires {formatInvitationTime(issued.invitation.expires_at)}
+            </div>
+            <button type="button" onClick={() => void copyInvitation()}>
+              {copyStatus === "copied" ? (
+                <Check size={12} aria-hidden="true" />
+              ) : (
+                <Copy size={12} aria-hidden="true" />
+              )}
+              {copyStatus === "copied" ? "Copied" : "Copy invitation"}
+            </button>
+            {copyStatus === "failed" && (
+              <p role="alert">
+                Invitation could not be copied. Select the code to copy it manually.
+              </p>
             )}
-            {copyStatus === "copied" ? "Copied" : "Copy invitation"}
-          </button>
-          {copyStatus === "failed" && (
-            <p role="alert">Invitation could not be copied. Select the code to copy it manually.</p>
-          )}
-        </div>
-      )}
+          </div>
+        )}
 
-      {error && (
-        <p className="landing-team-invitation-error" role="alert">
-          {error}
-        </p>
-      )}
+        {error && (
+          <p className="landing-team-invitation-error" role="alert">
+            {error}
+          </p>
+        )}
 
-      <TeamInvitationLedger
-        invitations={invitations}
-        loading={loading}
-        onRevoke={revokeInvitation}
-      />
+        <TeamInvitationLedger
+          invitations={invitations}
+          loading={loading}
+          onRevoke={revokeInvitation}
+        />
+      </section>
+    </>
+  );
+}
+
+export function TeamMemberRoster({
+  members,
+  currentUserId,
+  loading = false,
+}: {
+  members: SpaceUserSummary[];
+  currentUserId: string;
+  loading?: boolean;
+}) {
+  return (
+    <section className="landing-team-members" aria-busy={loading}>
+      <header>
+        <span>Team members</span>
+        <strong>{members.length}</strong>
+      </header>
+      <ul>
+        {members.map((member) => (
+          <li key={member.user_id}>
+            {member.display_name || "Unnamed member"}
+            {member.user_id === currentUserId ? " (you)" : ""}
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
@@ -331,11 +403,11 @@ export function TeamInvitationLedger({
         <ul>
           {invitations.map((invitation) => (
             <li key={invitation.invitation_id}>
-              <span>{invitationStatus(invitation)}</span>
+              <span>{invitation.status_label}</span>
               <time dateTime={invitation.expires_at}>
                 Expires {formatInvitationTime(invitation.expires_at)}
               </time>
-              {onRevoke && invitationIsRevocable(invitation) && (
+              {onRevoke && invitation.can_revoke && (
                 <button
                   type="button"
                   onClick={() => void onRevoke(invitation.invitation_id)}
@@ -354,26 +426,8 @@ export function TeamInvitationLedger({
   );
 }
 
-function invitationIsRevocable(invitation: TeamInvitation): boolean {
-  // A used invitation is not revocable: the member it minted is removed
-  // through member removal. An expired or already-revoked one is inert.
-  return (
-    invitation.consumed_at === null &&
-    invitation.revoked_at === null &&
-    new Date(invitation.expires_at).getTime() > Date.now()
-  );
-}
-
 export function invitationCopyBlock(issue: TeamInvitationIssue): string {
   return `${issue.space_name}\n${issue.code}\nExpires ${formatInvitationTime(issue.invitation.expires_at)}`;
-}
-
-function invitationStatus(invitation: TeamInvitation): string {
-  if (invitation.consumed_at) return "Used";
-  if (invitation.revoked_at) return "Revoked";
-  if (invitation.locked_at) return "Locked";
-  if (new Date(invitation.expires_at).getTime() <= Date.now()) return "Expired";
-  return "Available";
 }
 
 function formatInvitationTime(value: string): string {

@@ -36,9 +36,9 @@ covers. Report contradictions instead of silently choosing a source.
    handoff whose status changed in the same commit.
 
 When another session changes the tree during long work, integrate through a real
-three-way Git merge; never pipe a whole diff into `git apply`. The active first-
-team-server closure works directly on `main`. After that handoff closes, use
-short-lived branches, PR CI, and explicit human merge; servers consume only `main`.
+three-way Git merge; never pipe a whole diff into `git apply`. All work uses a
+short-lived branch, PR CI, and explicit human merge; servers consume only
+merged `main`.
 
 ## Commands and verification
 
