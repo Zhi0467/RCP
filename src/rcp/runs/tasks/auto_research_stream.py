@@ -66,6 +66,7 @@ from rcp.runs.chat import (
 from rcp.runs.shared import (
     _existing_exact_patch_digest,
     _parent_task_contract_path,
+    _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _retry_deliverable_is_unchanged,
@@ -962,7 +963,7 @@ def _open_auto_research_actor_stage(
                 execution_host=machine.host,
                 provider_binary=machine.provider_paths.get(request.provider),
             )
-        expected_local = _swept_stage_root(data_dir) / stage_name
+        expected_local = _swept_stage_root(data_dir, store=execution.store) / stage_name
         saved = Path(turn.binding.stage_root)
         if (
             turn.binding.stage_host is not None
@@ -988,7 +989,11 @@ def _open_auto_research_actor_stage(
             f"AutoResearch {actor_label} continuation cannot start a fresh execution stage."
         )
     if machine.host:
-        remote = RemoteRunStage(machine.host).open(stage_name, reuse=True)
+        remote = RemoteRunStage(machine.host).open(
+            stage_name,
+            reuse=True,
+            protected_roots=_protected_run_stage_roots(execution.store, machine.host),
+        )
         assert remote.root is not None
         execution.checkpoint_stage(machine.host, str(remote.root))
         return _WorkerStage(
@@ -998,7 +1003,7 @@ def _open_auto_research_actor_stage(
             execution_host=machine.host,
             provider_binary=machine.provider_paths.get(request.provider),
         )
-    local = _swept_stage_root(data_dir) / stage_name
+    local = _swept_stage_root(data_dir, store=execution.store) / stage_name
     if os.path.lexists(local):
         if local.is_symlink() or not local.is_dir():
             raise ValueError(f"AutoResearch {actor_label} local stage is unsafe.")

@@ -55,6 +55,7 @@ from rcp.runs.chat import (
 from rcp.runs.patch_validator import PatchValidationBudget, PatchValidationResult
 from rcp.runs.shared import (
     _parent_task_contract_path,
+    _protected_run_stage_roots,
     _ProviderOutcome,
     _sse,
     _stage_context_paths,
@@ -379,7 +380,14 @@ async def _stage_auto_research_child_work_turn(
                 )
                 remote_stage = RemoteRunStage(resolved.execution_host).attach(stage_root)
             else:
-                remote_stage = RemoteRunStage(resolved.execution_host).open(stage_name, reuse=True)
+                remote_stage = RemoteRunStage(resolved.execution_host).open(
+                    stage_name,
+                    reuse=True,
+                    protected_roots=_protected_run_stage_roots(
+                        execution.store,
+                        resolved.execution_host,
+                    ),
+                )
             assert remote_stage.root is not None
             execution.checkpoint_stage(resolved.execution_host, str(remote_stage.root))
             context = context.model_copy(
@@ -392,7 +400,7 @@ async def _stage_auto_research_child_work_turn(
             )
             workspace = Path(str(remote_stage.workspace))
         else:
-            stage_root = _swept_stage_root(data_dir)
+            stage_root = _swept_stage_root(data_dir, store=execution.store)
             expected_stage = stage_root / stage_name
             if saved_stage:
                 local_stage = _validated_local_chat_resume_stage(execution, expected_stage)

@@ -302,6 +302,18 @@ def test_resumed_chat_turn_is_marker_plus_unchanged_human_message_and_optional_d
     )
     assert "task contract" not in prompt.casefold()
 
+    pointed = PromptFactory.work_turn_prompt(
+        artifact_path="/stage/workspace/turns/op-2/artifacts",
+        human_message=message,
+        master_context_path="/stage/inputs/chat-master.md",
+        bootstrap_master_context=False,
+    )
+    assert pointed.startswith(
+        "RCP master context: /stage/inputs/chat-master.md\n\nThis is a Work turn."
+    )
+    assert "Open and retain" not in pointed
+    assert pointed.count("/stage/inputs/chat-master.md") == 1
+
     changed = PromptFactory.discuss_turn_prompt(
         artifact_path="/stage/workspace/turns/op-3/artifacts",
         human_message=message,

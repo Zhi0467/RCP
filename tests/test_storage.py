@@ -1321,6 +1321,78 @@ def test_multiple_active_agent_tasks_can_share_a_project(tmp_path) -> None:
     assert store.agent_task("second-run") is not None
 
 
+def test_run_stage_protection_tracks_active_tasks_on_their_execution_host(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    for operation_id, status, stage_host, stage_root in (
+        ("local-active", "queued", None, "/data/run-stage/local-active"),
+        ("remote-active", "running", "gpu.example", "/tmp/rcp-run.remote-active"),
+        ("local-terminal", "failed", None, "/data/run-stage/local-terminal"),
+    ):
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id="project",
+                kind="refresh",
+                status=status,
+                request={},
+                created_at=now,
+                updated_at=now,
+                status_message=status,
+                stage_host=stage_host,
+                stage_root=stage_root,
+            )
+        )
+
+    assert store.protected_run_stage_roots("") == ("/data/run-stage/local-active",)
+    assert store.protected_run_stage_roots("gpu.example") == ("/tmp/rcp-run.remote-active",)
+
+
+def test_committed_chat_session_owns_its_reusable_stage_after_the_task_settles(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    stage_root = "/data/run-stage/chat-project-chat"
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="chat-turn",
+            project_id="project",
+            kind="project_chat",
+            status="succeeded",
+            request={"chat_id": "chat", "provider": "codex", "run_on": "local"},
+            created_at=now,
+            updated_at=now,
+            status_message="succeeded",
+            native_session_id="native-session",
+            stage_root=stage_root,
+        )
+    )
+    snapshot_json, snapshot_sha256 = _snapshot("chat")
+    store.commit_chat_session_context(
+        provider="codex",
+        execution_machine="local",
+        native_session_id="native-session",
+        project_id="project",
+        kind="project_chat",
+        chat_id="chat",
+        node_id=None,
+        protocol_version=1,
+        snapshot_json=snapshot_json,
+        snapshot_sha256=snapshot_sha256,
+        committed_operation_id="chat-turn",
+        expected_snapshot_sha256=None,
+    )
+
+    assert store.protected_run_stage_roots("") == (stage_root,)
+    lifecycle = store.run_stage_lifecycles()
+    assert len(lifecycle) == 1
+    assert lifecycle[0].owner_refs == (
+        "chat_session_contexts:native-session",
+        "graph_runs:chat-turn",
+    )
+    assert lifecycle[0].must_exist is False
+    assert lifecycle[0].protect_from_cleanup is True
+
+
 def test_has_active_chat_task_is_scoped_to_project_kind_and_chat(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()

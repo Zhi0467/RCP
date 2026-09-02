@@ -83,12 +83,14 @@ from rcp.runs.shared import (
     _existing_exact_patch_digest,
     _parent_task_contract_path,
     _pinned_to_profile,
+    _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _retry_deliverable_is_unchanged,
     _sse,
     _stage_context_paths,
     _stage_json_task_input,
+    _stage_or_reuse_task_input,
     _stage_task_contract,
     _stage_task_input,
     _swept_stage_root,
@@ -264,6 +266,10 @@ async def _stage_work_turn(
                 remote_stage = RemoteRunStage(resolved.execution_host).open(
                     stage_name,
                     reuse=True,
+                    protected_roots=_protected_run_stage_roots(
+                        execution.store if execution is not None else None,
+                        resolved.execution_host,
+                    ),
                 )
             assert remote_stage.root is not None
             if execution is not None:
@@ -278,7 +284,10 @@ async def _stage_work_turn(
             )
             workspace = Path(str(remote_stage.workspace))
         else:
-            stage_root = _swept_stage_root(data_dir)
+            stage_root = _swept_stage_root(
+                data_dir,
+                store=execution.store if execution is not None else None,
+            )
             expected_stage = stage_root / stage_name
             if saved_stage:
                 local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
@@ -567,8 +576,10 @@ def _compose_wake_prompt(
         or not prepared.watcher_state_path
     ):
         raise ValueError("Experiment-loop wake inputs are incomplete after staging.")
+    experiment_contract_path = _experiment_session_contract_path(turn)
     contract = experiment_loop_wake_message(
         focused_experiment_id=turn.request.control_node_id,
+        experiment_contract_path=experiment_contract_path,
         invocation=turn.request.control_invocation,
         invocation_ceiling=turn.request.control_invocation_ceiling,
         previous_graph_result=prepared.wake_episode.last_graph_result or "",
@@ -601,8 +612,40 @@ def _compose_wake_prompt(
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
-        base_contract_path=contract_path,
+        base_contract_path=experiment_contract_path,
     )
+
+
+def _experiment_session_contract_path(turn: WorkTurn) -> str:
+    """Stage the full contract that initialized this exact episode session."""
+
+    execution = turn.execution
+    episode_id = turn.request.control_episode_id
+    session_id = turn.request.session_id
+    if execution is None or not episode_id or not session_id or not execution.stage_root:
+        raise ValueError("Experiment-loop wake has no exact session contract binding.")
+    stage_identity = (execution.stage_host or "", execution.stage_root)
+    tasks = tuple(reversed(execution.store.episode_tasks(episode_id)))
+    for candidate_session_id in (session_id, None):
+        for task in tasks:
+            if (
+                task.stage_host or "",
+                task.stage_root,
+            ) != stage_identity or task.native_session_id != candidate_session_id:
+                continue
+            for durable in reversed(execution.store.agent_task_contracts(task.operation_id)):
+                if durable.role not in {"work", "work_retry_base"}:
+                    continue
+                digest = hashlib.sha256(durable.content.encode("utf-8")).hexdigest()
+                if digest != durable.sha256:
+                    raise ValueError("The Experiment-loop session contract is corrupt.")
+                return _stage_or_reuse_task_input(
+                    turn.local_stage,
+                    turn.remote_stage,
+                    f"experiment-contract-{digest[:16]}.md",
+                    durable.content,
+                )
+    raise ValueError("Experiment-loop wake has no full contract for its exact session and stage.")
 
 
 def _compose_fresh_prompt(
@@ -1882,7 +1925,7 @@ async def _stream_work_graph_repair(
             )
             workspace = Path(str(remote_stage.workspace))
         else:
-            expected_stage = _swept_stage_root(data_dir) / stage_name
+            expected_stage = _swept_stage_root(data_dir, store=execution.store) / stage_name
             local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
             workspace = _prepare_local_chat_workspace(
                 local_stage,

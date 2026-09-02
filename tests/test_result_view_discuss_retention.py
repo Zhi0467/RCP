@@ -91,6 +91,35 @@ def _view(
     )
 
 
+def test_only_unexpired_temporary_result_view_stages_are_protected(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    current = datetime.now(UTC)
+    live_stage = str(tmp_path / "run-stage" / "live-view")
+    expired_stage = str(tmp_path / "run-stage" / "expired-view")
+    store.create_result_view(
+        _view(
+            view_id="a" * 24,
+            project_id="project-one",
+            chat_id=str(uuid.uuid4()),
+            stage_root=live_stage,
+            now=current,
+        ),
+        html=_VIEW_HTML,
+    )
+    store.create_result_view(
+        _view(
+            view_id="b" * 24,
+            project_id="project-one",
+            chat_id=str(uuid.uuid4()),
+            stage_root=expired_stage,
+            now=current - timedelta(hours=2),
+        ),
+        html=_VIEW_HTML,
+    )
+
+    assert store.protected_run_stage_roots("") == (live_stage,)
+
+
 def test_discuss_turn_touches_every_saved_stage_before_extending_expiry(
     tmp_path,
     monkeypatch,

@@ -113,7 +113,7 @@ from rcp.runs.experiment_loop import (
     experiment_watcher_delivery_request,
     preflight_episode_wake,
 )
-from rcp.runs.shared import _sweep_stale_stages
+from rcp.runs.shared import _protected_run_stage_roots, _sweep_stale_stages
 from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
 from rcp.runs.tasks.auto_research_child_work import stream_auto_research_child_work_run
 from rcp.runs.tasks.auto_research_stream import (
@@ -1594,7 +1594,10 @@ def create_app(
 
     async def sweep_remote_run_stages() -> None:
         try:
-            await asyncio.to_thread(RemoteRunStage(default_state_host).sweep)
+            await asyncio.to_thread(
+                RemoteRunStage(default_state_host).sweep,
+                protected_roots=_protected_run_stage_roots(store, default_state_host),
+            )
         except Exception as exc:
             # Stale scratch cleanup is best-effort and must not delay app
             # availability when the project's remote machine is unavailable.
@@ -1761,7 +1764,13 @@ def create_app(
                 await asyncio.to_thread(reconcile_auto_research_recovery_pass)
                 if member_removal_coordinator is not None:
                     await asyncio.to_thread(member_removal_coordinator.reconcile_pending)
-                _sweep_stale_stages(app_data / "run-stage", now=time.time())
+                protected_roots = _protected_run_stage_roots(store, "")
+                if protected_roots is not None:
+                    _sweep_stale_stages(
+                        app_data / "run-stage",
+                        now=time.time(),
+                        protected_roots=protected_roots,
+                    )
                 attachment_store.sweep()
                 cache_roots = [
                     *discover_project_cache_roots(app_data),

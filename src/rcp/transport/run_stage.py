@@ -10,6 +10,7 @@ import stat
 import subprocess
 import tempfile
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -72,35 +73,60 @@ class RemoteRunStage:
             raise RuntimeError("remote run stage is not open")
         return self.root / "workspace"
 
-    def sweep(self, *, retain_days: int = RUN_STAGE_RETENTION_DAYS) -> None:
+    def sweep(
+        self,
+        *,
+        retain_days: int = RUN_STAGE_RETENTION_DAYS,
+        protected_roots: Iterable[str] | None = (),
+    ) -> None:
         """Age out stages left behind by failed runs.
 
         A failed run deliberately keeps its scratch folder so the work is not
         lost, which means nothing else ever deletes it. Best effort: a stage that
         cannot be swept is not worth failing a run over.
         """
+        if protected_roots is None:
+            return
+        protected = tuple(dict.fromkeys(protected_roots))
+        if any(not _safe_root(root) for root in protected):
+            raise ValueError("protected remote run stage is outside the staging boundary")
         script = (
             _REMOTE_TREE_HELPERS
             + """
-import glob,sys,time
+import glob,json,sys,time
 cutoff=time.time()-(int(sys.argv[1])*86400)
+protected=set(json.loads(sys.argv[2]))
 for target in glob.glob('/tmp/rcp-run.*'):
     try:
-        if os.path.isdir(target) and os.path.getmtime(target) < cutoff:
+        if target not in protected and os.path.isdir(target) and os.path.getmtime(target) < cutoff:
             remove_tree(target)
     except OSError:
         pass
 """
         )
-        self._ssh(["python3", "-c", script, str(int(retain_days))])
+        self._ssh(
+            [
+                "python3",
+                "-c",
+                script,
+                str(int(retain_days)),
+                json.dumps(protected, separators=(",", ":")),
+            ]
+        )
 
-    def open(self, operation_id: str | None = None, *, reuse: bool = False) -> RemoteRunStage:
+    def open(
+        self,
+        operation_id: str | None = None,
+        *,
+        reuse: bool = False,
+        protected_roots: Iterable[str] | None = (),
+    ) -> RemoteRunStage:
         """Create this stage, or with `reuse` adopt it when it already exists.
 
         A chat conversation keeps one stage across its turns, so opening it a
         second time must land in the same directory rather than fail.
         """
-        self.sweep()
+        self.sweep(protected_roots=protected_roots)
         if operation_id is None:
             result = self._ssh(["mktemp", "-d", "/tmp/rcp-run.XXXXXXXX"])
             remote_root = result.stdout.strip()

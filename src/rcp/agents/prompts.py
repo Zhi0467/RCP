@@ -514,6 +514,7 @@ class PromptFactory:
         artifact_path: str,
         human_message: str,
         master_context_path: str | None = None,
+        bootstrap_master_context: bool = True,
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
@@ -524,6 +525,7 @@ class PromptFactory:
             artifact_path=artifact_path,
             human_message=human_message,
             master_context_path=master_context_path,
+            bootstrap_master_context=bootstrap_master_context,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
@@ -536,6 +538,7 @@ class PromptFactory:
         artifact_path: str,
         human_message: str,
         master_context_path: str | None = None,
+        bootstrap_master_context: bool = True,
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
@@ -549,6 +552,7 @@ class PromptFactory:
             artifact_path=artifact_path,
             human_message=human_message,
             master_context_path=master_context_path,
+            bootstrap_master_context=bootstrap_master_context,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
@@ -569,6 +573,7 @@ class PromptFactory:
         invoked_skill_pointers: list[dict[str, object]] | None,
         invoked_provider_skills: list[ProviderSkillReference] | None,
         attachments: list[dict[str, object]] | None,
+        bootstrap_master_context: bool = True,
         result_view_action: Literal["create", "revise"] | None = None,
         result_view_path: str | None = None,
         write_scope: ProjectWriteScope | None = None,
@@ -577,11 +582,15 @@ class PromptFactory:
             raise ValueError("a write boundary belongs only to a Work turn")
         parts = []
         if master_context_path is not None:
-            parts.append(
-                "Open and retain the RCP chat master context at:\n"
-                f"{master_context_path}\n"
-                "It defines the stable pointers and both mode contracts for this native session."
-            )
+            if bootstrap_master_context:
+                parts.append(
+                    "Open and retain the RCP chat master context at:\n"
+                    f"{master_context_path}\n"
+                    "It defines the stable pointers and both mode contracts for this native "
+                    "session."
+                )
+            else:
+                parts.append(f"RCP master context: {master_context_path}")
         parts.append(f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}")
         if write_scope is not None:
             parts.append(write_scope_section(write_scope).strip())

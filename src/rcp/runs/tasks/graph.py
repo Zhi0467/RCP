@@ -41,6 +41,7 @@ from rcp.runs.shared import (
     _existing_patch_digest,
     _parent_task_contract_path,
     _pinned_to_profile,
+    _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _record_patch_applied_receipt,
@@ -613,7 +614,11 @@ async def stream_graph_run(
                     )
                 else:
                     remote_stage = RemoteRunStage(execution_host).open(
-                        execution.operation_id if execution is not None else None
+                        execution.operation_id if execution is not None else None,
+                        protected_roots=_protected_run_stage_roots(
+                            execution.store if execution is not None else None,
+                            execution_host,
+                        ),
                     )
                     if execution is not None:
                         assert remote_stage.root is not None
@@ -631,7 +636,10 @@ async def stream_graph_run(
                 workspace = Path(str(remote_stage.workspace))
                 patch_path = str(remote_stage.workspace / "patch.json")
             else:
-                stage_root = _swept_stage_root(data_dir)
+                stage_root = _swept_stage_root(
+                    data_dir,
+                    store=execution.store if execution is not None else None,
+                )
                 if reuses_native_checkpoint and execution is not None and execution.stage_root:
                     local_stage = Path(execution.stage_root).resolve()
                     if local_stage.parent != stage_root.resolve() or not local_stage.is_dir():
