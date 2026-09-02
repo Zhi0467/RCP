@@ -436,6 +436,9 @@ def test_service_account_commands_clear_invoking_credentials_and_use_fixed_home(
         "HOME=/home/rcp",
     )
     assert "GIT_TERMINAL_PROMPT=0" in argv
+    assert (
+        "PATH=/home/rcp/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ) in argv
     assert all("SSH_AUTH_SOCK" not in token and "GH_TOKEN" not in token for token in argv)
     assert default_kwargs["cwd"] == Path("/home/rcp")
     assert captured[1][1]["cwd"] == explicit_cwd

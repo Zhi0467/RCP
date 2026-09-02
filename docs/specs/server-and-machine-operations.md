@@ -52,7 +52,13 @@ Provider-native state stays in each provider's normal per-account home path
 (currently `/home/rcp/.codex` and `/home/rcp/.claude`), and SSH state stays in
 `/home/rcp/.ssh`; RCP does not relocate or manage provider authentication. A
 later provider retains its own native path rather than joining an RCP credential
-store.
+store. The root-entered `server provider update <codex|claude>` command is a
+bounded operator wrapper around the provider's native update under `rcp`; it
+does not take ownership of provider releases or credentials. The installed
+service and root-to-service subprocess environment put `/home/rcp/.local/bin`
+first so a provider's account-local installation wins over a stale system-wide
+copy. Provider discovery persists that stable command path rather than resolving
+a provider-managed symlink to one versioned target.
 
 Only root/system integration lives elsewhere: `/etc/rcp/server.toml`, the
 root-owned current-release pointer, `/run/rcp/control.sock`, the stable CLI
@@ -209,7 +215,11 @@ both provider-plan and provider-check operations; a healthy socket that omits
 them is an installation problem. `server provider check` resolves only one
 durable request or existing team project through that service, shows the full
 plan before probing, and returns the same bounded success, failure, or operator
-action in interactive and machine-readable modes.
+action in interactive and machine-readable modes. `server provider update` is
+entered as root, runs only the selected provider's supported updater as `rcp`,
+and then proves the updated executable, version, and native authentication. It
+prints the exact provider-login recovery command when the update succeeds but
+authentication does not; it never receives a token or login code itself.
 
 `member remove` previews the target's active work, project memberships, tokens,
 sessions, and pending invitations before confirmation. It refuses to remove the

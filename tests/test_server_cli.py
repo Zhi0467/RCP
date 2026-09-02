@@ -175,6 +175,11 @@ def _operator_execution() -> ServerCommandExecution:
             {"project_id": PROJECT_ID},
         ),
         (
+            ("server", "provider", "update", "claude"),
+            "server provider update",
+            {"provider_update_provider": "claude"},
+        ),
+        (
             ("server", "project", "provision", REQUEST_ID),
             "server project provision",
             {"request_id": REQUEST_ID},
@@ -292,6 +297,8 @@ def test_machine_readable_is_a_renderer_choice_before_or_after_the_leaf() -> Non
         ("server", "install"),
         ("server", "install", "--team-name", ""),
         ("server", "provider", "check"),
+        ("server", "provider", "update"),
+        ("server", "provider", "update", "gemini"),
         (
             "server",
             "provider",
@@ -996,6 +1003,7 @@ def test_preparer_exception_becomes_a_secret_safe_terminal_event() -> None:
         (("server", "update"), "root"),
         (("server", "doctor"), "rcp"),
         (("server", "provider", "check", "--request", REQUEST_ID), "rcp"),
+        (("server", "provider", "update", "codex"), "root"),
         (("server", "project", "provision", REQUEST_ID), "rcp"),
         (("server", "project", "transfer-import", REQUEST_ID), "rcp"),
         (("server", "backup", "run"), "rcp"),

@@ -12,6 +12,7 @@ Group=rcp
 WorkingDirectory=/etc/rcp/current
 Environment=RCP_DATA_DIR=/home/rcp/rcp-server/data
 Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/home/rcp/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/usr/local/bin/rcp serve --host 127.0.0.1 --port 8421 --web-assets prebuilt
 Restart=on-failure
 RestartSec=3

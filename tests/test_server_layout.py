@@ -395,6 +395,7 @@ def test_systemd_asset_uses_the_fixed_non_reloading_service_boundary() -> None:
         "Group=rcp",
         "WorkingDirectory=/etc/rcp/current",
         "Environment=RCP_DATA_DIR=/home/rcp/rcp-server/data",
+        "Environment=PATH=/home/rcp/.local/bin:/usr/local/sbin:/usr/local/bin",
         "ExecStart=/usr/local/bin/rcp serve --host 127.0.0.1 --port 8421 --web-assets prebuilt",
         "RuntimeDirectory=rcp",
         "RuntimeDirectoryMode=0700",

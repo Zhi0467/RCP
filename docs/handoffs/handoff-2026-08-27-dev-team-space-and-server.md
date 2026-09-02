@@ -161,6 +161,21 @@ the next change uses a short-lived branch, PR CI, and explicit human merge.
   backup/restore under project state, transfer, member removal, and the exact
   visible multi-space drive remain the next live closure work.
 
+#### 2026-09-02 — provider maintenance uses the server CLI
+
+- Server operators no longer need a direct `rcp` login to update Codex or
+  Claude. `sudo rcp server provider update <codex|claude>` runs the provider's
+  supported native update under the service account, bounds diagnostics, and
+  verifies the resulting executable, version, and native authentication.
+- The service and maintenance subprocess PATH now prefer
+  `/home/rcp/.local/bin`. Local provider discovery preserves a stable command
+  symlink instead of pinning a project to its current versioned target. Projects
+  that already stored a versioned path need one normal **Resolve** in Settings;
+  future updates retain the stable path.
+- The persistent lab server still needs the new source commit installed and the
+  real Codex/Claude wrapper commands driven before this live qualification is
+  closed.
+
 ### Notes carried from earlier status updates
 
 D2 promotes the proved local-HTTPS mechanism into the production source-built

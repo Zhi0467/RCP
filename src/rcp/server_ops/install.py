@@ -1894,7 +1894,10 @@ def _run_as_account(
         "HOME": account.pw_dir,
         "USER": account.pw_name,
         "LOGNAME": account.pw_name,
-        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "PATH": (
+            f"{account.pw_dir}/.local/bin:"
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        ),
         "LANG": "C.UTF-8",
         "GIT_TERMINAL_PROMPT": "0",
     }

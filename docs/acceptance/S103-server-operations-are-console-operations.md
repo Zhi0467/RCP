@@ -9,6 +9,7 @@ covered_by:
   - tests/test_server_doctor.py
   - tests/test_server_install.py
   - tests/test_server_provider_readiness.py
+  - tests/test_server_provider_update.py
   - tests/test_server_update_prepare.py
   - tests/test_server_update_rehearsal.py
   - tests/test_server_update_checkpoint.py
@@ -61,10 +62,11 @@ Every member has equal space authority and there is no admin role. That only
 works if the operations nobody should perform casually are kept off the product
 surface entirely, rather than guarded by a rank the design refuses to introduce.
 
-Installation, backup, restore, source update, project provisioning, and member
-removal therefore require server operating-system authority. Provider login is
-not an RCP operation at all: the operator performs it with the provider's own
-command as the execution account, and RCP only checks readiness. A member token —
+Installation, backup, restore, source update, provider CLI update, project
+provisioning, and member removal therefore require server operating-system
+authority. Provider login is not an RCP operation at all: the operator performs
+it with the provider's own command as the execution account, while RCP only
+wraps provider-native update and checks readiness. A member token —
 including a stolen one — cannot redirect backups, pull code, restore over the
 space, provision a checkout, or remove anyone.
 
@@ -130,6 +132,13 @@ member running a long task plus active Auto-research and Experiment episodes.
    initialized team with no enrolled member survives candidate rehearsal. Run
    the equivalent structured-output operations and prove they emit the same
    durable plan/actions without prompting or executing human actions.
+10. From an ordinary operator SSH login, run
+    `sudo rcp server provider update` once for Codex and once for Claude. Prove
+    both native updates execute under `rcp`, the account-local executable wins
+    over any stale system-wide copy, the stable symlink path remains recorded,
+    and version plus existing native login are rechecked. Invalidate login once
+    and verify RCP preserves the successful update while printing the exact
+    provider-login recovery command.
 
 ## Assert
 
@@ -189,6 +198,8 @@ member running a long task plus active Auto-research and Experiment episodes.
 - `interactive_human_boundaries_continue_inside_one_terminal_wizard`
 - `every_install_or_update_failure_prints_exact_diagnostic_and_recovery_commands`
 - `machine_readable_server_operations_never_prompt_or_execute_human_actions`
+- `provider_updates_run_natively_under_rcp_and_verify_version_and_login`
+- `provider_update_preserves_success_and_prints_exact_login_recovery`
 
 ## UI path
 
@@ -227,7 +238,7 @@ after its authorizer was removed would spend hours of provider budget and then
 have every patch rejected.
 
 The fixed command family is `rcp server install`, `doctor`, `provider check`,
-`project provision`, `project transfer-import`, `backup configure`,
+`provider update`, `project provision`, `project transfer-import`, `backup configure`,
 `backup run`, `restore`, `member remove`, and `update`. Subcommand-specific
 flags may grow during implementation, but ordinary product actions must not
 migrate into this privileged namespace.

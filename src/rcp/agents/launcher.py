@@ -253,14 +253,17 @@ class _PrePromptRuntimeFailure(RuntimeError):
 def _discover_local_provider(provider: str) -> str | None:
     discovered = shutil.which(provider)
     if discovered:
-        return str(Path(discovered).resolve())
+        # Keep the command path stable across provider-native updates. Native
+        # installers commonly replace a symlink target with a versioned binary;
+        # persisting the resolved target would pin RCP to the old version.
+        return str(Path(discovered))
     try:
         account_home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
     except KeyError:
         return None
     candidate = account_home / ".local" / "bin" / provider
     if candidate.is_file() and os.access(candidate, os.X_OK):
-        return str(candidate.resolve())
+        return str(candidate)
     return None
 
 

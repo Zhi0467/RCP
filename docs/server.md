@@ -367,6 +367,34 @@ browser flow finishes. Never paste a provider token, returned login code, or a
 provider credential file into RCP, a command argument, a log, an issue, or chat.
 RCP only invokes the provider-native executable and checks its native status.
 
+### Update provider CLIs
+
+Stay in the ordinary operator SSH session for updates too. Do not enable a
+password or direct login for `rcp`, and do not run provider maintenance under
+the operator's home. RCP wraps each supported provider's native update, runs it
+under the `rcp` account, keeps its output bounded, and verifies the resulting
+executable, version, and existing login:
+
+```bash
+sudo /usr/local/bin/rcp server provider update codex
+sudo /usr/local/bin/rcp server provider update claude
+```
+
+The Codex command reruns OpenAI's supported standalone installer under
+`/home/rcp`; the Claude command runs `claude update`. These are the current
+provider-owned update paths documented by
+[OpenAI](https://learn.chatgpt.com/docs/codex/cli) and
+[Anthropic](https://code.claude.com/docs/en/cli-usage). RCP does not download or
+store provider credentials and an update never substitutes for login.
+
+If the provider updated but its native login is unavailable, the same command
+stops with the exact `sudo -u rcp -H ... login` recovery command. Complete that
+browser/device flow in the operator terminal, then use the printed Continue
+command. If an older project recorded a version-numbered executable before RCP
+preserved provider symlink paths, use **Resolve** once for that provider in
+Project Settings, then rerun `server provider check --project <project-id>`.
+Future native updates retain the stable command path.
+
 After the project wizard names its project id, run the exact readiness command
 it prints:
 

@@ -64,6 +64,7 @@ _ROOT_COMMANDS: frozenset[ServerCommandName] = frozenset(
         "server install",
         "server backup configure",
         "server restore",
+        "server provider update",
         "server update",
     }
 )
@@ -145,6 +146,17 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
     selector.add_argument("--request", dest="request_id", type=_request_id)
     selector.add_argument("--project", dest="project_id", type=_project_id)
     provider_check.set_defaults(server_operation="server provider check")
+    provider_update = _leaf(
+        provider_commands,
+        "update",
+        "Update one server-local provider CLI under the rcp account",
+    )
+    provider_update.add_argument(
+        "provider_update_provider",
+        choices=("codex", "claude"),
+        metavar="{codex,claude}",
+    )
+    provider_update.set_defaults(server_operation="server provider update")
 
     project = server_commands.add_parser("project", help="Prepare or import a team project")
     project_commands = project.add_subparsers(dest="project_command", required=True)
@@ -393,6 +405,7 @@ def request_from_namespace(args: argparse.Namespace) -> ServerCommandRequest:
             team_name=getattr(args, "team_name", None),
             request_id=getattr(args, "request_id", None),
             project_id=getattr(args, "project_id", None),
+            provider_update_provider=getattr(args, "provider_update_provider", None),
             member_id=getattr(args, "member_id", None),
             member_confirmed_boundary=getattr(args, "member_confirmed_boundary", None),
             archive_path=getattr(args, "archive_path", None),
@@ -577,6 +590,10 @@ def _dispatch_server_command(
             from rcp.server_ops.provider_readiness import prepare_provider_check_command
 
             return prepare_provider_check_command(request, identity)
+        case "server provider update":
+            from rcp.server_ops.provider_update import prepare_provider_update_command
+
+            return prepare_provider_update_command(request, identity)
         case "server project provision":
             from rcp.server_ops.project_provision import prepare_project_provision_command
 

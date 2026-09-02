@@ -398,6 +398,33 @@ def test_local_provider_discovery_includes_the_execution_accounts_local_bin(
     assert readiness.authenticated is True
 
 
+def test_local_provider_discovery_keeps_a_stable_symlink_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rcp.agents.launcher import AgentLauncher
+
+    version = tmp_path / "versions" / "2.1.252"
+    version.parent.mkdir()
+    version.write_text("#!/bin/sh\n", encoding="utf-8")
+    version.chmod(0o755)
+    command = tmp_path / "bin" / "claude"
+    command.parent.mkdir()
+    command.symlink_to(version)
+    monkeypatch.setattr(shutil, "which", lambda _provider: str(command))
+
+    def probe(_host: str, argv: list[str], **_kwargs):
+        if argv[-1] == "--version":
+            return _result("2.1.252")
+        return _result(json.dumps({"loggedIn": True}))
+
+    monkeypatch.setattr(AgentLauncher, "_probe", staticmethod(probe))
+
+    readiness = AgentLauncher().readiness("claude")
+
+    assert readiness.binary_path == str(command)
+
+
 def test_provider_commands_use_the_recorded_binary_as_argv_zero() -> None:
     from rcp.agents.launcher import AgentLauncher
 

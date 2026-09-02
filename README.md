@@ -164,6 +164,8 @@ backup, restore, and member removal:
 sudo -u rcp -H /usr/local/bin/rcp server doctor
 sudo -u rcp -H /usr/local/bin/rcp server project provision <request-id>
 sudo -u rcp -H /usr/local/bin/rcp server provider check --project <project-id>
+sudo /usr/local/bin/rcp server provider update codex
+sudo /usr/local/bin/rcp server provider update claude
 sudo /usr/local/bin/rcp server backup configure \
   --destination /absolute/path/to/backups \
   --recipient <age1-public-recipient> \
