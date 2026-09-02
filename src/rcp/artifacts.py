@@ -350,7 +350,7 @@ listen(window,'click',(event)=>{
 listen(document,'mouseup',()=>{
   const selection=document.getSelection();
   const text=bounded(selection?.toString(),4096);
-  if(!text || !selection?.rangeCount) return;
+  if(!text || !selection?.rangeCount){send({kind:'rcp-artifact-selection',selection:null});return;}
   const range=selection.getRangeAt(0);
   const container=range.commonAncestorContainer.nodeType===Node.ELEMENT_NODE
     ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
@@ -443,7 +443,7 @@ listen(window,'message',(event)=>{
   listen(artifactPort,'message',(portEvent)=>{
     const value=portEvent.data;
     if(!value || typeof value!=='object') return;
-    if(value.kind==='rcp-artifact-selection' && value.selection && window.parent!==window){
+    if(value.kind==='rcp-artifact-selection' && 'selection' in value && window.parent!==window){
       parentPost({type:'rcp-artifact-selection',version:1,selection:value.selection},'*');
       return;
     }
@@ -590,7 +590,7 @@ button:hover{{border-color:var(--accent);color:var(--accent)}}button:disabled{{o
 .spacer{{flex:1}}main{{display:grid;grid-template-columns:minmax(0,1fr) 300px;min-height:0}}
 .canvas{{position:relative;min-width:0;background:white;border-right:1px solid var(--rule)}}
 iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:block;width:100%;height:100%;object-fit:contain}}#boxLayer{{display:none;position:absolute;inset:0;cursor:crosshair}}#boxLayer.active{{display:block}}#boxLayer div{{position:absolute;border:2px solid var(--accent);background:rgba(169,79,49,.12)}}aside{{padding:14px;overflow:auto;background:var(--panel)}}
-aside h2{{margin:0 0 12px;font:600 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}}
+aside h2{{margin:0 0 12px;font:600 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}}.capture{{width:100%;margin-bottom:12px}}
 .empty{{color:var(--muted);font-family:Georgia,serif;font-style:italic}}.selection{{border-top:1px solid var(--rule);padding:12px 0}}
 .selection b{{display:block;margin-bottom:5px;color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.08em}}
 .excerpt{{max-height:90px;overflow:auto;font-family:Georgia,serif;font-size:13px}}
@@ -600,12 +600,12 @@ textarea{{width:100%;min-height:62px;margin-top:8px;resize:vertical;border:1px s
 </style></head><body>
 <header><strong>{html.escape(descriptor.name)}</strong><span id="state" class="state">{"kept" if descriptor.kept_filename else "temporary"}</span><span class="spacer"></span><button id="box" type="button">Box</button>{'<button id="keep" type="button">Keep</button>' if keep_url and descriptor.kept_filename is None else ""}</header>
 <main><div class="canvas">{preview_markup}</div>
-<aside><h2>Selections</h2><div id="empty" class="empty">Select text in the artifact or draw a box.</div><div id="items"></div><button id="add" class="add" type="button" disabled>Add to chat</button><div id="notice" class="notice" role="status"></div></aside></main>
+<aside><h2>Selections</h2><button id="captureText" class="capture" type="button" disabled>Add highlighted text</button><div id="empty" class="empty">Highlight text and add it, or draw a box.</div><div id="items"></div><button id="add" class="add" type="button" disabled>Add to chat</button><div id="notice" class="notice" role="status"></div></aside></main>
 <script>(()=>{{
 const config={js(config)};const selections=[];const frame=document.getElementById('preview'),boxLayer=document.getElementById('boxLayer');
-const items=document.getElementById('items'),empty=document.getElementById('empty'),add=document.getElementById('add'),notice=document.getElementById('notice');
+const items=document.getElementById('items'),empty=document.getElementById('empty'),captureText=document.getElementById('captureText'),add=document.getElementById('add'),notice=document.getElementById('notice');let pendingText=null;
 const bounded=(value,limit)=>String(value||'').replace(/\\s+/g,' ').trim().slice(0,limit);
-function render(){{items.replaceChildren();empty.hidden=selections.length>0;add.disabled=selections.length===0||!config.chatAvailable;
+function render(){{items.replaceChildren();empty.hidden=selections.length>0;captureText.disabled=!pendingText;add.disabled=selections.length===0||!config.chatAvailable;
   selections.forEach((selection,index)=>{{const card=document.createElement('section');card.className='selection';
     const label=document.createElement('b');label.textContent=`${{index+1}} · ${{selection.kind}}`;
     const excerpt=document.createElement('div');excerpt.className='excerpt';excerpt.textContent=selection.kind==='text'?selection.text:(selection.labels||`Box ${{Math.round(selection.rect.x*100)}}–${{Math.round((selection.rect.x+selection.rect.width)*100)}}%`);
@@ -614,10 +614,12 @@ function render(){{items.replaceChildren();empty.hidden=selections.length>0;add.
 }}
 function appendSelection(selection){{if(selections.length>=12){{notice.textContent='A prompt can include at most 12 selections.';return;}}selections.push(selection);render();}}
 window.addEventListener('message',(event)=>{{if(!frame||event.source!==frame.contentWindow) return;const value=event.data;
-  if(!value||value.type!=='rcp-artifact-selection'||value.version!==1||!value.selection) return;
-  const raw=value.selection;if(raw.kind==='text'&&typeof raw.text==='string') appendSelection({{kind:'text',text:bounded(raw.text,4096),surrounding_text:bounded(raw.surrounding_text,6144),comment:''}});
+  if(!value||value.type!=='rcp-artifact-selection'||value.version!==1||!('selection' in value)) return;
+  const raw=value.selection;if(raw===null){{pendingText=null;render();return;}}
+  if(raw.kind==='text'&&typeof raw.text==='string'){{pendingText={{kind:'text',text:bounded(raw.text,4096),surrounding_text:bounded(raw.surrounding_text,6144),comment:''}};render();}}
   else if(raw.kind==='box'&&raw.rect&&raw.viewport) appendSelection({{kind:'box',rect:raw.rect,viewport:raw.viewport,labels:bounded(raw.labels,4096),comment:''}});
 }});
+captureText.addEventListener('click',()=>{{if(!pendingText)return;appendSelection(pendingText);pendingText=null;render();}});
 document.getElementById('box').addEventListener('click',()=>{{if(frame) frame.contentWindow?.postMessage({{type:'rcp-artifact-box-start'}},'*');else boxLayer?.classList.add('active');}});
 if(boxLayer){{let start=null,mark=null;boxLayer.addEventListener('pointerdown',(event)=>{{start={{x:event.offsetX,y:event.offsetY}};mark=document.createElement('div');boxLayer.append(mark);}});boxLayer.addEventListener('pointermove',(event)=>{{if(!start||!mark)return;const left=Math.min(start.x,event.offsetX),top=Math.min(start.y,event.offsetY);Object.assign(mark.style,{{left:`${{left}}px`,top:`${{top}}px`,width:`${{Math.abs(event.offsetX-start.x)}}px`,height:`${{Math.abs(event.offsetY-start.y)}}px`}});}});boxLayer.addEventListener('pointerup',(event)=>{{if(!start||!mark)return;const width=boxLayer.clientWidth,height=boxLayer.clientHeight,left=Math.min(start.x,event.offsetX),top=Math.min(start.y,event.offsetY),right=Math.max(start.x,event.offsetX),bottom=Math.max(start.y,event.offsetY),boxWidth=right-left,boxHeight=bottom-top;mark.remove();mark=null;start=null;boxLayer.classList.remove('active');if(boxWidth<=0||boxHeight<=0)return;appendSelection({{kind:'box',rect:{{x:left/width,y:top/height,width:boxWidth/width,height:boxHeight/height}},viewport:{{width,height}},labels:'',comment:''}});}});}}
 add.addEventListener('click',()=>{{if(!config.chatAvailable){{notice.textContent='The originating chat is unavailable.';return;}}const payload={{type:'rcp-artifact-context',version:1,project_id:config.projectId,chat_id:config.chatId,operation_id:config.operationId,artifact_id:config.artifactId,artifact_name:config.artifactName,media_type:config.mediaType,selections}};

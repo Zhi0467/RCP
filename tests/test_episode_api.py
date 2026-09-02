@@ -375,4 +375,4 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert url in legacy_preview.text
     with TestClient(app) as client:
         assert client.head(legacy_preview_url).content == b""
-    assert "Select text in the artifact or draw a box." in viewer.text
+    assert "Highlight text and add it, or draw a box." in viewer.text
