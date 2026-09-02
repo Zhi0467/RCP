@@ -303,7 +303,11 @@ def _update_provider(
             raise ProviderUpdateRefused(
                 f"Codex's official installer download failed: {_bounded_diagnostic(downloaded)}"
             )
-        installed = runner(account, ("/bin/sh", str(installer)), _UPDATE_TIMEOUT_SECONDS)
+        installed = runner(
+            account,
+            ("/usr/bin/env", "CODEX_NON_INTERACTIVE=1", "/bin/sh", str(installer)),
+            _UPDATE_TIMEOUT_SECONDS,
+        )
         if installed.returncode != 0:
             raise ProviderUpdateRefused(
                 f"Codex's official installer failed: {_bounded_diagnostic(installed)}"

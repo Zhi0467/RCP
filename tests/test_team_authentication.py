@@ -115,6 +115,77 @@ def test_invitations_are_creator_private_expiring_single_use_credentials(tmp_pat
     assert expired.value.code == "enrollment_code_expired"
 
 
+def test_authenticated_team_roster_names_enrolled_members_without_credentials(tmp_path) -> None:
+    store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
+    client = TestClient(create_app(data_dir=tmp_path), base_url="https://team.test")
+    alice_enrollment = client.post(
+        "/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"}
+    ).json()
+    alice = alice_enrollment["identity"]["user"]
+    assert (
+        client.post(
+            "/api/team/session/exchange", json={"token": alice_enrollment["token"]}
+        ).status_code
+        == 200
+    )
+    invitation = client.post("/api/team/invitations", json={}).json()
+    bob, _bob_token = store.enroll_team_member(invitation["code"], "Bob")
+
+    roster = client.get("/api/space/users")
+
+    assert roster.status_code == 200
+    assert roster.json() == [
+        {"user_id": alice["user_id"], "display_name": "Alice"},
+        {"user_id": bob.user_id, "display_name": "Bob"},
+    ]
+    assert "token" not in roster.text
+
+
+def test_team_roster_excludes_member_pending_removal_but_invitation_keeps_name(
+    tmp_path,
+) -> None:
+    store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
+    app = create_app(data_dir=tmp_path)
+    alice = TestClient(app, base_url="https://testserver")
+    bob = TestClient(app, base_url="https://testserver")
+    alice_enrollment = alice.post(
+        "/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"}
+    ).json()
+    alice_user = alice_enrollment["identity"]["user"]
+    assert (
+        alice.post(
+            "/api/team/session/exchange", json={"token": alice_enrollment["token"]}
+        ).status_code
+        == 200
+    )
+    invitation = alice.post("/api/team/invitations", json={}).json()
+    bob_enrollment = bob.post(
+        "/api/team/enroll",
+        json={"code": invitation["code"], "display_name": "Bob Collaborator"},
+    ).json()
+    bob_user = bob_enrollment["identity"]["user"]
+    preview = store.member_removal_preview(bob_user["user_id"])
+
+    store.begin_member_removal(
+        bob_user["user_id"],
+        expected_boundary_sha256=preview.boundary_sha256,
+    )
+
+    roster = alice.get("/api/space/users")
+    assert roster.status_code == 200
+    assert roster.json() == [
+        {"user_id": alice_user["user_id"], "display_name": "Alice"},
+    ]
+    assert [user.user_id for user in store.space_users()] == [
+        alice_user["user_id"],
+        bob_user["user_id"],
+    ]
+    invitations = alice.get("/api/team/invitations")
+    assert invitations.status_code == 200
+    assert invitations.json()[0]["invitation_id"] == invitation["invitation"]["invitation_id"]
+    assert invitations.json()[0]["status_label"] == "Bob Collaborator joined"
+
+
 def test_revoking_an_invitation_stops_the_code_without_touching_others(tmp_path) -> None:
     store, _bootstrap, alice, _alice_token = _claimed_team(tmp_path)
     leaked, leaked_code = store.create_team_invitation(alice.user_id)
@@ -720,6 +791,9 @@ def test_revoking_an_invitation_over_http_blocks_enrollment(tmp_path) -> None:
     revoked = alice.post(f"/api/team/invitations/{invitation_id}/revoke", json={})
     assert revoked.status_code == 200
     assert revoked.json()["revoked_at"] is not None
+    assert revoked.json()["status"] == "revoked"
+    assert revoked.json()["status_label"] == "Revoked"
+    assert revoked.json()["can_revoke"] is False
 
     refused = bob.post(
         "/api/team/enroll", json={"code": issued["code"], "display_name": "Stranger"}
@@ -732,6 +806,58 @@ def test_revoking_an_invitation_over_http_blocks_enrollment(tmp_path) -> None:
 
     missing = alice.post(f"/api/team/invitations/{uuid.uuid4()}/revoke", json={})
     assert missing.status_code == 404
+
+
+def test_team_invitation_projection_names_members_and_human_states(tmp_path) -> None:
+    store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
+    app = create_app(data_dir=tmp_path)
+    alice = TestClient(app, base_url="https://testserver")
+    bob = TestClient(app, base_url="https://testserver")
+    alice_token = alice.post(
+        "/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"}
+    ).json()["token"]
+    assert alice.post("/api/team/session/exchange", json={"token": alice_token}).status_code == 200
+
+    joined = alice.post("/api/team/invitations", json={}).json()
+    waiting = alice.post("/api/team/invitations", json={}).json()
+    expired = alice.post("/api/team/invitations", json={}).json()
+    locked = alice.post("/api/team/invitations", json={}).json()
+    assert waiting["invitation"]["status"] == "waiting"
+    assert waiting["invitation"]["status_label"] == "Waiting for someone to join"
+    assert waiting["invitation"]["can_revoke"] is True
+
+    enrolled = bob.post(
+        "/api/team/enroll",
+        json={"code": joined["code"], "display_name": "Bob Collaborator"},
+    )
+    assert enrolled.status_code == 200
+    expired_at = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE team_invitations SET expires_at = ? WHERE invitation_id = ?",
+            (expired_at, expired["invitation"]["invitation_id"]),
+        )
+        connection.execute(
+            "UPDATE team_invitations SET locked_at = ? WHERE invitation_id = ?",
+            (store.now(), locked["invitation"]["invitation_id"]),
+        )
+
+    projected = {item["invitation_id"]: item for item in alice.get("/api/team/invitations").json()}
+    assert projected[joined["invitation"]["invitation_id"]]["status_label"] == (
+        "Bob Collaborator joined"
+    )
+    assert projected[joined["invitation"]["invitation_id"]]["can_revoke"] is False
+    assert projected[waiting["invitation"]["invitation_id"]]["status_label"] == (
+        "Waiting for someone to join"
+    )
+    expired_projection = projected[expired["invitation"]["invitation_id"]]
+    assert expired_projection["status"] == "expired"
+    assert expired_projection["status_label"] == "Expired"
+    assert expired_projection["can_revoke"] is False
+    assert projected[locked["invitation"]["invitation_id"]]["status_label"] == (
+        "Locked after failed attempts"
+    )
+    assert projected[locked["invitation"]["invitation_id"]]["can_revoke"] is True
 
 
 def test_team_members_see_only_their_invitations_and_cannot_target_credentials(

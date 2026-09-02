@@ -47,9 +47,9 @@ on 2026-09-01; only packets with an open drive remain below. The table above and
 this opening status are the authoritative current summary.
 
 The previously planned G1 pull-request transition before implementation was
-rejected by the human. Direct commits remain in force through this still-open,
-unstable server-stabilization slice. Archiving this handoff ends that exception;
-the next change uses a short-lived branch, PR CI, and explicit human merge.
+initially rejected while one person stabilized the first server. The human ended
+that direct-commit exception on 2026-09-02. All new work now uses a short-lived
+branch, ordinary PR CI, and human merge even while this handoff remains active.
 
 #### 2026-09-01 — persistent lab install and update qualified
 
@@ -195,6 +195,23 @@ the next change uses a short-lived branch, PR CI, and explicit human merge.
   denoising` used `/home/rcp/.local/bin/codex` at `0.152.1`. This closes the live
   provider-maintenance qualification; the broader first real task and two-user
   collaboration drives remain open as listed above.
+
+#### 2026-09-02 — team roster and invitation operations
+
+- The team identity panel now reads the existing authenticated space-user
+  projection into a quiet roster and count. It names the current person without
+  adding roles or ranks, and keeps durable ids out of the visual list.
+- The creator-only invitation ledger now uses human enrollment language:
+  **Waiting for someone to join**, **Name joined**, **Expired**, **Locked after
+  failed attempts**, and **Revoked**. One explicit **Refresh** reads the roster
+  and ledger together, so an inviter can verify enrollment without reopening the
+  panel or interpreting a credential-oriented `used` state.
+- The root README now points to one complete team-server guide rather than
+  duplicating console commands. That guide owns fresh installation, inviting and
+  joining, project invitation, provider authentication/update, source update,
+  service inspection, protected backup, restore, member removal, and recovery.
+- This is the first change under the restored short-lived branch and PR workflow;
+  it is not authorized for a direct push to `main`.
 
 ### Notes carried from earlier status updates
 
@@ -974,7 +991,7 @@ its live gate is available.
 | V1 | F6d, P6b, D7, O4d, O5b, O6, T5b | genuine one-lab environment |
 | V2 | V1 | every required local/remote baseline environment |
 
-G0 starts directly on `main`. After it is green, G2, F1, and D1 can proceed,
+G0 started directly on `main`. After it is green, G2, F1, and D1 can proceed,
 subject to the shared-file mutexes below. After F1 and G2, P1 can proceed
 alongside F2 and the desktop chain. T2a and T2b are deliberately ordered by
 their storage and API boundaries; T2c also waits for O4a's concrete restore

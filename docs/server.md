@@ -5,7 +5,7 @@ written for the machine operator who has `sudo` on a disposable or dedicated
 Ubuntu host. The supported host is Ubuntu 22.04 LTS or Ubuntu 24.04 LTS on
 x86-64 with systemd.
 
-The root [README](../README.md#install-a-team-server-from-source) points here;
+The root [README](../README.md#team-server) points here;
 this document is the single complete server setup and operations procedure.
 
 The `rcp server` CLI is the complete machine workflow and is itself a continuous
@@ -17,6 +17,14 @@ Every stop also prints an exact command that can continue later. Failures print
 bounded diagnosis and exact diagnostic/recovery commands instead of raw command
 output. `--machine-readable` is the noninteractive append-only JSON event stream;
 it never prompts or runs a human action.
+
+Use the numbered sections for a fresh installation. For an existing server,
+jump directly to [member invitations](#invite-another-person-to-the-team-space),
+[provider authentication and updates](#11-provider-authentication),
+[service inspection](#inspect-and-stop-the-service),
+[source updates](#update-the-source-built-server),
+[backup](#back-up-the-team-server), [restore](#restore-a-protected-archive), or
+[member removal](#remove-a-team-member).
 
 ## 1. Connect as the ordinary server operator
 
@@ -387,12 +395,13 @@ provider-owned update paths documented by
 [Anthropic](https://code.claude.com/docs/en/cli-usage). RCP does not download or
 store provider credentials and an update never substitutes for login.
 
-If the Codex installer detects an older npm-managed installation, keep it when
-prompted and decline the optional immediate Codex launch. RCP gives the
-account-local standalone command in `/home/rcp/.local/bin` precedence, then
-checks that command and the existing login before reporting success. The older
-system installation can be removed separately after the server is qualified;
-it does not need to be removed during this update.
+RCP runs the Codex installer in its supported noninteractive mode, so it does
+not ask whether to launch Codex or remove an older npm-managed installation.
+RCP leaves that older installation in place, gives the account-local standalone
+command in `/home/rcp/.local/bin` precedence, then checks that command and the
+existing login before reporting success. The older system installation can be
+removed separately after the server is qualified; it does not need to be
+removed during this update.
 
 If the provider updated but its native login is unavailable, the same command
 stops with the exact `sudo -u rcp -H ... login` recovery command. Complete that
@@ -420,6 +429,45 @@ In the source-built desktop app, choose **Add team space**, select SSH, enter th
 saved server route, and enroll with the one-time bootstrap code from Step 8. The
 unified project wizard can then create a team project from GitHub or move an
 existing personal RCP project into the team space.
+
+### Invite another person to the team space
+
+The invitation is an RCP membership secret, not an SSH credential. The person
+joining must separately have an SSH account that can reach the lab server; they
+do not need the `rcp` Linux account, server-operator sudo, or access to another
+member's provider credential.
+
+As an existing member:
+
+1. Open the team-space project index and select your identity in the top bar.
+2. Under **Team invitations**, select **Invite member**.
+3. Copy the invitation while it is visible and send it privately to the person
+   joining. Do not put it in a URL, issue, log, or command argument.
+4. Keep or close the panel. The raw code is shown only when created, while its
+   nonsecret status remains under **Created by you**.
+
+As the person joining, from their own source-built RCP desktop app:
+
+1. On the personal project index, select **Add team space** and **New member**.
+2. Enter their own SSH route, such as `alice@lab-server`, and server port
+   `8421`. This SSH account only carries the loopback tunnel.
+3. Enter their display name and paste the bootstrap or invitation code into the
+   secret field.
+4. Select **Add team space**. RCP exchanges the single-use code once, stores the
+   resulting permanent member credential in that person's operating-system
+   credential store, and opens the team space as that member.
+
+Back in the inviter's identity panel, **Refresh** updates both the quiet
+**Team members** roster and the invitation ledger. A pending code says
+**Waiting for someone to join**; successful enrollment says **Name joined**.
+Expired, locked, and revoked codes remain inert and are labelled accordingly.
+Only the member who created an invitation sees its ledger entry.
+
+Joining a team space does not grant access to every project. To add the new
+person to an existing project, open that project, go to **Settings → Members**,
+select the newly enrolled team member, and choose **Invite**. They then accept
+the separate project invitation card on their project index. Project
+invitations carry no enrollment secret.
 
 ## 13. Create the first shared project
 
@@ -485,6 +533,46 @@ a bounded inspection command, and the exact failed rehearsal/capture paths that
 may be deleted after the cause is fixed. Never delete a broader checkpoint or
 data directory.
 
+## Back up the team server
+
+Create the recovery identity on a separate trusted machine that has `age`; do
+not generate or retain the private identity in the RCP server's data directory:
+
+```bash
+age-keygen --output rcp-team-backup-key.txt
+age-keygen -y rcp-team-backup-key.txt
+```
+
+The first command creates the protected `AGE-SECRET-KEY-...` identity. Store
+that file in the lab's credential or disaster-recovery system. The second
+prints its nonsecret `age1...` recipient. Copy only that public recipient to the
+server operator terminal.
+
+Configure one absolute backup destination, public recipient, server-local daily
+time, and retained archive count:
+
+```bash
+sudo /usr/local/bin/rcp server backup configure \
+  --destination /absolute/path/to/backups \
+  --recipient <age1-public-recipient> \
+  --schedule 02:00 \
+  --retention 30 \
+  --confirm
+```
+
+The wizard verifies the destination and systemd timer. The destination may be a
+local or mounted filesystem; RCP does not claim that an on-server disk is a
+disaster-recovery copy. Run and verify an immediate archive after configuration:
+
+```bash
+sudo -u rcp -H /usr/local/bin/rcp server backup run
+sudo -u rcp -H /usr/local/bin/rcp server doctor
+```
+
+Keep the newest verified archive and the private recovery identity in locations
+that survive loss of the server. Never pass the private identity to `backup
+configure`; encryption needs only the public recipient.
+
 ## Restore a protected archive
 
 Restore requires a fresh installed server whose configured data directory is
@@ -515,6 +603,24 @@ the root command disappears first, the fenced process exits cleanly after its
 bounded timeout and stays stopped. Any other failure stops and disables the
 service; rerun the same archive-bound operation rather than editing SQLite or
 systemd.
+
+## Remove a team member
+
+Member removal is a server-console operation because it fences credentials,
+project membership, invitations, and live work together. Obtain the durable
+member ID from that person's identity record and preview the exact consequences:
+
+```bash
+sudo -u rcp -H /usr/local/bin/rcp server member remove <member-id>
+```
+
+RCP refuses removal if this is the last enrolled member or if any project would
+be left without a member. Add another person to the team and affected projects
+through the ordinary invitation flows first. Otherwise review the displayed
+memberships, credentials, invitations, and active-work boundary, then run the
+exact confirmation command printed by the wizard. Re-enter the same initial
+command after an interruption; RCP resumes the durable removal fence instead of
+restoring access.
 
 ## Maintainer live qualification
 

@@ -119,69 +119,12 @@ Closing the red window hides RCP. Use **Quit RCP** or Cmd+Q to end the
 desktop-owned backend. See [docs/desktop.md](docs/desktop.md) for native build,
 logging, and verification details.
 
-## Install a team server from source
+## Team server
 
-The server workflow below has passed source install, update/rollback, protected
-backup, and fresh-host restore on disposable Ubuntu 22.04 and 24.04 hosts. A
-persistent Ubuntu 22.04 lab server has also completed source install, desktop
-member enrollment, provider readiness, and creation of a real GitHub-backed team
-project. The two-member, backup/restore, and transfer closure drill is still
-pending.
-
-The supported server is Ubuntu 22.04 or 24.04 LTS on x86-64 with systemd. RCP is
-built from a GitHub `main` checkout; there is no Linux package or binary release
-channel. The service runs under a dedicated `rcp` Linux account and listens only
-on server loopback. Source-built desktop apps connect through SSH.
-
-Follow the complete [team server setup guide](docs/server.md). It contains the
-numbered host checks, system prerequisites, source build, installer pauses,
-team-space initialization, provider authentication, SSH operator route, desktop
-enrollment, verification, and recovery procedures.
-
-While the RCP repository is private, one conditional setup step grants the
-server a read-only source deploy key. The public-source transition removes that
-step and its key material together. Per-project write deploy keys are unrelated
-and remain part of team project setup.
-
-## Update and operate the team server
-
-The CLI owns server updates from GitHub `main`:
-
-```bash
-sudo /usr/local/bin/rcp server update
-```
-
-Review the fetched immutable commit when the wizard pauses. Press Enter to let
-the same command confirm that exact commit and continue. The confirmed update
-builds and rehearses a detached candidate before systemd cutover, and keeps a
-durable rollback/recovery boundary. If the terminal closes, RCP also prints the
-exact `--confirm-target <40-character-commit>` recovery command.
-
-The same console interface owns health, project provisioning, provider checks,
-backup, restore, and member removal:
-
-```bash
-sudo -u rcp -H /usr/local/bin/rcp server doctor
-sudo -u rcp -H /usr/local/bin/rcp server project provision <request-id>
-sudo -u rcp -H /usr/local/bin/rcp server provider check --project <project-id>
-sudo /usr/local/bin/rcp server provider update codex
-sudo /usr/local/bin/rcp server provider update claude
-sudo /usr/local/bin/rcp server backup configure \
-  --destination /absolute/path/to/backups \
-  --recipient <age1-public-recipient> \
-  --confirm
-sudo -u rcp -H /usr/local/bin/rcp server backup run
-sudo /usr/local/bin/rcp server restore /absolute/path/lab.tar.age \
-  --identity-file /absolute/protected/path/age-identity.txt
-sudo -u rcp -H /usr/local/bin/rcp server member remove <member-id>
-```
-
-Interactive commands show one colored current step, pause at human-action
-boundaries, and continue in the same terminal. A stop or failure expands into
-bounded details plus exact diagnostic, recovery, and resume commands. Use
-[docs/server.md](docs/server.md) for prerequisite, deploy-key, operator-route,
-backup/restore, update, and recovery procedures; use `--machine-readable` when
-the complete structured event stream is needed.
+RCP can run a shared team space from source on a lab-owned Ubuntu server.
+Installation, member invitations and joining, shared-project setup, provider
+maintenance, updates, backup, restore, member removal, verification, and
+recovery are all documented in the [team server guide](docs/server.md).
 
 ## Verify a checkout
 

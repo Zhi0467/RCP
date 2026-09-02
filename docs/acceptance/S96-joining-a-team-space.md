@@ -26,11 +26,11 @@ last_checked: 2026-08-15 — an isolated served team space drove steps 1–4. In
 
 # Join a team space once, and stay joined
 
-This scenario is human-confirmed. It implements the server half of enrollment
-and the browser login boundary from
+This scenario is human-confirmed. It implements enrollment, its member-facing
+roster and invitation ledger, and the browser login boundary from
 [Team initialization and enrollment](../specs/projects-spaces-and-operations.md#team-initialization-and-enrollment).
-The later desktop **Add team space** form, SSH transport, and operating-system
-credential storage are outside this scenario.
+The multi-space desktop switching and SSH-transport lifecycle are qualified
+separately in [S105](S105-move-between-spaces-in-one-window.md).
 
 A person initializes a named team space deliberately, then claims it with the
 one bootstrap code shown by that command. Every later person joins through an
@@ -65,8 +65,10 @@ A throwaway data directory, one named team space initialized with
    block names the space and its expiry, and that the member sees only the
    invitations they created.
 5. Enroll a second named member with one invitation and receive that member's
-   permanent token. Attempt to reuse the invitation, use an expired invitation,
-   and guess one invitation repeatedly until that specific code locks.
+   permanent token. Refresh the inviter's identity panel and confirm the roster
+   count and invitation state name that member. Attempt to reuse the invitation,
+   use an expired invitation, and guess one invitation repeatedly until that
+   specific code locks.
 6. Restart the backend. Make an authenticated request through each member's
    existing browser session and create a fresh session from each permanent
    token.
@@ -120,11 +122,20 @@ sets the server-side session cookie, and opens the team project index under that
 member's display name. Reloading and restarting the backend preserve the signed
 in state until the sliding idle expiry, logout, rotation, or revocation ends it.
 
-The landing identity panel identifies the current member and allows any member
-to create an invitation. The resulting copyable block shows the non-secret space
-name and invitation expiry beside the secret code, never places the code in a
-URL, and lists only invitations created by that signed-in member. The later
-desktop flow that adds and switches among remote spaces is not present here.
+The landing identity panel identifies the current member and quietly lists the
+team roster and count without roles. Any member may create an invitation. The
+resulting copyable block shows the non-secret space name and invitation expiry
+beside the secret code, never places the code in a URL, and lists only
+invitations created by that signed-in member. Its refresh action reads both the
+roster and ledger again: an unconsumed invitation says **Waiting for someone to
+join**, while a consumed invitation names the member who joined; expired,
+locked, and revoked invitations say so directly.
+
+In the source-built desktop, **Add team space → New member** collects that
+person's SSH target, display name, and bootstrap or invitation code. The SSH
+identity supplies transport only. Enrollment stores the resulting permanent
+member credential in the desktop credential store and never records the raw
+invitation in saved connection metadata.
 
 A personal space never shows this login page. Its `acting_user` remains the one
 durable local owner, and its existing identity naming guard continues to protect

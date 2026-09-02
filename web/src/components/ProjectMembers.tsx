@@ -1,6 +1,6 @@
 import { Users } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import type { IdentityResponse, ProjectMember, SpaceUser } from "../types";
+import type { IdentityResponse, ProjectMember, SpaceUserSummary } from "../types";
 
 interface Props {
   projectId: string;
@@ -18,8 +18,8 @@ interface Props {
  * name the step that fixes it.
  */
 export function inviteUnavailableReason(
-  spaceUsers: SpaceUser[] | null,
-  candidates: SpaceUser[],
+  spaceUsers: SpaceUserSummary[] | null,
+  candidates: SpaceUserSummary[],
 ): string | null {
   if (candidates.length > 0) return null;
   if (spaceUsers === null) return null;
@@ -38,8 +38,8 @@ export function inviteUnavailableReason(
  */
 export function ProjectMembers({ projectId, identity, api, onLeft }: Props) {
   const [members, setMembers] = useState<ProjectMember[] | null>(null);
-  const [spaceUsers, setSpaceUsers] = useState<SpaceUser[] | null>(null);
-  const [candidates, setCandidates] = useState<SpaceUser[]>([]);
+  const [spaceUsers, setSpaceUsers] = useState<SpaceUserSummary[] | null>(null);
+  const [candidates, setCandidates] = useState<SpaceUserSummary[]>([]);
   const [selected, setSelected] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +50,7 @@ export function ProjectMembers({ projectId, identity, api, onLeft }: Props) {
   const reload = useCallback(async () => {
     const [seated, everyone] = await Promise.all([
       api<ProjectMember[]>(`${base}/members`),
-      api<SpaceUser[]>("/api/space/users"),
+      api<SpaceUserSummary[]>("/api/space/users"),
     ]);
     setMembers(seated);
     setSpaceUsers(everyone);

@@ -586,6 +586,11 @@ export interface SpaceUser {
   removed_at: string | null;
 }
 
+export interface SpaceUserSummary {
+  user_id: string;
+  display_name: string | null;
+}
+
 export interface IdentityResponse {
   space_id: string;
   space_kind: "personal" | "team";
@@ -608,7 +613,12 @@ export interface TeamInvitation {
   failed_attempts: number;
   locked_at: string | null;
   revoked_at: string | null;
+  status: TeamInvitationStatus;
+  status_label: string;
+  can_revoke: boolean;
 }
+
+export type TeamInvitationStatus = string & { readonly __brand: "TeamInvitationStatus" };
 
 export interface TeamInvitationIssue {
   invitation: TeamInvitation;
