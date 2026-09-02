@@ -13,6 +13,7 @@ const {
   emptyProjectSessionState,
   projectHeartbeatSnapshotDisposition,
   projectSessionReducer,
+  reconcileInactiveProjectSession,
   serializeProjectSessionTabState,
 } = await server.ssrLoadModule("/src/hooks/projectSession.ts");
 
@@ -190,6 +191,56 @@ test("snapshot movement invalidates the manifest and rebases the draft in one tr
   assert.equal(moved.draftPreviewPending, false);
 });
 
+test("a committed transition replaces the canonical session in one transition", () => {
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1),
+    preserve_readiness: false,
+  });
+  state = projectSessionReducer(state, {
+    kind: "manifest_valid",
+    project_id: "alpha",
+    manifest: { ruleset_tag: "rcp.lifecycle.v1", triggers: [] },
+  });
+  state = projectSessionReducer(state, {
+    kind: "draft_preview_changed",
+    projection: projection(2),
+    conflict: "old preview",
+    pending: true,
+  });
+  const committed = {
+    ...projection(2),
+    ruleset_tag: "rcp.lifecycle.v2",
+    canonical: true,
+  };
+
+  const applied = projectSessionReducer(state, {
+    kind: "committed_transition_applied",
+    project_id: "alpha",
+    projection: committed,
+    submitted_draft: {
+      version: 1,
+      base_revision: 1,
+      nodes: {},
+      removed_node_ids: [],
+      proposals: {},
+      ontology: null,
+      custom_nodes: {},
+    },
+  });
+
+  assert.equal(applied.project.graph.revision, 2);
+  assert.equal(applied.renderedRevision, 2);
+  assert.deepEqual(applied.transitionHead, committed.head);
+  assert.equal(applied.transitionRulesetTag, "rcp.lifecycle.v2");
+  assert.equal(applied.transitionManifestState.status, "loading");
+  assert.equal(applied.transitionManifestExpectedRulesetTag, "rcp.lifecycle.v2");
+  assert.equal(applied.humanDraft, null);
+  assert.equal(applied.draftTransitionProjection, null);
+  assert.equal(applied.draftPreviewConflict, null);
+  assert.equal(applied.draftPreviewPending, false);
+});
+
 test("a populated project session survives tab serialization and restoration", () => {
   let populated = projectSessionReducer(emptyProjectSessionState("alpha"), {
     kind: "snapshot_applied",
@@ -274,5 +325,22 @@ test("a heartbeat that finishes after its inactive tab reactivates reloads the a
       renderedRevision: 2,
     }),
     { kind: "ignore" },
+  );
+});
+
+test("an unreadable inactive heartbeat snapshot fails instead of becoming a silent cache miss", () => {
+  const retained = serializeProjectSessionTabState(
+    projectSessionReducer(emptyProjectSessionState("alpha"), {
+      kind: "snapshot_applied",
+      snapshot: snapshot(1),
+      preserve_readiness: false,
+    }),
+  );
+
+  assert.throws(() =>
+    reconcileInactiveProjectSession(retained, {
+      ...snapshot(2),
+      graph: null,
+    }),
   );
 });

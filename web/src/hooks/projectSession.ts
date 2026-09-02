@@ -63,7 +63,13 @@ export interface ProjectSessionState extends ProjectSessionTabState {
 export type ProjectSessionAction =
   | { kind: "activate"; project_id: string | null }
   | { kind: "reset"; project_id: string | null; human_draft?: HumanDraft | null }
-  | { kind: "restore_tab"; project_id: string | null; state: ProjectSessionTabState }
+  | {
+      kind: "restore_tab";
+      project_id: string | null;
+      state: ProjectSessionTabState;
+      consumeDiscardedProposals?: boolean;
+      clearPendingPreview?: boolean;
+    }
   | { kind: "snapshot_request_started"; project_id: string; request_id: number }
   | {
       kind: "snapshot_applied";
@@ -188,9 +194,14 @@ export function projectSessionReducer(
           head: action.state.transitionHead,
         });
       }
+      const restored = cloneProjectSessionTabState(action.state);
       return {
         ...state,
-        ...cloneProjectSessionTabState(action.state),
+        ...restored,
+        draftPreviewPending: action.clearPendingPreview ? false : restored.draftPreviewPending,
+        draftReconciliationDiscardedProposalIds: action.consumeDiscardedProposals
+          ? []
+          : restored.draftReconciliationDiscardedProposalIds,
         transitionCoordinator,
       };
     }
@@ -368,24 +379,25 @@ export function reconcileInactiveProjectSession(
   state: ProjectSessionTabState,
   snapshot: ProjectSnapshot,
 ): ProjectSessionTabState {
+  const decodedSnapshot = decodeProjectSnapshot(snapshot);
+  if (decodedSnapshot.id !== state.project?.id || decodedSnapshot.snapshot_freshness !== "fresh")
+    return state;
   const session = {
     ...emptyProjectSessionState(state.project?.id ?? null),
     ...cloneProjectSessionTabState(state),
   };
   const next = applyProjectSnapshot(session, {
     kind: "snapshot_applied",
-    snapshot,
+    snapshot: decodedSnapshot,
     preserve_readiness: false,
   });
   return next === session ? state : serializeProjectSessionTabState(next);
 }
 
-export type ProjectHeartbeatSnapshotDisposition =
-  | { kind: "ignore" }
-  | { kind: "reload_active" }
-  | { kind: "reconcile_inactive"; state: ProjectSessionTabState };
+export type ProjectHeartbeatSnapshotDisposition<T extends ProjectSessionTabState> =
+  { kind: "ignore" } | { kind: "reload_active" } | { kind: "reconcile_inactive"; state: T };
 
-export function projectHeartbeatSnapshotDisposition({
+export function projectHeartbeatSnapshotDisposition<T extends ProjectSessionTabState>({
   requestedProjectId,
   activeProjectId,
   tabOpen,
@@ -396,10 +408,10 @@ export function projectHeartbeatSnapshotDisposition({
   requestedProjectId: string;
   activeProjectId: string | null;
   tabOpen: boolean;
-  inactiveState: ProjectSessionTabState | null;
+  inactiveState: T | null;
   snapshotRevision: number;
   renderedRevision: number;
-}): ProjectHeartbeatSnapshotDisposition {
+}): ProjectHeartbeatSnapshotDisposition<T> {
   if (!tabOpen) return { kind: "ignore" };
   if (activeProjectId === requestedProjectId) {
     return snapshotRevision > renderedRevision ? { kind: "reload_active" } : { kind: "ignore" };

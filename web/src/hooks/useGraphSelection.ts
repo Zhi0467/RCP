@@ -7,17 +7,10 @@ import {
 } from "../experimentBoard";
 import type { DetailWindowSlot } from "../floatingWindow";
 import { projectViewportRef, type ProjectViewState, type ProjectViewportRef } from "../projectTabs";
-import type {
-  AppView,
-  GraphNode,
-  GraphState,
-  PaperSnapshot,
-  ProjectSnapshot,
-  TrustView,
-} from "../types";
+import type { AppView, GraphNode, GraphState, ProjectSnapshot, TrustView } from "../types";
 import type { DagViewport } from "./dagZoom";
 
-const emptyGraph: GraphState = {
+export const emptyGraph: GraphState = {
   revision: 0,
   nodes: {},
   edges: {},
@@ -130,8 +123,6 @@ export function useGraphSelection({
   loadedProjectId,
   loading,
 }: UseGraphSelectionOptions) {
-  const [graph, setGraph] = useState<GraphState>(emptyGraph);
-  const [paper, setPaper] = useState<PaperSnapshot | null>(null);
   const [view, setView] = useState<AppView>(initialView);
   const [trustView, setTrustView] = useState<TrustView>(readTrustView);
   const [runScope, setRunScope] = useState<string[]>([]);
@@ -207,14 +198,11 @@ export function useGraphSelection({
   const restoreProjectSelection = useCallback(
     (
       id: string,
-      project: ProjectSnapshot,
+      nextGraph: GraphState,
       presentedNodes: GraphState["nodes"],
       snapshot: GraphSelectionTabSnapshot,
       requestedRoute?: ProjectHashRoute,
     ) => {
-      const nextGraph = project.graph;
-      setGraph(nextGraph);
-      setPaper(project.paper);
       setRunScope([...snapshot.runScope]);
       setSelectedNode(
         snapshot.selectedNodeId ? (presentedNodes[snapshot.selectedNodeId] ?? null) : null,
@@ -258,8 +246,6 @@ export function useGraphSelection({
       experimentId: string | null,
       experimentRoute: ExperimentRouteIdentity | null,
     ) => {
-      setGraph(emptyGraph);
-      setPaper(null);
       setSelectedNode(null);
       setCompanionNode(null);
       dispatchExperimentSelection({ kind: "route", experimentId, experimentRoute });
@@ -278,8 +264,6 @@ export function useGraphSelection({
   const applyCanonicalProject = useCallback(
     (nextProject: ProjectSnapshot, authoritative: boolean) => {
       const nextGraph = nextProject.graph;
-      setGraph(nextGraph);
-      setPaper(nextProject.paper);
       setSelectedNode((current) =>
         current ? (nextGraph.nodes[current.id] ?? (authoritative ? null : current)) : null,
       );
@@ -296,15 +280,6 @@ export function useGraphSelection({
     [],
   );
 
-  const applySyncedGraph = useCallback((nextGraph: GraphState) => {
-    setGraph(nextGraph);
-    setSelectedNode((current) => (current ? (nextGraph.nodes[current.id] ?? null) : null));
-    setCompanionNode((current) => (current ? (nextGraph.nodes[current.id] ?? null) : null));
-  }, []);
-
-  const replacePaper = useCallback((nextPaper: PaperSnapshot) => {
-    setPaper(nextPaper);
-  }, []);
   const replaceRunScope = useCallback((nextScope: string[]) => {
     setRunScope(nextScope);
   }, []);
@@ -460,8 +435,6 @@ export function useGraphSelection({
   }, [loading, loadedProjectId, view]);
 
   return {
-    graph,
-    paper,
     view,
     trustView,
     runScope,
@@ -481,8 +454,6 @@ export function useGraphSelection({
     restoreProjectSelection,
     resetProjectSelection,
     applyCanonicalProject,
-    applySyncedGraph,
-    replacePaper,
     replaceRunScope,
     applyRouteSelection,
     changeView,

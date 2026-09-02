@@ -68,8 +68,6 @@ import {
 } from "./experimentBoard";
 import {
   decodeTransitionTriggerManifest,
-  emptyProjectTransitionCoordinator,
-  reduceProjectTransitionCoordinator,
   reduceProjectTransitionProjection,
   transitionHeadsEqual,
   transitionPreviewRouting,
@@ -77,7 +75,6 @@ import {
   transitionSyncCompletionDisposition,
   type ProjectTransitionProjection,
   type StagedTransitionEdit,
-  type TransitionSyncFence,
   type TransitionPreviewRouting,
 } from "./projectTransition";
 import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./floatingWindow";
@@ -97,7 +94,11 @@ import {
 } from "./hooks/useChatState";
 import { useDesktopShell } from "./hooks/useDesktopShell";
 import { startLiveEpisodePolling, useEpisodeDialogs } from "./hooks/useEpisodeDialogs";
-import { useGraphSelection, type GraphSelectionTabSnapshot } from "./hooks/useGraphSelection";
+import {
+  emptyGraph,
+  useGraphSelection,
+  type GraphSelectionTabSnapshot,
+} from "./hooks/useGraphSelection";
 import {
   cloneProjectHistorySnapshot,
   useProjectHistory,
@@ -109,6 +110,18 @@ import {
   startProjectCachePolling,
   useProjectTabs,
 } from "./hooks/useProjectTabs";
+import {
+  cachedSnapshotCanReplace,
+  canonicalGraphHead,
+  latestSnapshotRequestCanApply,
+  persistProjectHumanDraft,
+  projectHeartbeatSnapshotDisposition,
+  reconcileInactiveProjectSession,
+  serializeProjectSessionTabState,
+  type BrowserTransitionProjection,
+  type ProjectSessionTabState,
+} from "./hooks/projectSession";
+import { useProjectSession } from "./hooks/useProjectSession";
 import { AutoResearchDialog } from "./components/AutoResearchDialog";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
 import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
@@ -122,7 +135,6 @@ import {
   applyHumanDraft,
   deserializeHumanDraft,
   draftNodeIsBehind,
-  emptyHumanDraft,
   humanDraftBehindCount,
   humanDraftChangeCount,
   humanDraftCommittableCount,
@@ -130,9 +142,6 @@ import {
   humanDraftStorageKey,
   humanSyncFailure,
   normalizeHumanDraft,
-  reconcileHumanDraft,
-  retainBehindDraftAfterSync,
-  serializeHumanDraft,
   stageDecisionChoice,
   stageNodeEdit,
   stageNodeEditStart,
@@ -170,11 +179,7 @@ import type {
   TrustView,
   WatcherRecord,
 } from "./types";
-import {
-  decodeProjectSnapshot,
-  decodeProjectTransitionResponse,
-  DISPLAY_NAME_MAX_LENGTH,
-} from "./types";
+import { decodeProjectTransitionResponse, DISPLAY_NAME_MAX_LENGTH } from "./types";
 import { ProjectLanding } from "./views/ProjectLanding";
 import { ProjectOverview } from "./views/ProjectOverview";
 import { ProjectSetup } from "./views/ProjectSetup";
@@ -381,11 +386,6 @@ export async function loadExperimentWatcherPoll(
 
 type ProjectReconciliation = "opening" | "reconciling" | "authoritative" | "failed";
 
-type BrowserTransitionProjection = ProjectTransitionProjection<
-  GraphState,
-  Record<string, ExperimentControlState>
->;
-
 const EMPTY_GRAPH_ATTENTION: GraphAttentionProjection = {
   pending_proposal_ids: [],
   decisions_awaiting_choice_ids: [],
@@ -412,46 +412,28 @@ export function projectAttentionForPresentation(
   return EMPTY_GRAPH_ATTENTION;
 }
 
-export function latestSnapshotRequestCanApply(
-  latestStartedRequestId: number | undefined,
-  responseRequestId: number,
-): boolean {
-  return latestStartedRequestId === responseRequestId;
-}
+export {
+  cachedSnapshotCanReplace,
+  canonicalGraphHead,
+  latestSnapshotRequestCanApply,
+  persistProjectHumanDraft,
+};
 
 export function experimentStartNeedsSync(projection: BrowserTransitionProjection | null): boolean {
   return projection?.base_head != null;
 }
 
-type TransitionManifestState =
-  | {
-      status: "loading";
-      project_id: string | null;
-      manifest: TransitionTriggerManifest | null;
-    }
-  | { status: "valid"; project_id: string; manifest: TransitionTriggerManifest }
-  | { status: "invalid"; project_id: string; manifest: null };
-
 interface CachedProjectTabState
-  extends ProjectHistorySnapshot, AgentTasksSnapshot, ChatStateSnapshot, GraphSelectionTabSnapshot {
+  extends
+    ProjectHistorySnapshot,
+    AgentTasksSnapshot,
+    ChatStateSnapshot,
+    GraphSelectionTabSnapshot,
+    ProjectSessionTabState {
   project: ProjectSnapshot;
   projectHeaderCollapsed: boolean;
-  humanDraft: HumanDraft | null;
-  draftReconciliationDiscardedProposalIds?: string[];
   usage: AgentUsageSnapshot | null;
   watchers: WatcherRecord[];
-  transitionHead?: GraphHeadRef;
-  transitionRulesetTag?: string | null;
-  transitionManifest?: TransitionTriggerManifest | null;
-  draftTransitionProjection?: BrowserTransitionProjection | null;
-  draftPreviewConflict?: string | null;
-}
-
-export function canonicalGraphHead(
-  revision: number,
-  transitionId: string | null = null,
-): GraphHeadRef {
-  return { target: { kind: "main" }, revision, transition_id: transitionId };
 }
 
 export function attentionGraphForProjection(
@@ -522,34 +504,18 @@ export function humanDraftTransitionRouting(
   return { route: "local_draft", reason: "no_manifest_trigger" };
 }
 
-export function cachedSnapshotCanReplace(
-  renderedProjectId: string | null,
-  renderedRevision: number,
-  snapshot: ProjectSnapshot,
-): boolean {
-  return snapshot.id !== renderedProjectId || snapshot.graph.revision >= renderedRevision;
-}
-
 export function reconcileInactiveProjectTabState(
   state: CachedProjectTabState,
   snapshot: ProjectSnapshot,
 ): CachedProjectTabState {
-  const decodedSnapshot = decodeProjectSnapshot(snapshot);
-  if (
-    !cachedSnapshotCanReplace(state.project.id, state.project.graph.revision, decodedSnapshot) ||
-    decodedSnapshot.id !== state.project.id
-  )
-    return state;
-  if (decodedSnapshot.snapshot_freshness !== "fresh") return state;
-  const reconciliation = state.humanDraft
-    ? reconcileHumanDraft(state.humanDraft, decodedSnapshot.graph)
-    : null;
-  const rebased = reconciliation?.draft ?? null;
-  const retainedDraft = rebased && humanDraftChangeCount(rebased) > 0 ? rebased : null;
-  const presented = applyHumanDraft(decodedSnapshot.graph, retainedDraft);
+  const session = reconcileInactiveProjectSession(state, snapshot);
+  if (session === state) return state;
+  if (!session.project) return state;
+  const presented = applyHumanDraft(session.project.graph, session.humanDraft);
   return {
     ...state,
-    project: decodedSnapshot,
+    ...session,
+    project: session.project,
     selectedNodeId:
       state.selectedNodeId && presented.nodes[state.selectedNodeId] ? state.selectedNodeId : null,
     companionNodeId:
@@ -558,19 +524,6 @@ export function reconcileInactiveProjectTabState(
         : null,
     floatingChat:
       state.floatingChat && presented.nodes[state.floatingChat.nodeId] ? state.floatingChat : null,
-    humanDraft: retainedDraft,
-    transitionHead:
-      state.transitionHead?.revision === decodedSnapshot.graph.revision
-        ? state.transitionHead
-        : canonicalGraphHead(decodedSnapshot.graph.revision),
-    draftTransitionProjection: null,
-    draftPreviewConflict: null,
-    draftReconciliationDiscardedProposalIds: [
-      ...new Set([
-        ...(state.draftReconciliationDiscardedProposalIds ?? []),
-        ...(reconciliation?.discardedProposalIds ?? []),
-      ]),
-    ],
   };
 }
 
@@ -590,18 +543,6 @@ export function humanSyncSuccessNotice(
   return withdrawnProposalIds.length > 0
     ? `Synced revision ${revision}. Stale proposals were withdrawn and their proposed changes were not applied: ${withdrawnProposalIds.join(", ")}.`
     : `Synced revision ${revision}.`;
-}
-
-export function persistProjectHumanDraft(
-  storage: Pick<Storage, "setItem" | "removeItem">,
-  projectId: string,
-  draft: HumanDraft | null,
-): void {
-  if (draft && humanDraftChangeCount(draft) > 0) {
-    storage.setItem(humanDraftStorageKey(projectId), serializeHumanDraft(draft));
-  } else {
-    storage.removeItem(humanDraftStorageKey(projectId));
-  }
 }
 
 export default function App() {
@@ -671,17 +612,35 @@ export default function App() {
     }
   }, []);
   const {
+    state: projectSession,
+    dispatchProjectSession,
+    getProjectSessionState,
+    beginProjectSnapshotRequest,
+    projectSnapshotRequestIsCurrent,
+    updateProjectHumanDraft,
+    beginProjectSync,
+    restoreProjectSessionTab,
+  } = useProjectSession(initialRoute.project.projectId);
+  const {
+    project,
+    humanDraft,
+    transitionHead,
+    transitionRulesetTag,
+    transitionManifestState,
+    transitionManifestRefresh,
+    draftTransitionProjection,
+    draftPreviewConflict,
+    draftPreviewPending,
+  } = projectSession;
+  const {
     projectId,
     setupOpen,
     projects,
     openProjectTabs,
     experimentLoops,
-    project,
     projectHeaderCollapsed,
     isActiveProject,
     getActiveProjectId,
-    replaceProject,
-    updateProject,
     replaceProjects,
     loadProjectIndex,
     refreshExperimentLoops,
@@ -708,8 +667,11 @@ export default function App() {
     initialSetupOpen: initialRoute.setupOpen,
     projectIndexReady:
       identityReady && !identityIssue && actorIdentityChecked && !teamSessionRequired,
+    project,
     reportError: reportErrorNotice,
   });
+  const graph = project?.graph ?? emptyGraph;
+  const paper = project?.paper ?? null;
   const openMoveProjectSetup = useCallback((sourceProjectId: string) => {
     window.location.hash = projectMoveSetupHash({ sourceProjectId });
   }, []);
@@ -717,25 +679,9 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
     useState<ProjectReconciliation>("opening");
-  const [humanDraft, setHumanDraft] = useState<HumanDraft | null>(null);
-  const [syncingProjectIds, setSyncingProjectIds] = useState<Set<string>>(() => new Set());
-  const [transitionHead, setTransitionHead] = useState<GraphHeadRef>(() => canonicalGraphHead(0));
-  const [transitionRulesetTag, setTransitionRulesetTag] = useState<string | null>(null);
-  const [transitionManifestState, setTransitionManifestState] = useState<TransitionManifestState>({
-    status: "loading",
-    project_id: null,
-    manifest: null,
-  });
-  const [transitionManifestRefresh, setTransitionManifestRefresh] = useState(0);
-  const [draftTransitionProjection, setDraftTransitionProjection] =
-    useState<BrowserTransitionProjection | null>(null);
-  const [draftPreviewConflict, setDraftPreviewConflict] = useState<string | null>(null);
-  const [draftPreviewPending, setDraftPreviewPending] = useState(false);
   const [usage, setUsage] = useState<AgentUsageSnapshot | null>(null);
   const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
   const {
-    graph,
-    paper,
     view,
     trustView,
     runScope,
@@ -755,8 +701,6 @@ export default function App() {
     restoreProjectSelection,
     resetProjectSelection,
     applyCanonicalProject,
-    applySyncedGraph,
-    replacePaper,
     replaceRunScope,
     applyRouteSelection,
     changeView,
@@ -827,49 +771,21 @@ export default function App() {
     projectId: string;
     request: Promise<void>;
   } | null>(null);
-  const projectSnapshotRequestSequence = useRef(0);
-  const latestProjectSnapshotRequest = useRef(new Map<string, number>());
-  const renderedRevisionRef = useRef(graph.revision);
   const initialShowHandshake = useRef(false);
   const readinessRequestedProjectIds = useRef(new Set<string>());
   const providerSkillReadinessPoll = useRef<{ projectId: string; timeoutId: number } | null>(null);
   const currentProjectStateRef = useRef<Omit<CachedProjectTabState, "viewState"> | null>(null);
-  const transitionCoordinatorRef = useRef(emptyProjectTransitionCoordinator());
-  const transitionSyncRequestSequence = useRef(0);
-  const transitionRulesetTagRef = useRef<string | null>(null);
-  const transitionManifestExpectedRulesetTagRef = useRef<string | null>(null);
-  const beginProjectSnapshotRequest = useCallback((requestedProjectId: string): number => {
-    const requestId = ++projectSnapshotRequestSequence.current;
-    latestProjectSnapshotRequest.current.set(requestedProjectId, requestId);
-    return requestId;
-  }, []);
-  const projectSnapshotRequestIsCurrent = useCallback(
-    (requestedProjectId: string, requestId: number): boolean =>
-      latestSnapshotRequestCanApply(
-        latestProjectSnapshotRequest.current.get(requestedProjectId),
-        requestId,
-      ),
-    [],
+  const updateProject = useCallback(
+    (update: (current: ProjectSnapshot | null) => ProjectSnapshot | null) => {
+      const current = getProjectSessionState().project;
+      dispatchProjectSession({ kind: "project_replaced", project: update(current) });
+    },
+    [dispatchProjectSession, getProjectSessionState],
   );
-  renderedRevisionRef.current = graph.revision;
-  transitionRulesetTagRef.current = transitionRulesetTag;
-  transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
-    transitionCoordinatorRef.current,
-    { kind: "activate", project_id: projectId },
-  );
-  if (
-    projectId &&
-    project?.id === projectId &&
-    graph.revision === transitionHead.revision &&
-    transitionHead.target.kind === "main"
-  ) {
-    transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
-      transitionCoordinatorRef.current,
-      { kind: "observe_head", project_id: projectId, head: transitionHead },
-    );
-  }
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
-  const syncingDraft = projectId ? syncingProjectIds.has(projectId) : false;
+  const syncingDraft = projectId
+    ? Boolean(projectSession.transitionCoordinator.sync_requests[projectId])
+    : false;
   const transitionManifest =
     transitionManifestState.status === "valid" &&
     transitionManifestState.project_id === projectId &&
@@ -991,6 +907,7 @@ export default function App() {
   } = projectHistorySnapshot;
   currentProjectStateRef.current = project
     ? {
+        ...serializeProjectSessionTabState(projectSession),
         project,
         projectHeaderCollapsed,
         runScope,
@@ -1004,18 +921,9 @@ export default function App() {
         ...chatStateSnapshot,
         dagRelationFocusId,
         ...agentTasksSnapshot,
-        humanDraft,
         ...projectHistorySnapshot,
         usage,
         watchers,
-        transitionHead,
-        transitionRulesetTag,
-        transitionManifest:
-          transitionManifestState.project_id === projectId
-            ? transitionManifestState.manifest
-            : null,
-        draftTransitionProjection,
-        draftPreviewConflict,
       }
     : null;
 
@@ -1045,45 +953,33 @@ export default function App() {
     return () => window.clearTimeout(timeoutId);
   }, [notice]);
 
+  useEffect(() => {
+    const proposalIds = projectSession.draftReconciliationDiscardedProposalIds;
+    if (proposalIds.length === 0) return;
+    setNotice({ kind: "info", text: proposalChoicesClearedNotice(proposalIds) });
+    dispatchProjectSession({ kind: "discarded_proposals_consumed" });
+  }, [dispatchProjectSession, projectSession.draftReconciliationDiscardedProposalIds]);
+
   const restoreProjectTabState = useCallback(
     (id: string, state: CachedProjectTabState, requestedRoute?: ProjectHashRoute) => {
-      const nextGraph = state.project.graph;
-      const presented = applyHumanDraft(nextGraph, state.humanDraft);
-      const discardedProposalIds = state.draftReconciliationDiscardedProposalIds ?? [];
-      const restoredHead = state.transitionHead ?? canonicalGraphHead(nextGraph.revision);
-      transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
-        transitionCoordinatorRef.current,
-        { kind: "activate", project_id: id },
-      );
-      transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
-        transitionCoordinatorRef.current,
-        { kind: "observe_head", project_id: id, head: restoredHead },
-      );
-      cacheProjectState(
-        id,
-        discardedProposalIds.length > 0
-          ? { ...state, draftReconciliationDiscardedProposalIds: [] }
-          : state,
-      );
-      renderedRevisionRef.current = nextGraph.revision;
+      const discardedProposalIds = state.draftReconciliationDiscardedProposalIds;
+      const { next } = restoreProjectSessionTab(id, state, {
+        consumeDiscardedProposals: true,
+        clearPendingPreview: true,
+      });
+      if (!next.project) return;
+      const nextGraph = next.project.graph;
+      const presented = applyHumanDraft(nextGraph, next.humanDraft);
+      cacheProjectState(id, {
+        ...state,
+        ...serializeProjectSessionTabState(next),
+        project: next.project,
+      });
       authoritativeProjectId.current = id;
-      replaceProject(state.project);
       restoreProjectHeader(state.projectHeaderCollapsed);
-      restoreProjectSelection(id, state.project, presented.nodes, state, requestedRoute);
+      restoreProjectSelection(id, nextGraph, presented.nodes, state, requestedRoute);
       restoreProjectChats(state, presented.nodes);
       restoreProjectTasks(state);
-      setHumanDraft(state.humanDraft);
-      setTransitionHead(restoredHead);
-      setTransitionRulesetTag(state.transitionRulesetTag ?? null);
-      transitionManifestExpectedRulesetTagRef.current = null;
-      setTransitionManifestState({
-        status: "loading",
-        project_id: id,
-        manifest: state.transitionManifest ?? null,
-      });
-      setDraftTransitionProjection(state.draftTransitionProjection ?? null);
-      setDraftPreviewConflict(state.draftPreviewConflict ?? null);
-      setDraftPreviewPending(false);
       restoreProjectHistory(state);
       setUsage(state.usage);
       setWatchers([...state.watchers]);
@@ -1095,10 +991,10 @@ export default function App() {
     },
     [
       cacheProjectState,
-      replaceProject,
       restoreProjectChats,
       restoreProjectHeader,
       restoreProjectSelection,
+      restoreProjectSessionTab,
     ],
   );
 
@@ -1108,68 +1004,27 @@ export default function App() {
       preserveReadiness: boolean,
       request?: { projectId: string; requestId: number },
     ): boolean => {
-      if (request && !projectSnapshotRequestIsCurrent(request.projectId, request.requestId)) {
-        return false;
-      }
-      const decodedProject = decodeProjectSnapshot(nextProject);
-      const nextGraph = decodedProject.graph;
-      const authoritative = decodedProject.snapshot_freshness === "fresh";
-      if (
-        !cachedSnapshotCanReplace(getActiveProjectId(), renderedRevisionRef.current, decodedProject)
-      )
-        return false;
-      const previousRevision = renderedRevisionRef.current;
-      renderedRevisionRef.current = nextGraph.revision;
-      const observedHead = transitionCoordinatorRef.current.canonical_heads[decodedProject.id];
-      const nextHead =
-        observedHead?.target.kind === "main" && observedHead.revision === nextGraph.revision
-          ? observedHead
-          : canonicalGraphHead(nextGraph.revision);
-      transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
-        transitionCoordinatorRef.current,
-        { kind: "observe_head", project_id: decodedProject.id, head: nextHead },
-      );
-      setTransitionHead(nextHead);
-      if (authoritative && nextGraph.revision !== previousRevision) {
-        transitionManifestExpectedRulesetTagRef.current = null;
-        setTransitionManifestState((current) => ({
-          status: "loading",
-          project_id: decodedProject.id,
-          manifest: current.project_id === decodedProject.id ? current.manifest : null,
-        }));
-        setTransitionManifestRefresh((current) => current + 1);
-      }
-      setDraftTransitionProjection(null);
-      setDraftPreviewConflict(null);
-      setDraftPreviewPending(false);
-      updateProject((current) =>
-        preserveReadiness ? preserveProjectReadiness(decodedProject, current) : decodedProject,
-      );
-      applyCanonicalProject(decodedProject, authoritative);
-      setHumanDraft((current) => {
-        if (!current) return null;
-        const reconciliation = authoritative
-          ? reconcileHumanDraft(current, nextGraph)
-          : { draft: normalizeHumanDraft(current, nextGraph), discardedProposalIds: [] };
-        const rebased = reconciliation.draft;
-        const retained = humanDraftChangeCount(rebased) > 0 ? rebased : null;
-        try {
-          persistProjectHumanDraft(localStorage, decodedProject.id, retained);
-        } catch {
-          // The in-memory draft remains usable if browser storage is unavailable.
-        }
-        if (reconciliation.discardedProposalIds.length > 0) {
-          setNotice({
-            kind: "info",
-            text: proposalChoicesClearedNotice(reconciliation.discardedProposalIds),
-          });
-        }
-        return retained;
+      const { previous, next } = dispatchProjectSession({
+        kind: "snapshot_applied",
+        snapshot: nextProject,
+        preserve_readiness: preserveReadiness,
+        request: request
+          ? { project_id: request.projectId, request_id: request.requestId }
+          : undefined,
       });
+      if (next === previous || !next.project) return false;
+      const authoritative = nextProject.snapshot_freshness === "fresh";
+      applyCanonicalProject(next.project, authoritative);
+      try {
+        persistProjectHumanDraft(localStorage, next.project.id, next.humanDraft);
+      } catch {
+        // The in-memory draft remains usable if browser storage is unavailable.
+      }
+      const nextGraph = next.project.graph;
       reconcileFloatingChat(nextGraph.nodes, !authoritative);
       return true;
     },
-    [applyCanonicalProject, getActiveProjectId, projectSnapshotRequestIsCurrent, updateProject],
+    [applyCanonicalProject, dispatchProjectSession, reconcileFloatingChat],
   );
 
   const reload = useCallback(
@@ -1239,48 +1094,46 @@ export default function App() {
     if (!projectId || !apiBase) return;
     const requestedProjectId = projectId;
     let cancelled = false;
-    setTransitionManifestState((current) => ({
-      status: "loading",
+    const currentManifest = getProjectSessionState().transitionManifestState;
+    dispatchProjectSession({
+      kind: "manifest_loading",
       project_id: requestedProjectId,
-      manifest: current.project_id === requestedProjectId ? current.manifest : null,
-    }));
+      manifest: currentManifest.project_id === requestedProjectId ? currentManifest.manifest : null,
+    });
     void api<unknown>(`${apiBase}/transition-manifest`)
       .then((payload) => {
         if (cancelled || !isActiveProject(requestedProjectId)) return;
         const manifest = decodeTransitionTriggerManifest(
           payload,
-          transitionManifestExpectedRulesetTagRef.current,
+          getProjectSessionState().transitionManifestExpectedRulesetTag,
         );
         if (!manifest) {
-          setTransitionManifestState({
-            status: "invalid",
-            project_id: requestedProjectId,
-            manifest: null,
-          });
+          dispatchProjectSession({ kind: "manifest_invalid", project_id: requestedProjectId });
           return;
         }
-        setTransitionManifestState({
-          status: "valid",
+        dispatchProjectSession({
+          kind: "manifest_valid",
           project_id: requestedProjectId,
           manifest,
         });
-        transitionManifestExpectedRulesetTagRef.current = null;
-        setTransitionRulesetTag(manifest.ruleset_tag);
       })
       .catch(() => {
         // A missing manifest is an intentional fail-safe state: staged edits use backend preview.
         if (!cancelled && isActiveProject(requestedProjectId)) {
-          setTransitionManifestState({
-            status: "invalid",
-            project_id: requestedProjectId,
-            manifest: null,
-          });
+          dispatchProjectSession({ kind: "manifest_invalid", project_id: requestedProjectId });
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [apiBase, isActiveProject, projectId, transitionManifestRefresh]);
+  }, [
+    apiBase,
+    dispatchProjectSession,
+    getProjectSessionState,
+    isActiveProject,
+    projectId,
+    transitionManifestRefresh,
+  ]);
 
   const reloadAuthoritativeProject = useCallback(
     (requestedProjectId?: string | null) => {
@@ -1324,7 +1177,12 @@ export default function App() {
         const tabIsOpen = () => isProjectTabOpen(requestedProjectId);
         if (!tabIsOpen()) return;
         if (isActiveProject(requestedProjectId)) {
-          if (canonicalRevisionNeedsReload(observedRevision, renderedRevisionRef.current)) {
+          if (
+            canonicalRevisionNeedsReload(
+              observedRevision,
+              getProjectSessionState().renderedRevision,
+            )
+          ) {
             await reloadAuthoritativeProject(requestedProjectId);
           }
           return;
@@ -1334,18 +1192,23 @@ export default function App() {
         if (!retained || observedRevision <= retained.project.graph.revision) return;
         const snapshot = await api<ProjectSnapshot>(`${base}/cached`);
         const current = inactiveCachedProjectState(requestedProjectId);
-        if (!current) {
-          if (!tabIsOpen()) return;
-          if (
-            isActiveProject(requestedProjectId) &&
-            canonicalRevisionNeedsReload(snapshot.graph.revision, renderedRevisionRef.current)
-          ) {
-            await reloadAuthoritativeProject(requestedProjectId);
-          }
+        const disposition = projectHeartbeatSnapshotDisposition({
+          requestedProjectId,
+          activeProjectId: getActiveProjectId(),
+          tabOpen: tabIsOpen(),
+          inactiveState: current,
+          snapshotRevision: snapshot.graph.revision,
+          renderedRevision: getProjectSessionState().renderedRevision,
+        });
+        if (disposition.kind === "reload_active") {
+          await reloadAuthoritativeProject(requestedProjectId);
           return;
         }
-        const next = reconcileInactiveProjectTabState(current, snapshot);
-        if (next === current) return;
+        if (disposition.kind === "ignore") {
+          return;
+        }
+        const next = reconcileInactiveProjectTabState(disposition.state, snapshot);
+        if (next === disposition.state) return;
         cacheProjectState(requestedProjectId, next);
         try {
           persistProjectHumanDraft(localStorage, requestedProjectId, next.humanDraft);
@@ -1357,6 +1220,8 @@ export default function App() {
       cacheProjectState,
       closeProjectRoute,
       forgetProjectViewport,
+      getActiveProjectId,
+      getProjectSessionState,
       inactiveCachedProjectState,
       isActiveProject,
       isProjectTabOpen,
@@ -1566,10 +1431,9 @@ export default function App() {
 
   const updatePaper = useCallback(
     (nextPaper: PaperSnapshot) => {
-      replacePaper(nextPaper);
       updateProject((current) => (current ? { ...current, paper: nextPaper } : current));
     },
-    [replacePaper, updateProject],
+    [updateProject],
   );
 
   useEffect(() => {
@@ -1603,8 +1467,20 @@ export default function App() {
       setLoading(true);
       setProjectReconciliation("opening");
       authoritativeProjectId.current = null;
-      renderedRevisionRef.current = 0;
-      replaceProject(null);
+      let storedDraft: HumanDraft | null = null;
+      if (projectId) {
+        try {
+          storedDraft = deserializeHumanDraft(
+            localStorage.getItem(humanDraftStorageKey(projectId)),
+          );
+        } catch (error) {
+          setNotice({
+            kind: "error",
+            text: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      dispatchProjectSession({ kind: "reset", project_id: projectId, human_draft: storedDraft });
       resetProjectSelection(
         routeMatchesProject ? requestedRoute.view : "overview",
         routeMatchesProject ? requestedRoute.experimentId : null,
@@ -1616,14 +1492,6 @@ export default function App() {
       setUsage(null);
       setWatchers([]);
       resetProjectHeader(projectId);
-      setHumanDraft(null);
-      setTransitionHead(canonicalGraphHead(0));
-      setTransitionRulesetTag(null);
-      transitionManifestExpectedRulesetTagRef.current = null;
-      setTransitionManifestState({ status: "loading", project_id: projectId, manifest: null });
-      setDraftTransitionProjection(null);
-      setDraftPreviewConflict(null);
-      setDraftPreviewPending(false);
     }
     if (setupOpen) {
       setLoading(false);
@@ -1640,13 +1508,6 @@ export default function App() {
         )
         .finally(() => setLoading(false));
       return;
-    }
-    if (!retained) {
-      try {
-        setHumanDraft(deserializeHumanDraft(localStorage.getItem(humanDraftStorageKey(projectId))));
-      } catch (error) {
-        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
-      }
     }
     let cancelled = false;
     const openProject = async () => {
@@ -1698,6 +1559,7 @@ export default function App() {
     actorIdentityChecked,
     beginProjectSnapshotRequest,
     cachedProjectStateForOpen,
+    dispatchProjectSession,
     identityIssue,
     identityReady,
     isActiveProject,
@@ -1705,7 +1567,6 @@ export default function App() {
     projectId,
     projectSnapshotRequestIsCurrent,
     reload,
-    replaceProject,
     resetProjectHeader,
     resetProjectSelection,
     restoreProjectTabState,
@@ -1867,23 +1728,29 @@ export default function App() {
   const ontologyDraftIsStale = humanDraftOntologyIsStale(humanDraft, graph);
   useLayoutEffect(() => {
     if (mutationsDisabled || !humanDraft) {
-      setDraftTransitionProjection(null);
-      setDraftPreviewConflict(null);
-      setDraftPreviewPending(false);
+      dispatchProjectSession({
+        kind: "draft_preview_changed",
+        projection: null,
+        conflict: null,
+        pending: false,
+      });
       return;
     }
     if (committableDraftCount === 0 || ontologyDraftIsStale) {
-      setDraftPreviewConflict(
-        ontologyDraftIsStale
+      dispatchProjectSession({
+        kind: "draft_preview_changed",
+        projection: draftTransitionProjection,
+        conflict: ontologyDraftIsStale
           ? "The staged ontology is based on an older canonical revision. Restage or reset it before previewing or Sync."
           : "The remaining staged node edits are behind canonical state. Reconcile or reset them before previewing or Sync.",
-      );
-      setDraftPreviewPending(false);
+        pending: false,
+      });
       return;
     }
     if (draftPreviewRouting.route === "local_draft") {
-      setDraftTransitionProjection(
-        localDraftTransitionProjection(
+      dispatchProjectSession({
+        kind: "draft_preview_changed",
+        projection: localDraftTransitionProjection(
           applyHumanDraft(graph, humanDraft),
           project?.experiment_control ?? {},
           projectAttentionForPresentation(project, null),
@@ -1892,15 +1759,20 @@ export default function App() {
           transitionHead,
           transitionRulesetTag,
         ),
-      );
-      setDraftPreviewConflict(null);
-      setDraftPreviewPending(false);
+        conflict: null,
+        pending: false,
+      });
       return;
     }
-    setDraftPreviewConflict(null);
-    setDraftPreviewPending(true);
+    dispatchProjectSession({
+      kind: "draft_preview_changed",
+      projection: draftTransitionProjection,
+      conflict: null,
+      pending: true,
+    });
   }, [
     committableDraftCount,
+    dispatchProjectSession,
     draftPreviewRouting.route,
     graph,
     humanDraft,
@@ -1937,14 +1809,22 @@ export default function App() {
         const projection = decodeProjectTransitionResponse(response.projection);
         const previewBaseHead = projection.base_head;
         if (!previewBaseHead) {
-          setDraftPreviewConflict("Staged transition preview omitted its canonical base head.");
-          setDraftPreviewPending(false);
+          dispatchProjectSession({
+            kind: "draft_preview_changed",
+            projection: getProjectSessionState().draftTransitionProjection,
+            conflict: "Staged transition preview omitted its canonical base head.",
+            pending: false,
+          });
           return;
         }
         const traceMismatch = previewTraceMismatch(response, projection);
         if (traceMismatch) {
-          setDraftPreviewConflict(traceMismatch);
-          setDraftPreviewPending(false);
+          dispatchProjectSession({
+            kind: "draft_preview_changed",
+            projection: getProjectSessionState().draftTransitionProjection,
+            conflict: traceMismatch,
+            pending: false,
+          });
           return;
         }
         const currentProjection: ProjectTransitionProjection<
@@ -1968,29 +1848,25 @@ export default function App() {
           manifest_ruleset_tag: null,
         });
         if (structuralRefusal) {
-          setDraftPreviewConflict(`Staged transition preview was refused: ${structuralRefusal}.`);
-          setDraftPreviewPending(false);
+          dispatchProjectSession({
+            kind: "draft_preview_changed",
+            projection: getProjectSessionState().draftTransitionProjection,
+            conflict: `Staged transition preview was refused: ${structuralRefusal}.`,
+            pending: false,
+          });
           return;
         }
         if (
           (transitionRulesetTag && transitionRulesetTag !== projection.ruleset_tag) ||
           (transitionManifest && transitionManifest.ruleset_tag !== projection.ruleset_tag)
         ) {
-          transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
-            transitionCoordinatorRef.current,
-            { kind: "observe_head", project_id: requestedProjectId, head: previewBaseHead },
-          );
-          setTransitionHead(previewBaseHead);
-          setTransitionRulesetTag(projection.ruleset_tag);
-          transitionManifestExpectedRulesetTagRef.current = projection.ruleset_tag;
-          setTransitionManifestState({
-            status: "loading",
+          dispatchProjectSession({
+            kind: "preview_ruleset_invalidated",
             project_id: requestedProjectId,
+            head: previewBaseHead,
+            ruleset_tag: projection.ruleset_tag,
             manifest: transitionManifest,
           });
-          setTransitionManifestRefresh((current) => current + 1);
-          setDraftPreviewConflict(null);
-          setDraftPreviewPending(true);
           return;
         }
         const matchingManifestTag =
@@ -2004,8 +1880,12 @@ export default function App() {
           manifest_ruleset_tag: matchingManifestTag,
         });
         if (refusal) {
-          setDraftPreviewConflict(`Staged transition preview was refused: ${refusal}.`);
-          setDraftPreviewPending(false);
+          dispatchProjectSession({
+            kind: "draft_preview_changed",
+            projection: getProjectSessionState().draftTransitionProjection,
+            conflict: `Staged transition preview was refused: ${refusal}.`,
+            pending: false,
+          });
           return;
         }
         const next = reduceProjectTransitionProjection(currentProjection, {
@@ -2014,22 +1894,21 @@ export default function App() {
           expected_base_head: transitionHead,
           manifest_ruleset_tag: matchingManifestTag,
         });
-        setDraftTransitionProjection(next);
-        transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
-          transitionCoordinatorRef.current,
-          { kind: "observe_head", project_id: requestedProjectId, head: previewBaseHead },
-        );
-        setTransitionHead((current) =>
-          transitionHeadsEqual(current, previewBaseHead) ? current : previewBaseHead,
-        );
-        setTransitionRulesetTag(next.ruleset_tag);
-        setDraftPreviewConflict(null);
-        setDraftPreviewPending(false);
+        dispatchProjectSession({
+          kind: "preview_applied",
+          project_id: requestedProjectId,
+          projection: next,
+          base_head: previewBaseHead,
+        });
       })
       .catch((error) => {
         if (cancelled || !isActiveProject(requestedProjectId)) return;
-        setDraftPreviewConflict(error instanceof Error ? error.message : String(error));
-        setDraftPreviewPending(false);
+        dispatchProjectSession({
+          kind: "draft_preview_changed",
+          projection: getProjectSessionState().draftTransitionProjection,
+          conflict: error instanceof Error ? error.message : String(error),
+          pending: false,
+        });
       });
     return () => {
       cancelled = true;
@@ -2037,8 +1916,10 @@ export default function App() {
   }, [
     apiBase,
     committableDraftCount,
+    dispatchProjectSession,
     draftPreviewRouting.route,
     graph,
+    getProjectSessionState,
     isActiveProject,
     mutationsDisabled,
     normalizedPreviewDraft,
@@ -2281,51 +2162,23 @@ export default function App() {
 
   const updateHumanDraft = (update: (draft: HumanDraft) => HumanDraft) => {
     if (!projectId || mutationsDisabled) return;
-    const nextDraftGeneration =
-      (transitionCoordinatorRef.current.draft_generations[projectId] ?? 0) + 1;
-    transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
-      transitionCoordinatorRef.current,
-      {
-        kind: "observe_draft_generation",
-        project_id: projectId,
-        generation: nextDraftGeneration,
-      },
-    );
     setNotice(null);
-    setHumanDraft((current) => {
-      const next = update(current ?? emptyHumanDraft(graph.revision));
-      try {
-        if (humanDraftChangeCount(next) > 0) {
-          localStorage.setItem(humanDraftStorageKey(projectId), serializeHumanDraft(next));
-          return next;
-        }
-        localStorage.removeItem(humanDraftStorageKey(projectId));
-        return null;
-      } catch (error) {
-        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
-        return next;
-      }
-    });
+    const { next } = updateProjectHumanDraft(projectId, graph, update);
+    try {
+      persistProjectHumanDraft(localStorage, projectId, next.humanDraft);
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+    }
   };
 
   const resetHumanDraft = () => {
     if (!projectId) return;
-    const nextDraftGeneration =
-      (transitionCoordinatorRef.current.draft_generations[projectId] ?? 0) + 1;
-    transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
-      transitionCoordinatorRef.current,
-      {
-        kind: "observe_draft_generation",
-        project_id: projectId,
-        generation: nextDraftGeneration,
-      },
-    );
+    dispatchProjectSession({ kind: "human_draft_updated", project_id: projectId, draft: null });
     try {
       localStorage.removeItem(humanDraftStorageKey(projectId));
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
-    setHumanDraft(null);
   };
 
   const syncHumanDraft = async () => {
@@ -2341,7 +2194,6 @@ export default function App() {
       mutationsDisabled
     )
       return;
-    if (transitionCoordinatorRef.current.sync_requests[projectId]) return;
     const requestedProjectId = projectId;
     const expectedGraph = graph;
     const expectedProject = project;
@@ -2349,18 +2201,8 @@ export default function App() {
     const normalized = normalizeHumanDraft(humanDraft, graph);
     if (humanDraftCommittableCount(normalized, graph) === 0) return;
     const request = toHumanSyncRequest(normalized, graph);
-    const fence: TransitionSyncFence = {
-      project_id: requestedProjectId,
-      request_id: ++transitionSyncRequestSequence.current,
-      expected_head: expectedHead,
-      draft_generation: transitionCoordinatorRef.current.draft_generations[requestedProjectId] ?? 0,
-    };
-    transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
-      transitionCoordinatorRef.current,
-      { kind: "sync_started", fence },
-    );
-    beginProjectSnapshotRequest(requestedProjectId);
-    setSyncingProjectIds((current) => new Set(current).add(requestedProjectId));
+    const fence = beginProjectSync(requestedProjectId, expectedHead);
+    if (!fence) return;
     setNotice(null);
     let committedResponseReceived = false;
     const reconcileRequestedProject = async () => {
@@ -2376,15 +2218,15 @@ export default function App() {
         body: JSON.stringify(request),
       });
       committedResponseReceived = true;
-      transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
-        transitionCoordinatorRef.current,
-        { kind: "activate", project_id: getActiveProjectId() },
-      );
+      dispatchProjectSession({ kind: "activate", project_id: getActiveProjectId() });
       const disposition = transitionSyncCompletionDisposition(
-        transitionCoordinatorRef.current,
+        getProjectSessionState().transitionCoordinator,
         fence,
       );
-      if (disposition !== "apply" || renderedRevisionRef.current !== fence.expected_head.revision) {
+      if (
+        disposition !== "apply" ||
+        getProjectSessionState().renderedRevision !== fence.expected_head.revision
+      ) {
         try {
           await reconcileRequestedProject();
           if (isActiveProject(requestedProjectId)) {
@@ -2428,49 +2270,25 @@ export default function App() {
         snapshot: projection,
       }) as ProjectTransitionResponse;
       const nextGraph = committed.graph;
-      const retained = retainBehindDraftAfterSync(normalized, expectedGraph, nextGraph);
-      setHumanDraft(retained);
+      const { previous: previousSession, next: committedSession } = dispatchProjectSession({
+        kind: "committed_transition_applied",
+        project_id: requestedProjectId,
+        projection: committed,
+        submitted_draft: normalized,
+      });
+      if (
+        committedSession === previousSession ||
+        committedSession.project?.id !== requestedProjectId ||
+        committedSession.renderedRevision !== nextGraph.revision
+      ) {
+        throw new Error("Committed transition response lost the active project session.");
+      }
       try {
-        persistProjectHumanDraft(localStorage, requestedProjectId, retained);
+        persistProjectHumanDraft(localStorage, requestedProjectId, committedSession.humanDraft);
       } catch (error) {
         setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       }
-      renderedRevisionRef.current = nextGraph.revision;
-      transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
-        transitionCoordinatorRef.current,
-        { kind: "observe_head", project_id: requestedProjectId, head: committed.head },
-      );
-      setTransitionHead(committed.head);
-      setTransitionRulesetTag(committed.ruleset_tag);
-      if (
-        (transitionRulesetTagRef.current &&
-          transitionRulesetTagRef.current !== committed.ruleset_tag) ||
-        (transitionManifest && transitionManifest.ruleset_tag !== committed.ruleset_tag)
-      ) {
-        transitionManifestExpectedRulesetTagRef.current = committed.ruleset_tag;
-        setTransitionManifestState({
-          status: "loading",
-          project_id: requestedProjectId,
-          manifest: transitionManifest,
-        });
-        setTransitionManifestRefresh((current) => current + 1);
-      }
-      setDraftTransitionProjection(null);
-      setDraftPreviewConflict(null);
-      setDraftPreviewPending(false);
-      applySyncedGraph(nextGraph);
-      updateProject((current) =>
-        current?.id === requestedProjectId
-          ? projectWithTransitionProjection(
-              current,
-              nextGraph,
-              committed.experiment_control,
-              committed.attention,
-              committed.primary_question,
-              committed.counts,
-            )
-          : current,
-      );
+      applyCanonicalProject(committedSession.project, true);
       reconcileFloatingChat(nextGraph.nodes, false);
       setNotice({
         kind: "info",
@@ -2507,18 +2325,7 @@ export default function App() {
         } catch {}
       }
     } finally {
-      const currentFence = transitionCoordinatorRef.current.sync_requests[requestedProjectId];
-      transitionCoordinatorRef.current = reduceProjectTransitionCoordinator(
-        transitionCoordinatorRef.current,
-        { kind: "sync_finished", fence },
-      );
-      if (currentFence?.request_id === fence.request_id) {
-        setSyncingProjectIds((current) => {
-          const next = new Set(current);
-          next.delete(requestedProjectId);
-          return next;
-        });
-      }
+      dispatchProjectSession({ kind: "sync_finished", fence });
     }
   };
 
@@ -3800,12 +3607,16 @@ export default function App() {
                 );
               }}
               onSaved={(saved, preserveReadiness = true) => {
-                beginProjectSnapshotRequest(saved.id);
-                const decoded = decodeProjectSnapshot(saved);
-                updateProject((current) =>
-                  preserveReadiness ? preserveProjectReadiness(decoded, current) : decoded,
-                );
-                replaceRunScope(decoded.default_run_truth_scope);
+                const requestId = beginProjectSnapshotRequest(saved.id);
+                if (
+                  !applyProjectSnapshot(saved, preserveReadiness, {
+                    projectId: saved.id,
+                    requestId,
+                  })
+                )
+                  return;
+                const applied = getProjectSessionState().project;
+                if (applied) replaceRunScope(applied.default_run_truth_scope);
                 setNotice({ kind: "info", text: "Project defaults synced." });
               }}
             />
@@ -4142,19 +3953,6 @@ function previewTraceMismatch(
     return "Staged transition preview ruleset did not match its transition trace.";
   }
   return null;
-}
-
-function preserveProjectReadiness(
-  next: ProjectSnapshot,
-  current: ProjectSnapshot | null,
-): ProjectSnapshot {
-  if (!current || current.id !== next.id) return next;
-  return {
-    ...next,
-    provider_readiness: current.provider_readiness,
-    providers: current.providers,
-    provider_skill_inventories: current.provider_skill_inventories,
-  };
 }
 
 function taskRetryConfig(task: AgentTask, project: ProjectSnapshot): AgentRunConfig {
