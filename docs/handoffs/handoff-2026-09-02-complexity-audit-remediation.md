@@ -3,10 +3,11 @@
 Date: 2026-09-02
 Human-confirmed: 2026-09-02
 Status: active. The team/server surface freeze decision is recorded and the
-archived audit fixes the accepted scope. No remediation packet was complete when
-this handoff opened. S, W, B, and D are being implemented concurrently on this
-pull request. Findings 2 and 3 are excluded and will be carried by a separate
-deployment-model pull request.
+archived audit fixes the accepted scope. B's background-policy matrix and D's
+documentation admission rules are implemented and pass their focused and
+required pull-request checks. S and W remain and are being implemented
+concurrently on this pull request. Findings 2 and 3 are excluded and will be
+carried by a separate deployment-model pull request.
 
 The settled decisions are to freeze new team/server surface until the active lab
 handoff closes, complete the ordered storage-migration boundary, create one
