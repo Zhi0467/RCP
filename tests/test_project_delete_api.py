@@ -45,6 +45,22 @@ def test_delete_project_route_refuses_active_task(manifest, tmp_path) -> None:
     assert app.state.catalog.card(project_id)["id"] == project_id
 
 
+def test_delete_project_validation_status_does_not_depend_on_exception_wording(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+
+    def reject_validation(_project_id: str):
+        raise ValueError("A locator validation error mentions active agent task.")
+
+    monkeypatch.setattr(app.state.catalog, "delete", reject_validation)
+
+    response = TestClient(app).delete(f"/api/projects/{project_id}")
+
+    assert response.status_code == 422
+
+
 def test_delete_project_route_disappears_after_restart_without_touching_repository(
     manifest, tmp_path
 ) -> None:

@@ -987,6 +987,7 @@ class WatcherStoreMixin:
             error = None
         timestamp = checked_at or self.now()
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
             ).fetchone()

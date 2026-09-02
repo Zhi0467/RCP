@@ -229,6 +229,27 @@ def _existing_patch_digest(
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _existing_exact_patch_digest(
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+) -> str | None:
+    """Fingerprint only the exact ``patch.json`` consumed by chat runs."""
+
+    try:
+        if remote_stage is not None:
+            if "patch.json" not in remote_stage.list_workspace_files():
+                return None
+            text = remote_stage.read_text(remote_stage.workspace / "patch.json")
+        else:
+            path = workspace / "patch.json"
+            if not path.is_file():
+                return None
+            text = path.read_text(encoding="utf-8")
+    except (OSError, StateUnavailable, ValueError):
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _retry_deliverable_is_unchanged(
     execution: AgentTaskExecution | None,
     *,

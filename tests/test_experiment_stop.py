@@ -426,6 +426,40 @@ def test_stop_with_only_watchers_left_terminalizes_them_and_settles_at_once(
     assert control["reasons"] == []
 
 
+def test_stop_settlement_rolls_back_watcher_changes_when_episode_terminalization_fails(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    loop.start_episode(status="running")
+    loop.arm_watcher("atomic-stop-watcher")
+    stopping = loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    assert stopping is not None and stopping.stop_settled_at is None
+    loop.store.complete_agent_task("loop-root", applied_revision=None, result={})
+    original = loop.store._mark_episode_stop_skipped_in_connection
+
+    def fail_terminalization(*_args, **_kwargs):
+        raise RuntimeError("injected episode terminalization failure")
+
+    monkeypatch.setattr(
+        loop.store,
+        "_mark_episode_stop_skipped_in_connection",
+        fail_terminalization,
+    )
+    with pytest.raises(RuntimeError, match="injected episode terminalization failure"):
+        loop.store.settle_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+
+    watcher = loop.store.watcher("atomic-stop-watcher")
+    episode = loop.store.episode(loop.episode_id)
+    assert watcher is not None and watcher.status == "active" and watcher.notified is False
+    assert episode is not None and episode.status == "stopping"
+    assert episode.stop_settled_at is None
+
+    monkeypatch.setattr(loop.store, "_mark_episode_stop_skipped_in_connection", original)
+    settled = loop.store.settle_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    assert settled is not None and settled.stop_settled_at is not None
+    assert loop.store.watcher("atomic-stop-watcher").status == "stopped"  # type: ignore[union-attr]
+
+
 def test_stop_is_idempotent(manifest, tmp_path) -> None:
     loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
     loop.start_episode()

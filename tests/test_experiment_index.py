@@ -111,6 +111,7 @@ def _record_loop(
     episode_id: str,
     operation_id: str,
     created_at: str,
+    node_id: str = "exp/launched",
 ) -> None:
     request = RunRequest(
         provider="codex",
@@ -120,11 +121,11 @@ def _record_loop(
         run_truth_scope=["repo-a"],
         chat_id=str(uuid.uuid4()),
         chat_scope="node",
-        node_id="exp/launched",
+        node_id=node_id,
         mode="work",
         trigger="experiment_run",
         patch_kind="experiment_loop",
-        control_node_id="exp/launched",
+        control_node_id=node_id,
         control_revision=2,
         control_episode_id=episode_id,
         control_invocation=1,
@@ -795,6 +796,72 @@ def test_experiment_index_runtime_projection_failure_fails_the_request(
     )
 
     assert response.status_code == 500
+
+
+def test_inconsistent_experiment_runtime_is_degraded_without_hiding_healthy_sibling(
+    manifest, tmp_path: Path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, _current_episode = _seed_indexed_project(app)
+    store = app.state.background_tasks.store
+    _record_loop(
+        store,
+        project_id,
+        episode_id=str(uuid.uuid4()),
+        operation_id="healthy-sibling-loop",
+        created_at="2026-08-10T00:00:00+00:00",
+        node_id="exp/never-run",
+    )
+    with store.connection() as connection:
+        row = connection.execute(
+            "SELECT request_json FROM graph_runs WHERE operation_id = 'current-loop'"
+        ).fetchone()
+        assert row is not None
+        request = json.loads(row["request_json"])
+        request["control_episode_id"] = str(uuid.uuid4())
+        connection.execute(
+            "UPDATE graph_runs SET request_json = ? WHERE operation_id = 'current-loop'",
+            (json.dumps(request, separators=(",", ":"), sort_keys=True),),
+        )
+
+    client = TestClient(app)
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+    response = client.get("/api/episodes?mode=experiment_loop")
+
+    assert response.status_code == 200, response.text
+    entries = {item["node"]["id"]: item for item in response.json()}
+    assert set(entries) == {"exp/launched", "exp/never-run"}
+    degraded = entries["exp/launched"]["control"]
+    assert degraded["health"] == "degraded"
+    assert "missing its paid root task" in degraded["operational"]["session"]["diagnostic"]
+    assert entries["exp/never-run"]["control"]["episode_id"] is not None
+
+
+def test_experiment_index_settles_stop_under_project_operation_lock(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, current_episode = _seed_indexed_project(app)
+    store = app.state.background_tasks.store
+    store.request_episode_stop(current_episode)
+    operation_lock = app.state.services.experiment_operation_lock(project_id)
+    original = store.settle_experiment_loop_stop
+    observed = False
+
+    def assert_locked(*args, **kwargs):
+        nonlocal observed
+        assert operation_lock.locked()  # type: ignore[attr-defined]
+        observed = True
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "settle_experiment_loop_stop", assert_locked)
+
+    response = TestClient(app).get("/api/episodes?mode=experiment_loop")
+
+    assert response.status_code == 200, response.text
+    assert observed is True
+    episode = store.episode(current_episode)
+    assert episode is not None and episode.stop_settled_at is not None
 
 
 def test_display_cache_refresh_failure_is_diagnostic_not_task_failure(

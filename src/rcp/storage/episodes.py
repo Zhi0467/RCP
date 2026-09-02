@@ -780,73 +780,92 @@ class EpisodeStoreMixin:
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
-            ).fetchone()
-            if row is None:
-                raise KeyError(episode_id)
-            episode = self._episode_record(row)
-            if episode.ending == "stopped" and episode.wrapup_state == "skipped":
-                return episode
-            if (
-                connection.execute(
-                    "SELECT 1 FROM episode_wrapups WHERE episode_id = ?", (episode_id,)
-                ).fetchone()
-                is not None
-            ):
-                raise EpisodeNotRunning("report generation has already begun")
-            if episode.status not in {"queued", "running", "stopping"}:
-                raise EpisodeNotRunning("the episode has already ended")
-            receipt_json, receipt_sha256 = compact_episode_receipt(
-                {
-                    "diagnostic": diagnostic,
-                    "ending": "stopped",
-                    "episode_id": episode_id,
-                }
-            )
-            concluding = connection.execute(
-                """
-                SELECT operation_id FROM episode_invocations
-                WHERE episode_id = ? ORDER BY invocation_number DESC LIMIT 1
-                """,
-                (episode_id,),
-            ).fetchone()
-            wrapup = EpisodeWrapupRecord(
-                episode_id=episode_id,
-                ending="stopped",
-                partial=True,
-                concluding_operation_id=(concluding["operation_id"] if concluding else None),
-                receipt_json=receipt_json,
-                receipt_sha256=receipt_sha256,
-                state="skipped",
-                diagnostic=diagnostic,
-                created_at=now,
-                updated_at=now,
-                finished_at=now,
-            )
-            self._insert_episode_wrapup(connection, wrapup)
-            connection.execute(
-                """
-                UPDATE episodes
-                SET status = 'stopped', stop_requested_at = COALESCE(stop_requested_at, ?),
-                    stop_settled_at = COALESCE(stop_settled_at, ?), ending = 'stopped',
-                    ending_diagnostic = ?, wrapup_state = 'skipped', wrapup_error = NULL,
-                    updated_at = ?, ended_at = COALESCE(ended_at, ?)
-                WHERE episode_id = ?
-                """,
-                (now, now, diagnostic, now, now, episode_id),
-            )
-            self._terminalize_auto_research_child_experiment_with_notice(
+            return self._mark_episode_stop_skipped_in_connection(
                 connection,
-                child_episode_id=episode_id,
-                status="stopped",
-                ending="stopped",
+                episode_id,
                 diagnostic=diagnostic,
-                created_at=now,
+                now=now,
             )
-        stored = self.episode(episode_id)
-        assert stored is not None
-        return stored
+
+    def _mark_episode_stop_skipped_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        episode_id: str,
+        *,
+        diagnostic: str | None,
+        now: str,
+    ) -> EpisodeRecord:
+        """Settle Stop through a caller-owned write transaction."""
+
+        row = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(episode_id)
+        episode = self._episode_record(row)
+        if episode.ending == "stopped" and episode.wrapup_state == "skipped":
+            return episode
+        if (
+            connection.execute(
+                "SELECT 1 FROM episode_wrapups WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+            is not None
+        ):
+            raise EpisodeNotRunning("report generation has already begun")
+        if episode.status not in {"queued", "running", "stopping"}:
+            raise EpisodeNotRunning("the episode has already ended")
+        receipt_json, receipt_sha256 = compact_episode_receipt(
+            {
+                "diagnostic": diagnostic,
+                "ending": "stopped",
+                "episode_id": episode_id,
+            }
+        )
+        concluding = connection.execute(
+            """
+            SELECT operation_id FROM episode_invocations
+            WHERE episode_id = ? ORDER BY invocation_number DESC LIMIT 1
+            """,
+            (episode_id,),
+        ).fetchone()
+        wrapup = EpisodeWrapupRecord(
+            episode_id=episode_id,
+            ending="stopped",
+            partial=True,
+            concluding_operation_id=(concluding["operation_id"] if concluding else None),
+            receipt_json=receipt_json,
+            receipt_sha256=receipt_sha256,
+            state="skipped",
+            diagnostic=diagnostic,
+            created_at=now,
+            updated_at=now,
+            finished_at=now,
+        )
+        self._insert_episode_wrapup(connection, wrapup)
+        connection.execute(
+            """
+            UPDATE episodes
+            SET status = 'stopped', stop_requested_at = COALESCE(stop_requested_at, ?),
+                stop_settled_at = COALESCE(stop_settled_at, ?), ending = 'stopped',
+                ending_diagnostic = ?, wrapup_state = 'skipped', wrapup_error = NULL,
+                updated_at = ?, ended_at = COALESCE(ended_at, ?)
+            WHERE episode_id = ?
+            """,
+            (now, now, diagnostic, now, now, episode_id),
+        )
+        self._terminalize_auto_research_child_experiment_with_notice(
+            connection,
+            child_episode_id=episode_id,
+            status="stopped",
+            ending="stopped",
+            diagnostic=diagnostic,
+            created_at=now,
+        )
+        updated = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        assert updated is not None
+        return self._episode_record(updated)
 
     def allocate_episode_report_attempt(
         self,

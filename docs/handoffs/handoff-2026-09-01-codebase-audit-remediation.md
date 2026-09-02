@@ -4,9 +4,9 @@ Date: 2026-09-01
 Status: active. A read-only audit of `src/rcp`, `web/src`, `tests/`, and `docs/`
 on 2026-09-01 produced the findings below. Every finding was verified by reading
 the code; the few that could only be reasoned about are marked *plausible*. Plan
-steps 1 through 4 are implemented and verified on the remediation branch: H1
-through H6, H8 through H10, M1 through M8, M15 through M21, M27, and M28 are
-closed with focused regressions. Steps 5 through 8 remain. The
+steps 1 through 5 are implemented and verified on the remediation branch: H1
+through H10 and M1 through M28 are closed with focused regressions. Steps 6
+through 8 remain. The
 human confirmed the list and asked for the remediation to land on a dedicated
 branch and pull request; implementation continues in that same PR.
 
@@ -457,9 +457,10 @@ pass for the touched area.
    `_replay_branch_tail` duplication.
 4. **Event loop and transport — completed 2026-09-01.** M1, M2, M3, M4, M5,
    M6, M7, M8, H10.
-5. **Storage lifecycle.** M9, M10, M11, M12, M13, M14, M22, M23, M24, M25, M26.
-6. **Frontend.** M30 to M35, then move the section 3 derivations into the
-   projection, starting with the two Stop surfaces.
+5. **Storage lifecycle — completed 2026-09-01.** H7, M9, M10, M11, M12, M13,
+   M14, M22, M23, M24, M25, M26.
+6. **Frontend.** M29 to M35, then move the section 3 derivations into the
+   projection, starting with the artifact sandbox and the two Stop surfaces.
 7. **Consolidation.** Filesystem primitives, `work.py` and `experiment_loop.py`
    mechanism, auto-research duplicates, dead surface, unused configurability,
    `noqa: F401` blocks, limits into `limits.py`.

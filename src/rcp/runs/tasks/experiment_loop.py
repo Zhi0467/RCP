@@ -80,7 +80,7 @@ from rcp.runs.patch_validator import (
     stage_patch_validation_mailbox,
 )
 from rcp.runs.shared import (
-    _existing_patch_digest,
+    _existing_exact_patch_digest,
     _parent_task_contract_path,
     _pinned_to_profile,
     _ProviderOutcome,
@@ -1325,7 +1325,7 @@ async def _apply_experiment_loop_turn(
                     execution=turn.execution,
                     role=(f"experiment_loop_patch_correction_{loop_patch_correction_rounds}"),
                 )
-                pre_launch_digest = _existing_patch_digest(
+                pre_launch_digest = _existing_exact_patch_digest(
                     turn.workspace,
                     turn.remote_stage,
                 )
@@ -1965,7 +1965,7 @@ async def _stream_work_graph_repair(
             execution=execution,
             role="work_patch_repair",
         )
-        pre_launch_digest = _existing_patch_digest(workspace, remote_stage)
+        pre_launch_digest = _existing_exact_patch_digest(workspace, remote_stage)
     except BaseException as exc:
         if validator_lifecycle is not None:
             await validator_lifecycle.close(primary_error=exc)

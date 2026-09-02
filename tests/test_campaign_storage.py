@@ -683,6 +683,9 @@ def test_legacy_campaign_tables_migrate_once_then_move_to_private_archives(tmp_p
             """
         )
         connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 2)"
+        )
+        connection.execute(
             """
             INSERT INTO graph_runs (
                 operation_id, project_id, episode_id, kind, status, request_json,

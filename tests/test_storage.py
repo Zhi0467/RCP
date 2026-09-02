@@ -39,6 +39,109 @@ def _project(project_id: str) -> ProjectRecord:
     )
 
 
+def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path)
+    with sqlite3.connect(path) as connection:
+        migrations = connection.execute(
+            """
+            SELECT migration_version, migration_name
+            FROM storage_schema_migrations ORDER BY migration_version
+            """
+        ).fetchall()
+    assert migrations == [
+        (1, "episode_lineage_v1"),
+        (2, "legacy_episode_ledger_v1"),
+        (3, "experiment_episode_state_v1"),
+    ]
+
+    def unexpected_migration(*_args) -> None:
+        raise AssertionError("completed storage migration was rescanned")
+
+    monkeypatch.setattr(
+        AppStore,
+        "_migrate_episode_lineage",
+        classmethod(unexpected_migration),
+    )
+    monkeypatch.setattr(
+        storage_base_module,
+        "migrate_legacy_episodes",
+        unexpected_migration,
+    )
+    monkeypatch.setattr(
+        AppStore,
+        "_migrate_experiment_episode_state",
+        staticmethod(unexpected_migration),
+    )
+
+    AppStore(path)
+
+
+def test_failed_storage_migration_rolls_back_without_marker_and_retries(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    store = AppStore(path)
+    now = store.now()
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO graph_runs (
+                operation_id, project_id, kind, status, request_json,
+                created_at, updated_at, status_message
+            ) VALUES ('legacy-kind', 'project', 'campaign', 'succeeded', '{}', ?, ?, 'done')
+            """,
+            (now, now),
+        )
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 1")
+
+    original = AppStore._migrate_episode_lineage
+
+    def fail_after_migration(cls, connection: sqlite3.Connection) -> None:
+        original(connection)
+        raise RuntimeError("injected migration failure")
+
+    monkeypatch.setattr(
+        AppStore,
+        "_migrate_episode_lineage",
+        classmethod(fail_after_migration),
+    )
+    with pytest.raises(RuntimeError, match="injected migration failure"):
+        AppStore(path)
+
+    with sqlite3.connect(path) as connection:
+        assert (
+            connection.execute(
+                "SELECT kind FROM graph_runs WHERE operation_id = 'legacy-kind'"
+            ).fetchone()[0]
+            == "campaign"
+        )
+        assert (
+            connection.execute(
+                "SELECT 1 FROM storage_schema_migrations WHERE migration_version = 1"
+            ).fetchone()
+            is None
+        )
+
+    monkeypatch.undo()
+    AppStore(path)
+    with sqlite3.connect(path) as connection:
+        assert (
+            connection.execute(
+                "SELECT kind FROM graph_runs WHERE operation_id = 'legacy-kind'"
+            ).fetchone()[0]
+            == "auto_research"
+        )
+        assert (
+            connection.execute(
+                "SELECT migration_name FROM storage_schema_migrations WHERE migration_version = 1"
+            ).fetchone()[0]
+            == "episode_lineage_v1"
+        )
+
+
 def _task(store: AppStore, project_id: str, operation_id: str, status: str) -> None:
     now = store.now()
     store.create_agent_task(

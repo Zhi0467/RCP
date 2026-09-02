@@ -59,6 +59,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "27c9682ed3679ff0063a96995b14ae184dbaff12",
         "5efeb8cde52d346dcbaa8af20f8cc35bd6b2ddabe0572c1c1c4c1c388bb30cb2",
     ),
+    "pre-storage-migration-ledger-v12-c3191bf": (
+        "c3191bf03c5e57d4e79a2976c3753ea82e8d777f",
+        "a0c3b71f13301e274b5976f7b7a2b86bee73d90e387010673920244e91e31b8d",
+    ),
 }
 
 

@@ -76,7 +76,7 @@ from rcp.runs.patch_validator import (
     stage_patch_validation_mailbox,
 )
 from rcp.runs.shared import (
-    _existing_patch_digest,
+    _existing_exact_patch_digest,
     _parent_task_contract_path,
     _pinned_to_profile,
     _ProviderOutcome,
@@ -1399,7 +1399,10 @@ async def _settle_patch_deliverable(
                 execution=turn.execution,
                 role=f"work_patch_correction_{correction_rounds}",
             )
-            pre_launch_digest = _existing_patch_digest(turn.workspace, turn.remote_stage)
+            pre_launch_digest = _existing_exact_patch_digest(
+                turn.workspace,
+                turn.remote_stage,
+            )
             _record_agent_launch_receipt(
                 turn.execution,
                 turn.request,
@@ -2160,7 +2163,7 @@ async def _stream_work_graph_repair(
             execution=execution,
             role="work_patch_repair",
         )
-        pre_launch_digest = _existing_patch_digest(workspace, remote_stage)
+        pre_launch_digest = _existing_exact_patch_digest(workspace, remote_stage)
     except BaseException as exc:
         if validator_lifecycle is not None:
             await validator_lifecycle.close(primary_error=exc)

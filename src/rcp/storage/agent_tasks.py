@@ -57,6 +57,7 @@ from rcp.storage.models import (  # noqa: F401
     AGENT_TASK_TRANSITIONS,
     SPACE_NAME_MAX_LENGTH,
     AgentCommandInvocationRecord,
+    AgentTaskAdmissionConflict,
     AgentTaskContractRecord,
     AgentTaskEventRecord,
     AgentTaskKind,
@@ -181,7 +182,9 @@ class AgentTaskStoreMixin:
                 if continuation_cause == "fresh":
                     self._require_project_accepts_new_work(connection, record.project_id)
                 if self._has_active_chat_overlap(connection, record):
-                    raise ValueError("Another task is already active in this conversation.")
+                    raise AgentTaskAdmissionConflict(
+                        "Another task is already active in this conversation."
+                    )
                 self._insert_agent_task(
                     connection,
                     record,
@@ -1284,7 +1287,9 @@ class AgentTaskStoreMixin:
             connection.execute("BEGIN IMMEDIATE")
             self._claim_agent_task_graph_repair(connection, parent_operation_id)
             if self._has_active_chat_overlap(connection, record):
-                raise ValueError("Another task is already active in this conversation.")
+                raise AgentTaskAdmissionConflict(
+                    "Another task is already active in this conversation."
+                )
             self._insert_agent_task(
                 connection,
                 record,

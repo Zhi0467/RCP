@@ -568,10 +568,20 @@ def test_update_maintenance_blocks_get_routes_that_can_mutate(tmp_path: Path) ->
     app.state.runtime_admission_gate.close_and_wait(timeout=1)
 
     with TestClient(app) as client:
-        response = client.get("/api/health")
+        response = client.get(
+            "/api/health",
+            headers={"Origin": "http://localhost:5173"},
+        )
+        disallowed = client.get(
+            "/api/health",
+            headers={"Origin": "https://attacker.test"},
+        )
 
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "server_update_maintenance"
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert disallowed.status_code == 503
+    assert "access-control-allow-origin" not in disallowed.headers
 
 
 def test_update_control_operations_require_a_root_peer(

@@ -644,6 +644,39 @@ def test_provisioning_restore_detachment_is_idempotent_and_keeps_step_receipts(
     assert store.project_provisioning_step_receipts(running.request_id) == receipts
 
 
+def test_provisioning_restore_detachment_rolls_back_a_stale_transition(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store, _bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lease lab")
+    running = _provisioning_request(store)
+    original = store._transition_project_provisioning_to_restore_reentry
+
+    def make_transition_stale(connection, *, current, **values) -> None:
+        connection.execute(
+            """
+            UPDATE project_provisioning_requests
+            SET revision = revision + 1
+            WHERE request_id = ?
+            """,
+            (current.request_id,),
+        )
+        original(connection, current=current, **values)
+
+    monkeypatch.setattr(
+        store,
+        "_transition_project_provisioning_to_restore_reentry",
+        make_transition_stale,
+    )
+    with pytest.raises(RuntimeError, match="changed during restore detachment"):
+        store.detach_restored_lifecycle(
+            diagnostic="Replacement restore invalidated old machine authority.",
+            confirmed_by="root@lab uid=0",
+            detached_at=CAPTURED_AT.isoformat(),
+        )
+
+    assert store.project_provisioning_request(running.request_id) == running
+
+
 def test_restore_schema_registry_covers_current_and_immutable_upgrade_boundaries(
     tmp_path: Path,
 ) -> None:

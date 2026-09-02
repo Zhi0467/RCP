@@ -18,6 +18,7 @@ from rcp.storage.models import (  # noqa: F401
     ACTIVE_AGENT_TASK_STATUSES,
     SPACE_NAME_MAX_LENGTH,
     AgentCommandInvocationRecord,
+    AgentTaskAdmissionConflict,
     AgentTaskContractRecord,
     AgentTaskEventRecord,
     AgentTaskKind,
@@ -433,7 +434,7 @@ class ExperimentStoreMixin:
         ):
             raise ValueError("The Experiment recovery has no paid invocation ancestor.")
         if self._has_active_chat_overlap(connection, record):
-            raise ValueError("Another task is already active in this conversation.")
+            raise AgentTaskAdmissionConflict("Another task is already active in this conversation.")
         self._insert_agent_task(
             connection,
             record,
@@ -2100,9 +2101,15 @@ class ExperimentStoreMixin:
                 control_node_id,
                 selected_episode_id,
             )
-        if quiescent:
-            self.mark_episode_stop_skipped(selected_episode_id)
-        return self.experiment_episode(selected_episode_id)
+            if quiescent:
+                self._mark_episode_stop_skipped_in_connection(
+                    connection,
+                    selected_episode_id,
+                    diagnostic=None,
+                    now=self.now(),
+                )
+            stored = self._experiment_episode_row(connection, selected_episode_id)
+            return self._experiment_episode_record(stored) if stored is not None else None
 
     def _settle_experiment_loop_stop(
         self,
@@ -2771,16 +2778,39 @@ class ExperimentStoreMixin:
             if requested is None
             else requested
         )
-        return {
-            control_node_id: self._derive_experiment_loop_runtime(
-                tasks_by_control.get(control_node_id, []),
-                watchers_by_control.get(control_node_id, []),
-                receipt_categories,
-                episodes,
-                parents_by_control.get(control_node_id),
-            )
-            for control_node_id in control_node_ids
-        }
+        projected: dict[str, ExperimentLoopRuntime] = {}
+        for control_node_id in control_node_ids:
+            parent = parents_by_control.get(control_node_id)
+            try:
+                projected[control_node_id] = self._derive_experiment_loop_runtime(
+                    tasks_by_control.get(control_node_id, []),
+                    watchers_by_control.get(control_node_id, []),
+                    receipt_categories,
+                    episodes,
+                    parent,
+                )
+            except ValueError as exc:
+                # A malformed durable ledger is a per-control degraded fact. It
+                # must remain visible without hiding healthy sibling controls;
+                # SQLite/IO failures still escape and fail the whole snapshot.
+                if parent is None:
+                    raise
+                diagnostic = f"Stored Experiment runtime is inconsistent: {exc}"
+                projected[control_node_id] = ExperimentLoopRuntime(
+                    episode_id=parent.episode_id,
+                    invocations_used=max(parent.invocations_used, 1),
+                    invocation_ceiling=parent.invocation_ceiling,
+                    control_revision=0,
+                    episode_live=parent.status in _LIVE_EPISODE_STATUSES,
+                    watcher_degraded=True,
+                    decision_bundle=[],
+                    completion_criteria=[],
+                    stop_requested=parent.stop_requested_at is not None,
+                    stop_settled=parent.stop_settled_at is not None,
+                    session_diagnostic=diagnostic[:2_000],
+                    projection_diagnostic=diagnostic[:2_000],
+                )
+        return projected
 
     @classmethod
     def _derive_experiment_loop_runtime(

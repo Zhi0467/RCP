@@ -48,7 +48,7 @@ from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _resolved_coach_request
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
-from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore
+from rcp.storage import AgentTaskAdmissionConflict, AgentTaskKind, AgentTaskRecord, AppStore
 from rcp.transport import RemoteRunStage, StateUnavailable
 from rcp.transport.state import StateWorkspace
 
@@ -264,9 +264,10 @@ def start_agent_task(
             if claimed_set is not None and store.agent_task(operation_id) is None:
                 attachment_store.release(*claimed_set)
             raise
+    except AgentTaskAdmissionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
-        status = 409 if "already running" in str(exc) else 422
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         if admission_lock is not None:
             admission_lock.release()

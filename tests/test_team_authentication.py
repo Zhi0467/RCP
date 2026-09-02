@@ -510,6 +510,18 @@ def test_authenticated_team_mutations_reject_forms_and_cross_origin_json(tmp_pat
         )
         assert forged_json.status_code == 403
         assert forged_json.json()["detail"]["code"] == "team_origin_invalid"
+        assert "access-control-allow-origin" not in forged_json.headers
+
+        cors_allowed_but_team_invalid = client.post(
+            path,
+            json={},
+            headers={"Origin": "http://localhost:5173"},
+        )
+        assert cors_allowed_but_team_invalid.status_code == 403
+        assert cors_allowed_but_team_invalid.json()["detail"]["code"] == ("team_origin_invalid")
+        assert cors_allowed_but_team_invalid.headers["access-control-allow-origin"] == (
+            "http://localhost:5173"
+        )
 
     assert client.get("/api/identity").status_code == 200
     assert client.get("/api/team/invitations").json() == []

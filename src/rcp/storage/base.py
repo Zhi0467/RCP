@@ -5,7 +5,7 @@ import os
 import sqlite3
 import stat
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1313,7 +1313,21 @@ class AppStoreBase:
                 );
                 """
             )
-            self._migrate_episode_lineage(connection)
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS storage_schema_migrations (
+                    migration_version INTEGER PRIMARY KEY CHECK(migration_version >= 1),
+                    migration_name TEXT NOT NULL UNIQUE,
+                    completed_at TEXT NOT NULL
+                )
+                """
+            )
+            self._run_storage_schema_migration(
+                connection,
+                version=1,
+                name="episode_lineage_v1",
+                migration=self._migrate_episode_lineage,
+            )
             # Legacy graph_runs tables may still expose campaign_id (or no
             # lineage column at all) until the migration above.  Build the
             # branch-merge index only after episode_id is guaranteed to exist.
@@ -1605,8 +1619,18 @@ class AppStoreBase:
                 "CREATE INDEX IF NOT EXISTS watchers_graph_conditions "
                 "ON watchers(project_id, status, notified, graph_condition_json)"
             )
-            migrate_legacy_episodes(connection)
-            self._migrate_experiment_episode_state(connection)
+            self._run_storage_schema_migration(
+                connection,
+                version=2,
+                name="legacy_episode_ledger_v1",
+                migration=migrate_legacy_episodes,
+            )
+            self._run_storage_schema_migration(
+                connection,
+                version=3,
+                name="experiment_episode_state_v1",
+                migration=self._migrate_experiment_episode_state,
+            )
             if has_legacy_campaigns:
                 # The generic parent/report copy must finish before the source
                 # tables move under private archive names.
@@ -1639,6 +1663,38 @@ class AppStoreBase:
                     (code_id, code_hash, self.now()),
                 )
         return bootstrap_code
+
+    def _run_storage_schema_migration(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        version: int,
+        name: str,
+        migration: Callable[[sqlite3.Connection], None],
+    ) -> None:
+        """Run one expensive one-way migration once inside initialization."""
+
+        row = connection.execute(
+            """
+            SELECT migration_version, migration_name
+            FROM storage_schema_migrations
+            WHERE migration_version = ? OR migration_name = ?
+            """,
+            (version, name),
+        ).fetchone()
+        if row is not None:
+            if row["migration_version"] != version or row["migration_name"] != name:
+                raise RuntimeError("RCP storage migration identity is inconsistent.")
+            return
+        migration(connection)
+        connection.execute(
+            """
+            INSERT INTO storage_schema_migrations(
+                migration_version, migration_name, completed_at
+            ) VALUES (?, ?, ?)
+            """,
+            (version, name, self.now()),
+        )
 
     @classmethod
     def _migrate_episode_lineage(cls, connection: sqlite3.Connection) -> None:

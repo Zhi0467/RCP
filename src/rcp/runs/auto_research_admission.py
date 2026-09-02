@@ -469,11 +469,15 @@ def ensure_auto_research_wake_spawned(
     return tasks.launch_admitted(existing.operation_id)
 
 
-def reconcile_committed_auto_research_dispatches(tasks: BackgroundAgentTasks) -> list[str]:
+def reconcile_committed_auto_research_dispatches(
+    tasks: BackgroundAgentTasks,
+    *,
+    episode_id: str | None = None,
+) -> list[str]:
     """Start exact paid child/wake rows durably proven never to have run."""
 
     started: list[str] = []
-    for dispatch in proven_committed_auto_research_dispatches(tasks):
+    for dispatch in proven_committed_auto_research_dispatches(tasks, episode_id=episode_id):
         if dispatch.kind == "actor_wake":
             task = ensure_auto_research_wake_spawned(
                 tasks,
@@ -504,17 +508,24 @@ def reconcile_committed_auto_research_dispatches(tasks: BackgroundAgentTasks) ->
 
 def proven_committed_auto_research_dispatches(
     tasks: BackgroundAgentTasks,
+    *,
+    episode_id: str | None = None,
 ) -> list[_CommittedAutoResearchDispatch]:
     """Find admitted queued rows whose dispatch attempt durably never started."""
 
     dispatches: list[_CommittedAutoResearchDispatch] = []
-    for project in tasks.store.projects():
+    if episode_id is None:
         episodes = [
-            item
-            for item in tasks.store.episodes(project.project_id)
-            if item.mode == "auto_research"
+            episode
+            for project in tasks.store.projects()
+            for episode in tasks.store.episodes(project.project_id)
+            if episode.mode == "auto_research"
         ]
-        for episode in episodes:
+    else:
+        episode = tasks.store.episode(episode_id)
+        episodes = [episode] if episode is not None else []
+    for episode in episodes:
+        if episode.mode == "auto_research":
             for task in tasks.store.auto_research_tasks(episode.episode_id):
                 if (
                     task.status != "queued"

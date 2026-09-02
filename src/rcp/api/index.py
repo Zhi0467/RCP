@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from rcp.agents import AgentLauncher
 from rcp.api.dependencies import (
     get_catalog,
+    get_experiment_operation_lock,
     get_identity_access,
     get_launcher,
     get_project_service,
@@ -21,6 +22,7 @@ from rcp.api.episodes import serialize_episode
 from rcp.api.experiment_controls import _experiment_control_response
 from rcp.api.identity import IdentityAccess
 from rcp.core.models import Experiment, GraphState
+from rcp.keyed_locks import KeyedLocks
 from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON, ProjectCatalog
 from rcp.providers import PROVIDER_IDS
 from rcp.service import ProjectService
@@ -37,6 +39,7 @@ from rcp.storage import (
     AppStore,
     ExperimentEpisodeProjectionSnapshot,
     ExperimentLoopRuntime,
+    ProjectActiveTaskConflict,
 )
 from rcp.transport import StateUnavailable
 
@@ -48,6 +51,10 @@ IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 LauncherDependency = Annotated[AgentLauncher, Depends(get_launcher)]
 SetupDependency = Annotated[ProjectSetupManager, Depends(get_setup)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
+ExperimentOperationLockDependency = Annotated[
+    KeyedLocks,
+    Depends(get_experiment_operation_lock),
+]
 
 
 def _require_personal_project_entry(store: StoreDependency) -> None:
@@ -88,6 +95,7 @@ def experiment_episodes(
     catalog: CatalogDependency,
     identity_access: IdentityDependency,
     store: StoreDependency,
+    experiment_operation_lock: ExperimentOperationLockDependency,
 ) -> list[dict[str, object]]:
     # An unfiltered answer would publish research and not just project names.
     # Start from durable loop parents rather than graph nodes: a branch may
@@ -108,18 +116,29 @@ def experiment_episodes(
             and not read_model.runtime.stop_settled
             and not read_model.runtime.task_active
         ]
-        for experiment_id in settle_ids:
-            episode_snapshot = read_models[experiment_id].episode
-            if episode_snapshot is not None:
-                episode = episode_snapshot.episode
-                store.settle_experiment_loop_stop(
-                    record.project_id,
-                    experiment_id,
-                    episode_id=episode.episode_id,
-                    graph_target=episode.graph_target,
-                )
         if settle_ids:
-            read_models = store.experiment_control_projection_snapshots(record.project_id)
+            # This GET is the only index path that performs lifecycle repair.
+            # Re-read under the same canonical project lock as Run/Stop so a
+            # concurrent admission cannot race the quiescence decision.
+            with experiment_operation_lock(record.project_id):
+                read_models = store.experiment_control_projection_snapshots(record.project_id)
+                for experiment_id, read_model in read_models.items():
+                    runtime = read_model.runtime
+                    episode_snapshot = read_model.episode
+                    if (
+                        runtime.stop_requested
+                        and not runtime.stop_settled
+                        and not runtime.task_active
+                        and episode_snapshot is not None
+                    ):
+                        episode = episode_snapshot.episode
+                        store.settle_experiment_loop_stop(
+                            record.project_id,
+                            experiment_id,
+                            episode_id=episode.episode_id,
+                            graph_target=episode.graph_target,
+                        )
+                read_models = store.experiment_control_projection_snapshots(record.project_id)
 
         current: list[
             tuple[
@@ -366,9 +385,10 @@ def delete_project(
         return catalog.delete(project_id).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
+    except ProjectActiveTaskConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
-        status = 409 if "active agent task" in str(exc) else 422
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (OSError, RuntimeError, StateUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

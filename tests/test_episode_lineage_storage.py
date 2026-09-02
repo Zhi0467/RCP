@@ -191,6 +191,7 @@ def test_existing_lineage_columns_json_watchers_and_usage_migrate_once(tmp_path)
         connection.execute("ALTER TABLE graph_runs RENAME COLUMN episode_id TO campaign_id")
         connection.execute("ALTER TABLE graph_run_events RENAME COLUMN episode_id TO campaign_id")
         connection.execute("ALTER TABLE watchers RENAME COLUMN episode_id TO experiment_episode_id")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 1")
 
     migrated = AppStore(path)
     task = migrated.agent_task("auto-origin")
@@ -248,6 +249,7 @@ def test_lineage_json_migration_rejects_both_parent_keys(tmp_path, request_paylo
             """,
             (json.dumps(request_payload), now, now),
         )
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 1")
 
     with pytest.raises(ValueError, match="both campaign_id and episode_id"):
         AppStore(path)

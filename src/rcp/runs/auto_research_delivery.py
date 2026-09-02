@@ -197,6 +197,7 @@ def _reconcile_committed_auto_research_wakes(
     store = background.store
     proven_started = reconcile_committed_auto_research_dispatches(
         background,
+        episode_id=episode_id,
     )
     if episode_id is not None:
         episode_ids = [episode_id]

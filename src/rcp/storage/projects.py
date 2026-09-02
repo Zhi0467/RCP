@@ -31,6 +31,7 @@ from rcp.storage.models import (  # noqa: F401
     GraphCondition,
     GraphWatcherRecord,
     NodeStatusGraphCondition,
+    ProjectActiveTaskConflict,
     ProjectRecord,
     ProjectStageRecord,
     ProposalResolvedGraphCondition,
@@ -438,7 +439,9 @@ class ProjectStoreMixin:
                 ).fetchone()
                 is not None
             ):
-                raise ValueError("Pause the active agent task before deleting this project.")
+                raise ProjectActiveTaskConflict(
+                    "Pause the active agent task before deleting this project."
+                )
             rows = connection.execute(
                 """
                 SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root
@@ -476,7 +479,9 @@ class ProjectStoreMixin:
                     ).fetchone()
                     is not None
                 ):
-                    raise ValueError("Pause the active agent task before deleting this project.")
+                    raise ProjectActiveTaskConflict(
+                        "Pause the active agent task before deleting this project."
+                    )
 
                 operation_ids = connection.execute(
                     "SELECT operation_id FROM graph_runs WHERE project_id = ?",
@@ -873,6 +878,12 @@ class ProjectStoreMixin:
                 WHERE project_id = ?
                 """,
                 (project_id, legacy_id),
+            )
+            # Canonical wins on conflict, but the legacy identity must still be
+            # retired so it cannot reappear as a second draft owner.
+            connection.execute(
+                "DELETE FROM paper_drafts WHERE project_id = ?",
+                (legacy_id,),
             )
             connection.execute(
                 "UPDATE writing_sessions SET project_id = ? WHERE project_id = ?",

@@ -64,7 +64,7 @@ from rcp.runs.chat import (
     _read_chat_patch,
 )
 from rcp.runs.shared import (
-    _existing_patch_digest,
+    _existing_exact_patch_digest,
     _parent_task_contract_path,
     _ProviderOutcome,
     _record_agent_launch_receipt,
@@ -272,7 +272,7 @@ async def stream_auto_research_orchestrator_run(
             )
             write_dirs = [Path(item) for item in write_scope.repository_roots]
             retry_patch_digest = (
-                _existing_patch_digest(stage.workspace, stage.remote)
+                _existing_exact_patch_digest(stage.workspace, stage.remote)
                 if execution.continuation == "retry"
                 else None
             )
@@ -520,7 +520,7 @@ async def stream_auto_research_worker_run(
             )
             write_dirs = [Path(item) for item in write_scope.repository_roots]
             retry_patch_digest = (
-                _existing_patch_digest(stage.workspace, stage.remote)
+                _existing_exact_patch_digest(stage.workspace, stage.remote)
                 if execution.continuation == "retry"
                 else None
             )
@@ -1839,7 +1839,7 @@ async def _settle_worker_patch(
                 execution=execution,
                 role=f"auto_research_{_actor_role}_patch_correction_{correction_rounds}",
             )
-            pre_launch_digest = _existing_patch_digest(stage.workspace, stage.remote)
+            pre_launch_digest = _existing_exact_patch_digest(stage.workspace, stage.remote)
             _record_agent_launch_receipt(
                 execution,
                 cast(RunRequest, turn.request),

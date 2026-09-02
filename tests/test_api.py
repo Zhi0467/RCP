@@ -29,6 +29,7 @@ from rcp.background import AgentTaskExecution
 from rcp.config import MachineConfig
 from rcp.core.attention import decision_awaits_choice
 from rcp.core.models import AuthorizedHuman, Blocker, Decision, GraphState, Patch
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.validation.constants import NODE_ADAPTER
 from rcp.history import HistoryManager, ReplayHalted
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
@@ -45,6 +46,7 @@ from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.shared import (
     AgentOutputProblem,
     _collect_patch_text,
+    _existing_exact_patch_digest,
     _sse,
     _sweep_stale_stages,
 )
@@ -68,8 +70,10 @@ from rcp.service import (
 from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.sources import project_cache_roots
 from rcp.storage import (
+    AgentTaskAdmissionConflict,
     AgentTaskRecord,
     AppStore,
+    EpisodeRecord,
     GraphWatcherRecord,
     ProjectRecord,
     WatcherContinuation,
@@ -428,13 +432,86 @@ def test_stale_instance_guard_rejects_mutation_before_side_effect(manifest, tmp_
 
     rejected = client.delete(
         f"/api/projects/{project_id}",
-        headers={"X-RCP-Instance-ID": "replaced-instance"},
+        headers={
+            "Origin": "http://127.0.0.1:5173",
+            "X-RCP-Instance-ID": "replaced-instance",
+        },
     )
 
     assert rejected.status_code == 409
     assert "replaced by another backend instance" in rejected.json()["detail"]
     assert rejected.json()["instance_id"] == app.state.instance_metadata.instance_id
+    assert rejected.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
     assert any(item["id"] == project_id for item in client.get("/api/projects").json())
+
+
+def test_watcher_poll_delivery_failure_does_not_starve_later_auto_research_episode(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_ids = [app.state.default_project_id, str(uuid.uuid4())]
+    store.upsert_project(
+        ProjectRecord(
+            project_id=project_ids[1],
+            locator=str(tmp_path / "second-project" / "research.yaml"),
+            name="Second project",
+            state_location=str(tmp_path / "second-project" / ".research"),
+            state_remote=False,
+            added_at=store.now(),
+        )
+    )
+    episode_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+    authorizer = _named_test_authorizer(store)
+    for project_id, episode_id in zip(project_ids, episode_ids, strict=True):
+        now = store.now()
+        store.create_episode(
+            EpisodeRecord(
+                episode_id=episode_id,
+                project_id=project_id,
+                mode="auto_research",
+                graph_target=GraphTargetRef(kind="branch", branch_id=episode_id),
+                graph_base_head=GraphHeadRef(revision=0),
+                status="queued",
+                invocation_ceiling=2,
+                authorized_by=authorizer,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    lifecycle_attempts: list[str] = []
+    mail_attempts: list[str] = []
+
+    def reconcile_lifecycle(_background, *, episode_id=None):
+        assert episode_id is not None
+        lifecycle_attempts.append(episode_id)
+        if len(lifecycle_attempts) == 1:
+            raise ValueError("malformed retained lifecycle row")
+        return []
+
+    def reconcile_mail(_background, *, episode_id=None):
+        assert episode_id is not None
+        mail_attempts.append(episode_id)
+        return []
+
+    monkeypatch.setattr(
+        "rcp.api.app.reconcile_pending_auto_research_lifecycle",
+        reconcile_lifecycle,
+    )
+    monkeypatch.setattr(
+        "rcp.api.app.reconcile_pending_auto_research_mail",
+        reconcile_mail,
+    )
+
+    after_poll = app.state.watcher_poller.on_poll_completed
+    assert after_poll is not None
+    after_poll()
+
+    assert len(lifecycle_attempts) == 2
+    assert mail_attempts == [lifecycle_attempts[1]]
 
 
 class ScriptedLauncher:
@@ -1523,6 +1600,25 @@ def test_seed_and_refresh_reject_caller_supplied_sessions(manifest, tmp_path, ki
     assert client.get(f"/api/projects/{project_id}/tasks").json() == []
 
 
+def test_task_validation_status_does_not_depend_on_exception_wording(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+
+    def reject_validation(*_args, **_kwargs):
+        raise ValueError("A malformed field happens to say already running.")
+
+    monkeypatch.setattr("rcp.api.tasks._validated_task_request", reject_validation)
+
+    response = TestClient(app).post(
+        f"/api/projects/{project_id}/tasks/seed",
+        json={"run_truth_scope": ["repo-a"]},
+    )
+
+    assert response.status_code == 422
+
+
 @pytest.mark.asyncio
 async def test_graph_stream_rejects_uncheckpointed_session_before_launch(
     manifest, tmp_path
@@ -1996,6 +2092,20 @@ def test_patch_collector_prefers_patch_json_and_refuses_ambiguity(tmp_path) -> N
     (tmp_path / "backup.json").write_text(patch, encoding="utf-8")
     with pytest.raises(AgentOutputProblem, match="more than one patch-shaped JSON file"):
         _collect_patch_text(tmp_path, None)
+
+
+def test_exact_patch_digest_ignores_patch_shaped_drafts(tmp_path) -> None:
+    malformed_patch = '{"summary": "retained", "ops": ['
+    (tmp_path / "patch.json").write_text(malformed_patch, encoding="utf-8")
+    (tmp_path / "draft.json").write_text(
+        agent_patch_json(refresh_patch()),
+        encoding="utf-8",
+    )
+
+    assert (
+        _existing_exact_patch_digest(tmp_path, None)
+        == hashlib.sha256(malformed_patch.encode("utf-8")).hexdigest()
+    )
 
 
 def test_local_state_repository_is_read_in_place_instead_of_copied(manifest, tmp_path) -> None:
@@ -6595,6 +6705,51 @@ def test_run_endpoint_preserves_a_nonblank_experiment_goal(manifest, tmp_path) -
     assert response.status_code == 202, response.text
     assert response.json()["request"]["message"] == goal
     assert seen.wait(timeout=1)
+
+
+def test_experiment_admission_conflict_status_uses_exception_type(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
+
+    def reject_admission(*_args, **_kwargs):
+        raise AgentTaskAdmissionConflict("The valid request conflicts with admitted work.")
+
+    monkeypatch.setattr(app.state.background_tasks, "start", reject_admission)
+    project_id = app.state.default_project_id
+
+    response = TestClient(app).post(
+        f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
+        json={"chat_id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "The valid request conflicts with admitted work."
+
+
+def test_experiment_validation_status_does_not_depend_on_exception_wording(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
+
+    def reject_validation(*_args, **_kwargs):
+        raise ValueError("A malformed field happens to say already running.")
+
+    monkeypatch.setattr("rcp.api.experiments.fresh_experiment_run_request", reject_validation)
+    project_id = app.state.default_project_id
+
+    response = TestClient(app).post(
+        f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
+        json={"chat_id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 422
 
 
 def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, tmp_path) -> None:

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from rcp.control import derive_experiment_control_state
-from rcp.core.models import Experiment
+from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, Experiment
 from rcp.runs.auto_research_admission import (
     ensure_auto_research_child_experiment_spawned,
     resume_auto_research_child_experiment,
@@ -59,6 +59,10 @@ class AutoResearchExperimentLimitInvalid(ValueError):
             f"allowance of {allowance.total}; lower --invocation-limit to "
             f"{allowance.total} or less."
         )
+
+
+class AutoResearchExperimentReplacementNotReady(ValueError):
+    """A valid replacement intent is waiting for a mutable admission gate."""
 
 
 class AutoResearchExperimentCoordinator:
@@ -350,6 +354,10 @@ class AutoResearchExperimentCoordinator:
                         request,
                         admission_id=None,
                     )
+                except AutoResearchExperimentReplacementNotReady:
+                    # The durable replacement remains pending. A later graph or
+                    # lifecycle reconciliation retries the same snapshotted intent.
+                    continue
                 except (
                     AutoResearchExperimentAllowanceReached,
                     EpisodeNotRunning,
@@ -455,7 +463,9 @@ class AutoResearchExperimentCoordinator:
             raise ValueError(f"Node {node_id!r} is not an Experiment.")
         control = derive_experiment_control_state(state, node_id)
         if not control.ready:
-            raise ValueError(" ".join(control.reasons))
+            if node.status in CLOSED_EXPERIMENT_STATUSES:
+                raise ValueError(" ".join(control.reasons))
+            raise AutoResearchExperimentReplacementNotReady(" ".join(control.reasons))
         supplied = RunRequest(
             chat_scope="node",
             node_id=node_id,
