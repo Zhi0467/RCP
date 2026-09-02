@@ -247,6 +247,7 @@ def _register_legacy_project(path: Path, locator: str, project_id: str) -> None:
 
     connection = sqlite3.connect(path)
     connection.execute("DROP TABLE IF EXISTS project_members")
+    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 5")
     connection.execute(
         """
         INSERT INTO projects (

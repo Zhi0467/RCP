@@ -55,6 +55,7 @@ class AppStoreBase:
             "project_invitations",
             "project_provisioning_requests",
             "projects",
+            "result_views",
             "space_users",
             "space_identity",
             "team_bootstrap_codes",
@@ -75,6 +76,7 @@ class AppStoreBase:
 
     @classmethod
     def initialize_team_space(cls, path: Path, name: str) -> tuple[AppStore, str]:
+        database_existed = path.exists()
         store = cls.__new__(cls)
         store.path = path
         store._read_only_snapshot = False
@@ -89,7 +91,11 @@ class AppStoreBase:
                 require_new=True,
             )
         except Exception:
-            _discard_failed_team_initialization(path, initial_space_id)
+            _discard_failed_team_initialization(
+                path,
+                initial_space_id,
+                created_file=not database_existed,
+            )
             raise
         if bootstrap_code is None:  # pragma: no cover - guarded by issue_bootstrap
             raise RuntimeError("RCP team bootstrap code was not created.")
