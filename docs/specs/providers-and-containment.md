@@ -210,8 +210,10 @@ They retain task mode, graph target, capability, host, stage, and external-effec
 diagnostics. A failed run retains its scratch and Patch text for bounded
 same-session repair and normal retention; RCP does not delete evidence merely
 because validation or transport failed. Age-based cleanup first excludes exact
-stages owned by active tasks, live episodes, pending or running report wrap-ups,
-and unexpired temporary result views; terminal debris follows normal retention.
+stages owned by active tasks, committed native chat sessions, live episodes,
+pending or running report wrap-ups, and unexpired temporary result views. One
+storage projection supplies the same ownership and required-stage decisions to
+cleanup and update checkpointing; terminal debris follows normal retention.
 
 Seed and Refresh repair through a generic correction ladder: rescan the retained
 stage for the Patch, then hand validation errors back to the same live session

@@ -13,7 +13,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator, Iterable
-from contextlib import AbstractContextManager, aclosing
+from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Protocol, TypeVar
@@ -33,6 +33,7 @@ from rcp.transport import RemoteRunStage, StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
+    from rcp.storage import RunStageLifecycleRecord
 
 _STAGE_RETENTION_SECONDS = RUN_STAGE_RETENTION_DAYS * 24 * 3600
 _LOCAL_STAGE_DIRECTORY_FLAGS = (
@@ -54,7 +55,7 @@ _RequestT = TypeVar("_RequestT", bound=BaseModel)
 
 
 class _RecoveryStageStore(Protocol):
-    def connection(self) -> AbstractContextManager[sqlite3.Connection]: ...
+    def run_stage_lifecycles(self) -> tuple[RunStageLifecycleRecord, ...]: ...
 
 
 class _RunStageProtectionStore(Protocol):
@@ -67,12 +68,6 @@ class LocalRecoveryStage:
 
     root: Path
     owner_refs: tuple[str, ...]
-
-
-@dataclass
-class _RecoveryStageBinding:
-    owner_refs: set[str]
-    required: bool = False
 
 
 def checkpoint_local_recovery_stages(
@@ -90,88 +85,25 @@ def checkpoint_local_recovery_stages(
     if not data_dir.is_absolute() or ".." in data_dir.parts:
         raise ValueError("recovery-stage inventory requires one absolute data directory")
     stage_root = data_dir / "run-stage"
-    bindings: dict[Path, _RecoveryStageBinding] = {}
-    stage_owners = (
-        (
-            "graph_runs",
-            """
-            SELECT operation_id AS owner, COALESCE(stage_host, '') AS host,
-                   stage_root AS root,
-                   status IN ('queued', 'running', 'pausing') AS required
-            FROM graph_runs
-            WHERE stage_root IS NOT NULL AND stage_root != ''
-            """,
-        ),
-        (
-            "experiment_episode_state",
-            """
-            SELECT state.episode_id AS owner, COALESCE(state.stage_host, '') AS host,
-                   state.stage_root AS root,
-                   episode.status IN ('queued', 'running', 'stopping', 'wrapping_up')
-                       AS required
-            FROM experiment_episode_state AS state
-            JOIN episodes AS episode ON episode.episode_id = state.episode_id
-            WHERE state.stage_root IS NOT NULL AND state.stage_root != ''
-            """,
-        ),
-        (
-            "episode_wrapups",
-            """
-            SELECT episode_id AS owner, COALESCE(stage_host, '') AS host,
-                   stage_root AS root,
-                   state IN ('pending', 'running') AS required
-            FROM episode_wrapups
-            WHERE stage_root IS NOT NULL AND stage_root != ''
-            """,
-        ),
-        (
-            "result_views",
-            """
-            SELECT view_id AS owner, COALESCE(stage_host, '') AS host,
-                   stage_root AS root, 0 AS required
-            FROM result_views
-            WHERE stage_root IS NOT NULL AND stage_root != ''
-            """,
-        ),
-    )
-    with store.connection() as connection:
-        tables = {
-            str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ).fetchall()
-        }
-        for table, query in stage_owners:
-            if table not in tables:
-                continue
-            if table == "experiment_episode_state" and "episodes" not in tables:
-                continue
-            rows = connection.execute(query).fetchall()
-            for row in rows:
-                if row["host"]:
-                    continue
-                stage_value = str(row["root"])
-                candidate = Path(stage_value)
-                if (
-                    not candidate.is_absolute()
-                    or ".." in candidate.parts
-                    or str(candidate) != stage_value
-                    or candidate.parent != stage_root
-                ):
-                    raise ValueError("a saved local run stage escaped its exact data boundary")
-                binding = bindings.setdefault(candidate, _RecoveryStageBinding(owner_refs=set()))
-                binding.owner_refs.add(f"{table}:{row['owner']}")
-                binding.required = binding.required or bool(row["required"])
-
+    bindings = tuple(item for item in store.run_stage_lifecycles() if not item.stage_host)
     if not bindings:
         return ()
 
     inventory: list[LocalRecoveryStage] = []
-    for root, binding in sorted(bindings.items(), key=lambda item: str(item[0])):
+    for binding in bindings:
+        stage_value = binding.stage_root
+        root = Path(stage_value)
+        if (
+            not root.is_absolute()
+            or ".." in root.parts
+            or str(root) != stage_value
+            or root.parent != stage_root
+        ):
+            raise ValueError("a saved local run stage escaped its exact data boundary")
         try:
             metadata = root.lstat()
         except FileNotFoundError as exc:
-            if binding.required:
+            if binding.must_exist:
                 raise ValueError("a recovery-critical local run stage is unavailable") from exc
             continue
         except OSError as exc:
@@ -181,7 +113,7 @@ def checkpoint_local_recovery_stages(
         inventory.append(
             LocalRecoveryStage(
                 root=root,
-                owner_refs=tuple(sorted(binding.owner_refs)),
+                owner_refs=binding.owner_refs,
             )
         )
     if not inventory:

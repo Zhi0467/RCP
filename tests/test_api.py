@@ -50,6 +50,7 @@ from rcp.runs.shared import (
     _existing_exact_patch_digest,
     _sse,
     _sweep_stale_stages,
+    _swept_stage_root,
 )
 from rcp.runs.tasks.coach import _paper_snapshot_path, stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
@@ -4151,6 +4152,48 @@ def test_local_stage_sweeper_removes_stale_read_only_tree(tmp_path) -> None:
 
     assert not stage.exists()
     assert protected_stage.is_dir()
+
+
+def test_local_stage_sweeper_keeps_a_settled_chat_session_stage(tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    stage = data_dir / "run-stage" / "chat-project-chat"
+    stage.mkdir(parents=True)
+    store = AppStore(data_dir / "rcp.sqlite3")
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="chat-turn",
+            project_id="project",
+            kind="project_chat",
+            status="succeeded",
+            request={"chat_id": "chat", "provider": "codex", "run_on": "local"},
+            created_at=now,
+            updated_at=now,
+            status_message="succeeded",
+            native_session_id="native-session",
+            stage_root=str(stage),
+        )
+    )
+    snapshot = json.dumps({"master_context_path": str(stage / "inputs" / "master.md")})
+    store.commit_chat_session_context(
+        provider="codex",
+        execution_machine="local",
+        native_session_id="native-session",
+        project_id="project",
+        kind="project_chat",
+        chat_id="chat",
+        node_id=None,
+        protocol_version=1,
+        snapshot_json=snapshot,
+        snapshot_sha256=hashlib.sha256(snapshot.encode()).hexdigest(),
+        committed_operation_id="chat-turn",
+        expected_snapshot_sha256=None,
+    )
+    stale = time.time() - 8 * 86400
+    os.utime(stage, (stale, stale))
+
+    assert _swept_stage_root(data_dir, store=store) == data_dir / "run-stage"
+    assert stage.is_dir()
 
 
 def test_failed_chat_task_keeps_the_answer_it_already_produced(manifest, tmp_path) -> None:

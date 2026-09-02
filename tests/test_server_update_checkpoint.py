@@ -5,13 +5,11 @@ import io
 import json
 import os
 import pwd
-import sqlite3
 import stat
 import subprocess
 import sys
 import uuid
 from collections.abc import Callable
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
@@ -61,6 +59,7 @@ from rcp.storage import AppStore
 from rcp.storage.models import (
     ProjectTransferUploadCompleteReceipt,
     ProjectTransferUploadRecord,
+    RunStageLifecycleRecord,
 )
 from rcp.transfer import TransferArchiveEntry
 from rcp.transfer.target import target_transfer_archive_path
@@ -127,18 +126,12 @@ def _write_private_model(path: Path, model: VerifiedCandidateReceipt) -> None:
         os.close(descriptor)
 
 
-class _SQLiteStageStore:
-    def __init__(self, database: Path) -> None:
-        self.database = database
+class _StageLifecycleStore:
+    def __init__(self, *records: RunStageLifecycleRecord) -> None:
+        self.records = records
 
-    @contextmanager
-    def connection(self):
-        connection = sqlite3.connect(self.database)
-        connection.row_factory = sqlite3.Row
-        try:
-            yield connection
-        finally:
-            connection.close()
+    def run_stage_lifecycles(self) -> tuple[RunStageLifecycleRecord, ...]:
+        return self.records
 
 
 def _checkpoint_fixture(
@@ -514,41 +507,30 @@ def test_local_recovery_stage_inventory_uses_the_task_ledger_and_ignores_remote(
     data_dir = tmp_path / "data"
     local = data_dir / "run-stage" / "local-stage"
     local.mkdir(parents=True)
-    database = tmp_path / "stages.sqlite3"
     local_operation = str(uuid.uuid4())
     local_episode = str(uuid.uuid4())
     remote_view = uuid.uuid4().hex[:24]
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            "CREATE TABLE graph_runs "
-            "(operation_id TEXT, status TEXT, stage_host TEXT, stage_root TEXT)"
-        )
-        connection.execute(
-            "CREATE TABLE result_views (view_id TEXT, stage_host TEXT, stage_root TEXT)"
-        )
-        connection.execute(
-            "CREATE TABLE experiment_episode_state "
-            "(episode_id TEXT, stage_host TEXT, stage_root TEXT)"
-        )
-        connection.execute("CREATE TABLE episodes (episode_id TEXT, status TEXT)")
-        connection.execute(
-            "INSERT INTO graph_runs VALUES (?, ?, ?, ?)",
-            (local_operation, "running", None, str(local)),
-        )
-        connection.execute(
-            "INSERT INTO result_views VALUES (?, ?, ?)",
-            (remote_view, "gpu.example", "/srv/rcp/run-stage/remote-stage"),
-        )
-        connection.execute(
-            "INSERT INTO experiment_episode_state VALUES (?, ?, ?)",
-            (local_episode, "", str(local)),
-        )
-        connection.execute(
-            "INSERT INTO episodes VALUES (?, ?)",
-            (local_episode, "running"),
-        )
+    store = _StageLifecycleStore(
+        RunStageLifecycleRecord(
+            stage_host="",
+            stage_root=str(local),
+            owner_refs=(
+                f"experiment_episode_state:{local_episode}",
+                f"graph_runs:{local_operation}",
+            ),
+            must_exist=True,
+            protect_from_cleanup=True,
+        ),
+        RunStageLifecycleRecord(
+            stage_host="gpu.example",
+            stage_root="/tmp/rcp-run.remote-stage",
+            owner_refs=(f"result_views:{remote_view}",),
+            must_exist=False,
+            protect_from_cleanup=True,
+        ),
+    )
 
-    inventory = checkpoint_local_recovery_stages(_SQLiteStageStore(database), data_dir)
+    inventory = checkpoint_local_recovery_stages(store, data_dir)
 
     assert [item.root for item in inventory] == [local]
     assert inventory[0].owner_refs == (
@@ -564,25 +546,24 @@ def test_local_recovery_stage_inventory_ignores_retention_swept_history(
     data_dir.mkdir()
     missing_task = data_dir / "run-stage" / "old-task"
     missing_view = data_dir / "run-stage" / "old-result-view"
-    database = tmp_path / "stages.sqlite3"
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            "CREATE TABLE graph_runs "
-            "(operation_id TEXT, status TEXT, stage_host TEXT, stage_root TEXT)"
-        )
-        connection.execute(
-            "CREATE TABLE result_views (view_id TEXT, stage_host TEXT, stage_root TEXT)"
-        )
-        connection.execute(
-            "INSERT INTO graph_runs VALUES (?, ?, ?, ?)",
-            (str(uuid.uuid4()), "succeeded", "", str(missing_task)),
-        )
-        connection.execute(
-            "INSERT INTO result_views VALUES (?, ?, ?)",
-            (uuid.uuid4().hex[:24], "", str(missing_view)),
-        )
+    store = _StageLifecycleStore(
+        RunStageLifecycleRecord(
+            stage_host="",
+            stage_root=str(missing_task),
+            owner_refs=(f"graph_runs:{uuid.uuid4()}",),
+            must_exist=False,
+            protect_from_cleanup=False,
+        ),
+        RunStageLifecycleRecord(
+            stage_host="",
+            stage_root=str(missing_view),
+            owner_refs=(f"result_views:{uuid.uuid4().hex[:24]}",),
+            must_exist=False,
+            protect_from_cleanup=False,
+        ),
+    )
 
-    assert checkpoint_local_recovery_stages(_SQLiteStageStore(database), data_dir) == ()
+    assert checkpoint_local_recovery_stages(store, data_dir) == ()
 
 
 def test_local_recovery_stage_inventory_requires_active_episode_stage(tmp_path: Path) -> None:
@@ -590,21 +571,18 @@ def test_local_recovery_stage_inventory_requires_active_episode_stage(tmp_path: 
     data_dir.mkdir()
     episode_id = str(uuid.uuid4())
     missing = data_dir / "run-stage" / "active-episode"
-    database = tmp_path / "stages.sqlite3"
-    with sqlite3.connect(database) as connection:
-        connection.execute("CREATE TABLE episodes (episode_id TEXT, status TEXT)")
-        connection.execute(
-            "CREATE TABLE experiment_episode_state "
-            "(episode_id TEXT, stage_host TEXT, stage_root TEXT)"
+    store = _StageLifecycleStore(
+        RunStageLifecycleRecord(
+            stage_host="",
+            stage_root=str(missing),
+            owner_refs=(f"experiment_episode_state:{episode_id}",),
+            must_exist=True,
+            protect_from_cleanup=True,
         )
-        connection.execute("INSERT INTO episodes VALUES (?, ?)", (episode_id, "running"))
-        connection.execute(
-            "INSERT INTO experiment_episode_state VALUES (?, ?, ?)",
-            (episode_id, "", str(missing)),
-        )
+    )
 
     with pytest.raises(ValueError, match="recovery-critical local run stage"):
-        checkpoint_local_recovery_stages(_SQLiteStageStore(database), data_dir)
+        checkpoint_local_recovery_stages(store, data_dir)
 
 
 def test_checkpoint_captures_attachment_bytes_and_excludes_runtime_debris(

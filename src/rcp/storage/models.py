@@ -1952,6 +1952,18 @@ class ChatSessionContextRecord(BaseModel):
     updated_at: str
 
 
+class RunStageLifecycleRecord(BaseModel):
+    """Aggregated durable ownership of one exact local or remote run stage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stage_host: str
+    stage_root: str = Field(min_length=1)
+    owner_refs: tuple[str, ...]
+    must_exist: bool
+    protect_from_cleanup: bool
+
+
 class AgentTaskRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -3386,6 +3398,7 @@ __all__ = [
     "ProviderSkillInventoryRecord",
     "ResultViewConflict",
     "ResultViewRecord",
+    "RunStageLifecycleRecord",
     "SPACE_NAME_MAX_LENGTH",
     "SpaceKind",
     "SpaceUserKind",

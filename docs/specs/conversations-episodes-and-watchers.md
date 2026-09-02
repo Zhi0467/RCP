@@ -50,7 +50,9 @@ continuing with the other target's authority.
 One conversation owns one reusable scratch stage because provider-native resume
 depends on its original working directory. Each logical turn owns one exact
 `turns/<turn-id>/artifacts` directory. Stale `patch.json` and `watch.json` are
-cleared fail-closed before a new turn that could misattribute them.
+cleared fail-closed before a new turn that could misattribute them. A committed
+native chat-session context retains that stage, including its immutable master
+context, even while no turn is active.
 
 The desktop composer may turn one bounded macOS dictation segment into editable
 text. It never sends automatically or retains audio. Temporary input attachments
