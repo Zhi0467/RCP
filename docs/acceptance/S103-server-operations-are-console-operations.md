@@ -139,9 +139,10 @@ member running a long task plus active Auto-research and Experiment episodes.
     `sudo rcp server provider update` once for Codex and once for Claude. Prove
     both native updates execute under `rcp`, the account-local executable wins
     over any stale system-wide copy, the stable symlink path remains recorded,
-    and version plus existing native login are rechecked. Invalidate login once
-    and verify RCP preserves the successful update while printing the exact
-    provider-login recovery command.
+    and version plus existing native login are rechecked. Prove the Codex
+    installer is noninteractive and never launches Codex as part of updating.
+    Invalidate login once and verify RCP preserves the successful update while
+    printing the exact provider-login recovery command.
 
 ## Assert
 

@@ -97,7 +97,11 @@ def test_provider_update_runs_native_maintenance_as_rcp_and_verifies_login(
             return subprocess.CompletedProcess(argv, 0, "updated", "")
         if provider == "codex" and argv[0] == "/usr/bin/curl":
             return subprocess.CompletedProcess(argv, 0, "", "")
-        if provider == "codex" and argv[0] == "/bin/sh":
+        if provider == "codex" and argv[:3] == (
+            "/usr/bin/env",
+            "CODEX_NON_INTERACTIVE=1",
+            "/bin/sh",
+        ):
             binary.parent.mkdir(parents=True, exist_ok=True)
             binary.write_text("#!/bin/sh\n", encoding="utf-8")
             binary.chmod(0o755)
@@ -132,7 +136,9 @@ def test_provider_update_runs_native_maintenance_as_rcp_and_verifies_login(
     }
     if provider == "codex":
         assert any(call[0] == "/usr/bin/curl" for call in calls)
-        assert any(call[0] == "/bin/sh" for call in calls)
+        assert any(
+            call[:3] == ("/usr/bin/env", "CODEX_NON_INTERACTIVE=1", "/bin/sh") for call in calls
+        )
         assert "existing projects keep their explicit path" not in events[-1]["step"]["message"]
     else:
         assert (str(binary), "update") in calls

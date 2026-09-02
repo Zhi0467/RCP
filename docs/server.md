@@ -395,12 +395,13 @@ provider-owned update paths documented by
 [Anthropic](https://code.claude.com/docs/en/cli-usage). RCP does not download or
 store provider credentials and an update never substitutes for login.
 
-If the Codex installer detects an older npm-managed installation, keep it when
-prompted and decline the optional immediate Codex launch. RCP gives the
-account-local standalone command in `/home/rcp/.local/bin` precedence, then
-checks that command and the existing login before reporting success. The older
-system installation can be removed separately after the server is qualified;
-it does not need to be removed during this update.
+RCP runs the Codex installer in its supported noninteractive mode, so it does
+not ask whether to launch Codex or remove an older npm-managed installation.
+RCP leaves that older installation in place, gives the account-local standalone
+command in `/home/rcp/.local/bin` precedence, then checks that command and the
+existing login before reporting success. The older system installation can be
+removed separately after the server is qualified; it does not need to be
+removed during this update.
 
 If the provider updated but its native login is unavailable, the same command
 stops with the exact `sudo -u rcp -H ... login` recovery command. Complete that

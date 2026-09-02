@@ -58,7 +58,11 @@ does not take ownership of provider releases or credentials. The installed
 service and root-to-service subprocess environment put `/home/rcp/.local/bin`
 first so a provider's account-local installation wins over a stale system-wide
 copy. Provider discovery persists that stable command path rather than resolving
-a provider-managed symlink to one versioned target.
+a provider-managed symlink to one versioned target. RCP runs the Codex installer
+in its supported noninteractive mode: the installer never launches Codex or asks
+the operator to decide what to do with an older package-manager installation.
+RCP verifies the selected executable and existing login as its separate final
+step.
 
 Only root/system integration lives elsewhere: `/etc/rcp/server.toml`, the
 root-owned current-release pointer, `/run/rcp/control.sock`, the stable CLI
