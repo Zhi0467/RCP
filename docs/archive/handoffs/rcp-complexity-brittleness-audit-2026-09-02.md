@@ -8,8 +8,8 @@
 ## Disposition (2026-09-02)
 
 The human accepted findings 1, 4, 5, 6, and 7; they are carried by the
-[complexity audit remediation handoff](../../handoffs/handoff-2026-09-02-complexity-audit-remediation.md).
-Findings 2 and 3 are deferred to a separate deployment-model pull request.
+[complexity audit remediation handoff](handoff-2026-09-02-complexity-audit-remediation.md).
+Findings 2 and 3 are carried by https://github.com/Zhi0467/RCP/pull/12.
 
 ## Conclusion
 

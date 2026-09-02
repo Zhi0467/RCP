@@ -2,12 +2,18 @@
 
 Date: 2026-09-02
 Human-confirmed: 2026-09-02
-Status: active. The team/server surface freeze decision is recorded and the
-archived audit fixes the accepted scope. B's background-policy matrix and D's
-documentation admission rules are implemented and pass their focused and
-required pull-request checks. S and W remain and are being implemented
-concurrently on this pull request. Findings 2 and 3 are excluded and will be
-carried by a separate deployment-model pull request.
+Status: implemented and verified on pull request #9. S now has an explicit
+ordered migration registry, one fresh baseline, transactional ledgered
+migrations, and read-only startup validation; all fourteen frozen fixtures
+converge, current startup preserves database bytes, and independent review's
+transfer-upload normalization gap is fixed. Its focused and full pytest runs,
+exact-base-upgrade check, ruff, and pre-commit passed. W now has one reducer-owned
+project session and derived graph selection; its build, all 495 tests,
+independent-review fixes, pre-commit, and live two-tab draft, reload, preview,
+and revision-9 Sync drive passed. B's policy matrix and D's admission rule also
+pass their required checks. The closure condition is met once this pull request
+merges, and the handoff is archived in the change that records completion.
+Findings 2 and 3 remain excluded.
 
 The settled decisions are to freeze new team/server surface until the active lab
 handoff closes, complete the ordered storage-migration boundary, create one
@@ -22,9 +28,9 @@ facts. Findings 2 and 3 do not block this closure.
 ## Scope boundary
 
 The accepted source is the
-[complexity and brittleness audit](../archive/handoffs/rcp-complexity-brittleness-audit-2026-09-02.md).
+[complexity and brittleness audit](rcp-complexity-brittleness-audit-2026-09-02.md).
 This handoff carries findings 4, 5, 6, and 7. Finding 1 is recorded in the
-[team/server surface freeze decision](../decisions/2026-09-02-freeze-new-team-server-surface-until-lab-closure.md).
+[team/server surface freeze decision](../../decisions/2026-09-02-freeze-new-team-server-surface-until-lab-closure.md).
 
 Do not restructure source update and restore as a second control plane or extract
 the installed-service lifecycle from `create_app` here. Those are findings 2 and

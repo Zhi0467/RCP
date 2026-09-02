@@ -15,12 +15,6 @@ Active:
   Its dated implementation log and completed packet sections were archived to
   [the evidence file](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-evidence.md)
   on 2026-09-01; the handoff itself retains only work with an open drive.
-- [Complexity audit remediation](handoff-2026-09-02-complexity-audit-remediation.md)
-  — human-confirmed remediation of the accepted storage-startup,
-  project-session, background-policy, and documentation-admission findings.
-  Packets S, W, B, and D are being implemented concurrently on pull request #9;
-  deployment-model findings 2 and 3 are excluded.
-
 This directory contains only human-confirmed work that is ready to implement and
 not yet complete. A handoff is an execution contract, not a chronological diary.
 Its opening status must state:

@@ -209,6 +209,7 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 Keep this file near 200 lines: target 180–220 lines, with a hard ceiling of 230
 lines enforced by tests. Add only cross-cutting rules a coding agent must see on
 every task. Move behavior, rationale, long failure histories, UI details, and
-module-specific procedures to their owning documents. A new global invariant
-must replace or consolidate an existing global rule, name its concrete code
-owner, and cite an executable test or acceptance scenario.
+module-specific procedures to their owning documents.
+Do not grow this file by append-only notes: each added line must remove or consolidate
+equal-value text. A new global invariant must replace or consolidate a global rule,
+name its concrete code owner, and cite an executable test or acceptance scenario.
