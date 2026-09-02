@@ -104,6 +104,8 @@ def _team_invitation_response(
     else:
         status = "waiting"
         status_label = "Waiting for someone to join"
+    # Deliberately narrower than the store, which also accepts revoking expired,
+    # unconsumed invitations; this frontend decision only offers live ones.
     can_revoke = (
         invitation.consumed_at is None
         and invitation.revoked_at is None

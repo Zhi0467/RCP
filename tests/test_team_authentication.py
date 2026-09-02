@@ -141,6 +141,51 @@ def test_authenticated_team_roster_names_enrolled_members_without_credentials(tm
     assert "token" not in roster.text
 
 
+def test_team_roster_excludes_member_pending_removal_but_invitation_keeps_name(
+    tmp_path,
+) -> None:
+    store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
+    app = create_app(data_dir=tmp_path)
+    alice = TestClient(app, base_url="https://testserver")
+    bob = TestClient(app, base_url="https://testserver")
+    alice_enrollment = alice.post(
+        "/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"}
+    ).json()
+    alice_user = alice_enrollment["identity"]["user"]
+    assert (
+        alice.post(
+            "/api/team/session/exchange", json={"token": alice_enrollment["token"]}
+        ).status_code
+        == 200
+    )
+    invitation = alice.post("/api/team/invitations", json={}).json()
+    bob_enrollment = bob.post(
+        "/api/team/enroll",
+        json={"code": invitation["code"], "display_name": "Bob Collaborator"},
+    ).json()
+    bob_user = bob_enrollment["identity"]["user"]
+    preview = store.member_removal_preview(bob_user["user_id"])
+
+    store.begin_member_removal(
+        bob_user["user_id"],
+        expected_boundary_sha256=preview.boundary_sha256,
+    )
+
+    roster = alice.get("/api/space/users")
+    assert roster.status_code == 200
+    assert roster.json() == [
+        {"user_id": alice_user["user_id"], "display_name": "Alice"},
+    ]
+    assert [user.user_id for user in store.space_users()] == [
+        alice_user["user_id"],
+        bob_user["user_id"],
+    ]
+    invitations = alice.get("/api/team/invitations")
+    assert invitations.status_code == 200
+    assert invitations.json()[0]["invitation_id"] == invitation["invitation"]["invitation_id"]
+    assert invitations.json()[0]["status_label"] == "Bob Collaborator joined"
+
+
 def test_revoking_an_invitation_stops_the_code_without_touching_others(tmp_path) -> None:
     store, _bootstrap, alice, _alice_token = _claimed_team(tmp_path)
     leaked, leaked_code = store.create_team_invitation(alice.user_id)

@@ -6,8 +6,10 @@ import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from pydantic import ValidationError
 
 import rcp.storage.base as storage_base_module
 from rcp.artifacts import AgentArtifactDescriptor
@@ -24,6 +26,7 @@ from rcp.storage import (
     ProjectRecord,
     SpaceUserRecord,
     TeamAuthenticationError,
+    TeamInvitationRecord,
     WatcherContinuation,
     WatcherRecord,
 )
@@ -547,6 +550,28 @@ def test_space_user_record_rejects_noncanonical_identity_and_extra_fields(tmp_pa
         SpaceUserRecord.model_validate({**owner.model_dump(), "user_id": str(uuid.uuid1())})
     with pytest.raises(ValueError, match="Extra inputs are not permitted"):
         SpaceUserRecord.model_validate({**owner.model_dump(), "role": "admin"})
+
+
+def test_team_invitation_record_cannot_be_consumed_and_revoked() -> None:
+    created_at = datetime.now(UTC)
+    consumed = TeamInvitationRecord(
+        invitation_id=str(uuid.uuid4()),
+        created_by=str(uuid.uuid4()),
+        created_at=created_at.isoformat(),
+        expires_at=(created_at + timedelta(days=1)).isoformat(),
+        consumed_at=(created_at + timedelta(minutes=1)).isoformat(),
+        consumed_by=str(uuid.uuid4()),
+        failed_attempts=0,
+    )
+
+    assert consumed.consumed_at is not None
+    with pytest.raises(ValidationError, match="cannot be both consumed and revoked"):
+        TeamInvitationRecord.model_validate(
+            {
+                **consumed.model_dump(),
+                "revoked_at": (created_at + timedelta(minutes=2)).isoformat(),
+            }
+        )
 
 
 @pytest.mark.parametrize("persisted", [None, "not-a-uuid", str(uuid.uuid1())])
