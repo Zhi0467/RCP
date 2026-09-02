@@ -44,6 +44,12 @@ single-use invitations created by any existing member. Repeated invalid guesses
 lock only that code. Invitation copy text names the nonsecret space and expiry,
 shows the code once, and never embeds it in a URL.
 
+The desktop identity panel lists the enrolled team roster and count without
+roles or ranks. An invitation's creator sees its nonsecret ledger state as
+waiting, the joining member's display name after enrollment, expired, locked,
+or revoked, and may refresh that roster and ledger explicitly. Raw codes remain
+one-display secrets.
+
 An invitation's creator may revoke it while it is still live, because a code
 that reached the wrong place is otherwise redeemable until it expires. Only the
 creator may revoke, matching who can see it, and a revoked code is refused as
@@ -65,10 +71,12 @@ expiry. Restart does not re-enroll members. A member may rotate or revoke only
 their own credential and may log out their own session.
 
 A team space binds only loopback because credentials may not cross plaintext
-HTTP. Direct HTTPS/VPN declaration and the desktop **Add team space** SSH client
-are not current product paths. An unauthenticated browser receives the focused
-team login boundary; a personal space instead shows the reserved team controls
-disabled and unconnected.
+HTTP. The source-built desktop **Add team space** flow reaches it through an SSH
+tunnel, enrolls a new member with a bootstrap or invitation code, or reconnects
+an existing member with their permanent token. Direct public HTTPS and declared
+VPN transport are not current product paths. An unauthenticated browser receives
+the focused team login boundary; a personal space remains locally owned without
+a team credential.
 
 Credential revocation does not cancel already-authorized tasks. Stopping work
 and changing project membership are separate authority actions.

@@ -432,6 +432,10 @@ test("team invitation helpers use the member-scoped collection without code URLs
     consumed_by: null,
     failed_attempts: 0,
     locked_at: null,
+    revoked_at: null,
+    status: "waiting",
+    status_label: "Waiting for someone to join",
+    can_revoke: true,
   };
   globalThis.fetch = async (path, init) => {
     requests.push({ path, init });

@@ -330,7 +330,9 @@ def space_users(
 
     identity_access.acting_user(request)
     return [
-        {"user_id": user.user_id, "display_name": user.display_name} for user in store.space_users()
+        {"user_id": user.user_id, "display_name": user.display_name}
+        for user in store.space_users()
+        if user.removal_started_at is None and user.removed_at is None
     ]
 
 
