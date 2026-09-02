@@ -117,8 +117,10 @@ import {
   persistProjectHumanDraft,
   projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
+  projectSettingsSavedProject,
   reconcileInactiveProjectSession,
   serializeProjectSessionTabState,
+  trustedProjectTransitionManifest,
   type BrowserTransitionProjection,
   type ProjectSessionTabState,
 } from "./hooks/projectSession";
@@ -626,7 +628,6 @@ export default function App() {
     project: sessionProject,
     transitionHead,
     transitionRulesetTag,
-    transitionManifestState,
     transitionManifestRefresh,
     draftTransitionProjection,
     draftPreviewConflict,
@@ -787,12 +788,7 @@ export default function App() {
   const syncingDraft = projectId
     ? Boolean(projectSession.transitionCoordinator.sync_requests[projectId])
     : false;
-  const transitionManifest =
-    transitionManifestState.status === "valid" &&
-    transitionManifestState.project_id === projectId &&
-    (!transitionRulesetTag || transitionManifestState.manifest.ruleset_tag === transitionRulesetTag)
-      ? transitionManifestState.manifest
-      : null;
+  const transitionManifest = trustedProjectTransitionManifest(projectSession, projectId);
   const {
     snapshot: agentTasksSnapshot,
     taskStarting,
@@ -3607,14 +3603,10 @@ export default function App() {
                 );
               }}
               onSaved={(saved, preserveReadiness = true) => {
-                const requestId = beginProjectSnapshotRequest(saved.id);
-                if (
-                  !applyProjectSnapshot(saved, preserveReadiness, {
-                    projectId: saved.id,
-                    requestId,
-                  })
-                )
-                  return;
+                beginProjectSnapshotRequest(saved.id);
+                updateProject((current) =>
+                  projectSettingsSavedProject(saved, current, preserveReadiness),
+                );
                 const applied = getProjectSessionState().project;
                 if (applied) replaceRunScope(applied.default_run_truth_scope);
                 setNotice({ kind: "info", text: "Project defaults synced." });

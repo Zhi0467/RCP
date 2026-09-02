@@ -14,8 +14,10 @@ const {
   projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
   projectSessionReducer,
+  projectSettingsSavedProject,
   reconcileInactiveProjectSession,
   serializeProjectSessionTabState,
+  trustedProjectTransitionManifest,
 } = await server.ssrLoadModule("/src/hooks/projectSession.ts");
 const { transitionSyncCompletionDisposition } = await server.ssrLoadModule(
   "/src/projectTransition.ts",
@@ -262,6 +264,73 @@ test("a committed transition replaces the canonical session in one transition", 
   assert.equal(applied.draftTransitionProjection, null);
   assert.equal(applied.draftPreviewConflict, null);
   assert.equal(applied.draftPreviewPending, false);
+});
+
+test("a loading stale manifest cannot invalidate a committed transition", () => {
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1),
+    preserve_readiness: false,
+  });
+  state = projectSessionReducer(state, {
+    kind: "manifest_valid",
+    project_id: "alpha",
+    manifest: { ruleset_tag: "rcp.lifecycle.v1", triggers: [] },
+  });
+  state = projectSessionReducer(state, {
+    kind: "manifest_loading",
+    project_id: "alpha",
+    manifest: { ruleset_tag: "rcp.lifecycle.stale", triggers: [] },
+  });
+  const manifestState = state.transitionManifestState;
+  const manifestRefresh = state.transitionManifestRefresh;
+
+  assert.equal(trustedProjectTransitionManifest(state, "alpha"), null);
+  const applied = projectSessionReducer(state, {
+    kind: "committed_transition_applied",
+    project_id: "alpha",
+    projection: { ...projection(2), canonical: true },
+    submitted_draft: humanDraft(1),
+  });
+
+  assert.strictEqual(applied.transitionManifestState, manifestState);
+  assert.equal(applied.transitionManifestExpectedRulesetTag, null);
+  assert.equal(applied.transitionManifestRefresh, manifestRefresh);
+});
+
+test("a settings save replaces project metadata without reconciling session state", () => {
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1),
+    preserve_readiness: false,
+  });
+  state = projectSessionReducer(state, {
+    kind: "human_draft_loaded",
+    draft: humanDraft(1),
+  });
+  state = projectSessionReducer(state, {
+    kind: "draft_preview_changed",
+    projection: projection(2),
+    conflict: "retained preview conflict",
+    pending: true,
+  });
+  state = { ...state, draftReconciliationDiscardedProposalIds: ["proposal/retained"] };
+  const previousDraft = state.humanDraft;
+  const previousProjection = state.draftTransitionProjection;
+
+  const saved = projectSettingsSavedProject(
+    snapshot(1, { name: "Renamed Alpha" }),
+    state.project,
+    true,
+  );
+  const updated = projectSessionReducer(state, { kind: "project_replaced", project: saved });
+
+  assert.equal(updated.project.name, "Renamed Alpha");
+  assert.strictEqual(updated.humanDraft, previousDraft);
+  assert.strictEqual(updated.draftTransitionProjection, previousProjection);
+  assert.equal(updated.draftPreviewConflict, "retained preview conflict");
+  assert.equal(updated.draftPreviewPending, true);
+  assert.deepEqual(updated.draftReconciliationDiscardedProposalIds, ["proposal/retained"]);
 });
 
 test("a populated project session survives tab serialization and restoration", () => {

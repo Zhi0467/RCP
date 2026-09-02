@@ -366,6 +366,36 @@ export function projectDraftPreviewEffectInputs(
   return { project: state.project, humanDraft: state.humanDraft };
 }
 
+export function trustedProjectTransitionManifest(
+  state: Pick<
+    ProjectSessionState,
+    "projectId" | "transitionManifestState" | "transitionRulesetTag"
+  >,
+  projectId: string | null,
+): TransitionTriggerManifest | null {
+  const manifestState = state.transitionManifestState;
+  if (
+    !projectId ||
+    state.projectId !== projectId ||
+    manifestState.status !== "valid" ||
+    manifestState.project_id !== projectId ||
+    (state.transitionRulesetTag &&
+      manifestState.manifest.ruleset_tag !== state.transitionRulesetTag)
+  ) {
+    return null;
+  }
+  return manifestState.manifest;
+}
+
+export function projectSettingsSavedProject(
+  saved: ProjectSnapshot,
+  current: ProjectSnapshot | null,
+  preserveReadiness: boolean,
+): ProjectSnapshot {
+  const decoded = decodeProjectSnapshot(saved);
+  return preserveReadiness ? preserveProjectReadiness(decoded, current) : decoded;
+}
+
 export function latestSnapshotRequestCanApply(
   latestStartedRequestId: number | undefined,
   responseRequestId: number,
@@ -545,10 +575,10 @@ function applyCommittedTransition(
     project.graph,
     nextGraph,
   );
+  const trustedManifest = trustedProjectTransitionManifest(state, action.project_id);
   const manifestInvalid =
     (state.transitionRulesetTag && state.transitionRulesetTag !== action.projection.ruleset_tag) ||
-    (state.transitionManifestState.manifest &&
-      state.transitionManifestState.manifest.ruleset_tag !== action.projection.ruleset_tag);
+    (trustedManifest && trustedManifest.ruleset_tag !== action.projection.ruleset_tag);
   const transitionCoordinator = reduceProjectTransitionCoordinator(state.transitionCoordinator, {
     kind: "observe_head",
     project_id: action.project_id,
@@ -573,7 +603,7 @@ function applyCommittedTransition(
       ? {
           status: "loading",
           project_id: action.project_id,
-          manifest: state.transitionManifestState.manifest,
+          manifest: trustedManifest,
         }
       : state.transitionManifestState,
     transitionManifestExpectedRulesetTag: manifestInvalid
