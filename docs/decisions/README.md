@@ -29,6 +29,11 @@
 - [The native team entrance negotiates one thin protocol range](2026-09-01-team-shell-handshake-compatibility.md)
   records the live highest-overlap handshake, source-commit diagnostics,
   immutable per-version contracts, and removal of persisted compatibility state.
+- [Servers install promoted release artifacts through an external supervisor](2026-09-02-deployment-moves-to-an-external-supervisor.md)
+  records one CI build per merge, human promotion to `stable` without rebuild,
+  thirty-day build retention, a Python supervisor that imports nothing from
+  `rcp`, going public inside that work, and the deletion of the in-app update
+  and restore control plane.
 - [Freeze new team/server surface until lab closure](2026-09-02-freeze-new-team-server-surface-until-lab-closure.md)
   records the temporary admission boundary on new team infrastructure while the
   existing desktop, server, transfer, and recovery drives reach lab closure.

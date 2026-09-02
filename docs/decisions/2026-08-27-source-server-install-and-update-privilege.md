@@ -1,6 +1,10 @@
 # Source server uses staged releases and split operator/service privilege
 
-**Status:** accepted on 2026-08-27.
+**Status:** accepted on 2026-08-27. Amended on 2026-09-02 by
+[the supervisor decision](2026-09-02-deployment-moves-to-an-external-supervisor.md):
+per-commit source builds on the server become installed release artifacts, and
+the rejected "package or download release artifacts" alternative is adopted.
+The privilege split, account layout, and disposable bootstrap stand.
 
 ## Decision
 

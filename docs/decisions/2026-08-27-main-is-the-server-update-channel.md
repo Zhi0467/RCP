@@ -3,6 +3,10 @@
 **Status:** accepted on 2026-08-27; amended by the human on 2026-09-01 to set the
 end of the direct-development exception; further amended by the human on
 2026-09-02 to end that exception before the stabilization handoff closed.
+Amended again on 2026-09-02 by
+[the supervisor decision](2026-09-02-deployment-moves-to-an-external-supervisor.md):
+servers consume promoted release artifacts built from `main` rather than
+`origin/main` commits, and going public moves into that handoff.
 
 ## Decision
 
