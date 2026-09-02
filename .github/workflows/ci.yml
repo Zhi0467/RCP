@@ -128,6 +128,8 @@ jobs:
         run: python packaging/release_build.py stamp-version --run-number "${{ github.run_number }}" --sha "${{ github.sha }}"
       - name: Build the wheel
         run: uv build --wheel --out-dir dist
+      - name: Remove the uv output marker
+        run: rm -f dist/.gitignore
       - name: Write the asset manifest
         run: python packaging/release_build.py write-manifest dist --output manifest.sha256
       - name: Publish the build prerelease

@@ -35,11 +35,6 @@ packages = ["src/rcp"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "web/dist" = "rcp/web_dist"
-"src/rcp/skills/graph-audit" = "rcp/skills/graph-audit"
-"src/rcp/skills/evidence-triage" = "rcp/skills/evidence-triage"
-"src/rcp/skills/experiment-causality" = "rcp/skills/experiment-causality"
-"src/rcp/skills/episode-report" = "rcp/skills/episode-report"
-"src/rcp/skills/workflows" = "rcp/skills/workflows"
 
 [tool.hatch.version]
 path = "src/rcp/__init__.py"
