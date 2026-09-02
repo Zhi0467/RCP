@@ -63,6 +63,10 @@ TRANSFER_RECORD_TABLES = frozenset(
 
 TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
     {
+        "_legacy_campaign_invocations_archive",
+        "_legacy_campaign_messages_archive",
+        "_legacy_campaign_recoveries_archive",
+        "_legacy_campaign_reports_archive",
         "_legacy_campaigns_archive",
         "chat_session_contexts",
         "graph_watcher_reconciliation",
