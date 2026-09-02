@@ -1,11 +1,12 @@
 # Build, tag, and release
 
-**This process takes effect when Phase 1 of
+Phase 1 of
 [the supervisor handoff](handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md)
-lands.** Until then, servers build `origin/main` from source exactly as
-[the team server guide](server.md) describes, and nothing in this file applies.
-The interfaces below are the intended ones; the handoff records the decision in
-[the supervisor decision](decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md).
+is implemented: CI builds one prerelease per successful merge to `main`, a
+human can promote that build without rebuilding it, and a daily workflow prunes
+old build prereleases. Servers do not consume these artifacts yet. Until Phase
+4 lands, they still build `origin/main` from source exactly as
+[the team server guide](server.md) describes.
 
 ## The two events
 
@@ -17,7 +18,7 @@ so that merging often costs nothing and releasing stays deliberate.
 | Trigger | every merge to `main` | a human promotes one build |
 | Name | `build/<N>`, `<N>` is the CI run number | `vX.Y.Z` |
 | GitHub | prerelease | release; the newest one is `stable` |
-| Contents | `rcp` wheel, hashed lock export, SHA-256 manifest, and the `rcp_supervisor` wheel once that package exists | the same files, re-attached, never rebuilt |
+| Contents | `rcp` wheel, hashed lock export, SHA-256 manifest | the same files, re-attached, never rebuilt |
 | Kept | thirty days | forever |
 | Who acts | nobody | a human, never an agent |
 
@@ -59,7 +60,7 @@ Pick the build. Confirm on GitHub that its CI run is green and that its commit
 is the one you mean. Then run the promotion workflow:
 
 ```bash
-gh workflow run promote --repo Zhi0467/RCP -f build=<N> -f tag=v<X.Y.Z>
+gh workflow run promote.yml --repo Zhi0467/RCP -f build=<N> -f tag=v<X.Y.Z>
 ```
 
 The workflow verifies the base version, creates release `v<X.Y.Z>` pointing at
@@ -72,53 +73,27 @@ may tell you which build is green; it does not run the workflow.
 
 ## How servers pick it up
 
-Every server follows `stable`. An operator runs:
-
-```bash
-sudo /usr/local/bin/rcp server update
-```
-
-The supervisor downloads the newest release, verifies every hash, installs it
-beside the current release, checks that the data directory can migrate, takes
-the protected backup, stops the service, takes a local pre-switch checkpoint,
-switches, starts, and verifies health. If health does not come back with the
-expected build, it restores the checkpoint, switches back, and says so, even if
-the new release had already migrated the data. Servers never update themselves
-without an operator running that command.
-
-To pin a server, or to roll back deliberately:
-
-```bash
-sudo /usr/local/bin/rcp server update --release v<X.Y.Z>
-```
-
-A pinned server stays on that release until an operator runs `update` again
-without the flag.
+**Not yet in effect.** Phase 4 of
+[the supervisor handoff](handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md)
+will connect server updates to promoted artifacts. Today servers still build
+`origin/main` from source through the commands in
+[the team server guide](server.md); they do not follow GitHub Releases.
 
 ## Retention
 
-A scheduled workflow deletes `build/<N>` prereleases older than thirty days. A
-build that was promoted lives on as its release; the prerelease entry may
-still be pruned. If you need to reproduce a build older than thirty days,
-promote it before it ages out, or rebuild the commit locally and accept that
-the bytes will not be the tested ones.
+A scheduled workflow deletes `build/<N>` prereleases older than thirty days
+and cleans up their tags. A build that was promoted lives on as its release;
+the prerelease entry may still be pruned. If you need to reproduce a build
+older than thirty days, promote it before it ages out, or rebuild the commit
+locally and accept that the bytes will not be the tested ones.
 
 ## Supervisor versions
 
-The supervisor has its own version, independent of RCP's. Every build made
-after the supervisor package exists carries its wheel, but its version changes
-only when a pull request changes the supervisor's own code. A server operator
-updates it explicitly:
-
-```bash
-sudo /usr/local/bin/rcp server supervisor update
-```
-
-This installs the supervisor from the current `stable` release when its version
-differs from the installed one, and does nothing otherwise. RCP releases never
-require a supervisor update, because the supervisor reads three fixed facts
-from any RCP version: health with build identity, `rcp migrate --check`, and
-the machine-readable event stream.
+**Not yet in effect.** The supervisor package and its independent version do
+not exist yet. Phase 3 of
+[the supervisor handoff](handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md)
+will add them. Current build and release assets therefore contain only the RCP
+wheel, hashed lock export, and manifest.
 
 ## What to check before promoting
 
