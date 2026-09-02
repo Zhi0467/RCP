@@ -39,6 +39,7 @@ export type ProjectSessionManifestState =
   | { status: "invalid"; project_id: string; manifest: null };
 
 export interface ProjectSessionTabState {
+  projectId: string | null;
   project: ProjectSnapshot | null;
   renderedRevision: number;
   humanDraft: HumanDraft | null;
@@ -49,11 +50,11 @@ export interface ProjectSessionTabState {
   transitionManifestExpectedRulesetTag: string | null;
   draftTransitionProjection: BrowserTransitionProjection | null;
   draftPreviewConflict: string | null;
-  draftPreviewPending: boolean;
   draftReconciliationDiscardedProposalIds: string[];
 }
 
 export interface ProjectSessionState extends ProjectSessionTabState {
+  draftPreviewPending: boolean;
   snapshotRequestSequence: number;
   latestSnapshotRequests: Record<string, number>;
   transitionCoordinator: ProjectTransitionCoordinatorState;
@@ -68,7 +69,6 @@ export type ProjectSessionAction =
       project_id: string | null;
       state: ProjectSessionTabState;
       consumeDiscardedProposals?: boolean;
-      clearPendingPreview?: boolean;
     }
   | { kind: "snapshot_request_started"; project_id: string; request_id: number }
   | {
@@ -134,6 +134,7 @@ export function emptyProjectSessionState(
   initialProjectId: string | null = null,
 ): ProjectSessionState {
   return {
+    projectId: initialProjectId,
     project: null,
     renderedRevision: 0,
     humanDraft: null,
@@ -176,6 +177,7 @@ export function projectSessionReducer(
         ...state,
         ...serializeProjectSessionTabState(empty),
         humanDraft: action.human_draft ?? null,
+        draftPreviewPending: false,
         transitionCoordinator: reduceProjectTransitionCoordinator(state.transitionCoordinator, {
           kind: "activate",
           project_id: action.project_id,
@@ -198,7 +200,8 @@ export function projectSessionReducer(
       return {
         ...state,
         ...restored,
-        draftPreviewPending: action.clearPendingPreview ? false : restored.draftPreviewPending,
+        projectId: action.project_id,
+        draftPreviewPending: false,
         draftReconciliationDiscardedProposalIds: action.consumeDiscardedProposals
           ? []
           : restored.draftReconciliationDiscardedProposalIds,
@@ -229,6 +232,7 @@ export function projectSessionReducer(
     case "human_draft_loaded":
       return state.humanDraft === action.draft ? state : { ...state, humanDraft: action.draft };
     case "human_draft_updated": {
+      if (state.projectId !== action.project_id) return state;
       const nextGeneration =
         (state.transitionCoordinator.draft_generations[action.project_id] ?? 0) + 1;
       const transitionCoordinator = reduceProjectTransitionCoordinator(
@@ -352,6 +356,16 @@ export function serializeProjectSessionTabState(
   return cloneProjectSessionTabState(state);
 }
 
+export function projectDraftPreviewEffectInputs(
+  state: Pick<ProjectSessionState, "projectId" | "project" | "humanDraft">,
+  projectId: string | null,
+): Pick<ProjectSessionState, "project" | "humanDraft"> {
+  if (!projectId || state.projectId !== projectId || state.project?.id !== projectId) {
+    return { project: null, humanDraft: null };
+  }
+  return { project: state.project, humanDraft: state.humanDraft };
+}
+
 export function latestSnapshotRequestCanApply(
   latestStartedRequestId: number | undefined,
   responseRequestId: number,
@@ -446,6 +460,7 @@ function applyProjectSnapshot(
     return state;
   }
   const decodedProject = decodeProjectSnapshot(action.snapshot);
+  if (decodedProject.id !== state.projectId) return state;
   if (
     !cachedSnapshotCanReplace(
       state.project?.id ?? state.transitionCoordinator.active_project_id,
@@ -587,6 +602,7 @@ function withTransitionCoordinator(
 
 function cloneProjectSessionTabState(state: ProjectSessionTabState): ProjectSessionTabState {
   return {
+    projectId: state.projectId,
     project: state.project,
     renderedRevision: state.renderedRevision,
     humanDraft: state.humanDraft,
@@ -597,7 +613,6 @@ function cloneProjectSessionTabState(state: ProjectSessionTabState): ProjectSess
     transitionManifestExpectedRulesetTag: state.transitionManifestExpectedRulesetTag,
     draftTransitionProjection: state.draftTransitionProjection,
     draftPreviewConflict: state.draftPreviewConflict,
-    draftPreviewPending: state.draftPreviewPending,
     draftReconciliationDiscardedProposalIds: [...state.draftReconciliationDiscardedProposalIds],
   };
 }

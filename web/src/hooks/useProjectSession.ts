@@ -92,7 +92,7 @@ export function useProjectSession(initialProjectId: string | null) {
     (
       projectId: string,
       cached: ProjectSessionTabState,
-      options: { consumeDiscardedProposals?: boolean; clearPendingPreview?: boolean } = {},
+      options: { consumeDiscardedProposals?: boolean } = {},
     ): ProjectSessionTransition =>
       dispatch({
         kind: "restore_tab",

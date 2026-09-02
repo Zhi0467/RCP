@@ -115,6 +115,7 @@ import {
   canonicalGraphHead,
   latestSnapshotRequestCanApply,
   persistProjectHumanDraft,
+  projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
   reconcileInactiveProjectSession,
   serializeProjectSessionTabState,
@@ -622,8 +623,7 @@ export default function App() {
     restoreProjectSessionTab,
   } = useProjectSession(initialRoute.project.projectId);
   const {
-    project,
-    humanDraft,
+    project: sessionProject,
     transitionHead,
     transitionRulesetTag,
     transitionManifestState,
@@ -667,9 +667,10 @@ export default function App() {
     initialSetupOpen: initialRoute.setupOpen,
     projectIndexReady:
       identityReady && !identityIssue && actorIdentityChecked && !teamSessionRequired,
-    project,
+    project: sessionProject,
     reportError: reportErrorNotice,
   });
+  const { project, humanDraft } = projectDraftPreviewEffectInputs(projectSession, projectId);
   const graph = project?.graph ?? emptyGraph;
   const paper = project?.paper ?? null;
   const openMoveProjectSetup = useCallback((sourceProjectId: string) => {
@@ -965,7 +966,6 @@ export default function App() {
       const discardedProposalIds = state.draftReconciliationDiscardedProposalIds;
       const { next } = restoreProjectSessionTab(id, state, {
         consumeDiscardedProposals: true,
-        clearPendingPreview: true,
       });
       if (!next.project) return;
       const nextGraph = next.project.graph;

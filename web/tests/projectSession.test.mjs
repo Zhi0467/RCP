@@ -11,11 +11,15 @@ const server = await createServer({
 });
 const {
   emptyProjectSessionState,
+  projectDraftPreviewEffectInputs,
   projectHeartbeatSnapshotDisposition,
   projectSessionReducer,
   reconcileInactiveProjectSession,
   serializeProjectSessionTabState,
 } = await server.ssrLoadModule("/src/hooks/projectSession.ts");
+const { transitionSyncCompletionDisposition } = await server.ssrLoadModule(
+  "/src/projectTransition.ts",
+);
 
 after(() => server.close());
 
@@ -80,6 +84,25 @@ function projection(revision) {
     transition_id: transitionId,
     canonical: false,
     base_head: { target: { kind: "main" }, revision: revision - 1, transition_id: null },
+  };
+}
+
+function humanDraft(revision, title = "My staged title") {
+  return {
+    version: 1,
+    base_revision: revision,
+    nodes: {
+      "hyp/example": {
+        base_updated_rev: revision,
+        changes: { title },
+        standing: "asserted",
+        standing_origin: "edit",
+      },
+    },
+    removed_node_ids: [],
+    proposals: {},
+    ontology: null,
+    custom_nodes: {},
   };
 }
 
@@ -278,7 +301,99 @@ test("a populated project session survives tab serialization and restoration", (
     state: serialized,
   });
 
+  assert.equal("draftPreviewPending" in serialized, false);
+  assert.equal(restored.draftPreviewPending, false);
   assert.deepEqual(serializeProjectSessionTabState(restored), serialized);
+});
+
+test("tab restoration replaces project identity and draft in one reducer transition", () => {
+  let projectY = projectSessionReducer(emptyProjectSessionState("project-y"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(7, { id: "project-y", name: "Project Y" }),
+    preserve_readiness: false,
+  });
+  projectY = projectSessionReducer(projectY, {
+    kind: "human_draft_loaded",
+    draft: humanDraft(7, "Project Y draft"),
+  });
+  const projectX = projectSessionReducer(emptyProjectSessionState("project-x"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(0, { id: "project-x", name: "Project X" }),
+    preserve_readiness: false,
+  });
+
+  const restored = projectSessionReducer(projectY, {
+    kind: "restore_tab",
+    project_id: "project-x",
+    state: serializeProjectSessionTabState(projectX),
+  });
+
+  assert.equal(restored.projectId, "project-x");
+  assert.equal(restored.project.id, "project-x");
+  assert.equal(restored.humanDraft, null);
+  assert.deepEqual(projectDraftPreviewEffectInputs(projectY, "project-x"), {
+    project: null,
+    humanDraft: null,
+  });
+  assert.deepEqual(projectDraftPreviewEffectInputs(restored, "project-x"), {
+    project: restored.project,
+    humanDraft: null,
+  });
+});
+
+test("reset replaces project identity and a stored draft in one reducer transition", () => {
+  const projectY = projectSessionReducer(emptyProjectSessionState("project-y"), {
+    kind: "human_draft_loaded",
+    draft: humanDraft(7, "Project Y draft"),
+  });
+  const projectXDraft = humanDraft(0, "Project X stored draft");
+
+  const reset = projectSessionReducer(projectY, {
+    kind: "reset",
+    project_id: "project-x",
+    human_draft: projectXDraft,
+  });
+
+  assert.equal(reset.projectId, "project-x");
+  assert.strictEqual(reset.humanDraft, projectXDraft);
+});
+
+test("a Sync response becomes inactive after its project tab is replaced", () => {
+  const projectXHead = { target: { kind: "main" }, revision: 1, transition_id: transitionOne };
+  const fence = {
+    project_id: "project-x",
+    request_id: 1,
+    expected_head: projectXHead,
+    draft_generation: 0,
+  };
+  let projectX = projectSessionReducer(emptyProjectSessionState("project-x"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(1, { id: "project-x", name: "Project X" }),
+    preserve_readiness: false,
+  });
+  projectX = projectSessionReducer(projectX, {
+    kind: "sync_started",
+    fence,
+    snapshot_request_id: 1,
+    sync_request_sequence: 1,
+  });
+  const projectY = projectSessionReducer(emptyProjectSessionState("project-y"), {
+    kind: "snapshot_applied",
+    snapshot: snapshot(2, { id: "project-y", name: "Project Y" }),
+    preserve_readiness: false,
+  });
+
+  const switched = projectSessionReducer(projectX, {
+    kind: "restore_tab",
+    project_id: "project-y",
+    state: serializeProjectSessionTabState(projectY),
+  });
+
+  assert.equal(switched.transitionCoordinator.active_project_id, "project-y");
+  assert.equal(
+    transitionSyncCompletionDisposition(switched.transitionCoordinator, fence),
+    "reload_inactive",
+  );
 });
 
 test("an empty project session survives tab serialization and restoration", () => {
