@@ -60,6 +60,11 @@ UNRELATED_SPACE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 CREATED_AT = datetime(2026, 8, 31, 18, 0, tzinfo=UTC)
 
 PROJECT_LINKED_TABLES = {
+    "_legacy_campaign_invocations_archive",
+    "_legacy_campaign_messages_archive",
+    "_legacy_campaign_recoveries_archive",
+    "_legacy_campaign_reports_archive",
+    "_legacy_campaigns_archive",
     "agent_usage",
     "auto_research_apply_results",
     "auto_research_child_admissions",

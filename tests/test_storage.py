@@ -60,6 +60,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (2, "legacy_episode_ledger_v1"),
         (3, "experiment_episode_state_v1"),
         (4, "agent_usage_counted_dedupe_v1"),
+        (5, "legacy_startup_schema_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -85,8 +86,138 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         "_migrate_agent_usage_counted_dedupe",
         staticmethod(unexpected_migration),
     )
+    monkeypatch.setattr(
+        AppStore,
+        "_migrate_legacy_startup_schema",
+        unexpected_migration,
+    )
 
     AppStore(path)
+
+
+def test_current_storage_startup_is_read_only_and_preserves_database_bytes(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path)
+    before = path.read_bytes()
+    statements: list[str] = []
+
+    class TracedStore(AppStore):
+        @contextmanager
+        def connection(self) -> Iterator[sqlite3.Connection]:
+            with super().connection() as connection:
+                connection.set_trace_callback(statements.append)
+                yield connection
+
+    TracedStore(path)
+
+    write_prefixes = ("ALTER ", "CREATE ", "DELETE ", "DROP ", "INSERT ", "REPLACE ", "UPDATE ")
+    assert not [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith(write_prefixes)
+    ]
+    assert path.read_bytes() == before
+
+
+def test_current_storage_schema_validator_rejects_corruption(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP INDEX watchers_due")
+
+    with pytest.raises(RuntimeError, match="storage schema validation failed"):
+        AppStore(path)
+
+
+def test_legacy_project_transfer_uploads_schema_converges(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE project_transfer_uploads")
+        connection.execute(
+            """
+            CREATE TABLE project_transfer_uploads (
+                request_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                archive_sha256 TEXT NOT NULL,
+                archive_size_bytes INTEGER NOT NULL CHECK(archive_size_bytes >= 1),
+                lease_boundary_sha256 TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('active', 'complete', 'invalidated')),
+                receipt_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                invalidated_at TEXT,
+                FOREIGN KEY(request_id) REFERENCES project_transfer_requests(request_id),
+                CHECK(
+                    (status = 'active' AND receipt_json IS NULL AND invalidated_at IS NULL)
+                    OR (status = 'complete' AND receipt_json IS NOT NULL
+                        AND invalidated_at IS NULL)
+                    OR (status = 'invalidated' AND receipt_json IS NULL
+                        AND invalidated_at IS NOT NULL)
+                )
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO project_transfer_requests (
+                request_id, side, phase, project_id, source_space_id,
+                target_space_id, record_json, revision, created_at, updated_at
+            ) VALUES (?, 'target', 'archive_bound', ?, ?, ?, '{}', 0, ?, ?)
+            """,
+            (
+                "legacy-upload",
+                "project",
+                "source-space",
+                "target-space",
+                "2026-08-31T00:00:00+00:00",
+                "2026-08-31T00:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO project_transfer_uploads (
+                request_id, project_id, archive_sha256, archive_size_bytes,
+                lease_boundary_sha256, status, receipt_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'complete', ?, ?, ?)
+            """,
+            (
+                "legacy-upload",
+                "project",
+                "a" * 64,
+                1,
+                "b" * 64,
+                '{"status":"complete"}',
+                "2026-08-31T00:00:00+00:00",
+                "2026-08-31T00:00:00+00:00",
+            ),
+        )
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 5")
+        assert connection.execute(
+            "SELECT migration_version FROM storage_schema_migrations ORDER BY migration_version"
+        ).fetchall() == [(1,), (2,), (3,), (4,)]
+
+    reopened = AppStore(path)
+
+    with reopened.connection() as connection:
+        row = connection.execute(
+            """
+            SELECT project_id, status, receipt_json
+            FROM project_transfer_uploads WHERE request_id = 'legacy-upload'
+            """
+        ).fetchone()
+        assert tuple(row) == ("project", "complete", '{"status":"complete"}')
+        connection.execute(
+            "UPDATE project_transfer_uploads SET status = 'consumed' "
+            "WHERE request_id = 'legacy-upload'"
+        )
+        assert (
+            connection.execute(
+                "SELECT status FROM project_transfer_uploads WHERE request_id = 'legacy-upload'"
+            ).fetchone()[0]
+            == "consumed"
+        )
+        reopened._validate_storage_schema(connection)
 
 
 def test_failed_storage_migration_rolls_back_without_marker_and_retries(
@@ -105,7 +236,9 @@ def test_failed_storage_migration_rolls_back_without_marker_and_retries(
             """,
             (now, now),
         )
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 1")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5)"
+        )
 
     original = AppStore._migrate_episode_lineage
 
@@ -2165,7 +2298,9 @@ def test_agent_usage_dedupe_migration_repairs_historical_counted_duplicates_once
     first = store.record_agent_usage("refresh-operation", usage)
     with store.connection() as connection:
         connection.execute("DROP INDEX agent_usage_counted_dedupe")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 4")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (4, 5)"
+        )
         row = dict(
             connection.execute(
                 "SELECT * FROM agent_usage WHERE usage_id = ?", (first.usage_id,)

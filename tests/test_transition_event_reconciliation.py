@@ -501,6 +501,7 @@ def test_legacy_database_adds_graph_watcher_reconciliation_table(tmp_path) -> No
     store = AppStore(path)
     with store.connection() as connection:
         connection.execute("DROP TABLE graph_watcher_reconciliation")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 5")
 
     reopened = AppStore(path)
     assert reopened.graph_watcher_reconciliation_head("project", GraphTargetRef()) is None

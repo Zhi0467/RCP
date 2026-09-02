@@ -48,3 +48,7 @@ adding that marker.
 `pre-member-removal-v11-27c9682` records the resulting last database shape before
 team members gain durable removal fences and tombstones, and before team and
 project invitations gain explicit revocation state.
+`pre-storage-migration-ledger-v12-c3191bf` records the last shape before the
+first expensive semantic migrations gained durable completion markers.
+`storage-ledger-v13-371b807` records that first ledger era before startup schema
+completion and validation moved under one ordered migration plan.
