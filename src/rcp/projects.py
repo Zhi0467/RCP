@@ -210,7 +210,9 @@ def inspect_backup_project_registration(
         raise BackupProjectUnavailable(
             "The completed provisioning record cannot reproduce its reviewed manifest."
         ) from exc
-    if recorded_manifest.model_dump(mode="json") != expected_manifest.model_dump(mode="json"):
+    if _provisioning_bound_configuration(recorded_manifest) != _provisioning_bound_configuration(
+        expected_manifest
+    ):
         raise BackupProjectUnavailable(
             "The canonical manifest changed after the completed provisioning proof."
         )
@@ -282,6 +284,34 @@ def inspect_backup_project_registration(
         workspace=state_workspace_for_probe(manifest, data_dir),
         recovery=recovery,
     )
+
+
+def _provisioning_bound_configuration(manifest: Manifest) -> dict[str, object]:
+    """Return the manifest fields whose authority remains the provisioning review.
+
+    Project Settings intentionally rewrites provider executable paths, agent
+    profiles, skill defaults, run scope, and the Experiment invocation ceiling.
+    Backup must retain those current canonical values. Checkout placement and
+    project truth identity remain bound to the completed provisioning proof.
+    """
+
+    return {
+        "name": manifest.name,
+        "machines": tuple(
+            sorted(
+                (machine.alias, machine.host, machine.os_account) for machine in manifest.machines
+            )
+        ),
+        "repositories": tuple(
+            sorted(
+                (repository.alias, repository.machine, repository.path)
+                for repository in manifest.repositories
+            )
+        ),
+        "project_truth_scope": tuple(manifest.project.truth_scope),
+        "state_repository": manifest.state.repository,
+        "sources": manifest.sources.model_dump(mode="json"),
+    }
 
 
 def rebind_restored_project_registration(

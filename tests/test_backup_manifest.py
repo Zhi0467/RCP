@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from rcp.config import AGENT_EXECUTION_PROFILES, Manifest, load_manifest
+from rcp.config import (
+    AGENT_EXECUTION_PROFILES,
+    Manifest,
+    load_manifest,
+    write_machine_provider_paths,
+)
 from rcp.core.models import AuthorizedHuman, GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
@@ -388,6 +393,28 @@ def test_completed_provisioning_builds_one_secret_free_recovery_descriptor(
     assert "private_key" not in payload
     assert "AGE-SECRET-KEY" not in payload
     assert "token" not in payload
+
+
+def test_completed_provisioning_allows_settings_owned_provider_path_updates(
+    tmp_path: Path,
+) -> None:
+    record, request = _completed_registration(tmp_path)
+    write_machine_provider_paths(
+        load_manifest(record.locator),
+        {"worker": {"claude": "/home/alice/.local/bin/claude"}},
+    )
+
+    registration = inspect_backup_project_registration(
+        record,
+        data_dir=tmp_path / "data",
+        provisioning_requests=[request],
+    )
+
+    machine = registration.recovery.configuration.machines[0]
+    assert machine.provider_paths == {
+        "claude": "/home/alice/.local/bin/claude",
+        "codex": "/usr/local/bin/codex",
+    }
 
 
 def test_missing_or_stale_recovery_proof_makes_the_project_uncapturable(

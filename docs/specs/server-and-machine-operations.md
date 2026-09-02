@@ -1025,7 +1025,11 @@ aliases, resolved central paths and machine/SSH-route references, canonical
 manifest configuration, and old deploy-key labels/fingerprints. This descriptor
 is enough to reconstruct the checkout set without a member checkout or personal
 Git credential. A missing, stale, credential-bearing, or inconsistent descriptor
-makes that project uncaptured.
+makes that project uncaptured. The completed provisioning proof continues to bind
+project identity and checkout topology. Settings-owned provider paths, agent
+profiles, skill defaults, default run scope, and Experiment invocation ceiling
+may change afterward; backup captures their current canonical manifest values
+rather than treating those supported edits as stale provisioning.
 
 The first archive contract accepts only a native X25519 `age1...` recipient and
 uses the upstream `age` CLI from `1.0.0` through the 1.x line. Plugin, SSH,
@@ -1193,7 +1197,8 @@ also creates a private immutable online SQLite snapshot and derives typed
 project, provisioning, task, and kept-file inventory only from that copy. The
 backup boundary classifies every direct app-data and `.research` root, rejects
 materialized or credential-bearing archive entries, binds a captured project to
-its unchanged completed provisioning proof, and can record a project as
+its unchanged completed provisioning identity and checkout proof, while retaining
+current Settings-owned manifest values, and can record a project as
 uncaptured without refreshing remote state or taking a canonical writer lock.
 It now consumes that immutable SQLite receipt to optimistically copy exact local
 or SSH canonical main/branch history, typed chat prefixes, Paper introduction,
