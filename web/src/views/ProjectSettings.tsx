@@ -62,6 +62,7 @@ interface Props {
   onSaved: (project: ProjectSnapshot, preserveReadiness?: boolean) => void;
   onCacheMetricsChange: (metrics: ProjectCacheMetrics) => void;
   onRefreshReadiness: () => Promise<void>;
+  readinessRequest?: { pending: boolean; error: string | null };
   showDisplaySettings: boolean;
   spaceKind: "personal" | "team";
   onMovePersonalProjectToTeam?: (sourceProjectId: string) => void;
@@ -160,6 +161,7 @@ export function ProjectSettings({
   onSaved,
   onCacheMetricsChange,
   onRefreshReadiness,
+  readinessRequest,
   showDisplaySettings,
   spaceKind,
   onMovePersonalProjectToTeam,
@@ -664,6 +666,8 @@ export function ProjectSettings({
                 locked={writesDisabled}
                 runOnLocked={id !== "paper_coach"}
                 onRefreshReadiness={onRefreshReadiness}
+                readinessPending={readinessRequest?.pending ?? false}
+                readinessError={readinessRequest?.error ?? null}
                 runtime={{
                   value: profiles[id].runtime,
                   onChange: (runtime) => {

@@ -197,6 +197,18 @@ import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from
 const PROVIDER_SKILL_READINESS_POLL_DELAY_MS = 1_000;
 const PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS = 20;
 
+interface ProviderReadinessRequestState {
+  pending: boolean;
+  error: string | null;
+}
+
+type ProjectReadinessSnapshot = Awaited<ReturnType<typeof loadProjectReadiness>>;
+
+interface ProviderReadinessInFlight {
+  refresh: boolean;
+  request: Promise<ProjectReadinessSnapshot | null>;
+}
+
 export function shouldPollProviderSkillReadiness(
   inventories: ProjectSnapshot["provider_skill_inventories"] | undefined,
   completedFollowUps: number,
@@ -207,6 +219,15 @@ export function shouldPollProviderSkillReadiness(
     Object.values(inventories).some((providers) =>
       Object.values(providers).some((inventory) => inventory?.status === "refreshing"),
     )
+  );
+}
+
+export function shouldRequestProviderReadiness(
+  readiness: ProjectSnapshot["provider_readiness"],
+  pending: boolean,
+): boolean {
+  return (
+    !pending && !Object.values(readiness).some((providers) => Object.keys(providers).length > 0)
   );
 }
 
@@ -733,6 +754,9 @@ export default function App() {
   const [draftPreviewPending, setDraftPreviewPending] = useState(false);
   const [usage, setUsage] = useState<AgentUsageSnapshot | null>(null);
   const [watchers, setWatchers] = useState<WatcherRecord[]>([]);
+  const [providerReadinessRequests, setProviderReadinessRequests] = useState<
+    Record<string, ProviderReadinessRequestState>
+  >({});
   const {
     graph,
     paper,
@@ -831,7 +855,7 @@ export default function App() {
   const latestProjectSnapshotRequest = useRef(new Map<string, number>());
   const renderedRevisionRef = useRef(graph.revision);
   const initialShowHandshake = useRef(false);
-  const readinessRequestedProjectIds = useRef(new Set<string>());
+  const providerReadinessRequestsInFlight = useRef(new Map<string, ProviderReadinessInFlight>());
   const providerSkillReadinessPoll = useRef<{ projectId: string; timeoutId: number } | null>(null);
   const currentProjectStateRef = useRef<Omit<CachedProjectTabState, "viewState"> | null>(null);
   const transitionCoordinatorRef = useRef(emptyProjectTransitionCoordinator());
@@ -1485,15 +1509,64 @@ export default function App() {
     };
   }, [desktop, refreshDesktopUpdate]);
 
+  const requestProjectReadiness = useCallback(
+    (refresh: boolean): Promise<ProjectReadinessSnapshot | null> => {
+      if (!apiBase || !projectId) return Promise.resolve(null);
+      const requestedProjectId = projectId;
+      const existing = providerReadinessRequestsInFlight.current.get(requestedProjectId);
+      if (existing) {
+        if (!refresh || existing.refresh) return existing.request;
+        return existing.request.then(() => requestProjectReadiness(true));
+      }
+
+      setProviderReadinessRequests((current) => ({
+        ...current,
+        [requestedProjectId]: { pending: true, error: null },
+      }));
+      let request: Promise<ProjectReadinessSnapshot | null>;
+      request = loadProjectReadiness(apiBase, refresh)
+        .then((readiness) => {
+          if (isActiveProject(requestedProjectId)) {
+            updateProject((current) =>
+              current?.id === requestedProjectId ? { ...current, ...readiness } : current,
+            );
+          }
+          return readiness;
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          setProviderReadinessRequests((current) => ({
+            ...current,
+            [requestedProjectId]: { pending: true, error: message },
+          }));
+          if (isActiveProject(requestedProjectId)) {
+            setNotice({ kind: "error", text: message });
+          }
+          return null;
+        })
+        .finally(() => {
+          if (
+            providerReadinessRequestsInFlight.current.get(requestedProjectId)?.request === request
+          ) {
+            providerReadinessRequestsInFlight.current.delete(requestedProjectId);
+          }
+          setProviderReadinessRequests((current) => ({
+            ...current,
+            [requestedProjectId]: {
+              pending: false,
+              error: current[requestedProjectId]?.error ?? null,
+            },
+          }));
+        });
+      providerReadinessRequestsInFlight.current.set(requestedProjectId, { refresh, request });
+      return request;
+    },
+    [apiBase, isActiveProject, projectId, updateProject],
+  );
+
   const refreshReadiness = useCallback(async () => {
-    if (!apiBase) return;
-    try {
-      const readiness = await loadProjectReadiness(apiBase, true);
-      updateProject((current) => (current ? { ...current, ...readiness } : current));
-    } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
-    }
-  }, [apiBase, updateProject]);
+    await requestProjectReadiness(true);
+  }, [requestProjectReadiness]);
 
   const ensureProjectReadiness = useCallback(() => {
     if (
@@ -1501,48 +1574,40 @@ export default function App() {
       !projectId ||
       project?.id !== projectId ||
       projectReconciliation !== "authoritative" ||
-      readinessRequestedProjectIds.current.has(projectId)
+      !shouldRequestProviderReadiness(
+        project.provider_readiness,
+        providerReadinessRequestsInFlight.current.has(projectId),
+      )
     )
       return;
     const requestedProjectId = projectId;
-    readinessRequestedProjectIds.current.add(requestedProjectId);
     const readCachedReadiness = (completedFollowUps: number) => {
-      void loadProjectReadiness(apiBase)
-        .then((readiness) => {
-          if (!isActiveProject(requestedProjectId)) return;
-          updateProject((current) =>
-            current?.id === requestedProjectId ? { ...current, ...readiness } : current,
-          );
-          if (
-            shouldPollProviderSkillReadiness(
-              readiness.provider_skill_inventories,
-              completedFollowUps,
-            )
-          ) {
-            const timeoutId = window.setTimeout(() => {
-              providerSkillReadinessPoll.current = null;
-              if (!isActiveProject(requestedProjectId)) return;
-              readCachedReadiness(completedFollowUps + 1);
-            }, PROVIDER_SKILL_READINESS_POLL_DELAY_MS);
-            providerSkillReadinessPoll.current = { projectId: requestedProjectId, timeoutId };
-          } else {
+      void requestProjectReadiness(false).then((readiness) => {
+        if (!readiness) return;
+        if (!isActiveProject(requestedProjectId)) return;
+        if (
+          shouldPollProviderSkillReadiness(readiness.provider_skill_inventories, completedFollowUps)
+        ) {
+          const timeoutId = window.setTimeout(() => {
             providerSkillReadinessPoll.current = null;
-          }
-        })
-        .catch((error) => {
-          readinessRequestedProjectIds.current.delete(requestedProjectId);
-          if (providerSkillReadinessPoll.current?.projectId === requestedProjectId) {
-            providerSkillReadinessPoll.current = null;
-          }
-          if (!isActiveProject(requestedProjectId)) return;
-          setNotice({
-            kind: "error",
-            text: error instanceof Error ? error.message : String(error),
-          });
-        });
+            if (!isActiveProject(requestedProjectId)) return;
+            readCachedReadiness(completedFollowUps + 1);
+          }, PROVIDER_SKILL_READINESS_POLL_DELAY_MS);
+          providerSkillReadinessPoll.current = { projectId: requestedProjectId, timeoutId };
+        } else {
+          providerSkillReadinessPoll.current = null;
+        }
+      });
     };
     readCachedReadiness(0);
-  }, [apiBase, isActiveProject, project?.id, projectId, projectReconciliation, updateProject]);
+  }, [
+    apiBase,
+    isActiveProject,
+    project,
+    projectId,
+    projectReconciliation,
+    requestProjectReadiness,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -3793,6 +3858,7 @@ export default function App() {
               textScale={textScale}
               onTextScaleChange={changeAppTextScale}
               onRefreshReadiness={refreshReadiness}
+              readinessRequest={providerReadinessRequests[project.id]}
               onMovePersonalProjectToTeam={movePersonalProjectToTeam}
               onCacheMetricsChange={(cacheMetrics) => {
                 updateProject((current) =>
