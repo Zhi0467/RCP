@@ -195,7 +195,8 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 - Literal expiry dates are test time bombs; derive them from the test clock.
 - Going public is one bundled transition, not a visibility flip: it turns on
   branch protection and retires the private-source deploy key together. Read
-  `decisions/2026-08-27-main-is-the-server-update-channel.md` before any of it.
+  `decisions/2026-08-27-main-is-the-server-update-channel.md` and
+  `decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md` first.
 - Two entrances are managed: the browser from `rcp serve`, and the source-built
   desktop app. Native team changes preserve every advertised contract or add a
   version; highest range overlap fails closed. Rebuild Tauri for native changes.

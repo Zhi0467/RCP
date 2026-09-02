@@ -15,6 +15,12 @@ Active:
   Its dated implementation log and completed packet sections were archived to
   [the evidence file](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-evidence.md)
   on 2026-09-01; the handoff itself retains only work with an open drive.
+- [External supervisor and release artifacts](handoff-2026-09-02-external-supervisor-and-release-artifacts.md)
+  — human-confirmed on 2026-09-02; nothing implemented yet. Moves server
+  update and restore out of the application into a Python supervisor that
+  installs promoted release artifacts from `stable`, with one CI build per
+  merge and human promotion. Phases 0–2 (contract, builds, going public) may
+  start now; Phases 3–6 wait for the team-server handoff above to archive.
 
 This directory contains only human-confirmed work that is ready to implement and
 not yet complete. A handoff is an execution contract, not a chronological diary.

@@ -125,6 +125,8 @@ RCP can run a shared team space from source on a lab-owned Ubuntu server.
 Installation, member invitations and joining, shared-project setup, provider
 maintenance, updates, backup, restore, member removal, verification, and
 recovery are all documented in the [team server guide](docs/server.md).
+Maintainers release through the build, tag, and promote process in
+[docs/release.md](docs/release.md).
 
 ## Verify a checkout
 
