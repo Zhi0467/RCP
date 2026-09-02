@@ -764,8 +764,14 @@ class _LocalBackedRemoteStage:
         assert self.root is not None
         return self.root / "workspace"
 
-    def open(self, operation_id: str, *, reuse: bool = False):
-        del reuse
+    def open(
+        self,
+        operation_id: str,
+        *,
+        reuse: bool = False,
+        protected_roots=(),
+    ):
+        del reuse, protected_roots
         self.root = self.base / operation_id
         (self.root / "inputs").mkdir(parents=True, exist_ok=True)
         self.workspace.mkdir(exist_ok=True)

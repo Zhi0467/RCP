@@ -32,7 +32,13 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
-from rcp.runs.shared import _remove_local_tree, _safe_stage_name, _sse, _swept_stage_root
+from rcp.runs.shared import (
+    _protected_run_stage_roots,
+    _remove_local_tree,
+    _safe_stage_name,
+    _sse,
+    _swept_stage_root,
+)
 from rcp.runs.task_policy import task_graph_capable
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, EpisodeRecord
@@ -83,13 +89,16 @@ async def stream_branch_merge_task(
     completed = False
     try:
         if machine.host:
-            remote_stage = RemoteRunStage(machine.host).open(task.operation_id)
+            remote_stage = RemoteRunStage(machine.host).open(
+                task.operation_id,
+                protected_roots=_protected_run_stage_roots(execution.store, machine.host),
+            )
             assert remote_stage.root is not None
             execution.checkpoint_stage(machine.host, str(remote_stage.root))
             workspace = Path(str(remote_stage.workspace))
             stage_root = str(remote_stage.root)
         else:
-            parent = _swept_stage_root(data_dir)
+            parent = _swept_stage_root(data_dir, store=execution.store)
             local_stage = parent / _safe_stage_name(task.operation_id)
             local_stage.mkdir(mode=0o700, parents=True, exist_ok=False)
             workspace = local_stage / "workspace"

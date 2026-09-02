@@ -326,7 +326,7 @@ async def test_fresh_discuss_passes_provider_native_receipt_beside_unchanged_mes
     assert "Invoked provider-native skill this turn:" not in master_path.read_text(encoding="utf-8")
 
 
-def test_ordinary_resumed_discuss_sends_only_marker_message_without_unchanged_context(
+def test_ordinary_resumed_discuss_repeats_only_master_pointer_with_turn_context(
     manifest, tmp_path
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -388,7 +388,7 @@ def test_ordinary_resumed_discuss_sends_only_marker_message_without_unchanged_co
     prompt = launcher.prompts[1]
     second_artifacts = launcher.workspaces[1] / "turns" / second_operation_id / "artifacts"
     marker = f"This is a Discuss turn.\nArtifact directory for this turn: {second_artifacts}"
-    assert prompt.startswith(marker)
+    assert prompt.startswith(f"RCP master context: {master_path}\n\n{marker}")
     assert prompt.count(second_message) == 1
     assert "Invoked for this turn — read and follow each exact staged package:" in prompt
     assert "Graph audit (skill `graph-audit` v3.0.0)" in prompt
@@ -424,8 +424,11 @@ def test_ordinary_resumed_discuss_sends_only_marker_message_without_unchanged_co
     assert third_response.status_code == 202, third_response.text
     third_operation_id = third_response.json()["operation_id"]
     assert wait_for_task_response(client, project_id, third_operation_id)["status"] == "succeeded"
-    assert launcher.prompts[2].count(third_message) == 1
-    assert "Invoked for this turn" not in launcher.prompts[2]
+    third_prompt = launcher.prompts[2]
+    assert third_prompt.startswith(f"RCP master context: {master_path}\n\n")
+    assert third_prompt.count(third_message) == 1
+    assert "Open and retain the RCP chat master context" not in third_prompt
+    assert "Invoked for this turn" not in third_prompt
 
 
 @pytest.mark.parametrize("legacy_layout", [False, True])
@@ -498,6 +501,7 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
         assert launcher.workspaces[0] == launcher.workspaces[1]
     work_artifacts = launcher.workspaces[1] / "turns" / second_id / "artifacts"
     assert launcher.prompts[1].startswith(
+        f"RCP master context: {launcher.prompts[0].splitlines()[1]}\n\n"
         f"This is a Work turn.\nArtifact directory for this turn: {work_artifacts}"
     )
     assert launcher.prompts[1].count(work_message) == 1

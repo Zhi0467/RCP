@@ -1321,6 +1321,33 @@ def test_multiple_active_agent_tasks_can_share_a_project(tmp_path) -> None:
     assert store.agent_task("second-run") is not None
 
 
+def test_run_stage_protection_tracks_active_tasks_on_their_execution_host(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    for operation_id, status, stage_host, stage_root in (
+        ("local-active", "queued", None, "/data/run-stage/local-active"),
+        ("remote-active", "running", "gpu.example", "/tmp/rcp-run.remote-active"),
+        ("local-terminal", "failed", None, "/data/run-stage/local-terminal"),
+    ):
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id="project",
+                kind="refresh",
+                status=status,
+                request={},
+                created_at=now,
+                updated_at=now,
+                status_message=status,
+                stage_host=stage_host,
+                stage_root=stage_root,
+            )
+        )
+
+    assert store.protected_run_stage_roots("") == ("/data/run-stage/local-active",)
+    assert store.protected_run_stage_roots("gpu.example") == ("/tmp/rcp-run.remote-active",)
+
+
 def test_has_active_chat_task_is_scoped_to_project_kind_and_chat(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()

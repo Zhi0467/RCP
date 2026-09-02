@@ -2335,11 +2335,20 @@ def test_remote_stage_sweeper_uses_read_only_tree_cleanup(monkeypatch) -> None:
 
     monkeypatch.setattr(stage, "_ssh", fake_ssh)
 
-    stage.sweep(retain_days=7)
+    stage.sweep(retain_days=7, protected_roots=["/tmp/rcp-run.episode-live"])
 
     assert calls[0][:2] == ["python3", "-c"]
     assert "make_writable" in calls[0][2]
     assert "remove_tree(target)" in calls[0][2]
+    assert "target not in protected" in calls[0][2]
+    assert json.loads(calls[0][4]) == ["/tmp/rcp-run.episode-live"]
+
+
+def test_remote_stage_sweeper_rejects_unsafe_protected_root() -> None:
+    stage = RemoteRunStage("research.example")
+
+    with pytest.raises(ValueError, match="outside the staging boundary"):
+        stage.sweep(protected_roots=["/tmp/not-an-rcp-stage"])
 
 
 def test_remote_stage_artifact_operations_are_exact_and_binary(monkeypatch) -> None:

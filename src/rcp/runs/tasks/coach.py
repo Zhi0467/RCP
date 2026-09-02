@@ -127,7 +127,10 @@ async def stream_coach(
             )
         )
         return
-    stage_root = _swept_stage_root(data_dir)
+    stage_root = _swept_stage_root(
+        data_dir,
+        store=execution.store if execution is not None else None,
+    )
     if reusing_checkpoint:
         if not execution.stage_root:
             yield _sse(

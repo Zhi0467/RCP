@@ -12,7 +12,7 @@ import stat
 import tempfile
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextlib import AbstractContextManager, aclosing
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -55,6 +55,10 @@ _RequestT = TypeVar("_RequestT", bound=BaseModel)
 
 class _RecoveryStageStore(Protocol):
     def connection(self) -> AbstractContextManager[sqlite3.Connection]: ...
+
+
+class _RunStageProtectionStore(Protocol):
+    def protected_run_stage_roots(self, stage_host: str) -> tuple[str, ...]: ...
 
 
 @dataclass(frozen=True)
@@ -340,12 +344,18 @@ def _collect_patch_text(
     )
 
 
-def _sweep_stale_stages(root: Path, *, now: float) -> None:
+def _sweep_stale_stages(
+    root: Path,
+    *,
+    now: float,
+    protected_roots: Iterable[str | Path] = (),
+) -> None:
     """Age out retained scratch folders. Failed runs keep theirs until then."""
     if not root.is_dir():
         return
+    protected = {Path(item) for item in protected_roots}
     for candidate in root.iterdir():
-        if not candidate.is_dir():
+        if candidate in protected or not candidate.is_dir():
             continue
         try:
             age = now - candidate.stat().st_mtime
@@ -400,10 +410,37 @@ def _make_local_tree_writable(target: Path) -> None:
         _make_local_tree_writable(child)
 
 
-def _swept_stage_root(data_dir: Path) -> Path:
+def _protected_run_stage_roots(
+    store: _RunStageProtectionStore | None,
+    stage_host: str,
+) -> tuple[str, ...] | None:
+    """Read cleanup exclusions, or decline cleanup when state cannot be read."""
+
+    if store is None:
+        return ()
+    reader = getattr(store, "protected_run_stage_roots", None)
+    if reader is None:
+        return None
+    try:
+        return reader(stage_host)
+    except (sqlite3.Error, ValueError):
+        return None
+
+
+def _swept_stage_root(
+    data_dir: Path,
+    *,
+    store: _RunStageProtectionStore | None = None,
+) -> Path:
     """The local scratch root, with expired folders reclaimed before it is used."""
     stage_root = data_dir / "run-stage"
-    _sweep_stale_stages(stage_root, now=time.time())
+    protected_roots = _protected_run_stage_roots(store, "")
+    if protected_roots is not None:
+        _sweep_stale_stages(
+            stage_root,
+            now=time.time(),
+            protected_roots=protected_roots,
+        )
     return stage_root
 
 
