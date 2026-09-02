@@ -29,6 +29,7 @@ interface UseProjectTabsOptions {
   initialProjectId: string | null;
   initialSetupOpen: boolean;
   projectIndexReady: boolean;
+  project: ProjectSnapshot | null;
   reportError: (message: string) => void;
 }
 
@@ -115,6 +116,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   initialProjectId,
   initialSetupOpen,
   projectIndexReady,
+  project,
   reportError,
 }: UseProjectTabsOptions) {
   const [projectId, setProjectId] = useState<string | null>(initialProjectId);
@@ -122,7 +124,6 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const [projects, setProjects] = useState<ProjectCard[]>([]);
   const [openProjectTabs, setOpenProjectTabs] = useState<ProjectTab[]>([]);
   const [experimentLoops, setExperimentLoops] = useState<ExperimentLoopIndexEntry[]>([]);
-  const [project, setProject] = useState<ProjectSnapshot | null>(null);
   const [projectHeaderCollapsed, setProjectHeaderCollapsed] = useState(() =>
     readProjectHeaderCollapsed(initialProjectId),
   );
@@ -138,15 +139,6 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     [],
   );
   const getActiveProjectId = useCallback(() => activeProjectId.current, []);
-  const replaceProject = useCallback((nextProject: ProjectSnapshot | null) => {
-    setProject(nextProject);
-  }, []);
-  const updateProject = useCallback(
-    (update: (current: ProjectSnapshot | null) => ProjectSnapshot | null) => {
-      setProject(update);
-    },
-    [],
-  );
   const replaceProjects = useCallback((nextProjects: ProjectCard[]) => {
     setProjects(nextProjects);
   }, []);
@@ -343,12 +335,9 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     projects,
     openProjectTabs,
     experimentLoops,
-    project,
     projectHeaderCollapsed,
     isActiveProject,
     getActiveProjectId,
-    replaceProject,
-    updateProject,
     replaceProjects,
     loadProjectIndex,
     refreshExperimentLoops,

@@ -29,6 +29,9 @@
 - [The native team entrance negotiates one thin protocol range](2026-09-01-team-shell-handshake-compatibility.md)
   records the live highest-overlap handshake, source-commit diagnostics,
   immutable per-version contracts, and removal of persisted compatibility state.
+- [Freeze new team/server surface until lab closure](2026-09-02-freeze-new-team-server-surface-until-lab-closure.md)
+  records the temporary admission boundary on new team infrastructure while the
+  existing desktop, server, transfer, and recovery drives reach lab closure.
 
 Decision records explain rationale that remains materially useful for an active
 migration, live tradeoff, or easy-to-regress architectural boundary. They link to

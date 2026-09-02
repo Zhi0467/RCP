@@ -279,6 +279,7 @@ def test_old_project_invitation_table_is_migrated_to_accept_revocation(tmp_path)
             "INSERT INTO project_invitations SELECT * FROM current_project_invitations"
         )
         connection.execute("DROP TABLE current_project_invitations")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 5")
 
     reopened = AppStore(path)
     with reopened.connection() as connection:

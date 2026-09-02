@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import re
 import shutil
 import sqlite3
 from contextlib import chdir
@@ -45,7 +46,7 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT migration_version FROM storage_schema_migrations ORDER BY migration_version"
-        ).fetchall() == [(1,), (2,), (3,), (4,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (5,)]
 
     def unexpected_migration(*_args) -> None:
         raise AssertionError("completed legacy migration was rescanned")
@@ -84,6 +85,23 @@ def test_immutable_server_boundaries_upgrade_and_start(
     shutil.copytree(fixture, copied)
 
     _exercise_candidate_upgrade(copied)
+
+
+@pytest.mark.parametrize("fixture", immutable_fixture_directories(), ids=lambda path: path.name)
+def test_immutable_server_boundaries_converge_on_the_baseline_schema(
+    fixture: Path,
+    tmp_path: Path,
+) -> None:
+    verify_fixture_integrity(fixture)
+    copied = tmp_path / "fixture"
+    shutil.copytree(fixture, copied)
+    upgraded = _materialize_database(copied / "data")
+    AppStore(upgraded)
+
+    baseline = tmp_path / "baseline.sqlite3"
+    AppStore(baseline)
+
+    assert _normalized_schema(upgraded) == _normalized_schema(baseline)
 
 
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
@@ -238,6 +256,21 @@ def _canonical_patch_hashes(fixture: Path) -> dict[str, str]:
         for path in sorted(patch_root.rglob("*"))
         if path.is_file()
     }
+
+
+def _normalized_schema(database: Path) -> list[tuple[str, str, str, str]]:
+    with sqlite3.connect(database) as connection:
+        rows = connection.execute(
+            """
+            SELECT type, name, tbl_name, sql FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%'
+            ORDER BY type, name
+            """
+        ).fetchall()
+    return [
+        (object_type, name, table_name, re.sub(r"\s+", " ", sql or "").strip())
+        for object_type, name, table_name, sql in rows
+    ]
 
 
 def _assert_member_auth_rows(store: AppStore, metadata: dict[str, object]) -> None:

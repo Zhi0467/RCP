@@ -3186,20 +3186,32 @@ def _parse_enrollment_code(
     return None
 
 
-def _discard_failed_team_initialization(path: Path, expected_space_id: str) -> None:
+def _discard_failed_team_initialization(
+    path: Path,
+    expected_space_id: str,
+    *,
+    created_file: bool,
+) -> None:
     """Remove only the unopened team database created by this failed init attempt."""
 
     if not path.exists():
         return
     try:
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
-            identity = connection.execute(
-                "SELECT space_id, space_kind FROM space_identity WHERE singleton = 1"
+            has_schema = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
             ).fetchone()
-            user_count = connection.execute("SELECT COUNT(*) FROM space_users").fetchone()[0]
+            if has_schema is None:
+                removable = created_file
+            else:
+                identity = connection.execute(
+                    "SELECT space_id, space_kind FROM space_identity WHERE singleton = 1"
+                ).fetchone()
+                user_count = connection.execute("SELECT COUNT(*) FROM space_users").fetchone()[0]
+                removable = identity == (expected_space_id, "team") and user_count == 0
     except (OSError, sqlite3.Error):
         return
-    if identity != (expected_space_id, "team") or user_count != 0:
+    if not removable:
         return
     for candidate in (path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")):
         candidate.unlink(missing_ok=True)

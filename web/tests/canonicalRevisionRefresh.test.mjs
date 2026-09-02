@@ -30,8 +30,25 @@ const {
   singleFlightProjectCacheHeartbeat,
   startProjectCachePolling,
 } = await server.ssrLoadModule("/src/hooks/useProjectTabs.ts");
+const { emptyProjectSessionState, serializeProjectSessionTabState } = await server.ssrLoadModule(
+  "/src/hooks/projectSession.ts",
+);
 
 after(() => server.close());
+
+function projectSessionCacheFields(project, humanDraft = null) {
+  return {
+    ...serializeProjectSessionTabState(emptyProjectSessionState(project.id)),
+    project,
+    renderedRevision: project.graph.revision,
+    humanDraft,
+    transitionHead: {
+      target: { kind: "main" },
+      revision: project.graph.revision,
+      transition_id: null,
+    },
+  };
+}
 
 test("canonical revision polling uses only the lightweight project endpoint", async () => {
   const requested = [];
@@ -259,8 +276,7 @@ test("inactive advancement rebases only snapshot and draft while retaining the t
     custom_nodes: {},
   };
   const retained = {
-    project: { id: "alpha", graph },
-    humanDraft: draft,
+    ...projectSessionCacheFields({ id: "alpha", graph }, draft),
     tasks: [{ operation_id: "task-1" }],
     watchers: [{ watcher_id: "watcher-1" }],
     chatSummaries: [{ chat_id: "chat-1" }],
@@ -379,8 +395,7 @@ test("authoritative inactive snapshots prune resolved choices and clear missing 
     custom_nodes: {},
   };
   const retained = {
-    project: { id: "alpha", graph: oldGraph },
-    humanDraft: draft,
+    ...projectSessionCacheFields({ id: "alpha", graph: oldGraph }, draft),
     selectedNodeId: removedNode.id,
     companionNodeId: node.id,
     floatingChat: { chatId: "chat/removed", nodeId: removedNode.id },

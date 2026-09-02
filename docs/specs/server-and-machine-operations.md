@@ -329,9 +329,14 @@ deferred while the switched candidate is eligible for rollback.
 The current running release owns rehearsal capture, orchestration, expected
 answers, and final judgment. It revalidates the built receipt, obtains one
 online SQLite/project-file capture, and computes the expected canonical graph
-and startup-recovery models with current code. The candidate receives only the
-copied database: first it runs its migration twice to prove idempotence, then it
-starts behind the fence, opens the copied team space, and serves bounded reads.
+and startup-recovery models with current code. Storage startup creates one
+baseline schema only for an empty database. An existing database runs missing
+ordered, named migrations through `storage_schema_migrations`, then a read-only
+schema, migration-ledger, integrity, and foreign-key validator. Shape inspection
+is confined to the migration that owns that retained historical shape; a
+current database performs no startup writes. Rehearsal opens the copied database
+twice to prove that boundary before it starts behind the fence, opens the copied
+team space, and serves bounded reads.
 A freshly initialized team space waiting for its first enrollment is valid
 server state: rehearsal requires team identity and a closed unauthenticated
 boundary, but it must not invent an enrolled member requirement. In that state
@@ -485,10 +490,11 @@ From the first team-server-capable commit onward, current `main` directly
 upgrades state from every earlier server-era persistence boundary; an operator
 never walks through intermediate commits. Required CI retains one immutable,
 sanitized SQLite-plus-canonical-history fixture bundle per distinct schema or
-migration-semantics boundary and also exercises an upgrade from the exact
-candidate base. Historical fixtures do not expire automatically. Retiring one
-requires a separate explicit migration path and human decision. The compatibility
-rationale is recorded in the
+migration-semantics boundary, requires each upgraded fixture's normalized
+tables, indexes, and triggers to equal a fresh baseline schema, and also
+exercises an upgrade from the exact candidate base. Historical fixtures do not
+expire automatically. Retiring one requires a separate explicit migration path
+and human decision. The compatibility rationale is recorded in the
 [server-schema decision](../decisions/2026-08-27-server-schema-compatibility.md).
 
 A dirty managed checkout, a non-`main` checkout, divergence from `origin/main`,

@@ -63,6 +63,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "c3191bf03c5e57d4e79a2976c3753ea82e8d777f",
         "a0c3b71f13301e274b5976f7b7a2b86bee73d90e387010673920244e91e31b8d",
     ),
+    "storage-ledger-v13-371b807": (
+        "371b8070e7d6261f967fba825f61abf1371024d8",
+        "881d4dc046445f2ce2cf00f3a2ea3c7c64781f1c501619b795165a70385aa5da",
+    ),
 }
 
 

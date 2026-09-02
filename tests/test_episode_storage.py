@@ -38,6 +38,11 @@ def _authorizer(store: AppStore) -> AuthorizedHuman:
 def _create_legacy_campaign_tables(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
+        DROP TABLE IF EXISTS _legacy_campaign_invocations_archive;
+        DROP TABLE IF EXISTS _legacy_campaign_messages_archive;
+        DROP TABLE IF EXISTS _legacy_campaign_recoveries_archive;
+        DROP TABLE IF EXISTS _legacy_campaign_reports_archive;
+        DROP TABLE IF EXISTS _legacy_campaigns_archive;
         CREATE TABLE campaigns (
             campaign_id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL,
@@ -73,7 +78,7 @@ def _create_legacy_campaign_tables(connection: sqlite3.Connection) -> None:
         );
         """
     )
-    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 2)")
+    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 2, 5)")
 
 
 def _create_legacy_experiment_episode_table(connection: sqlite3.Connection) -> None:
@@ -103,7 +108,7 @@ def _create_legacy_experiment_episode_table(connection: sqlite3.Connection) -> N
         );
         """
     )
-    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 3)")
+    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 3, 5)")
 
 
 def _episode(
@@ -1309,7 +1314,9 @@ def test_experiment_migration_removes_its_impossible_modern_wrapup(tmp_path) -> 
         "modern-operation",
     )
     with store.connection() as connection:
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 2")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 5)"
+        )
     assert stopping.status == "stopping"
     assert stopping.ending is None
     assert stopping.wrapup_state == "not_started"
@@ -1545,6 +1552,7 @@ def _downgrade_wrapups_to_not_null(path, *, episode_id: str) -> None:
         """,
         (episode_id,),
     )
+    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 5")
     connection.commit()
     connection.close()
 
