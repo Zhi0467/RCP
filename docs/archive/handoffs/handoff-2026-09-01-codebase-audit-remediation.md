@@ -1,7 +1,13 @@
 # Codebase audit remediation handoff
 
 Date: 2026-09-01
-Status: archived at human direction on 2026-09-01. A read-only audit of `src/rcp`, `web/src`, `tests/`, and `docs/`
+Status: archived at human direction on 2026-09-01. An independent verification
+of the remediation branch on 2026-09-02 found one production-blocking regression
+in the restore lock scope, nine smaller fixes owed before merge, six unrequested
+behavior changes needing a decision, and the closure condition's UI drive still
+owed; see
+[the verification report](handoff-2026-09-01-codebase-audit-remediation-verification.md).
+A read-only audit of `src/rcp`, `web/src`, `tests/`, and `docs/`
 on 2026-09-01 produced the findings below. Every finding was verified by reading
 the code; the few that could only be reasoned about are marked *plausible*. Plan
 steps 1 through 6 are implemented and verified on the remediation branch: H1
