@@ -172,9 +172,29 @@ the next change uses a short-lived branch, PR CI, and explicit human merge.
   symlink instead of pinning a project to its current versioned target. Projects
   that already stored a versioned path need one normal **Resolve** in Settings;
   future updates retain the stable path.
-- The persistent lab server still needs the new source commit installed and the
-  real Codex/Claude wrapper commands driven before this live qualification is
-  closed.
+- The first persistent-server update exposed one adjacent release-ownership
+  defect: a source update could change the root-owned systemd unit without
+  installing that candidate unit. Update cutover, rollback, abort, and startup
+  recovery now converge the unit from the selected immutable release before
+  starting it. A crash-boundary regression covers a candidate unit installed
+  before the release pointer changes.
+- The persistent Ubuntu 22.04 server updated through the normal 13-step wizard
+  to `dd923f43d26b3318f867bf99b22db70e78aadf89`. The running commit, current
+  release, Web build, managed source, and installed unit read back aligned;
+  `server doctor` reported no problems, and the installed unit's SHA-256 exactly
+  matched the selected release.
+- Both real wrapper commands then completed under the non-login `rcp` account.
+  Claude resolved to `/home/rcp/.local/bin/claude` at `2.1.258` and Codex to
+  `/home/rcp/.local/bin/codex` at `0.152.1`; both retained usable native
+  authentication. The Codex standalone installer detected the older global npm
+  installation, which was safely retained because the account-local path wins.
+- The current source-built desktop connected to that server. One normal
+  **Resolve** changed the existing project's stored Claude and Codex paths from
+  versioned/global targets to the stable account-local symlinks, both rows
+  displayed **Ready**, and a server-side readiness run for `dark matter
+  denoising` used `/home/rcp/.local/bin/codex` at `0.152.1`. This closes the live
+  provider-maintenance qualification; the broader first real task and two-user
+  collaboration drives remain open as listed above.
 
 ### Notes carried from earlier status updates
 
