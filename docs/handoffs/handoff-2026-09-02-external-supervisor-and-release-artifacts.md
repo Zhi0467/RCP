@@ -1,11 +1,11 @@
 # External supervisor and release artifacts handoff
 
 Date: 2026-09-02
-Status: active, human-confirmed on 2026-09-02. Nothing is implemented. Every
-phase below remains. The decisions are settled in
+Status: active, human-confirmed on 2026-09-02. Phase 0 is implemented on branch
+`deploy/phase0-contract`; Phases 1 through 6 remain. The decisions are settled in
 [the supervisor decision](../decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md)
-and repeated in the next section so this file stands alone. Phases 0 through 2
-may start now. Phases 3 through 6 wait for
+and repeated in the next section so this file stands alone. Phases 1 and 2 may
+start now. Phases 3 through 6 wait for
 [the dev-team-space-and-server handoff](handoff-2026-08-27-dev-team-space-and-server.md)
 to meet its closure condition and be archived, because the human has frozen new
 team and server lifecycle surface until that first lab deployment is closed.
@@ -75,6 +75,12 @@ behavior it must not change, and the proof that closes it. "Green" means the
 baseline checks in `AGENTS.md` plus the phase's own checks.
 
 ### Phase 0 — contract the supervisor will rely on
+
+Status: implemented on branch `deploy/phase0-contract`. The exit proof is met:
+fresh, current, every frozen server-upgrade boundary, unknown-ledger,
+ledger-ahead-of-registry, apply, and held-instance-lock migration cases are
+covered; the frozen fixture bytes remain unchanged under `--check`; and health
+and both version renderings assert the new identity fields.
 
 Lands: `GET /api/health` adds `build`, `commit`, and `schema_ledger_head`
 beside `version`; `rcp --version` prints the same three facts; `rcp migrate
