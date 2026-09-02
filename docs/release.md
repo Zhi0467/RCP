@@ -17,7 +17,7 @@ so that merging often costs nothing and releasing stays deliberate.
 | Trigger | every merge to `main` | a human promotes one build |
 | Name | `build/<N>`, `<N>` is the CI run number | `vX.Y.Z` |
 | GitHub | prerelease | release; the newest one is `stable` |
-| Contents | `rcp` wheel, `rcp_supervisor` wheel, hashed lock export, SHA-256 manifest | the same files, re-attached, never rebuilt |
+| Contents | `rcp` wheel, hashed lock export, SHA-256 manifest, and the `rcp_supervisor` wheel once that package exists | the same files, re-attached, never rebuilt |
 | Kept | thirty days | forever |
 | Who acts | nobody | a human, never an agent |
 
@@ -30,6 +30,8 @@ so that merging often costs nothing and releasing stays deliberate.
    `src/rcp/__init__.py`.
 3. The job exports the locked dependencies with hashes, writes a manifest of
    SHA-256 sums, and publishes everything as prerelease `build/<N>`.
+4. A later merge never cancels an earlier `main` run. Every merge that passes
+   CI gets its own build, however close together they land.
 
 Find a build under the repository's Releases page, filtered to prereleases, or
 with:
@@ -78,9 +80,11 @@ sudo /usr/local/bin/rcp server update
 
 The supervisor downloads the newest release, verifies every hash, installs it
 beside the current release, checks that the data directory can migrate, takes
-the protected backup, switches, and verifies health. If health does not come
-back with the expected build, it switches back and says so. Servers never
-update themselves without an operator running that command.
+the protected backup, stops the service, takes a local pre-switch checkpoint,
+switches, starts, and verifies health. If health does not come back with the
+expected build, it restores the checkpoint, switches back, and says so, even if
+the new release had already migrated the data. Servers never update themselves
+without an operator running that command.
 
 To pin a server, or to roll back deliberately:
 
@@ -101,9 +105,10 @@ the bytes will not be the tested ones.
 
 ## Supervisor versions
 
-The supervisor has its own version, independent of RCP's. Every build carries
-the supervisor wheel, but its version changes only when a pull request changes
-the supervisor's own code. A server operator updates it explicitly:
+The supervisor has its own version, independent of RCP's. Every build made
+after the supervisor package exists carries its wheel, but its version changes
+only when a pull request changes the supervisor's own code. A server operator
+updates it explicitly:
 
 ```bash
 sudo /usr/local/bin/rcp server supervisor update

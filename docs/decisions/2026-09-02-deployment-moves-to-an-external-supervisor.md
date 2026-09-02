@@ -45,8 +45,9 @@ Promoted releases are never pruned.
 
 The supervisor is a Python package in this repository, `rcp_supervisor`, with
 its own version. It imports nothing from `rcp`, the same rule that governs the
-shipped `remote_*.py` modules. CI builds its wheel and attaches it to every
-build. Its version changes only when its own logic changes, so a supervisor
+shipped `remote_*.py` modules. Once the package exists, CI builds its wheel and
+attaches it to every build; builds made before that carry only the `rcp`
+assets. Its version changes only when its own logic changes, so a supervisor
 release is simply a build whose supervisor version differs from the installed
 one. `rcp server install` installs it once; `rcp server supervisor update`
 reinstalls it from the current `stable` release when the version differs. RCP
@@ -62,14 +63,26 @@ deleted.
 hash. Create `releases/<build>/` with an isolated environment installed from
 the wheel and the hashed lock. Run `rcp migrate --check` against a copy of the
 data directory. Take the protected backup. Close admission and stop the
-service. Switch the current-release pointer. Start. Poll health until the
-reported build matches, or a timeout passes. On any failure: stop, restore the
-checkpoint, switch back, start the previous release, verify it, and report both
+service. With nothing able to mutate, take a crash-safe local checkpoint of the
+data directory and every RCP-owned local state root, with a phase journal
+fsynced beside it; this is the same pre-switch checkpoint the current
+coordinator takes, and it is distinct from the off-server backup. Switch the
+current-release pointer. Start. Poll health until the reported build matches,
+or a timeout passes. On any failure: stop, restore the checkpoint from its
+journal, switch back, start the previous release, verify it, and report both
 the failed target and the restored release. That is rollback, and it is never
-silent.
+silent. A forward migration that ran before the failure is undone by the
+checkpoint, not by the old release reading migrated data. Re-entry after a
+crash keeps the service stopped and completes whatever the journal says was in
+progress.
 
-**Restore** unpacks a protected archive into a candidate data directory and
-runs the same check, switch, start, verify, and roll-back sequence.
+**Restore** unpacks a protected archive into a candidate data directory beside
+the live one and runs the release's `rcp migrate --check` on it. It then stops
+the service, checkpoints the live data directory under the same journal,
+atomically publishes the candidate into the configured `RCP_DATA_DIR`, starts,
+verifies, and rolls back by re-publishing the checkpoint. A crash mid-restore
+re-enters and finishes either the publication or the rollback; it never leaves
+a mixed data directory.
 
 **Contract with RCP**, fixed and extended only by adding fields:
 
@@ -85,8 +98,11 @@ runs the same check, switch, start, verify, and roll-back sequence.
 The repository becomes public with a protected `main` inside this work, not at
 a later sharing milestone. It stays one bundled transition: branch protection
 requiring the named CI jobs, and retirement of the private-source deploy key
-together with its install pause and backup label. Once public, release assets
-download without a token, so no server credential replaces the deploy key.
+together with its install pause and backup label. An installation that already
+uses a deploy-key SSH origin is converged once to the public HTTPS origin, and
+proven to update from it, before its key is revoked; a public repository does
+not make an SSH remote credential-free. Once public, release assets download
+without a token, so no server credential replaces the deploy key.
 
 ### What the application loses and keeps
 
@@ -97,7 +113,8 @@ candidate rehearsal that ran a copy of the new release inside the old one.
 
 Kept: forward-only migrations, the promise that every server-era database
 upgrades directly, the old-data CI job and its frozen fixtures, protected
-backups, systemd, the split operator and service privilege, and the operator
+backups, the crash-safe pre-switch checkpoint and its phase journal, systemd,
+the split operator and service privilege, and the operator
 commands `rcp server update` and `rcp server restore`, which now delegate to
 the supervisor.
 

@@ -27,8 +27,9 @@ When those hold, archive this handoff.
 - Every server follows `stable`, the newest non-prerelease GitHub Release. A
   human promotes a build to `stable` when they choose. No cadence.
 - CI publishes one build per merge to `main` as prerelease `build/<N>`: the
-  `rcp` wheel, the supervisor wheel, the hashed lock export, and a SHA-256
-  manifest. Builds are pruned after thirty days; releases never.
+  `rcp` wheel, the hashed lock export, a SHA-256 manifest, and, once Phase 3
+  creates it, the supervisor wheel. A later merge never cancels an earlier
+  `main` run. Builds are pruned after thirty days; releases never.
 - Promotion re-attaches the build's assets under `vX.Y.Z` and never rebuilds.
   The build's base version must equal the tag.
 - The wheel version is `<__version__>+build.<N>.g<sha7>`. Bumping
@@ -96,13 +97,17 @@ from package metadata, so a source checkout reports `build: null` honestly.
 ### Phase 1 — one build per merge, promotion without rebuild
 
 Lands: a `build` job in `.github/workflows/ci.yml` on `push` to `main` that
-builds the `rcp` wheel with the `+build.<N>.g<sha7>` local version, builds the
-supervisor wheel, runs `uv export --frozen` with hashes, writes a SHA-256
-manifest, and creates prerelease `build/<N>`; a `promote` workflow with a
-`build` input that verifies the base version equals the requested tag, creates
-release `vX.Y.Z`, and re-attaches the same assets; a scheduled `prune`
-workflow that deletes `build/<N>` prereleases older than thirty days;
-`docs/release.md` updated from "intended" to "current" wording.
+builds the `rcp` wheel with the `+build.<N>.g<sha7>` local version, runs
+`uv export --frozen` with hashes, writes a SHA-256 manifest, and creates
+prerelease `build/<N>`; the workflow's `concurrency.cancel-in-progress` narrowed
+to pull-request runs only, because today's setting cancels an earlier `main`
+run when a second merge lands and would silently drop that merge's build; a
+`promote` workflow with a `build` input that verifies the base version equals
+the requested tag, creates release `vX.Y.Z`, and re-attaches the same assets;
+a scheduled `prune` workflow that deletes `build/<N>` prereleases older than
+thirty days; `docs/release.md` updated from "intended" to "current" wording.
+The supervisor wheel is not part of this phase; Phase 3 adds it to the build
+when the package exists.
 
 Owner files: `.github/workflows/ci.yml`, `.github/workflows/promote.yml`,
 `.github/workflows/prune-builds.yml`, `pyproject.toml`, `docs/release.md`.
@@ -111,7 +116,8 @@ Must not change: the wheel contents beyond the version string; the existing
 lint, pytest, old-data, and web jobs; `__version__` semantics for a source
 checkout.
 
-Exit proof: two consecutive merges yield two downloadable builds; one promotion
+Exit proof: two merges landing within one minute yield two downloadable builds,
+neither run cancelled; one promotion
 yields a `stable` release whose assets are byte-identical to the build's,
 proven by the manifest hashes; a promotion whose base version mismatches the
 tag fails with a plain message; the prune workflow's dry run lists only builds
@@ -120,22 +126,33 @@ past the window.
 ### Phase 2 — public repository and protected `main`
 
 Lands: the bundled transition already designed in the 2026-08-27 update-channel
-decision. Repository public. Branch protection on `main` requiring the named CI
-jobs, rejecting direct pushes and failed or missing checks. The `grant_needed`
-install pause, the `source_ed25519` key material, and the `rcp-source:<id>`
-backup label removed together. The persistent lab server's deploy key revoked
-and its record updated.
+decision, in this order. Repository public. Branch protection on `main`
+requiring the named CI jobs, rejecting direct pushes and failed or missing
+checks. A one-time origin migration for installations that still use a
+deploy-key SSH origin: `prepare_source_access` and `converge_source_checkout` in
+`server_ops/install.py` refuse a mismatched origin today and gain exactly one
+deliberate transition, deploy-key SSH to the public HTTPS origin, with the
+machine config's `authentication` updated in the same step. The persistent lab
+server is migrated and proven with one `rcp server update` from the public
+origin. Only then are the `grant_needed` install pause, the `source_ed25519`
+key material, and the `rcp-source:<id>` backup label removed together and the
+lab server's deploy key revoked. Until Phase 4, servers keep building from
+source; they simply fetch it from the public origin.
 
-Owner files: `src/rcp/server_ops/install.py`, `src/rcp/server_ops/backup*.py`,
-`src/rcp/server_ops/restore.py` (label handling only), `docs/server.md` step 7,
+Owner files: `src/rcp/server_ops/install.py`, `src/rcp/server_ops/config.py`,
+`src/rcp/server_ops/backup*.py`, `src/rcp/server_ops/restore.py` (label
+handling only), `docs/server.md` step 7,
 `docs/specs/server-and-machine-operations.md`.
 
 Must not change: install behavior on a host that never had a private origin;
-backup archive compatibility for archives that carry the old label.
+backup archive compatibility for archives that carry the old label; any origin
+other than the one deliberate deploy-key-to-public transition.
 
 Exit proof: a live enforcement record (a direct push to `main` refused, a PR
-with a failed check blocked); a fresh install on a disposable host with no
-deploy-key step; an old archive with the label still restores.
+with a failed check blocked); the lab server's `server doctor` showing the
+public HTTPS origin and a successful update from it before the key is revoked;
+a fresh install on a disposable host with no deploy-key step; an old archive
+with the label still restores.
 
 ### Phase 3 — the supervisor package
 
@@ -144,12 +161,20 @@ Lands: `src/rcp_supervisor/` with its own `pyproject` entry, version, and
 (manifest, assets, hash verification, `stable` or a named release), `install`
 (isolated environment under `releases/<build>/` from wheel plus hashed lock, as
 `rcp`), `check` (copy data directory, run the release's `rcp migrate --check`),
-`switch` (backup, stop, pointer, start, health poll, roll back on failure),
-`restore` (candidate data directory from an archive, then the same switch),
-`self-update`. Event stream in the same machine-readable shape the CLI uses.
+`switch` (protected backup, stop, crash-safe local checkpoint of the data
+directory and every RCP-owned local state root with an fsynced phase journal,
+pointer switch, start, health poll, and on failure restore the checkpoint from
+the journal, switch back, start and verify the previous release), `restore`
+(unpack the archive into a candidate data directory beside the live one, run
+`check` on it, stop, checkpoint the live data directory under the same journal,
+atomically publish the candidate into `RCP_DATA_DIR`, start, verify, and roll
+back by re-publishing the checkpoint), `self-update`. Event stream in the same
+machine-readable shape the CLI uses. The checkpoint is what makes rollback
+after a forward migration possible; the old release never reads migrated data.
 
 Owner files: `src/rcp_supervisor/**`, `tests/test_supervisor*.py`,
-`pyproject.toml`, `.github/workflows/ci.yml` (test job only).
+`pyproject.toml`, `.github/workflows/ci.yml` (test job, and adding the
+supervisor wheel to the `build` job's assets).
 
 Must not change: anything under `src/rcp/`; the server layout from the
 2026-08-27 install decision; systemd unit contents.
@@ -157,7 +182,10 @@ Must not change: anything under `src/rcp/`; the server layout from the
 Exit proof: tests against a fake service that fails health checks, hangs, and
 reports a wrong build; tests against a frozen real RCP build installed into a
 temporary layout; a test that the package imports nothing from `rcp`; a test
-that an interrupted `switch` re-enters and completes rollback from its journal.
+that an interrupted `switch` re-enters and completes rollback from its journal,
+including after a forward migration ran; a test that an interrupted `restore`
+re-enters and finishes either the publication or the rollback, never leaving a
+mixed data directory.
 
 ### Phase 4 — cutover: operator commands delegate
 
@@ -219,8 +247,9 @@ followed release. Then archive this handoff.
 ## Not in scope
 
 - Any new team feature, transfer phase, or desktop protocol surface.
-- Data rollback after a migration. Restore from the protected backup remains
-  the answer, as today.
+- Rolling back data after a cutover has verified and reopened service. Inside
+  the switch window the pre-switch checkpoint is restored automatically; after
+  the window, restore from the protected backup remains the answer, as today.
 - A package repository or PyPI publication. Assets live on GitHub Releases.
 - Windows or non-Ubuntu servers.
 
