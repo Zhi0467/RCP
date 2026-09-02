@@ -172,6 +172,7 @@ def test_actual_legacy_result_view_schema_migrates_before_indexes_are_created(tm
         connection.execute("DROP INDEX result_views_project_chat")
         connection.execute("DROP INDEX result_views_expiry")
         connection.execute("ALTER TABLE result_views DROP COLUMN html")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 5")
         connection.execute(
             """
             INSERT INTO result_views (

@@ -90,7 +90,7 @@ def test_reused_remote_stage_refuses_unsafe_existing_root(
         remote_root.mkdir(mode=0o700)
         remote_root.chmod(0o755)
     stage = RemoteRunStage("research.example")
-    monkeypatch.setattr(stage, "sweep", lambda: None)
+    monkeypatch.setattr(stage, "sweep", lambda **_kwargs: None)
     monkeypatch.setattr(
         stage,
         "_ssh",

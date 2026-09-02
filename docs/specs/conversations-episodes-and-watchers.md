@@ -33,11 +33,13 @@ run-scope repository pointers, enabled-package pointers, schemas, outputs, and
 both Discuss and Work contracts. Seeing both contracts grants no cumulative
 authority: each turn carries one explicit mode marker.
 
-Later ordinary resumes send the marker, logical turn id, human message unchanged,
-resolved artifact directory, and only a compact replacement delta when stable
-context changed. A new baseline commits only after a mechanically successful
-turn and is bound to provider, host, native session, project, graph target,
-conversation, and focused node. Failed or interrupted work does not advance it.
+Later ordinary resumes repeat only the master-context path, then send the marker,
+logical turn id, human message unchanged, resolved artifact directory, and a
+compact replacement delta only when stable context changed. The repeated path is
+a pointer, not an instruction to reread unchanged context. A new baseline commits
+only after a mechanically successful turn and is bound to provider, host, native
+session, project, graph target, conversation, and focused node. Failed or
+interrupted work does not advance it.
 
 An exact conversation/native session cannot be reused across a different chat
 or graph target. Main and branch-bound stages fail closed instead of silently
@@ -48,7 +50,9 @@ continuing with the other target's authority.
 One conversation owns one reusable scratch stage because provider-native resume
 depends on its original working directory. Each logical turn owns one exact
 `turns/<turn-id>/artifacts` directory. Stale `patch.json` and `watch.json` are
-cleared fail-closed before a new turn that could misattribute them.
+cleared fail-closed before a new turn that could misattribute them. A committed
+native chat-session context retains that stage, including its immutable master
+context, even while no turn is active.
 
 The desktop composer may turn one bounded macOS dictation segment into editable
 text. It never sends automatically or retains audio. Temporary input attachments
@@ -130,7 +134,9 @@ Each invocation receives a dedicated Experiment contract and compact control
 file with phase, episode, graph target, invocation counts, pinned Decisions,
 current drift, completion criteria, and delivered watcher identities. Watcher
 state is a separate exact file. The provider never receives prior chat
-transcripts.
+transcripts. An automatic wake repeats one path to the full Experiment contract
+that initialized its exact current native session; it does not tell the provider
+to reread that unchanged contract.
 
 The Experiment-loop Patch may update its own attempt/status and guidance, create
 Evidence and Blockers, assert legal epistemic and output edges, and create the

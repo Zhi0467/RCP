@@ -363,6 +363,7 @@ Reply and artifacts:
 def experiment_loop_wake_message(
     *,
     focused_experiment_id: str,
+    experiment_contract_path: str,
     invocation: int,
     invocation_ceiling: int,
     previous_graph_result: str,
@@ -382,15 +383,16 @@ def experiment_loop_wake_message(
 ) -> str:
     """Continue one bounded episode's native session with a compact human-style turn.
 
-    The original session already holds the immutable Experiment-loop contract, so
-    this confirms what RCP accepted from the previous turn, names the delivered
-    watchers, replaces stale pointers with fresh ones, and restates the three
-    exits. It never rebuilds the contract. It says "turn" rather than
-    "invocation"; invocation stays the internal persisted budget term.
+    This retains one pointer to the immutable Experiment-loop contract, confirms
+    what RCP accepted from the previous turn, names the delivered watchers,
+    replaces stale pointers with fresh ones, and restates the three exits. It
+    never rebuilds the contract. It says "turn" rather than "invocation";
+    invocation stays the internal persisted budget term.
     """
 
     required = {
         "focused Experiment id": focused_experiment_id,
+        "Experiment contract path": experiment_contract_path,
         "previous graph result": previous_graph_result,
         "delivered watcher ids": delivered_watcher_ids,
         "loop control path": loop_control_path,
@@ -418,6 +420,8 @@ def experiment_loop_wake_message(
     )
     return f"""The watched work for Experiment `{focused_experiment_id}` is ready for another look. Continue the
 same bounded loop in turn {invocation} of {invocation_ceiling}.
+
+Experiment contract: {experiment_contract_path}
 
 RCP accepted the previous turn's handoff:
 - graph update: {previous_graph_result}

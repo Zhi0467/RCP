@@ -334,6 +334,12 @@ def test_episode_report_request_is_strict() -> None:
         )
 
 
+def test_pending_episode_report_stage_is_protected_from_age_cleanup(manifest, tmp_path) -> None:
+    _service, store, _request, _execution, stage = _setup_report(manifest, tmp_path)
+
+    assert store.protected_run_stage_roots("") == (str(stage),)
+
+
 @pytest.mark.asyncio
 async def test_report_runner_stages_only_minimal_resume_inputs(manifest, tmp_path) -> None:
     service, store, request, execution, stage = _setup_report(manifest, tmp_path)

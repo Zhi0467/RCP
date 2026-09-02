@@ -837,6 +837,7 @@ def test_retry_contract_recovery_does_not_cross_stage_boundary(tmp_path: Path) -
 def test_compact_wake_message_is_human_style_and_authority_truthful() -> None:
     message = experiment_loop_wake_message(
         focused_experiment_id=_EXPERIMENT_ID,
+        experiment_contract_path="/stage/inputs/experiment-contract.md",
         invocation=2,
         invocation_ceiling=4,
         previous_graph_result="applied as revision 9",
@@ -856,6 +857,8 @@ def test_compact_wake_message_is_human_style_and_authority_truthful() -> None:
         f"The watched work for Experiment `{_EXPERIMENT_ID}` is ready for another look."
     )
     assert "turn 2 of 4" in message
+    assert "Experiment contract: /stage/inputs/experiment-contract.md" in message
+    assert "reread" not in message.casefold()
     assert "invocation" not in message.lower()
     assert "- graph update: applied as revision 9" in message
     assert "- watchers armed: watch/old-a, watch/old-b" in message
@@ -1114,6 +1117,20 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     )
     assert "# RCP Experiment-loop task contract" not in wake_contract
     assert "turn 2 of 3" in wake_contract
+    experiment_contract_path = Path(
+        next(
+            line.removeprefix("Experiment contract: ")
+            for line in wake_contract.splitlines()
+            if line.startswith("Experiment contract: ")
+        )
+    )
+    assert experiment_contract_path.read_text(encoding="utf-8") == launcher.contracts[0]
+    assert wake_contract.count("Experiment contract: ") == 1
+    assert "reread" not in wake_contract.casefold()
+    assert (
+        f"Original immutable Experiment-loop contract: `{experiment_contract_path}`"
+        in launcher.contracts[2]
+    )
     assert "These context values replace what this session was given:" in wake_contract
     replacement = wake_contract.split(
         "These context values replace what this session was given:\n", 1
@@ -1253,6 +1270,21 @@ async def test_provider_switch_stages_full_recovery_contract_with_durable_proven
     assert "inspect authoritative external state" in compact
     persisted = store.agent_task_contract("loop-provider-switch", "work_retry_base")
     assert persisted == contract
+    switched_episode = store.experiment_episode(episode_id)
+    assert switched_episode is not None and switched_episode.session_bound
+    assert switched_episode.native_session_id == "claude-session-after-switch"
+    assert switch_execution.stage_root is not None
+    session_contract_path = experiment_loop_task_module._experiment_session_contract_path(
+        SimpleNamespace(
+            execution=switch_execution,
+            request=switch_request.model_copy(
+                update={"session_id": switched_episode.native_session_id}
+            ),
+            local_stage=Path(switch_execution.stage_root),
+            remote_stage=None,
+        )
+    )
+    assert Path(session_contract_path).read_text(encoding="utf-8") == contract
     diagnostics_path = Path(
         next(
             line.rsplit("`", 2)[1]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import subprocess
 import threading
 import time
@@ -49,6 +50,7 @@ from rcp.runs.shared import (
     _existing_exact_patch_digest,
     _sse,
     _sweep_stale_stages,
+    _swept_stage_root,
 )
 from rcp.runs.tasks.coach import _paper_snapshot_path, stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
@@ -409,7 +411,7 @@ def test_remote_stage_sweep_starts_after_health_is_available(
         lambda _catalog, _project_id: "research.example",
     )
 
-    def blocked_sweep(_stage) -> None:
+    def blocked_sweep(_stage, **_kwargs) -> None:
         entered.set()
         assert release.wait(timeout=3)
 
@@ -544,7 +546,13 @@ class ScriptedLauncher:
         self.launch_kwargs.append(kwargs)
         workspace = Path(kwargs["cwd"])
         self.workspaces.append(workspace)
-        inputs = Path(prompt.splitlines()[1]).parent
+        first_line, *remaining_lines = prompt.splitlines()
+        master_path = (
+            first_line.removeprefix("RCP master context: ")
+            if first_line.startswith("RCP master context: ")
+            else remaining_lines[0]
+        )
+        inputs = Path(master_path).parent
         self.input_snapshots.append(
             {
                 item.name: item.read_text(encoding="utf-8")
@@ -2288,7 +2296,7 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
             assert self.root is not None
             return self.root / "workspace"
 
-        def open(self, operation_id=None):
+        def open(self, operation_id=None, **_kwargs):
             self.root = PurePosixPath(f"/tmp/rcp-run.{operation_id}")
             return self
 
@@ -4124,17 +4132,68 @@ async def test_chat_launch_exception_keeps_workspace_without_transcript_projecti
 def test_local_stage_sweeper_removes_stale_read_only_tree(tmp_path) -> None:
     root = tmp_path / "run-stage"
     stale_tree = root / "chat-expired" / "inputs" / "old-tree"
+    protected_tree = root / "episode-live" / "inputs"
     stale_tree.mkdir(parents=True)
+    protected_tree.mkdir(parents=True)
     copied = stale_tree / "old-input.txt"
     copied.write_text("old input", encoding="utf-8")
     copied.chmod(0o400)
     stale_tree.chmod(0o500)
     stage = root / "chat-expired"
     old_mtime = stage.stat().st_mtime
+    protected_stage = root / "episode-live"
+    os.utime(protected_stage, (old_mtime, old_mtime))
 
-    _sweep_stale_stages(root, now=old_mtime + 8 * 86400)
+    _sweep_stale_stages(
+        root,
+        now=old_mtime + 8 * 86400,
+        protected_roots=[protected_stage],
+    )
 
     assert not stage.exists()
+    assert protected_stage.is_dir()
+
+
+def test_local_stage_sweeper_keeps_a_settled_chat_session_stage(tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    stage = data_dir / "run-stage" / "chat-project-chat"
+    stage.mkdir(parents=True)
+    store = AppStore(data_dir / "rcp.sqlite3")
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="chat-turn",
+            project_id="project",
+            kind="project_chat",
+            status="succeeded",
+            request={"chat_id": "chat", "provider": "codex", "run_on": "local"},
+            created_at=now,
+            updated_at=now,
+            status_message="succeeded",
+            native_session_id="native-session",
+            stage_root=str(stage),
+        )
+    )
+    snapshot = json.dumps({"master_context_path": str(stage / "inputs" / "master.md")})
+    store.commit_chat_session_context(
+        provider="codex",
+        execution_machine="local",
+        native_session_id="native-session",
+        project_id="project",
+        kind="project_chat",
+        chat_id="chat",
+        node_id=None,
+        protocol_version=1,
+        snapshot_json=snapshot,
+        snapshot_sha256=hashlib.sha256(snapshot.encode()).hexdigest(),
+        committed_operation_id="chat-turn",
+        expected_snapshot_sha256=None,
+    )
+    stale = time.time() - 8 * 86400
+    os.utime(stage, (stale, stale))
+
+    assert _swept_stage_root(data_dir, store=store) == data_dir / "run-stage"
+    assert stage.is_dir()
 
 
 def test_failed_chat_task_keeps_the_answer_it_already_produced(manifest, tmp_path) -> None:
@@ -5283,12 +5342,14 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     assert launcher.workspaces == [workspace, workspace]
     second_artifacts = workspace / "turns" / second_operation_id / "artifacts"
     second_prompt = launcher.prompts[1]
-    # A Work envelope is the marker, that turn's enforced write boundary, the unchanged human
-    # bytes, and the delta — in that order and nothing else.
+    # A resumed Work envelope retains one master pointer, then the marker, that turn's enforced
+    # write boundary, the unchanged human bytes, and the delta.
     assert second_prompt.startswith(
+        f"RCP master context: {master_path}\n\n"
         f"This is a Work turn.\nArtifact directory for this turn: {second_artifacts}"
         f"\n\nEnforced write boundary on the machine this turn runs on:\n"
     )
+    assert "Open and retain the RCP chat master context" not in second_prompt
     assert f"\n\n{second_message}\n\nRCP context update" in second_prompt
     assert second_prompt.index("Enforced write boundary") < second_prompt.index(second_message)
     second_delta = json.loads(second_prompt.split("RCP context update", 1)[1].split(":\n", 1)[1])
@@ -5334,9 +5395,11 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     third_prompt = launcher.prompts[2]
     third_artifacts = workspace / "turns" / third_operation_id / "artifacts"
     assert third_prompt.startswith(
+        f"RCP master context: {master_path}\n\n"
         f"This is a Work turn.\nArtifact directory for this turn: {third_artifacts}"
         f"\n\nEnforced write boundary on the machine this turn runs on:\n"
     )
+    assert "Open and retain the RCP chat master context" not in third_prompt
     assert f"\n\n{third_message}\n\nRCP context update" in third_prompt
     delta = json.loads(third_prompt.split("RCP context update", 1)[1].split(":\n", 1)[1])
     assert set(delta) == {"patch", "settings"}

@@ -81,6 +81,15 @@ TRANSFER_GLOBAL_TABLES = frozenset(
         "team_sessions",
     }
 )
+_LEGACY_PROJECT_ARCHIVE_TABLES = frozenset(
+    {
+        "_legacy_campaign_invocations_archive",
+        "_legacy_campaign_messages_archive",
+        "_legacy_campaign_recoveries_archive",
+        "_legacy_campaign_reports_archive",
+        "_legacy_campaigns_archive",
+    }
+)
 
 TransferArchiveGroup = Literal[
     "source_manifest_provenance",
@@ -699,6 +708,7 @@ def inspect_project_linked_tables(connection: sqlite3.Connection) -> tuple[str, 
             str(row[1]) for row in pragma_rows("table_info", table)
         )
     }
+    linked.update(tables.intersection(_LEGACY_PROJECT_ARCHIVE_TABLES))
     while True:
         children = {
             table

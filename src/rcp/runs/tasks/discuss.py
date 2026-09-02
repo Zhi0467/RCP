@@ -39,6 +39,7 @@ from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _pinned_to_profile,
+    _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _sse,
@@ -126,7 +127,8 @@ def _prepare_discuss_chat_prompt(
     prompt = PromptFactory.discuss_turn_prompt(
         artifact_path=artifact_path,
         human_message=request.message,
-        master_context_path=bootstrap_path,
+        master_context_path=retained_master_path,
+        bootstrap_master_context=bootstrap_path is not None,
         context_delta=context_delta,
         invoked_skill_pointers=invoked_package_pointers(
             skill_pointers,
@@ -191,7 +193,14 @@ async def stream_discuss_run(
                     )
                     remote_stage = RemoteRunStage(execution_host).attach(stage_root)
                 else:
-                    remote_stage = RemoteRunStage(execution_host).open(stage_name, reuse=True)
+                    remote_stage = RemoteRunStage(execution_host).open(
+                        stage_name,
+                        reuse=True,
+                        protected_roots=_protected_run_stage_roots(
+                            execution.store if execution is not None else None,
+                            execution_host,
+                        ),
+                    )
                 assert remote_stage.root is not None
                 if execution is not None:
                     execution.checkpoint_stage(execution_host, str(remote_stage.root))
@@ -203,7 +212,10 @@ async def stream_discuss_run(
                     )
                 workspace = Path(str(remote_stage.workspace))
             else:
-                stage_root = _swept_stage_root(data_dir)
+                stage_root = _swept_stage_root(
+                    data_dir,
+                    store=execution.store if execution is not None else None,
+                )
                 expected_stage = stage_root / stage_name
                 if saved_stage:
                     local_stage = _validated_local_chat_resume_stage(execution, expected_stage)

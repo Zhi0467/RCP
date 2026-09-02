@@ -65,6 +65,7 @@ from rcp.storage.models import (
     AgentUsageSnapshot,
     AutoResearchRole,
     ChatSessionContextRecord,
+    RunStageLifecycleRecord,
     _canonical_uuid4,
     _required_timestamp,
     _result_view_reference_time,
@@ -108,6 +109,13 @@ _AGENT_TASK_CONTINUATION_CAUSES = frozenset(
 class _AgentTaskTransitionResult:
     outcome: Literal["applied", "refused", "missing"]
     observed_status: AgentTaskStatus | None = None
+
+
+@dataclass
+class _RunStageLifecycleAggregate:
+    owner_refs: set[str]
+    must_exist: bool = False
+    protect_from_cleanup: bool = False
 
 
 class AgentTaskStoreMixin:
@@ -2868,6 +2876,153 @@ class AgentTaskStoreMixin:
                 """,
                 (now, operation_id),
             )
+
+    def run_stage_lifecycles(
+        self,
+        *,
+        as_of: datetime | None = None,
+    ) -> tuple[RunStageLifecycleRecord, ...]:
+        """Project every durable owner onto its exact run-stage lifecycle."""
+
+        current = _result_view_reference_time(as_of)
+        aggregates: dict[tuple[str, str], _RunStageLifecycleAggregate] = {}
+
+        def add(
+            *,
+            stage_host: object,
+            stage_root: object,
+            owner_ref: str,
+            must_exist: bool,
+            protect_from_cleanup: bool,
+        ) -> None:
+            if not isinstance(stage_root, str) or not stage_root:
+                return
+            host = stage_host if isinstance(stage_host, str) else ""
+            aggregate = aggregates.setdefault(
+                (host, stage_root),
+                _RunStageLifecycleAggregate(owner_refs=set()),
+            )
+            aggregate.owner_refs.add(owner_ref)
+            aggregate.must_exist = aggregate.must_exist or must_exist
+            aggregate.protect_from_cleanup = aggregate.protect_from_cleanup or protect_from_cleanup
+
+        with self.connection() as connection:
+            task_rows = connection.execute(
+                """
+                SELECT run.operation_id, COALESCE(run.stage_host, '') AS stage_host,
+                       run.stage_root,
+                       (
+                         run.status IN ('queued', 'running', 'pausing')
+                         OR episode.status IN ('queued', 'running', 'stopping', 'wrapping_up')
+                       ) AS live
+                FROM graph_runs AS run
+                LEFT JOIN episodes AS episode ON episode.episode_id = run.episode_id
+                WHERE run.stage_root IS NOT NULL AND run.stage_root != ''
+                """
+            ).fetchall()
+            episode_rows = connection.execute(
+                """
+                SELECT state.episode_id, COALESCE(state.stage_host, '') AS stage_host,
+                       state.stage_root,
+                       episode.status IN ('queued', 'running', 'stopping', 'wrapping_up') AS live
+                FROM experiment_episode_state AS state
+                JOIN episodes AS episode ON episode.episode_id = state.episode_id
+                WHERE state.stage_root IS NOT NULL AND state.stage_root != ''
+                """
+            ).fetchall()
+            wrapup_rows = connection.execute(
+                """
+                SELECT wrapup.episode_id, COALESCE(wrapup.stage_host, '') AS stage_host,
+                       wrapup.stage_root,
+                       wrapup.state IN ('pending', 'running') AS live
+                FROM episode_wrapups AS wrapup
+                WHERE wrapup.stage_root IS NOT NULL AND wrapup.stage_root != ''
+                """
+            ).fetchall()
+            view_rows = connection.execute(
+                """
+                SELECT view_id, stage_host, stage_root, expires_at, kept_filename
+                FROM result_views
+                WHERE stage_root IS NOT NULL AND stage_root != ''
+                """
+            ).fetchall()
+            chat_rows = connection.execute(
+                """
+                SELECT context.native_session_id,
+                       COALESCE(run.stage_host, '') AS stage_host, run.stage_root
+                FROM chat_session_contexts AS context
+                JOIN graph_runs AS run
+                  ON run.operation_id = context.committed_operation_id
+                WHERE run.stage_root IS NOT NULL AND run.stage_root != ''
+                """
+            ).fetchall()
+
+        for row in task_rows:
+            live = bool(row["live"])
+            add(
+                stage_host=row["stage_host"],
+                stage_root=row["stage_root"],
+                owner_ref=f"graph_runs:{row['operation_id']}",
+                must_exist=live,
+                protect_from_cleanup=live,
+            )
+        for row in episode_rows:
+            live = bool(row["live"])
+            add(
+                stage_host=row["stage_host"],
+                stage_root=row["stage_root"],
+                owner_ref=f"experiment_episode_state:{row['episode_id']}",
+                must_exist=live,
+                protect_from_cleanup=live,
+            )
+        for row in wrapup_rows:
+            live = bool(row["live"])
+            add(
+                stage_host=row["stage_host"],
+                stage_root=row["stage_root"],
+                owner_ref=f"episode_wrapups:{row['episode_id']}",
+                must_exist=live,
+                protect_from_cleanup=live,
+            )
+        for row in view_rows:
+            live = row["kept_filename"] is None and _required_timestamp(row["expires_at"]) > current
+            add(
+                stage_host=row["stage_host"],
+                stage_root=row["stage_root"],
+                owner_ref=f"result_views:{row['view_id']}",
+                must_exist=False,
+                protect_from_cleanup=live,
+            )
+        for row in chat_rows:
+            add(
+                stage_host=row["stage_host"],
+                stage_root=row["stage_root"],
+                owner_ref=f"chat_session_contexts:{row['native_session_id']}",
+                must_exist=False,
+                protect_from_cleanup=True,
+            )
+
+        return tuple(
+            RunStageLifecycleRecord(
+                stage_host=host,
+                stage_root=root,
+                owner_refs=tuple(sorted(aggregate.owner_refs)),
+                must_exist=aggregate.must_exist,
+                protect_from_cleanup=aggregate.protect_from_cleanup,
+            )
+            for (host, root), aggregate in sorted(aggregates.items())
+        )
+
+    def protected_run_stage_roots(self, stage_host: str) -> tuple[str, ...]:
+        """Return exact stages whose durable lifecycle still depends on them."""
+
+        if not isinstance(stage_host, str):
+            raise ValueError("run-stage protection requires one execution host")
+        return tuple(
+            record.stage_root
+            for record in self.run_stage_lifecycles()
+            if record.stage_host == stage_host and record.protect_from_cleanup
+        )
 
     def request_agent_task_pause(
         self,

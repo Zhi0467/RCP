@@ -75,6 +75,7 @@ from rcp.runs.shared import (
     _existing_exact_patch_digest,
     _parent_task_contract_path,
     _pinned_to_profile,
+    _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _retry_deliverable_is_unchanged,
@@ -192,7 +193,8 @@ def _prepare_work_chat_prompt(
     prompt = PromptFactory.work_turn_prompt(
         artifact_path=artifact_path,
         human_message=request.message,
-        master_context_path=bootstrap_path,
+        master_context_path=retained_master_path,
+        bootstrap_master_context=bootstrap_path is not None,
         context_delta=context_delta,
         invoked_skill_pointers=invoked_package_pointers(
             skill_pointers,
@@ -267,6 +269,10 @@ async def _stage_work_turn(
                 remote_stage = RemoteRunStage(resolved.execution_host).open(
                     stage_name,
                     reuse=True,
+                    protected_roots=_protected_run_stage_roots(
+                        execution.store if execution is not None else None,
+                        resolved.execution_host,
+                    ),
                 )
             assert remote_stage.root is not None
             if execution is not None:
@@ -281,7 +287,10 @@ async def _stage_work_turn(
             )
             workspace = Path(str(remote_stage.workspace))
         else:
-            stage_root = _swept_stage_root(data_dir)
+            stage_root = _swept_stage_root(
+                data_dir,
+                store=execution.store if execution is not None else None,
+            )
             expected_stage = stage_root / stage_name
             if saved_stage:
                 local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
@@ -1833,7 +1842,7 @@ async def _stream_work_graph_repair(
             )
             workspace = Path(str(remote_stage.workspace))
         else:
-            expected_stage = _swept_stage_root(data_dir) / stage_name
+            expected_stage = _swept_stage_root(data_dir, store=execution.store) / stage_name
             local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
             workspace = _prepare_local_chat_workspace(
                 local_stage,

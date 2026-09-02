@@ -237,6 +237,21 @@ def test_one_live_parent_per_experiment_survives_a_turn_that_wakes_nothing(
     )
 
 
+def test_live_episode_stage_is_protected_after_its_current_task_settles(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id, task = _admit_root(store)
+    store.complete_agent_task(task.operation_id, applied_revision=None, result={})
+    _bind(store, episode_id, task.operation_id, invocation=1)
+
+    assert store.protected_run_stage_roots("") == ("/tmp/exact-experiment-stage",)
+
+    settled = store.request_experiment_loop_stop("project", "exp-one")
+    assert settled is not None
+    episode = store.episode(episode_id)
+    assert episode is not None and episode.status == "stopped"
+    assert store.protected_run_stage_roots("") == ()
+
+
 def test_failed_root_insert_rolls_back_parent_and_child(tmp_path: Path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id = str(uuid.uuid4())
@@ -688,7 +703,7 @@ def test_legacy_combined_rows_and_missing_state_roots_migrate_one_way(
             """
         )
         connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 3)"
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 3, 5)"
         )
         for index, episode_id in enumerate((old_episode_id, missing_state_id), start=1):
             request = _request(episode_id, control_node_id=f"exp-{index}")

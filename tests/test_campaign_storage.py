@@ -647,6 +647,11 @@ def test_legacy_campaign_tables_migrate_once_then_move_to_private_archives(tmp_p
     with store.connection() as connection:
         connection.executescript(
             """
+            DROP TABLE IF EXISTS _legacy_campaign_invocations_archive;
+            DROP TABLE IF EXISTS _legacy_campaign_messages_archive;
+            DROP TABLE IF EXISTS _legacy_campaign_recoveries_archive;
+            DROP TABLE IF EXISTS _legacy_campaign_reports_archive;
+            DROP TABLE IF EXISTS _legacy_campaigns_archive;
             CREATE TABLE campaigns (
                 campaign_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
                 root_operation_id TEXT, status TEXT NOT NULL, starting_instruction TEXT,
@@ -683,7 +688,7 @@ def test_legacy_campaign_tables_migrate_once_then_move_to_private_archives(tmp_p
             """
         )
         connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 2)"
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 2, 5)"
         )
         connection.execute(
             """
