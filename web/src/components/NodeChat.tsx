@@ -158,6 +158,19 @@ function artifactContextStorageKey(projectId: string, chatId: string): string {
   return `rcp:artifact-context:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`;
 }
 
+export function reconcileChatRunScope(
+  current: string[],
+  requested: string[],
+  projectTruthScope: string[],
+  reset: boolean,
+): string[] {
+  const allowed = new Set(projectTruthScope);
+  const candidate = reset ? requested : current;
+  return candidate.filter(
+    (repository, index) => allowed.has(repository) && candidate.indexOf(repository) === index,
+  );
+}
+
 export function parseArtifactContextPayload(value: unknown): ArtifactContextPayload | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
@@ -348,7 +361,12 @@ export function NodeChat({
       ),
     [historyMessages, project.agent_profiles, relatedTasks, surface],
   );
-  const [scope, setScope] = useState(runScope);
+  const [scope, setScope] = useState(() =>
+    reconcileChatRunScope([], runScope, project.project_truth_scope, true),
+  );
+  const scopeIdentityRef = useRef(`${project.id}\0${chatId}`);
+  const requestedScopeKey = runScope.join("\0");
+  const projectTruthScopeKey = project.project_truth_scope.join("\0");
   const draftKey = chatDraftStorageKey(project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
   const artifactContextKey = artifactContextStorageKey(project.id, chatId);
@@ -511,6 +529,15 @@ export function NodeChat({
   const attachmentsPreparing = attachments.some((item) => item.status === "preparing");
   const attachmentsUnready = attachments.some((item) => item.status !== "ready");
   const dictating = dictationState !== "idle" && dictationState !== "error";
+  useEffect(() => {
+    const identity = `${project.id}\0${chatId}`;
+    const reset = scopeIdentityRef.current !== identity;
+    scopeIdentityRef.current = identity;
+    setScope((current) =>
+      reconcileChatRunScope(current, runScope, project.project_truth_scope, reset),
+    );
+  }, [chatId, project.id, projectTruthScopeKey, requestedScopeKey]);
+
   useEffect(() => {
     setModeState((current) =>
       current.pinned || current.value === derivedMode

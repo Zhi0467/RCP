@@ -12,10 +12,10 @@ const server = await createServer({
 const {
   attentionGraphForProjection,
   canonicalGraphHead,
+  decisionsAwaitingChoice,
   experimentStartNeedsSync,
   humanAttentionBlockers,
   humanDraftTransitionRouting,
-  primaryQuestionForGraph,
   projectWithGraph,
 } = await server.ssrLoadModule("/src/App.tsx");
 
@@ -180,6 +180,7 @@ test("attention membership follows a backend preview candidate, not canonical bl
       pending_proposal_ids: [],
       decisions_awaiting_choice_ids: [],
       open_blocker_ids: [],
+      proposal_actions: {},
     },
     experiment_control: {},
     ruleset_tag: "rcp.lifecycle.v1",
@@ -222,6 +223,7 @@ test("attention content follows the same local projection snapshot as the rest o
       pending_proposal_ids: [],
       decisions_awaiting_choice_ids: [],
       open_blocker_ids: ["blocker"],
+      proposal_actions: {},
     },
     experiment_control: {},
     ruleset_tag: "rcp.lifecycle.v1",
@@ -233,7 +235,49 @@ test("attention content follows the same local projection snapshot as the rest o
   assert.strictEqual(attentionGraphForProjection(canonical, projection), projected);
 });
 
-test("candidate snapshots rederive the primary question by backend standing and id order", () => {
+test("a local draft keeps canonical decision membership while presenting staged fields", () => {
+  const canonicalDecision = {
+    id: "decision/runtime",
+    type: "decision",
+    title: "Choose a runtime",
+    standing: "asserted",
+    status: "pending",
+  };
+  const canonical = { revision: 4, nodes: { [canonicalDecision.id]: canonicalDecision } };
+  const stagedDecision = { ...canonicalDecision, title: "Choose the production runtime" };
+  const projected = {
+    ...canonical,
+    nodes: { [canonicalDecision.id]: stagedDecision },
+  };
+  const projection = {
+    head: canonicalGraphHead(4),
+    graph: projected,
+    attention: {
+      pending_proposal_ids: [],
+      decisions_awaiting_choice_ids: [canonicalDecision.id],
+      open_blocker_ids: [],
+      proposal_actions: {},
+    },
+    experiment_control: {},
+    ruleset_tag: "rcp.lifecycle.v1",
+    transition_id: null,
+    canonical: false,
+    base_head: canonicalGraphHead(4),
+  };
+
+  const membershipGraph = attentionGraphForProjection(canonical, projection, "local_draft");
+  assert.strictEqual(membershipGraph, canonical);
+  assert.deepEqual(
+    decisionsAwaitingChoice(
+      projection.attention.decisions_awaiting_choice_ids,
+      membershipGraph.nodes,
+      projected.nodes,
+    ),
+    [stagedDecision],
+  );
+});
+
+test("candidate snapshots consume the backend primary question and counts", () => {
   const questions = {
     revision: 5,
     nodes: {
@@ -255,14 +299,13 @@ test("candidate snapshots rederive the primary question by backend standing and 
     },
     proposals: {},
   };
-  assert.equal(primaryQuestionForGraph(questions).id, "rq/asserted-a");
-
   const project = {
     primary_question: { id: "rq/removed", type: "research_question", standing: "accepted" },
     attention: {
       pending_proposal_ids: [],
       decisions_awaiting_choice_ids: [],
       open_blocker_ids: [],
+      proposal_actions: {},
     },
     counts: {
       pending_proposals: 0,
@@ -273,6 +316,15 @@ test("candidate snapshots rederive the primary question by backend standing and 
       contested: 0,
     },
   };
-  assert.equal(projectWithGraph(project, questions).primary_question.id, "rq/asserted-a");
-  assert.equal(projectWithGraph(project, { ...questions, nodes: {} }).primary_question, null);
+  const backendPrimary = questions.nodes["rq/asserted-a"];
+  const backendCounts = { ...project.counts, asserted: 2, contested: 1 };
+  const projected = projectWithGraph(
+    project,
+    questions,
+    project.attention,
+    backendPrimary,
+    backendCounts,
+  );
+  assert.strictEqual(projected.primary_question, backendPrimary);
+  assert.strictEqual(projected.counts, backendCounts);
 });

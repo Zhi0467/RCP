@@ -786,7 +786,7 @@ export interface ExperimentLoopIndexEntry {
   parent_episode_id: string | null;
   node: GraphNode;
   control: ExperimentControlState;
-  episode: Episode | null;
+  episode: Episode;
 }
 
 export interface WatcherContinuation {
@@ -833,6 +833,7 @@ interface WatcherDeliveryRecord {
   stop_reason: string | null;
   stopped_at: string | null;
   stop_operation_id: string | null;
+  can_check_now: boolean;
 }
 
 export interface ExternalWatcherRecord extends WatcherDeliveryRecord {
@@ -1069,11 +1070,18 @@ export function decodeGraphAttentionProjection(
   value: unknown,
   graph: GraphState,
 ): GraphAttentionProjection {
-  const keys = ["pending_proposal_ids", "decisions_awaiting_choice_ids", "open_blocker_ids"];
+  const keys = [
+    "pending_proposal_ids",
+    "decisions_awaiting_choice_ids",
+    "open_blocker_ids",
+    "proposal_actions",
+  ];
   if (!isPlainRecord(value) || !hasExactKeys(value, keys)) {
     throw new Error("Project attention projection is missing or malformed.");
   }
-  const readIds = (field: (typeof keys)[number]): string[] => {
+  const readIds = (
+    field: "pending_proposal_ids" | "decisions_awaiting_choice_ids" | "open_blocker_ids",
+  ): string[] => {
     const raw = value[field];
     if (!Array.isArray(raw) || raw.some((item) => !isNonEmptyString(item))) {
       throw new Error(`Project attention projection has invalid ${field}.`);
@@ -1084,10 +1092,40 @@ export function decodeGraphAttentionProjection(
     }
     return [...ids];
   };
+  const pendingProposalIds = readIds("pending_proposal_ids");
+  const rawActions = value.proposal_actions;
+  if (!isPlainRecord(rawActions)) {
+    throw new Error("Project attention projection has invalid proposal_actions.");
+  }
+  if (
+    Object.keys(rawActions).length !== pendingProposalIds.length ||
+    pendingProposalIds.some((proposalId) => !Object.hasOwn(rawActions, proposalId))
+  ) {
+    throw new Error("Project attention Proposal actions do not match pending membership.");
+  }
+  const proposalActions: Record<string, ProposalActionLine[]> = {};
+  for (const proposalId of pendingProposalIds) {
+    const lines = rawActions[proposalId];
+    if (
+      !Array.isArray(lines) ||
+      lines.length === 0 ||
+      lines.some(
+        (line) =>
+          !isPlainRecord(line) ||
+          !hasExactKeys(line, Object.hasOwn(line, "label") ? ["label", "text"] : ["text"]) ||
+          !isNonEmptyString(line.text) ||
+          (Object.hasOwn(line, "label") && line.label !== null && !isNonEmptyString(line.label)),
+      )
+    ) {
+      throw new Error(`Project attention projection has invalid action for ${proposalId}.`);
+    }
+    proposalActions[proposalId] = lines as ProposalActionLine[];
+  }
   const attention: GraphAttentionProjection = {
-    pending_proposal_ids: readIds("pending_proposal_ids"),
+    pending_proposal_ids: pendingProposalIds,
     decisions_awaiting_choice_ids: readIds("decisions_awaiting_choice_ids"),
     open_blocker_ids: readIds("open_blocker_ids"),
+    proposal_actions: proposalActions,
   };
   for (const proposalId of attention.pending_proposal_ids) {
     if (!graph.proposals[proposalId]) {
@@ -1420,6 +1458,8 @@ export interface ProjectTransitionResponse {
   head: GraphHeadRef;
   graph: GraphState;
   attention: GraphAttentionProjection;
+  primary_question: GraphNode | null;
+  counts: ProjectCounts;
   experiment_control: Record<string, ExperimentControlState>;
   guidance_validity: Record<string, ExperimentGuidanceValidity>;
   ruleset_tag: string;
@@ -1432,6 +1472,41 @@ export interface GraphAttentionProjection {
   pending_proposal_ids: string[];
   decisions_awaiting_choice_ids: string[];
   open_blocker_ids: string[];
+  proposal_actions: Record<string, ProposalActionLine[]>;
+}
+
+export interface ProposalActionLine {
+  label?: string | null;
+  text: string;
+}
+
+export interface ProjectCounts {
+  pending_proposals: number;
+  decisions_awaiting_choice: number;
+  open_blockers: number;
+  asserted: number;
+  accepted: number;
+  contested: number;
+}
+
+export type GraphMutationAvailability =
+  { available: true; reason: null } | { available: false; reason: string };
+
+export interface RevisionedTransitionGraph {
+  revision: number;
+}
+
+export interface ProjectTransitionProjection<Graph extends RevisionedTransitionGraph, Control> {
+  head: GraphHeadRef;
+  graph: Graph;
+  attention: GraphAttentionProjection;
+  primary_question: GraphNode | null;
+  counts: ProjectCounts;
+  experiment_control: Control;
+  ruleset_tag: string | null;
+  transition_id: string | null;
+  canonical: boolean;
+  base_head?: GraphHeadRef | null;
 }
 
 export interface TransitionTrigger {
@@ -1759,6 +1834,11 @@ export interface AgentTask {
   contracts?: AgentTaskContract[];
 }
 
+export interface EpisodeTask extends AgentTask {
+  role: "orchestrator" | "worker" | "wake";
+  depth: number;
+}
+
 export type EpisodeHealth =
   | "starting"
   | "active"
@@ -1838,7 +1918,7 @@ export interface Episode {
   created_at: string;
   updated_at: string;
   ended_at: string | null;
-  tasks: AgentTask[];
+  tasks: EpisodeTask[];
   report: EpisodeReportSummary | null;
   can_stop: boolean;
   can_reauthorize: boolean;
@@ -2036,14 +2116,8 @@ export interface ProjectSnapshot {
   last_refresh_at?: string | null;
   experiment_control: Record<string, ExperimentControlState>;
   attention: GraphAttentionProjection;
-  counts: {
-    pending_proposals: number;
-    decisions_awaiting_choice: number;
-    open_blockers: number;
-    asserted: number;
-    accepted: number;
-    contested: number;
-  };
+  counts: ProjectCounts;
+  graph_mutation: GraphMutationAvailability;
   coverage: {
     repositories_seen: string[];
     repositories_never_seen: string[];

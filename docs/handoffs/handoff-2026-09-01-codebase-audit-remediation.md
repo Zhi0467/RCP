@@ -4,9 +4,9 @@ Date: 2026-09-01
 Status: active. A read-only audit of `src/rcp`, `web/src`, `tests/`, and `docs/`
 on 2026-09-01 produced the findings below. Every finding was verified by reading
 the code; the few that could only be reasoned about are marked *plausible*. Plan
-steps 1 through 5 are implemented and verified on the remediation branch: H1
-through H10 and M1 through M28 are closed with focused regressions. Steps 6
-through 8 remain. The
+steps 1 through 6 are implemented and verified on the remediation branch: H1
+through H10 and M1 through M35 are closed with focused regressions. Steps 7
+and 8 remain. The
 human confirmed the list and asked for the remediation to land on a dedicated
 branch and pull request; implementation continues in that same PR.
 
@@ -459,8 +459,8 @@ pass for the touched area.
    M6, M7, M8, H10.
 5. **Storage lifecycle — completed 2026-09-01.** H7, M9, M10, M11, M12, M13,
    M14, M22, M23, M24, M25, M26.
-6. **Frontend.** M29 to M35, then move the section 3 derivations into the
-   projection, starting with the artifact sandbox and the two Stop surfaces.
+6. **Frontend — completed 2026-09-01.** M29 to M35 and the section 3 frontend
+   derivations, including the artifact sandbox and the two Stop surfaces.
 7. **Consolidation.** Filesystem primitives, `work.py` and `experiment_loop.py`
    mechanism, auto-research duplicates, dead surface, unused configurability,
    `noqa: F401` blocks, limits into `limits.py`.

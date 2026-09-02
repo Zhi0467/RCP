@@ -594,7 +594,7 @@ function WatcherDetail({
   onCheckWatcher: (watcherId: string) => void;
 }) {
   const external = isExternalWatcherRecord(watcher);
-  const canCheckNow = external && watcher.status === "degraded" && !watcher.notified;
+  const canCheckNow = watcher.can_check_now;
   const checkBusy = watcherCheckBusyId === watcher.watcher_id;
   return (
     <li className={`experiment-run-watcher ${watcher.status}`}>

@@ -164,6 +164,7 @@ function watcher(fields = {}) {
     stop_reason: null,
     stopped_at: null,
     stop_operation_id: null,
+    can_check_now: false,
     ...fields,
   };
 }
@@ -944,6 +945,7 @@ test("degraded external watcher exposes backoff and Check now without recommendi
     last_error: "ssh connection timed out",
     next_check_at: "2026-08-06T04:30:00Z",
     consecutive_error_count: 3,
+    can_check_now: true,
   });
   const html = render({
     node: node({ status: "debugging" }),
@@ -978,7 +980,7 @@ test("degraded external watcher exposes backoff and Check now without recommendi
 });
 
 test("watcher Check now renders busy and disables concurrent mutations", () => {
-  const degraded = watcher({ status: "degraded", completed_at: null });
+  const degraded = watcher({ status: "degraded", completed_at: null, can_check_now: true });
   const html = render(
     {
       node: node(),

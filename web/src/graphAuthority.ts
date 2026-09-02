@@ -1,14 +1,15 @@
-import type { AgentTask, GraphState } from "./types";
+import type { AgentTask, ProjectSnapshot } from "./types";
 
-export function graphMutationsDisabled(graph: GraphState): boolean {
-  return graph.replay_status === "degraded";
+export function projectGraphMutationsDisabled(
+  project: Pick<ProjectSnapshot, "graph_mutation">,
+): boolean {
+  return !project.graph_mutation.available;
 }
 
-export function replayFailureLabel(graph: GraphState): string | null {
-  if (!graphMutationsDisabled(graph)) return null;
-  const failure = graph.replay_failure;
-  if (!failure) return "Replay is degraded. This is the last coherent graph.";
-  return `Replay stopped at revision ${failure.revision} (${failure.code}): ${failure.message} This is the last coherent graph.`;
+export function projectGraphMutationFailureLabel(
+  project: Pick<ProjectSnapshot, "graph_mutation">,
+): string | null {
+  return project.graph_mutation.available ? null : project.graph_mutation.reason;
 }
 
 export function taskMayMutateGraph(task: AgentTask): boolean {

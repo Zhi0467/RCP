@@ -49,11 +49,13 @@ Bytes remain in temporary local or remote scratch and are proxied on demand
 until the human keeps them. Descriptors are durable with the task but do not
 copy bytes into chat or canonical graph storage.
 
-HTML previews run in an opaque sandbox. They cannot access or navigate the RCP
-parent, open popups, submit forms, initiate downloads, or use ordinary network
-resource APIs. Inline JavaScript remains useful and may navigate only its
-isolated child frame, which can still cause a navigation request; RCP does not
-claim literal zero network traffic.
+HTML previews run in an opaque sandbox. Agent scripts cannot access or navigate
+the RCP parent, open popups, submit forms, initiate downloads, or use ordinary
+network resource APIs. A trusted human click on a sanitized HTTP(S) reference
+may be relayed by the RCP wrapper over a private channel unavailable to the
+artifact. Inline JavaScript remains useful and may navigate only its isolated
+child frame, which can still cause a navigation request; RCP does not claim
+literal zero network traffic.
 
 Raster images, SVG, and HTML have bounded validation. A small raster image or
 SVG renders directly with the answer. HTML retains the ordinary **Open** link;

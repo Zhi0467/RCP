@@ -106,6 +106,7 @@ test("attention decoding validates shape and referenced graph member types", () 
     pending_proposal_ids: ["proposal"],
     decisions_awaiting_choice_ids: ["decision"],
     open_blocker_ids: ["blocker"],
+    proposal_actions: { proposal: [{ text: "Review this Proposal." }] },
   };
 
   assert.deepEqual(decodeGraphAttentionProjection(attention, state), attention);
@@ -123,7 +124,14 @@ test("attention decoding validates shape and referenced graph member types", () 
   );
   assert.throws(
     () =>
-      decodeGraphAttentionProjection({ ...attention, pending_proposal_ids: ["missing"] }, state),
+      decodeGraphAttentionProjection(
+        {
+          ...attention,
+          pending_proposal_ids: ["missing"],
+          proposal_actions: { missing: [{ text: "Review." }] },
+        },
+        state,
+      ),
     /missing Proposal missing/,
   );
   assert.throws(

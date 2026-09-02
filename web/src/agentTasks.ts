@@ -25,28 +25,6 @@ export function isActiveTask(task: AgentTask): boolean {
   return task.active;
 }
 
-export function taskNotificationStorageKey(projectId: string | null): string {
-  return `rcp:dismissed-task-notifications:${projectId ?? "none"}`;
-}
-
-export function parseDismissedTaskIds(value: string | null): Set<string> {
-  if (!value) return new Set();
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return new Set(
-      Array.isArray(parsed)
-        ? parsed.filter((item): item is string => typeof item === "string" && item.length > 0)
-        : [],
-    );
-  } catch {
-    return new Set();
-  }
-}
-
-export function serializeDismissedTaskIds(taskIds: ReadonlySet<string>): string {
-  return JSON.stringify([...taskIds].sort());
-}
-
 export function isTaskNotificationSuperseded(task: AgentTask, tasks: AgentTask[]): boolean {
   // A paused turn is the one awaiting-human state the human can still resume, and
   // its notification is the way back to it, so a later success never retires it.

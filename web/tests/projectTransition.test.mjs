@@ -26,6 +26,16 @@ function projection(fields = {}) {
       pending_proposal_ids: [],
       decisions_awaiting_choice_ids: [],
       open_blocker_ids: [],
+      proposal_actions: {},
+    },
+    primary_question: null,
+    counts: {
+      pending_proposals: 0,
+      decisions_awaiting_choice: 0,
+      open_blockers: 0,
+      asserted: 0,
+      accepted: 0,
+      contested: 0,
     },
     experiment_control: { marker: "control-one" },
     ruleset_tag: "rcp.lifecycle.v1",
@@ -64,6 +74,7 @@ test("transition replacement refuses missing or malformed attention", () => {
       attention: {
         pending_proposal_ids: [],
         decisions_awaiting_choice_ids: [],
+        proposal_actions: {},
       },
     }),
     projection({
@@ -71,6 +82,7 @@ test("transition replacement refuses missing or malformed attention", () => {
         pending_proposal_ids: ["duplicate", "duplicate"],
         decisions_awaiting_choice_ids: [],
         open_blocker_ids: [],
+        proposal_actions: {},
       },
     }),
   ];

@@ -278,6 +278,7 @@ test("inactive advancement rebases only snapshot and draft while retaining the t
       pending_proposal_ids: [],
       decisions_awaiting_choice_ids: [],
       open_blocker_ids: [],
+      proposal_actions: {},
     },
     graph: { ...graph, revision: 5, nodes: { [node.id]: movedNode } },
   };
@@ -389,6 +390,7 @@ test("authoritative inactive snapshots prune resolved choices and clear missing 
       pending_proposal_ids: [pending.id],
       decisions_awaiting_choice_ids: [],
       open_blocker_ids: [],
+      proposal_actions: { [pending.id]: [{ text: "Review the pending Proposal." }] },
     },
     graph: {
       ...oldGraph,

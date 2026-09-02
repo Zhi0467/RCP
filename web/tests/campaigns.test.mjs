@@ -37,6 +37,8 @@ after(() => server.close());
 
 const rootTask = {
   operation_id: "turn-root",
+  role: "orchestrator",
+  depth: 0,
   project_id: "project one",
   kind: "auto_research",
   status: "running",
@@ -154,6 +156,22 @@ test("the episode parent owns an operational-only invocation meter", () => {
   assert.match(html, /3 of 8 operational invocations used/);
   assert.doesNotMatch(html, /reserved|report unit|episode_report/i);
   assert.match(html, /12345|12,345/);
+});
+
+test("Stop visibility consumes backend can_stop and preserves an in-flight Stop", () => {
+  const backendStoppable = {
+    ...episode,
+    health: "failed",
+    recommendation: "review",
+    can_stop: true,
+  };
+  assert.match(renderEpisodes([backendStoppable]), />Stop<\/button>/);
+
+  const requestInFlight = { ...episode, can_stop: false };
+  assert.match(
+    renderEpisodes([requestInFlight], { busyAction: `stop:${episode.episode_id}` }),
+    />Stopping…<\/button>/,
+  );
 });
 
 test("wrap-up has one exact parent state and no report task or recovery control", () => {
@@ -487,6 +505,8 @@ test("retries and continuations stay at their canonical actor depth", () => {
   const worker = {
     ...rootTask,
     operation_id: "turn-worker",
+    role: "worker",
+    depth: 1,
     request: {
       role: "worker",
       actor_operation_id: "turn-worker",
@@ -498,6 +518,7 @@ test("retries and continuations stay at their canonical actor depth", () => {
   const workerWake = {
     ...worker,
     operation_id: "turn-worker-wake",
+    role: "wake",
     request: { ...worker.request, wake_cause: "message" },
     parent_operation_id: worker.operation_id,
     created_at: "2026-08-12T08:04:00Z",

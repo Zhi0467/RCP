@@ -225,6 +225,8 @@ def test_auto_episode_projection_includes_mode_state_and_exact_recovery(tmp_path
     assert response.graph_branch is not None
     assert response.graph_branch.branch_id == episode.episode_id
     assert response.tasks[0].graph_target == episode.graph_target
+    assert response.tasks[0].role == "orchestrator"
+    assert response.tasks[0].depth == 0
     assert response.current_operation_id == root.operation_id
     assert response.current_orchestrator_task_id == root.operation_id
     assert response.current_control_task_id == root.operation_id

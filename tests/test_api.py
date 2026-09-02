@@ -1232,6 +1232,7 @@ def test_project_snapshot_counts_only_ripe_decisions_and_open_asserted_blockers(
         "pending_proposal_ids": [],
         "decisions_awaiting_choice_ids": ["dec/ready", "dec/revisit"],
         "open_blocker_ids": ["blk/asserted-open"],
+        "proposal_actions": {},
     }
     assert {
         node_id: (node["status"], node["standing"])
@@ -3586,8 +3587,10 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert "javascript:alert" not in html_preview.text
     assert "https://example.com/tracker.png" not in html_preview.text
     assert "event.isTrusted" in html_preview.text
-    assert "value.secret" in html_preview.text
-    assert "window.open(target.href,'_blank','noopener,noreferrer')" in html_preview.text
+    assert "value.secret" not in html_preview.text
+    assert "rcp-artifact-channel" in html_preview.text
+    assert "event.ports.length!==1" in html_preview.text
+    assert "openWindow(target.href,'_blank','noopener,noreferrer')" in html_preview.text
     assert "window.location.assign" not in html_preview.text
     assert "connect-src &amp;#x27;none&amp;#x27;" in html_preview.text
 

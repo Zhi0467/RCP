@@ -863,6 +863,24 @@ class AutoResearchStoreMixin:
             ).fetchone()
         return self._auto_research_invocation_record(row) if row is not None else None
 
+    def auto_research_invocations(
+        self,
+        operation_ids: list[str],
+    ) -> dict[str, AutoResearchInvocationRecord]:
+        """Load one bounded episode task set's durable actor lineage in one read."""
+
+        unique_ids = list(dict.fromkeys(operation_ids))
+        if not unique_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in unique_ids)
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM auto_research_invocations WHERE operation_id IN ({placeholders})",
+                unique_ids,
+            ).fetchall()
+        records = [self._auto_research_invocation_record(row) for row in rows]
+        return {record.operation_id: record for record in records}
+
     def auto_research_invocation_role(self, operation_id: str) -> AutoResearchRole | None:
         invocation = self.auto_research_invocation(operation_id)
         return invocation.role if invocation is not None else None

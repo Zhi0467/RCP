@@ -358,17 +358,17 @@ def test_experiment_index_uses_main_cache_and_unbounded_project_runtime(
 
     store = app.state.background_tasks.store
     original = store.experiment_control_projection_snapshots
-    calls: list[str] = []
+    calls: list[tuple[str, GraphTargetRef | None]] = []
 
     def capture(requested_project_id, *args, **kwargs):
-        calls.append(requested_project_id)
+        calls.append((requested_project_id, kwargs.get("graph_target")))
         return original(requested_project_id, *args, **kwargs)
 
     monkeypatch.setattr(store, "experiment_control_projection_snapshots", capture)
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
-    assert calls == [project_id]
+    assert calls == [(project_id, None), (project_id, GraphTargetRef())]
     assert len(response.json()) == 1
     entry = response.json()[0]
     assert set(entry) == {
@@ -395,6 +395,26 @@ def test_experiment_index_uses_main_cache_and_unbounded_project_runtime(
     assert entry["control"]["invocation_ceiling"] == 3
     assert entry["control"]["operational"]["current_operation_id"] == "current-loop"
     assert entry["control"]["operational"]["current_status"] == "succeeded"
+
+
+def test_experiment_index_skips_an_orphan_main_runtime(manifest, tmp_path: Path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, current_episode = _seed_indexed_project(app)
+    client = TestClient(app)
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+    _record_loop(
+        app.state.background_tasks.store,
+        project_id,
+        episode_id=str(uuid.uuid4()),
+        operation_id="orphan-loop",
+        created_at="2026-08-10T00:00:00+00:00",
+        node_id="exp/removed",
+    )
+
+    response = client.get("/api/episodes?mode=experiment_loop")
+
+    assert response.status_code == 200
+    assert [entry["episode"]["episode_id"] for entry in response.json()] == [current_episode]
 
 
 def test_branch_modified_child_experiment_uses_exact_target_across_index_and_stop(

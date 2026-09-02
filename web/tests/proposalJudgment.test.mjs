@@ -95,14 +95,96 @@ function proposal(operation, decisionNeeded = "Use the stored card fallback.") {
 }
 
 function renderProposal(operation, currentGraph = graph, decisionNeeded) {
+  const currentProposal = proposal(operation, decisionNeeded);
+  let action;
+  try {
+    action = projectedAction(operation, currentGraph);
+  } catch {
+    action = [{ text: currentProposal.card.decision_needed }];
+  }
+  if (!action) action = [{ text: currentProposal.card.decision_needed }];
   return renderToStaticMarkup(
     React.createElement(ProposalJudgmentSection, {
-      proposals: [proposal(operation, decisionNeeded)],
+      proposals: [currentProposal],
       graph: currentGraph,
+      proposalActions: { [currentProposal.id]: action },
       draft: null,
       onDecision() {},
     }),
   );
+}
+
+function projectedAction(operation, currentGraph) {
+  const title = (id) => currentGraph.nodes[id]?.title;
+  const relation = (edge) =>
+    `${title(edge.source)} — ${edge.relation.replaceAll("_", " ")} → ${title(edge.target)}`;
+  switch (operation.intent) {
+    case "content_change": {
+      const update = operation.nodes[0];
+      return [
+        { label: "Node", text: title(update.id) },
+        ...Object.entries(update.changes).flatMap(([field, proposed]) => [
+          {
+            label: `Current ${field.replaceAll("_", " ")}`,
+            text: display(currentGraph.nodes[update.id][field]),
+          },
+          { label: `Proposed ${field.replaceAll("_", " ")}`, text: display(proposed) },
+        ]),
+      ];
+    }
+    case "removal": {
+      const nodeId = operation.node_ids[0];
+      const incident = Object.values(currentGraph.edges)
+        .filter((edge) => edge.source === nodeId || edge.target === nodeId)
+        .sort((left, right) => left.id.localeCompare(right.id));
+      return [
+        { label: "Remove", text: title(nodeId) },
+        ...(incident.length
+          ? incident.map((edge) => ({ label: "Also removes", text: relation(edge) }))
+          : [{ label: "Incident relations", text: "None" }]),
+      ];
+    }
+    case "supersede":
+      return [
+        { label: "Supersede", text: title(operation.nodes[0].id) },
+        { label: "With", text: title(operation.nodes[0].superseded_by) },
+      ];
+    case "merge":
+      return [
+        { label: "Merge", text: title(operation.merges[0].duplicate) },
+        { label: "Into", text: title(operation.merges[0].canonical) },
+      ];
+    case "protected_relation_change": {
+      const edge =
+        operation.op === "create_edges"
+          ? operation.edges[0]
+          : currentGraph.edges[operation.edge_ids[0]];
+      return [
+        {
+          label: operation.op === "create_edges" ? "Add relation" : "Remove relation",
+          text: relation(edge),
+        },
+      ];
+    }
+    case "status_change": {
+      const update = operation.nodes[0];
+      return [
+        { label: "Node", text: title(update.id) },
+        {
+          label: "Status",
+          text: `${currentGraph.nodes[update.id].status} → ${update.changes.status}`,
+        },
+      ];
+    }
+  }
+}
+
+function display(value) {
+  if (value === null || value === undefined) return "Not set";
+  if (typeof value === "string") return `“${value}”`;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(display).join(", ");
+  return JSON.stringify(value);
 }
 
 test("content-change proposals compare every changed field with current graph wording", () => {
@@ -325,6 +407,10 @@ test("an overlapping second approval is visibly blocked while its rejection rema
     React.createElement(ProposalJudgmentSection, {
       proposals: [first, second],
       graph: proposalGraph,
+      proposalActions: {
+        [first.id]: [{ text: first.card.decision_needed }],
+        [second.id]: [{ text: second.card.decision_needed }],
+      },
       draft,
       onDecision() {},
     }),

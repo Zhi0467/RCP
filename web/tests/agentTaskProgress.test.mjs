@@ -52,7 +52,6 @@ function renderInspector(status) {
       onPause() {},
       onResume() {},
       onRetry() {},
-      onDismiss() {},
       onClose() {},
     }),
   );
@@ -89,7 +88,6 @@ test("Auto-research tasks are inspection-only while ordinary task controls remai
       onPause() {},
       onResume() {},
       onRetry() {},
-      onDismiss() {},
       onClose() {},
     }),
   );

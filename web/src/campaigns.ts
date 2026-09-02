@@ -5,6 +5,7 @@ import type {
   EpisodeHealth,
   EpisodeRecommendationKind,
   EpisodeTaskControlKind,
+  EpisodeTask,
 } from "./types";
 
 export type { EpisodeHealth, EpisodeRecommendationKind };
@@ -24,7 +25,7 @@ const EPISODE_HEALTH_LABELS: Record<EpisodeHealth, string> = {
 export type EpisodeTaskRole = "orchestrator" | "worker" | "wake";
 
 export interface EpisodeTaskRow {
-  task: AgentTask;
+  task: EpisodeTask;
   role: EpisodeTaskRole;
   depth: number;
 }
@@ -157,35 +158,18 @@ export function episodeReportPreviewUrl(projectId: string, episodeId: string): s
   return `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/report/viewer`;
 }
 
-export function episodeTaskRows(episode: Episode, tasks: AgentTask[]): EpisodeTaskRow[] {
+export function episodeTaskRows(
+  episode: Episode,
+  tasks: EpisodeTask[] = episode.tasks,
+): EpisodeTaskRow[] {
   const episodeTasks = tasks
     .filter((task) => task.episode_id === episode.episode_id)
     .sort(compareTaskTime);
-  const byId = new Map(episodeTasks.map((task) => [task.operation_id, task]));
   return episodeTasks.map((task) => ({
     task,
-    role: episodeTaskRole(episode, task),
-    depth: episodeTaskDepth(task, byId),
+    role: task.role,
+    depth: task.depth,
   }));
-}
-
-export function episodeTaskRole(episode: Episode, task: AgentTask): EpisodeTaskRole {
-  const declared = task.request.role ?? task.request.invocation_role;
-  if (
-    task.request.wake_cause ||
-    task.request.trigger === "watcher" ||
-    task.request.continuation_cause === "graph_condition" ||
-    task.request.continuation_cause === "message"
-  ) {
-    return "wake";
-  }
-  if (declared === "worker") return "worker";
-  if (task.operation_id === episode.root_operation_id) return "orchestrator";
-  if (declared === "orchestrator" || declared === "wake") return declared;
-  if (task.kind !== "auto_research" || task.request.control_node_id || task.request.node_id) {
-    return "worker";
-  }
-  return "orchestrator";
 }
 
 export function episodeTaskRoleLabel(role: EpisodeTaskRole): string {
@@ -203,52 +187,7 @@ export function formatTokenCount(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
 }
 
-function episodeTaskDepth(task: AgentTask, byId: ReadonlyMap<string, AgentTask>): number {
-  const actorOperationId = episodeActorOperationId(task);
-  const actorOrigin = actorOperationId === null ? null : byId.get(actorOperationId);
-  if (actorOrigin) return episodeActorDepth(actorOrigin, byId);
-  return episodeAncestryDepth(task, byId);
-}
-
-function episodeActorDepth(task: AgentTask, byId: ReadonlyMap<string, AgentTask>): number {
-  let depth = 0;
-  let current = task;
-  let parentId = current.parent_operation_id;
-  const seen = new Set<string>([current.operation_id]);
-  while (parentId && byId.has(parentId) && !seen.has(parentId)) {
-    seen.add(parentId);
-    const parent = byId.get(parentId);
-    if (!parent) break;
-    if (
-      (episodeActorOperationId(current) ?? current.operation_id) !==
-      (episodeActorOperationId(parent) ?? parent.operation_id)
-    ) {
-      depth += 1;
-    }
-    current = parent;
-    parentId = current.parent_operation_id;
-  }
-  return Math.min(depth, 4);
-}
-
-function episodeActorOperationId(task: AgentTask): string | null {
-  const value = task.request.actor_operation_id;
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function episodeAncestryDepth(task: AgentTask, byId: ReadonlyMap<string, AgentTask>): number {
-  let depth = 0;
-  let parentId = task.parent_operation_id;
-  const seen = new Set<string>();
-  while (parentId && byId.has(parentId) && !seen.has(parentId)) {
-    seen.add(parentId);
-    depth += 1;
-    parentId = byId.get(parentId)?.parent_operation_id ?? null;
-  }
-  return Math.min(depth, 4);
-}
-
-function compareTaskTime(left: AgentTask, right: AgentTask): number {
+function compareTaskTime(left: EpisodeTask, right: EpisodeTask): number {
   return (
     comparableTime(left.created_at) - comparableTime(right.created_at) ||
     left.operation_id.localeCompare(right.operation_id)

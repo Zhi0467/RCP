@@ -1,11 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  isActiveTask,
-  parseDismissedTaskIds,
-  projectActivityTask,
-  serializeDismissedTaskIds,
-  taskNotificationStorageKey,
-} from "../agentTasks";
+import { isActiveTask, projectActivityTask } from "../agentTasks";
 import { api } from "../api";
 import type { AgentTask } from "../types";
 
@@ -15,7 +9,6 @@ export interface AgentTasksSnapshot {
   taskInspectorId: string | null;
   inspectedTask: AgentTask | null;
   activityTaskId: string | null;
-  dismissedTaskIds: Set<string>;
 }
 
 interface UseAgentTasksOptions {
@@ -25,9 +18,11 @@ interface UseAgentTasksOptions {
 
 export function cloneAgentTasksSnapshot(snapshot: AgentTasksSnapshot): AgentTasksSnapshot {
   return {
-    ...snapshot,
+    retryTask: snapshot.retryTask,
     tasks: [...snapshot.tasks],
-    dismissedTaskIds: new Set(snapshot.dismissedTaskIds),
+    taskInspectorId: snapshot.taskInspectorId,
+    inspectedTask: snapshot.inspectedTask,
+    activityTaskId: snapshot.activityTaskId,
   };
 }
 
@@ -54,9 +49,6 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
   const [inspectedTask, setInspectedTask] = useState<AgentTask | null>(null);
   const [taskInspectorLoading, setTaskInspectorLoading] = useState(false);
   const [activityTaskId, setActivityTaskId] = useState<string | null>(null);
-  const [dismissedTaskIds, setDismissedTaskIds] = useState<Set<string>>(() =>
-    readDismissedTaskIds(projectId),
-  );
   const taskStartLock = useRef(false);
   const knownActiveTasks = useRef(new Map<string, AgentTask>());
 
@@ -123,11 +115,6 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
         task,
         ...current.filter((item) => item.operation_id !== task.operation_id),
       ]);
-      setDismissedTaskIds((current) => {
-        const next = new Set(current);
-        next.delete(task.operation_id);
-        return next;
-      });
     },
     [rememberActiveTasks],
   );
@@ -140,11 +127,6 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
         ...current.filter((item) => item.operation_id !== task.operation_id),
       ]);
       setActivityTaskId(task.operation_id);
-      setDismissedTaskIds((current) => {
-        const next = new Set(current);
-        next.delete(task.operation_id);
-        return next;
-      });
     },
     [rememberActiveTasks],
   );
@@ -171,27 +153,6 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
   const closeRetryTask = useCallback(() => {
     setRetryTask(null);
   }, []);
-
-  const dismissTaskNotification = useCallback(
-    (operationId: string) => {
-      setDismissedTaskIds((current) => {
-        const next = new Set(current);
-        next.add(operationId);
-        try {
-          localStorage.setItem(
-            taskNotificationStorageKey(projectId),
-            serializeDismissedTaskIds(next),
-          );
-        } catch {}
-        return next;
-      });
-      if (taskInspectorId === operationId) {
-        setTaskInspectorId(null);
-        setInspectedTask(null);
-      }
-    },
-    [projectId, taskInspectorId],
-  );
 
   const beginTaskStart = useCallback(() => {
     if (taskStartLock.current || taskStarting) return null;
@@ -227,14 +188,13 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
     [taskActionId, taskStarting],
   );
 
-  const resetProjectTasks = useCallback((nextProjectId: string | null) => {
+  const resetProjectTasks = useCallback(() => {
     knownActiveTasks.current.clear();
     setRetryTask(null);
     setTasks([]);
     setTaskInspectorId(null);
     setInspectedTask(null);
     setActivityTaskId(null);
-    setDismissedTaskIds(readDismissedTaskIds(nextProjectId));
   }, []);
 
   const restoreProjectTasks = useCallback(
@@ -246,7 +206,6 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
       setTaskInspectorId(snapshot.taskInspectorId);
       setInspectedTask(snapshot.inspectedTask);
       setActivityTaskId(snapshot.activityTaskId);
-      setDismissedTaskIds(new Set(snapshot.dismissedTaskIds));
     },
     [rememberActiveTasks],
   );
@@ -258,9 +217,8 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
       taskInspectorId,
       inspectedTask,
       activityTaskId,
-      dismissedTaskIds,
     }),
-    [activityTaskId, dismissedTaskIds, inspectedTask, retryTask, taskInspectorId, tasks],
+    [activityTaskId, inspectedTask, retryTask, taskInspectorId, tasks],
   );
 
   return {
@@ -278,19 +236,10 @@ export function useAgentTasks({ projectId, reportError }: UseAgentTasksOptions) 
     selectTaskInspector,
     chooseRetryTask,
     closeRetryTask,
-    dismissTaskNotification,
     beginTaskStart,
     beginTaskAction,
     beginTaskRepair,
     resetProjectTasks,
     restoreProjectTasks,
   };
-}
-
-function readDismissedTaskIds(projectId: string | null): Set<string> {
-  try {
-    return parseDismissedTaskIds(localStorage.getItem(taskNotificationStorageKey(projectId)));
-  } catch {
-    return new Set();
-  }
 }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -11,9 +12,15 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { NodeChat } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
+const { NodeChat, reconcileChatRunScope } = await server.ssrLoadModule(
+  "/src/components/NodeChat.tsx",
+);
 const { loadPaperSnapshot, PaperWorkspace, swapPaperBuffers } = await server.ssrLoadModule(
   "/src/views/PaperWorkspace.tsx",
+);
+const paperWorkspaceSource = await readFile(
+  new URL("../src/views/PaperWorkspace.tsx", import.meta.url),
+  "utf8",
 );
 
 after(() => server.close());
@@ -212,4 +219,25 @@ test("paper freshness checks use the paper snapshot endpoint", async () => {
 
   assert.strictEqual(snapshot, expected);
   assert.deepEqual(requested, ["/api/projects/project/paper"]);
+});
+
+test("paper polling cannot invalidate an in-flight save response", () => {
+  assert.match(paperWorkspaceSource, /const paperPollGeneration = useRef\(0\)/);
+  assert.match(paperWorkspaceSource, /const paperSaveGeneration = useRef\(0\)/);
+  assert.match(paperWorkspaceSource, /generation !== paperPollGeneration\.current/);
+  assert.match(paperWorkspaceSource, /generation !== paperSaveGeneration\.current/);
+  assert.match(paperWorkspaceSource, /saveGeneration !== paperSaveGeneration\.current/);
+  assert.match(paperWorkspaceSource, /paperSaveGeneration\.current \+= 1/);
+  assert.doesNotMatch(paperWorkspaceSource, /paperRequestGeneration/);
+});
+
+test("chat run scope preserves valid choices, prunes removed repositories, and resets", () => {
+  assert.deepEqual(
+    reconcileChatRunScope(["repo-b", "removed"], ["repo-a"], ["repo-a", "repo-b"], false),
+    ["repo-b"],
+  );
+  assert.deepEqual(
+    reconcileChatRunScope(["repo-b"], ["repo-a", "removed", "repo-a"], ["repo-a"], true),
+    ["repo-a"],
+  );
 });

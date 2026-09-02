@@ -29,7 +29,6 @@ interface Props {
   onPause: () => void;
   onResume: () => void;
   onRetry: () => void;
-  onDismiss: () => void;
   onClose: () => void;
 }
 
@@ -43,7 +42,6 @@ export function AgentTaskInspector({
   onPause,
   onResume,
   onRetry,
-  onDismiss,
   onClose,
 }: Props) {
   const [copiedReceiptId, setCopiedReceiptId] = useState<number | null>(null);
@@ -382,11 +380,6 @@ export function AgentTaskInspector({
                     onClick={onResume}
                   >
                     <Play size={14} /> Resume
-                  </button>
-                )}
-                {task.awaiting_human && (
-                  <button className="button ghost" type="button" onClick={onDismiss}>
-                    <X size={14} /> Dismiss notification
                   </button>
                 )}
               </div>

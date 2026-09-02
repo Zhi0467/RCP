@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { withTaskAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import { createServer } from "vite";
@@ -18,9 +19,25 @@ const {
   terminalTaskNeedsAuthoritativeProjectReload,
   terminalTasksSince,
 } = await server.ssrLoadModule("/src/App.tsx");
-const { reconcileKnownActiveTasks } = await server.ssrLoadModule("/src/hooks/useAgentTasks.ts");
+const { cloneAgentTasksSnapshot, reconcileKnownActiveTasks } = await server.ssrLoadModule(
+  "/src/hooks/useAgentTasks.ts",
+);
 
 after(() => server.close());
+
+test("agent task snapshots do not retain dismissed notification state", () => {
+  const snapshot = cloneAgentTasksSnapshot({
+    retryTask: null,
+    tasks: [],
+    taskInspectorId: "task-1",
+    inspectedTask: null,
+    activityTaskId: "task-1",
+    dismissedTaskIds: new Set(["task-1"]),
+  });
+
+  assert.equal("dismissedTaskIds" in snapshot, false);
+  assert.deepEqual(snapshot.tasks, []);
+});
 
 test("terminal Experiment work refetches control state even without a graph revision", () => {
   const completedLoop = {
@@ -156,4 +173,14 @@ test("pending Experiment watcher polling always refreshes control state", async 
   assert.deepEqual(requested, [`${base}/watchers`, `${base}/tasks`, base]);
   assert.deepEqual(result.watchers, [watcher]);
   assert.ok(result.project.experiment_control);
+});
+
+test("watcher polling reports persistent API failures instead of swallowing them", async () => {
+  const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+
+  assert.match(
+    source,
+    /catch \(error\) \{[\s\S]*reportErrorNotice\([\s\S]*Watcher status could not refresh:/,
+  );
+  assert.doesNotMatch(source, /authoritative project reload surfaces persistent API failures/);
 });

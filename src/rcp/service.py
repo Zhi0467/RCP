@@ -36,7 +36,12 @@ from rcp.config import (
     Manifest,
 )
 from rcp.control import derive_experiment_control_state
-from rcp.core.attention import project_graph_attention
+from rcp.core.attention import (
+    project_counts,
+    project_graph_attention,
+    project_graph_mutation_availability,
+    project_primary_question,
+)
 from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
@@ -1315,8 +1320,9 @@ class ProjectService:
             state = self.history.state()
         if paper is None:
             paper = self.paper.snapshot()
-        primary = self._primary_question(state)
+        primary = project_primary_question(state)
         attention = project_graph_attention(state)
+        counts = project_counts(state, attention)
         refresh_profile = self.manifest.agent_profile("refresh")
         profiles = {
             surface: self.manifest.agent_profile(surface).model_dump(mode="json")
@@ -1338,23 +1344,15 @@ class ProjectService:
                     repository.model_dump() for repository in self.manifest.repositories
                 ],
                 "machines": [machine.model_dump() for machine in self.manifest.machines],
-                "primary_question": primary,
+                "primary_question": (
+                    primary.model_dump(mode="json") if primary is not None else None
+                ),
                 "last_refresh_at": state.last_refresh_at,
                 "attention": attention.model_dump(mode="json"),
-                "counts": {
-                    "pending_proposals": len(attention.pending_proposal_ids),
-                    "decisions_awaiting_choice": len(attention.decisions_awaiting_choice_ids),
-                    "open_blockers": len(attention.open_blocker_ids),
-                    "asserted": sum(
-                        node.standing == Standing.ASSERTED for node in state.nodes.values()
-                    ),
-                    "accepted": sum(
-                        node.standing == Standing.ACCEPTED for node in state.nodes.values()
-                    ),
-                    "contested": sum(
-                        node.standing == Standing.CONTESTED for node in state.nodes.values()
-                    ),
-                },
+                "counts": counts.model_dump(mode="json"),
+                "graph_mutation": project_graph_mutation_availability(state).model_dump(
+                    mode="json"
+                ),
                 "coverage": state.coverage.model_dump(mode="json"),
                 "graph": state.model_dump(mode="json"),
                 "paper": paper.model_dump(mode="json"),
@@ -2561,14 +2559,3 @@ class ProjectService:
         if last_problem is not None:
             raise last_problem
         raise ValueError("agent completed without a valid semantic Patch object")
-
-    @staticmethod
-    def _primary_question(state: GraphState):
-        questions = [node for node in state.nodes.values() if node.type == "research_question"]
-        questions.sort(
-            key=lambda node: (
-                {Standing.ACCEPTED: 0, Standing.ASSERTED: 1, Standing.CONTESTED: 2}[node.standing],
-                node.id,
-            )
-        )
-        return questions[0].model_dump(mode="json") if questions else None

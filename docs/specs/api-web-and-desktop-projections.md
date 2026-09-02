@@ -17,21 +17,24 @@ materialized output, branch metadata, or Patch history directly.
 
 Every graph mutation response uses one strict transition projection containing
 the graph target, head, graph, Experiment-control map, guidance validity,
-transition/ruleset identity, and any causal or attention inputs from the same
-final state. Preview responses are explicitly noncanonical and name their base
-head and ruleset.
+transition/ruleset identity, primary question, graph counts, and any causal or
+attention inputs from the same final state. Preview responses are explicitly
+noncanonical and name their base head and ruleset. The browser renders these
+published values instead of recalculating a second transition result.
 
 Project snapshots and transition projections publish exact graph-attention
 membership as pending Proposal ids, Decisions awaiting choice, and asserted
-open Blocker ids. Counts are lengths of that same projection. The browser maps
-those ids onto the graph it is presenting; Inbox, Overview, and Runs never
-reapply the membership predicates. A backend preview supplies both the candidate
+open Blocker ids. Pending Proposals additionally publish their ordered action
+lines, including incident relations removed with a node. Counts are lengths of
+that same projection. The browser maps those ids and action lines onto the graph
+it is presenting; Inbox, Overview, and Runs never reapply the membership or
+Proposal-operation predicates. A backend preview supplies both the candidate
 graph and candidate membership, while a rule-inert local draft retains the
 current backend membership until Sync. Cached snapshots are invalid when their
 membership or the three corresponding counts disagree with their graph. The
-browser validates the exact projection shape and referenced graph member types;
-missing or malformed membership fails the snapshot instead of becoming an empty
-attention view.
+browser validates the exact projection shape, exact Proposal-action membership,
+and referenced graph member types; missing or malformed membership fails the
+snapshot instead of becoming an empty attention view.
 
 Each Experiment-control entry is also a complete read model. In addition to
 budgets, reasons, episode, and operational history, it publishes health,
@@ -51,6 +54,11 @@ Concurrent project snapshot requests are fenced per project by start order,
 including equal-revision responses. Once a newer cache, reload, watcher poll,
 settings save, or Sync starts, an older response cannot overwrite its graph or
 operational controls.
+
+A completed project snapshot publishes whether canonical graph mutation is
+available and the exact unavailable reason. Watcher responses similarly publish
+whether **Check now** is currently available. These are backend decisions, not
+client reconstructions from replay, status, or notification fields.
 
 Every branch route proves the branch belongs to the requested project and
 episode. A branch id alone never grants lookup. Task, watcher, episode, and
@@ -395,6 +403,12 @@ commentary. Each Experiment's backend control selects its one current
 `episode_id`, so repeated work produces one card for that Experiment node. Older
 episodes remain reachable through project History instead of appearing as
 sibling Runs cards.
+
+The episode index is an explicit typed projection whose current `episode` is
+non-null. Main-target entries consume the completed project snapshot's
+Experiment-control map; branch entries consume the exact branch read model.
+Episode task rows publish durable actor `role` and lineage `depth`, and episode
+cards consume those fields without interpreting persisted task requests.
 
 Starting an Experiment navigates to its Runs detail rather than opening floating
 chat. The detail separates historical episode budgets from **Next episode

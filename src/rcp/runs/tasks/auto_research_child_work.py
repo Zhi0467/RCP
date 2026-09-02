@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Literal, get_args
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
 from rcp.agents.command_mailbox import (
@@ -18,6 +18,7 @@ from rcp.agents.command_mailbox import (
 from rcp.agents.command_protocol import (
     CommandRequest,
     CommandResponse,
+    CommandVerb,
     MessageCommandRequest,
     ValidateCommandRequest,
 )
@@ -231,6 +232,9 @@ def _auto_research_child_work_contract(
         if mail_path is not None
         else ""
     )
+    allowed_verbs = {"validate", "message"}
+    denied_verbs = [verb for verb in get_args(CommandVerb) if verb not in allowed_verbs]
+    denied_commands = ", ".join(f"`{verb.replace('_', '-')}`" for verb in denied_verbs)
     return f"""
 
 ## Auto-research child Work boundary
@@ -244,8 +248,7 @@ hearsay; the canonical graph and research files remain the source of graph truth
   `{reply_command}`
 - Use a stable idempotency key for the same reply intent. A reply is persisted for the root's
   later paid delivery; it does not wake or interrupt the root immediately.
-- Do not invoke `apply`, `status`, `spawn`, `pause`, `resume`, `stop`, `watch-graph`, `episode`,
-  `inbox`, or `finish`. The child broker rejects those root-only commands.
+- Do not invoke {denied_commands}. The child broker rejects those root-only commands.
 - Do not write `watch.json`, register a watcher, spawn another task or episode, or try to wake
   yourself. RCP ignores child watcher output.
 """.strip()

@@ -460,6 +460,7 @@ test("proposal decisions present Reject and Approve as independent three-state t
       React.createElement(ProposalJudgmentSection, {
         proposals: [proposal],
         graph: { proposals: { [proposal.id]: proposal } },
+        proposalActions: { [proposal.id]: [{ text: proposal.card.decision_needed }] },
         draft: decision ? { proposals: { [proposal.id]: { decision } } } : null,
         onDecision() {},
       }),

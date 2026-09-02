@@ -13,7 +13,7 @@ const moduleHooks = registerHooks({
     return nextResolve(specifier, context);
   },
 });
-const { DAG_NODE_WIDTH, forceCanvasMetrics, forceLaneX, forceTuning } =
+const { DAG_NODE_WIDTH, forceCanvasMetrics, forceDagSemanticKey, forceLaneX, forceTuning } =
   await import("../src/hooks/useForceDag.ts");
 moduleHooks.deregister();
 
@@ -49,6 +49,31 @@ test("force canvas is generous and automatic lanes leave manual-layout gutters",
   assert.ok(metrics.height >= 1300);
   assert.ok(leftLane - dragCenterMinimum >= 350);
   assert.ok(dragCenterMaximum - rightLane >= 350);
+});
+
+test("semantic graph identity ignores fresh snapshots but changes with simulation data", () => {
+  const nodes = [graphNode("question", "research_question"), graphNode("evidence", "evidence")];
+  const edges = [graphEdge("supports", "question", "evidence", "supports")];
+  const key = forceDagSemanticKey(nodes, edges);
+
+  assert.equal(
+    forceDagSemanticKey(
+      [...nodes].reverse().map((node) => ({ ...node, title: `${node.title} refreshed` })),
+      edges.map((edge) => ({ ...edge, explanation: "refreshed" })),
+    ),
+    key,
+  );
+  assert.notEqual(
+    forceDagSemanticKey(
+      [graphNode("question", "hypothesis"), graphNode("evidence", "evidence")],
+      edges,
+    ),
+    key,
+  );
+  assert.notEqual(
+    forceDagSemanticKey(nodes, [graphEdge("supports", "question", "evidence", "rebuts")]),
+    key,
+  );
 });
 
 test("maximum repulsion materially increases settled node separation", () => {
@@ -117,6 +142,30 @@ function settledMeanSeparation(repulsion) {
     }
   }
   return total / pairs;
+}
+
+function graphNode(id, type) {
+  return {
+    id,
+    type,
+    title: id,
+    extension_fields: {},
+    standing: "active",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+  };
+}
+
+function graphEdge(id, source, target, relation) {
+  return {
+    id,
+    source,
+    target,
+    relation,
+    layer: "epistemic",
+    explanation: relation,
+  };
 }
 
 function rectangleCollision(padding) {

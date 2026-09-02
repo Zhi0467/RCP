@@ -8,15 +8,12 @@ import {
   chatTasksMissingFromHistory,
   latestNativeSessionId,
   orderTranscriptLines,
-  parseDismissedTaskIds,
   projectActivityTask,
   reconcileChatHistoryArtifacts,
   reconstructTaskTranscript,
   relatedChatTasks,
   resumablePausedChatTask,
-  serializeDismissedTaskIds,
   taskKindLabel,
-  taskNotificationStorageKey,
 } from "../src/agentTasks.ts";
 
 function task(overrides) {
@@ -642,12 +639,4 @@ test("a completed retry clears its failed parent, while a failed retry stays act
     projectActivityTask([failedRetry, failedSeed], "failed-seed")?.operation_id,
     "failed-retry",
   );
-});
-
-test("dismissed task notification ids round trip by project", () => {
-  const ids = new Set(["task-b", "task-a"]);
-  assert.equal(taskNotificationStorageKey("project"), "rcp:dismissed-task-notifications:project");
-  assert.equal(serializeDismissedTaskIds(ids), '["task-a","task-b"]');
-  assert.deepEqual(parseDismissedTaskIds('["task-b","task-a",3]'), ids);
-  assert.deepEqual(parseDismissedTaskIds("not json"), new Set());
 });

@@ -12,7 +12,7 @@ from rcp.api.dependencies import (
     require_registered_project,
 )
 from rcp.projects import ProjectCatalog
-from rcp.storage import AppStore, WatcherClaimConflict
+from rcp.storage import AppStore, StoredWatcherRecord, WatcherClaimConflict, WatcherRecord
 from rcp.watchers import WatcherPoller
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -30,7 +30,7 @@ def project_watchers(
     store: StoreDependency,
 ) -> list[dict[str, object]]:
     require_registered_project(catalog, project_id)
-    return [record.model_dump(mode="json") for record in store.watchers(project_id)]
+    return [_watcher_response(record) for record in store.watchers(project_id)]
 
 
 @router.post("/api/projects/{project_id}/watchers/{watcher_id}/check")
@@ -48,7 +48,7 @@ def check_watcher_now(
         raise HTTPException(status_code=404, detail="Watcher not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return watcher.model_dump(mode="json")
+    return _watcher_response(watcher)
 
 
 @router.post("/api/projects/{project_id}/watchers/{watcher_id}/stop")
@@ -76,7 +76,15 @@ def stop_watcher(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return stopped[0].model_dump(mode="json")
+    return _watcher_response(stopped[0])
+
+
+def _watcher_response(record: StoredWatcherRecord) -> dict[str, object]:
+    payload = record.model_dump(mode="json")
+    payload["can_check_now"] = bool(
+        isinstance(record, WatcherRecord) and record.status == "degraded" and not record.notified
+    )
+    return payload
 
 
 __all__ = [

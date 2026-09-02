@@ -714,6 +714,8 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert "## Auto-research child Work boundary" in initial_master
     assert "only staged command capabilities" in initial_master
     assert "Do not invoke `apply`, `status`, `spawn`" in initial_master
+    assert "`watch-graph`" in initial_master
+    assert "`watch_graph`" not in initial_master
     assert "Do not write `watch.json`" in initial_master
     assert launcher.launch_kwargs[0]["invocation_gate"] is not None
     workspace = launcher.workspaces[0]

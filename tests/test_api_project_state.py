@@ -101,7 +101,10 @@ def test_project_display_boundary_completes_all_public_snapshots(manifest, tmp_p
     assert "experiment_control" not in raw_after_settings
 
 
-@pytest.mark.parametrize("corruption", ["attention", "attention_count"])
+@pytest.mark.parametrize(
+    "corruption",
+    ["attention", "attention_count", "asserted_count", "accepted_count", "contested_count"],
+)
 def test_cached_project_rejects_attention_that_disagrees_with_its_graph(
     manifest,
     tmp_path,
@@ -115,8 +118,10 @@ def test_cached_project_rejects_attention_that_disagrees_with_its_graph(
     envelope = json.loads(cache_path.read_text(encoding="utf-8"))
     if corruption == "attention":
         envelope["snapshot"]["attention"]["open_blocker_ids"] = ["blk/not-in-graph"]
-    else:
+    elif corruption == "attention_count":
         envelope["snapshot"]["counts"]["open_blockers"] += 1
+    else:
+        envelope["snapshot"]["counts"][corruption.removesuffix("_count")] += 1
     cache_path.write_text(json.dumps(envelope), encoding="utf-8")
 
     assert app.state.catalog.cached_snapshot_status(project_id) == ("invalid", None)
@@ -479,6 +484,8 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
     legacy_snapshot["default_campaign_invocation_ceiling"] = legacy_snapshot.pop(
         "default_auto_research_invocation_ceiling"
     )
+    legacy_snapshot["attention"].pop("proposal_actions")
+    legacy_snapshot.pop("graph_mutation")
     legacy = {
         "schema_version": 2,
         "project_id": project_id,
@@ -490,6 +497,8 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
     assert migrated.status_code == 200
     assert migrated.json()["default_auto_research_invocation_ceiling"] == 10
     assert "default_campaign_invocation_ceiling" not in migrated.json()
+    assert migrated.json()["attention"]["proposal_actions"] == {}
+    assert migrated.json()["graph_mutation"] == {"available": True, "reason": None}
 
     legacy["snapshot"]["default_auto_research_invocation_ceiling"] = 11
     cache_path.write_text(json.dumps(legacy), encoding="utf-8")

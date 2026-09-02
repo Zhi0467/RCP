@@ -11,13 +11,13 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.control import ExperimentControlState, experiment_control_dependencies
-from rcp.core.attention import project_graph_attention
+from rcp.core.attention import project_counts, project_graph_attention, project_primary_question
 from rcp.core.materialize import (
     apply_transition_generated_operation,
     apply_valid_operation,
     apply_valid_patch,
 )
-from rcp.core.models import Evidence, Experiment, GraphState, Patch, ReplayFailure
+from rcp.core.models import Evidence, Experiment, GraphState, Patch, ProjectNode, ReplayFailure
 from rcp.core.operations import (
     GraphOperation,
     NodeUpdate,
@@ -29,6 +29,7 @@ from rcp.core.transition_models import (
     GraphHeadRef,
     GraphTargetRef,
     GuidanceFieldValidity,
+    ProjectCountsProjection,
     TransitionCauseRef,
     TransitionConflictDetail,
     TransitionEvent,
@@ -92,6 +93,8 @@ class ProjectTransitionProjection(BaseModel):
     head: GraphHeadRef
     graph: GraphState
     attention: GraphAttentionProjection
+    primary_question: ProjectNode | None
+    counts: ProjectCountsProjection
     experiment_control: dict[str, ExperimentControlState]
     guidance_validity: dict[str, ExperimentGuidanceValidity]
     ruleset_tag: str
@@ -630,10 +633,13 @@ def _project_projection(
                 invalidation_event_by_field.get((node_id, "next_action_stale")),
             ),
         )
+    attention = project_graph_attention(state)
     return ProjectTransitionProjection(
         head=head,
         graph=state,
-        attention=project_graph_attention(state),
+        attention=attention,
+        primary_question=project_primary_question(state),
+        counts=project_counts(state, attention),
         experiment_control=controls,
         guidance_validity=guidance,
         ruleset_tag=ruleset_tag,
