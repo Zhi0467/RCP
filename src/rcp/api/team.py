@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from rcp.api.dependencies import get_identity_access, get_store
 from rcp.api.identity import TEAM_SESSION_COOKIE, IdentityAccess
+from rcp.api.team_shell_protocol import acknowledge_team_shell_protocol
 from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, normalize_display_name
 from rcp.limits import (
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
@@ -87,11 +88,14 @@ def update_identity(
 
 @router.post("/api/team/enroll")
 def enroll_team_member(
+    request: Request,
+    response: Response,
     body: TeamEnrollmentRequest,
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
 ) -> dict[str, object]:
+    acknowledge_team_shell_protocol(request, response, required_on_installed_server=True)
     identity_access.require_team_space()
     member, token = store.enroll_team_member(body.code, body.display_name)
     return {"identity": identity_access.identity_payload(member), "token": token}
@@ -99,12 +103,14 @@ def enroll_team_member(
 
 @router.post("/api/team/session/exchange")
 def exchange_team_session(
+    request: Request,
     body: TeamSessionExchangeRequest,
     response: Response,
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
 ) -> dict[str, object]:
+    acknowledge_team_shell_protocol(request, response, required_on_installed_server=True)
     identity_access.require_team_space()
     session, member = store.create_team_session(body.token)
     identity_access.set_team_session_cookie(response, session)

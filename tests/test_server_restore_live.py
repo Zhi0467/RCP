@@ -161,7 +161,13 @@ def test_protected_backup_restores_on_a_fresh_disposable_ubuntu() -> None:
         health = _wait_for_team_health()
         assert health["status"] == "ok"
         surviving_cookie = _exchange_token(str(metadata["surviving_member_token"]))
-        projects, _headers = _http_json("GET", "/api/projects", cookie=surviving_cookie)
+        projects, project_headers = _http_json(
+            "GET",
+            "/api/projects",
+            cookie=surviving_cookie,
+            team_shell_protocol=True,
+        )
+        assert project_headers.get("RCP-Team-Shell-Protocol") == "1"
         if (
             not isinstance(projects, list)
             or not all(isinstance(item, dict) for item in projects)
@@ -329,7 +335,9 @@ def _exchange_token(token: str) -> str:
         "POST",
         "/api/team/session/exchange",
         {"token": token},
+        team_shell_protocol=True,
     )
+    assert headers.get("RCP-Team-Shell-Protocol") == "1"
     cookies = http.cookies.SimpleCookie()
     cookies.load(headers.get("Set-Cookie", ""))
     if len(cookies) != 1:
@@ -346,7 +354,11 @@ def _token_exchange_status(token: str) -> int:
         "http://127.0.0.1:8421/api/team/session/exchange",
         method="POST",
         data=json.dumps({"token": token}).encode(),
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "RCP-Team-Shell-Protocol": "1",
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:

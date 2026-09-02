@@ -27,7 +27,6 @@ const connection = {
   remote_loopback_port: 8421,
   expected_space_id: "22222222-2222-4222-8222-222222222222",
   local_origin: "https://rcp-11111111111141118111111111111111.rcp.localhost:18421",
-  minimum_shell_version: "0.3.2",
   last_known_cards: [
     {
       id: "33333333-3333-4333-8333-333333333333",

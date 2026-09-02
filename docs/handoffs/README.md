@@ -4,7 +4,8 @@ Active:
 
 - [Dev team space and source server completion](handoff-2026-08-27-dev-team-space-and-server.md)
   — human-confirmed implementation through one genuinely usable lab/server
-  deployment. Implementation is active directly on `main`. The gate, server
+  deployment. Implementation remains directly on `main` through this handoff's
+  exact closure; subsequent work uses PR CI and human merge. The gate, server
   foundation, provisioning, backup, restore, and member-removal lanes are
   implemented; two of them still owe a live drive. The desktop team-space lane
   is in progress, and the read-only Server Settings projection is complete.

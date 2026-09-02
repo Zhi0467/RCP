@@ -452,16 +452,17 @@ it is not a sandbox against a malicious or compromised source commit executing
 as the same Linux user. Before external sharing, protected human-reviewed
 `main` is therefore required as part of this trust boundary.
 
-`origin/main` is the single server update channel. During the private,
-single-developer implementation of this first slice, work remains directly on
-`main`; scoped tests, pre-commit, and code review precede recording or pushing a
-change, while full desktop/live drives occur at meaningful milestones. CI
-reports pushed results but the current GitHub plan does not block a bad direct
-push. Development branches are never server configuration. Before public or
-external sharing, the repository becomes public and real `main` branch
-protection requires pull requests and the named jobs and rejects direct pushes
-and failed or missing checks. The repository workflow rationale is recorded in
-the
+`origin/main` is the single server update channel. Work remains directly on
+`main` only through the active first-team-server stabilization handoff; scoped
+tests, pre-commit, and code review precede recording or pushing a change, while
+full desktop/live drives occur at meaningful milestones. Archiving that handoff
+ends the exception: subsequent development uses short-lived branches, PR CI,
+and explicit human merge, while servers still consume only merged `main`.
+Before public or external sharing, the repository becomes public and branch
+protection technically requires that already-adopted workflow's named jobs and
+rejects direct pushes and failed or missing checks. Until then the PR rule is a
+documented convention because the current private-repository plan cannot enforce
+it. The repository workflow rationale is recorded in the
 [main update-channel decision](../decisions/2026-08-27-main-is-the-server-update-channel.md).
 
 From the first team-server-capable commit onward, current `main` directly

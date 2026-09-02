@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from rcp import __version__
+from rcp.api.team_shell_protocol import (
+    TEAM_SHELL_PROTOCOL_HEADER,
+    TEAM_SHELL_PROTOCOL_MAXIMUM,
+    TEAM_SHELL_PROTOCOL_MINIMUM,
+    TEAM_SHELL_PROTOCOL_MISMATCH_CODE,
+    TEAM_SHELL_PROTOCOL_MISMATCH_STATUS,
+)
 from rcp.server_runtime import ServerMetadata, data_dir_identity
 from rcp.storage import AppStore
 
@@ -72,6 +82,7 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
         "owner_kind": "desktop",
         "running_commit": None,
         "web_build_id": None,
+        "team_shell_protocol": {"minimum": 1, "maximum": 1},
         "active_agent_tasks": 0,
         "projects": 0,
         "agent_mode": "provider",
@@ -114,6 +125,38 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
             ],
         },
     }
+
+
+def test_team_shell_protocol_one_fixture_matches_the_advertised_contract(tmp_path) -> None:
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "team_shell_protocol_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    app = create_app(data_dir=tmp_path)
+
+    with TestClient(app) as client:
+        advertised = client.get("/api/health").json()[fixture["health_field"]]
+
+    assert fixture["schema_version"] == fixture["protocol_version"] == 1
+    assert (
+        advertised
+        == fixture["advertised_range"]
+        == {
+            "minimum": TEAM_SHELL_PROTOCOL_MINIMUM,
+            "maximum": TEAM_SHELL_PROTOCOL_MAXIMUM,
+        }
+    )
+    assert fixture["selection_header"] == TEAM_SHELL_PROTOCOL_HEADER
+    assert fixture["mismatch"] == {
+        "status": TEAM_SHELL_PROTOCOL_MISMATCH_STATUS,
+        "code": TEAM_SHELL_PROTOCOL_MISMATCH_CODE,
+    }
+    assert fixture["handshake_requests"] == [
+        {"method": "POST", "path": "/api/team/enroll"},
+        {"method": "POST", "path": "/api/team/session/exchange"},
+        {"method": "GET", "path": "/api/projects"},
+    ]
 
 
 def test_health_projects_team_creation_eligibility_without_member_authority(tmp_path) -> None:

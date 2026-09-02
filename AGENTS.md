@@ -36,9 +36,9 @@ covers. Report contradictions instead of silently choosing a source.
    handoff whose status changed in the same commit.
 
 When another session changes the tree during long work, integrate through a real
-three-way Git merge. Do not pipe a whole diff into `git apply`. The default local
-workflow is direct work on `main`; use a dedicated branch and PR when the human
-explicitly requests one.
+three-way Git merge; never pipe a whole diff into `git apply`. The active first-
+team-server closure works directly on `main`. After that handoff closes, use
+short-lived branches, PR CI, and explicit human merge; servers consume only `main`.
 
 ## Commands and verification
 
@@ -197,8 +197,8 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
   branch protection and retires the private-source deploy key together. Read
   `decisions/2026-08-27-main-is-the-server-update-channel.md` before any of it.
 - Two entrances are managed: the browser from `rcp serve`, and the source-built
-  desktop app. Everyone builds from source, so the frozen release bundle is not
-  a maintained target. Rebuild Tauri only when native files change.
+  desktop app. Native team changes preserve every advertised contract or add a
+  version; highest range overlap fails closed. Rebuild Tauri for native changes.
 
 ## Maintaining this file
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import partial
 from typing import Annotated, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from rcp.agents import AgentLauncher
@@ -22,6 +22,7 @@ from rcp.api.episode_branches import graph_branch_summary
 from rcp.api.episodes import EpisodeResponse, serialize_episode
 from rcp.api.experiment_controls import ExperimentControlResponse, _experiment_control_response
 from rcp.api.identity import IdentityAccess
+from rcp.api.team_shell_protocol import acknowledge_team_shell_protocol
 from rcp.core.models import Experiment, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.keyed_locks import KeyedLocks
@@ -94,11 +95,13 @@ class ExperimentLoopIndexEntryResponse(BaseModel):
 @router.get("/api/projects")
 def projects(
     request: Request,
+    response: Response,
     *,
     catalog: CatalogDependency,
     identity_access: IdentityDependency,
     store: StoreDependency,
 ) -> list[dict[str, object]]:
+    acknowledge_team_shell_protocol(request, response)
     visible = store.member_project_ids(identity_access.acting_user(request).user_id)
     return [card for card in catalog.cards() if card["id"] in visible]
 

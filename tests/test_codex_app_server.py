@@ -259,7 +259,9 @@ async def test_app_server_work_turn_carries_the_exact_project_permission_profile
     transcript = json.loads(capture.read_text(encoding="utf-8"))
     assert 'default_permissions="rcp_project"' in transcript["argv"]
     assert any(
-        item.startswith("permissions={rcp_project=") and str(stage) in item
+        item.startswith("permissions={rcp_project=")
+        and str(stage) in item
+        and '".git"="write"' in item
         for item in transcript["argv"]
     ), transcript["argv"]
     thread_start = next(

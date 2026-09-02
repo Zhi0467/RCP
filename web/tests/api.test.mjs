@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -14,8 +15,17 @@ import {
   registerIdentityNameRequiredHandler,
   registerMutationFailureHandler,
   removeChatAttachment,
+  TEAM_SHELL_PROTOCOL_HEADER,
+  TEAM_SHELL_PROTOCOL_VERSION,
   uploadChatAttachment,
 } from "../src/api.ts";
+
+const teamShellProtocolOne = JSON.parse(
+  readFileSync(
+    new URL("../../tests/fixtures/team_shell_protocol_v1.json", import.meta.url),
+    "utf8",
+  ),
+);
 
 const metrics = {
   remote_sources: {
@@ -376,14 +386,38 @@ test("team session exchange sends the raw token once in the JSON body only", asy
   };
   try {
     assert.deepEqual(await exchangeTeamSession(rawToken), identity);
-    assert.equal(request.path, "/api/team/session/exchange");
+    assert.equal(
+      request.path,
+      teamShellProtocolOne.handshake_requests.find(
+        (request) => request.method === "POST" && request.path.endsWith("/session/exchange"),
+      ).path,
+    );
     assert.equal(request.init.method, "POST");
     assert.deepEqual(JSON.parse(request.init.body), { token: rawToken });
     assert.doesNotMatch(request.path, new RegExp(rawToken));
-    assert.equal(new Headers(request.init.headers).get("Authorization"), null);
+    const headers = new Headers(request.init.headers);
+    assert.equal(headers.get("Authorization"), null);
+    assert.equal(headers.get(TEAM_SHELL_PROTOCOL_HEADER), String(TEAM_SHELL_PROTOCOL_VERSION));
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("team shell protocol one remains the initial thin entrance contract", () => {
+  assert.deepEqual(teamShellProtocolOne.advertised_range, {
+    minimum: TEAM_SHELL_PROTOCOL_VERSION,
+    maximum: TEAM_SHELL_PROTOCOL_VERSION,
+  });
+  assert.equal(teamShellProtocolOne.selection_header, TEAM_SHELL_PROTOCOL_HEADER);
+  assert.deepEqual(teamShellProtocolOne.mismatch, {
+    status: 426,
+    code: "team_shell_protocol_mismatch",
+  });
+  assert.deepEqual(teamShellProtocolOne.handshake_requests, [
+    { method: "POST", path: "/api/team/enroll" },
+    { method: "POST", path: "/api/team/session/exchange" },
+    { method: "GET", path: "/api/projects" },
+  ]);
 });
 
 test("team invitation helpers use the member-scoped collection without code URLs", async () => {

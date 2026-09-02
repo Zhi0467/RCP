@@ -34,6 +34,13 @@ use crate::{
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_SESSION_COOKIE_BYTES: usize = 4 * 1024;
 const SESSION_COOKIE_PREFIX: &str = "__Host-rcp_session=";
+const TEAM_SHELL_PROTOCOL_HEADER: &str = "RCP-Team-Shell-Protocol";
+const TEAM_SHELL_PROTOCOL_MINIMUM: u32 = 1;
+const TEAM_SHELL_PROTOCOL_MAXIMUM: u32 = 1;
+const TEAM_ENROLLMENT_PATH: &str = "/api/team/enroll";
+const TEAM_SESSION_EXCHANGE_PATH: &str = "/api/team/session/exchange";
+const TEAM_PROJECT_CARDS_PATH: &str = "/api/projects";
+const DESKTOP_SOURCE_COMMIT: &str = env!("RCP_DESKTOP_SOURCE_COMMIT");
 // The installed systemd unit executes `rcp serve`; that production CLI path
 // publishes `cli`, while desktop and embedded owners are never team services.
 const EXPECTED_SERVER_OWNER: &str = "cli";
@@ -90,7 +97,16 @@ struct TeamHealth {
     owner_kind: String,
     running_commit: Option<String>,
     web_build_id: Option<String>,
+    #[serde(default)]
+    team_shell_protocol: Option<TeamShellProtocolRange>,
     active_agent_tasks: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct TeamShellProtocolRange {
+    minimum: u32,
+    maximum: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -183,10 +199,16 @@ impl TeamSessionState {
             .ok_or_else(|| "the team connection is not saved on this desktop".to_string())?;
         let client = self.client(&connection.local_origin)?;
         let health = read_health(&client, &connection.local_origin).await?;
-        validate_health(&health, Some(&connection))?;
+        let protocol = validate_health(&health, Some(&connection))?;
         let token = connections.load_member_token(connection_id)?;
-        let (identity, set_cookie) =
-            exchange_session(&client, &connection.local_origin, &token).await?;
+        let (identity, set_cookie) = exchange_session(
+            &client,
+            &connection.local_origin,
+            &token,
+            protocol,
+            installed_server_commit(&health),
+        )
+        .await?;
         validate_identity(&identity, &health)?;
         let cookie = request_cookie(&set_cookie)?;
         let header = HeaderValue::from_str(&cookie)
@@ -467,7 +489,7 @@ impl TeamSessionState {
     ) -> Result<Zeroizing<Vec<u8>>, String> {
         validate_uuid4(request_id, "target transfer request identity")?;
         let (connection, session) = self.saved_established(connections, connection_id)?;
-        let (client, _health) = self.native_client(&connection, &session).await?;
+        let (client, _health, _protocol) = self.native_client(&connection, &session).await?;
         let token = connections.load_member_token(connection_id)?;
         let authorization = bearer_header(&token)?;
         let response = client
@@ -522,7 +544,7 @@ impl TeamSessionState {
             return Err("the cleanup acknowledgment does not match the target request".into());
         }
         let (connection, session) = self.saved_established(connections, connection_id)?;
-        let (client, _health) = self.native_client(&connection, &session).await?;
+        let (client, _health, _protocol) = self.native_client(&connection, &session).await?;
         let token = connections.load_member_token(connection_id)?;
         let authorization = bearer_header(&token)?;
         let body = CleanupAcknowledgmentBody { acknowledgment };
@@ -634,13 +656,25 @@ impl TeamSessionState {
             .await?;
         let client = self.client(&ready.local_origin)?;
         let health = read_health(&client, &ready.local_origin).await?;
-        validate_health(&health, Some(&connection))?;
+        let protocol = validate_health(&health, Some(&connection))?;
         let token = connections.load_member_token(connection_id)?;
-        let (identity, cookie) =
-            exchange_session(&client, &connection.local_origin, &token).await?;
+        let (identity, cookie) = exchange_session(
+            &client,
+            &connection.local_origin,
+            &token,
+            protocol,
+            installed_server_commit(&health),
+        )
+        .await?;
         validate_identity(&identity, &health)?;
-        connection.last_known_cards =
-            read_project_cards(&client, &ready.local_origin, &cookie).await?;
+        connection.last_known_cards = read_project_cards(
+            &client,
+            &ready.local_origin,
+            &cookie,
+            protocol,
+            installed_server_commit(&health),
+        )
+        .await?;
         connections.save_metadata(connection.clone())?;
         install_team_session_cookie(window, &ready.local_origin, cookie).await?;
         self.record(connection, identity, &health)
@@ -671,9 +705,16 @@ impl TeamSessionState {
             .await?;
         let client = self.client(&ready.local_origin)?;
         let health = read_health(&client, &ready.local_origin).await?;
-        validate_health(&health, Some(&connection))?;
+        let protocol = validate_health(&health, Some(&connection))?;
         let token = connections.load_member_token(connection_id)?;
-        let (identity, _cookie) = exchange_session(&client, &ready.local_origin, &token).await?;
+        let (identity, _cookie) = exchange_session(
+            &client,
+            &ready.local_origin,
+            &token,
+            protocol,
+            installed_server_commit(&health),
+        )
+        .await?;
         validate_identity(&identity, &health)?;
         self.record(connection, identity, &health)
     }
@@ -691,18 +732,20 @@ impl TeamSessionState {
     ) -> Result<EstablishedTeamSession, String> {
         let client = self.client(&ready.local_origin)?;
         let health = read_health(&client, &ready.local_origin).await?;
-        validate_health(&health, None)?;
+        let protocol = validate_health(&health, None)?;
         let connection = new_connection(ready, ssh_target, remote_loopback_port, &health);
         connections.save_metadata(connection.clone())?;
         let enrolled: EnrollmentResponse = match post_json(
             &client,
             &ready.local_origin,
-            "/api/team/enroll",
+            TEAM_ENROLLMENT_PATH,
             &EnrollmentBody {
                 code: enrollment_code,
                 display_name: &member_display_name,
             },
             "team enrollment",
+            protocol,
+            installed_server_commit(&health),
         )
         .await
         {
@@ -755,11 +798,24 @@ impl TeamSessionState {
         health: TeamHealth,
         token: Zeroizing<String>,
     ) -> Result<EstablishedTeamSession, String> {
-        let (identity, cookie) =
-            exchange_session(&client, &connection.local_origin, &token).await?;
+        let protocol = select_team_shell_protocol(&health)?;
+        let (identity, cookie) = exchange_session(
+            &client,
+            &connection.local_origin,
+            &token,
+            protocol,
+            installed_server_commit(&health),
+        )
+        .await?;
         validate_identity(&identity, &health)?;
-        connection.last_known_cards =
-            read_project_cards(&client, &connection.local_origin, &cookie).await?;
+        connection.last_known_cards = read_project_cards(
+            &client,
+            &connection.local_origin,
+            &cookie,
+            protocol,
+            installed_server_commit(&health),
+        )
+        .await?;
         connections.save_metadata(connection.clone())?;
         install_team_session_cookie(window, &connection.local_origin, cookie).await?;
         self.record(connection, identity, &health)
@@ -815,10 +871,10 @@ impl TeamSessionState {
         &self,
         connection: &TeamConnectionMetadata,
         session: &EstablishedTeamSession,
-    ) -> Result<(Client, TeamHealth), String> {
+    ) -> Result<(Client, TeamHealth, u32), String> {
         let client = self.client(&connection.local_origin)?;
         let health = read_health(&client, &connection.local_origin).await?;
-        validate_health(&health, Some(connection))?;
+        let protocol = validate_health(&health, Some(connection))?;
         if health.instance_id != session.status.instance_id
             || health.data_dir_id != session.status.data_dir_id
             || health.version != session.status.version
@@ -826,7 +882,7 @@ impl TeamSessionState {
         {
             return Err("the team server identity changed; explicit reconnect is required".into());
         }
-        Ok((client, health))
+        Ok((client, health, protocol))
     }
 
     async fn authenticated_request_context(
@@ -835,10 +891,16 @@ impl TeamSessionState {
         connection_id: &str,
     ) -> Result<(TeamConnectionMetadata, Client, HeaderValue), String> {
         let (connection, session) = self.saved_established(connections, connection_id)?;
-        let (client, health) = self.native_client(&connection, &session).await?;
+        let (client, health, protocol) = self.native_client(&connection, &session).await?;
         let token = connections.load_member_token(connection_id)?;
-        let (identity, set_cookie) =
-            exchange_session(&client, &connection.local_origin, &token).await?;
+        let (identity, set_cookie) = exchange_session(
+            &client,
+            &connection.local_origin,
+            &token,
+            protocol,
+            installed_server_commit(&health),
+        )
+        .await?;
         validate_identity(&identity, &health)?;
         let cookie = request_cookie(&set_cookie)?;
         let header = HeaderValue::from_str(&cookie)
@@ -913,7 +975,6 @@ fn new_connection(
         remote_loopback_port,
         expected_space_id: health.space_id.clone(),
         local_origin: ready.local_origin.clone(),
-        minimum_shell_version: health.version.clone(),
         last_known_cards: Vec::new(),
         operator_route: None,
     }
@@ -961,9 +1022,12 @@ async fn exchange_session(
     client: &Client,
     origin: &str,
     token: &str,
+    protocol: u32,
+    server_commit: &str,
 ) -> Result<(TeamIdentity, Zeroizing<String>), String> {
     let response = client
-        .post(endpoint(origin, "/api/team/session/exchange")?)
+        .post(endpoint(origin, TEAM_SESSION_EXCHANGE_PATH)?)
+        .header(TEAM_SHELL_PROTOCOL_HEADER, protocol.to_string())
         .json(&ExchangeBody { token })
         .send()
         .await
@@ -974,6 +1038,7 @@ async fn exchange_session(
             response.status().as_u16()
         ));
     }
+    validate_protocol_echo(&response, protocol, server_commit)?;
     let cookie = session_cookie(response.headers())?;
     let identity = response
         .json::<TeamIdentity>()
@@ -986,16 +1051,22 @@ async fn read_project_cards(
     client: &Client,
     origin: &str,
     set_cookie: &str,
+    protocol: u32,
+    server_commit: &str,
 ) -> Result<Vec<CachedTeamProjectCard>, String> {
     let cookie = request_cookie(set_cookie)?;
     let header = HeaderValue::from_str(&cookie)
         .map_err(|_| "team session exchange returned an invalid cookie".to_string())?;
     let response = client
-        .get(endpoint(origin, "/api/projects")?)
+        .get(endpoint(origin, TEAM_PROJECT_CARDS_PATH)?)
+        .header(TEAM_SHELL_PROTOCOL_HEADER, protocol.to_string())
         .header(COOKIE, header)
         .send()
         .await
         .map_err(|error| format!("could not read team projects: {error}"))?;
+    if response.status().is_success() {
+        validate_protocol_echo(&response, protocol, server_commit)?;
+    }
     let cards: Vec<TeamProjectCard> = response_json(response, "team project index").await?;
     Ok(cards
         .into_iter()
@@ -1014,14 +1085,48 @@ async fn post_json<T: DeserializeOwned, B: Serialize + ?Sized>(
     path: &str,
     body: &B,
     description: &str,
+    protocol: u32,
+    server_commit: &str,
 ) -> Result<T, String> {
     let response = client
         .post(endpoint(origin, path)?)
+        .header(TEAM_SHELL_PROTOCOL_HEADER, protocol.to_string())
         .json(body)
         .send()
         .await
         .map_err(|error| format!("could not reach {description}: {error}"))?;
+    if response.status().is_success() {
+        validate_protocol_echo(&response, protocol, server_commit)?;
+    }
     response_json(response, description).await
+}
+
+fn validate_protocol_echo(
+    response: &Response,
+    selected: u32,
+    server_commit: &str,
+) -> Result<(), String> {
+    let echoed = response
+        .headers()
+        .get(TEAM_SHELL_PROTOCOL_HEADER)
+        .and_then(|value| value.to_str().ok());
+    validate_protocol_echo_value(echoed, selected, server_commit)
+}
+
+fn validate_protocol_echo_value(
+    echoed: Option<&str>,
+    selected: u32,
+    server_commit: &str,
+) -> Result<(), String> {
+    let expected = selected.to_string();
+    if echoed != Some(expected.as_str()) {
+        return Err(format!(
+            "The team server did not confirm selected team-shell protocol {selected}. \
+             RCP desktop source is {DESKTOP_SOURCE_COMMIT}; team server source is \
+             {server_commit}. Update the team server from current origin/main and reconnect."
+        ));
+    }
+    Ok(())
 }
 
 async fn response_json<T: DeserializeOwned>(
@@ -1104,7 +1209,7 @@ fn endpoint(origin: &str, path: &str) -> Result<Url, String> {
 fn validate_health(
     health: &TeamHealth,
     expected: Option<&TeamConnectionMetadata>,
-) -> Result<(), String> {
+) -> Result<u32, String> {
     if health.status != "ok"
         || health.space_kind != "team"
         || health.owner_kind != EXPECTED_SERVER_OWNER
@@ -1119,14 +1224,7 @@ fn validate_health(
     if health.space_name.as_deref().is_none_or(str::is_empty) {
         return Err("the team server has no display name".into());
     }
-    let server_version = canonical_version(&health.version, "team server version")?;
-    let shell_version = canonical_version(env!("CARGO_PKG_VERSION"), "desktop shell version")?;
-    if server_version > shell_version {
-        return Err(format!(
-            "this team server requires RCP desktop {} or newer",
-            health.version
-        ));
-    }
+    canonical_version(&health.version, "team server version")?;
     match (&health.running_commit, &health.web_build_id) {
         (Some(commit), Some(build))
             if commit.len() == 40
@@ -1142,18 +1240,65 @@ fn validate_health(
                 "the saved team space identity changed; explicit reconnect is required".into(),
             );
         }
-        let minimum = canonical_version(
-            &expected.minimum_shell_version,
-            "saved minimum desktop shell version",
-        )?;
-        if shell_version < minimum {
-            return Err(format!(
-                "this team connection requires RCP desktop {} or newer",
-                expected.minimum_shell_version
-            ));
-        }
     }
-    Ok(())
+    select_team_shell_protocol(health)
+}
+
+fn select_team_shell_protocol(health: &TeamHealth) -> Result<u32, String> {
+    let server_commit = installed_server_commit(health);
+    let Some(server) = &health.team_shell_protocol else {
+        return Err(format!(
+            "This team server does not advertise the required team-shell protocol range. \
+             RCP desktop supports {TEAM_SHELL_PROTOCOL_MINIMUM} through \
+             {TEAM_SHELL_PROTOCOL_MAXIMUM} at source {DESKTOP_SOURCE_COMMIT}; team server source \
+             is {server_commit}. Update the team server from current origin/main and reconnect."
+        ));
+    };
+    if server.minimum == 0 || server.minimum > server.maximum {
+        return Err(format!(
+            "This team server advertises an invalid team-shell protocol range {} through {}. \
+             RCP desktop source is {DESKTOP_SOURCE_COMMIT}; team server source is \
+             {server_commit}. Update the team server from current origin/main and reconnect.",
+            server.minimum, server.maximum
+        ));
+    }
+    if let Some(selected) = highest_common_protocol(
+        TEAM_SHELL_PROTOCOL_MINIMUM,
+        TEAM_SHELL_PROTOCOL_MAXIMUM,
+        server.minimum,
+        server.maximum,
+    ) {
+        return Ok(selected);
+    }
+    let action = if server.maximum < TEAM_SHELL_PROTOCOL_MINIMUM {
+        "Update the team server from current origin/main"
+    } else {
+        "Update and rebuild RCP desktop from current origin/main"
+    };
+    Err(format!(
+        "RCP desktop supports team-shell protocol {TEAM_SHELL_PROTOCOL_MINIMUM} through \
+         {TEAM_SHELL_PROTOCOL_MAXIMUM} at source {DESKTOP_SOURCE_COMMIT}, but the team server \
+         supports {} through {} at source {server_commit}. {action}, then reconnect.",
+        server.minimum, server.maximum
+    ))
+}
+
+fn highest_common_protocol(
+    desktop_minimum: u32,
+    desktop_maximum: u32,
+    server_minimum: u32,
+    server_maximum: u32,
+) -> Option<u32> {
+    let minimum = desktop_minimum.max(server_minimum);
+    let maximum = desktop_maximum.min(server_maximum);
+    (minimum <= maximum).then_some(maximum)
+}
+
+fn installed_server_commit(health: &TeamHealth) -> &str {
+    health
+        .running_commit
+        .as_deref()
+        .expect("validated installed team health must carry a source commit")
 }
 
 fn validate_identity(identity: &TeamIdentity, health: &TeamHealth) -> Result<(), String> {
@@ -1277,6 +1422,10 @@ mod tests {
             owner_kind: EXPECTED_SERVER_OWNER.into(),
             running_commit: Some("4".repeat(40)),
             web_build_id: Some(format!("sha256:{}", "5".repeat(64))),
+            team_shell_protocol: Some(TeamShellProtocolRange {
+                minimum: TEAM_SHELL_PROTOCOL_MINIMUM,
+                maximum: TEAM_SHELL_PROTOCOL_MAXIMUM,
+            }),
             active_agent_tasks: 2,
         }
     }
@@ -1312,7 +1461,7 @@ mod tests {
     }
 
     #[test]
-    fn saved_space_identity_and_shell_floor_are_enforced() {
+    fn saved_space_identity_and_live_protocol_range_are_enforced() {
         let verified = health();
         let mut connection = TeamConnectionMetadata {
             connection_id: "66666666-6666-4666-8666-666666666666".into(),
@@ -1321,16 +1470,76 @@ mod tests {
             remote_loopback_port: 8421,
             expected_space_id: verified.space_id.clone(),
             local_origin: "https://rcp-66666666666646668666666666666666.rcp.localhost:18421".into(),
-            minimum_shell_version: env!("CARGO_PKG_VERSION").into(),
             last_known_cards: Vec::new(),
             operator_route: None,
         };
         assert!(validate_health(&verified, Some(&connection)).is_ok());
         connection.expected_space_id = "77777777-7777-4777-8777-777777777777".into();
         assert!(validate_health(&verified, Some(&connection)).is_err());
-        connection.expected_space_id = verified.space_id.clone();
-        connection.minimum_shell_version = "999.0.0".into();
-        assert!(validate_health(&verified, Some(&connection)).is_err());
+    }
+
+    #[test]
+    fn protocol_selection_uses_the_highest_overlap_and_names_the_stale_side() {
+        assert_eq!(highest_common_protocol(1, 2, 1, 1), Some(1));
+        assert_eq!(highest_common_protocol(1, 3, 2, 4), Some(3));
+        assert_eq!(highest_common_protocol(2, 3, 4, 5), None);
+
+        let mut stale_desktop = health();
+        stale_desktop.team_shell_protocol = Some(TeamShellProtocolRange {
+            minimum: TEAM_SHELL_PROTOCOL_MAXIMUM + 1,
+            maximum: TEAM_SHELL_PROTOCOL_MAXIMUM + 2,
+        });
+        let error = validate_health(&stale_desktop, None).unwrap_err();
+        assert!(error.contains(DESKTOP_SOURCE_COMMIT));
+        assert!(error.contains(installed_server_commit(&stale_desktop)));
+        assert!(error.contains("Update and rebuild RCP desktop"));
+
+        let mut stale_server = health();
+        stale_server.team_shell_protocol = None;
+        let error = validate_health(&stale_server, None).unwrap_err();
+        assert!(error.contains(DESKTOP_SOURCE_COMMIT));
+        assert!(error.contains(installed_server_commit(&stale_server)));
+        assert!(error.contains("Update the team server"));
+    }
+
+    #[test]
+    fn protocol_one_fixture_matches_the_native_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/team_shell_protocol_v1.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["schema_version"], 1);
+        assert_eq!(fixture["protocol_version"], 1);
+        assert_eq!(
+            fixture["advertised_range"],
+            serde_json::json!({
+                "minimum": TEAM_SHELL_PROTOCOL_MINIMUM,
+                "maximum": TEAM_SHELL_PROTOCOL_MAXIMUM,
+            })
+        );
+        assert_eq!(fixture["selection_header"], TEAM_SHELL_PROTOCOL_HEADER);
+        assert_eq!(fixture["mismatch"]["status"], 426);
+        assert_eq!(fixture["mismatch"]["code"], "team_shell_protocol_mismatch");
+        assert_eq!(
+            fixture["handshake_requests"],
+            serde_json::json!([
+                {"method": "POST", "path": TEAM_ENROLLMENT_PATH},
+                {"method": "POST", "path": TEAM_SESSION_EXCHANGE_PATH},
+                {"method": "GET", "path": TEAM_PROJECT_CARDS_PATH},
+            ])
+        );
+    }
+
+    #[test]
+    fn protocol_echo_is_exact_and_diagnostic() {
+        let server_commit = "4".repeat(40);
+        assert!(validate_protocol_echo_value(Some("1"), 1, &server_commit).is_ok());
+        for echoed in [None, Some("01"), Some("2")] {
+            let error = validate_protocol_echo_value(echoed, 1, &server_commit).unwrap_err();
+            assert!(error.contains(DESKTOP_SOURCE_COMMIT));
+            assert!(error.contains(&server_commit));
+            assert!(error.contains("Update the team server"));
+        }
     }
 
     #[test]

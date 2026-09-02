@@ -26,6 +26,9 @@
   records the deterministic per-connection host, sealed desktop identity with a
   Keychain-held key, app-scoped certificate pin, and independent navigation and
   capability fences.
+- [The native team entrance negotiates one thin protocol range](2026-09-01-team-shell-handshake-compatibility.md)
+  records the live highest-overlap handshake, source-commit diagnostics,
+  immutable per-version contracts, and removal of persisted compatibility state.
 
 Decision records explain rationale that remains materially useful for an active
 migration, live tradeoff, or easy-to-regress architectural boundary. They link to

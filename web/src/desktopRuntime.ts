@@ -46,7 +46,6 @@ export interface TeamConnectionMetadata {
   remote_loopback_port: number;
   expected_space_id: string;
   local_origin: string;
-  minimum_shell_version: string;
   last_known_cards: CachedTeamProjectCard[];
   operator_route: ServerOperatorRoute | null;
 }
