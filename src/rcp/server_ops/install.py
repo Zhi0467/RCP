@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -126,6 +127,8 @@ class SourceAccess:
     grant_needed: bool
     deploy_key_label: str | None = None
     public_key: str | None = None
+    source_transitioned: bool = False
+    retired_deploy_key_label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -216,6 +219,15 @@ def normalize_github_repository(origin: str) -> GitHubRepository:
         ssh_origin=reference.ssh_clone_url,
         deploy_keys_url=reference.settings_url,
     )
+
+
+def _is_repository_ssh_origin(origin: str, *, repository: GitHubRepository) -> bool:
+    if not origin.startswith("git@github.com:"):
+        return False
+    try:
+        return normalize_github_repository(origin).slug == repository.slug
+    except ValueError:
+        return False
 
 
 def discover_bootstrap_repository(bootstrap_root: Path | None = None) -> GitHubRepository:
@@ -478,14 +490,9 @@ def _execute_install(
             steps[2],
             running=f"Preparing credential-isolated read access for {repository.slug} as rcp.",
             operation=lambda: machine.prepare_source_access(repository),
-            succeeded="The installed-server source identity and access mode are recorded.",
-            fields=lambda value: (
-                NonsecretField(name="installation_id", value=value.config.installation_id),
-                NonsecretField(name="source_repository", value=value.repository.slug),
-                NonsecretField(
-                    name="source_authentication", value=value.config.source.authentication
-                ),
-            ),
+            succeeded=_source_access_succeeded,
+            fields=_source_access_fields,
+            announce_success=lambda value: value.source_transitioned,
             recovery_argv=retry,
         )
         if access.grant_needed:
@@ -572,14 +579,49 @@ def _execute_install(
 _T = TypeVar("_T")
 
 
+def _source_access_succeeded(access: SourceAccess) -> str:
+    if not access.source_transitioned:
+        return "The installed-server source identity and access mode are recorded."
+    if access.retired_deploy_key_label is None:
+        raise RuntimeError("a public source transition did not retain its deploy-key label")
+    return (
+        f"The source is now the public HTTPS origin {access.config.source.origin}. "
+        "The local deploy key pair was retired. The operator should revoke deploy key "
+        f"{access.retired_deploy_key_label} at {access.repository.deploy_keys_url} after this "
+        "update completes and server doctor shows the public origin."
+    )
+
+
+def _source_access_fields(access: SourceAccess) -> tuple[NonsecretField, ...]:
+    fields = (
+        NonsecretField(name="installation_id", value=access.config.installation_id),
+        NonsecretField(name="source_repository", value=access.repository.slug),
+        NonsecretField(name="source_authentication", value=access.config.source.authentication),
+    )
+    if not access.source_transitioned:
+        return fields
+    if access.retired_deploy_key_label is None:
+        raise RuntimeError("a public source transition did not retain its deploy-key label")
+    return (
+        *fields,
+        NonsecretField(name="source_origin", value=access.config.source.origin),
+        NonsecretField(
+            name="retired_deploy_key_label",
+            value=access.retired_deploy_key_label,
+        ),
+        NonsecretField(name="deploy_keys_url", value=access.repository.deploy_keys_url),
+    )
+
+
 def _run_step(
     emitter: ServerEventEmitter,
     planned: ServerStep,
     *,
     running: str,
     operation,
-    succeeded: str,
+    succeeded: str | Callable[[_T], str],
     fields=lambda _value: (),
+    announce_success=lambda _value: False,
     recovery_argv: tuple[str, ...] = (),
 ) -> _T:
     emitter.emit_step(planned.model_copy(update={"state": "running", "message": running}))
@@ -610,14 +652,16 @@ def _run_step(
             )
         )
         raise _ReportedInstallFailure from exc
+    message = succeeded(value) if callable(succeeded) else succeeded
     emitter.emit_step(
         planned.model_copy(
             update={
                 "state": "succeeded",
-                "message": succeeded,
+                "message": message,
                 "fields": tuple(fields(value)),
             }
-        )
+        ),
+        announce_success=bool(announce_success(value)),
     )
     return value
 
@@ -880,8 +924,10 @@ class LinuxInstallMachine:
                     or public_path.is_symlink()
                 ):
                     raise InstallRefused(
-                        "A public source configuration has an unexpected source-key file. Remove "
-                        "nothing automatically; inspect the credential path and rerun."
+                        "A public source configuration has an unexpected source-key file. The "
+                        "keys are the retired deploy-key pair from a completed public transition "
+                        "and may be removed by hand after checking server doctor; RCP will not "
+                        "remove them automatically on re-entry."
                     )
                 probe = self._probe_source(repository.https_origin, source=None)
                 if probe != "ready":
@@ -891,6 +937,35 @@ class LinuxInstallMachine:
                     )
                 return SourceAccess(config=config, repository=repository, grant_needed=False)
             public_key = self._validate_source_key_pair(config, private_path, public_path)
+            public_probe = self._probe_source(repository.https_origin, source=None)
+            if public_probe == "ready":
+                retired_label = f"rcp-source:{config.installation_id}"
+                transitioned_config = config.model_copy(
+                    update={
+                        "source": ServerSourceConfig(
+                            origin=repository.https_origin,
+                            authentication="public",
+                        )
+                    }
+                )
+                write_installed_server_config(transitioned_config, self.layout.config_path)
+                try:
+                    private_path.unlink()
+                    public_path.unlink()
+                    _fsync_directory(self.layout.credentials_root)
+                except OSError as exc:
+                    raise InstallRefused(
+                        "The installed source configuration now records the public HTTPS origin, "
+                        "but the retired deploy-key pair could not be fully removed. Check server "
+                        "doctor, inspect the two source-key paths, and remove any remainder by hand."
+                    ) from exc
+                return SourceAccess(
+                    config=transitioned_config,
+                    repository=repository,
+                    grant_needed=False,
+                    source_transitioned=True,
+                    retired_deploy_key_label=retired_label,
+                )
             probe = self._probe_source(repository.ssh_origin, source=config.source)
             if probe == "unavailable":
                 raise InstallRefused(
@@ -1030,6 +1105,24 @@ class LinuxInstallMachine:
                 "replace or adopt it."
             )
         origin = self._git_text(source, ("remote", "get-url", "origin"), environment=environment)
+        if access.source_transitioned and _is_repository_ssh_origin(
+            origin,
+            repository=access.repository,
+        ):
+            self._run_git(
+                source,
+                ("remote", "set-url", "origin", access.repository.https_origin),
+                environment=environment,
+                error=(
+                    "The managed checkout origin could not be changed from the retired "
+                    "deploy-key SSH origin to the public HTTPS origin."
+                ),
+            )
+            origin = self._git_text(
+                source,
+                ("remote", "get-url", "origin"),
+                environment=environment,
+            )
         if origin != access.config.source.origin:
             raise InstallRefused(
                 "The managed checkout origin differs from the installed source configuration; "

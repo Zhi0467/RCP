@@ -1,11 +1,13 @@
 # External supervisor and release artifacts handoff
 
 Date: 2026-09-02
-Status: active, human-confirmed on 2026-09-02. Nothing is implemented. Every
-phase below remains. The decisions are settled in
+Status: active, human-confirmed on 2026-09-02. The Phase 2 code half is
+implemented on branch `deploy/phase2-public-origin`; the lab update from the
+public origin, source deploy-key revocation, the later removal pull request, and
+the fresh-install and old-archive proofs remain. The decisions are settled in
 [the supervisor decision](../decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md)
-and repeated in the next section so this file stands alone. Phases 0 through 2
-may start now. Phases 3 through 6 wait for
+and repeated in the next section so this file stands alone. Phases 3 through 6
+wait for
 [the dev-team-space-and-server handoff](handoff-2026-08-27-dev-team-space-and-server.md)
 to meet its closure condition and be archived, because the human has frozen new
 team and server lifecycle surface until that first lab deployment is closed.
@@ -125,6 +127,8 @@ past the window.
 
 ### Phase 2 — public repository and protected `main`
 
+Code status: implemented on branch `deploy/phase2-public-origin`.
+
 Lands: the bundled transition already designed in the 2026-08-27 update-channel
 decision, in this order. Repository public. Branch protection on `main`
 requiring the named CI jobs, rejecting direct pushes and failed or missing
@@ -138,6 +142,16 @@ origin. Only then are the `grant_needed` install pause, the `source_ed25519`
 key material, and the `rcp-source:<id>` backup label removed together and the
 lab server's deploy key revoked. Until Phase 4, servers keep building from
 source; they simply fetch it from the public origin.
+
+Remaining human steps, in order:
+
+1. The persistent lab server is migrated and proven with one `rcp server update`
+   from the public origin.
+2. The lab server's deploy key revoked.
+3. The `grant_needed` install pause, the `source_ed25519` key material, and the
+   `rcp-source:<id>` backup label removed together in the later pull request.
+4. A fresh install on a disposable host with no deploy-key step; an old archive
+   with the label still restores.
 
 Owner files: `src/rcp/server_ops/install.py`, `src/rcp/server_ops/config.py`,
 `src/rcp/server_ops/backup*.py`, `src/rcp/server_ops/restore.py` (label

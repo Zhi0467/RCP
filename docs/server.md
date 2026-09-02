@@ -181,6 +181,12 @@ does not stop for a source deploy key.
 
 ## 7. Private source only: grant read access in the running wizard
 
+The RCP repository has been public since 2026-09-02, so new installations never
+see this step. An installation that still records a deploy-key source converges
+to the public HTTPS origin on its next `rcp server update`; the wizard then
+identifies the retired GitHub deploy key for the operator to revoke after the
+update completes and `server doctor` shows the public origin.
+
 While the RCP source repository is private, the running wizard pauses and shows:
 
 - the exact GitHub deploy-key settings page;
@@ -208,8 +214,9 @@ after the wizard continues is a separate clean checkout under
 `/usr/local/bin/rcp`, and a fresh service that is still stopped and disabled.
 
 This read-only source key is unrelated to the write-enabled deploy key each team
-project receives. When RCP becomes public, the source-key pause, key material,
-and this entire step are removed together.
+project receives. After every existing installation has migrated and its retired
+source key has been revoked, a later pull request removes the source-key pause,
+key handling, and this entire step together.
 
 For structured output, place `--machine-readable` after `install`:
 

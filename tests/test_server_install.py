@@ -8,6 +8,7 @@ from contextlib import nullcontext
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
 
@@ -20,7 +21,13 @@ from rcp.server_ops.cli import (
     CallerIdentity,
     run_server_command,
 )
-from rcp.server_ops.config import ServerSourceConfig, create_installed_server_config
+from rcp.server_ops.config import (
+    InstalledServerConfig,
+    ServerSourceConfig,
+    create_installed_server_config,
+    parse_installed_server_config,
+    render_installed_server_config,
+)
 from rcp.server_ops.install import (
     GitHubRepository,
     HostFacts,
@@ -103,7 +110,12 @@ class FakeInstallMachine:
         return ServiceHealth(status="ok", space_kind="team", space_name="Systems Lab")
 
 
-def _source_access(*, private: bool, grant_needed: bool = False) -> SourceAccess:
+def _source_access(
+    *,
+    private: bool,
+    grant_needed: bool = False,
+    source_transitioned: bool = False,
+) -> SourceAccess:
     if private:
         source = ServerSourceConfig(
             origin=REPOSITORY.ssh_origin,
@@ -122,6 +134,8 @@ def _source_access(*, private: bool, grant_needed: bool = False) -> SourceAccess
         grant_needed=grant_needed,
         deploy_key_label=f"rcp-source:{INSTALLATION_ID}" if private else None,
         public_key="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKey rcp-source" if private else None,
+        source_transitioned=source_transitioned,
+        retired_deploy_key_label=(f"rcp-source:{INSTALLATION_ID}" if source_transitioned else None),
     )
 
 
@@ -206,6 +220,48 @@ def test_public_fresh_install_prints_exact_init_and_resume_contract() -> None:
         "Systems Lab",
     ]
     assert all("systemctl" not in action.get("argv", []) for action in paused["actions"])
+
+
+def test_source_transition_reports_one_operator_paragraph_and_machine_fields() -> None:
+    access = _source_access(private=False, source_transitioned=True)
+    machine = FakeInstallMachine(
+        access=access,
+        service_state=ServiceInstallState(data_state="initialized", service_state="active"),
+    )
+    paragraph = (
+        "The source is now the public HTTPS origin https://github.com/openai/rcp.git. "
+        "The local deploy key pair was retired. The operator should revoke deploy key "
+        "rcp-source:123e4567-e89b-42d3-a456-426614174000 at "
+        "https://github.com/openai/rcp/settings/keys after this update completes and server "
+        "doctor shows the public origin."
+    )
+
+    exit_code, output = _run_install(machine)
+    source_step = next(
+        event["step"]
+        for event in _events(output)
+        if event.get("step", {}).get("phase") == "source_access_prepare"
+        and event["step"]["state"] == "succeeded"
+    )
+
+    assert exit_code == 0
+    assert source_step["message"] == paragraph
+    assert {field["name"]: field["value"] for field in source_step["fields"]} == {
+        "installation_id": INSTALLATION_ID,
+        "source_repository": REPOSITORY.slug,
+        "source_authentication": "public",
+        "source_origin": REPOSITORY.https_origin,
+        "retired_deploy_key_label": f"rcp-source:{INSTALLATION_ID}",
+        "deploy_keys_url": REPOSITORY.deploy_keys_url,
+    }
+
+    interactive_machine = FakeInstallMachine(
+        access=access,
+        service_state=ServiceInstallState(data_state="initialized", service_state="active"),
+    )
+    interactive_code, interactive = _run_install(interactive_machine, machine_readable=False)
+    assert interactive_code == 0
+    assert paragraph in " ".join(interactive.split())
 
 
 def test_initialized_install_converges_through_systemd_and_health() -> None:
@@ -513,6 +569,264 @@ def test_private_source_environment_uses_only_fixed_key_and_strict_host_checking
         "-o UserKnownHostsFile=/home/rcp/.ssh/known_hosts"
     )
     assert "SSH_AUTH_SOCK" not in environment
+
+
+def _configured_source_install(
+    tmp_path: Path,
+    *,
+    authentication: Literal["public", "deploy_key"],
+) -> tuple[
+    ServerLayout,
+    server_install.LinuxInstallMachine,
+    InstalledServerConfig,
+    Path,
+    Path,
+]:
+    layout = _temporary_layout(tmp_path)
+    layout.credentials_root.mkdir(parents=True)
+    layout.config_path.parent.mkdir(parents=True)
+    if authentication == "deploy_key":
+        source = ServerSourceConfig(
+            origin=REPOSITORY.ssh_origin,
+            authentication="deploy_key",
+            public_key_fingerprint="SHA256:" + ("A" * 43),
+        )
+    else:
+        source = ServerSourceConfig(
+            origin=REPOSITORY.https_origin,
+            authentication="public",
+        )
+    config = create_installed_server_config(source=source, installation_id=INSTALLATION_ID)
+    layout.config_path.write_text(render_installed_server_config(config), encoding="utf-8")
+    private = layout.credentials_root / "source_ed25519"
+    public = layout.credentials_root / "source_ed25519.pub"
+    if authentication == "deploy_key":
+        private.write_bytes(b"private-key\n")
+        private.chmod(0o600)
+        public.write_bytes(b"public-key\n")
+        public.chmod(0o644)
+    machine = server_install.LinuxInstallMachine(layout)
+    machine._service_uid = os.getuid()
+    machine._service_gid = os.getgid()
+    return layout, machine, config, private, public
+
+
+def test_existing_deploy_key_source_transitions_config_keys_and_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    layout, machine, config, private, public = _configured_source_install(
+        tmp_path,
+        authentication="deploy_key",
+    )
+    probes: list[tuple[str, ServerSourceConfig | None]] = []
+
+    def probe(origin: str, *, source: ServerSourceConfig | None):
+        probes.append((origin, source))
+        return "ready"
+
+    def write_config(updated, path: Path) -> None:
+        assert private.exists() and public.exists()
+        path.write_text(render_installed_server_config(updated), encoding="utf-8")
+
+    monkeypatch.setattr(server_install, "load_installed_server_config", lambda _path: config)
+    monkeypatch.setattr(server_install, "write_installed_server_config", write_config)
+    monkeypatch.setattr(machine, "_validate_source_key_pair", lambda *_args: "public-key")
+    monkeypatch.setattr(machine, "_probe_source", probe)
+
+    access = machine.prepare_source_access(REPOSITORY)
+
+    installed = parse_installed_server_config(layout.config_path.read_text(encoding="utf-8"))
+    assert installed.installation_id == config.installation_id == INSTALLATION_ID
+    assert installed.source == ServerSourceConfig(
+        origin=REPOSITORY.https_origin,
+        authentication="public",
+    )
+    assert not private.exists()
+    assert not public.exists()
+    assert access.config == installed
+    assert access.grant_needed is False
+    assert access.deploy_key_label is None
+    assert access.source_transitioned is True
+    assert access.retired_deploy_key_label == f"rcp-source:{INSTALLATION_ID}"
+    assert probes == [(REPOSITORY.https_origin, None)]
+
+    layout.source_checkout.mkdir(parents=True)
+    (layout.source_checkout / ".git").mkdir()
+    layout.restore_operations_root.mkdir(parents=True, mode=0o700)
+    layout.update_checkpoints_root.mkdir(parents=True, mode=0o700)
+    origin = [REPOSITORY.ssh_origin]
+    git_commands: list[tuple[tuple[str, ...], dict[str, str]]] = []
+
+    def git_text(_root: Path, argv: tuple[str, ...], **_kwargs) -> str:
+        if argv == ("remote", "get-url", "origin"):
+            return origin[0]
+        if argv[0] == "status":
+            return ""
+        if argv == ("rev-parse", "origin/main"):
+            return COMMIT
+        raise AssertionError(argv)
+
+    def run_git(_root: Path, argv: tuple[str, ...], **kwargs) -> None:
+        environment = kwargs["environment"]
+        assert "GIT_SSH_COMMAND" not in environment
+        git_commands.append((argv, environment))
+        if argv[:3] == ("remote", "set-url", "origin"):
+            origin[0] = argv[3]
+        elif argv[0] == "fetch":
+            assert origin[0] == REPOSITORY.https_origin
+
+    monkeypatch.setattr(machine, "_git_text", git_text)
+    monkeypatch.setattr(machine, "_run_git", run_git)
+    monkeypatch.setattr(machine, "_current_release_commit", lambda: None)
+
+    checkout = machine.converge_source_checkout(access)
+
+    assert checkout == ManagedCheckout(commit=COMMIT, is_current_release=False)
+    assert origin == [REPOSITORY.https_origin]
+    assert [argv for argv, _environment in git_commands] == [
+        ("remote", "set-url", "origin", REPOSITORY.https_origin),
+        ("fetch", "--prune", "origin", "main"),
+        ("checkout", "--force", "-B", "main", "origin/main"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("public_probe", "ssh_probe", "grant_needed"),
+    [
+        pytest.param("grant_needed", "grant_needed", True, id="repository-still-private"),
+        pytest.param("unavailable", "ready", False, id="public-probe-network-blip"),
+    ],
+)
+def test_existing_deploy_key_source_does_not_transition_without_a_ready_public_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    public_probe: str,
+    ssh_probe: str,
+    grant_needed: bool,
+) -> None:
+    layout, machine, config, private, public = _configured_source_install(
+        tmp_path,
+        authentication="deploy_key",
+    )
+    before = {path: path.read_bytes() for path in (layout.config_path, private, public)}
+    probes: list[tuple[str, ServerSourceConfig | None]] = []
+
+    def probe(origin: str, *, source: ServerSourceConfig | None):
+        probes.append((origin, source))
+        return public_probe if origin == REPOSITORY.https_origin else ssh_probe
+
+    monkeypatch.setattr(server_install, "load_installed_server_config", lambda _path: config)
+    monkeypatch.setattr(
+        server_install,
+        "write_installed_server_config",
+        lambda *_args: pytest.fail("a non-ready public probe must not rewrite config"),
+    )
+    monkeypatch.setattr(machine, "_validate_source_key_pair", lambda *_args: "public-key")
+    monkeypatch.setattr(machine, "_probe_source", probe)
+
+    access = machine.prepare_source_access(REPOSITORY)
+
+    assert access.config is config
+    assert access.grant_needed is grant_needed
+    assert access.source_transitioned is False
+    assert access.deploy_key_label == f"rcp-source:{INSTALLATION_ID}"
+    assert {path: path.read_bytes() for path in before} == before
+    assert probes == [
+        (REPOSITORY.https_origin, None),
+        (REPOSITORY.ssh_origin, config.source),
+    ]
+
+
+def test_existing_public_source_never_probes_ssh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _layout, machine, config, private, public = _configured_source_install(
+        tmp_path,
+        authentication="public",
+    )
+    probes: list[tuple[str, ServerSourceConfig | None]] = []
+
+    def probe(origin: str, *, source: ServerSourceConfig | None):
+        probes.append((origin, source))
+        return "ready"
+
+    monkeypatch.setattr(server_install, "load_installed_server_config", lambda _path: config)
+    monkeypatch.setattr(machine, "_probe_source", probe)
+
+    access = machine.prepare_source_access(REPOSITORY)
+
+    assert not private.exists() and not public.exists()
+    assert access.config is config
+    assert access.source_transitioned is False
+    assert probes == [(REPOSITORY.https_origin, None)]
+
+
+def test_public_source_with_retired_key_files_is_refused_with_manual_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _layout, machine, config, private, public = _configured_source_install(
+        tmp_path,
+        authentication="public",
+    )
+    private.write_bytes(b"retired-private\n")
+    public.write_bytes(b"retired-public\n")
+    monkeypatch.setattr(server_install, "load_installed_server_config", lambda _path: config)
+    monkeypatch.setattr(
+        machine,
+        "_probe_source",
+        lambda *_args, **_kwargs: pytest.fail("stale public keys must refuse before probing"),
+    )
+
+    with pytest.raises(
+        InstallRefused,
+        match=(
+            "retired deploy-key pair from a completed public transition and may be removed by "
+            "hand after checking server doctor"
+        ),
+    ):
+        machine.prepare_source_access(REPOSITORY)
+
+
+def test_source_transition_refuses_a_third_checkout_origin_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    layout = _temporary_layout(tmp_path)
+    layout.source_checkout.mkdir(parents=True)
+    (layout.source_checkout / ".git").mkdir()
+    marker = layout.source_checkout / "preserve.txt"
+    marker.write_bytes(b"untouched\n")
+    layout.restore_operations_root.mkdir(parents=True, mode=0o700)
+    layout.update_checkpoints_root.mkdir(parents=True, mode=0o700)
+    machine = server_install.LinuxInstallMachine(layout)
+    machine._service_uid = os.getuid()
+    machine._service_gid = os.getgid()
+    access = _source_access(private=False, source_transitioned=True)
+    third_origin = "https://github.com/openai/not-rcp.git"
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        machine,
+        "_git_text",
+        lambda _root, argv, **_kwargs: (
+            third_origin
+            if argv == ("remote", "get-url", "origin")
+            else pytest.fail(f"unexpected Git read after origin mismatch: {argv}")
+        ),
+    )
+    monkeypatch.setattr(
+        machine,
+        "_run_git",
+        lambda _root, argv, **_kwargs: calls.append(argv),
+    )
+
+    with pytest.raises(InstallRefused, match="origin differs"):
+        machine.converge_source_checkout(access)
+
+    assert marker.read_bytes() == b"untouched\n"
+    assert calls == []
 
 
 def test_existing_source_key_must_match_recorded_public_key(monkeypatch, tmp_path: Path) -> None:
