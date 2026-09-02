@@ -688,7 +688,7 @@ def test_legacy_combined_rows_and_missing_state_roots_migrate_one_way(
             """
         )
         connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 3)"
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 3, 5)"
         )
         for index, episode_id in enumerate((old_episode_id, missing_state_id), start=1):
             request = _request(episode_id, control_node_id=f"exp-{index}")

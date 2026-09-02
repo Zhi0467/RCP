@@ -60,6 +60,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (2, "legacy_episode_ledger_v1"),
         (3, "experiment_episode_state_v1"),
         (4, "agent_usage_counted_dedupe_v1"),
+        (5, "legacy_startup_schema_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -85,8 +86,47 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         "_migrate_agent_usage_counted_dedupe",
         staticmethod(unexpected_migration),
     )
+    monkeypatch.setattr(
+        AppStore,
+        "_migrate_legacy_startup_schema",
+        unexpected_migration,
+    )
 
     AppStore(path)
+
+
+def test_current_storage_startup_is_read_only_and_preserves_database_bytes(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path)
+    before = path.read_bytes()
+    statements: list[str] = []
+
+    class TracedStore(AppStore):
+        @contextmanager
+        def connection(self) -> Iterator[sqlite3.Connection]:
+            with super().connection() as connection:
+                connection.set_trace_callback(statements.append)
+                yield connection
+
+    TracedStore(path)
+
+    write_prefixes = ("ALTER ", "CREATE ", "DELETE ", "DROP ", "INSERT ", "REPLACE ", "UPDATE ")
+    assert not [
+        statement
+        for statement in statements
+        if statement.lstrip().upper().startswith(write_prefixes)
+    ]
+    assert path.read_bytes() == before
+
+
+def test_current_storage_schema_validator_rejects_corruption(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP INDEX watchers_due")
+
+    with pytest.raises(RuntimeError, match="storage schema validation failed"):
+        AppStore(path)
 
 
 def test_failed_storage_migration_rolls_back_without_marker_and_retries(
@@ -105,7 +145,9 @@ def test_failed_storage_migration_rolls_back_without_marker_and_retries(
             """,
             (now, now),
         )
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 1")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5)"
+        )
 
     original = AppStore._migrate_episode_lineage
 
@@ -2165,7 +2207,9 @@ def test_agent_usage_dedupe_migration_repairs_historical_counted_duplicates_once
     first = store.record_agent_usage("refresh-operation", usage)
     with store.connection() as connection:
         connection.execute("DROP INDEX agent_usage_counted_dedupe")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 4")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (4, 5)"
+        )
         row = dict(
             connection.execute(
                 "SELECT * FROM agent_usage WHERE usage_id = ?", (first.usage_id,)
