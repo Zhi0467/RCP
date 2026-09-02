@@ -196,7 +196,12 @@ export function projectSessionReducer(
           head: action.state.transitionHead,
         });
       }
-      const restored = cloneProjectSessionTabState(action.state);
+      const restored = cloneProjectSessionTabState(
+        action.state.projectId === action.project_id &&
+          (!action.state.project || action.state.project.id === action.project_id)
+          ? action.state
+          : emptyProjectSessionState(action.project_id),
+      );
       return {
         ...state,
         ...restored,

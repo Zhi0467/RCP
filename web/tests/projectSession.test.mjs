@@ -408,6 +408,15 @@ test("tab restoration replaces project identity and draft in one reducer transit
     project: restored.project,
     humanDraft: null,
   });
+
+  const mismatchedCache = projectSessionReducer(projectY, {
+    kind: "restore_tab",
+    project_id: "project-x",
+    state: serializeProjectSessionTabState(projectY),
+  });
+  assert.equal(mismatchedCache.projectId, "project-x");
+  assert.equal(mismatchedCache.project, null);
+  assert.equal(mismatchedCache.humanDraft, null);
 });
 
 test("reset replaces project identity and a stored draft in one reducer transition", () => {
