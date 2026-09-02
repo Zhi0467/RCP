@@ -575,12 +575,17 @@ def _episode_task_metadata(
     metadata: dict[str, tuple[Literal["orchestrator", "worker", "wake"], int]] = {}
     for task in tasks:
         invocation = invocations.get(task.operation_id)
-        if invocation is None:
+        continuation_cause = store.agent_task_continuation_cause(task.operation_id)
+        if (
+            continuation_cause
+            in {"watcher_wake", "graph_condition_wake", "message_wake", "lifecycle_wake"}
+            or task.request.get("trigger") == "watcher"
+        ):
+            role: Literal["orchestrator", "worker", "wake"] = "wake"
+        elif invocation is None:
             role: Literal["orchestrator", "worker", "wake"] = (
                 "orchestrator" if task.operation_id == episode.root_operation_id else "worker"
             )
-        elif task.request.get("wake_cause") is not None:
-            role = "wake"
         else:
             role = invocation.role
         metadata[task.operation_id] = (role, actor_depth(task))

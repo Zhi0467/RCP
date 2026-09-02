@@ -463,6 +463,13 @@ export function attentionGraphForProjection(
   return projection?.graph ?? canonicalGraph;
 }
 
+export function transitionProjectionForRoute(
+  projection: BrowserTransitionProjection | null,
+  route: TransitionPreviewRouting["route"],
+): BrowserTransitionProjection | null {
+  return route === "backend_preview" ? projection : null;
+}
+
 export function humanDraftTransitionRouting(
   draft: HumanDraft,
   graph: GraphState,
@@ -1746,7 +1753,31 @@ export default function App() {
     [watchers],
   );
   const mutationsDisabled = project ? projectGraphMutationsDisabled(project) : false;
-  const presentedTransitionProjection = mutationsDisabled ? null : draftTransitionProjection;
+  const candidateTransitionProjection = mutationsDisabled ? null : draftTransitionProjection;
+  const retryConfig = useMemo(
+    () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
+    [project, retryTask],
+  );
+  const normalizedPreviewDraft = useMemo(
+    () => (humanDraft ? normalizeHumanDraft(humanDraft, graph) : null),
+    [graph, humanDraft],
+  );
+  const draftPreviewRouting = useMemo(
+    () =>
+      normalizedPreviewDraft
+        ? humanDraftTransitionRouting(
+            normalizedPreviewDraft,
+            graph,
+            transitionManifest,
+            transitionRulesetTag,
+          )
+        : ({ route: "local_draft", reason: "no_manifest_trigger" } as const),
+    [graph, normalizedPreviewDraft, transitionManifest, transitionRulesetTag],
+  );
+  const presentedTransitionProjection = transitionProjectionForRoute(
+    candidateTransitionProjection,
+    draftPreviewRouting.route,
+  );
   const presentedExperimentControl =
     presentedTransitionProjection?.experiment_control ?? project?.experiment_control ?? {};
   const experimentWrapupPollingActive = experimentControlsNeedWrapupPolling(
@@ -1784,26 +1815,6 @@ export default function App() {
     }
     return control;
   };
-  const retryConfig = useMemo(
-    () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
-    [project, retryTask],
-  );
-  const normalizedPreviewDraft = useMemo(
-    () => (humanDraft ? normalizeHumanDraft(humanDraft, graph) : null),
-    [graph, humanDraft],
-  );
-  const draftPreviewRouting = useMemo(
-    () =>
-      normalizedPreviewDraft
-        ? humanDraftTransitionRouting(
-            normalizedPreviewDraft,
-            graph,
-            transitionManifest,
-            transitionRulesetTag,
-          )
-        : ({ route: "local_draft", reason: "no_manifest_trigger" } as const),
-    [graph, normalizedPreviewDraft, transitionManifest, transitionRulesetTag],
-  );
   const presentedGraph = useMemo(
     () => attentionGraphForProjection(graph, presentedTransitionProjection),
     [graph, presentedTransitionProjection],
@@ -1813,11 +1824,7 @@ export default function App() {
     presentedTransitionProjection,
   );
   const experimentStartRequiresSync = experimentStartNeedsSync(presentedTransitionProjection);
-  const attentionGraph = useMemo(
-    () =>
-      attentionGraphForProjection(graph, presentedTransitionProjection, draftPreviewRouting.route),
-    [draftPreviewRouting.route, graph, presentedTransitionProjection],
-  );
+  const attentionGraph = presentedGraph;
   const glossaryIndex = useMemo(
     () => buildGlossaryIndex(presentedGraph.glossary),
     [presentedGraph.glossary, presentedGraph.revision],
@@ -2202,7 +2209,13 @@ export default function App() {
           setWatchers(nextWatchers);
           replaceTasks(nextTasks);
           if (hasUnseenWatcherResults) {
-            void refreshChatSummaries(requestedProjectId, base);
+            void refreshChatSummaries(requestedProjectId, base).catch((error) => {
+              if (!stopped && isActiveProject(requestedProjectId)) {
+                reportErrorNotice(
+                  `Chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+                );
+              }
+            });
           }
         }
       } catch (error) {

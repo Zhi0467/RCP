@@ -719,19 +719,30 @@ def test_an_unclaimed_completion_cannot_win_a_wake_after_a_persisted_stop(
     assert runtime.invocations_used == 1
 
 
-def test_a_stop_settles_on_the_next_derivation_after_its_turn_ends(manifest, tmp_path) -> None:
+def test_a_stop_settles_only_under_the_operation_lock_after_its_turn_ends(
+    manifest, tmp_path
+) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app)
     loop.start_episode(status="running")
     loop.arm_watcher("still-running")
     assert loop.stop()["operational"]["stop_settled"] is False
 
-    # The authorized turn finishes on its own. Nothing replays the stop; the
-    # next derivation reconciles it, which is what survives a restart.
+    # The authorized turn finishes on its own. The ordinary project snapshot is
+    # read-only and cannot reconcile the Stop outside the operation lock.
     loop.store.complete_agent_task("loop-root", applied_revision=None, result={})
 
     control = loop.control()
     assert control["operational"]["stop_requested"] is True
+    assert control["operational"]["stop_settled"] is False
+    assert loop.store.watcher("still-running").status == "active"
+
+    # The cross-project Experiment owner takes the operation lock and performs
+    # the same recovery reconciliation used after restart.
+    response = loop.client.get("/api/episodes?mode=experiment_loop")
+    assert response.status_code == 200, response.text
+
+    control = loop.control()
     assert control["operational"]["stop_settled"] is True
     assert loop.store.watcher("still-running").status == "stopped"
     assert control["ready"] is True

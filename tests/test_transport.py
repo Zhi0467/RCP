@@ -635,27 +635,30 @@ def test_process_advisory_lock_drains_chatty_holder_stderr() -> None:
         future.result(timeout=10)
 
 
-def test_remote_transaction_times_out_after_contended(tmp_path, monkeypatch) -> None:
-    contended_holder = 'import sys, time\nprint("contended", flush=True)\ntime.sleep(60)\n'
+def test_remote_transaction_waits_past_handshake_timeout_after_contended(
+    tmp_path, monkeypatch
+) -> None:
+    contended_holder = (
+        'import sys, time\nprint("contended", flush=True)\ntime.sleep(0.2)\n'
+        'print("acquired", flush=True)\nfor line in sys.stdin:\n    pass\n'
+    )
     workspace = SSHStateWorkspace(tmp_path / ".research", "research.example", "/srv/project")
     monkeypatch.setattr(
         workspace,
         "_ssh",
         lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, "", ""),
     )
+    monkeypatch.setattr(workspace, "_remote_manifest_exists", lambda: False)
     monkeypatch.setattr(
         "rcp.transport.state._remote_advisory_lock_command",
         lambda _host, _path: [sys.executable, "-c", contended_holder],
     )
     monkeypatch.setattr("rcp.transport.state.STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS", 0.1)
 
-    with (
-        pytest.raises(StateUnavailable, match="Timed out after 0.1 seconds"),
-        workspace.transaction(),
-    ):
+    with workspace.transaction():
         pass
 
-    assert workspace.reachable is False
+    assert workspace.reachable is True
 
 
 def test_process_advisory_lock_uses_one_waiter_during_long_contention(

@@ -1572,6 +1572,12 @@ class AppStoreBase:
                 name="experiment_episode_state_v1",
                 migration=self._migrate_experiment_episode_state,
             )
+            self._run_storage_schema_migration(
+                connection,
+                version=4,
+                name="agent_usage_counted_dedupe_v1",
+                migration=self._migrate_agent_usage_counted_dedupe,
+            )
             if has_legacy_campaigns:
                 # The generic parent/report copy must finish before the source
                 # tables move under private archive names.
@@ -1635,6 +1641,31 @@ class AppStoreBase:
             ) VALUES (?, ?, ?)
             """,
             (version, name, self.now()),
+        )
+
+    @staticmethod
+    def _migrate_agent_usage_counted_dedupe(connection: sqlite3.Connection) -> None:
+        """Repair historical duplicates once, then enforce one counted usage report."""
+
+        connection.execute(
+            """
+            UPDATE agent_usage
+            SET counted = 0, count_reason = 'duplicate'
+            WHERE counted = 1
+              AND rowid NOT IN (
+                SELECT MIN(rowid)
+                FROM agent_usage
+                WHERE counted = 1
+                GROUP BY operation_id, provider_profile, dedupe_key
+              )
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS agent_usage_counted_dedupe
+            ON agent_usage(operation_id, provider_profile, dedupe_key)
+            WHERE counted = 1
+            """
         )
 
     @classmethod

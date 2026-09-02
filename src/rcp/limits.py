@@ -65,6 +65,8 @@ AUTO_RESEARCH_MAIL_MAX_MESSAGES = 64
 AUTO_RESEARCH_MAIL_MAX_BYTES = min(1024 * 1024, CHAT_ARTIFACT_MAX_FILE_BYTES)
 AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES = 50
 AUTO_RESEARCH_LIFECYCLE_MAX_BYTES = 256 * 1024
+# One authorized Auto-research turn may allocate this many child Experiments.
+AUTO_RESEARCH_CHILD_EXPERIMENTS_PER_INVOCATION = 5
 # Temporary human-provided chat inputs. Keep these independent from output artifact
 # limits even while their initial bounds happen to be the same.
 CHAT_ATTACHMENT_MAX_COUNT = 8

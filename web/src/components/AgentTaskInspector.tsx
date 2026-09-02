@@ -234,11 +234,8 @@ export function AgentTaskInspector({
                   <section>
                     <h4>Result</h4>
                     <div className="task-result-transcript">
-                      {transcript.map((line, index) => (
-                        <div
-                          className={`node-chat-line ${line.role}`}
-                          key={`${line.taskId}-${index}`}
-                        >
+                      {transcript.map((line) => (
+                        <div className={`node-chat-line ${line.role}`} key={line.lineId}>
                           {line.text}
                         </div>
                       ))}

@@ -330,6 +330,22 @@ def test_server_parser_rejects_ambiguous_ids_overrides_and_raw_restore_identity(
     assert raised.value.code == 2
 
 
+def test_restore_cli_normalizes_harmless_operator_path_spelling() -> None:
+    parsed = _parse(
+        "server",
+        "restore",
+        "/backups//lab.age/",
+        "--identity-file",
+        "/safe//age.key/",
+        "--confirm-data-dir",
+        "/home/rcp/rcp-server/data/",
+    )
+
+    assert parsed.archive_path == "/backups/lab.age"
+    assert parsed.recovery_identity_file == "/safe/age.key"
+    assert parsed.restore_confirmed_data_dir == "/home/rcp/rcp-server/data"
+
+
 def test_restore_ignores_raw_identity_environment_and_keeps_it_out_of_request(
     monkeypatch,
 ) -> None:

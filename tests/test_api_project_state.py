@@ -240,6 +240,41 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
     assert probes == 1
 
 
+def test_cached_revision_file_read_does_not_block_the_event_loop(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert TestClient(app).get(f"/api/projects/{project_id}").status_code == 200
+    display_cache = app.state.services.project_display_cache
+    original = display_cache.cached_project_snapshot
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_snapshot(requested_project_id: str):
+        entered.set()
+        assert release.wait(timeout=3)
+        return original(requested_project_id)
+
+    monkeypatch.setattr(display_cache, "cached_project_snapshot", blocked_snapshot)
+
+    async def drive() -> tuple[httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            revision_task = asyncio.create_task(
+                client.get(f"/api/projects/{project_id}/cached/revision")
+            )
+            assert await asyncio.to_thread(entered.wait, 1)
+            health = await asyncio.wait_for(client.get("/api/health"), timeout=1)
+            release.set()
+            return await revision_task, health
+
+    revision, health = asyncio.run(drive())
+
+    assert revision.status_code == 200
+    assert health.status_code == 200
+
+
 def test_cached_revision_heartbeat_enforces_three_second_probe_cooldown(
     manifest, tmp_path, monkeypatch
 ) -> None:

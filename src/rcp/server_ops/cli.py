@@ -15,6 +15,7 @@ import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import BinaryIO, TextIO
 
 from pydantic import ValidationError
@@ -340,7 +341,10 @@ def _git_commit(value: str) -> str:
 
 def _absolute_path(value: str, label: str) -> str:
     try:
-        return absolute_path(value, label=label)
+        path = Path(value)
+        if ".." in path.parts:
+            raise ValueError(f"{label} must be absolute and normalized")
+        return absolute_path(str(path), label=label)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 

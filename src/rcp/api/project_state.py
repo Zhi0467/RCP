@@ -203,7 +203,10 @@ async def cached_project_revision(
     *,
     project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
-    snapshot = project_display_cache.cached_project_snapshot(project_id)
+    snapshot = await asyncio.to_thread(
+        project_display_cache.cached_project_snapshot,
+        project_id,
+    )
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Cached project snapshot not found")
     project_display_cache.schedule_project_reconciliation(project_id)

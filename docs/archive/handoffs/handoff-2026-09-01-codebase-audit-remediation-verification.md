@@ -1,35 +1,46 @@
 # PR #7 verification — 2026-09-02
 
-Branch `audit-remediation-2026-09-01` at `970fad0` versus `origin/main`. 224 files,
-+9473 / −4959. Seven read-only verifiers, one per area, each read the full diff of
-its area and checked every finding for: fixed with a regression that fails on
-main, partially fixed, not fixed, or closed as an accepted exception in the
-archived handoff. I re-verified the blocking items by hand.
+This report first verified branch `audit-remediation-2026-09-01` at `970fad0`
+against `origin/main`. Seven read-only verifiers, one per area, read the full
+diff and classified every finding. A corrective pass based on merge commit
+`1c23d55` then resolved every item this report left open. The sections below are
+retained as historical verification evidence; none is an active instruction or
+open work item.
 
-## Checks I ran
+## Final resolution
 
-| Check | Result |
-| --- | --- |
-| `uv run pytest` (full) | pass, only pre-existing skips |
-| `uv run ruff check src tests packaging web/src-tauri/scripts` | pass |
-| `uv run pre-commit run --all-files` | pass |
-| `npm --prefix web run build` | pass |
-| `npm --prefix web test` | 480 / 480 |
-| GitHub CI (pytest 3.11 + 3.12, lint, web, old-data upgrade) | pass |
-| GitHub Desktop (Rust) | pass |
+- B1 and F1–F8 received production fixes and focused regressions. Restore now
+  releases its app instance lock before systemd activation, remote lock
+  contention waits after the bounded handshake, projection reads are coherent,
+  chat-stage markers repair safe duplicates transactionally, proposal actions
+  reject empty operation lists, the DAG key is memoized, transition preview
+  state has one projection, and the server/restore specs match the code.
+- D1–D6 were settled in the implementation: Retry preserves predecessor files
+  without consuming unchanged outputs; unreadable Experiment deliverables
+  become durable terminal recovery failures; invalid pending child admissions
+  cancel; episode task roles use durable continuation data; local drafts render
+  the canonical projection; and harmless absolute-path spellings normalize
+  while traversal still fails closed.
+- The former follow-up list is closed: the remaining tables migrate, display
+  GETs are read-only and their file work is off the event loop, wake
+  reconciliation is bounded and isolates rows, all-cache deletion is personal
+  space only, filesystem identity uses same-file semantics, and the listed
+  storage, web, test, and tooling issues are covered or removed.
+- The database schema registry includes the one-time usage-deduplication
+  migration. Existing duplicate counted usage rows are repaired once during
+  migration and protected by a unique partial index; opening the app does not
+  rescan them.
+- The affected UI paths were driven against an isolated served app: project
+  open, Settings/cache controls, Runs, Research, DAG-backed node details, and a
+  staged Decision transition. The browser console had no warnings or errors;
+  server requests completed as expected, including the explicit identity
+  precondition when the isolated user attempted a staged preview.
 
-## Verdict
+Final local command results are recorded at the end of this report. PR #7's
+GitHub record owns its branch checks and merge commit instead of duplicating
+drift-prone remote state here.
 
-The implementation is real. Every High finding and almost every Medium finding
-has code plus a focused regression that fails on `main`. The scope reductions are
-declared in the handoff's "Accepted exceptions" rather than hidden. Tests and CI
-are green.
-
-**Do not merge yet.** The fixes introduced one production-blocking regression
-and a handful of smaller ones, and the handoff was archived while its closure
-condition was unmet.
-
-## Blocking
+## Historical blocking finding (resolved)
 
 **B1. Restore can no longer activate on a real machine.** The H2 fix adds
 `instance_lock(data_dir)` to `admission()` (`server_ops/restore.py:1587`).
@@ -44,7 +55,7 @@ directly, outside `admission()`, so it cannot see this. Fix: release the
 instance lock before step 11, and add a test that drives
 `prepare_restore_command` through activation under `admission()`.
 
-## Fix before merge
+## Historical fixes required before merge (resolved)
 
 - **F1. `_require_restored_target` can raise an unhandled `FileNotFoundError`.**
   `restore.py:3405-3409`: the new permitted-set check accepts a data dir holding
@@ -84,7 +95,7 @@ instance lock before step 11, and add a test that drives
   a "Rejected" list; the file has "Accepted exceptions" instead. The full pytest
   run is now done (this report); the UI drive is still owed.
 
-## Decide (behavior changes the audit did not ask for)
+## Historical decisions (settled)
 
 - **D1. Retry now deletes the previous attempt's `patch.json`, `watch.json`,
   and message files.** `work_turn_runtime.py:216-226` puts `retry` in the
@@ -114,7 +125,7 @@ instance lock before step 11, and add a test that drives
   `--identity-file`, `--confirm-data-dir`: rejects non-normalized paths and
   trailing slashes it used to normalize. Operator-facing, no note.
 
-## Not fixed and not declared as an exception
+## Historical follow-up list (resolved)
 
 - M12: `project_members` and `graph_watcher_reconciliation` still never migrated
   (11 of 14 tables now, was 10).
@@ -181,3 +192,21 @@ auto-research, and `work_turn_runtime` consolidations; the `noqa: F401` blocks;
 the storage `_local_primitives` consolidation; every declared dead-surface
 deletion. No `remote_*.py` module imports from `rcp`. The export-worktree
 workflow is gone from the branch tip.
+
+## Final closure gate
+
+| Check | Result |
+| --- | --- |
+| `.venv/bin/pytest -q` | pass, 3,334 passed and 9 skipped |
+| Formerly flaky lifecycle acceptance drive, five consecutive runs | pass |
+| `uv run pre-commit run --all-files` | pass |
+| `npm --prefix web run build` | pass |
+| `npm --prefix web test` | pass, 481 / 481 |
+| Served-app browser drive | pass; no console warnings or errors |
+
+The first full rerun exposed one timing-dependent defect in the deterministic
+acceptance provider: a message wake could race ahead of its worker lifecycle
+notice, after which the fixture tried to Finish without settling the notice.
+The fixture now runs the same explicit inbox Harvest required of a real agent
+before Finish. The focused drive passed five consecutive runs and the complete
+suite then passed.

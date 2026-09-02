@@ -814,13 +814,6 @@ class HistoryManager:
         result = materialization or self.current_materialization()
         if result.state.replay_status != "complete":
             raise ReplayHalted(result.state)
-        failure = accepted_transition_head_chain_failure(
-            result.patches,
-            target=self.graph_target,
-            initial_transition_id=None,
-        )
-        if failure is not None:
-            raise ValueError(failure.message)
         transition_id: str | None = None
         for patch in result.patches:
             if patch.admission != "accepted" or patch.transition is None:

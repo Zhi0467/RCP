@@ -367,7 +367,7 @@ def test_a_non_member_dispatch_never_launches_a_provider(manifest, tmp_path) -> 
     assert store.agent_tasks(project_id) == []
 
 
-def test_a_non_member_cannot_clear_all_project_caches(manifest, tmp_path) -> None:
+def test_team_members_cannot_clear_all_project_caches(manifest, tmp_path) -> None:
     app, client, _store, people, acting = _team_app(tmp_path)
     creator, outsider = people
     project_id = _create_project(client, tmp_path / "repo", seat_member=creator.user_id)
@@ -376,13 +376,19 @@ def test_a_non_member_cannot_clear_all_project_caches(manifest, tmp_path) -> Non
     cached.parent.mkdir(parents=True)
     cached.write_text("project source", encoding="utf-8")
 
-    acting[0] = outsider.user_id
     refused = client.delete(f"/api/projects/{project_id}/caches/all")
-    unknown = client.delete("/api/projects/no-such-project-at-all/caches/all")
 
-    assert refused.status_code == 404
-    assert refused.json() == unknown.json() == {"detail": "Project not found"}
+    assert refused.status_code == 409
+    assert refused.json() == {
+        "detail": "Clearing every project's cache is available only in a personal space."
+    }
     assert cached.read_text(encoding="utf-8") == "project source"
+
+    acting[0] = outsider.user_id
+    hidden = client.delete(f"/api/projects/{project_id}/caches/all")
+    unknown = client.delete("/api/projects/no-such-project-at-all/caches/all")
+    assert hidden.status_code == 404
+    assert hidden.json() == unknown.json() == {"detail": "Project not found"}
 
 
 def test_a_non_member_patch_is_refused_at_apply_under_the_append_lock(manifest, tmp_path) -> None:

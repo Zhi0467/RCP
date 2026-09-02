@@ -1208,9 +1208,10 @@ after a successful first run.
 
 Replacement restore implements its database, checkout-recovery, stopped
 project-publication, authority-review, and fenced-activation boundaries. `rcp
-server restore` requires the
-installed server's exact fresh/empty data directory and a protected off-server
-`age` identity, verifies the canonical
+server restore` requires either the installed server's fresh data directory or
+the exact phase-owned database and SQLite sidecars recorded by the same restore
+journal; any unknown entry still refuses re-entry. It also requires a protected
+off-server `age` identity and verifies the canonical
 manifest, every archived byte, the recorded database schema, and the source
 commit boundary before target mutation, and constructs a service-owned SQLite
 candidate with every captured runnable lifecycle detached. It stops and disables
@@ -1278,8 +1279,12 @@ only for the linked incoming transfer before project registration and target
 activation; it does not enable ordinary team-project deletion or deprovisioning.
 The private installed-service control socket exposes probe, provider plan/check,
 project-provision plan/step, online SQLite capture, member-removal, update, and
-root-only restore-activation operations. `rcp server
-project provision <request-id>` publishes one complete plan, advances one
+root-only restore-activation operations. The current control protocol is version
+9. A running predecessor also accepts version 8 only so one in-place update can
+cross that deliberately bounded compatibility window; no older or unlisted
+version is accepted.
+
+`rcp server project provision <request-id>` publishes one complete plan, advances one
 stale-boundary-checked durable step at a time, and stops with a structured human
 action when Git, checkout, transport, or provider readiness needs repair. It
 exits successfully only after reading back the same request as **ready for

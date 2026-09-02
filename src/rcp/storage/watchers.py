@@ -1299,7 +1299,8 @@ class WatcherStoreMixin:
                 f"""
                 UPDATE watchers
                 SET status = 'stopped', notified = 1, next_check_at = NULL,
-                    stop_reason = ?, stopped_at = COALESCE(stopped_at, ?)
+                    stopped_by = 'loop', stop_reason = ?,
+                    stopped_at = COALESCE(stopped_at, ?)
                 WHERE watcher_id IN ({placeholders})
                   AND status IN ('completed', 'degraded')
                   AND notified = 0 AND notification_operation_id IS NULL

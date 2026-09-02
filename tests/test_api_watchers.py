@@ -63,6 +63,7 @@ def test_degraded_watcher_can_be_checked_now_through_the_api(manifest, tmp_path:
     listed = client.get(f"/api/projects/{project_id}/watchers")
     assert listed.status_code == 200
     assert listed.json()[0]["can_check_now"] is True
+    assert listed.json()[0]["delivery_label"] == "Not delivered"
     response = client.post(f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/check")
 
     assert response.status_code == 200
@@ -77,6 +78,7 @@ def test_degraded_watcher_can_be_checked_now_through_the_api(manifest, tmp_path:
     assert response.json()["consecutive_error_count"] == 0
     assert response.json()["last_error"] is None
     assert response.json()["can_check_now"] is False
+    assert response.json()["delivery_label"] == "Not delivered"
 
 
 def test_check_watcher_now_rejects_missing_graph_and_ineligible_records(

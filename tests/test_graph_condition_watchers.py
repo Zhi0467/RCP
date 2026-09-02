@@ -1668,7 +1668,10 @@ def test_app_lifespan_evaluates_conditions_satisfied_before_restart(
     monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_delivery)
     with TestClient(reopened) as client:
         assert client.get("/api/health").status_code == 200
-        time.sleep(0.05)
+        wait_until(
+            lambda: deliveries if deliveries else None,
+            detail="startup graph watcher delivery did not run",
+        )
 
     assert len(deliveries) == 1
     assert set(deliveries[0]) == {"startup-hook", "startup-retry"}

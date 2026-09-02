@@ -828,6 +828,21 @@ class ProjectStoreMixin:
                 (legacy_id,),
             )
             connection.execute(
+                """
+                INSERT OR IGNORE INTO project_members (
+                    project_id, user_id, seated_at, seated_by
+                )
+                SELECT ?, user_id, seated_at, seated_by
+                FROM project_members
+                WHERE project_id = ?
+                """,
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "DELETE FROM project_members WHERE project_id = ?",
+                (legacy_id,),
+            )
+            connection.execute(
                 "UPDATE writing_sessions SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
@@ -854,6 +869,23 @@ class ProjectStoreMixin:
             connection.execute(
                 "UPDATE watchers SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO graph_watcher_reconciliation (
+                    project_id, graph_target_key, graph_target_json,
+                    revision, transition_id, updated_at
+                )
+                SELECT ?, graph_target_key, graph_target_json,
+                       revision, transition_id, updated_at
+                FROM graph_watcher_reconciliation
+                WHERE project_id = ?
+                """,
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "DELETE FROM graph_watcher_reconciliation WHERE project_id = ?",
+                (legacy_id,),
             )
             connection.execute(
                 "UPDATE auto_research_child_work SET project_id = ? WHERE project_id = ?",

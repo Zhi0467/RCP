@@ -10,6 +10,7 @@ from typing import Literal
 
 from rcp.limits import (
     AGENT_COMMAND_EVENT_MAX_BYTES,
+    AUTO_RESEARCH_CHILD_EXPERIMENTS_PER_INVOCATION,
     AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES,
     AUTO_RESEARCH_MAIL_MAX_MESSAGES,
 )
@@ -941,7 +942,7 @@ class AutoResearchChildrenStoreMixin:
         ).fetchone()
         if row is None:
             raise KeyError(episode_id)
-        total = int(row["invocation_ceiling"]) * 5
+        total = int(row["invocation_ceiling"]) * AUTO_RESEARCH_CHILD_EXPERIMENTS_PER_INVOCATION
         used = int(row["used"])
         return AutoResearchExperimentAllowance(total=total, used=used, remaining=total - used)
 
@@ -1875,7 +1876,6 @@ class AutoResearchChildrenStoreMixin:
         """Return every current obligation without mutating or settling any of them."""
 
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             return self._auto_research_finish_blockers(connection, episode_id)
 
     def guard_auto_research_finish(

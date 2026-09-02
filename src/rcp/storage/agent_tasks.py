@@ -75,6 +75,18 @@ from rcp.storage.models import (
 # remains below its existing 64 KiB storage boundary.
 _GRAPH_UPDATE_HISTORY_RESERVE_BYTES = 8 * 1024
 
+_PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
+    "operation_admitted",
+    "operation_dispatch_attempt",
+    "operation_dispatch_failed_before_start",
+    "operation_dispatch_started",
+    "operation_dispatch_reset",
+    "chat_stage_layout",
+)
+_PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS = ", ".join(
+    "?" for _category in _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES
+)
+
 _AGENT_TASK_CONTINUATION_CAUSES = frozenset(
     {
         "fresh",
@@ -237,7 +249,7 @@ class AgentTaskStoreMixin:
         if self._contains_legacy_lineage_key(record.request):
             raise ValueError("agent task requests must use episode_id, not campaign_id")
         self._validate_dispatch_authority_insert(connection, record)
-        self._bind_chat_stage(connection, record)
+        record = self._bind_chat_stage(connection, record)
         self._validate_experiment_task_insert(connection, record)
         self._validate_graph_target_insert(connection, record)
         connection.execute(
@@ -546,7 +558,7 @@ class AgentTaskStoreMixin:
     def _bind_chat_stage(
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
-    ) -> None:
+    ) -> AgentTaskRecord:
         """Keep one exact scratch directory bound to a conversation.
 
         Every later task in the same chat inherits the prior host/root pair
@@ -559,16 +571,16 @@ class AgentTaskStoreMixin:
         """
 
         if record.kind not in {"node_chat", "project_chat"}:
-            return
+            return record
         # Resume, Retry, provider handoff, and Experiment recovery already carry
         # an exact server-owned stage. They are authoritative and may
         # deliberately replace an older binding; only a missing binding is
         # recovered from the durable conversation ledger here.
         if record.stage_root is not None:
-            return
+            return record
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
-            return
+            return record
         prior_chat_targets = connection.execute(
             """
             SELECT DISTINCT graph_target_json
@@ -631,7 +643,7 @@ class AgentTaskStoreMixin:
                 (*watcher_ids, record.project_id, record.kind, chat_id),
             ).fetchall()
         else:
-            return
+            return record
         bindings = {(str(row["host"]), str(row["root"])) for row in rows}
         if len(bindings) > 1:
             raise ValueError(
@@ -639,10 +651,11 @@ class AgentTaskStoreMixin:
                 "continue safely."
             )
         if not bindings:
-            return
+            return record
         saved_host, saved_root = next(iter(bindings))
-        record.stage_host = saved_host or None
-        record.stage_root = saved_root
+        return record.model_copy(
+            update={"stage_host": saved_host or None, "stage_root": saved_root}
+        )
 
     def chat_stage_layout(
         self,
@@ -729,6 +742,7 @@ class AgentTaskStoreMixin:
         """Record one idempotent split-layout marker before stage checkpointing."""
 
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             task = connection.execute(
                 """
                 SELECT project_id, kind, json_extract(request_json, '$.chat_id') AS chat_id
@@ -751,7 +765,7 @@ class AgentTaskStoreMixin:
             payload_json = self._bounded_receipt_payload(payload)
             rows = connection.execute(
                 """
-                SELECT receipt.payload_json
+                SELECT receipt.receipt_id, receipt.payload_json
                 FROM graph_run_receipts AS receipt
                 JOIN graph_runs AS run ON run.operation_id = receipt.operation_id
                 WHERE receipt.category = 'chat_stage_layout'
@@ -763,12 +777,17 @@ class AgentTaskStoreMixin:
                 """,
                 (task["project_id"], task["kind"], task["chat_id"], stage_root),
             ).fetchall()
-            if len(rows) > 1:
-                raise ValueError("The conversation stage has multiple layout markers.")
             if rows:
-                if rows[0]["payload_json"] != payload_json:
+                if any(row["payload_json"] != payload_json for row in rows):
                     raise ValueError(
                         "The conversation stage layout marker conflicts with its stage."
+                    )
+                duplicate_ids = [row["receipt_id"] for row in rows[1:]]
+                if duplicate_ids:
+                    placeholders = ",".join("?" for _ in duplicate_ids)
+                    connection.execute(
+                        f"DELETE FROM graph_run_receipts WHERE receipt_id IN ({placeholders})",
+                        duplicate_ids,
                     )
                 return
             legacy = connection.execute(
@@ -1619,6 +1638,7 @@ class AgentTaskStoreMixin:
         usage_id = str(uuid.uuid4())
         now = self.now()
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             duplicate = connection.execute(
                 """
                 SELECT 1 FROM agent_usage
@@ -2150,45 +2170,24 @@ class AgentTaskStoreMixin:
         )
         protected_count = int(
             connection.execute(
-                """
+                f"""
                 SELECT COUNT(*) FROM graph_run_receipts
                 WHERE operation_id = ? AND tier = ?
-                  AND category IN (
-                    'operation_admitted',
-                    'operation_dispatch_attempt',
-                    'operation_dispatch_failed_before_start',
-                    'operation_dispatch_started',
-                    'operation_dispatch_reset',
-                    'chat_stage_layout'
-                  )
+                  AND category IN ({_PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS})
                 """,
-                (operation_id, tier),
+                (operation_id, tier, *_PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES),
             ).fetchone()[0]
         )
         ordinary_limit = max(0, AGENT_TASK_RECEIPT_RETENTION_COUNTS[tier] - protected_count)
         connection.execute(
-            """
+            f"""
             DELETE FROM graph_run_receipts
             WHERE operation_id = ? AND tier = ?
-              AND category NOT IN (
-                'operation_admitted',
-                'operation_dispatch_attempt',
-                'operation_dispatch_failed_before_start',
-                'operation_dispatch_started',
-                'operation_dispatch_reset',
-                'chat_stage_layout'
-              )
+              AND category NOT IN ({_PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS})
               AND receipt_id NOT IN (
                 SELECT receipt_id FROM graph_run_receipts
                 WHERE operation_id = ? AND tier = ?
-                  AND category NOT IN (
-                    'operation_admitted',
-                    'operation_dispatch_attempt',
-                    'operation_dispatch_failed_before_start',
-                    'operation_dispatch_started',
-                    'operation_dispatch_reset',
-                    'chat_stage_layout'
-                  )
+                  AND category NOT IN ({_PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS})
                 ORDER BY receipt_id DESC
                 LIMIT ?
             )
@@ -2196,8 +2195,10 @@ class AgentTaskStoreMixin:
             (
                 operation_id,
                 tier,
+                *_PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES,
                 operation_id,
                 tier,
+                *_PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES,
                 ordinary_limit,
             ),
         )

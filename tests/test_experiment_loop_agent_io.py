@@ -77,6 +77,62 @@ def test_initial_loop_patch_read_preserves_storage_failure(
     )
 
 
+@pytest.mark.asyncio
+async def test_unreadable_loop_deliverable_is_a_durable_terminal_recovery_problem(
+    manifest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store: AppStore = app.state.background_tasks.store
+    episode_id = "00000000-0000-4000-8000-000000000088"
+    request = _loop_request(
+        episode_id,
+        "chat-unreadable-patch",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    execution = _execution(store, project_id, "unreadable-turn", request)
+    launcher = _LoopLauncher("unreadable-session", tmp_path, write_handoff=True)
+    launcher.patch_payload = {
+        "summary": "Recorded one attempt.",
+        "ops": [],
+        "repositories_read": [],
+        "change_summary": [],
+    }
+
+    def fail_read(*_args: object, **_kwargs: object) -> str | None:
+        raise OSError("input/output error")
+
+    monkeypatch.setattr(experiment_loop_task_module, "_read_chat_patch", fail_read)
+    events = await _events(
+        stream_experiment_loop_task(
+            service,
+            launcher,
+            request,
+            data_dir,
+            execution=execution,
+        )
+    )
+    diagnostic = "The agent wrote a patch file that could not be read: input/output error"
+
+    assert [event.text for event in events if event.event == "error"] == [diagnostic]
+    assert any(
+        receipt.category == "experiment_unrecoverable_deliverable"
+        and receipt.payload == {"diagnostic": diagnostic}
+        for receipt in store.agent_task_receipts(execution.operation_id)
+    )
+    assert store.experiment_episode_recovery_context_problem(execution.operation_id) == (
+        "This Experiment-loop turn cannot continue: " + diagnostic
+    )
+
+
 def _empty_project_write_scope(workspace: Path, project_id: str) -> ProjectWriteScope:
     return ProjectWriteScope.create(
         project_id=project_id,

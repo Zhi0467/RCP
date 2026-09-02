@@ -3221,9 +3221,9 @@ def _required_timestamp(value: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
-        raise ValueError("result view timestamp is invalid") from exc
+        raise ValueError("timestamp is invalid") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError("result view timestamp must include a timezone")
+        raise ValueError("timestamp must include a timezone")
     return parsed.astimezone(UTC)
 
 

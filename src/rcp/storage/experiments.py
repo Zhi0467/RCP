@@ -1573,6 +1573,24 @@ class ExperimentStoreMixin:
     ) -> str | None:
         """Validate the immutable candidate on an Experiment invocation's lineage root."""
 
+        unrecoverable = connection.execute(
+            """
+            SELECT payload_json FROM graph_run_receipts
+            WHERE operation_id = ? AND category = 'experiment_unrecoverable_deliverable'
+            ORDER BY receipt_id DESC LIMIT 1
+            """,
+            (operation_id,),
+        ).fetchone()
+        if unrecoverable is not None:
+            try:
+                payload = json.loads(unrecoverable["payload_json"])
+            except (json.JSONDecodeError, TypeError):
+                payload = None
+            diagnostic = payload.get("diagnostic") if isinstance(payload, dict) else None
+            if isinstance(diagnostic, str) and diagnostic.strip():
+                return "This Experiment-loop turn cannot continue: " + diagnostic.strip()
+            return "This Experiment-loop turn cannot continue because its output was unreadable."
+
         current_id = operation_id
         seen: set[str] = set()
         while True:

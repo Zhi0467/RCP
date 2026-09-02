@@ -782,6 +782,15 @@ async def _accept_campaign_turn(
             )
             fixture_state.update(spawned=True, spawn_result=result)
         else:
+            harvested = await _run_campaign_client(
+                command_prefix,
+                "inbox",
+                "--key",
+                "acceptance-harvest-before-finish",
+                "--harvest",
+            )
+            if harvested.get("status") != "ok":
+                raise ValueError("Acceptance campaign could not harvest child lifecycle.")
             await _run_deduplicated_campaign_command(
                 command_prefix,
                 "finish",

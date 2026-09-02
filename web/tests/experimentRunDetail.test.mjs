@@ -165,6 +165,7 @@ function watcher(fields = {}) {
     stopped_at: null,
     stop_operation_id: null,
     can_check_now: false,
+    delivery_label: "Pending delivery",
     ...fields,
   };
 }
@@ -1176,6 +1177,7 @@ test("detail separates watcher provenance from semantic meaning and execution bi
     notified: true,
     completed_at: null,
     last_exit_code: null,
+    delivery_label: "Stopped · not delivered",
   });
   const html = render({
     node: node({ status: "planned" }),
@@ -1251,6 +1253,7 @@ test("a queued notification claim is not presented as proven provider delivery",
   const claimed = watcher({
     notified: true,
     notification_operation_id: "wake-task",
+    delivery_label: "Delivery claimed",
   });
   const html = render({
     node: node(),

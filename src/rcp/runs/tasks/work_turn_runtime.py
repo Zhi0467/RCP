@@ -217,14 +217,13 @@ _NEW_LOGICAL_WORK_TURN_CONTINUATIONS = frozenset(
     {
         "fresh",
         "handoff",
-        "retry",
         "watcher_wake",
         "graph_condition_wake",
         "message_wake",
         "lifecycle_wake",
     }
 )
-_SAME_LOGICAL_WORK_TURN_CONTINUATIONS = frozenset({"resume", "graph_repair"})
+_SAME_LOGICAL_WORK_TURN_CONTINUATIONS = frozenset({"resume", "retry", "graph_repair"})
 
 
 def clears_stale_turn_handoffs(continuation: AgentTaskContinuation) -> bool:

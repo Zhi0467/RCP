@@ -1790,6 +1790,13 @@ async def stream_experiment_loop_task(
     settled = _SettledExperimentDeliverables(native_session_id=outcome.session_id)
     initial_patch = _read_initial_patch_deliverable(turn, retry_patch_digest, settled)
     if initial_patch.failure is not None:
+        if execution is not None:
+            execution.store.record_agent_task_receipt(
+                execution.operation_id,
+                "experiment_unrecoverable_deliverable",
+                {"diagnostic": initial_patch.failure.message},
+                tier="summary",
+            )
         yield _sse(AgentEvent(event="error", text=initial_patch.failure.message))
         return
     if settled.stop:

@@ -1560,10 +1560,11 @@ def _wait_for_lock_holder(
 ) -> None:
     deadline = time.monotonic() + STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS
     waiting_reported = False
+    contended = False
     while True:
         if cancelled is not None and cancelled():
             _raise_lock_cancelled(process)
-        if time.monotonic() >= deadline:
+        if not contended and time.monotonic() >= deadline:
             _terminate_lock_holder(process)
             raise StateUnavailable(
                 f"Timed out after {STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS:g} seconds while checking "
@@ -1582,6 +1583,7 @@ def _wait_for_lock_holder(
         if cancelled is not None and cancelled():
             _raise_lock_cancelled(process, acquired=status == _LOCK_ACQUIRED)
         if status == _LOCK_CONTENDED:
+            contended = True
             if not waiting_reported and on_wait is not None:
                 on_wait("Waiting for another graph-writing run to release canonical state.")
                 waiting_reported = True

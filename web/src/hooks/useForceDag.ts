@@ -83,7 +83,7 @@ export function forceTuning(repulsion: number) {
 }
 
 export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceDagOptions) {
-  const graphKey = forceDagSemanticKey(nodes, edges);
+  const graphKey = useMemo(() => forceDagSemanticKey(nodes, edges), [edges, nodes]);
   const graphRef = useRef<StableDagGraph | null>(null);
   if (graphRef.current?.key !== graphKey) {
     graphRef.current = {

@@ -519,7 +519,10 @@ function copyExperimentRoute(
 
 function readTrustView(): TrustView {
   try {
-    return (localStorage.getItem("rcp:trust-view") as TrustView) || "working";
+    const stored = localStorage.getItem("rcp:trust-view");
+    return stored === "accepted" || stored === "review" || stored === "working"
+      ? stored
+      : "working";
   } catch {
     return "working";
   }

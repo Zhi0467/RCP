@@ -4,9 +4,11 @@ import asyncio
 import hashlib
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
+import rcp.runs.auto_research_delivery as delivery_module
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.command_protocol import MessageArguments, MessageCommandRequest, WatchGraphArguments
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
@@ -66,6 +68,59 @@ def _store(tmp_path) -> AppStore:
         )
     )
     return store
+
+
+def test_committed_wake_reconciliation_is_bounded_and_isolates_bad_rows(monkeypatch) -> None:
+    bad = SimpleNamespace(
+        operation_id="bad-wake",
+        status="queued",
+        request={"wake_cause": "watcher"},
+    )
+    good = SimpleNamespace(
+        operation_id="good-wake",
+        status="queued",
+        request={"wake_cause": "watcher"},
+    )
+
+    class Store:
+        def projects(self):
+            raise AssertionError("reconciliation must not scan every project")
+
+        def auto_research_episode_ids(self, episode_id=None):
+            assert episode_id is None
+            return ["bad-episode", "good-episode"]
+
+        def episode(self, episode_id):
+            return SimpleNamespace(episode_id=episode_id, mode="auto_research")
+
+        def auto_research_tasks(self, episode_id):
+            return [bad if episode_id == "bad-episode" else good]
+
+    def spawn(_background, episode_id, *, operation_id):
+        if episode_id == "bad-episode":
+            raise ValueError("corrupt durable wake")
+        assert operation_id == "good-wake"
+
+    monkeypatch.setattr(
+        delivery_module,
+        "reconcile_committed_auto_research_dispatches",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(delivery_module, "ensure_auto_research_wake_spawned", spawn)
+    monkeypatch.setattr(
+        delivery_module.AutoResearchRunRequest,
+        "model_validate",
+        lambda value: SimpleNamespace(wake_cause=value["wake_cause"]),
+    )
+
+    started = delivery_module._reconcile_committed_auto_research_wakes(
+        SimpleNamespace(store=Store()),
+        episode_id=None,
+        wake_causes={"watcher"},
+        include_child_work=False,
+    )
+
+    assert started == ["good-wake"]
 
 
 def _start_auto_research(

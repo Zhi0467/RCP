@@ -3,9 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sys
 import tempfile
-import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -358,25 +356,32 @@ def _canonical_directories(
 class _ExecutionPathSemantics:
     """One answer for path identity on the filesystem doing the execution."""
 
-    case_sensitive: bool
+    remote: bool
 
     @classmethod
     def for_execution(cls, *, remote: bool) -> _ExecutionPathSemantics:
-        # Remote execution targets the POSIX server contract. Local macOS uses
-        # its case-insensitive path identity; other local POSIX hosts remain
-        # exact. Keep this decision here so individual guards cannot drift.
-        return cls(case_sensitive=remote or sys.platform != "darwin")
+        return cls(remote=remote)
 
     def normalized(self, value: str | Path) -> PurePosixPath:
-        normalized = os.path.normpath(os.fspath(value))
-        if not self.case_sensitive:
-            normalized = unicodedata.normalize("NFC", normalized.casefold())
-        return PurePosixPath(normalized)
+        return PurePosixPath(os.path.normpath(os.fspath(value)))
 
     def equal(self, left: str | Path, right: str | Path) -> bool:
+        if not self.remote:
+            try:
+                return os.path.samefile(left, right)
+            except OSError:
+                pass
         return self.normalized(left) == self.normalized(right)
 
     def overlaps(self, left: str | Path, right: str | Path) -> bool:
+        if not self.remote:
+            left_path = Path(left)
+            right_path = Path(right)
+            if self.equal(left_path, right_path):
+                return True
+            return any(self.equal(parent, right_path) for parent in left_path.parents) or any(
+                self.equal(left_path, parent) for parent in right_path.parents
+            )
         left_path = self.normalized(left)
         right_path = self.normalized(right)
         return (

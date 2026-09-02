@@ -376,7 +376,10 @@ class ResultViewStoreMixin:
                 raise KeyError(view_id)
             current = self._result_view_record(row)
             if current.kept_filename is not None:
-                if current.content_sha256 != expected_content_sha256:
+                if (
+                    current.content_sha256 != expected_content_sha256
+                    or current.kept_filename != kept_filename
+                ):
                     raise ResultViewConflict("result view changed before Keep was recorded")
                 return current
             if current.content_sha256 != expected_content_sha256:

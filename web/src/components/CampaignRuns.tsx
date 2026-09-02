@@ -40,7 +40,6 @@ export function AutoResearchEpisodeCard({
   onOperateTask,
 }: {
   episode: Episode;
-  tasks: AgentTask[];
   messages: EpisodeMessage[];
   initiallyExpanded: boolean;
   busyAction: string | null;

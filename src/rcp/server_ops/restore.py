@@ -126,6 +126,7 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "2e5ba0c68eccff397619edb4f3bf8574b0002d89879a8095acfa001474da23f4",
         "d7530fb1961b8c0d002bc39b92b354e7d3f34681845beeef15caa62b5713132a",
         "46e5a2762be47bff427ae3e240dd61e7c8048c0c24f78c14e5595d749765a4b7",
+        "198c440b01783e09952742b56efb2b1e4987e405e88e7a59707ab5896f60af69",
     }
 )
 
@@ -825,9 +826,10 @@ def prepare_restore_command(
                 resume_executable=resume_executable,
             )
             return
+        activation_ready = None
         try:
             with resolved_machine.admission():
-                _execute_restore(
+                activation_ready = _execute_restore(
                     request,
                     identity,
                     emitter,
@@ -841,6 +843,32 @@ def prepare_restore_command(
             emitter.emit_step(
                 planned.steps[2].model_copy(update={"state": "failed", "message": str(exc)})
             )
+            return
+        if activation_ready is None:
+            return
+        activation_step = plan.steps[10]
+        try:
+            completed = resolved_machine.activate_replacement(activation_ready)
+        except RestoreRefused as exc:
+            emitter.emit_step(
+                activation_step.model_copy(update={"state": "failed", "message": str(exc)})
+            )
+            return
+        emitter.emit_step(
+            activation_step.model_copy(
+                update={
+                    "state": "succeeded",
+                    "message": (
+                        "The replacement is enabled and its fenced activation readback is durable."
+                    ),
+                    "fields": (
+                        NonsecretField(name="restore_phase", value=completed.phase),
+                        NonsecretField(name="operation_id", value=completed.operation_id),
+                        NonsecretField(name="service_state", value="enabled_active"),
+                    ),
+                }
+            )
+        )
 
     return PreparedServerCommand(plan=plan, execute=execute)
 
@@ -1018,7 +1046,7 @@ def _execute_restore(
     *,
     data_dir: Path,
     resume_executable: Path,
-) -> None:
+) -> RestoreOperationJournal | None:
     planned = emitter.events[0]
     assert isinstance(planned, ServerPlanEvent)
     steps = planned.steps
@@ -1286,20 +1314,21 @@ def _execute_restore(
                 }
             )
         )
-        journal = _run_restore_step(
-            emitter,
-            steps[10],
-            running="Starting the replacement behind its closed activation fence.",
-            operation=lambda: machine.activate_replacement(machine.prepare_activation(journal)),
-            succeeded="The replacement is enabled and its fenced activation readback is durable.",
-            fields=lambda value: (
-                NonsecretField(name="restore_phase", value=value.phase),
-                NonsecretField(name="operation_id", value=value.operation_id),
-                NonsecretField(name="service_state", value="enabled_active"),
-            ),
+        emitter.emit_step(
+            steps[10].model_copy(
+                update={
+                    "state": "running",
+                    "message": "Starting the replacement behind its closed activation fence.",
+                }
+            )
         )
+        try:
+            return machine.prepare_activation(journal)
+        except RestoreRefused as exc:
+            emitter.emit_step(steps[10].model_copy(update={"state": "failed", "message": str(exc)}))
+            raise _ReportedRestoreFailure from exc
     except _ReportedRestoreFailure:
-        return
+        return None
 
 
 def _restore_resume_argv(
@@ -3406,7 +3435,10 @@ def _require_restored_target(
         root = entries.get(name)
         if root is not None:
             _require_private_directory(root, uid=uid, gid=gid, label=f"restored {name} root")
-    info = target.lstat()
+    restored_database = entries.get(target.name)
+    if restored_database is None:
+        raise RestoreRefused("The configured data directory lost its restored database.")
+    info = restored_database.lstat()
     if (
         not stat.S_ISREG(info.st_mode)
         or (info.st_uid, info.st_gid) != (uid, gid)

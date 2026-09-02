@@ -14,7 +14,6 @@ from rcp.runs.tasks.work_turn_runtime import clears_stale_turn_handoffs
     [
         "fresh",
         "handoff",
-        "retry",
         "watcher_wake",
         "graph_condition_wake",
         "message_wake",
@@ -27,7 +26,7 @@ def test_new_logical_work_turns_clear_previous_handoffs(
     assert clears_stale_turn_handoffs(continuation) is True
 
 
-@pytest.mark.parametrize("continuation", ["resume", "graph_repair"])
+@pytest.mark.parametrize("continuation", ["resume", "retry", "graph_repair"])
 def test_same_logical_work_turn_continuations_preserve_handoffs(
     continuation: AgentTaskContinuation,
 ) -> None:

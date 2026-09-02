@@ -16,7 +16,9 @@ const {
   experimentStartNeedsSync,
   humanAttentionBlockers,
   humanDraftTransitionRouting,
+  projectAttentionForPresentation,
   projectWithGraph,
+  transitionProjectionForRoute,
 } = await server.ssrLoadModule("/src/App.tsx");
 
 after(() => server.close());
@@ -235,7 +237,7 @@ test("attention content follows the same local projection snapshot as the rest o
   assert.strictEqual(attentionGraphForProjection(canonical, projection), projected);
 });
 
-test("a local draft keeps canonical decision membership while presenting staged fields", () => {
+test("a local draft cannot consume stale backend-preview attention membership", () => {
   const canonicalDecision = {
     id: "decision/runtime",
     type: "decision",
@@ -265,15 +267,23 @@ test("a local draft keeps canonical decision membership while presenting staged 
     base_head: canonicalGraphHead(4),
   };
 
-  const membershipGraph = attentionGraphForProjection(canonical, projection, "local_draft");
+  const activeProjection = transitionProjectionForRoute(projection, "local_draft");
+  const membershipGraph = attentionGraphForProjection(canonical, activeProjection, "local_draft");
   assert.strictEqual(membershipGraph, canonical);
+  const canonicalAttention = {
+    pending_proposal_ids: [],
+    decisions_awaiting_choice_ids: [],
+    open_blocker_ids: [],
+    proposal_actions: {},
+  };
   assert.deepEqual(
     decisionsAwaitingChoice(
-      projection.attention.decisions_awaiting_choice_ids,
+      projectAttentionForPresentation({ attention: canonicalAttention }, activeProjection)
+        .decisions_awaiting_choice_ids,
       membershipGraph.nodes,
-      projected.nodes,
+      membershipGraph.nodes,
     ),
-    [stagedDecision],
+    [],
   );
 });
 

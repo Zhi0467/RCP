@@ -117,6 +117,8 @@ def _proposal_action(proposal: Proposal, state: GraphState) -> list[ProposalActi
     operation = proposal.ops[0]
     lines: list[ProposalActionLine] | None = None
     if isinstance(operation, ProposalContentChangeOperation):
+        if not operation.nodes:
+            return fallback
         update = operation.nodes[0]
         node = state.nodes.get(update.id)
         if node is not None:
@@ -135,6 +137,8 @@ def _proposal_action(proposal: Proposal, state: GraphState) -> list[ProposalActi
                     ]
                 )
     elif isinstance(operation, ProposalRemovalOperation):
+        if not operation.node_ids:
+            return fallback
         node_id = operation.node_ids[0]
         node = state.nodes.get(node_id)
         if node is not None:
@@ -151,6 +155,8 @@ def _proposal_action(proposal: Proposal, state: GraphState) -> list[ProposalActi
                     else [ProposalActionLine(label="Incident relations", text="None")]
                 )
     elif isinstance(operation, ProposalSupersedeOperation):
+        if not operation.nodes:
+            return fallback
         item = operation.nodes[0]
         before = state.nodes.get(item.id)
         after = state.nodes.get(item.superseded_by)
@@ -160,6 +166,8 @@ def _proposal_action(proposal: Proposal, state: GraphState) -> list[ProposalActi
                 ProposalActionLine(label="With", text=after.title),
             ]
     elif isinstance(operation, ProposalMergeOperation):
+        if not operation.merges:
+            return fallback
         item = operation.merges[0]
         duplicate = state.nodes.get(item.duplicate)
         canonical = state.nodes.get(item.canonical)
@@ -181,6 +189,8 @@ def _proposal_action(proposal: Proposal, state: GraphState) -> list[ProposalActi
                 if text:
                     lines = [ProposalActionLine(label="Remove relation", text=text)]
     elif isinstance(operation, ProposalStatusChangeOperation):
+        if not operation.nodes:
+            return fallback
         update = operation.nodes[0]
         node = state.nodes.get(update.id)
         proposed = update.changes.get("status")

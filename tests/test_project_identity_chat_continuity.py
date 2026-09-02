@@ -141,8 +141,8 @@ def test_adopted_chat_next_turn_reuses_exact_saved_stage(tmp_path: Path, remote:
     )
     next_turn = store.create_agent_task(candidate)
 
-    assert candidate.stage_host == stage_host
-    assert candidate.stage_root == stage_root
+    assert candidate.stage_host is None
+    assert candidate.stage_root is None
     assert next_turn.stage_host == stage_host
     assert next_turn.stage_root == stage_root
     execution = AgentTaskExecution(
@@ -210,7 +210,7 @@ def test_adopted_chat_resume_and_retry_keep_pre_adoption_stage(tmp_path: Path) -
     assert retried.stage_root == str(stage)
 
 
-def test_split_chat_stage_layout_marker_is_idempotent_but_ambiguous_lineage_fails(
+def test_split_chat_stage_layout_marker_is_idempotent_and_repairs_duplicate_receipts(
     tmp_path: Path,
 ) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
@@ -259,6 +259,22 @@ def test_split_chat_stage_layout_marker_is_idempotent_but_ambiguous_lineage_fail
             stage_host="",
             stage_root=str(stage),
         )
+
+    store.record_chat_stage_layout(
+        task.operation_id,
+        stage_root=str(stage),
+        workspace_root=str(workspace),
+    )
+    assert (
+        store.chat_stage_layout(
+            project_id=project_id,
+            kind="project_chat",
+            chat_id=chat_id,
+            stage_host="",
+            stage_root=str(stage),
+        )
+        == "split-v1"
+    )
 
 
 def test_second_fresh_sessionless_chat_reuses_one_split_layout_and_artifact_root(
@@ -651,6 +667,7 @@ def test_adopted_generic_watcher_wake_inherits_conversation_stage(tmp_path: Path
     queued = store.create_watcher_notification_task(wake, ["finished-work"])
 
     assert queued is not None
+    assert wake.stage_root is None
     assert queued.stage_host is None
     assert queued.stage_root == str(stage)
 

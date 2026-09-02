@@ -339,6 +339,7 @@ export function NodeChat({
         ...(pendingTurn
           ? [
               {
+                lineId: `pending:${pendingTurn.clientId}`,
                 role: "human" as const,
                 text: pendingTurn.text,
                 taskId: pendingTurn.clientId,
@@ -1125,8 +1126,8 @@ export function NodeChat({
         onScroll={handleChatScroll}
         ref={chatLinesRef}
       >
-        {transcript.map((line, index) => {
-          const messageId = `${line.taskId}:${index}`;
+        {transcript.map((line) => {
+          const messageId = line.lineId;
           const task = relatedTasks.find((candidate) => candidate.operation_id === line.taskId);
           const activeLineTask = task && isActiveTask(task) ? task : null;
           const pausedLineTask =
@@ -1138,7 +1139,7 @@ export function NodeChat({
             line.role === "human" && line.text.length > CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD;
           const expanded = expandedHumanMessageIds.has(messageId);
           return (
-            <div className={`node-chat-line ${line.role}`} key={`${line.taskId}-${index}`}>
+            <div className={`node-chat-line ${line.role}`} key={line.lineId}>
               {line.role === "human" && line.mode && (
                 <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
               )}

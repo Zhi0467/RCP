@@ -77,16 +77,7 @@ def pending_auto_research_mail_recipients(
 ) -> list[tuple[str, str]]:
     """Enumerate undelivered mail by stable canonical auto_research actor."""
 
-    if episode_id is None:
-        episode_ids = {
-            episode.episode_id
-            for project in store.projects()
-            for episode in store.episodes(project.project_id)
-            if episode.mode == "auto_research"
-            and episode.status in {"queued", "running", "stopping"}
-        }
-    else:
-        episode_ids = {episode_id}
+    episode_ids = set(store.auto_research_episode_ids(episode_id))
     recipients: set[tuple[str, str]] = set()
     for current_episode_id in episode_ids:
         recipient_ids = {
@@ -199,29 +190,24 @@ def _reconcile_committed_auto_research_wakes(
         background,
         episode_id=episode_id,
     )
-    if episode_id is not None:
-        episode_ids = [episode_id]
-    else:
-        episode_ids = sorted(
-            episode.episode_id
-            for project in store.projects()
-            for episode in store.episodes(project.project_id)
-            if episode.mode == "auto_research"
-        )
+    episode_ids = store.auto_research_episode_ids(episode_id)
     started: list[str] = []
     for operation_id in proven_started:
-        task = store.agent_task(operation_id)
-        if task is None:
-            continue
-        if task.kind == "auto_research":
-            request = AutoResearchRunRequest.model_validate(task.request)
-            if request.wake_cause in wake_causes:
+        try:
+            task = store.agent_task(operation_id)
+            if task is None:
+                continue
+            if task.kind == "auto_research":
+                request = AutoResearchRunRequest.model_validate(task.request)
+                if request.wake_cause in wake_causes:
+                    started.append(operation_id)
+            elif include_child_work and any(
+                message.delivery_operation_id == operation_id
+                for message in store.auto_research_messages(task.episode_id or "")
+            ):
                 started.append(operation_id)
-        elif include_child_work and any(
-            message.delivery_operation_id == operation_id
-            for message in store.auto_research_messages(task.episode_id or "")
-        ):
-            started.append(operation_id)
+        except (KeyError, TypeError, ValueError):
+            continue
     for current_episode_id in episode_ids:
         episode = store.episode(current_episode_id)
         if episode is None or episode.mode != "auto_research":
@@ -229,14 +215,17 @@ def _reconcile_committed_auto_research_wakes(
         for task in store.auto_research_tasks(current_episode_id):
             if task.status != "queued":
                 continue
-            request = AutoResearchRunRequest.model_validate(task.request)
-            if request.wake_cause not in wake_causes:
+            try:
+                request = AutoResearchRunRequest.model_validate(task.request)
+                if request.wake_cause not in wake_causes:
+                    continue
+                ensure_auto_research_wake_spawned(
+                    background,
+                    current_episode_id,
+                    operation_id=task.operation_id,
+                )
+            except (KeyError, TypeError, ValueError):
                 continue
-            ensure_auto_research_wake_spawned(
-                background,
-                current_episode_id,
-                operation_id=task.operation_id,
-            )
             started.append(task.operation_id)
         if not include_child_work:
             continue
@@ -251,13 +240,16 @@ def _reconcile_committed_auto_research_wakes(
             task = store.agent_task(route.current_operation_id)
             if task is None or task.status != "queued":
                 continue
-            ensure_auto_research_child_work_spawned(
-                background,
-                current_episode_id,
-                route.worker_id,
-                operation_id=task.operation_id,
-                continuation="message_wake",
-            )
+            try:
+                ensure_auto_research_child_work_spawned(
+                    background,
+                    current_episode_id,
+                    route.worker_id,
+                    operation_id=task.operation_id,
+                    continuation="message_wake",
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
             started.append(task.operation_id)
     return list(dict.fromkeys(started))
 

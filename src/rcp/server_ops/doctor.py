@@ -592,7 +592,7 @@ class LinuxServerDoctorMachine:
         )
         from rcp.server_ops.update_cutover import (
             UpdateCutoverRefused,
-            active_update_operation,
+            update_operation_needing_recovery,
             update_operation_receipts,
         )
 
@@ -601,7 +601,7 @@ class LinuxServerDoctorMachine:
                 self.layout.update_checkpoints_root,
                 expected_uid=service_uid,
             )
-            active = active_update_operation(
+            recovery = update_operation_needing_recovery(
                 self.layout.update_checkpoints_root,
                 expected_uid=service_uid,
                 receipts=operations,
@@ -617,12 +617,12 @@ class LinuxServerDoctorMachine:
             add_problem("unfinished update rollback requires sudo rcp server update re-entry")
         if not operations:
             return _DoctorUpdateSummary(state="none")
-        selected = active or max(
+        selected = recovery or max(
             operations,
             key=lambda item: (item[1].updated_at, item[1].operation_id),
         )
         _path, receipt, _digest = selected
-        qualifier = "unfinished" if active is not None else "latest"
+        qualifier = "unfinished" if recovery is not None else "latest"
         if installation_id is not None and receipt.installation_id != installation_id:
             add_problem(f"{qualifier} update receipt belongs to another server installation")
         runtime_failure = getattr(receipt, "runtime_failure", None)

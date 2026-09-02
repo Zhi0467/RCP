@@ -45,7 +45,7 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT migration_version FROM storage_schema_migrations ORDER BY migration_version"
-        ).fetchall() == [(1,), (2,), (3,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,)]
 
     def unexpected_migration(*_args) -> None:
         raise AssertionError("completed legacy migration was rescanned")
@@ -63,6 +63,11 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
     monkeypatch.setattr(
         AppStore,
         "_migrate_experiment_episode_state",
+        staticmethod(unexpected_migration),
+    )
+    monkeypatch.setattr(
+        AppStore,
+        "_migrate_agent_usage_counted_dedupe",
         staticmethod(unexpected_migration),
     )
 

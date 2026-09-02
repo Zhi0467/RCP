@@ -10,6 +10,7 @@ import type {
 } from "./types";
 
 export interface TaskTranscriptLine {
+  lineId: string;
   role: "human" | "agent" | "error" | "meta";
   text: string;
   taskId: string;
@@ -150,6 +151,7 @@ export function chatTasksMissingFromHistory(
 
 export function chatMessageTranscriptLine(message: ChatMessage): TaskTranscriptLine {
   return {
+    lineId: `message:${message.message_id}`,
     role: message.role === "user" && message.trigger !== "watcher" ? "human" : "agent",
     text: message.text,
     taskId: message.operation_id ?? message.message_id,
@@ -195,6 +197,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     if (message && trigger === "human") {
       const attachments = taskAttachments(task.request.attachments);
       lines.push({
+        lineId: `task:${task.operation_id}:human`,
         role: "human",
         text: message,
         taskId: task.operation_id,
@@ -212,6 +215,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     const artifacts = taskArtifacts(task);
     messages.forEach((text, index) =>
       lines.push({
+        lineId: `task:${task.operation_id}:answer:${index}`,
         role: "agent",
         text,
         taskId: task.operation_id,
@@ -224,6 +228,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     );
     if (!messages.length && (artifacts.length || (graphUpdate && graphUpdate.status !== "none"))) {
       lines.push({
+        lineId: `task:${task.operation_id}:deliverables`,
         role: "agent",
         text: "",
         taskId: task.operation_id,
@@ -237,6 +242,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
     const graphOnlyRejection = task.settled && graphUpdate?.status === "rejected";
     if (task.error && !graphOnlyRejection) {
       lines.push({
+        lineId: `task:${task.operation_id}:error`,
         role: "error",
         text: task.error,
         taskId: task.operation_id,
@@ -245,6 +251,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
       });
     } else if (task.awaiting_human) {
       lines.push({
+        lineId: `task:${task.operation_id}:status`,
         role: task.failed ? "error" : "meta",
         text: task.status_message,
         taskId: task.operation_id,

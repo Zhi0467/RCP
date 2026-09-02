@@ -154,6 +154,38 @@ def test_graph_attention_projection_expands_proposal_removal_incident_relations(
     }
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {"op": "update_nodes", "intent": "content_change", "nodes": []},
+        {"op": "remove_nodes", "intent": "removal", "node_ids": []},
+        {"op": "supersede_nodes", "intent": "supersede", "nodes": []},
+        {"op": "merge_nodes", "intent": "merge", "merges": []},
+        {"op": "update_nodes", "intent": "status_change", "nodes": []},
+    ],
+)
+def test_graph_attention_falls_back_for_historical_empty_proposal_operations(
+    operation: dict[str, object],
+) -> None:
+    state = GraphState.model_validate(
+        {
+            "proposals": {
+                "prop/historical": {
+                    "id": "prop/historical",
+                    "title": "Historical proposal",
+                    "card": {"decision_needed": "Review the original proposal."},
+                    "ops": [operation],
+                    "status": "pending",
+                }
+            }
+        }
+    )
+
+    assert project_graph_attention(state).model_dump(mode="json")["proposal_actions"] == {
+        "prop/historical": [{"label": None, "text": "Review the original proposal."}]
+    }
+
+
 @pytest.mark.parametrize("collection", ["nodes", "proposals"])
 def test_graph_attention_projection_rejects_mapping_identity_mismatches(collection: str) -> None:
     state = GraphState(

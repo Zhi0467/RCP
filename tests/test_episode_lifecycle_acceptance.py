@@ -258,6 +258,7 @@ def test_acceptance_episode_completes_and_corrects_one_hidden_report(
     assert report_task.stage_host == root.stage_host
     assert report_task.stage_root == root.stage_root
     assert store.agent_command_by_key(episode_id, "acceptance-spawn") is not None
+    assert store.agent_command_by_key(episode_id, "acceptance-harvest-before-finish") is not None
     assert store.agent_command_by_key(episode_id, "acceptance-finish-after-worker") is not None
     assert store.episode_report(episode_id) is not None
 

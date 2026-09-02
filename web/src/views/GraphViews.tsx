@@ -925,7 +925,6 @@ export function ExecutionView({
       return (
         <AutoResearchEpisodeCard
           episode={episode}
-          tasks={tasks}
           messages={episodeMessages[episode.episode_id] ?? []}
           initiallyExpanded={initiallyExpanded}
           busyAction={episodeAction}

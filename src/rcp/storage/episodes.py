@@ -152,6 +152,30 @@ class EpisodeStoreMixin:
             ).fetchall()
         return [self._episode_record(row) for row in rows]
 
+    def auto_research_episode_ids(self, episode_id: str | None = None) -> list[str]:
+        """Return Auto-research episode ids without scanning every project."""
+
+        with self.connection() as connection:
+            if episode_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT episode_id
+                    FROM episodes
+                    WHERE mode = 'auto_research'
+                    ORDER BY created_at, episode_id
+                    """
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT episode_id
+                    FROM episodes
+                    WHERE episode_id = ? AND mode = 'auto_research'
+                    """,
+                    (episode_id,),
+                ).fetchall()
+        return [str(row["episode_id"]) for row in rows]
+
     def episodes_awaiting_report(self) -> list[EpisodeRecord]:
         """Return durable hidden wrap-ups that startup must reconcile."""
 
@@ -223,7 +247,12 @@ class EpisodeStoreMixin:
             """
             UPDATE experiment_episode_state
             SET native_session_id = NULL, stage_host = NULL, stage_root = NULL, updated_at = ?
-            WHERE native_session_id IS NOT NULL OR stage_host IS NOT NULL OR stage_root IS NOT NULL
+            WHERE episode_id IN (
+                SELECT episode_id FROM episodes
+                WHERE mode = 'experiment_loop'
+                  AND status IN ('queued', 'running', 'stopping', 'wrapping_up')
+            )
+              AND (native_session_id IS NOT NULL OR stage_host IS NOT NULL OR stage_root IS NOT NULL)
             """,
             (now,),
         )
@@ -1802,16 +1831,7 @@ class EpisodeStoreMixin:
 
     @staticmethod
     def _status_for_ending(ending: str) -> str:
-        try:
-            return {
-                "completed": "completed",
-                "exhausted": "needs_action",
-                "human_pause": "needs_action",
-                "failed": "failed",
-                "stopped": "stopped",
-            }[ending]
-        except KeyError as exc:
-            raise ValueError("the episode has no valid semantic ending") from exc
+        return _status_for_ending(ending)
 
 
 def migrate_legacy_episodes(connection: sqlite3.Connection) -> None:
@@ -1872,7 +1892,7 @@ def _migrate_campaign_episodes(connection: sqlite3.Connection) -> None:
             operational_used=len(invocation_rows),
         )
         ending = _campaign_ending(campaign, report)
-        status = _campaign_status(campaign, ending, report is not None)
+        status = _campaign_status(campaign, ending)
         wrapup_state = _legacy_wrapup_state(
             status=status, ending=ending, has_report=report is not None
         )
@@ -2404,12 +2424,10 @@ def _campaign_ending(campaign: sqlite3.Row, report: sqlite3.Row | None) -> str |
     }.get(str(campaign["status"]))
 
 
-def _campaign_status(campaign: sqlite3.Row, ending: str | None, has_report: bool) -> str:
+def _campaign_status(campaign: sqlite3.Row, ending: str | None) -> str:
     status = str(campaign["status"])
     if ending is None:
         return status
-    if status == "wrapping_up" and not has_report:
-        return _status_for_ending(ending)
     return _status_for_ending(ending)
 
 
@@ -2619,14 +2637,17 @@ def _insert_legacy_wrapup(
     )
 
 
-def _status_for_ending(ending: str | None) -> str:
-    return {
-        "completed": "completed",
-        "exhausted": "needs_action",
-        "human_pause": "needs_action",
-        "failed": "failed",
-        "stopped": "stopped",
-    }.get(ending, "failed")
+def _status_for_ending(ending: str) -> str:
+    try:
+        return {
+            "completed": "completed",
+            "exhausted": "needs_action",
+            "human_pause": "needs_action",
+            "failed": "failed",
+            "stopped": "stopped",
+        }[ending]
+    except KeyError as exc:
+        raise ValueError("the episode has no valid semantic ending") from exc
 
 
 def _legacy_table_exists(connection: sqlite3.Connection, table: str) -> bool:

@@ -32,8 +32,10 @@ from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.restore import (
     SUPPORTED_RESTORE_DATABASE_SCHEMAS,
     LinuxRestoreMachine,
+    RestoreCheckoutRecoveryOutcome,
     RestoreConfirmation,
     RestoreRefused,
+    RestoreReviewOutcome,
     detach_restore_database,
     prepare_restore_command,
     read_restore_journal,
@@ -342,6 +344,123 @@ def test_restore_cli_accepts_confirmed_destination_before_archive_work(
     )
 
 
+def test_restore_command_releases_instance_lock_before_activation(tmp_path: Path) -> None:
+    data_dir = tmp_path / "configured-data"
+    data_dir.mkdir()
+    archive = tmp_path / "archive.age"
+    archive.write_bytes(b"archive")
+    identity_file = tmp_path / "identity.txt"
+    identity_file.write_text("identity", encoding="utf-8")
+
+    class ActivationBoundaryMachine:
+        def __init__(self) -> None:
+            self.journal = SimpleNamespace(
+                operation_id="operation-1",
+                phase="archive_verified",
+                candidate_sqlite_sha256="d" * 64,
+                repository_recoveries=(),
+                project_rebinds=(),
+                project_publications=(),
+                old_authority_review=None,
+                member_roster_review=None,
+            )
+            self.activation_saw_lock_free = False
+
+        def configured_data_dir(self) -> Path:
+            return data_dir
+
+        def admission(self):
+            return instance_lock(data_dir, timeout=0.0)
+
+        def stage_candidate(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                archive_sha256="a" * 64,
+                manifest=SimpleNamespace(space_id="space-1", rcp_source_commit=COMMIT, projects=()),
+            )
+
+        def journal_candidate(self, *_args, **_kwargs):
+            return self.journal
+
+        def install_sqlite_candidate(self, journal):
+            journal.phase = "sqlite_restored"
+            return journal
+
+        def verify_offline_candidate(self, journal):
+            return journal
+
+        def recover_checkouts(self, journal, **_kwargs):
+            return RestoreCheckoutRecoveryOutcome(journal=journal)
+
+        def rebind_checkouts(self, journal):
+            return journal
+
+        def publish_projects(self, journal):
+            return journal
+
+        def review_old_authority(self, journal, **_kwargs):
+            journal.old_authority_review = SimpleNamespace(
+                boundary_sha256="b" * 64,
+                disposition="old-machine-destroyed",
+            )
+            return RestoreReviewOutcome(journal=journal)
+
+        def review_member_roster(self, journal, **_kwargs):
+            journal.member_roster_review = SimpleNamespace(
+                boundary_sha256="c" * 64,
+                members=(),
+            )
+            return RestoreReviewOutcome(journal=journal)
+
+        def prepare_activation(self, journal):
+            with pytest.raises(InstanceLockHeld), instance_lock(data_dir, timeout=0.0):
+                pass
+            journal.phase = "activation_ready"
+            return journal
+
+        def activate_replacement(self, journal):
+            with instance_lock(data_dir, timeout=0.0):
+                self.activation_saw_lock_free = True
+            journal.phase = "complete"
+            return journal
+
+    machine = ActivationBoundaryMachine()
+    arguments = build_parser().parse_args(
+        (
+            "server",
+            "restore",
+            str(archive),
+            "--identity-file",
+            str(identity_file),
+            "--confirm-data-dir",
+            str(data_dir),
+            "--old-authority-disposition",
+            "old-machine-destroyed",
+            "--confirm-old-authority",
+            "b" * 64,
+            "--confirm-member-roster",
+            "c" * 64,
+            "--machine-readable",
+        )
+    )
+
+    output = StringIO()
+    exit_code = run_server_command(
+        arguments,
+        identity=CallerIdentity(uid=0, username="root", host="lab.example"),
+        input_stream=BytesIO(),
+        stream=output,
+        handler=lambda request, caller: prepare_restore_command(
+            request,
+            caller,
+            machine=machine,  # type: ignore[arg-type]
+            resume_executable=Path("/usr/local/bin/rcp"),
+        ),
+    )
+
+    assert exit_code == 0, output.getvalue()
+    assert machine.activation_saw_lock_free is True
+
+
 def test_restore_builds_one_detached_offline_sqlite_candidate(tmp_path: Path) -> None:
     archive, source, manifest = _archive(tmp_path / "backup")
     request = source.project_provisioning_requests()[0]
@@ -564,6 +683,18 @@ def test_restore_reentry_accepts_only_phase_owned_data_roots_and_sqlite_sidecars
     )
     assert machine.install_sqlite_candidate(publishing) == publishing
     assert machine.verify_offline_candidate(publishing) == publishing
+
+
+def test_restore_reentry_reports_a_missing_restored_database(tmp_path: Path) -> None:
+    archive, _source, _manifest = _archive(tmp_path / "backup")
+    machine, layout, _service, identity = _machine(tmp_path, archive)
+    candidate = machine.stage_candidate(archive, identity, confirmed_by="root@lab uid=0")
+    journal = machine.journal_candidate(candidate, _confirmation(layout))
+    installed = machine.install_sqlite_candidate(journal)
+    (layout.data_dir / "rcp.sqlite3").unlink()
+
+    with pytest.raises(RestoreRefused, match="lost its restored database"):
+        machine.verify_offline_candidate(installed)
 
 
 @pytest.mark.parametrize(

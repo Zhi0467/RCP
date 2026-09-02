@@ -326,30 +326,11 @@ class GraphTransitionManager:
     @staticmethod
     def _require_compatible_envelopes(patches: list[Patch]) -> None:
         first = patches[0]
-        fields = (
-            "schema_generation",
-            "kind",
-            "author",
-            "producer",
-            "source_operation_id",
-            "source_effect_id",
-            "source_effect_sha256",
-            "project_identity",
-            "project_home_transfer",
-            "authorized_by",
-            "profile",
-            "task_id",
-            "episode_id",
-            "experiment_control_node_id",
-            "experiment_decision_bundle",
-            "run_truth_scope",
-            "repositories_read",
-            "processed_cursors",
-            "branch_merge",
-        )
         for patch in patches[1:]:
             mismatched = [
-                field for field in fields if getattr(patch, field) != getattr(first, field)
+                field
+                for field in _TRANSITION_PROVENANCE_FIELDS
+                if getattr(patch, field) != getattr(first, field)
             ]
             if mismatched:
                 raise ValueError(

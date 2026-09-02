@@ -110,13 +110,14 @@ def wait_until(
     timeout: float = 5.0,
     interval: float = _TASK_POLL_INTERVAL,
     detail: str | Callable[[], str] = "condition was not met",
+    allow_falsy: bool = False,
 ) -> _T:
-    """Return the first truthy probe result, or fail after a bounded wait."""
+    """Return the first settled result; opt in when false or zero means settled."""
 
     deadline = time.monotonic() + timeout
     while True:
         result = probe()
-        if result:
+        if result is not None and (allow_falsy or bool(result)):
             return result
         remaining = deadline - time.monotonic()
         if remaining <= 0:

@@ -514,16 +514,11 @@ def proven_committed_auto_research_dispatches(
     """Find admitted queued rows whose dispatch attempt durably never started."""
 
     dispatches: list[_CommittedAutoResearchDispatch] = []
-    if episode_id is None:
-        episodes = [
-            episode
-            for project in tasks.store.projects()
-            for episode in tasks.store.episodes(project.project_id)
-            if episode.mode == "auto_research"
-        ]
-    else:
-        episode = tasks.store.episode(episode_id)
-        episodes = [episode] if episode is not None else []
+    episodes = [
+        episode
+        for current_episode_id in tasks.store.auto_research_episode_ids(episode_id)
+        if (episode := tasks.store.episode(current_episode_id)) is not None
+    ]
     for episode in episodes:
         if episode.mode == "auto_research":
             for task in tasks.store.auto_research_tasks(episode.episode_id):

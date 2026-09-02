@@ -4,7 +4,6 @@ import os
 import shlex
 import stat
 import subprocess
-import unicodedata
 import uuid
 from pathlib import Path
 
@@ -19,33 +18,41 @@ from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 
 
-def test_local_macos_path_semantics_cover_case_insensitive_authority_guards(
-    monkeypatch: pytest.MonkeyPatch,
+def test_local_path_semantics_use_real_filesystem_identity_for_authority_guards(
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr("rcp.agents.write_scope.sys.platform", "darwin")
     semantics = _ExecutionPathSemantics.for_execution(remote=False)
+    home = tmp_path / "Research"
+    repository = home / "Repo"
+    nested = repository / "nested"
+    data_root = tmp_path / "rcp-data"
+    data_project = data_root / "projects"
+    nested.mkdir(parents=True)
+    data_project.mkdir(parents=True)
+    home_alias = tmp_path / "home-alias"
+    data_alias = tmp_path / "data-alias"
+    home_alias.symlink_to(home, target_is_directory=True)
+    data_alias.symlink_to(data_root, target_is_directory=True)
 
-    assert semantics.overlaps("/Users/Research/Repo", "/users/research/repo/nested")
+    assert semantics.equal(home, home_alias)
+    assert semantics.overlaps(repository, home_alias / "Repo" / "nested")
     with pytest.raises(ValueError, match="execution account home"):
         _reject_broad_repository_root(
-            "/USERS/RESEARCH",
-            account_home="/Users/Research",
+            str(home_alias),
+            account_home=str(home),
             app_data_dir=None,
             path_semantics=semantics,
         )
     with pytest.raises(ValueError, match="application data directory"):
         _reject_broad_repository_root(
-            "/USERS/RESEARCH/RCP-DATA/PROJECTS",
-            account_home="/Users/Research",
-            app_data_dir=Path("/Users/Research/rcp-data"),
+            str(data_alias / "projects"),
+            account_home=str(home),
+            app_data_dir=data_root,
             path_semantics=semantics,
         )
 
 
-def test_remote_posix_path_semantics_remain_case_sensitive(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("rcp.agents.write_scope.sys.platform", "darwin")
+def test_remote_posix_path_semantics_remain_case_sensitive() -> None:
     semantics = _ExecutionPathSemantics.for_execution(remote=True)
 
     assert not semantics.overlaps("/srv/Research/Repo", "/srv/research/repo/nested")
@@ -57,38 +64,9 @@ def test_remote_posix_path_semantics_remain_case_sensitive(
     )
 
 
-def test_local_macos_path_semantics_normalize_unicode_for_authority_guards(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("rcp.agents.write_scope.sys.platform", "darwin")
-    semantics = _ExecutionPathSemantics.for_execution(remote=False)
-    composed_home = "/Users/Résumé"
-    decomposed_home = unicodedata.normalize("NFD", composed_home)
+def test_remote_posix_path_semantics_keep_unicode_forms_distinct() -> None:
+    import unicodedata
 
-    assert semantics.overlaps(
-        f"{composed_home}/Repo",
-        f"{decomposed_home}/repo/nested",
-    )
-    with pytest.raises(ValueError, match="execution account home"):
-        _reject_broad_repository_root(
-            decomposed_home,
-            account_home=composed_home,
-            app_data_dir=None,
-            path_semantics=semantics,
-        )
-    with pytest.raises(ValueError, match="application data directory"):
-        _reject_broad_repository_root(
-            f"{decomposed_home}/RCP-DATA/projects",
-            account_home="/Users/Other",
-            app_data_dir=Path(f"{composed_home}/rcp-data"),
-            path_semantics=semantics,
-        )
-
-
-def test_remote_posix_path_semantics_keep_unicode_forms_distinct(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("rcp.agents.write_scope.sys.platform", "darwin")
     semantics = _ExecutionPathSemantics.for_execution(remote=True)
     composed = "/srv/Résumé/Repo"
     decomposed = unicodedata.normalize("NFD", composed)

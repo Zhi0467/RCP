@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   EMPTY_SKILL_SELECTION,
   addProviderSkillSelection,
@@ -77,13 +77,13 @@ export function useSkillPicker({
     setQuery(null);
   }, [targetKey]);
 
-  const close = () => setQuery(null);
+  const close = useCallback(() => setQuery(null), []);
 
-  const reset = () => {
+  const reset = useCallback(() => {
     setSelection(EMPTY_SKILL_SELECTION);
     setProviderSkillNames([]);
     close();
-  };
+  }, [close]);
 
   /** Track the trigger word as the composer text changes. */
   const readMessage = (next: string) => setQuery(readSkillTrigger(next));

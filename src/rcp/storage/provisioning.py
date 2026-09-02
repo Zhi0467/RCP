@@ -67,12 +67,12 @@ _PROVISIONING_TRANSITIONS: dict[ProjectProvisioningStatus, frozenset[ProjectProv
 _RESTORE_REENTRY_PROVISIONING_TRANSITIONS: dict[
     ProjectProvisioningStatus, frozenset[ProjectProvisioningStatus]
 ] = {
-    "waiting_for_server_setup": frozenset({"operator_action_needed"}),
-    "setup_in_progress": frozenset({"operator_action_needed"}),
-    "operator_action_needed": frozenset({"operator_action_needed"}),
-    "ready_for_review": frozenset({"operator_action_needed"}),
-    "completed": frozenset(),
-    "cancelled": frozenset(),
+    status: (
+        frozenset()
+        if status in {"completed", "cancelled"}
+        else frozenset({"operator_action_needed"})
+    )
+    for status in _PROVISIONING_TRANSITIONS
 }
 _MESSAGE_TEXT_ADAPTER = TypeAdapter(MessageText)
 _PROJECT_CONFIG_FIELDS = frozenset(

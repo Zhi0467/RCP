@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from collections.abc import Callable
@@ -184,7 +185,7 @@ def test_same_provider_discuss_retry_receives_exact_failure(manifest, tmp_path) 
 
 
 @pytest.mark.parametrize("legacy_layout", [False, True])
-def test_same_provider_work_retry_clears_predecessor_outputs(
+def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_outputs(
     manifest, tmp_path, legacy_layout: bool
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -261,8 +262,14 @@ def test_same_provider_work_retry_clears_predecessor_outputs(
     else:
         assert launcher.workspaces[0] == launcher.workspaces[1]
     workspace = launcher.workspaces[1]
-    assert not (workspace / "patch.json").exists()
-    assert not (workspace / "watch.json").exists()
+    retained_workspace = launcher.workspaces[0] if legacy_layout else workspace
+    assert (retained_workspace / "patch.json").read_text(encoding="utf-8") == agent_patch_json(
+        stale_patch
+    )
+    assert (retained_workspace / "watch.json").read_text(encoding="utf-8") == stale_watch
+    if legacy_layout:
+        assert not (workspace / "patch.json").exists()
+        assert not (workspace / "watch.json").exists()
     assert "rq/stale-retry-deliverable" not in service.history.state().nodes
     assert retried["result"]["graph_update"]["status"] == "none"
     assert store.watchers(project_id) == []
@@ -280,10 +287,29 @@ def test_same_provider_work_retry_clears_predecessor_outputs(
             item["consumed"],
         )
         for item in comparisons
-    } == {
-        ("patch.json", None, None, False, False),
-        ("watch.json", None, None, False, False),
-    }
+    } == (
+        {
+            ("patch.json", None, None, False, False),
+            ("watch.json", None, None, False, False),
+        }
+        if legacy_layout
+        else {
+            (
+                "patch.json",
+                hashlib.sha256(agent_patch_json(stale_patch).encode()).hexdigest(),
+                hashlib.sha256(agent_patch_json(stale_patch).encode()).hexdigest(),
+                True,
+                False,
+            ),
+            (
+                "watch.json",
+                hashlib.sha256(stale_watch.encode()).hexdigest(),
+                hashlib.sha256(stale_watch.encode()).hexdigest(),
+                True,
+                False,
+            ),
+        }
+    )
     _assert_retry_receipt(app, str(retried["operation_id"]))
     if legacy_layout:
         launch = next(

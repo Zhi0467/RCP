@@ -206,14 +206,11 @@ def experiment_episodes(
                 (episode_snapshot, runtime, read_model)
             )
 
-        main_read_models = (
-            store.experiment_control_projection_snapshots(
-                record.project_id,
-                graph_target=GraphTargetRef(),
-            )
-            if "main" in grouped
-            else {}
-        )
+        main_read_models = {
+            episode_snapshot.episode.control_node_id: read_model
+            for episode_snapshot, _runtime, read_model in grouped.get("main", [])
+            if episode_snapshot.episode.control_node_id is not None
+        }
         completed_cached = (
             project_display_cache.complete_cached_transition_control(
                 record.project_id,
@@ -489,6 +486,11 @@ def clear_all_rebuildable_caches(
     catalog: CatalogDependency,
     store: StoreDependency,
 ) -> dict[str, object]:
+    if store.space_kind != "personal":
+        raise HTTPException(
+            status_code=409,
+            detail="Clearing every project's cache is available only in a personal space.",
+        )
     if store.has_any_active_agent_task():
         raise HTTPException(
             status_code=409,

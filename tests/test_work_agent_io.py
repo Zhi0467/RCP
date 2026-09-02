@@ -291,7 +291,6 @@ async def test_manual_graph_repair_preserves_post_stage_failure_over_mailbox_fai
     "continuation",
     [
         "fresh",
-        "retry",
         "handoff",
         "watcher_wake",
         "message_wake",
@@ -303,7 +302,7 @@ def test_new_logical_work_continuations_clear_stale_handoffs(continuation: str) 
     assert work_module._clears_stale_turn_handoffs(continuation) is True  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("continuation", ["resume", "graph_repair"])
+@pytest.mark.parametrize("continuation", ["resume", "retry", "graph_repair"])
 def test_same_logical_work_continuations_preserve_handoffs(continuation: str) -> None:
     assert work_module._clears_stale_turn_handoffs(continuation) is False  # type: ignore[arg-type]
 

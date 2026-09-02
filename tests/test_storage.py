@@ -56,6 +56,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (1, "episode_lineage_v1"),
         (2, "legacy_episode_ledger_v1"),
         (3, "experiment_episode_state_v1"),
+        (4, "agent_usage_counted_dedupe_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -74,6 +75,11 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
     monkeypatch.setattr(
         AppStore,
         "_migrate_experiment_episode_state",
+        staticmethod(unexpected_migration),
+    )
+    monkeypatch.setattr(
+        AppStore,
+        "_migrate_agent_usage_counted_dedupe",
         staticmethod(unexpected_migration),
     )
 
@@ -941,6 +947,9 @@ def _insert_destination_conflict(
         primary_key = primary_keys.get(table)
         if primary_key is not None:
             cloned[primary_key] = f"destination-{cloned[primary_key]}"
+        if table == "agent_usage":
+            cloned["counted"] = 0
+            cloned["count_reason"] = "destination-conflict-fixture"
         columns = list(cloned)
         connection.execute(
             f"INSERT INTO {table} ({', '.join(columns)}) "
@@ -1796,6 +1805,7 @@ def test_chat_session_context_project_id_migrates_with_legacy_project_data(tmp_p
 
 _LEGACY_PROJECT_DATA_TABLES = (
     "paper_drafts",
+    "project_members",
     "writing_sessions",
     "chat_session_contexts",
     "result_views",
@@ -1803,6 +1813,7 @@ _LEGACY_PROJECT_DATA_TABLES = (
     "episodes",
     "agent_usage",
     "watchers",
+    "graph_watcher_reconciliation",
 )
 
 
@@ -1821,6 +1832,25 @@ def _seed_legacy_project_data_rows(store: AppStore, project_id: str, *, label: s
         sort_keys=True,
     )
     with store.connection() as connection:
+        user_id = connection.execute(
+            "SELECT user_id FROM space_users ORDER BY created_at, user_id LIMIT 1"
+        ).fetchone()["user_id"]
+        connection.execute(
+            """
+            INSERT INTO project_members (project_id, user_id, seated_at, seated_by)
+            VALUES (?, ?, ?, NULL)
+            """,
+            (project_id, user_id, created_at),
+        )
+        connection.execute(
+            """
+            INSERT INTO graph_watcher_reconciliation (
+                project_id, graph_target_key, graph_target_json,
+                revision, transition_id, updated_at
+            ) VALUES (?, 'main', '{"kind":"main","branch_id":null}', 7, ?, ?)
+            """,
+            (project_id, f"transition-{label}", created_at),
+        )
         connection.execute(
             """
             INSERT INTO result_views (
@@ -1862,6 +1892,42 @@ def _seed_legacy_project_data_rows(store: AppStore, project_id: str, *, label: s
             ),
         )
     return operation_id
+
+
+def test_legacy_project_data_migration_moves_membership_and_watcher_reconciliation(
+    tmp_path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    project_id = str(uuid.uuid4())
+    legacy_id = "legacy-project-data"
+    store.upsert_project(_project(project_id).model_copy(update={"home_space_id": store.space_id}))
+    _seed_legacy_project_data_rows(store, legacy_id, label="migration")
+    with store.connection() as connection:
+        connection.execute("DELETE FROM projects WHERE project_id = ?", (legacy_id,))
+
+    store.migrate_legacy_project_data(legacy_id, project_id)
+
+    with store.connection() as connection:
+        for table in _LEGACY_PROJECT_DATA_TABLES:
+            assert (
+                connection.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE project_id = ?", (legacy_id,)
+                ).fetchone()[0]
+                == 0
+            )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM project_members WHERE project_id = ?", (project_id,)
+            ).fetchone()[0]
+            == 1
+        )
+        reconciliation = connection.execute(
+            "SELECT * FROM graph_watcher_reconciliation WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+    assert reconciliation is not None
+    assert reconciliation["revision"] == 7
+    assert reconciliation["transition_id"] == "transition-migration"
 
 
 def _legacy_project_data_state(store: AppStore) -> dict[str, list[dict[str, object]]]:
@@ -2006,6 +2072,100 @@ def test_agent_usage_is_counted_once_and_snapshot_uses_weighted_cache_share(tmp_
     assert snapshot.input_processed.cache_share == 0.4
     assert snapshot.input_processed.block_tokens == 50
     assert snapshot.input_processed.cells[0].task_kind == "refresh"
+
+
+def test_concurrent_agent_usage_reports_count_one_dedupe_key_once(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.upsert_project(_project("project"))
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="refresh-operation",
+            project_id="project",
+            kind="refresh",
+            status="succeeded",
+            request={"provider": "codex", "model": "gpt"},
+            created_at=now,
+            updated_at=now,
+            status_message="done",
+        )
+    )
+    usage = ProviderUsage(
+        provider_profile="codex.turn.v1",
+        provider_event_type="turn.completed",
+        dedupe_key="same-turn",
+        processed_input_tokens=10,
+        generated_tokens=2,
+        cached_input_tokens=1,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(
+                lambda _index: store.record_agent_usage("refresh-operation", usage),
+                range(2),
+            )
+        )
+
+    assert sorted(record.counted for record in results) == [False, True]
+    assert store.agent_usage_snapshot("project").counted_records == 1
+
+
+def test_agent_usage_dedupe_migration_repairs_historical_counted_duplicates_once(
+    tmp_path,
+) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    store = AppStore(path)
+    store.upsert_project(_project("project"))
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="refresh-operation",
+            project_id="project",
+            kind="refresh",
+            status="succeeded",
+            request={"provider": "codex"},
+            created_at=now,
+            updated_at=now,
+            status_message="done",
+        )
+    )
+    usage = ProviderUsage(
+        provider_profile="codex.turn.v1",
+        provider_event_type="turn.completed",
+        dedupe_key="same-turn",
+        processed_input_tokens=10,
+        generated_tokens=2,
+    )
+    first = store.record_agent_usage("refresh-operation", usage)
+    with store.connection() as connection:
+        connection.execute("DROP INDEX agent_usage_counted_dedupe")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 4")
+        row = dict(
+            connection.execute(
+                "SELECT * FROM agent_usage WHERE usage_id = ?", (first.usage_id,)
+            ).fetchone()
+        )
+        row["usage_id"] = "historical-duplicate"
+        columns = list(row)
+        connection.execute(
+            f"INSERT INTO agent_usage ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            tuple(row[column] for column in columns),
+        )
+
+    reopened = AppStore(path)
+
+    records = reopened.agent_usage("project")
+    assert sum(record.counted for record in records) == 1
+    assert {record.count_reason for record in records} == {"counted", "duplicate"}
+    with reopened.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT migration_name FROM storage_schema_migrations WHERE migration_version = 4"
+            ).fetchone()[0]
+            == "agent_usage_counted_dedupe_v1"
+        )
 
 
 def test_agent_usage_snapshot_counts_latest_input_context_once_per_native_session(tmp_path) -> None:

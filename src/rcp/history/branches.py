@@ -1121,7 +1121,6 @@ def read_branch_snapshots(
             accepted_patch_observer=remember_main_state,
         )
         parent.require_writable(main.state)
-        parent.head_ref(main)  # Validate the exact main transition chain once.
         main_heads = _main_heads_by_revision(main)
         main_states = _main_states_by_revision(parent, main, accepted_main_states)
         main_receipts = _main_merge_receipts(main)

@@ -11,6 +11,7 @@ from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandEffectResult,
     AutoResearchCommandFile,
+    AutoResearchCommandUnavailable,
     AutoResearchRunRequest,
     AutoResearchSeatNodeType,
     auto_research_planned_effect_id,
@@ -290,12 +291,17 @@ def _reconcile_spawn(
         snapshot.text,
         admission.child_id,
     )
-    validate_auto_research_worker_request(
-        arguments,
-        snapshot.text,
-        admission.child_id,
-        request,
-    )
+    try:
+        validate_auto_research_worker_request(
+            arguments,
+            snapshot.text,
+            admission.child_id,
+            request,
+        )
+    except AutoResearchCommandUnavailable as exc:
+        # This pure validator uses unavailable only for an unresolved provider
+        # or execution machine. Retrying cannot change the admitted request.
+        raise ValueError(str(exc)) from exc
     worker = start_auto_research_child_work(
         background,
         admission.episode_id,

@@ -2431,36 +2431,10 @@ class ProjectDisplayCache:
 
         state = GraphState.model_validate(snapshot["graph"])
         experiment_ids = [node.id for node in state.nodes.values() if node.type == "experiment"]
-        initial_read_models = self._store.experiment_control_projection_snapshots(
+        read_models = self._store.experiment_control_projection_snapshots(
             project_id,
             experiment_ids,
             graph_target=GraphTargetRef(),
-        )
-        settle_ids = [
-            experiment_id
-            for experiment_id, read_model in initial_read_models.items()
-            if read_model.runtime.stop_requested
-            and not read_model.runtime.stop_settled
-            and not read_model.runtime.task_active
-        ]
-        for experiment_id in settle_ids:
-            episode_snapshot = initial_read_models[experiment_id].episode
-            if episode_snapshot is not None:
-                episode = episode_snapshot.episode
-                self._store.settle_experiment_loop_stop(
-                    project_id,
-                    experiment_id,
-                    episode_id=episode.episode_id,
-                    graph_target=episode.graph_target,
-                )
-        read_models = (
-            self._store.experiment_control_projection_snapshots(
-                project_id,
-                experiment_ids,
-                graph_target=GraphTargetRef(),
-            )
-            if settle_ids
-            else initial_read_models
         )
         snapshot["experiment_control"] = self._controls_from_read_models(
             project_id,

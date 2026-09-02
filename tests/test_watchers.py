@@ -1874,6 +1874,7 @@ def test_legacy_delivery_terminalizes_watchers_and_episode_diagnostic_atomically
     assert terminal is not None
     assert terminal.status == "stopped"
     assert terminal.notified is True
+    assert terminal.stopped_by == "loop"
     assert terminal.stop_reason == diagnostic
     assert episode is not None
     assert episode.session_diagnostic == diagnostic

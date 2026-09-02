@@ -838,6 +838,7 @@ interface WatcherDeliveryRecord {
   stopped_at: string | null;
   stop_operation_id: string | null;
   can_check_now: boolean;
+  delivery_label: string;
 }
 
 export interface ExternalWatcherRecord extends WatcherDeliveryRecord {

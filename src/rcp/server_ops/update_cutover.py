@@ -533,10 +533,15 @@ def update_operation_needing_recovery(
     update_root: Path,
     *,
     expected_uid: int,
+    receipts: tuple[tuple[Path, UpdateOperationReceipt, str], ...] | None = None,
 ) -> tuple[Path, UpdateOperationReceipt, str] | None:
     """Return one nonterminal operation or the latest failed selected release."""
 
-    operations = update_operation_receipts(update_root, expected_uid=expected_uid)
+    operations = (
+        receipts
+        if receipts is not None
+        else update_operation_receipts(update_root, expected_uid=expected_uid)
+    )
     active = [item for item in operations if not item[1].terminal]
     if len(active) > 1:
         raise UpdateCutoverRefused(

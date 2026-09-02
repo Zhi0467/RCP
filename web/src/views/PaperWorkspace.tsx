@@ -247,11 +247,11 @@ export function PaperWorkspace({
       });
     },
   });
+  const resetSkills = skills.reset;
 
   useEffect(() => {
-    skills.reset();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id]);
+    resetSkills();
+  }, [project.id, resetSkills]);
   useEffect(() => {
     if (!latestCoachTask?.native_session_id || !latestCoachTask.settled) return;
     if (handledCoachTask.current === latestCoachTask.operation_id) return;
@@ -647,10 +647,10 @@ export function PaperWorkspace({
         )}
 
         <div className="coach-transcript" aria-live="polite">
-          {transcript.map((line, index) => (
+          {transcript.map((line) => (
             <div
               className={`chat-line ${line.role === "agent" ? "coach" : line.role}`}
-              key={`${line.taskId}-${index}`}
+              key={line.lineId}
             >
               {line.role === "human" ? `You: ${line.text}` : line.text}
             </div>

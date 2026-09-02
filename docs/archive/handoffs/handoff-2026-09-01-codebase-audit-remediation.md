@@ -1,23 +1,20 @@
 # Codebase audit remediation handoff
 
 Date: 2026-09-01
-Status: archived at human direction on 2026-09-01. An independent verification
-of the remediation branch on 2026-09-02 found one production-blocking regression
-in the restore lock scope, nine smaller fixes owed before merge, six unrequested
-behavior changes needing a decision, and the closure condition's UI drive still
-owed; see
-[the verification report](handoff-2026-09-01-codebase-audit-remediation-verification.md).
+Status: archived and closed. An independent verification on 2026-09-02 found a
+restore-lock regression plus smaller correctness and closure gaps. The
+follow-up pass resolved every reported blocker, settled each behavior question,
+completed the full command gate, and drove the affected UI paths in a served
+app. See
+[the final verification report](handoff-2026-09-01-codebase-audit-remediation-verification.md).
 A read-only audit of `src/rcp`, `web/src`, `tests/`, and `docs/`
 on 2026-09-01 produced the findings below. Every finding was verified by reading
 the code; the few that could only be reasoned about are marked *plausible*. Plan
 steps 1 through 6 are implemented and verified on the remediation branch: H1
 through H10 and M1 through M35 are closed with focused regressions. Steps 7 and
 8 landed their bounded, evidence-backed changes; the remaining refactor-only
-items are accepted exceptions below. The human asked to archive and push this
-state so another agent can finish the PR's final gate. The last full backend run
-reached 3,297 passed and 9 skipped before exposing two stale test expectations;
-both were corrected and their focused 18-test gate passes, but the full rerun was
-explicitly deferred to that next agent.
+items are accepted exceptions below. The remediation and its independent
+follow-up are complete; this file remains archived evidence, not active work.
 
 Settled decisions:
 
@@ -50,12 +47,12 @@ the drift lives. So before adding a guard, name the fact's owner and make the
 guard call it. If there is no owner, create one and route both producer and
 checker through it. If neither is possible, do not add the guard.
 
-Closure condition: every High and Medium finding is fixed with a focused
-regression test or explicitly closed as rejected in this file, the
+Closure condition met on 2026-09-02: every High and Medium finding is fixed with
+a focused regression test or explicitly closed as an accepted exception in this file, the
 over-engineering and design sections are resolved or reduced to a closed list
 of accepted exceptions, `uv run pytest`, `uv run pre-commit run --all-files`,
 and `npm --prefix web test` pass, and the affected UI paths were driven in the
-served app. Then this handoff is archived.
+served app.
 
 Severity key: **H** leaves data, authority, or a recovery path in a state the
 system cannot get out of on its own. **M** is wrong behavior or a maintenance
@@ -520,10 +517,10 @@ pass for the touched area.
    Work-turn runtime, Auto-research duplicates, confirmed server/web dead
    surface, unused configuration, and storage `noqa: F401` blocks were closed;
    the remaining refactor-only proposals are accepted exceptions above.
-8. **Tests and docs — completed 2026-09-01.** `wait_until`, the handoff README, S96 status, the
-   `last_passed` key, ruff and pytest config, prettier scope, `AGENTS.md`
-   ordering and headroom. The final full-suite rerun is transferred to the next
-   PR agent as recorded in the opening status.
+8. **Tests and docs — completed 2026-09-02.** `wait_until`, the handoff README,
+   S96 status, the `last_passed` key, ruff and pytest config, prettier scope,
+   `AGENTS.md` ordering and headroom, final command gate, and served-app UI
+   drive.
 
-Findings closed as rejected are moved to a "Rejected" list in this file with a
-one-line reason in the same commit.
+Findings intentionally not implemented are recorded under **Accepted
+exceptions** with their evidence and one-line reason.

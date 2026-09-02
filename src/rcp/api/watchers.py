@@ -84,6 +84,16 @@ def _watcher_response(record: StoredWatcherRecord) -> dict[str, object]:
     payload["can_check_now"] = bool(
         isinstance(record, WatcherRecord) and record.status == "degraded" and not record.notified
     )
+    if record.notification_operation_id:
+        payload["delivery_label"] = "Delivery claimed"
+    elif record.status == "stopped":
+        payload["delivery_label"] = "Stopped · not delivered"
+    elif record.status == "completed" and not record.notified:
+        payload["delivery_label"] = "Pending delivery"
+    elif record.notified:
+        payload["delivery_label"] = "Acknowledged · not delivered"
+    else:
+        payload["delivery_label"] = "Not delivered"
     return payload
 
 

@@ -339,7 +339,7 @@ def _event_frame(event: AgentEvent) -> str:
     return f"data: {event.model_dump_json()}\n\n"
 
 
-def test_experiment_index_uses_main_cache_and_unbounded_project_runtime(
+def test_experiment_index_uses_one_coherent_runtime_snapshot_per_project(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -367,7 +367,7 @@ def test_experiment_index_uses_main_cache_and_unbounded_project_runtime(
     response = client.get("/api/episodes?mode=experiment_loop")
 
     assert response.status_code == 200
-    assert calls == [(project_id, None), (project_id, GraphTargetRef())]
+    assert calls == [(project_id, None)]
     assert len(response.json()) == 1
     entry = response.json()[0]
     assert set(entry) == {
