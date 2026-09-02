@@ -1,0 +1,59 @@
+name: Prune builds
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List stale builds without deleting them
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  prune:
+    name: prune builds
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Select stale build releases
+        run: |
+          if ! gh release list --limit 1000 --json tagName,isPrerelease,createdAt > releases.json 2>/dev/null; then
+            echo "could not list releases"
+            exit 1
+          fi
+          NOW="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          python packaging/release_build.py select-stale-builds \
+            --releases releases.json \
+            --now "$NOW" \
+            --days 30 > stale-builds.txt
+          echo "stale build releases:"
+          if [[ -s stale-builds.txt ]]; then
+            cat stale-builds.txt
+          else
+            echo "(none)"
+          fi
+
+      - name: Delete stale build releases
+        run: |
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "dry run; no releases deleted"
+            exit 0
+          fi
+          while IFS= read -r BUILD_TAG; do
+            if [[ -z "$BUILD_TAG" ]]; then
+              continue
+            fi
+            if ! gh release delete "$BUILD_TAG" --cleanup-tag --yes >/dev/null 2>&1; then
+              echo "could not delete $BUILD_TAG"
+              exit 1
+            fi
+            echo "deleted $BUILD_TAG"
+          done < stale-builds.txt

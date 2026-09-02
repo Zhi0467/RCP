@@ -1,0 +1,87 @@
+name: Promote build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: Build run number
+        required: true
+        type: string
+      tag:
+        description: Release tag in vX.Y.Z form
+        required: true
+        type: string
+
+jobs:
+  promote:
+    name: promote build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    env:
+      BUILD_NUMBER: ${{ inputs.build }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Refuse an existing release
+        run: |
+          if ! [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "invalid build number $BUILD_NUMBER"
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release $RELEASE_TAG already exists"
+            exit 1
+          fi
+
+      - name: Download the build assets
+        run: |
+          mkdir build-assets
+          if ! gh release download "build/$BUILD_NUMBER" --dir build-assets >/dev/null 2>&1; then
+            echo "build release build/$BUILD_NUMBER does not exist"
+            exit 1
+          fi
+
+      - name: Verify the build manifest
+        run: python packaging/release_build.py verify-manifest build-assets --manifest manifest.sha256
+
+      - name: Check the promotion version
+        run: python packaging/release_build.py check-promotion --wheel build-assets/rcp-*.whl --tag "$RELEASE_TAG"
+
+      - name: Read the build commit
+        run: |
+          if ! TARGET_COMMIT="$(gh release view "build/$BUILD_NUMBER" --json targetCommitish --jq .targetCommitish 2>/dev/null)"; then
+            echo "could not read the commit for build/$BUILD_NUMBER"
+            exit 1
+          fi
+          if ! [[ "$TARGET_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "build/$BUILD_NUMBER has an invalid target commit"
+            exit 1
+          fi
+          echo "TARGET_COMMIT=$TARGET_COMMIT" >> "$GITHUB_ENV"
+
+      - name: Create the promoted release
+        run: |
+          if ! gh release create "$RELEASE_TAG" build-assets/* \
+            --target "$TARGET_COMMIT" \
+            --latest \
+            --title "$RELEASE_TAG" \
+            --notes "Promoted build $BUILD_NUMBER from commit $TARGET_COMMIT." >/dev/null 2>&1; then
+            echo "could not create release $RELEASE_TAG"
+            exit 1
+          fi
+
+      - name: Prove the promoted asset bytes
+        run: |
+          mkdir promoted-assets
+          if ! gh release download "$RELEASE_TAG" --dir promoted-assets >/dev/null 2>&1; then
+            echo "could not download promoted release $RELEASE_TAG"
+            exit 1
+          fi
+          if ! cmp -s build-assets/manifest.sha256 promoted-assets/manifest.sha256; then
+            echo "promoted manifest.sha256 differs from build $BUILD_NUMBER"
+            exit 1
+          fi
+          python packaging/release_build.py verify-manifest promoted-assets --manifest build-assets/manifest.sha256
