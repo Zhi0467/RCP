@@ -125,10 +125,14 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
   `patch_kind`, or equivalent selectors to shared execution plumbing merely to
   collapse visible policy.
 - `BackgroundAgentTasks` is the common launch/runtime engine. Auto-research,
-  Experiment recovery, watcher admission, and report owners intentionally call
-  named engine internals, while the engine calls named owner functions. This is
-  navigational modularity, not a plugin boundary; do not manufacture registries,
-  facades, or event buses to hide the coupling.
+  Experiment recovery, watcher admission, and report owners intentionally share
+  named calls with it; this is navigational modularity, not a plugin boundary.
+  Add no new `kind`, `patch_kind`, or request-subtype branch to the engine unless
+  the change removes an existing exception or proves the rule belongs to universal
+  task-row construction.
+  A feature that must edit three or more engine entry points triggers structural
+  work; move one complete policy decision to its concrete owner rather than
+  manufacturing a registry, facade, callback bus, or event bus.
 - `api/app.py` is explicit composition plus run dispatch, startup recovery, and
   watcher runtime. Do not extract another control layer without measured owner
   collisions or a concrete testing problem.
@@ -205,5 +209,6 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
 Keep this file near 200 lines: target 180–220 lines, with a hard ceiling of 230
 lines enforced by tests. Add only cross-cutting rules a coding agent must see on
 every task. Move behavior, rationale, long failure histories, UI details, and
-module-specific procedures to their owning documents. When adding a line, remove
-or consolidate something of equal value; never grow the file by append-only notes.
+module-specific procedures to their owning documents. A new global invariant
+must replace or consolidate an existing global rule, name its concrete code
+owner, and cite an executable test or acceptance scenario.
