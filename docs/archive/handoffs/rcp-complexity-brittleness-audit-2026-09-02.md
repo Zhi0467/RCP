@@ -1,9 +1,9 @@
 # RCP complexity and brittleness audit
 
-Date: 2026-09-02  
-Audited commit: `5e8a4f889c7988b345178ba68f143f05b3e8150d`  
-Status: point-in-time review. This report is archived evidence, not current
-product authority and not an implementation handoff.
+- Date: 2026-09-02
+- Audited commit: `5e8a4f889c7988b345178ba68f143f05b3e8150d`
+- Status: point-in-time review. This report is archived evidence, not current
+  product authority and not an implementation handoff.
 
 ## Conclusion
 
@@ -288,15 +288,17 @@ Do not refactor this into a registry or plugin API now. Instead:
 The trigger for structural work is a feature that must edit three or more engine
 entry points, not the current named imports or file size.
 
-## P2. Documentation authority is correct but saturated
+## P2. Documentation authority is correct but capacity is finite
 
 RCP depends on documentation more than an ordinary application because coding
 agents consume it as an authority system. The hierarchy is clear, archived work
 is separated, and the prior drift findings were corrected. The remaining
-brittleness is capacity: [`AGENTS.md`](../../../AGENTS.md) is at its enforced
-230-line ceiling, while the same cross-cutting promises also appear at coarser
-grain in `design.md` and are referenced by specifications, acceptance scenarios,
-decisions, source comments, and tests.
+brittleness is finite capacity, not exhaustion: [`AGENTS.md`](../../../AGENTS.md)
+is 209 lines at the audited commit, inside its 180–220-line target band and with
+about twenty lines of headroom to the enforced 230-line hard ceiling, while the
+same cross-cutting promises also appear at coarser grain in `design.md` and are
+referenced by specifications, acceptance scenarios, decisions, source comments,
+and tests.
 
 Do not add another documentation layer or generated policy registry. Apply a
 stricter admission rule instead: a new global invariant must replace or
