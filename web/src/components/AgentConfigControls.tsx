@@ -28,6 +28,9 @@ interface Props {
   defaultCollapsed?: boolean;
   /** Re-probe the provider CLIs. Rendered as a control only where passed. */
   onRefreshReadiness?: () => Promise<void>;
+  /** The active project's real request state; missing readiness alone is not a request. */
+  readinessPending?: boolean;
+  readinessError?: string | null;
   /**
    * The profile runtime this configuration runs on. A run request cannot
    * override it, so a surface that only builds a request passes `locked` and
@@ -60,6 +63,8 @@ export function AgentConfigControls({
   collapsible = false,
   defaultCollapsed = false,
   onRefreshReadiness,
+  readinessPending = false,
+  readinessError = null,
   runtime,
   children,
 }: Props) {
@@ -176,14 +181,20 @@ export function AgentConfigControls({
           <div
             className={
               readiness === undefined
-                ? "agent-readiness pending"
+                ? readinessPending
+                  ? "agent-readiness pending"
+                  : "agent-readiness warning"
                 : readiness.authenticated
                   ? "agent-readiness ready"
                   : "agent-readiness warning"
             }
           >
             {readiness === undefined ? (
-              <LoaderCircle className="spin" size={14} />
+              readinessPending ? (
+                <LoaderCircle className="spin" size={14} />
+              ) : (
+                <TriangleAlert size={14} />
+              )
             ) : readiness.authenticated ? (
               <CheckCircle2 size={14} />
             ) : (
@@ -191,7 +202,10 @@ export function AgentConfigControls({
             )}
             <span>
               {readiness === undefined
-                ? `Checking ${value.provider} on ${machine?.host || "this machine"}…`
+                ? readinessPending
+                  ? `Checking ${value.provider} on ${machine?.host || "this machine"}…`
+                  : readinessError ||
+                    `${value.provider} status is unavailable on ${machine?.host || "this machine"}. Re-check it.`
                 : readiness.authenticated
                   ? `${readiness.version || value.provider} ready on ${machine?.host || "this machine"}`
                   : readiness?.reason ||
@@ -201,7 +215,7 @@ export function AgentConfigControls({
               <button
                 type="button"
                 className="icon-button compact"
-                disabled={reprobing}
+                disabled={reprobing || readinessPending}
                 aria-label="Re-check provider CLIs"
                 onClick={() => {
                   setReprobing(true);
