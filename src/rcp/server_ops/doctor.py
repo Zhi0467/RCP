@@ -592,6 +592,7 @@ class LinuxServerDoctorMachine:
         )
         from rcp.server_ops.update_cutover import (
             UpdateCutoverRefused,
+            update_operation_needing_recovery,
             update_operation_receipts,
         )
 
@@ -599,6 +600,11 @@ class LinuxServerDoctorMachine:
             operations = update_operation_receipts(
                 self.layout.update_checkpoints_root,
                 expected_uid=service_uid,
+            )
+            recovery = update_operation_needing_recovery(
+                self.layout.update_checkpoints_root,
+                expected_uid=service_uid,
+                receipts=operations,
             )
             journals = unfinished_rollback_journals(
                 self.layout.update_checkpoints_root,
@@ -611,24 +617,26 @@ class LinuxServerDoctorMachine:
             add_problem("unfinished update rollback requires sudo rcp server update re-entry")
         if not operations:
             return _DoctorUpdateSummary(state="none")
-        _path, latest, _digest = max(
+        selected = recovery or max(
             operations,
             key=lambda item: (item[1].updated_at, item[1].operation_id),
         )
-        if installation_id is not None and latest.installation_id != installation_id:
-            add_problem("latest update receipt belongs to another server installation")
-        runtime_failure = getattr(latest, "runtime_failure", None)
-        if not latest.terminal:
+        _path, receipt, _digest = selected
+        qualifier = "unfinished" if recovery is not None else "latest"
+        if installation_id is not None and receipt.installation_id != installation_id:
+            add_problem(f"{qualifier} update receipt belongs to another server installation")
+        runtime_failure = getattr(receipt, "runtime_failure", None)
+        if not receipt.terminal:
             add_problem("unfinished source update requires sudo rcp server update re-entry")
-        elif latest.state in {"committed", "rolled_back"} and runtime_failure is not None:
+        elif receipt.state in {"committed", "rolled_back"} and runtime_failure is not None:
             add_problem(
                 "selected source release needs safe runtime restart via sudo rcp server update"
             )
         return _DoctorUpdateSummary(
-            state=latest.state,
-            candidate_commit=latest.candidate_commit,
-            restored_commit=(latest.base_commit if latest.state == "rolled_back" else None),
-            failure=runtime_failure or latest.failure,
+            state=receipt.state,
+            candidate_commit=receipt.candidate_commit,
+            restored_commit=(receipt.base_commit if receipt.state == "rolled_back" else None),
+            failure=runtime_failure or receipt.failure,
         )
 
     def _resolve_service_identity(

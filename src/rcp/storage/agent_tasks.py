@@ -7,6 +7,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import PurePosixPath
 from statistics import median
 from typing import Literal
 
@@ -46,16 +47,10 @@ from rcp.limits import (
     WRITING_SESSIONS_PER_PROJECT,
 )
 from rcp.providers import ProviderUsage, require_runtime_id
-from rcp.storage.models import (  # noqa: F401
-    _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
-    _EXPERIMENT_EPISODE_PINNED_FIELDS,
-    _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC,
-    _PROJECT_ID_TABLES,
-    ACTIVE_AGENT_TASK_STATUSES,
+from rcp.storage.models import (
     AGENT_TASK_PROJECTION_FIELDS,
     AGENT_TASK_TRANSITIONS,
-    SPACE_NAME_MAX_LENGTH,
-    AgentCommandInvocationRecord,
+    AgentTaskAdmissionConflict,
     AgentTaskContractRecord,
     AgentTaskEventRecord,
     AgentTaskKind,
@@ -70,55 +65,27 @@ from rcp.storage.models import (  # noqa: F401
     AgentUsageSnapshot,
     AutoResearchRole,
     ChatSessionContextRecord,
-    ExperimentEpisodeRecord,
-    ExperimentLoopRuntime,
-    ExperimentWatcherResourceRecord,
-    GraphCondition,
-    GraphWatcherRecord,
-    NodeStatusGraphCondition,
-    ProjectRecord,
-    ProjectStageRecord,
-    ProposalResolvedGraphCondition,
-    ProviderSkillInventoryRecord,
-    ResultViewConflict,
-    ResultViewRecord,
-    SpaceKind,
-    SpaceUserKind,
-    SpaceUserRecord,
-    StoredWatcherRecord,
-    TeamAuthenticationError,
-    TeamInvitationRecord,
-    WatcherClaimConflict,
-    WatcherContinuation,
-    WatcherDeliveryRecord,
-    WatcherRecord,
-    WatcherStatus,
-    WatcherStopRequest,
-    _canonical_space_id,
     _canonical_uuid4,
-    _discard_failed_team_initialization,
-    _experiment_pinned_value,
-    _new_enrollment_code,
-    _new_member_token,
-    _new_session_token,
-    _optional_str,
-    _parse_enrollment_code,
-    _plain_html_name,
     _required_timestamp,
-    _result_view_html_bytes,
-    _result_view_is_visible,
     _result_view_reference_time,
-    _sha256,
-    _stored_space_kind,
-    _validated_result_view_html,
-    normalize_space_name,
-    watcher_next_check_at,
 )
 
 # Ordered Apply history is a contiguous latest tail. The singular projection
 # retains the detailed latest result; history entries are concise so task JSON
 # remains below its existing 64 KiB storage boundary.
 _GRAPH_UPDATE_HISTORY_RESERVE_BYTES = 8 * 1024
+
+_PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
+    "operation_admitted",
+    "operation_dispatch_attempt",
+    "operation_dispatch_failed_before_start",
+    "operation_dispatch_started",
+    "operation_dispatch_reset",
+    "chat_stage_layout",
+)
+_PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS = ", ".join(
+    "?" for _category in _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES
+)
 
 _AGENT_TASK_CONTINUATION_CAUSES = frozenset(
     {
@@ -180,7 +147,9 @@ class AgentTaskStoreMixin:
                 if continuation_cause == "fresh":
                     self._require_project_accepts_new_work(connection, record.project_id)
                 if self._has_active_chat_overlap(connection, record):
-                    raise ValueError("Another task is already active in this conversation.")
+                    raise AgentTaskAdmissionConflict(
+                        "Another task is already active in this conversation."
+                    )
                 self._insert_agent_task(
                     connection,
                     record,
@@ -280,7 +249,7 @@ class AgentTaskStoreMixin:
         if self._contains_legacy_lineage_key(record.request):
             raise ValueError("agent task requests must use episode_id, not campaign_id")
         self._validate_dispatch_authority_insert(connection, record)
-        self._bind_chat_stage(connection, record)
+        record = self._bind_chat_stage(connection, record)
         self._validate_experiment_task_insert(connection, record)
         self._validate_graph_target_insert(connection, record)
         connection.execute(
@@ -589,7 +558,7 @@ class AgentTaskStoreMixin:
     def _bind_chat_stage(
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
-    ) -> None:
+    ) -> AgentTaskRecord:
         """Keep one exact scratch directory bound to a conversation.
 
         Every later task in the same chat inherits the prior host/root pair
@@ -602,16 +571,16 @@ class AgentTaskStoreMixin:
         """
 
         if record.kind not in {"node_chat", "project_chat"}:
-            return
+            return record
         # Resume, Retry, provider handoff, and Experiment recovery already carry
         # an exact server-owned stage. They are authoritative and may
         # deliberately replace an older binding; only a missing binding is
         # recovered from the durable conversation ledger here.
         if record.stage_root is not None:
-            return
+            return record
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
-            return
+            return record
         prior_chat_targets = connection.execute(
             """
             SELECT DISTINCT graph_target_json
@@ -674,7 +643,7 @@ class AgentTaskStoreMixin:
                 (*watcher_ids, record.project_id, record.kind, chat_id),
             ).fetchall()
         else:
-            return
+            return record
         bindings = {(str(row["host"]), str(row["root"])) for row in rows}
         if len(bindings) > 1:
             raise ValueError(
@@ -682,10 +651,171 @@ class AgentTaskStoreMixin:
                 "continue safely."
             )
         if not bindings:
-            return
+            return record
         saved_host, saved_root = next(iter(bindings))
-        record.stage_host = saved_host or None
-        record.stage_root = saved_root
+        return record.model_copy(
+            update={"stage_host": saved_host or None, "stage_root": saved_root}
+        )
+
+    def chat_stage_layout(
+        self,
+        *,
+        project_id: str,
+        kind: Literal["node_chat", "project_chat"],
+        chat_id: str,
+        stage_host: str,
+        stage_root: str,
+    ) -> Literal["split-v1"] | None:
+        """Return the one immutable local-chat stage-layout marker for a binding."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT receipt.payload_json
+                FROM graph_run_receipts AS receipt
+                JOIN graph_runs AS run ON run.operation_id = receipt.operation_id
+                WHERE receipt.category = 'chat_stage_layout'
+                  AND run.project_id = ? AND run.kind = ?
+                  AND json_extract(run.request_json, '$.chat_id') = ?
+                  AND json_extract(receipt.payload_json, '$.stage_host') = ?
+                  AND json_extract(receipt.payload_json, '$.stage_root') = ?
+                ORDER BY receipt.receipt_id ASC
+                """,
+                (
+                    project_id,
+                    kind,
+                    chat_id,
+                    stage_host,
+                    stage_root,
+                ),
+            ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ValueError("The conversation stage has multiple layout markers.")
+        try:
+            payload = json.loads(rows[0]["payload_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("The conversation stage layout marker is malformed.") from exc
+        expected = {
+            "layout": "split-v1",
+            "stage_host": stage_host,
+            "stage_root": stage_root,
+            "workspace_root": str(PurePosixPath(stage_root) / "workspace"),
+        }
+        if payload != expected:
+            raise ValueError("The conversation stage layout marker conflicts with its binding.")
+        return "split-v1"
+
+    def chat_stage_has_prior_binding(
+        self,
+        *,
+        operation_id: str,
+        project_id: str,
+        kind: Literal["node_chat", "project_chat"],
+        chat_id: str,
+        stage_host: str,
+        stage_root: str,
+    ) -> bool:
+        """Return whether another task durably bound this exact conversation stage."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE operation_id != ? AND project_id = ? AND kind = ?
+                  AND json_extract(request_json, '$.chat_id') = ?
+                  AND COALESCE(stage_host, '') = ? AND stage_root = ?
+                LIMIT 1
+                """,
+                (operation_id, project_id, kind, chat_id, stage_host, stage_root),
+            ).fetchone()
+        return row is not None
+
+    def record_chat_stage_layout(
+        self,
+        operation_id: str,
+        *,
+        stage_root: str,
+        workspace_root: str,
+    ) -> None:
+        """Record one idempotent split-layout marker before stage checkpointing."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = connection.execute(
+                """
+                SELECT project_id, kind, json_extract(request_json, '$.chat_id') AS chat_id
+                FROM graph_runs WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if (
+                task is None
+                or task["kind"] not in {"node_chat", "project_chat"}
+                or not task["chat_id"]
+            ):
+                raise ValueError("The agent task has no durable chat stage binding.")
+            payload = {
+                "layout": "split-v1",
+                "stage_host": "",
+                "stage_root": stage_root,
+                "workspace_root": workspace_root,
+            }
+            payload_json = self._bounded_receipt_payload(payload)
+            rows = connection.execute(
+                """
+                SELECT receipt.receipt_id, receipt.payload_json
+                FROM graph_run_receipts AS receipt
+                JOIN graph_runs AS run ON run.operation_id = receipt.operation_id
+                WHERE receipt.category = 'chat_stage_layout'
+                  AND run.project_id = ? AND run.kind = ?
+                  AND json_extract(run.request_json, '$.chat_id') = ?
+                  AND json_extract(receipt.payload_json, '$.stage_host') = ''
+                  AND json_extract(receipt.payload_json, '$.stage_root') = ?
+                ORDER BY receipt.receipt_id ASC
+                """,
+                (task["project_id"], task["kind"], task["chat_id"], stage_root),
+            ).fetchall()
+            if rows:
+                if any(row["payload_json"] != payload_json for row in rows):
+                    raise ValueError(
+                        "The conversation stage layout marker conflicts with its stage."
+                    )
+                duplicate_ids = [row["receipt_id"] for row in rows[1:]]
+                if duplicate_ids:
+                    placeholders = ",".join("?" for _ in duplicate_ids)
+                    connection.execute(
+                        f"DELETE FROM graph_run_receipts WHERE receipt_id IN ({placeholders})",
+                        duplicate_ids,
+                    )
+                return
+            legacy = connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE operation_id != ? AND project_id = ? AND kind = ?
+                  AND json_extract(request_json, '$.chat_id') = ?
+                  AND COALESCE(stage_host, '') = '' AND stage_root = ?
+                LIMIT 1
+                """,
+                (
+                    operation_id,
+                    task["project_id"],
+                    task["kind"],
+                    task["chat_id"],
+                    stage_root,
+                ),
+            ).fetchone()
+            if legacy is not None:
+                raise ValueError("A legacy conversation stage cannot acquire a split layout.")
+            self._insert_agent_task_receipt(
+                connection,
+                operation_id,
+                "chat_stage_layout",
+                payload_json,
+                tier="summary",
+                created_at=self.now(),
+            )
 
     @staticmethod
     def _has_active_chat_overlap(
@@ -1129,7 +1259,9 @@ class AgentTaskStoreMixin:
             connection.execute("BEGIN IMMEDIATE")
             self._claim_agent_task_graph_repair(connection, parent_operation_id)
             if self._has_active_chat_overlap(connection, record):
-                raise ValueError("Another task is already active in this conversation.")
+                raise AgentTaskAdmissionConflict(
+                    "Another task is already active in this conversation."
+                )
             self._insert_agent_task(
                 connection,
                 record,
@@ -1506,6 +1638,7 @@ class AgentTaskStoreMixin:
         usage_id = str(uuid.uuid4())
         now = self.now()
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             duplicate = connection.execute(
                 """
                 SELECT 1 FROM agent_usage
@@ -2037,42 +2170,24 @@ class AgentTaskStoreMixin:
         )
         protected_count = int(
             connection.execute(
-                """
+                f"""
                 SELECT COUNT(*) FROM graph_run_receipts
                 WHERE operation_id = ? AND tier = ?
-                  AND category IN (
-                    'operation_admitted',
-                    'operation_dispatch_attempt',
-                    'operation_dispatch_failed_before_start',
-                    'operation_dispatch_started',
-                    'operation_dispatch_reset'
-                  )
+                  AND category IN ({_PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS})
                 """,
-                (operation_id, tier),
+                (operation_id, tier, *_PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES),
             ).fetchone()[0]
         )
         ordinary_limit = max(0, AGENT_TASK_RECEIPT_RETENTION_COUNTS[tier] - protected_count)
         connection.execute(
-            """
+            f"""
             DELETE FROM graph_run_receipts
             WHERE operation_id = ? AND tier = ?
-              AND category NOT IN (
-                'operation_admitted',
-                'operation_dispatch_attempt',
-                'operation_dispatch_failed_before_start',
-                'operation_dispatch_started',
-                'operation_dispatch_reset'
-              )
+              AND category NOT IN ({_PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS})
               AND receipt_id NOT IN (
                 SELECT receipt_id FROM graph_run_receipts
                 WHERE operation_id = ? AND tier = ?
-                  AND category NOT IN (
-                  'operation_admitted',
-                  'operation_dispatch_attempt',
-                  'operation_dispatch_failed_before_start',
-                  'operation_dispatch_started',
-                  'operation_dispatch_reset'
-                  )
+                  AND category NOT IN ({_PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS})
                 ORDER BY receipt_id DESC
                 LIMIT ?
             )
@@ -2080,8 +2195,10 @@ class AgentTaskStoreMixin:
             (
                 operation_id,
                 tier,
+                *_PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES,
                 operation_id,
                 tier,
+                *_PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES,
                 ordinary_limit,
             ),
         )
@@ -2678,6 +2795,7 @@ class AgentTaskStoreMixin:
         stage_host: str,
         stage_root: str,
         fingerprint: str,
+        compatible_previous_fingerprint: str | None = None,
     ) -> None:
         """Compare-and-set the durable filesystem scope before provider launch."""
 
@@ -2702,7 +2820,7 @@ class AgentTaskStoreMixin:
             if row["stage_host"] != normalized_host or row["stage_root"] != stage_root:
                 raise ValueError("agent task write scope does not match its saved execution stage")
             existing = row["write_scope_fingerprint"]
-            if existing is not None and existing != fingerprint:
+            if existing not in {None, fingerprint, compatible_previous_fingerprint}:
                 raise ValueError("agent task write scope changed after it was durably bound")
 
             clauses = ["(COALESCE(stage_host, '') = ? AND stage_root = ?)"]
@@ -2722,7 +2840,8 @@ class AgentTaskStoreMixin:
                 (operation_id, row["kind"], *values),
             ).fetchall()
             inherited = {item["write_scope_fingerprint"] for item in related}
-            if inherited and inherited != {fingerprint}:
+            incompatible = inherited - {fingerprint}
+            if incompatible - {compatible_previous_fingerprint}:
                 raise ValueError(
                     "agent task continuation conflicts with its saved project write scope"
                 )
@@ -2731,9 +2850,9 @@ class AgentTaskStoreMixin:
                 UPDATE graph_runs
                 SET write_scope_fingerprint = ?, updated_at = ?
                 WHERE operation_id = ?
-                  AND (write_scope_fingerprint IS NULL OR write_scope_fingerprint = ?)
+                  AND write_scope_fingerprint IS ?
                 """,
-                (fingerprint, self.now(), operation_id, fingerprint),
+                (fingerprint, self.now(), operation_id, existing),
             ).rowcount
             if updated != 1:
                 raise ValueError("agent task write scope changed while it was being bound")

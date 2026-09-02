@@ -4,70 +4,13 @@ import json
 import sqlite3
 
 from rcp.providers import ProviderSkill
-from rcp.storage.models import (  # noqa: F401
-    _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
-    _EXPERIMENT_EPISODE_PINNED_FIELDS,
-    _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC,
+from rcp.storage.models import (
     _PROJECT_ID_TABLES,
-    ACTIVE_AGENT_TASK_STATUSES,
-    SPACE_NAME_MAX_LENGTH,
-    AgentCommandInvocationRecord,
-    AgentTaskContractRecord,
-    AgentTaskEventRecord,
-    AgentTaskKind,
-    AgentTaskReceiptRecord,
-    AgentTaskReceiptTier,
-    AgentTaskRecord,
-    AgentTaskStatus,
-    AgentUsageCell,
-    AgentUsageCountReason,
-    AgentUsageMetric,
-    AgentUsageRecord,
-    AgentUsageSnapshot,
-    ChatSessionContextRecord,
-    ExperimentEpisodeRecord,
-    ExperimentLoopRuntime,
-    ExperimentWatcherResourceRecord,
-    GraphCondition,
-    GraphWatcherRecord,
-    NodeStatusGraphCondition,
+    ProjectActiveTaskConflict,
     ProjectRecord,
     ProjectStageRecord,
-    ProposalResolvedGraphCondition,
     ProviderSkillInventoryRecord,
-    ResultViewConflict,
-    ResultViewRecord,
-    SpaceKind,
-    SpaceUserKind,
-    SpaceUserRecord,
-    StoredWatcherRecord,
-    TeamAuthenticationError,
-    TeamInvitationRecord,
-    WatcherClaimConflict,
-    WatcherContinuation,
-    WatcherDeliveryRecord,
-    WatcherRecord,
-    WatcherStatus,
-    WatcherStopRequest,
-    _canonical_space_id,
     _canonical_uuid4,
-    _discard_failed_team_initialization,
-    _experiment_pinned_value,
-    _new_enrollment_code,
-    _new_member_token,
-    _new_session_token,
-    _optional_str,
-    _parse_enrollment_code,
-    _plain_html_name,
-    _required_timestamp,
-    _result_view_html_bytes,
-    _result_view_is_visible,
-    _result_view_reference_time,
-    _sha256,
-    _stored_space_kind,
-    _validated_result_view_html,
-    normalize_space_name,
-    watcher_next_check_at,
 )
 
 
@@ -438,7 +381,9 @@ class ProjectStoreMixin:
                 ).fetchone()
                 is not None
             ):
-                raise ValueError("Pause the active agent task before deleting this project.")
+                raise ProjectActiveTaskConflict(
+                    "Pause the active agent task before deleting this project."
+                )
             rows = connection.execute(
                 """
                 SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root
@@ -476,7 +421,9 @@ class ProjectStoreMixin:
                     ).fetchone()
                     is not None
                 ):
-                    raise ValueError("Pause the active agent task before deleting this project.")
+                    raise ProjectActiveTaskConflict(
+                        "Pause the active agent task before deleting this project."
+                    )
 
                 operation_ids = connection.execute(
                     "SELECT operation_id FROM graph_runs WHERE project_id = ?",
@@ -874,6 +821,27 @@ class ProjectStoreMixin:
                 """,
                 (project_id, legacy_id),
             )
+            # Canonical wins on conflict, but the legacy identity must still be
+            # retired so it cannot reappear as a second draft owner.
+            connection.execute(
+                "DELETE FROM paper_drafts WHERE project_id = ?",
+                (legacy_id,),
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO project_members (
+                    project_id, user_id, seated_at, seated_by
+                )
+                SELECT ?, user_id, seated_at, seated_by
+                FROM project_members
+                WHERE project_id = ?
+                """,
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "DELETE FROM project_members WHERE project_id = ?",
+                (legacy_id,),
+            )
             connection.execute(
                 "UPDATE writing_sessions SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
@@ -901,6 +869,23 @@ class ProjectStoreMixin:
             connection.execute(
                 "UPDATE watchers SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO graph_watcher_reconciliation (
+                    project_id, graph_target_key, graph_target_json,
+                    revision, transition_id, updated_at
+                )
+                SELECT ?, graph_target_key, graph_target_json,
+                       revision, transition_id, updated_at
+                FROM graph_watcher_reconciliation
+                WHERE project_id = ?
+                """,
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "DELETE FROM graph_watcher_reconciliation WHERE project_id = ?",
+                (legacy_id,),
             )
             connection.execute(
                 "UPDATE auto_research_child_work SET project_id = ? WHERE project_id = ?",

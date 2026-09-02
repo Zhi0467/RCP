@@ -131,7 +131,8 @@ export function PaperWorkspace({
   const coachTextarea = useRef<HTMLTextAreaElement>(null);
   const latestContent = useRef(content);
   const buffersSwapped = useRef(false);
-  const paperRequestGeneration = useRef(0);
+  const paperPollGeneration = useRef(0);
+  const paperSaveGeneration = useRef(0);
   const handledCoachTask = useRef<string | null>(
     tasks.find((task) => task.kind === "paper_coach" && task.settled)?.operation_id ?? null,
   );
@@ -144,10 +145,16 @@ export function PaperWorkspace({
     let cancelled = false;
     let timer: number | undefined;
     const poll = async () => {
-      const generation = ++paperRequestGeneration.current;
+      const generation = ++paperPollGeneration.current;
+      const saveGeneration = paperSaveGeneration.current;
       try {
         const next = await loadPaperSnapshot(api, apiBase);
-        if (cancelled || generation !== paperRequestGeneration.current) return;
+        if (
+          cancelled ||
+          generation !== paperPollGeneration.current ||
+          saveGeneration !== paperSaveGeneration.current
+        )
+          return;
         setPaper(next);
         if (!buffersSwapped.current) {
           setIncomingContent(next.incoming_content ?? "");
@@ -240,11 +247,11 @@ export function PaperWorkspace({
       });
     },
   });
+  const resetSkills = skills.reset;
 
   useEffect(() => {
-    skills.reset();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.id]);
+    resetSkills();
+  }, [project.id, resetSkills]);
   useEffect(() => {
     if (!latestCoachTask?.native_session_id || !latestCoachTask.settled) return;
     if (handledCoachTask.current === latestCoachTask.operation_id) return;
@@ -259,13 +266,15 @@ export function PaperWorkspace({
     const timer = window.setTimeout(async () => {
       setSaving(true);
       const savedContent = latestContent.current;
-      const generation = ++paperRequestGeneration.current;
+      const generation = ++paperSaveGeneration.current;
       try {
         const next = await api<PaperSnapshot>(`${apiBase}/paper`, {
           method: "PUT",
           body: JSON.stringify({ content: savedContent, base_hash: saveBaseHash }),
         });
-        if (generation !== paperRequestGeneration.current) return;
+        if (generation !== paperSaveGeneration.current) return;
+        // Invalidate a poll that began before or during this successful save.
+        paperSaveGeneration.current += 1;
         setPaper(next);
         setIncomingContent(next.incoming_content ?? "");
         setIncomingCanonicalHash(
@@ -638,10 +647,10 @@ export function PaperWorkspace({
         )}
 
         <div className="coach-transcript" aria-live="polite">
-          {transcript.map((line, index) => (
+          {transcript.map((line) => (
             <div
               className={`chat-line ${line.role === "agent" ? "coach" : line.role}`}
-              key={`${line.taskId}-${index}`}
+              key={line.lineId}
             >
               {line.role === "human" ? `You: ${line.text}` : line.text}
             </div>

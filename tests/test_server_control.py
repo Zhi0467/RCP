@@ -568,10 +568,20 @@ def test_update_maintenance_blocks_get_routes_that_can_mutate(tmp_path: Path) ->
     app.state.runtime_admission_gate.close_and_wait(timeout=1)
 
     with TestClient(app) as client:
-        response = client.get("/api/health")
+        response = client.get(
+            "/api/health",
+            headers={"Origin": "http://localhost:5173"},
+        )
+        disallowed = client.get(
+            "/api/health",
+            headers={"Origin": "https://attacker.test"},
+        )
 
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "server_update_maintenance"
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert disallowed.status_code == 503
+    assert "access-control-allow-origin" not in disallowed.headers
 
 
 def test_update_control_operations_require_a_root_peer(
@@ -751,6 +761,45 @@ def test_unauthorized_os_peer_is_rejected_before_request_dispatch(control_root: 
         assert dispatched is False
     finally:
         server.stop()
+
+
+def test_server_accepts_previous_protocol_and_echoes_it_on_success_and_error(
+    control_root: Path,
+) -> None:
+    server, metadata = _standalone_server(control_root)
+    previous = control.SERVER_CONTROL_COMPATIBLE_PROTOCOL_VERSIONS[-2]
+    request_id = str(uuid.uuid4())
+    base = {
+        "protocol_version": previous,
+        "request_id": request_id,
+        "instance_id": metadata.instance_id,
+        "operation": "probe",
+    }
+    server.start()
+    try:
+        succeeded = _raw_request(
+            Path(metadata.control_socket or ""),
+            _framed_json(base),
+        )
+        refused = _raw_request(
+            Path(metadata.control_socket or ""),
+            _framed_json({**base, "unexpected": True}),
+        )
+        unsupported = _raw_request(
+            Path(metadata.control_socket or ""),
+            _framed_json({**base, "protocol_version": previous - 1}),
+        )
+    finally:
+        server.stop()
+
+    assert succeeded["ok"] is True
+    assert succeeded["protocol_version"] == previous
+    assert refused["ok"] is False
+    assert refused["protocol_version"] == previous
+    assert refused["error"]["code"] == "invalid_request"
+    assert unsupported["ok"] is False
+    assert unsupported["protocol_version"] == previous - 1
+    assert unsupported["error"]["code"] == "invalid_request"
 
 
 @pytest.mark.parametrize(

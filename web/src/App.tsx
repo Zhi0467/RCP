@@ -52,7 +52,11 @@ import {
   returnDesktopToPersonal,
   type DesktopUpdate,
 } from "./desktopRuntime";
-import { graphMutationsDisabled, replayFailureLabel, taskMayMutateGraph } from "./graphAuthority";
+import {
+  projectGraphMutationFailureLabel,
+  projectGraphMutationsDisabled,
+  taskMayMutateGraph,
+} from "./graphAuthority";
 import { buildGlossaryIndex } from "./glossary";
 import {
   branchExperimentPollingKey,
@@ -188,26 +192,6 @@ import {
 } from "./textScale";
 import { NOTICE_TIMEOUT_MS } from "./uiConstants";
 
-export { revisionSummariesUrl } from "./hooks/useProjectHistory";
-export {
-  shouldLoadVisibleChatTranscript,
-  visibleChatTranscriptIds,
-  visibleUnreadChatId,
-} from "./hooks/useChatState";
-export { LIVE_EPISODE_POLL_INTERVAL_MS } from "./hooks/useEpisodeDialogs";
-export { startLiveEpisodePolling };
-export { relatedNodeWindowAction } from "./hooks/useGraphSelection";
-export {
-  ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
-  OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
-  PROJECT_TAB_CACHE_LIMIT,
-  cacheProjectTabState,
-  inactiveProjectTabState,
-  projectIdsForCacheHeartbeat,
-  projectTabStateForOpen,
-  singleFlightProjectCacheHeartbeat,
-  startProjectCachePolling,
-} from "./hooks/useProjectTabs";
 import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from "./projectTabs";
 
 const PROVIDER_SKILL_READINESS_POLL_DELAY_MS = 1_000;
@@ -323,11 +307,6 @@ export function experimentControlsNeedWrapupPolling(
   return Object.values(controls).some((control) => control.health === "wrapping_up");
 }
 
-export function terminalTasksSince(previous: AgentTask[], current: AgentTask[]): AgentTask[] {
-  const previouslyActive = new Set(previous.filter(isActiveTask).map((task) => task.operation_id));
-  return current.filter((task) => previouslyActive.has(task.operation_id) && !isActiveTask(task));
-}
-
 export function activeBranchMergeTask(episode: Episode): AgentTask | null {
   const operationId = episode.graph_branch?.active_merge_task_id;
   if (!operationId) return null;
@@ -411,6 +390,7 @@ const EMPTY_GRAPH_ATTENTION: GraphAttentionProjection = {
   pending_proposal_ids: [],
   decisions_awaiting_choice_ids: [],
   open_blocker_ids: [],
+  proposal_actions: {},
 };
 
 export function projectAttentionForPresentation(
@@ -477,8 +457,17 @@ export function canonicalGraphHead(
 export function attentionGraphForProjection(
   canonicalGraph: GraphState,
   projection: BrowserTransitionProjection | null,
+  route: TransitionPreviewRouting["route"] = "backend_preview",
 ): GraphState {
+  if (route === "local_draft") return canonicalGraph;
   return projection?.graph ?? canonicalGraph;
+}
+
+export function transitionProjectionForRoute(
+  projection: BrowserTransitionProjection | null,
+  route: TransitionPreviewRouting["route"],
+): BrowserTransitionProjection | null {
+  return route === "backend_preview" ? projection : null;
 }
 
 export function humanDraftTransitionRouting(
@@ -902,7 +891,6 @@ export default function App() {
     selectTaskInspector,
     chooseRetryTask,
     closeRetryTask,
-    dismissTaskNotification,
     beginTaskStart,
     beginTaskAction,
     beginTaskRepair,
@@ -1623,7 +1611,7 @@ export default function App() {
         routeMatchesProject ? requestedRoute.experimentRoute : null,
       );
       resetProjectChats();
-      resetProjectTasks(projectId);
+      resetProjectTasks();
       resetProjectHistory(projectId);
       setUsage(null);
       setWatchers([]);
@@ -1764,8 +1752,32 @@ export default function App() {
     () => watchers.some((watcher) => !watcher.notified),
     [watchers],
   );
-  const mutationsDisabled = graphMutationsDisabled(graph);
-  const presentedTransitionProjection = mutationsDisabled ? null : draftTransitionProjection;
+  const mutationsDisabled = project ? projectGraphMutationsDisabled(project) : false;
+  const candidateTransitionProjection = mutationsDisabled ? null : draftTransitionProjection;
+  const retryConfig = useMemo(
+    () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
+    [project, retryTask],
+  );
+  const normalizedPreviewDraft = useMemo(
+    () => (humanDraft ? normalizeHumanDraft(humanDraft, graph) : null),
+    [graph, humanDraft],
+  );
+  const draftPreviewRouting = useMemo(
+    () =>
+      normalizedPreviewDraft
+        ? humanDraftTransitionRouting(
+            normalizedPreviewDraft,
+            graph,
+            transitionManifest,
+            transitionRulesetTag,
+          )
+        : ({ route: "local_draft", reason: "no_manifest_trigger" } as const),
+    [graph, normalizedPreviewDraft, transitionManifest, transitionRulesetTag],
+  );
+  const presentedTransitionProjection = transitionProjectionForRoute(
+    candidateTransitionProjection,
+    draftPreviewRouting.route,
+  );
   const presentedExperimentControl =
     presentedTransitionProjection?.experiment_control ?? project?.experiment_control ?? {};
   const experimentWrapupPollingActive = experimentControlsNeedWrapupPolling(
@@ -1803,10 +1815,6 @@ export default function App() {
     }
     return control;
   };
-  const retryConfig = useMemo(
-    () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
-    [project, retryTask],
-  );
   const presentedGraph = useMemo(
     () => attentionGraphForProjection(graph, presentedTransitionProjection),
     [graph, presentedTransitionProjection],
@@ -1857,23 +1865,6 @@ export default function App() {
   const committableDraftCount = humanDraftCommittableCount(humanDraft, graph);
   const behindDraftCount = humanDraftBehindCount(humanDraft, graph);
   const ontologyDraftIsStale = humanDraftOntologyIsStale(humanDraft, graph);
-  const normalizedPreviewDraft = useMemo(
-    () => (humanDraft ? normalizeHumanDraft(humanDraft, graph) : null),
-    [graph, humanDraft],
-  );
-  const draftPreviewRouting = useMemo(
-    () =>
-      normalizedPreviewDraft
-        ? humanDraftTransitionRouting(
-            normalizedPreviewDraft,
-            graph,
-            transitionManifest,
-            transitionRulesetTag,
-          )
-        : ({ route: "local_draft", reason: "no_manifest_trigger" } as const),
-    [graph, normalizedPreviewDraft, transitionManifest, transitionRulesetTag],
-  );
-
   useLayoutEffect(() => {
     if (mutationsDisabled || !humanDraft) {
       setDraftTransitionProjection(null);
@@ -1896,6 +1887,8 @@ export default function App() {
           applyHumanDraft(graph, humanDraft),
           project?.experiment_control ?? {},
           projectAttentionForPresentation(project, null),
+          project?.primary_question ?? null,
+          project?.counts ?? emptyProjectCounts(),
           transitionHead,
           transitionRulesetTag,
         ),
@@ -1962,6 +1955,8 @@ export default function App() {
           graph,
           attention: project.attention,
           experiment_control: project.experiment_control,
+          primary_question: project.primary_question ?? null,
+          counts: project.counts,
           ruleset_tag: transitionRulesetTag,
           transition_id: transitionHead.transition_id,
           canonical: true,
@@ -2214,11 +2209,21 @@ export default function App() {
           setWatchers(nextWatchers);
           replaceTasks(nextTasks);
           if (hasUnseenWatcherResults) {
-            void refreshChatSummaries(requestedProjectId, base);
+            void refreshChatSummaries(requestedProjectId, base).catch((error) => {
+              if (!stopped && isActiveProject(requestedProjectId)) {
+                reportErrorNotice(
+                  `Chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+                );
+              }
+            });
           }
         }
-      } catch {
-        // The authoritative project reload surfaces persistent API failures.
+      } catch (error) {
+        if (!stopped && isActiveProject(requestedProjectId)) {
+          reportErrorNotice(
+            `Watcher status could not refresh: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
       } finally {
         if (!stopped) schedule();
       }
@@ -2235,6 +2240,7 @@ export default function App() {
     projectId,
     projectSnapshotRequestIsCurrent,
     refreshChatSummaries,
+    reportErrorNotice,
     watchersAwaitingDelivery,
   ]);
 
@@ -2406,6 +2412,8 @@ export default function App() {
         graph: expectedGraph,
         attention: expectedProject.attention,
         experiment_control: expectedProject.experiment_control,
+        primary_question: expectedProject.primary_question ?? null,
+        counts: expectedProject.counts,
         ruleset_tag: transitionRulesetTag,
         transition_id: expectedHead.transition_id,
         canonical: true,
@@ -2458,6 +2466,8 @@ export default function App() {
               nextGraph,
               committed.experiment_control,
               committed.attention,
+              committed.primary_question,
+              committed.counts,
             )
           : current,
       );
@@ -2539,7 +2549,7 @@ export default function App() {
       });
       setWatchers(await api<WatcherRecord[]>(`${apiBase}/watchers`));
     } catch (error) {
-      setNotice({ kind: "error", text: (error as Error).message });
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
   };
 
@@ -2550,7 +2560,7 @@ export default function App() {
       await api<unknown>(experimentStopPath(apiBase, nodeId, episodeId), { method: "POST" });
       await Promise.all([reload(), episodeId ? refreshExperimentLoops() : Promise.resolve()]);
     } catch (error) {
-      setNotice({ kind: "error", text: (error as Error).message });
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       finishExperimentStop();
     }
@@ -2577,7 +2587,7 @@ export default function App() {
       );
       await reload();
     } catch (error) {
-      setNotice({ kind: "error", text: (error as Error).message });
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       finishWatcherCheck();
     }
@@ -3202,7 +3212,7 @@ export default function App() {
   const attentionCount = pendingProposals.length + attentionDecisions.length + openBlockers.length;
   const showTrustFilter = view === "scientific" || view === "dag";
   const runKind = project.last_refresh_at ? "refresh" : "seed";
-  const replayWarning = replayFailureLabel(graph);
+  const replayWarning = projectGraphMutationFailureLabel(project);
   const selectedExperimentNode = selectedExperimentRunId
     ? selectedExperimentUsesBranch
       ? (selectedBranchExperiment?.node ?? null)
@@ -3641,6 +3651,8 @@ export default function App() {
                 presentedGraph,
                 presentedExperimentControl,
                 presentedAttention,
+                presentedTransitionProjection?.primary_question ?? project.primary_question ?? null,
+                presentedTransitionProjection?.counts ?? project.counts,
               )}
               graph={presentedGraph}
               pendingProposals={pendingProposals}
@@ -3663,6 +3675,7 @@ export default function App() {
                 <ProposalJudgmentSection
                   proposals={pendingProposals}
                   graph={attentionGraph}
+                  proposalActions={presentedAttention.proposal_actions}
                   glossaryIndex={glossaryIndex}
                   draft={mutationsDisabled ? null : humanDraft}
                   mutationsDisabled={mutationsDisabled}
@@ -4026,7 +4039,6 @@ export default function App() {
           onPause={() => inspectedTask && void operateTask(inspectedTask, "pause")}
           onResume={() => inspectedTask && void operateTask(inspectedTask, "resume")}
           onRetry={() => inspectedTask && requestRetry(inspectedTask)}
-          onDismiss={() => inspectedTask && dismissTaskNotification(inspectedTask.operation_id)}
           onClose={() => selectTaskInspector(null)}
         />
       )}
@@ -4049,47 +4061,20 @@ function readTextScale(): number {
   }
 }
 
-export function primaryQuestionForGraph(graph: GraphState): GraphNode | null {
-  const standingPriority: Record<GraphNode["standing"], number> = {
-    accepted: 0,
-    asserted: 1,
-    contested: 2,
-  };
-  return (
-    Object.values(graph.nodes)
-      .filter((node) => node.type === "research_question")
-      .sort(
-        (left, right) =>
-          standingPriority[left.standing] - standingPriority[right.standing] ||
-          left.id.localeCompare(right.id),
-      )[0] ?? null
-  );
-}
-
 export function projectWithGraph(
   project: ProjectSnapshot,
   graph: GraphState,
   attention: GraphAttentionProjection = projectAttentionForPresentation(project, null),
+  primaryQuestion: GraphNode | null = project.primary_question ?? null,
+  counts = project.counts,
 ): ProjectSnapshot {
-  const standingCounts = Object.values(graph.nodes).reduce(
-    (counts, node) => {
-      counts[node.standing] += 1;
-      return counts;
-    },
-    { asserted: 0, accepted: 0, contested: 0 },
-  );
   return {
     ...project,
     graph,
     revision: graph.revision,
-    primary_question: primaryQuestionForGraph(graph),
+    primary_question: primaryQuestion,
     attention,
-    counts: {
-      ...standingCounts,
-      pending_proposals: attention.pending_proposal_ids.length,
-      decisions_awaiting_choice: attention.decisions_awaiting_choice_ids.length,
-      open_blockers: attention.open_blocker_ids.length,
-    },
+    counts,
   };
 }
 
@@ -4098,9 +4083,11 @@ function projectWithTransitionProjection(
   graph: GraphState,
   experimentControl: Record<string, ExperimentControlState>,
   attention: GraphAttentionProjection,
+  primaryQuestion: GraphNode | null,
+  counts: ProjectSnapshot["counts"],
 ): ProjectSnapshot {
   return {
-    ...projectWithGraph(project, graph, attention),
+    ...projectWithGraph(project, graph, attention, primaryQuestion, counts),
     experiment_control: experimentControl,
   };
 }
@@ -4109,6 +4096,8 @@ function localDraftTransitionProjection(
   graph: GraphState,
   experimentControl: Record<string, ExperimentControlState>,
   attention: GraphAttentionProjection,
+  primaryQuestion: GraphNode | null,
+  counts: ProjectSnapshot["counts"],
   head: GraphHeadRef,
   rulesetTag: string | null,
 ): BrowserTransitionProjection {
@@ -4116,11 +4105,24 @@ function localDraftTransitionProjection(
     head,
     graph,
     attention,
+    primary_question: primaryQuestion,
+    counts,
     experiment_control: experimentControl,
     ruleset_tag: rulesetTag,
     transition_id: head.transition_id,
     canonical: false,
     base_head: head,
+  };
+}
+
+function emptyProjectCounts(): ProjectSnapshot["counts"] {
+  return {
+    pending_proposals: 0,
+    decisions_awaiting_choice: 0,
+    open_blockers: 0,
+    asserted: 0,
+    accepted: 0,
+    contested: 0,
   };
 }
 

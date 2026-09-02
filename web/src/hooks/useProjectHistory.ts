@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { parseDismissedTaskIds } from "../agentTasks";
 import { api } from "../api";
 import type { RevisionSummary, ValidationMessage } from "../types";
 
@@ -196,7 +195,14 @@ function historyNoticeStorageKey(projectId: string | null): string {
 
 function readDismissedHistoryNoticeIds(projectId: string | null): Set<string> {
   try {
-    return parseDismissedTaskIds(localStorage.getItem(historyNoticeStorageKey(projectId)));
+    const parsed: unknown = JSON.parse(
+      localStorage.getItem(historyNoticeStorageKey(projectId)) ?? "[]",
+    );
+    return new Set(
+      Array.isArray(parsed)
+        ? parsed.filter((item): item is string => typeof item === "string" && item.length > 0)
+        : [],
+    );
   } catch {
     return new Set();
   }

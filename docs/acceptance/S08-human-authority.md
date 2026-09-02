@@ -10,6 +10,7 @@ covered_by:
   - tests/test_history.py::test_direct_human_prose_edit_preserves_node_standing
   - tests/test_history.py::test_direct_human_edit_rejects_non_prose_fields
 invariants: [1, 2, 3]
+last_checked: 2026-09-01 — automated authority coverage passed; the full browser journey was not redriven.
 ---
 
 # Human authority, and Sync as the only commit

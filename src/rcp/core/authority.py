@@ -529,7 +529,7 @@ def operation_actions(
             MERGE_PROTECTED_EPISTEMIC,
         )
     if isinstance(operation, SetStandingOperation):
-        if is_existing_protected_node(state, patch, operation.node_id) or _created_node_type(
+        if is_existing_protected_node(state, operation.node_id) or _created_node_type(
             patch, operation.node_id
         ) in {"research_question", "hypothesis"}:
             return frozenset({UPDATE_PROTECTED_EPISTEMIC})
@@ -555,7 +555,7 @@ def operation_actions(
     raise ValueError(f"Unknown graph operation {getattr(operation, 'op', None)!r}.")
 
 
-def is_existing_protected_node(state: GraphState, patch: Patch, node_id: str) -> bool:
+def is_existing_protected_node(state: GraphState, node_id: str) -> bool:
     """Whether ``node_id`` names a pre-Patch ResearchQuestion or Hypothesis."""
 
     return isinstance(state.nodes.get(node_id), (ResearchQuestion, Hypothesis))
@@ -585,7 +585,7 @@ def _update_actions(
     actions: set[GraphAction] = set()
     for update in operation.nodes:
         node_id = update.id
-        if is_existing_protected_node(state, patch, node_id):
+        if is_existing_protected_node(state, node_id):
             actions.add(UPDATE_PROTECTED_EPISTEMIC)
             continue
         node = state.nodes.get(node_id)
@@ -649,8 +649,7 @@ def _remove_edge_actions(
             and edge_id not in new_edge_ids
             and edge.relation in PROTECTED_EPISTEMIC_RELATIONS
             and any(
-                is_existing_protected_node(state, patch, node_id)
-                for node_id in (edge.source, edge.target)
+                is_existing_protected_node(state, node_id) for node_id in (edge.source, edge.target)
             )
         )
         actions.add(RESTRUCTURE_PROTECTED_EPISTEMIC if restructures else REMOVE_EDGE)
@@ -665,8 +664,7 @@ def _node_target_actions(
     protected: GraphAction,
 ) -> frozenset[GraphAction]:
     actions = {
-        protected if is_existing_protected_node(state, patch, node_id) else base
-        for node_id in node_ids
+        protected if is_existing_protected_node(state, node_id) else base for node_id in node_ids
     }
     return frozenset(actions or {base})
 
@@ -708,7 +706,7 @@ def _restructures_protected_relation(
         len(endpoints) == 2
         and relation in PROTECTED_EPISTEMIC_RELATIONS
         and not new_node_ids.intersection(endpoints)
-        and any(is_existing_protected_node(state, patch, node_id) for node_id in endpoints)
+        and any(is_existing_protected_node(state, node_id) for node_id in endpoints)
     )
 
 

@@ -1227,6 +1227,7 @@ def create_app(
             store,
             background_tasks,
             identity,
+            layout=server_layout,
         )
     auto_research_experiment_coordinator = AutoResearchExperimentCoordinator(
         store,
@@ -1393,16 +1394,24 @@ def create_app(
             )
             for episode in store.episodes(project_id):
                 if episode.mode == "auto_research":
-                    reconcile_auto_research_children(episode.episode_id)
-                    auto_research_experiment_coordinator.reconcile(episode.episode_id)
-                    reconcile_pending_auto_research_lifecycle(
-                        background_tasks,
-                        episode_id=episode.episode_id,
-                    )
-                    reconcile_pending_auto_research_mail(
-                        background_tasks,
-                        episode_id=episode.episode_id,
-                    )
+                    try:
+                        reconcile_auto_research_children(episode.episode_id)
+                        auto_research_experiment_coordinator.reconcile(episode.episode_id)
+                        reconcile_pending_auto_research_lifecycle(
+                            background_tasks,
+                            episode_id=episode.episode_id,
+                        )
+                        reconcile_pending_auto_research_mail(
+                            background_tasks,
+                            episode_id=episode.episode_id,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not reconcile Auto-research episode %s after task "
+                            "settlement: %s",
+                            episode.episode_id,
+                            exc,
+                        )
         finally:
             try:
                 if isinstance(request, AutoResearchRunRequest):
@@ -1430,26 +1439,40 @@ def create_app(
             for episode in store.episodes(project.project_id):
                 if episode.mode == "auto_research":
                     auto_research_episode_ids.append(episode.episode_id)
-                    reconcile_auto_research_children(episode.episode_id)
-                    auto_research_experiment_coordinator.reconcile(episode.episode_id)
-                    reconcile_auto_research_episode(
-                        episode.episode_id,
-                        source="watcher poll",
-                    )
+                    try:
+                        reconcile_auto_research_children(episode.episode_id)
+                        auto_research_experiment_coordinator.reconcile(episode.episode_id)
+                        reconcile_auto_research_episode(
+                            episode.episode_id,
+                            source="watcher poll",
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not reconcile Auto-research episode %s after watcher poll: %s",
+                            episode.episode_id,
+                            exc,
+                        )
                 elif episode.mode == "experiment_loop":
                     reconcile_experiment_episode(
                         episode.episode_id,
                         source="watcher poll",
                     )
         for episode_id in auto_research_episode_ids:
-            reconcile_pending_auto_research_lifecycle(
-                background_tasks,
-                episode_id=episode_id,
-            )
-            reconcile_pending_auto_research_mail(
-                background_tasks,
-                episode_id=episode_id,
-            )
+            try:
+                reconcile_pending_auto_research_lifecycle(
+                    background_tasks,
+                    episode_id=episode_id,
+                )
+                reconcile_pending_auto_research_mail(
+                    background_tasks,
+                    episode_id=episode_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not deliver pending Auto-research episode %s after watcher poll: %s",
+                    episode_id,
+                    exc,
+                )
 
     watcher_poller = WatcherPoller(
         store,
@@ -1677,10 +1700,18 @@ def create_app(
                 for project in store.projects():
                     for episode in store.episodes(project.project_id):
                         if episode.mode == "auto_research":
-                            await asyncio.to_thread(
-                                auto_research_experiment_coordinator.reconcile,
-                                episode.episode_id,
-                            )
+                            try:
+                                await asyncio.to_thread(
+                                    auto_research_experiment_coordinator.reconcile,
+                                    episode.episode_id,
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Could not reconcile Auto-research child Experiments for "
+                                    "episode %s at startup: %s",
+                                    episode.episode_id,
+                                    exc,
+                                )
                 orphaned_endings = await asyncio.to_thread(
                     reconcile_orphaned_auto_research_failures,
                     background_tasks,
@@ -1702,17 +1733,25 @@ def create_app(
                     )
                 except Exception as exc:
                     logger.warning(
-                        "Could not reconcile pending Auto-research lifecycle or mail at startup: %s",
+                        "Could not reconcile pending Auto-research lifecycle or mail at "
+                        "startup: %s",
                         exc,
                     )
                 for project in store.projects():
                     for episode in store.episodes(project.project_id):
                         if episode.mode == "auto_research":
-                            await asyncio.to_thread(
-                                reconcile_auto_research_episode,
-                                episode.episode_id,
-                                source="startup",
-                            )
+                            try:
+                                await asyncio.to_thread(
+                                    reconcile_auto_research_episode,
+                                    episode.episode_id,
+                                    source="startup",
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Could not reconcile Auto-research episode %s at startup: %s",
+                                    episode.episode_id,
+                                    exc,
+                                )
                         elif episode.mode == "experiment_loop":
                             await asyncio.to_thread(
                                 reconcile_experiment_episode,
@@ -1865,13 +1904,6 @@ def create_app(
     app.state.background_admission_gate = background_admission_gate
     if space_kind == "team":
         app.add_middleware(TeamPublicAuthBodyLimit)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
 
     @app.middleware("http")
     async def enforce_update_maintenance(request: Request, call_next):
@@ -2004,6 +2036,17 @@ def create_app(
         if isinstance(session, str) and path not in session_ending_paths:
             set_team_session_cookie(response, session)
         return response
+
+    # FastAPI prepends decorator middleware as it is registered. Add CORS only
+    # after those refusal owners so their early responses retain allowed-origin
+    # headers while authentication and body limits remain inside the envelope.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     @app.exception_handler(PatchRejected)
     async def patch_rejected(_: Request, exc: PatchRejected) -> JSONResponse:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
@@ -12,7 +11,11 @@ from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandEffectResult,
     AutoResearchCommandFile,
+    AutoResearchCommandUnavailable,
     AutoResearchRunRequest,
+    AutoResearchSeatNodeType,
+    auto_research_planned_effect_id,
+    validate_auto_research_worker_request,
 )
 from rcp.runs.auto_research_admission import (
     start_auto_research_child_work,
@@ -38,7 +41,6 @@ AutoResearchWorkerRequestFactory = Callable[
     [AutoResearchCommandContext, SpawnArguments, str, str],
     RunRequest,
 ]
-AutoResearchSeatNodeType = Callable[[str, str, str], str | None]
 
 
 @dataclass(frozen=True)
@@ -163,10 +165,14 @@ def _command_context(
     command: AgentCommandInvocationRecord,
 ) -> AutoResearchCommandContext:
     expected_verb = "spawn" if admission.child_kind == "work" else "episode"
-    expected_child_id = _planned_child_id(
-        admission.episode_id,
-        admission.child_kind,
-        command.idempotency_key,
+    expected_child_id = (
+        auto_research_planned_effect_id(
+            admission.episode_id,
+            expected_verb,
+            command.idempotency_key,
+        )
+        if command.idempotency_key is not None
+        else None
     )
     if (
         command.episode_id != admission.episode_id
@@ -285,7 +291,17 @@ def _reconcile_spawn(
         snapshot.text,
         admission.child_id,
     )
-    _validate_worker_request(arguments, snapshot.text, admission.child_id, request)
+    try:
+        validate_auto_research_worker_request(
+            arguments,
+            snapshot.text,
+            admission.child_id,
+            request,
+        )
+    except AutoResearchCommandUnavailable as exc:
+        # This pure validator uses unavailable only for an unresolved provider
+        # or execution machine. Retrying cannot change the admitted request.
+        raise ValueError(str(exc)) from exc
     worker = start_auto_research_child_work(
         background,
         admission.episode_id,
@@ -305,31 +321,6 @@ def _reconcile_spawn(
             "disposition": "created",
         },
     )
-
-
-def _validate_worker_request(
-    arguments: SpawnArguments,
-    instruction: str,
-    worker_id: str,
-    request: RunRequest,
-) -> None:
-    if (
-        request.mode != "work"
-        or request.trigger != "orchestrator"
-        or request.patch_kind != "work"
-        or request.chat_scope != "node"
-        or request.node_id != arguments.seat_node_id
-        or request.message != instruction
-        or request.chat_id != worker_id
-        or request.provider is None
-        or request.run_on is None
-        or request.session_id is not None
-        or request.watcher_ids
-        or request.result_view is not None
-    ):
-        raise ValueError(
-            "The resolved worker request changed its ordinary fresh Work mode, seat, or instruction."
-        )
 
 
 def _reconcile_experiment(
@@ -450,20 +441,4 @@ def _failed_outcome(exc: Exception) -> AutoResearchCommandEffectResult:
         status="invalid" if isinstance(exc, ValueError) else "unavailable",
         message=_diagnostic(exc),
         result={"disposition": "cancelled"},
-    )
-
-
-def _planned_child_id(
-    episode_id: str,
-    child_kind: str,
-    idempotency_key: str | None,
-) -> str | None:
-    if idempotency_key is None:
-        return None
-    verb = "spawn" if child_kind == "work" else "episode"
-    return str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{episode_id}:{verb}:{idempotency_key}",
-        )
     )

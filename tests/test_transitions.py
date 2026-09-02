@@ -4,9 +4,18 @@ import pytest
 from pydantic import ValidationError
 
 from rcp.core.materialize import materialize_patches
-from rcp.core.models import Blocker, Edge, Evidence, Experiment, GraphState, Hypothesis, Patch
+from rcp.core.models import (
+    Blocker,
+    BranchMergeProvenance,
+    Edge,
+    Evidence,
+    Experiment,
+    GraphState,
+    Hypothesis,
+    Patch,
+)
 from rcp.core.operations import UpdateNodesOperation
-from rcp.core.transition_models import GraphHeadRef, TransitionCauseRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef, TransitionCauseRef
 from rcp.core.transitions import (
     GUIDANCE_RULE_ID,
     TRANSITION_RULESET_TAG,
@@ -552,7 +561,7 @@ def test_status_event_survives_later_node_removal() -> None:
     assert event.cause.action_index == 0
 
 
-def test_recorded_expanded_actions_replay_without_loading_rule_registry(monkeypatch) -> None:
+def test_recorded_expanded_actions_replay_without_rerunning_rules() -> None:
     setup = _setup_patch()
     base = materialize_patches(
         [setup],
@@ -564,8 +573,6 @@ def test_recorded_expanded_actions_replay_without_loading_rule_registry(monkeypa
         base.state,
         [_resolve_patch(revision=2)],
     )
-    monkeypatch.setattr("rcp.core.transitions.RULE_REGISTRY", ())
-
     replay = materialize_patches(
         [setup, prepared.patch],
         initial_truth_scope=["repo"],
@@ -626,6 +633,63 @@ def _transition_without_generated_actions() -> tuple[GraphState, Patch]:
         ],
     )
     return state, GraphTransitionManager().prepare_validated(state, [patch]).patch
+
+
+def test_transition_identity_has_a_golden_provenance_digest() -> None:
+    _state, patch = _transition_without_generated_actions()
+
+    assert patch.transition is not None
+    assert (
+        patch.transition.transition_id
+        == "25c01d5ff34de59cf077d44f5a974a0d9bc7b0d8d02dcb2a8f02f44d538d04ce"
+    )
+
+
+def test_transition_rejects_an_opless_initiating_patch() -> None:
+    state, nonempty = _transition_without_generated_actions()
+    empty = nonempty.model_copy(update={"ops": [], "transition": None})
+    nonempty = nonempty.model_copy(update={"transition": None})
+
+    with pytest.raises(ValueError, match="every initiating patch"):
+        GraphTransitionManager().prepare_validated(state, [nonempty, empty])
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("run_truth_scope", ["repo"]),
+        ("repositories_read", ["repo"]),
+        ("processed_cursors", {"repo": "cursor"}),
+        (
+            "branch_merge",
+            BranchMergeProvenance(
+                merge_id="0" * 64,
+                branch_id="00000000-0000-4000-8000-000000000001",
+                episode_id="00000000-0000-4000-8000-000000000001",
+                branch_base_head=GraphHeadRef(revision=0),
+                branch_head=GraphHeadRef(
+                    target=GraphTargetRef(
+                        kind="branch",
+                        branch_id="00000000-0000-4000-8000-000000000001",
+                    ),
+                    revision=0,
+                ),
+                rebased_main_head=GraphHeadRef(revision=0),
+                merge_task_id="merge-task",
+            ),
+        ),
+    ],
+)
+def test_transition_rejects_provenance_that_combination_cannot_preserve(
+    field: str,
+    value: object,
+) -> None:
+    state, first = _transition_without_generated_actions()
+    first = first.model_copy(update={"transition": None})
+    second = first.model_copy(update={field: value})
+
+    with pytest.raises(ValueError, match=field):
+        GraphTransitionManager().prepare_validated(state, [first, second])
 
 
 def test_transition_identity_rejects_a_forged_ruleset_tag() -> None:

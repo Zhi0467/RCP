@@ -85,6 +85,8 @@ def _experiment_control(
 
     Deriving is also where a graceful stop is reconciled, so the same joint
     handoff settles identically after a restart without anyone replaying it.
+    A caller that can reach reconciliation must already hold the canonical
+    project operation lock; this helper deliberately does not reacquire it.
     """
 
     runtime = store.experiment_loop_runtime(
@@ -115,7 +117,11 @@ def _experiment_control_for_target(
     *,
     graph_target: GraphTargetRef,
 ) -> tuple[ExperimentLoopRuntime, ExperimentControlState]:
-    """Derive and reconcile one exact target-bound operational runtime."""
+    """Derive and reconcile one exact target-bound operational runtime.
+
+    The caller owns the canonical project operation lock whenever reconciliation
+    can write. The helper stays non-locking so Stop can use it without reentry.
+    """
 
     runtime = store.experiment_loop_runtime_for_target(
         project_id,
@@ -204,6 +210,8 @@ def _experiment_control_response(
         awaiting_human=awaiting_human,
         has_valid_recovery=has_valid_recovery,
     )
+    if runtime.projection_diagnostic is not None:
+        health = "degraded"
     recommendation = _experiment_recommendation(
         control,
         episode,

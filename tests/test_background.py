@@ -770,9 +770,17 @@ def test_restart_dispatches_committed_fresh_child_work_without_respending_b(
     restarted = BackgroundAgentTasks(store, stream)
     queued = store.agent_task(worker_id)
     assert queued is not None and queued.status == "queued"
+    projects = AppStore.projects
+
+    def fail_global_project_scan(_store):
+        pytest.fail("episode-scoped dispatch reconciliation performed a global scan")
+
+    monkeypatch.setattr(AppStore, "projects", fail_global_project_scan)
     assert reconcile_committed_auto_research_dispatches(
         restarted,
+        episode_id=episode.episode_id,
     ) == [worker_id]
+    monkeypatch.setattr(AppStore, "projects", projects)
     wait_for_task(store, worker_id, expect="succeeded")
 
     assert executions == ["fresh"]

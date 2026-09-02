@@ -9,8 +9,9 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { LIVE_EPISODE_POLL_INTERVAL_MS, startLiveEpisodePolling } =
-  await server.ssrLoadModule("/src/App.tsx");
+const { LIVE_EPISODE_POLL_INTERVAL_MS, startLiveEpisodePolling } = await server.ssrLoadModule(
+  "/src/hooks/useEpisodeDialogs.ts",
+);
 const { episodePollingTarget } = await server.ssrLoadModule("/src/hooks/useEpisodeDialogs.ts");
 
 after(() => server.close());

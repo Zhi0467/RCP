@@ -26,11 +26,13 @@ from rcp.server_ops.backup_capture import (
     BackupKeptArtifactReference,
     BackupKeptResultViewReference,
     BackupSnapshotProjectInventory,
+    read_backup_sqlite_capture_receipt,
     write_immutable_backup_receipt,
 )
 from rcp.server_ops.backup_checkout import BackupCheckoutHostUnavailable
 from rcp.server_ops.backup_models import (
     BackupCheckoutRecoveryDescriptor,
+    BackupImportedProviderSourceInventory,
     BackupManifestConfiguration,
     BackupRecoveryMachine,
     BackupRecoveryRepository,
@@ -42,6 +44,7 @@ from rcp.server_ops.backup_project_files import (
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_runtime import ServerMetadata
 from rcp.service import canonical_chat_backup_sources, iter_canonical_chat_backup_prefix
+from rcp.sources import ImportedProviderSourceStore
 from rcp.storage import AppStore
 from rcp.transport import SSHStateWorkspace, StateUnavailable
 from rcp.transport.remote_backup_checkout import CheckoutInspectionError, inspect_checkout
@@ -450,6 +453,83 @@ def test_one_unavailable_ssh_project_does_not_spoil_a_healthy_capture(
     assert projects[remote_id].recovery is not None
     assert projects[remote_id].recovery.project_id == remote_id
     assert receipt.status == "partial"
+
+
+def test_one_imported_source_capture_failure_does_not_spoil_a_healthy_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    healthy_id = str(uuid.uuid4())
+    failed_id = str(uuid.uuid4())
+    healthy, _ = _project_inventory(
+        tmp_path,
+        project_id=healthy_id,
+        task_id=str(uuid.uuid4()),
+        with_files=False,
+    )
+    failed, _ = _project_inventory(
+        tmp_path,
+        project_id=failed_id,
+        task_id=str(uuid.uuid4()),
+        with_files=False,
+    )
+    receipt_path, receipt_sha256 = _sqlite_capture_with_projects(
+        data_dir,
+        (healthy, failed),
+    )
+    sqlite_receipt = read_backup_sqlite_capture_receipt(
+        receipt_path,
+        expected_sha256=receipt_sha256,
+    )
+    imported_inventories = tuple(
+        BackupImportedProviderSourceInventory.model_validate(
+            ImportedProviderSourceStore(data_dir, project_id).inventory().model_dump()
+        )
+        for project_id in sorted((healthy_id, failed_id))
+    )
+    receipt_path.chmod(0o600)
+    receipt_path.unlink()
+    receipt_sha256 = write_immutable_backup_receipt(
+        receipt_path,
+        sqlite_receipt.model_copy(update={"imported_source_inventories": imported_inventories}),
+    )
+    original_capture = ImportedProviderSourceStore.capture_snapshot
+
+    def fail_one_source(
+        store: ImportedProviderSourceStore,
+        destination: Path,
+        *,
+        expected_inventory=None,
+    ):
+        if store.project_id == failed_id:
+            destination.mkdir(parents=True)
+            (destination / "partial").write_bytes(b"must be discarded")
+            raise OSError("simulated provider-history read failure")
+        return original_capture(
+            store,
+            destination,
+            expected_inventory=expected_inventory,
+        )
+
+    monkeypatch.setattr(ImportedProviderSourceStore, "capture_snapshot", fail_one_source)
+
+    receipt = (
+        BackupProjectFileCaptureCoordinator(data_dir)
+        .capture(
+            receipt_path,
+            expected_sha256=receipt_sha256,
+        )
+        .receipt
+    )
+
+    projects = {project.project_id: project for project in receipt.projects}
+    assert projects[healthy_id].status == "captured"
+    assert projects[failed_id].status == "uncaptured"
+    assert projects[failed_id].unavailable_kind == "capture_failure"
+    assert [capture.project_id for capture in receipt.imported_sources] == [healthy_id]
+    assert receipt.status == "partial"
+    assert not (receipt_path.parent / "project-sources" / failed_id).exists()
 
 
 def test_only_an_ssh_transport_failure_is_classified_as_host_unreachable(

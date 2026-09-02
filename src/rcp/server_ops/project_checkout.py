@@ -13,6 +13,7 @@ from pathlib import PurePosixPath
 from typing import Literal, cast
 
 from rcp.limits import SERVER_PROJECT_CHECKOUT_TIMEOUT_SECONDS
+from rcp.server_ops._local_primitives import canonical_json_text
 from rcp.server_ops.backup_models import (
     BACKUP_MATERIALIZED_NAMES,
     BACKUP_RESEARCH_CANONICAL_ROOTS,
@@ -290,7 +291,7 @@ class ProjectCheckoutManager:
         stable: tuple[bool, str, int] | None = None
         offset = 0
         while True:
-            policy = json.dumps(
+            policy = canonical_json_text(
                 {
                     "durable_roots": sorted(
                         BACKUP_RESEARCH_CANONICAL_ROOTS | BACKUP_RESEARCH_DELEGATED_ROOTS
@@ -301,8 +302,6 @@ class ProjectCheckoutManager:
                     "offset": offset,
                     "page_size": 8,
                 },
-                separators=(",", ":"),
-                sort_keys=True,
             )
             try:
                 payload = self._helper(

@@ -9,7 +9,6 @@ start fenced and a later CLI invocation can resume an interrupted operation.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import stat
@@ -26,6 +25,23 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from rcp.server_ops._local_primitives import (
+    PrivateFileReadError,
+    canonical_json_line,
+    read_stable_private_file,
+)
+from rcp.server_ops._local_primitives import (
+    canonical_uuid4 as _canonical_uuid4,
+)
+from rcp.server_ops._local_primitives import (
+    fsync_directory as _fsync_directory,
+)
+from rcp.server_ops._local_primitives import (
+    normalized_absolute_non_root_path as _absolute_path,
+)
+from rcp.server_ops._local_primitives import (
+    write_all as _write_all,
+)
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_runtime import data_dir_identity
 
@@ -118,30 +134,6 @@ class _StrictModel(BaseModel):
         frozen=True,
         revalidate_instances="always",
     )
-
-
-def _canonical_uuid4(value: str, *, label: str) -> str:
-    try:
-        parsed = uuid.UUID(value)
-    except (AttributeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a canonical UUID4") from exc
-    if parsed.version != 4 or str(parsed) != value:
-        raise ValueError(f"{label} must be a lowercase canonical UUID4")
-    return value
-
-
-def _absolute_path(value: str, *, label: str) -> str:
-    if (
-        not value
-        or value != value.strip()
-        or len(value.encode("utf-8")) > 4096
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
-    ):
-        raise ValueError(f"{label} must be one bounded absolute path")
-    path = Path(value)
-    if not path.is_absolute() or path == Path("/") or ".." in path.parts or str(path) != value:
-        raise ValueError(f"{label} must be absolute and normalized")
-    return value
 
 
 class UpdateCaptureBoundary(_StrictModel):
@@ -519,10 +511,15 @@ def active_update_operation(
     update_root: Path,
     *,
     expected_uid: int,
+    receipts: tuple[tuple[Path, UpdateOperationReceipt, str], ...] | None = None,
 ) -> tuple[Path, UpdateOperationReceipt, str] | None:
     active = [
         item
-        for item in update_operation_receipts(update_root, expected_uid=expected_uid)
+        for item in (
+            receipts
+            if receipts is not None
+            else update_operation_receipts(update_root, expected_uid=expected_uid)
+        )
         if not item[1].terminal
     ]
     if len(active) > 1:
@@ -536,10 +533,15 @@ def update_operation_needing_recovery(
     update_root: Path,
     *,
     expected_uid: int,
+    receipts: tuple[tuple[Path, UpdateOperationReceipt, str], ...] | None = None,
 ) -> tuple[Path, UpdateOperationReceipt, str] | None:
     """Return one nonterminal operation or the latest failed selected release."""
 
-    operations = update_operation_receipts(update_root, expected_uid=expected_uid)
+    operations = (
+        receipts
+        if receipts is not None
+        else update_operation_receipts(update_root, expected_uid=expected_uid)
+    )
     active = [item for item in operations if not item[1].terminal]
     if len(active) > 1:
         raise UpdateCutoverRefused(
@@ -1139,6 +1141,7 @@ class UpdateCutoverCoordinator:
         )
         checkpoint_path: Path | None = None
         switched = False
+        pointer_incompatible = False
         try:
             entered = self.actions.enter_maintenance(
                 operation_id=operation_id,
@@ -1205,10 +1208,31 @@ class UpdateCutoverCoordinator:
             )
             self.progress("checkpoint_ready")
             self.actions.stop_service()
-            self.actions.switch_current(
-                expected=self.layout.release_dir(operation.base_commit),
-                target=self.layout.release_dir(operation.candidate_commit),
-            )
+            base_release = self.layout.release_dir(operation.base_commit)
+            candidate_release = self.layout.release_dir(operation.candidate_commit)
+            try:
+                self.actions.switch_current(
+                    expected=base_release,
+                    target=candidate_release,
+                )
+            except BaseException:
+                try:
+                    observed_release = self.actions.current_release()
+                except BaseException:
+                    pointer_incompatible = True
+                    raise
+                if observed_release == candidate_release:
+                    switched = True
+                    operation, digest = advance_update_operation(
+                        Path(operation.receipt_path),
+                        expected_uid=self.expected_uid,
+                        expected_gid=self.expected_gid,
+                        expected_sha256=digest,
+                        state="candidate_starting",
+                    )
+                elif observed_release != base_release:
+                    pointer_incompatible = True
+                raise
             switched = True
             operation, digest = advance_update_operation(
                 Path(operation.receipt_path),
@@ -1242,6 +1266,32 @@ class UpdateCutoverCoordinator:
             return self._outcome(operation, digest)
         except BaseException as exc:
             failure = _safe_failure(exc)
+            if pointer_incompatible:
+                with suppress(BaseException):
+                    self.actions.stop_service()
+                try:
+                    current, current_digest = read_update_operation(
+                        update_operation_receipt_path(
+                            operation_id,
+                            self.layout.update_checkpoints_root,
+                        ),
+                        expected_uid=self.expected_uid,
+                    )
+                    if current.state not in TERMINAL_UPDATE_STATES:
+                        advance_update_operation(
+                            Path(current.receipt_path),
+                            expected_uid=self.expected_uid,
+                            expected_gid=self.expected_gid,
+                            expected_sha256=current_digest,
+                            state="repair_required",
+                            update={"failure": failure},
+                        )
+                except BaseException:
+                    pass
+                raise UpdateCutoverRefused(
+                    "The current release pointer became unreadable or named an unexpected "
+                    "release; RCP kept the service stopped for operator repair."
+                ) from exc
             if switched:
                 current, current_digest = read_update_operation(
                     update_operation_receipt_path(
@@ -1277,19 +1327,6 @@ class UpdateCutoverCoordinator:
             if isinstance(exc, UpdateCutoverRefused):
                 raise
             raise UpdateCutoverRefused(failure) from exc
-
-    def repair_committed(
-        self,
-        operation: UpdateOperationReceipt,
-        receipt_sha256: str,
-    ) -> tuple[UpdateOperationReceipt, str]:
-        """Compatibility name for repairing one selected committed candidate."""
-
-        if operation.state != "committed":
-            raise UpdateCutoverRefused(
-                "Committed update repair requires one committed candidate receipt."
-            )
-        return self.repair_selected_release(operation, receipt_sha256)
 
     def repair_selected_release(
         self,
@@ -1858,16 +1895,7 @@ def control_capture_from_boundary(boundary: UpdateCaptureBoundary):
 
 
 def _model_bytes(model: BaseModel) -> bytes:
-    payload = (
-        json.dumps(
-            model.model_dump(mode="json"),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
+    payload = canonical_json_line(model.model_dump(mode="json"))
     if len(payload) > UPDATE_OPERATION_MAX_BYTES:
         raise UpdateCutoverRefused("The update operation receipt exceeds its fixed bound.")
     return payload
@@ -1875,40 +1903,22 @@ def _model_bytes(model: BaseModel) -> bytes:
 
 def _read_private_file(path: Path, *, expected_uid: int) -> bytes:
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    except OSError as exc:
-        raise UpdateCutoverRefused("A private update operation receipt is unavailable.") from exc
-    try:
-        initial = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(initial.st_mode)
-            or initial.st_uid != expected_uid
-            or stat.S_IMODE(initial.st_mode) != UPDATE_OPERATION_FILE_MODE
-            or initial.st_size > UPDATE_OPERATION_MAX_BYTES
-        ):
-            raise UpdateCutoverRefused(
-                "A private update operation receipt has unsafe ownership or mode."
-            )
-        chunks: list[bytes] = []
-        remaining = initial.st_size
-        while remaining:
-            chunk = os.read(descriptor, min(1024 * 1024, remaining))
-            if not chunk:
-                raise UpdateCutoverRefused("A private update operation receipt is incomplete.")
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        final = os.fstat(descriptor)
-        path_final = path.lstat()
-        stable = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-        if any(getattr(initial, name) != getattr(final, name) for name in stable) or any(
-            getattr(final, name) != getattr(path_final, name) for name in stable
-        ):
-            raise UpdateCutoverRefused("A private update operation receipt changed while reading.")
-        return b"".join(chunks)
-    except OSError as exc:
-        raise UpdateCutoverRefused("A private update operation receipt cannot be read.") from exc
-    finally:
-        os.close(descriptor)
+        return read_stable_private_file(
+            path,
+            expected_uid=expected_uid,
+            expected_mode=UPDATE_OPERATION_FILE_MODE,
+            maximum=UPDATE_OPERATION_MAX_BYTES,
+            chunk_size=1024 * 1024,
+        )
+    except PrivateFileReadError as exc:
+        messages = {
+            "unavailable": "A private update operation receipt is unavailable.",
+            "unsafe": "A private update operation receipt has unsafe ownership or mode.",
+            "incomplete": "A private update operation receipt is incomplete.",
+            "changed": "A private update operation receipt changed while reading.",
+            "cannot_read": "A private update operation receipt cannot be read.",
+        }
+        raise UpdateCutoverRefused(messages[exc.failure]) from exc
 
 
 def _write_new_private_file(path: Path, payload: bytes, *, uid: int, gid: int) -> None:
@@ -1961,26 +1971,6 @@ def _require_private_directory(path: Path, *, expected_uid: int, expected_gid: i
         raise UpdateCutoverRefused(
             "The update checkpoint root has unsafe type, ownership, or mode."
         )
-
-
-def _write_all(descriptor: int, payload: bytes) -> None:
-    remaining = memoryview(payload)
-    while remaining:
-        written = os.write(descriptor, remaining)
-        if written <= 0:
-            raise OSError("short update receipt write")
-        remaining = remaining[written:]
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(
-        path,
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-    )
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def file_sha256(path: Path, *, expected_uid: int, maximum: int = UPDATE_OPERATION_MAX_BYTES) -> str:

@@ -233,9 +233,11 @@ def _receipts(store: AppStore, operation_id: str, category: str):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_layout", [False, True])
 async def test_create_and_revise_result_view_keep_one_cwd_session_and_stable_file(
     manifest,
     tmp_path: Path,
+    legacy_layout: bool,
 ) -> None:
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
@@ -286,7 +288,7 @@ async def test_create_and_revise_result_view_keep_one_cwd_session_and_stable_fil
     assert "rcp-result-view-gesture" in create_launcher.prompts[0]
     assert "gesture:'box'|'underscore'" in create_launcher.prompts[0]
     assert "The page may omit gestures" in create_launcher.prompts[0]
-    assert create_launcher.workspaces[0] == Path(create_execution.stage_root or "")
+    assert create_launcher.workspaces[0] == Path(create_execution.stage_root or "") / "workspace"
     records = store.list_result_views(project_id, chat_id=chat_id)
     assert len(records) == 1
     created = records[0]
@@ -301,6 +303,19 @@ async def test_create_and_revise_result_view_keep_one_cwd_session_and_stable_fil
     assert len(_receipts(store, "result-view-create", "result_view_created")) == 1
     assert service.history.state().revision == initial_revision
     store.complete_agent_task("result-view-create", applied_revision=None, result={})
+    expected_revision_workspace = create_launcher.workspaces[0]
+    if legacy_layout:
+        stage = Path(created.stage_root)
+        (stage / "workspace" / "views").rename(stage / "views")
+        with store.connection() as connection:
+            connection.execute(
+                "DELETE FROM graph_run_receipts WHERE category = 'chat_stage_layout'"
+            )
+            connection.execute(
+                "UPDATE graph_runs SET write_scope_fingerprint = NULL "
+                "WHERE operation_id = 'result-view-create'"
+            )
+        expected_revision_workspace = stage
 
     revise_message = "Box the late spike, then explain  why.\nDo not normalize this."
 
@@ -308,7 +323,7 @@ async def test_create_and_revise_result_view_keep_one_cwd_session_and_stable_fil
         target = _revised_path(prompt)
         assert target.name == created.source_name
         assert target.parent.name == created.view_id
-        assert workspace == create_launcher.workspaces[0]
+        assert workspace == expected_revision_workspace
         target.write_text("<html><body>loss curves v2</body></html>", encoding="utf-8")
 
     revise_request = _request(
@@ -338,6 +353,7 @@ async def test_create_and_revise_result_view_keep_one_cwd_session_and_stable_fil
     assert not [event for event in revise_events if event.event == "error"]
     assert [event.event for event in revise_events].count("artifact") == 0
     assert revise_launcher.sessions == [session_id]
+    assert revise_launcher.workspaces == [expected_revision_workspace]
     assert revise_launcher.prompts[0].count(revise_message) == 1
     assert "atomic replacement at that path is allowed" in revise_launcher.prompts[0]
     revised = store.result_view_for_diagnostics(created.view_id)
@@ -401,7 +417,9 @@ async def test_rejected_revision_leaves_stored_bytes_without_rejecting_answer_or
     )
     created = store.list_result_views(project_id, chat_id=chat_id)[0]
     store.complete_agent_task("rejected-view-create", applied_revision=None, result={})
-    original = Path(created.stage_root) / "views" / created.view_id / created.source_name
+    original = (
+        Path(created.stage_root) / "workspace" / "views" / created.view_id / created.source_name
+    )
     original_bytes = original.read_bytes()
     initial_revision = service.history.state().revision
 
@@ -578,7 +596,9 @@ async def test_background_stream_close_leaves_stored_bytes_unchanged(
     )
     created = store.list_result_views(project_id, chat_id=chat_id)[0]
     store.complete_agent_task(create_operation, applied_revision=None, result={})
-    target = Path(created.stage_root) / "views" / created.view_id / created.source_name
+    target = (
+        Path(created.stage_root) / "workspace" / "views" / created.view_id / created.source_name
+    )
     original_bytes = target.read_bytes()
 
     def revision_writer(prompt: str, _workspace: Path) -> None:
@@ -679,7 +699,9 @@ async def test_hard_interrupted_revision_leaves_stored_bytes_unchanged(
     )
     created = store.list_result_views(project_id, chat_id=chat_id)[0]
     store.complete_agent_task(create_execution.operation_id, applied_revision=None, result={})
-    target = Path(created.stage_root) / "views" / created.view_id / created.source_name
+    target = (
+        Path(created.stage_root) / "workspace" / "views" / created.view_id / created.source_name
+    )
     original = target.read_bytes()
 
     revision_request = _request(
@@ -844,7 +866,7 @@ def test_background_retry_handoff_creates_after_pre_slot_failure(
     expected_view_id = hashlib.sha256(f"result-view\0{started.operation_id}".encode()).hexdigest()[
         :24
     ]
-    assert not Path(failed.stage_root).joinpath("views", expected_view_id).exists()
+    assert not Path(failed.stage_root).joinpath("workspace", "views", expected_view_id).exists()
 
     retried = tasks.retry(started.operation_id, authorized_by=authorized_by)
     completed = wait_for_task(store, retried.operation_id)
@@ -932,7 +954,9 @@ def test_background_retry_recovers_without_reauthoring_an_already_bound_create(
     records = store.list_result_views(project_id, chat_id=request.chat_id)
     assert len(records) == 1
     created = records[0]
-    target = Path(created.stage_root) / "views" / created.view_id / created.source_name
+    target = (
+        Path(created.stage_root) / "workspace" / "views" / created.view_id / created.source_name
+    )
     created_bytes = target.read_bytes()
 
     if retry_provider is not None:
@@ -1012,7 +1036,9 @@ async def test_accepted_create_recovery_continues_without_reauthoring_result_vie
         "Downstream task settlement was interrupted after accepting the view.",
         status="interrupted" if continuation == "resume" else "failed",
     )
-    target = Path(created.stage_root) / "views" / created.view_id / created.source_name
+    target = (
+        Path(created.stage_root) / "workspace" / "views" / created.view_id / created.source_name
+    )
     original_bytes = target.read_bytes()
 
     recovery_request = create_request.model_copy(update={"session_id": session_id})
@@ -1146,7 +1172,9 @@ async def test_accepted_revision_recovery_continues_without_reauthoring_result_v
         "Downstream task settlement was interrupted after accepting the revision.",
         status="interrupted" if continuation == "resume" else "failed",
     )
-    target = Path(revised.stage_root) / "views" / revised.view_id / revised.source_name
+    target = (
+        Path(revised.stage_root) / "workspace" / "views" / revised.view_id / revised.source_name
+    )
     revised_bytes = target.read_bytes()
 
     recovery_operation = f"settled-revision-{continuation}-recovery"

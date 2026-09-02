@@ -15,7 +15,6 @@ from rcp.project_transfer import PROJECT_TRANSFER_ARCHIVE_CODEC
 from rcp.server_ops.backup_models import (
     BACKUP_APP_DATA_CAPTURED,
     BACKUP_APP_DATA_DATABASE,
-    BACKUP_APP_DATA_DEFERRED,
     BACKUP_APP_DATA_EXCLUSIONS,
     BACKUP_RESEARCH_CANONICAL_ROOTS,
     BACKUP_RESEARCH_DELEGATED_ROOTS,
@@ -229,10 +228,7 @@ def test_transfer_root_policy_is_closed_against_current_concrete_owners() -> Non
         TRANSFER_APP_DATA_EXCLUDED_ROOTS,
     )
     assert set().union(*app_groups) == (
-        {BACKUP_APP_DATA_DATABASE}
-        | BACKUP_APP_DATA_CAPTURED
-        | BACKUP_APP_DATA_DEFERRED
-        | BACKUP_APP_DATA_EXCLUSIONS
+        {BACKUP_APP_DATA_DATABASE} | BACKUP_APP_DATA_CAPTURED | BACKUP_APP_DATA_EXCLUSIONS
     )
     assert sum(len(group) for group in app_groups) == len(set().union(*app_groups))
 

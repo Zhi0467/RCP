@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import shutil
+import time
 import uuid
 from pathlib import Path
 
@@ -9,9 +12,12 @@ from rcp.agents import AgentProcessControl
 from rcp.background import AgentTaskExecution
 from rcp.runs.chat import (
     _chat_stage_name,
+    _local_chat_artifact_directory,
+    _prepare_local_chat_workspace,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
 )
+from rcp.runs.shared import _sweep_stale_stages
 from rcp.service import RunRequest
 from rcp.storage import (
     AgentTaskRecord,
@@ -71,10 +77,12 @@ def _task(
     parent_operation_id: str | None = None,
     native_session_id: str | None = None,
     request_session_id: str | None = None,
+    run_on: str = "laptop",
 ) -> AgentTaskRecord:
     now = store.now()
     request = _request(chat_id)
     request["session_id"] = request_session_id
+    request["run_on"] = run_on
     return AgentTaskRecord(
         operation_id=operation_id,
         project_id=project_id,
@@ -123,17 +131,18 @@ def test_adopted_chat_next_turn_reuses_exact_saved_stage(tmp_path: Path, remote:
     )
     store.migrate_project_identity(legacy_id, canonical_id, store.space_id)
 
-    next_turn = store.create_agent_task(
-        _task(
-            store,
-            "turn-after-adoption",
-            canonical_id,
-            chat_id,
-            status="queued",
-            request_session_id=native_session_id,
-        )
+    candidate = _task(
+        store,
+        "turn-after-adoption",
+        canonical_id,
+        chat_id,
+        status="queued",
+        request_session_id=native_session_id,
     )
+    next_turn = store.create_agent_task(candidate)
 
+    assert candidate.stage_host is None
+    assert candidate.stage_root is None
     assert next_turn.stage_host == stage_host
     assert next_turn.stage_root == stage_root
     execution = AgentTaskExecution(
@@ -201,6 +210,405 @@ def test_adopted_chat_resume_and_retry_keep_pre_adoption_stage(tmp_path: Path) -
     assert retried.stage_root == str(stage)
 
 
+def test_split_chat_stage_layout_marker_is_idempotent_and_repairs_duplicate_receipts(
+    tmp_path: Path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    project_id = "legacy-project"
+    chat_id = str(uuid.uuid4())
+    stage = tmp_path / "data" / "run-stage" / "chat-layout"
+    workspace = stage / "workspace"
+    workspace.mkdir(parents=True)
+    _register_legacy_project(store, project_id)
+    task = store.create_agent_task(
+        _task(store, "layout-turn", project_id, chat_id, stage_root=str(stage))
+    )
+
+    for _ in range(2):
+        store.record_chat_stage_layout(
+            task.operation_id,
+            stage_root=str(stage),
+            workspace_root=str(workspace),
+        )
+    assert (
+        store.chat_stage_layout(
+            project_id=project_id,
+            kind="project_chat",
+            chat_id=chat_id,
+            stage_host="",
+            stage_root=str(stage),
+        )
+        == "split-v1"
+    )
+
+    store.record_agent_task_receipt(
+        task.operation_id,
+        "chat_stage_layout",
+        {
+            "layout": "split-v1",
+            "stage_host": "",
+            "stage_root": str(stage),
+            "workspace_root": str(workspace),
+        },
+    )
+    with pytest.raises(ValueError, match="multiple layout markers"):
+        store.chat_stage_layout(
+            project_id=project_id,
+            kind="project_chat",
+            chat_id=chat_id,
+            stage_host="",
+            stage_root=str(stage),
+        )
+
+    store.record_chat_stage_layout(
+        task.operation_id,
+        stage_root=str(stage),
+        workspace_root=str(workspace),
+    )
+    assert (
+        store.chat_stage_layout(
+            project_id=project_id,
+            kind="project_chat",
+            chat_id=chat_id,
+            stage_host="",
+            stage_root=str(stage),
+        )
+        == "split-v1"
+    )
+
+
+def test_second_fresh_sessionless_chat_reuses_one_split_layout_and_artifact_root(
+    tmp_path: Path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    project_id = "legacy-project"
+    chat_id = str(uuid.uuid4())
+    stage = tmp_path / "data" / "run-stage" / "chat-second-fresh"
+    stage.mkdir(parents=True)
+    _register_legacy_project(store, project_id)
+    first = store.create_agent_task(_task(store, "first", project_id, chat_id))
+    first_execution = AgentTaskExecution(
+        operation_id=first.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+    )
+    workspace = _prepare_local_chat_workspace(
+        stage,
+        execution=first_execution,
+        saved_stage=False,
+    )
+    first_execution.checkpoint_stage("", str(stage))
+    artifact = workspace / "turns" / "first" / "artifacts" / "result.html"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("<html>retained</html>", encoding="utf-8")
+
+    second = store.create_agent_task(
+        _task(
+            store,
+            "second",
+            project_id,
+            chat_id,
+            native_session_id="second-session",
+        )
+    )
+    second_execution = AgentTaskExecution(
+        operation_id=second.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+    )
+    assert (
+        _prepare_local_chat_workspace(
+            stage,
+            execution=second_execution,
+            saved_stage=False,
+        )
+        == workspace
+    )
+    second_execution.checkpoint_stage("", str(stage))
+    resumed = store.create_agent_task(
+        _task(
+            store,
+            "resumed",
+            project_id,
+            chat_id,
+            parent_operation_id=second.operation_id,
+            request_session_id="second-session",
+        )
+    )
+
+    stored_first = store.agent_task(first.operation_id)
+    stored_second = store.agent_task(second.operation_id)
+    assert stored_first is not None and stored_second is not None
+    assert stored_second.stage_root == resumed.stage_root == str(stage)
+    assert _local_chat_artifact_directory(store, stored_first, "first") / "result.html" == artifact
+    layout_receipts = [
+        receipt
+        for operation_id in (first.operation_id, second.operation_id, resumed.operation_id)
+        for receipt in store.agent_task_receipts(operation_id)
+        if receipt.category == "chat_stage_layout"
+    ]
+    assert len(layout_receipts) == 1
+
+
+def test_fresh_sessionless_task_preserves_an_exact_legacy_stage_layout(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    project_id = "legacy-project"
+    chat_id = str(uuid.uuid4())
+    stage = tmp_path / "data" / "run-stage" / "legacy-chat"
+    stage.mkdir(parents=True)
+    _register_legacy_project(store, project_id)
+    store.create_agent_task(_task(store, "legacy", project_id, chat_id, stage_root=str(stage)))
+    fresh = store.create_agent_task(_task(store, "fresh", project_id, chat_id))
+    execution = AgentTaskExecution(
+        operation_id=fresh.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+    )
+
+    assert (
+        _prepare_local_chat_workspace(
+            stage,
+            execution=execution,
+            saved_stage=False,
+        )
+        == stage
+    )
+    execution.checkpoint_stage("", str(stage))
+    assert not (stage / "workspace").exists()
+    assert all(
+        receipt.category != "chat_stage_layout"
+        for operation_id in ("legacy", fresh.operation_id)
+        for receipt in store.agent_task_receipts(operation_id)
+    )
+
+
+def test_split_layout_marker_survives_crash_before_stage_checkpoint(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    project_id = "legacy-project"
+    chat_id = str(uuid.uuid4())
+    stage = tmp_path / "data" / "run-stage" / "chat-crash-before-checkpoint"
+    stage.mkdir(parents=True)
+    _register_legacy_project(store, project_id)
+    crashed = store.create_agent_task(_task(store, "crashed", project_id, chat_id))
+    crashed_execution = AgentTaskExecution(
+        operation_id=crashed.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+    )
+    workspace = _prepare_local_chat_workspace(
+        stage,
+        execution=crashed_execution,
+        saved_stage=False,
+    )
+
+    retry = store.create_agent_task(
+        _task(
+            store,
+            "retry",
+            project_id,
+            chat_id,
+            native_session_id="retry-session",
+        )
+    )
+    retry_execution = AgentTaskExecution(
+        operation_id=retry.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+        continuation="retry",
+    )
+    assert (
+        _prepare_local_chat_workspace(
+            stage,
+            execution=retry_execution,
+            saved_stage=False,
+        )
+        == workspace
+    )
+    retry_execution.checkpoint_stage("", str(stage))
+    artifact = workspace / "turns" / "retry" / "artifacts" / "result.html"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("<html>recovered</html>", encoding="utf-8")
+    resumed = store.create_agent_task(
+        _task(
+            store,
+            "resume",
+            project_id,
+            chat_id,
+            parent_operation_id=retry.operation_id,
+            request_session_id="retry-session",
+        )
+    )
+
+    stored_retry = store.agent_task(retry.operation_id)
+    assert stored_retry is not None
+    assert resumed.stage_root == str(stage)
+    assert _local_chat_artifact_directory(store, stored_retry, "retry") / "result.html" == artifact
+    assert (
+        sum(
+            receipt.category == "chat_stage_layout"
+            for operation_id in (crashed.operation_id, retry.operation_id, resumed.operation_id)
+            for receipt in store.agent_task_receipts(operation_id)
+        )
+        == 1
+    )
+
+
+def test_clean_turn_recreates_swept_split_workspace_but_saved_turn_fails_closed(
+    tmp_path: Path,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    project_id = "legacy-project"
+    chat_id = str(uuid.uuid4())
+    stage = tmp_path / "data" / "run-stage" / "chat-swept-split"
+    stage.mkdir(parents=True)
+    _register_legacy_project(store, project_id)
+    first = store.create_agent_task(_task(store, "first", project_id, chat_id))
+    first_execution = AgentTaskExecution(
+        operation_id=first.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+    )
+    workspace = _prepare_local_chat_workspace(
+        stage,
+        execution=first_execution,
+        saved_stage=False,
+    )
+    first_execution.checkpoint_stage("", str(stage))
+
+    shutil.rmtree(stage)
+    stage.mkdir()
+    fresh = store.create_agent_task(_task(store, "fresh", project_id, chat_id))
+    fresh_execution = AgentTaskExecution(
+        operation_id=fresh.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+    )
+
+    assert (
+        _prepare_local_chat_workspace(
+            stage,
+            execution=fresh_execution,
+            saved_stage=False,
+        )
+        == workspace
+    )
+    assert workspace.is_dir()
+    assert (
+        sum(
+            receipt.category == "chat_stage_layout"
+            for operation_id in (first.operation_id, fresh.operation_id)
+            for receipt in store.agent_task_receipts(operation_id)
+        )
+        == 1
+    )
+
+    fresh_execution.checkpoint_stage("", str(stage))
+    shutil.rmtree(workspace)
+    saved = store.create_agent_task(
+        _task(
+            store,
+            "saved",
+            project_id,
+            chat_id,
+            stage_root=str(stage),
+            parent_operation_id=fresh.operation_id,
+        )
+    )
+    saved_execution = AgentTaskExecution(
+        operation_id=saved.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+        stage_root=str(stage),
+        continuation="resume",
+    )
+    with pytest.raises(ValueError, match="saved provider workspace is unavailable"):
+        _prepare_local_chat_workspace(
+            stage,
+            execution=saved_execution,
+            saved_stage=True,
+        )
+
+
+@pytest.mark.parametrize("layout", ["split", "legacy"])
+def test_saved_chat_turn_refreshes_outer_stage_before_retention_sweep(
+    tmp_path: Path,
+    layout: str,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    project_id = "legacy-project"
+    chat_id = str(uuid.uuid4())
+    stage_root = tmp_path / "data" / "run-stage"
+    stage = stage_root / f"chat-active-{layout}"
+    stage.mkdir(parents=True)
+    _register_legacy_project(store, project_id)
+    task = store.create_agent_task(
+        _task(store, f"active-{layout}", project_id, chat_id, stage_root=str(stage))
+    )
+    execution = AgentTaskExecution(
+        operation_id=task.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+        stage_root=str(stage),
+        continuation="resume",
+    )
+    expected_workspace = stage
+    if layout == "split":
+        expected_workspace = stage / "workspace"
+        expected_workspace.mkdir()
+        store.record_chat_stage_layout(
+            task.operation_id,
+            stage_root=str(stage),
+            workspace_root=str(expected_workspace),
+        )
+    stale_mtime = time.time() - 8 * 86400
+    os.utime(stage, (stale_mtime, stale_mtime))
+
+    assert (
+        _prepare_local_chat_workspace(
+            stage,
+            execution=execution,
+            saved_stage=True,
+        )
+        == expected_workspace
+    )
+    refreshed_mtime = stage.stat().st_mtime
+    assert refreshed_mtime > stale_mtime
+
+    _sweep_stale_stages(stage_root, now=refreshed_mtime)
+    assert stage.is_dir()
+
+
+def test_split_layout_marker_follows_project_identity_adoption(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    legacy_id = "legacy-project"
+    canonical_id = str(uuid.uuid4())
+    chat_id = str(uuid.uuid4())
+    stage = tmp_path / "data" / "run-stage" / "chat-before-adoption"
+    stage.mkdir(parents=True)
+    _register_legacy_project(store, legacy_id)
+    task = store.create_agent_task(_task(store, "before-adoption", legacy_id, chat_id))
+    execution = AgentTaskExecution(
+        operation_id=task.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+    )
+    workspace = _prepare_local_chat_workspace(
+        stage,
+        execution=execution,
+        saved_stage=False,
+    )
+    execution.checkpoint_stage("", str(stage))
+
+    store.migrate_project_identity(legacy_id, canonical_id, store.space_id)
+
+    adopted = store.agent_task(task.operation_id)
+    assert adopted is not None
+    assert adopted.project_id == canonical_id
+    assert _local_chat_artifact_directory(store, adopted, "turn") == (
+        workspace / "turns" / "turn" / "artifacts"
+    )
+
+
 def test_adopted_generic_watcher_wake_inherits_conversation_stage(tmp_path: Path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     legacy_id = "legacy-project"
@@ -259,6 +667,7 @@ def test_adopted_generic_watcher_wake_inherits_conversation_stage(tmp_path: Path
     queued = store.create_watcher_notification_task(wake, ["finished-work"])
 
     assert queued is not None
+    assert wake.stage_root is None
     assert queued.stage_host is None
     assert queued.stage_root == str(stage)
 

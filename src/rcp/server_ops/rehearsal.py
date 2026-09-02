@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import re
 import shutil
@@ -33,6 +32,24 @@ from rcp.limits import (
     SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
 )
 from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON
+from rcp.server_ops._local_primitives import (
+    PrivateFileReadError,
+    canonical_json_bytes,
+    canonical_json_line,
+    read_stable_private_file,
+)
+from rcp.server_ops._local_primitives import (
+    canonical_uuid4 as _canonical_uuid4,
+)
+from rcp.server_ops._local_primitives import (
+    fsync_directory as _fsync_directory,
+)
+from rcp.server_ops._local_primitives import (
+    fsync_file as _fsync_file,
+)
+from rcp.server_ops._local_primitives import (
+    normalized_absolute_path as _absolute_path,
+)
 from rcp.server_ops.backup import BackupRunRefused, discard_backup_capture_root
 from rcp.server_ops.backup_capture import (
     BackupCaptureUnavailable,
@@ -85,30 +102,6 @@ class StartupRecoveryReadModel(_StrictModel):
     report_episode_ids: tuple[str, ...]
     auto_research_recovery_operation_ids: tuple[str, ...]
     active_watcher_ids: tuple[str, ...]
-
-
-def _absolute_path(value: str, *, label: str) -> str:
-    if (
-        not value
-        or value != value.strip()
-        or len(value.encode("utf-8")) > 4096
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
-    ):
-        raise ValueError(f"{label} must be one bounded absolute path")
-    path = Path(value)
-    if not path.is_absolute() or ".." in path.parts or str(path) != value:
-        raise ValueError(f"{label} must be absolute and normalized")
-    return value
-
-
-def _canonical_uuid4(value: str, *, label: str) -> str:
-    try:
-        parsed = uuid.UUID(value)
-    except (AttributeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a canonical UUID4") from exc
-    if parsed.version != 4 or str(parsed) != value:
-        raise ValueError(f"{label} must be a lowercase canonical UUID4")
-    return value
 
 
 class RehearsalProjectOverlay(_StrictModel):
@@ -1668,38 +1661,29 @@ def _publish_private_json(path: Path, model: BaseModel) -> None:
 
 
 def _model_bytes(model: BaseModel) -> bytes:
-    content = (
-        json.dumps(
-            model.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
+    content = canonical_json_line(model.model_dump(mode="json"))
     if len(content) > _MAX_RECEIPT_BYTES:
         raise CandidateRehearsalRefused("A rehearsal receipt exceeds its fixed size bound.")
     return content
 
 
 def _read_private_file(path: Path, *, expected_uid: int, expected_mode: int) -> bytes:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        info = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid != expected_uid
-            or stat.S_IMODE(info.st_mode) != expected_mode
-            or info.st_size > _MAX_RECEIPT_BYTES
-        ):
-            raise CandidateRehearsalRefused("A rehearsal receipt has unsafe metadata.")
-        content = os.read(descriptor, _MAX_RECEIPT_BYTES + 1)
-    finally:
-        os.close(descriptor)
-    if len(content) > _MAX_RECEIPT_BYTES or len(content) != info.st_size:
-        raise CandidateRehearsalRefused("A rehearsal receipt is oversized or incomplete.")
-    return content
+        return read_stable_private_file(
+            path,
+            expected_uid=expected_uid,
+            expected_mode=expected_mode,
+            maximum=_MAX_RECEIPT_BYTES,
+            chunk_size=BACKUP_COPY_BUFFER_BYTES,
+        )
+    except PrivateFileReadError as exc:
+        if exc.failure == "unsafe":
+            message = "A rehearsal receipt has unsafe metadata."
+        elif exc.failure == "incomplete":
+            message = "A rehearsal receipt is oversized or incomplete."
+        else:
+            message = "A rehearsal receipt changed or could not be read."
+        raise CandidateRehearsalRefused(message) from exc
 
 
 def _read_bounded_file(path: Path) -> bytes:
@@ -1782,30 +1766,7 @@ def _expected_candidate_reads(
 
 
 def _canonical_sha256(value: object) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _fsync_file(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
 def _main(argv: list[str]) -> int:

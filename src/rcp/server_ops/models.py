@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import re
-import uuid
 from datetime import datetime
-from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlsplit
 
@@ -18,6 +16,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from rcp.server_ops._local_primitives import canonical_uuid4
+from rcp.server_ops._local_primitives import normalized_absolute_path as absolute_path
 
 SERVER_CLI_PROTOCOL_VERSION = 1
 # One project plan may contain start + three steps for each of 64 repositories
@@ -49,7 +50,6 @@ ServerStepState = Literal[
     "succeeded",
     "failed",
     "operator_action_needed",
-    "unavailable",
 ]
 
 _PEM_PRIVATE_KEY = re.compile(
@@ -137,27 +137,6 @@ ArgvToken = Annotated[
     StringConstraints(min_length=1, max_length=SERVER_CLI_MAX_ARG_CHARS),
     AfterValidator(_safe_argv_token),
 ]
-
-
-def canonical_uuid4(value: str, *, label: str) -> str:
-    try:
-        parsed = uuid.UUID(value)
-    except (AttributeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a canonical UUID4") from exc
-    if parsed.version != 4 or str(parsed) != value:
-        raise ValueError(f"{label} must be a lowercase, hyphenated canonical UUID4")
-    return value
-
-
-def absolute_path(value: str, *, label: str) -> str:
-    try:
-        _single_line_text(value)
-    except ValueError as exc:
-        raise ValueError(f"{label} cannot contain control characters") from exc
-    path = Path(value)
-    if not path.is_absolute():
-        raise ValueError(f"{label} must be an absolute path")
-    return str(path)
 
 
 class _StrictModel(BaseModel):
@@ -500,7 +479,7 @@ class ServerStep(_StrictModel):
                 raise ValueError("operator-action steps must be performed by a human")
             if not self.actions or not self.resume_argv:
                 raise ValueError("operator-action steps require actions and resume argv")
-        elif self.state in {"failed", "unavailable"}:
+        elif self.state == "failed":
             if bool(self.actions) != bool(self.resume_argv):
                 raise ValueError(
                     "failure recovery requires both ordered actions and exact resume argv"
@@ -633,10 +612,10 @@ def _validate_event_sequence(
             raise ValueError("a step can start only once")
         if event.step.state == "succeeded" and previous != "running":
             raise ValueError("a step must start before it succeeds")
-        if previous in {"succeeded", "failed", "operator_action_needed", "unavailable"}:
+        if previous in {"succeeded", "failed", "operator_action_needed"}:
             raise ValueError("a completed or paused step cannot emit another event")
         latest[event.step.number] = event.step.state
-        terminated = event.step.state in {"failed", "operator_action_needed", "unavailable"}
+        terminated = event.step.state in {"failed", "operator_action_needed"}
     if not require_terminal:
         return
     final = events[-1]

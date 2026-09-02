@@ -469,11 +469,15 @@ def ensure_auto_research_wake_spawned(
     return tasks.launch_admitted(existing.operation_id)
 
 
-def reconcile_committed_auto_research_dispatches(tasks: BackgroundAgentTasks) -> list[str]:
+def reconcile_committed_auto_research_dispatches(
+    tasks: BackgroundAgentTasks,
+    *,
+    episode_id: str | None = None,
+) -> list[str]:
     """Start exact paid child/wake rows durably proven never to have run."""
 
     started: list[str] = []
-    for dispatch in proven_committed_auto_research_dispatches(tasks):
+    for dispatch in proven_committed_auto_research_dispatches(tasks, episode_id=episode_id):
         if dispatch.kind == "actor_wake":
             task = ensure_auto_research_wake_spawned(
                 tasks,
@@ -504,17 +508,19 @@ def reconcile_committed_auto_research_dispatches(tasks: BackgroundAgentTasks) ->
 
 def proven_committed_auto_research_dispatches(
     tasks: BackgroundAgentTasks,
+    *,
+    episode_id: str | None = None,
 ) -> list[_CommittedAutoResearchDispatch]:
     """Find admitted queued rows whose dispatch attempt durably never started."""
 
     dispatches: list[_CommittedAutoResearchDispatch] = []
-    for project in tasks.store.projects():
-        episodes = [
-            item
-            for item in tasks.store.episodes(project.project_id)
-            if item.mode == "auto_research"
-        ]
-        for episode in episodes:
+    episodes = [
+        episode
+        for current_episode_id in tasks.store.auto_research_episode_ids(episode_id)
+        if (episode := tasks.store.episode(current_episode_id)) is not None
+    ]
+    for episode in episodes:
+        if episode.mode == "auto_research":
             for task in tasks.store.auto_research_tasks(episode.episode_id):
                 if (
                     task.status != "queued"
@@ -928,9 +934,9 @@ def stop_auto_research_child_work(
 ) -> AgentTaskRecord:
     """Durably stop one route and gracefully pause its current live attempt."""
 
-    route, current = auto_research_child_work_task(tasks, episode_id, worker_id)
+    route, _ = auto_research_child_work_task(tasks, episode_id, worker_id)
     tasks.store.request_auto_research_child_work_stop(route.worker_id)
-    current = tasks._require_operation(current.operation_id)
+    _, current = auto_research_child_work_task(tasks, episode_id, worker_id)
     if current.status in {"queued", "running"}:
         return tasks.pause(current.operation_id)
     if current.status == "pausing":
@@ -1562,8 +1568,17 @@ def auto_research_admission_exhausted(tasks: BackgroundAgentTasks, episode: Epis
                 level="warning",
             )
     if tasks.on_auto_research_admission_exhausted is not None:
-        with suppress(Exception):
+        try:
             tasks.on_auto_research_admission_exhausted(current)
+        except Exception as exc:
+            if current.root_operation_id is not None:
+                with suppress(Exception):
+                    tasks.store.record_agent_task_receipt(
+                        current.root_operation_id,
+                        "auto_research_admission_exhausted_callback_failed",
+                        {"exception_type": type(exc).__name__},
+                        tier="diagnostic",
+                    )
 
 
 def _validate_existing_auto_research_wake(

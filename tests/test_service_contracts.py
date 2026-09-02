@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from rcp.core.attention import decision_awaits_choice, project_graph_attention
-from rcp.core.models import Blocker, Decision, GatedCard, GraphState, Proposal
+from rcp.core.models import Blocker, Decision, Edge, GatedCard, GraphState, Hypothesis, Proposal
 from rcp.service import (
     ChatMessage,
     GraphSyncRequest,
@@ -93,6 +93,96 @@ def test_graph_attention_projection_publishes_exact_membership_ids() -> None:
         "pending_proposal_ids": ["prop/pending"],
         "decisions_awaiting_choice_ids": ["dec/revisit"],
         "open_blocker_ids": ["blk/asserted"],
+        "proposal_actions": {
+            "prop/pending": [{"label": None, "text": "Choose."}],
+        },
+    }
+
+
+def test_graph_attention_projection_expands_proposal_removal_incident_relations() -> None:
+    state = GraphState(
+        nodes={
+            "hyp/remove": Hypothesis(
+                id="hyp/remove",
+                type="hypothesis",
+                title="Remove this hypothesis",
+                statement="This hypothesis is obsolete.",
+                status="proposed",
+            ),
+            "hyp/keep": Hypothesis(
+                id="hyp/keep",
+                type="hypothesis",
+                title="Keep this hypothesis",
+                statement="This hypothesis remains useful.",
+                status="active",
+            ),
+        },
+        edges={
+            "edge/incident": Edge(
+                id="edge/incident",
+                source="hyp/keep",
+                target="hyp/remove",
+                relation="supports",
+            )
+        },
+        proposals={
+            "prop/remove": Proposal.model_validate(
+                {
+                    "id": "prop/remove",
+                    "title": "Remove obsolete hypothesis",
+                    "card": {"decision_needed": "Approve or reject removal."},
+                    "ops": [
+                        {
+                            "op": "remove_nodes",
+                            "intent": "removal",
+                            "node_ids": ["hyp/remove"],
+                        }
+                    ],
+                }
+            )
+        },
+    )
+
+    assert project_graph_attention(state).model_dump(mode="json")["proposal_actions"] == {
+        "prop/remove": [
+            {"label": "Remove", "text": "Remove this hypothesis"},
+            {
+                "label": "Also removes",
+                "text": "Keep this hypothesis — supports → Remove this hypothesis",
+            },
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {"op": "update_nodes", "intent": "content_change", "nodes": []},
+        {"op": "remove_nodes", "intent": "removal", "node_ids": []},
+        {"op": "supersede_nodes", "intent": "supersede", "nodes": []},
+        {"op": "merge_nodes", "intent": "merge", "merges": []},
+        {"op": "update_nodes", "intent": "status_change", "nodes": []},
+    ],
+)
+def test_graph_attention_falls_back_for_historical_empty_proposal_operations(
+    operation: dict[str, object],
+) -> None:
+    state = GraphState.model_validate(
+        {
+            "proposals": {
+                "prop/historical": {
+                    "id": "prop/historical",
+                    "title": "Historical proposal",
+                    "card": {"decision_needed": "Review the original proposal."},
+                    "ops": [operation],
+                    "status": "pending",
+                }
+            }
+        }
+    )
+
+    assert project_graph_attention(state).model_dump(mode="json")["proposal_actions"] == {
+        "prop/historical": [{"label": None, "text": "Review the original proposal."}]
     }
 
 

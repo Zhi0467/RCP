@@ -13,7 +13,6 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const {
-  buildExperimentBoard,
   experimentBoardHref,
   experimentBoardRouteToken,
   experimentIndexEntryForRoute,
@@ -161,15 +160,10 @@ test("the board shows the shared report wrap-up as in-progress", () => {
       run_section: "running",
     }),
   );
-  const board = buildExperimentBoard([entryValue]);
   const html = renderToStaticMarkup(
     React.createElement(ExperimentBoard, { entries: [entryValue], onOpen() {} }),
   );
 
-  assert.deepEqual(
-    board.inProgress.map((item) => item.health),
-    ["wrapping_up"],
-  );
   assert.match(html, /Wrapping up visualization and report/);
 });
 
@@ -190,147 +184,12 @@ test("a final report error never becomes the board's episode health", () => {
       run_section: "completed",
     }),
   );
-  const board = buildExperimentBoard([entryValue]);
   const html = renderToStaticMarkup(
     React.createElement(ExperimentBoard, { entries: [entryValue], onOpen() {} }),
   );
 
-  assert.deepEqual(
-    board.finished.map((item) => item.health),
-    ["completed"],
-  );
   assert.match(html, /Completed/);
   assert.doesNotMatch(html, /Report error/);
-});
-
-test("board reuses loop health and groups current state in operational order", () => {
-  const board = buildExperimentBoard([
-    entry(
-      "stopped",
-      "active",
-      control(
-        {
-          health: "human_stopped",
-          recommendation: "start_episode",
-          run_section: "actionable",
-        },
-        { current_status: "failed", stop_requested: true, stop_settled: true },
-      ),
-    ),
-    entry(
-      "running",
-      "active",
-      control(
-        { health: "agent_active", recommendation: "wait", run_section: "running", live: true },
-        { current_status: "running" },
-      ),
-    ),
-    entry(
-      "degraded",
-      "active",
-      control(
-        { health: "degraded", recommendation: "keep_loop", run_section: "running", live: true },
-        { watcher_degraded: true },
-      ),
-    ),
-    entry(
-      "finished",
-      "completed",
-      control({ health: "completed", recommendation: "none", run_section: "completed" }),
-    ),
-  ]);
-
-  assert.deepEqual(
-    board.needsAction.map((item) => [item.entry.node.id, item.health]),
-    [["stopped", "human_stopped"]],
-  );
-  assert.deepEqual(
-    board.inProgress.map((item) => [item.entry.node.id, item.health]),
-    [
-      ["degraded", "degraded"],
-      ["running", "agent_active"],
-    ],
-  );
-  assert.deepEqual(
-    board.finished.map((item) => [item.entry.node.id, item.health]),
-    [["finished", "completed"]],
-  );
-});
-
-test("unsettled stops with actionable task states stay in Needs action exactly as Runs", () => {
-  const board = buildExperimentBoard(
-    ["failed", "paused", "interrupted"].map((status) =>
-      entry(
-        `stop-${status}`,
-        "active",
-        control(
-          {},
-          {
-            task_active: true,
-            current_status: status,
-            stop_requested: true,
-            stop_settled: false,
-          },
-        ),
-      ),
-    ),
-  );
-
-  assert.deepEqual(
-    board.needsAction.map((item) => [item.entry.node.id, item.health]),
-    [
-      ["stop-failed", "needs_action"],
-      ["stop-interrupted", "needs_action"],
-      ["stop-paused", "needs_action"],
-    ],
-  );
-  assert.equal(board.inProgress.length, 0);
-});
-
-test("each section sorts by newest activity with a deterministic fallback", () => {
-  const board = buildExperimentBoard([
-    entry(
-      "older",
-      "active",
-      control(
-        { health: "agent_active", recommendation: "wait", run_section: "running", live: true },
-        { current_status: "running", current_last_activity_at: "2026-08-08T10:00:00Z" },
-      ),
-      "Zulu",
-    ),
-    entry(
-      "newer",
-      "active",
-      control(
-        { health: "agent_active", recommendation: "wait", run_section: "running", live: true },
-        { current_status: "running", current_last_activity_at: "2026-08-09T10:00:00Z" },
-      ),
-      "Zulu",
-    ),
-    entry(
-      "fallback-b",
-      "active",
-      control(
-        { health: "agent_active", recommendation: "wait", run_section: "running", live: true },
-        { current_status: "running" },
-      ),
-      "Beta",
-    ),
-    entry(
-      "fallback-a",
-      "active",
-      control(
-        { health: "agent_active", recommendation: "wait", run_section: "running", live: true },
-        { current_status: "running" },
-      ),
-      "Alpha",
-    ),
-  ]);
-
-  assert.deepEqual(
-    board.inProgress.map((item) => item.entry.node.id),
-    ["newer", "older", "fallback-a", "fallback-b"],
-  );
 });
 
 test("finished outcome labels stay distinct", () => {

@@ -1,0 +1,31 @@
+{
+  "active_operation_id": "5440b8bf-f702-410d-ac72-0fa555378319",
+  "boundary": "pre-storage-migration-ledger-v12-c3191bf",
+  "created_with_commit": "c3191bf03c5e57d4e79a2976c3753ea82e8d777f",
+  "expected_repair": null,
+  "expected_revision": 1,
+  "experiment_episode_id": "67466966-89ae-41e4-ae8c-abad71faf1ff",
+  "experiment_operation_id": "6a5d71db-8105-41ba-b8c6-eff2033bce1e",
+  "files": {
+    "data/rcp.sqlite3.gz": "4f4e42c602132a1b17538d8d14647daf4af8bf75d9c8dbaaf9597eab3c08c5c4",
+    "project/.research/coverage.json": "0a2aa01fcd75ac1c888792cf8b80f166b715253ac1643fa9cb50993369ef81a3",
+    "project/.research/cursors.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "project/.research/glossary.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "project/.research/graph.json": "db630154ffe2aeb438d1b5a585e2712bf992ad40edec0e934846b22007595496",
+    "project/.research/manifest.toml": "62f859b330e6b40bf5ee9f1e452a0519ff2750d39d97c358d7ce16db28cefd5b",
+    "project/.research/patches/000001.json": "4946f1993ad57e49887834b2e4cbb630555512606576376b9b346d2f5428ff18",
+    "project/.research/proposals.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "project/.research/research.md": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "project/.research/scope-base.json": "0c19495c5a23742881ee23daeec8a3aaee130f1006971539f3818aa135149390"
+  },
+  "member_session_hash": "d656cb2fb5b08b5c9ea44faf0be4d1e093d6e28ad95a42a56470d9588946dcb6",
+  "member_token_hash": "29944f63f11216a9a2ed67ca5d9a2b8b329e0f8579226b2aec6c7986bc3e6c9e",
+  "member_token_id": "ae30e3de-083c-431c-b84b-973b05d832e3",
+  "project_id": "cb6bdc99-6c49-4085-9ed0-f77bcb1137f2",
+  "provisioning_configuration_complete": true,
+  "provisioning_project_id": "41fcccde-d30c-43a8-8cac-136deb4d0420",
+  "provisioning_request_id": "d2cdf014-d69f-4f9a-8ce5-77dc4c025aa1",
+  "schema_version": 1,
+  "space_id": "325f1c1f-d175-4f90-b243-10a4837326ed",
+  "user_id": "397de88b-7e8c-4ee9-a6a5-8c295dad5373"
+}

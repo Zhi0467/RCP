@@ -363,12 +363,19 @@ def test_restore_helpers_detach_tasks_experiments_and_reports_idempotently(tmp_p
         assert connection.execute("SELECT COUNT(*) FROM writing_sessions").fetchone()[0] == 0
         state_rows = connection.execute(
             """
-            SELECT native_session_id, stage_host, stage_root
+            SELECT episode_id, native_session_id, stage_host, stage_root
             FROM experiment_episode_state ORDER BY episode_id
             """
         ).fetchall()
-        assert state_rows
-        assert all(tuple(row) == (None, None, None) for row in state_rows)
+        state_by_episode = {row["episode_id"]: row for row in state_rows}
+        for episode_id in (active_episode_id, wrapping_episode_id):
+            assert tuple(state_by_episode[episode_id])[1:] == (None, None, None)
+        assert state_by_episode[completed_episode_id]["native_session_id"] == (
+            f"{completed_episode_id}-native-session"
+        )
+        assert state_by_episode[completed_episode_id]["stage_root"] == (
+            f"/tmp/{completed_episode_id}-stage"
+        )
         before_counts = {
             "events": connection.execute("SELECT COUNT(*) FROM graph_run_events").fetchone()[0],
             "receipts": connection.execute("SELECT COUNT(*) FROM graph_run_receipts").fetchone()[0],

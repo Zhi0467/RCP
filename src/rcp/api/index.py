@@ -9,20 +9,24 @@ from pydantic import BaseModel
 from rcp.agents import AgentLauncher
 from rcp.api.dependencies import (
     get_catalog,
+    get_experiment_operation_lock,
     get_identity_access,
     get_launcher,
+    get_project_display_cache,
     get_project_service,
     get_setup,
     get_store,
     require_project_membership,
 )
 from rcp.api.episode_branches import graph_branch_summary
-from rcp.api.episodes import serialize_episode
-from rcp.api.experiment_controls import _experiment_control_response
+from rcp.api.episodes import EpisodeResponse, serialize_episode
+from rcp.api.experiment_controls import ExperimentControlResponse, _experiment_control_response
 from rcp.api.identity import IdentityAccess
 from rcp.api.team_shell_protocol import acknowledge_team_shell_protocol
 from rcp.core.models import Experiment, GraphState
-from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON, ProjectCatalog
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.keyed_locks import KeyedLocks
+from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON, ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager, ProjectSetupRequest
@@ -36,8 +40,10 @@ from rcp.sources import (
 )
 from rcp.storage import (
     AppStore,
+    ExperimentControlProjectionSnapshot,
     ExperimentEpisodeProjectionSnapshot,
     ExperimentLoopRuntime,
+    ProjectActiveTaskConflict,
 )
 from rcp.transport import StateUnavailable
 
@@ -45,10 +51,15 @@ router = APIRouter()
 membership_router = APIRouter(dependencies=[Depends(require_project_membership)])
 
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
+DisplayCacheDependency = Annotated[ProjectDisplayCache, Depends(get_project_display_cache)]
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 LauncherDependency = Annotated[AgentLauncher, Depends(get_launcher)]
 SetupDependency = Annotated[ProjectSetupManager, Depends(get_setup)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
+ExperimentOperationLockDependency = Annotated[
+    KeyedLocks,
+    Depends(get_experiment_operation_lock),
+]
 
 
 def _require_personal_project_entry(store: StoreDependency) -> None:
@@ -69,6 +80,18 @@ class ProjectRegisterRequest(BaseModel):
     locator: str
 
 
+class ExperimentLoopIndexEntryResponse(BaseModel):
+    project_id: str
+    project_name: str
+    project_reachable: bool | None
+    graph_target: GraphTargetRef
+    graph_head: GraphHeadRef | None
+    parent_episode_id: str | None
+    node: Experiment
+    control: ExperimentControlResponse
+    episode: EpisodeResponse
+
+
 @router.get("/api/projects")
 def projects(
     request: Request,
@@ -83,20 +106,22 @@ def projects(
     return [card for card in catalog.cards() if card["id"] in visible]
 
 
-@router.get("/api/episodes")
+@router.get("/api/episodes", response_model=list[ExperimentLoopIndexEntryResponse])
 def experiment_episodes(
     request: Request,
     mode: Literal["experiment_loop"] = Query(...),
     *,
     catalog: CatalogDependency,
+    project_display_cache: DisplayCacheDependency,
     identity_access: IdentityDependency,
     store: StoreDependency,
-) -> list[dict[str, object]]:
+    experiment_operation_lock: ExperimentOperationLockDependency,
+) -> list[ExperimentLoopIndexEntryResponse]:
     # An unfiltered answer would publish research and not just project names.
     # Start from durable loop parents rather than graph nodes: a branch may
     # create an Experiment that does not exist on main at all.
     visible = store.member_project_ids(identity_access.acting_user(request).user_id)
-    entries: list[dict[str, object]] = []
+    entries: list[ExperimentLoopIndexEntryResponse] = []
     branch_summary = partial(graph_branch_summary, store=store, catalog=catalog)
     for record in store.projects():
         if record.project_id not in visible:
@@ -111,23 +136,35 @@ def experiment_episodes(
             and not read_model.runtime.stop_settled
             and not read_model.runtime.task_active
         ]
-        for experiment_id in settle_ids:
-            episode_snapshot = read_models[experiment_id].episode
-            if episode_snapshot is not None:
-                episode = episode_snapshot.episode
-                store.settle_experiment_loop_stop(
-                    record.project_id,
-                    experiment_id,
-                    episode_id=episode.episode_id,
-                    graph_target=episode.graph_target,
-                )
         if settle_ids:
-            read_models = store.experiment_control_projection_snapshots(record.project_id)
+            # This GET is the only index path that performs lifecycle repair.
+            # Re-read under the same canonical project lock as Run/Stop so a
+            # concurrent admission cannot race the quiescence decision.
+            with experiment_operation_lock(record.project_id):
+                read_models = store.experiment_control_projection_snapshots(record.project_id)
+                for experiment_id, read_model in read_models.items():
+                    runtime = read_model.runtime
+                    episode_snapshot = read_model.episode
+                    if (
+                        runtime.stop_requested
+                        and not runtime.stop_settled
+                        and not runtime.task_active
+                        and episode_snapshot is not None
+                    ):
+                        episode = episode_snapshot.episode
+                        store.settle_experiment_loop_stop(
+                            record.project_id,
+                            experiment_id,
+                            episode_id=episode.episode_id,
+                            graph_target=episode.graph_target,
+                        )
+                read_models = store.experiment_control_projection_snapshots(record.project_id)
 
         current: list[
             tuple[
                 ExperimentEpisodeProjectionSnapshot,
                 ExperimentLoopRuntime,
+                ExperimentControlProjectionSnapshot,
             ]
         ] = []
         for control_node_id, read_model in read_models.items():
@@ -142,7 +179,7 @@ def experiment_episodes(
                 or episode.control_node_id != control_node_id
             ):
                 raise ValueError("Experiment runtime does not identify its exact durable episode.")
-            current.append((episode_snapshot, runtime))
+            current.append((episode_snapshot, runtime, read_model))
         current.sort(
             key=lambda item: (item[0].episode.created_at, item[0].episode.episode_id),
             reverse=True,
@@ -154,18 +191,38 @@ def experiment_episodes(
                 status_code=503,
                 detail=f"Cached project snapshot is unavailable for {record.project_id}.",
             )
-        reachable = _cached_project_reachable(cached)
-        if record.reachable is False:
-            reachable = False
-
         grouped: dict[
             str,
-            list[tuple[ExperimentEpisodeProjectionSnapshot, ExperimentLoopRuntime]],
+            list[
+                tuple[
+                    ExperimentEpisodeProjectionSnapshot,
+                    ExperimentLoopRuntime,
+                    ExperimentControlProjectionSnapshot,
+                ]
+            ],
         ] = {}
-        for episode_snapshot, runtime in current:
+        for episode_snapshot, runtime, read_model in current:
             grouped.setdefault(episode_snapshot.episode.graph_target.key, []).append(
-                (episode_snapshot, runtime)
+                (episode_snapshot, runtime, read_model)
             )
+
+        main_read_models = {
+            episode_snapshot.episode.control_node_id: read_model
+            for episode_snapshot, _runtime, read_model in grouped.get("main", [])
+            if episode_snapshot.episode.control_node_id is not None
+        }
+        completed_cached = (
+            project_display_cache.complete_cached_transition_control(
+                record.project_id,
+                cached,
+                main_read_models,
+            )
+            if cached is not None
+            else None
+        )
+        reachable = _cached_project_reachable(completed_cached)
+        if record.reachable is False:
+            reachable = False
 
         main_service: ProjectService | None = None
         for group in grouped.values():
@@ -175,7 +232,7 @@ def experiment_episodes(
                 # ProjectDisplayCache is deliberately a main-only display snapshot.
                 # Preserve its graph/runtime publication fence for ordinary loops;
                 # branch state is always read through its exact history service.
-                state = _cached_graph_state(cached)
+                state = _cached_graph_state(completed_cached)
                 if state is None:
                     continue
             else:
@@ -200,7 +257,7 @@ def experiment_episodes(
                         "Experiment graph projection returned a different target head."
                     )
 
-            for episode_snapshot, runtime in group:
+            for episode_snapshot, runtime, read_model in group:
                 episode = episode_snapshot.episode
                 node_id = episode.control_node_id
                 assert node_id is not None
@@ -213,34 +270,48 @@ def experiment_episodes(
                     raise ValueError(
                         "Branch-target Experiment lost its Auto-research parent identity."
                     )
-                serialized_episode = serialize_episode(
-                    store,
-                    record.project_id,
-                    episode,
-                    branch_summary=branch_summary,
-                    projection_snapshot=episode_snapshot,
-                ).model_dump(mode="json")
-                control = _experiment_control_response(
-                    state,
-                    node.id,
-                    runtime,
-                    serialized_episode,
-                    latest_report_episode_id=read_model.latest_report_episode_id,
-                ).model_dump(mode="json")
+                if target.kind == "main":
+                    controls = (
+                        completed_cached.get("experiment_control") if completed_cached else None
+                    )
+                    if not isinstance(controls, dict) or node.id not in controls:
+                        raise ValueError("Completed project snapshot lost Experiment control.")
+                    control = ExperimentControlResponse.model_validate(controls[node.id])
+                    serialized_episode = control.episode
+                    if (
+                        serialized_episode is None
+                        or serialized_episode.episode_id != episode.episode_id
+                    ):
+                        raise ValueError(
+                            "Completed project control lost its exact Experiment episode."
+                        )
+                else:
+                    serialized_episode = serialize_episode(
+                        store,
+                        record.project_id,
+                        episode,
+                        branch_summary=branch_summary,
+                        projection_snapshot=episode_snapshot,
+                    )
+                    control = _experiment_control_response(
+                        state,
+                        node.id,
+                        runtime,
+                        serialized_episode,
+                        latest_report_episode_id=read_model.latest_report_episode_id,
+                    )
                 entries.append(
-                    {
-                        "project_id": record.project_id,
-                        "project_name": record.name,
-                        "project_reachable": reachable,
-                        "graph_target": target.model_dump(mode="json"),
-                        "graph_head": (
-                            graph_head.model_dump(mode="json") if graph_head is not None else None
-                        ),
-                        "parent_episode_id": parent_episode_id,
-                        "node": node.model_dump(mode="json"),
-                        "control": control,
-                        "episode": serialized_episode,
-                    }
+                    ExperimentLoopIndexEntryResponse(
+                        project_id=record.project_id,
+                        project_name=record.name,
+                        project_reachable=reachable,
+                        graph_target=target,
+                        graph_head=graph_head,
+                        parent_episode_id=parent_episode_id,
+                        node=node,
+                        control=control,
+                        episode=serialized_episode,
+                    )
                 )
     return entries
 
@@ -369,9 +440,10 @@ def delete_project(
         return catalog.delete(project_id).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
+    except ProjectActiveTaskConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
-        status = 409 if "active agent task" in str(exc) else 422
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (OSError, RuntimeError, StateUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -407,13 +479,18 @@ def create_project(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.delete("/api/caches")
+@membership_router.delete("/api/projects/{project_id}/caches/all")
 def clear_all_rebuildable_caches(
     project_id: str,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
 ) -> dict[str, object]:
+    if store.space_kind != "personal":
+        raise HTTPException(
+            status_code=409,
+            detail="Clearing every project's cache is available only in a personal space.",
+        )
     if store.has_any_active_agent_task():
         raise HTTPException(
             status_code=409,
@@ -487,6 +564,7 @@ def _cached_project_reachable(snapshot: dict[str, object] | None) -> bool | None
 
 
 __all__ = [
+    "ExperimentLoopIndexEntryResponse",
     "answer_project_invitation",
     "clear_all_rebuildable_caches",
     "create_project",

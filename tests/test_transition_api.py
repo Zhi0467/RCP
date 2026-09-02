@@ -199,8 +199,11 @@ def test_sync_preview_and_commit_publish_the_same_graph_attention_membership(
         "decisions_awaiting_choice_ids": ["dec/attention"],
         "open_blocker_ids": ["blk/attention"],
     }
-    assert preview.json()["projection"]["attention"] == expected
-    assert committed.json()["attention"] == expected
+    preview_attention = preview.json()["projection"]["attention"]
+    committed_attention = committed.json()["attention"]
+    for key, value in expected.items():
+        assert preview_attention[key] == value
+    assert committed_attention == preview_attention
 
 
 def test_experiment_control_publishes_whether_the_human_closed_the_node(

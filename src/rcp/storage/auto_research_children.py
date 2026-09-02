@@ -10,6 +10,7 @@ from typing import Literal
 
 from rcp.limits import (
     AGENT_COMMAND_EVENT_MAX_BYTES,
+    AUTO_RESEARCH_CHILD_EXPERIMENTS_PER_INVOCATION,
     AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES,
     AUTO_RESEARCH_MAIL_MAX_MESSAGES,
 )
@@ -471,6 +472,8 @@ class AutoResearchChildrenStoreMixin:
             route = self._child_work_record(route_row)
             episode = self._load_auto_research_episode(connection, route.episode_id)
             self._validate_auto_research_parent_admission(episode)
+            if route.stop_requested_at is not None:
+                raise EpisodeNotRunning("the child Work route is stopping")
             current = connection.execute(
                 "SELECT * FROM graph_runs WHERE operation_id = ?",
                 (route.current_operation_id,),
@@ -531,6 +534,7 @@ class AutoResearchChildrenStoreMixin:
                 UPDATE auto_research_child_work
                 SET current_operation_id = ?, updated_at = ?
                 WHERE worker_id = ? AND current_operation_id = ?
+                  AND stop_requested_at IS NULL
                 """,
                 (task.operation_id, task.created_at, worker_id, current_task.operation_id),
             )
@@ -938,7 +942,7 @@ class AutoResearchChildrenStoreMixin:
         ).fetchone()
         if row is None:
             raise KeyError(episode_id)
-        total = int(row["invocation_ceiling"]) * 5
+        total = int(row["invocation_ceiling"]) * AUTO_RESEARCH_CHILD_EXPERIMENTS_PER_INVOCATION
         used = int(row["used"])
         return AutoResearchExperimentAllowance(total=total, used=used, remaining=total - used)
 
@@ -1872,7 +1876,6 @@ class AutoResearchChildrenStoreMixin:
         """Return every current obligation without mutating or settling any of them."""
 
         with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
             return self._auto_research_finish_blockers(connection, episode_id)
 
     def guard_auto_research_finish(

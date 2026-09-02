@@ -52,6 +52,13 @@ interface ForceDagOptions {
   mode: DagLayoutMode;
 }
 
+interface StableDagGraph {
+  key: string;
+  nodes: GraphNode[];
+  edges: Edge[];
+  flowLayout: SemanticLaneLayout;
+}
+
 const HORIZONTAL_PADDING = 54;
 const VERTICAL_PADDING = 56;
 const FLOW_ROW_GAP = 44;
@@ -76,8 +83,23 @@ export function forceTuning(repulsion: number) {
 }
 
 export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceDagOptions) {
-  const flowLayout = useMemo(() => buildSemanticLaneLayout(nodes, edges), [edges, nodes]);
-  const metrics = useMemo(() => canvasMetrics(nodes, mode, flowLayout), [flowLayout, mode, nodes]);
+  const graphKey = useMemo(() => forceDagSemanticKey(nodes, edges), [edges, nodes]);
+  const graphRef = useRef<StableDagGraph | null>(null);
+  if (graphRef.current?.key !== graphKey) {
+    graphRef.current = {
+      key: graphKey,
+      nodes,
+      edges,
+      flowLayout: buildSemanticLaneLayout(nodes, edges),
+    };
+  }
+  const stableNodes = graphRef.current.nodes;
+  const stableEdges = graphRef.current.edges;
+  const flowLayout = graphRef.current.flowLayout;
+  const metrics = useMemo(
+    () => canvasMetrics(stableNodes, mode, flowLayout),
+    [flowLayout, mode, stableNodes],
+  );
   const storageKey =
     mode === "force" ? `rcp:dag-layout:v2:${projectId}` : `rcp:dag-layout:flow:v2:${projectId}`;
   const simulationRef = useRef<Simulation<ForceNode, ForceEdge> | null>(null);
@@ -105,8 +127,8 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
     const initial =
       mode === "flow"
         ? flowPositions(flowLayout, metrics.width, metrics.height)
-        : initialPositions(nodes, metrics.width, metrics.height);
-    const forceNodes: ForceNode[] = nodes.map((node) => {
+        : initialPositions(stableNodes, metrics.width, metrics.height);
+    const forceNodes: ForceNode[] = stableNodes.map((node) => {
       const prior = previous.get(node.id);
       const saved = stored[node.id];
       const fallback = initial[node.id];
@@ -125,7 +147,7 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
         fy: pinned ? y : null,
       };
     });
-    const forceEdges: ForceEdge[] = edges.map((edge) => ({
+    const forceEdges: ForceEdge[] = stableEdges.map((edge) => ({
       id: edge.id,
       relation: edge.relation,
       source: edge.source,
@@ -200,15 +222,15 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
       if (simulationRef.current === simulation) simulationRef.current = null;
     };
   }, [
-    edges,
     flowLayout,
     metrics.height,
     metrics.width,
     mode,
-    nodes,
     publish,
     repulsion,
     resetGeneration,
+    stableEdges,
+    stableNodes,
     storageKey,
   ]);
 
@@ -316,6 +338,21 @@ export function useForceDag({ nodes, edges, projectId, repulsion, mode }: ForceD
     releasePins,
     resetLayout,
   };
+}
+
+/** Identity of the graph data that can affect the DAG simulation or lane projection. */
+export function forceDagSemanticKey(nodes: GraphNode[], edges: Edge[]): string {
+  const nodeKeys = nodes
+    .map((node) => [node.id, node.type, RESEARCH_STAGE_BY_NODE_TYPE[node.type]] as const)
+    .sort(compareSemanticTuple);
+  const edgeKeys = edges
+    .map((edge) => [edge.id, edge.source, edge.target, edge.relation] as const)
+    .sort(compareSemanticTuple);
+  return JSON.stringify([nodeKeys, edgeKeys]);
+}
+
+function compareSemanticTuple(left: readonly unknown[], right: readonly unknown[]): number {
+  return JSON.stringify(left).localeCompare(JSON.stringify(right));
 }
 
 function canvasMetrics(nodes: GraphNode[], mode: DagLayoutMode, flowLayout: SemanticLaneLayout) {

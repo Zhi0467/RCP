@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-import time
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -25,6 +24,7 @@ from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import CoachRequest, RunRequest, resolve_dispatch_authority
 from rcp.storage import (
+    ACTIVE_AGENT_TASK_STATUSES,
     AgentTaskKind,
     AgentTaskRecord,
     AppStore,
@@ -34,7 +34,7 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
-from tests.helpers import seated_on_every_project, seed_patch
+from tests.helpers import seated_on_every_project, seed_patch, wait_until
 
 
 def _authorizer(store: AppStore) -> AuthorizedHuman:
@@ -108,14 +108,14 @@ def _record(
 
 
 def _wait_for_terminal(store: AppStore, operation_id: str) -> AgentTaskRecord:
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline:
+    def settled() -> AgentTaskRecord | None:
         record = store.agent_task(operation_id)
         assert record is not None
-        if record.status in {"succeeded", "failed", "paused", "interrupted"}:
+        if record.status not in ACTIVE_AGENT_TASK_STATUSES:
             return record
-        time.sleep(0.01)
-    raise AssertionError("background task did not settle")
+        return None
+
+    return wait_until(settled, timeout=3, detail="background task did not settle")
 
 
 def test_ordinary_resolver_maps_every_current_task_and_ignores_forged_fields() -> None:

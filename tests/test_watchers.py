@@ -614,6 +614,7 @@ def test_watcher_episode_owner_migrates_and_backfills_before_indexing(tmp_path) 
     with sqlite3.connect(path) as connection:
         connection.execute("DROP INDEX watchers_episode")
         connection.execute("ALTER TABLE watchers RENAME COLUMN episode_id TO experiment_episode_id")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 1")
 
     reopened = AppStore(path)
     with reopened.connection() as connection:
@@ -793,6 +794,92 @@ def test_watcher_schedule_persists_backoff_and_resets_after_a_healthy_check(tmp_
     assert healthy.consecutive_error_count == 0
     assert healthy.next_check_at == watcher_next_check_at("scheduled", checked_at, 0)
     assert healthy.last_error is None
+
+
+def test_concurrent_degraded_checks_preserve_every_error_and_latest_backoff(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    store = AppStore(path)
+    store.create_watchers([_record("concurrent-degraded", status="active")])
+    first = AppStore(path)
+    second = AppStore(path)
+    start = threading.Barrier(3)
+    failures: list[BaseException] = []
+
+    def record(opened: AppStore) -> None:
+        try:
+            start.wait()
+            opened.record_watcher_check(
+                "concurrent-degraded",
+                status="degraded",
+                exit_code=255,
+                error="transport unavailable",
+                checked_at="2026-08-01T00:01:00+00:00",
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            failures.append(exc)
+
+    threads = [threading.Thread(target=record, args=(opened,)) for opened in (first, second)]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert not failures
+    assert all(not thread.is_alive() for thread in threads)
+    stored = store.watcher("concurrent-degraded")
+    assert stored is not None
+    assert stored.status == "degraded"
+    assert stored.consecutive_error_count == 2
+    assert stored.next_check_at == watcher_next_check_at(
+        stored.watcher_id,
+        "2026-08-01T00:01:00+00:00",
+        2,
+    )
+
+
+def test_terminal_watcher_check_winner_cannot_be_reverted_by_a_waiting_error(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    store = AppStore(path)
+    store.create_watchers([_record("terminal-race", status="active")])
+    waiting_store = AppStore(path)
+    started = threading.Event()
+    finished = threading.Event()
+
+    def record_waiting_error() -> None:
+        started.set()
+        waiting_store.record_watcher_check(
+            "terminal-race",
+            status="degraded",
+            exit_code=255,
+            error="late transport failure",
+            checked_at="2026-08-01T00:02:00+00:00",
+        )
+        finished.set()
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            UPDATE watchers
+            SET status = 'completed', completed_at = ?
+            WHERE watcher_id = 'terminal-race'
+            """,
+            ("2026-08-01T00:01:00+00:00",),
+        )
+        thread = threading.Thread(target=record_waiting_error)
+        thread.start()
+        assert started.wait(timeout=1)
+        assert not finished.wait(timeout=0.05)
+        connection.commit()
+    thread.join(timeout=5)
+
+    assert finished.is_set()
+    stored = store.watcher("terminal-race")
+    assert stored is not None
+    assert stored.status == "completed"
+    assert stored.consecutive_error_count == 0
+    assert stored.last_error is None
 
 
 def test_grouped_watchers_wait_for_all_members_then_claim_once(tmp_path) -> None:
@@ -1787,6 +1874,7 @@ def test_legacy_delivery_terminalizes_watchers_and_episode_diagnostic_atomically
     assert terminal is not None
     assert terminal.status == "stopped"
     assert terminal.notified is True
+    assert terminal.stopped_by == "loop"
     assert terminal.stop_reason == diagnostic
     assert episode is not None
     assert episode.session_diagnostic == diagnostic

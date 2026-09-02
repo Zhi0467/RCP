@@ -29,6 +29,7 @@ from rcp.background import AgentTaskExecution
 from rcp.config import MachineConfig
 from rcp.core.attention import decision_awaits_choice
 from rcp.core.models import AuthorizedHuman, Blocker, Decision, GraphState, Patch
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.validation.constants import NODE_ADAPTER
 from rcp.history import HistoryManager, ReplayHalted
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
@@ -37,6 +38,7 @@ from rcp.providers import ProviderSkill
 from rcp.runs.chat import (
     _chat_stage_name,
     _discover_chat_artifacts,
+    _local_chat_artifact_directory,
     _prepare_local_artifact_directory,
     _project_write_scope,
 )
@@ -44,6 +46,7 @@ from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.shared import (
     AgentOutputProblem,
     _collect_patch_text,
+    _existing_exact_patch_digest,
     _sse,
     _sweep_stale_stages,
 )
@@ -67,8 +70,10 @@ from rcp.service import (
 from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.sources import project_cache_roots
 from rcp.storage import (
+    AgentTaskAdmissionConflict,
     AgentTaskRecord,
     AppStore,
+    EpisodeRecord,
     GraphWatcherRecord,
     ProjectRecord,
     WatcherContinuation,
@@ -85,6 +90,7 @@ from .helpers import (
     refresh_patch,
     seed_patch,
     shape_invalid_patch,
+    wait_until,
 )
 from .helpers import wait_for_task_response as _wait_for_run
 
@@ -427,13 +433,86 @@ def test_stale_instance_guard_rejects_mutation_before_side_effect(manifest, tmp_
 
     rejected = client.delete(
         f"/api/projects/{project_id}",
-        headers={"X-RCP-Instance-ID": "replaced-instance"},
+        headers={
+            "Origin": "http://127.0.0.1:5173",
+            "X-RCP-Instance-ID": "replaced-instance",
+        },
     )
 
     assert rejected.status_code == 409
     assert "replaced by another backend instance" in rejected.json()["detail"]
     assert rejected.json()["instance_id"] == app.state.instance_metadata.instance_id
+    assert rejected.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
     assert any(item["id"] == project_id for item in client.get("/api/projects").json())
+
+
+def test_watcher_poll_delivery_failure_does_not_starve_later_auto_research_episode(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_ids = [app.state.default_project_id, str(uuid.uuid4())]
+    store.upsert_project(
+        ProjectRecord(
+            project_id=project_ids[1],
+            locator=str(tmp_path / "second-project" / "research.yaml"),
+            name="Second project",
+            state_location=str(tmp_path / "second-project" / ".research"),
+            state_remote=False,
+            added_at=store.now(),
+        )
+    )
+    episode_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+    authorizer = _named_test_authorizer(store)
+    for project_id, episode_id in zip(project_ids, episode_ids, strict=True):
+        now = store.now()
+        store.create_episode(
+            EpisodeRecord(
+                episode_id=episode_id,
+                project_id=project_id,
+                mode="auto_research",
+                graph_target=GraphTargetRef(kind="branch", branch_id=episode_id),
+                graph_base_head=GraphHeadRef(revision=0),
+                status="queued",
+                invocation_ceiling=2,
+                authorized_by=authorizer,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    lifecycle_attempts: list[str] = []
+    mail_attempts: list[str] = []
+
+    def reconcile_lifecycle(_background, *, episode_id=None):
+        assert episode_id is not None
+        lifecycle_attempts.append(episode_id)
+        if len(lifecycle_attempts) == 1:
+            raise ValueError("malformed retained lifecycle row")
+        return []
+
+    def reconcile_mail(_background, *, episode_id=None):
+        assert episode_id is not None
+        mail_attempts.append(episode_id)
+        return []
+
+    monkeypatch.setattr(
+        "rcp.api.app.reconcile_pending_auto_research_lifecycle",
+        reconcile_lifecycle,
+    )
+    monkeypatch.setattr(
+        "rcp.api.app.reconcile_pending_auto_research_mail",
+        reconcile_mail,
+    )
+
+    after_poll = app.state.watcher_poller.on_poll_completed
+    assert after_poll is not None
+    after_poll()
+
+    assert len(lifecycle_attempts) == 2
+    assert mail_attempts == [lifecycle_attempts[1]]
 
 
 class ScriptedLauncher:
@@ -465,7 +544,7 @@ class ScriptedLauncher:
         self.launch_kwargs.append(kwargs)
         workspace = Path(kwargs["cwd"])
         self.workspaces.append(workspace)
-        inputs = workspace / "inputs"
+        inputs = Path(prompt.splitlines()[1]).parent
         self.input_snapshots.append(
             {
                 item.name: item.read_text(encoding="utf-8")
@@ -1154,6 +1233,7 @@ def test_project_snapshot_counts_only_ripe_decisions_and_open_asserted_blockers(
         "pending_proposal_ids": [],
         "decisions_awaiting_choice_ids": ["dec/ready", "dec/revisit"],
         "open_blocker_ids": ["blk/asserted-open"],
+        "proposal_actions": {},
     }
     assert {
         node_id: (node["status"], node["standing"])
@@ -1307,14 +1387,14 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
     assert refused.status_code == 409
     assert cached.read_text(encoding="utf-8") == "project-a-source-again"
 
-    global_refused = client.delete(f"/api/caches?project_id={project_id}")
+    global_refused = client.delete(f"/api/projects/{project_id}/caches/all")
     assert global_refused.status_code == 409
     assert cached.exists()
     assert b_cached.exists()
     assert legacy_cached.exists()
 
     store.fail_agent_task("this-project-cache-reader", "finished for test")
-    all_cleared = client.delete(f"/api/caches?project_id={project_id}")
+    all_cleared = client.delete(f"/api/projects/{project_id}/caches/all")
     assert all_cleared.status_code == 200
     assert all_cleared.json()["remote_sources"]["count"] == 0
     assert all_cleared.json()["remote_sources"]["bytes"] == 0
@@ -1520,6 +1600,25 @@ def test_seed_and_refresh_reject_caller_supplied_sessions(manifest, tmp_path, ki
 
     assert background.status_code == 422
     assert client.get(f"/api/projects/{project_id}/tasks").json() == []
+
+
+def test_task_validation_status_does_not_depend_on_exception_wording(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+
+    def reject_validation(*_args, **_kwargs):
+        raise ValueError("A malformed field happens to say already running.")
+
+    monkeypatch.setattr("rcp.api.tasks._validated_task_request", reject_validation)
+
+    response = TestClient(app).post(
+        f"/api/projects/{project_id}/tasks/seed",
+        json={"run_truth_scope": ["repo-a"]},
+    )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -1995,6 +2094,20 @@ def test_patch_collector_prefers_patch_json_and_refuses_ambiguity(tmp_path) -> N
     (tmp_path / "backup.json").write_text(patch, encoding="utf-8")
     with pytest.raises(AgentOutputProblem, match="more than one patch-shaped JSON file"):
         _collect_patch_text(tmp_path, None)
+
+
+def test_exact_patch_digest_ignores_patch_shaped_drafts(tmp_path) -> None:
+    malformed_patch = '{"summary": "retained", "ops": ['
+    (tmp_path / "patch.json").write_text(malformed_patch, encoding="utf-8")
+    (tmp_path / "draft.json").write_text(
+        agent_patch_json(refresh_patch()),
+        encoding="utf-8",
+    )
+
+    assert (
+        _existing_exact_patch_digest(tmp_path, None)
+        == hashlib.sha256(malformed_patch.encode("utf-8")).hexdigest()
+    )
 
 
 def test_local_state_repository_is_read_in_place_instead_of_copied(manifest, tmp_path) -> None:
@@ -3383,8 +3496,9 @@ def test_new_chat_turn_refuses_resumable_paused_attempt(manifest, tmp_path) -> N
     )
 
 
+@pytest.mark.parametrize("legacy_layout", [False, True])
 def test_chat_artifacts_are_bounded_sandboxed_and_independent(
-    manifest, tmp_path, monkeypatch
+    manifest, tmp_path, monkeypatch, legacy_layout: bool
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -3450,6 +3564,15 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
         "unsupported.svg",
     ]
     assert all("path" not in item and "host" not in item for item in artifacts)
+    if legacy_layout:
+        persisted = app.state.background_tasks.store.agent_task(completed["operation_id"])
+        assert persisted is not None and persisted.stage_root
+        stage = Path(persisted.stage_root)
+        (stage / "workspace" / "turns").rename(stage / "turns")
+        with app.state.background_tasks.store.connection() as connection:
+            connection.execute(
+                "DELETE FROM graph_run_receipts WHERE category = 'chat_stage_layout'"
+            )
 
     by_name = {item["name"]: item for item in artifacts}
     base = f"/api/projects/{project_id}/tasks/{completed['operation_id']}/artifacts"
@@ -3465,8 +3588,10 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert "javascript:alert" not in html_preview.text
     assert "https://example.com/tracker.png" not in html_preview.text
     assert "event.isTrusted" in html_preview.text
-    assert "value.secret" in html_preview.text
-    assert "window.open(target.href,'_blank','noopener,noreferrer')" in html_preview.text
+    assert "value.secret" not in html_preview.text
+    assert "rcp-artifact-channel" in html_preview.text
+    assert "event.ports.length!==1" in html_preview.text
+    assert "openWindow(target.href,'_blank','noopener,noreferrer')" in html_preview.text
     assert "window.location.assign" not in html_preview.text
     assert "connect-src &amp;#x27;none&amp;#x27;" in html_preview.text
 
@@ -3584,10 +3709,11 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     persisted_before = app.state.background_tasks.store.agent_task(completed["operation_id"])
     assert persisted_before is not None and persisted_before.stage_root
     artifact_file = (
-        Path(persisted_before.stage_root)
-        / "turns"
-        / completed["operation_id"]
-        / "artifacts"
+        _local_chat_artifact_directory(
+            app.state.background_tasks.store,
+            persisted_before,
+            completed["operation_id"],
+        )
         / "preview.html"
     )
     artifact_file.unlink()
@@ -3835,9 +3961,12 @@ async def test_same_chat_id_uses_distinct_stages_for_distinct_projects(manifest,
     first_workspace = Path(first_launcher.last_kwargs["cwd"])
     second_workspace = Path(second_launcher.last_kwargs["cwd"])
     assert first_workspace != second_workspace
-    assert first_workspace.parent == second_workspace.parent == shared_data / "run-stage"
-    assert chat_id in first_workspace.name
-    assert chat_id in second_workspace.name
+    assert first_workspace.name == second_workspace.name == "workspace"
+    assert (
+        first_workspace.parent.parent == second_workspace.parent.parent == shared_data / "run-stage"
+    )
+    assert chat_id in first_workspace.parent.name
+    assert chat_id in second_workspace.parent.name
 
 
 @pytest.mark.asyncio
@@ -5016,15 +5145,19 @@ def _wait_for_status(
     operation_id: str,
     statuses: set[str],
 ) -> dict[str, object]:
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
+    def matching_status() -> dict[str, object] | None:
         response = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
         assert response.status_code == 200
         record = response.json()
         if record["status"] in statuses:
             return record
-        time.sleep(0.01)
-    raise AssertionError(f"background run did not reach {sorted(statuses)}")
+        return None
+
+    return wait_until(
+        matching_status,
+        timeout=2,
+        detail=f"background run did not reach {sorted(statuses)}",
+    )
 
 
 @pytest.mark.asyncio
@@ -6580,6 +6713,51 @@ def test_run_endpoint_preserves_a_nonblank_experiment_goal(manifest, tmp_path) -
     assert response.status_code == 202, response.text
     assert response.json()["request"]["message"] == goal
     assert seen.wait(timeout=1)
+
+
+def test_experiment_admission_conflict_status_uses_exception_type(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
+
+    def reject_admission(*_args, **_kwargs):
+        raise AgentTaskAdmissionConflict("The valid request conflicts with admitted work.")
+
+    monkeypatch.setattr(app.state.background_tasks, "start", reject_admission)
+    project_id = app.state.default_project_id
+
+    response = TestClient(app).post(
+        f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
+        json={"chat_id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "The valid request conflicts with admitted work."
+
+
+def test_experiment_validation_status_does_not_depend_on_exception_wording(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
+
+    def reject_validation(*_args, **_kwargs):
+        raise ValueError("A malformed field happens to say already running.")
+
+    monkeypatch.setattr("rcp.api.experiments.fresh_experiment_run_request", reject_validation)
+    project_id = app.state.default_project_id
+
+    response = TestClient(app).post(
+        f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
+        json={"chat_id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 422
 
 
 def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, tmp_path) -> None:

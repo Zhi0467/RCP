@@ -294,7 +294,13 @@ def test_design_index_links_each_module_spec_once() -> None:
     assert links == EXPECTED_SPECS
 
 
-def test_s125_records_implemented_verification() -> None:
-    metadata = _frontmatter(ACTIVE_ACCEPTANCE / "S125-auto-research-graph-branch-merge.md")
-    assert metadata["status"] == "implemented"
-    assert metadata["last_passed"].startswith("2026-08-18")
+def test_implemented_acceptance_records_verification_lifecycle() -> None:
+    missing = []
+    for scenario in ACTIVE_ACCEPTANCE.glob("S*.md"):
+        metadata = _frontmatter(scenario)
+        if metadata["status"] == "implemented" and not {
+            "last_passed",
+            "last_checked",
+        }.intersection(metadata):
+            missing.append(scenario.name)
+    assert not missing, f"implemented scenarios lack verification metadata: {missing}"

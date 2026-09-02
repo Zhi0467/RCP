@@ -928,6 +928,9 @@ def _codex_permission_profile(scope: ProjectWriteScope) -> str:
     roots = ",".join(
         f"{json.dumps(path, ensure_ascii=False)}=true" for path in scope.writable_roots
     )
+    protected = ",".join(
+        f'{json.dumps(path, ensure_ascii=False)}="read"' for path in scope.protected_write_paths
+    )
     # Codex protects `.git` separately, so the writable root alone does not let
     # Work run ordinary Git commands such as fetch or pull. `.research` is "read",
     # never "deny": Codex reads `deny` as no access at all, which would also revoke
@@ -936,7 +939,9 @@ def _codex_permission_profile(scope: ProjectWriteScope) -> str:
         "permissions={rcp_project={workspace_roots={"
         + roots
         + '},filesystem={":root"="read",":workspace_roots"={"."="write",'
-        '".git"="write",".research"="read"}},network={enabled=true}}}'
+        '".git"="write",".research"="read"}'
+        + ("," + protected if protected else "")
+        + "},network={enabled=true}}}"
     )
 
 

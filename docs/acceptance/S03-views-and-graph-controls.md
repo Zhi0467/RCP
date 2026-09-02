@@ -12,6 +12,7 @@ covered_by:
   - web/tests/forceDag.test.mjs
   - web/tests/graphProjectionPerformance.test.mjs
 invariants: []
+last_checked: 2026-09-01 — Web coverage passed; the complete browser journey was not redriven.
 ---
 
 # Move between views and work the graph

@@ -1,6 +1,6 @@
 ---
 id: S96-joining-a-team-space
-status: implemented
+status: pending
 tier: hermetic
 driver: pytest + api + browser
 covered_by:

@@ -12,7 +12,7 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { relatedNodeWindowAction } = await server.ssrLoadModule("/src/App.tsx");
+const { relatedNodeWindowAction } = await server.ssrLoadModule("/src/hooks/useGraphSelection.ts");
 const { DetailDrawer } = await server.ssrLoadModule("/src/components/DetailDrawer.tsx");
 
 after(() => server.close());

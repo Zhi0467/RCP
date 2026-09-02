@@ -267,6 +267,58 @@ def test_doctor_reports_an_unfinished_source_update_as_a_problem(tmp_path: Path)
     assert problems == ["unfinished source update requires sudo rcp server update re-entry"]
 
 
+def test_doctor_selects_an_older_active_receipt_over_the_latest_terminal_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    active = SimpleNamespace(
+        updated_at=datetime(2026, 8, 29, 12, 0, tzinfo=UTC),
+        operation_id=str(uuid.uuid4()),
+        installation_id=INSTALLATION_ID,
+        terminal=False,
+        state="checkpoint_ready",
+        candidate_commit=OTHER_COMMIT,
+        base_commit=COMMIT,
+        failure=None,
+        runtime_failure=None,
+    )
+    latest = SimpleNamespace(
+        updated_at=datetime(2026, 8, 29, 13, 0, tzinfo=UTC),
+        operation_id=str(uuid.uuid4()),
+        installation_id=INSTALLATION_ID,
+        terminal=True,
+        state="committed",
+        candidate_commit="c" * 40,
+        base_commit=OTHER_COMMIT,
+        failure=None,
+        runtime_failure=None,
+    )
+    receipts = (
+        (Path("/active"), active, "a" * 64),
+        (Path("/latest"), latest, "b" * 64),
+    )
+    monkeypatch.setattr(
+        "rcp.server_ops.update_cutover.update_operation_receipts",
+        lambda _root, *, expected_uid: receipts,
+    )
+    monkeypatch.setattr(
+        "rcp.server_ops.update_checkpoint.unfinished_rollback_journals",
+        lambda _root, *, expected_uid: (),
+    )
+    problems: list[str] = []
+
+    summary = LinuxServerDoctorMachine(layout)._inspect_update(
+        service_uid=os.geteuid(),
+        installation_id=INSTALLATION_ID,
+        add_problem=problems.append,
+    )
+
+    assert summary.state == "checkpoint_ready"
+    assert summary.candidate_commit == OTHER_COMMIT
+    assert problems == ["unfinished source update requires sudo rcp server update re-entry"]
+
+
 @pytest.mark.parametrize("state", ["committed", "rolled_back"])
 def test_doctor_reports_a_selected_release_that_needs_runtime_restart(
     monkeypatch: pytest.MonkeyPatch,

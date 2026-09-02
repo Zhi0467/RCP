@@ -373,6 +373,19 @@ async def test_report_runner_stages_only_minimal_resume_inputs(manifest, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_report_runner_never_inherits_orchestrator_capability(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+    monkeypatch.setattr(store, "agent_task_profile", lambda _operation_id: "orchestrator")
+    launcher = _ReportLauncher(["valid"])
+
+    await _events(stream_episode_report_run(service, launcher, request, execution))
+
+    assert launcher.kwargs[0]["capability"] == "work_auto"
+
+
+@pytest.mark.asyncio
 async def test_experiment_control_response_owns_wrapup_and_ready_report_state(
     manifest,
     tmp_path,

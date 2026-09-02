@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import pytest
@@ -35,6 +34,7 @@ from .helpers import (
     append_fixture_patch,
     create_named_app,
     wait_for_task,
+    wait_until,
 )
 
 
@@ -48,44 +48,52 @@ def _wait_for_episode(
     report_ready: bool | None = None,
     timeout: float = 20,
 ) -> dict[str, object]:
-    deadline = time.monotonic() + timeout
-    episode: dict[str, object] | None = None
-    while time.monotonic() < deadline:
+    last_episode: dict[str, object] | None = None
+
+    def matching_episode() -> dict[str, object] | None:
+        nonlocal last_episode
         response = client.get(f"/api/projects/{project_id}/episodes")
         assert response.status_code == 200, response.text
-        episode = next(item for item in response.json() if item["episode_id"] == episode_id)
-        report_matches = report_ready is None or bool(episode["report"]) is report_ready
-        if episode["status"] == status and episode["ending"] == ending and report_matches:
-            return episode
-        time.sleep(0.01)
-    raise AssertionError(
-        f"acceptance episode did not reach {status}/{ending} with report={report_ready}; "
-        f"last state: {episode}"
+        last_episode = next(item for item in response.json() if item["episode_id"] == episode_id)
+        report_matches = report_ready is None or bool(last_episode["report"]) is report_ready
+        if last_episode["status"] == status and last_episode["ending"] == ending and report_matches:
+            return last_episode
+        return None
+
+    return wait_until(
+        matching_episode,
+        timeout=timeout,
+        detail=lambda: (
+            f"acceptance episode did not reach {status}/{ending} with report={report_ready}; "
+            f"last state: {last_episode}"
+        ),
     )
 
 
 def _wait_for_path(path: Path, *, timeout: float = 10) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if path.is_file():
-            return
-        time.sleep(0.01)
-    raise AssertionError(f"acceptance fixture path did not appear: {path}")
+    wait_until(
+        path.is_file,
+        timeout=timeout,
+        detail=f"acceptance fixture path did not appear: {path}",
+    )
 
 
 def _wait_for_task_stage(store, operation_id: str, *, timeout: float = 10) -> Path:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    def stage_path() -> Path | None:
         task = store.agent_task(operation_id)
         if task is not None and task.stage_root is not None:
             return Path(task.stage_root)
-        time.sleep(0.01)
-    raise AssertionError(f"acceptance task did not persist its stage: {operation_id}")
+        return None
+
+    return wait_until(
+        stage_path,
+        timeout=timeout,
+        detail=f"acceptance task did not persist its stage: {operation_id}",
+    )
 
 
 def _wait_for_child_work(store, episode_id: str, *, timeout: float = 10):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    def child_work():
         routes = store.auto_research_child_works(episode_id)
         if routes:
             assert len(routes) == 1
@@ -93,8 +101,13 @@ def _wait_for_child_work(store, episode_id: str, *, timeout: float = 10):
             task = store.agent_task(route.current_operation_id)
             if task is not None:
                 return route, task
-        time.sleep(0.01)
-    raise AssertionError("acceptance episode did not admit its ordinary child Work task")
+        return None
+
+    return wait_until(
+        child_work,
+        timeout=timeout,
+        detail="acceptance episode did not admit its ordinary child Work task",
+    )
 
 
 def _add_worker_seat(app, *, node_id: str, title: str, objective: str) -> None:
@@ -245,6 +258,7 @@ def test_acceptance_episode_completes_and_corrects_one_hidden_report(
     assert report_task.stage_host == root.stage_host
     assert report_task.stage_root == root.stage_root
     assert store.agent_command_by_key(episode_id, "acceptance-spawn") is not None
+    assert store.agent_command_by_key(episode_id, "acceptance-harvest-before-finish") is not None
     assert store.agent_command_by_key(episode_id, "acceptance-finish-after-worker") is not None
     assert store.episode_report(episode_id) is not None
 
@@ -612,8 +626,9 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
 
         worker_route, worker = _wait_for_child_work(store, episode_id)
         worker_stage = _wait_for_task_stage(store, worker.operation_id)
-        worker_active_path = worker_stage / ".rcp-acceptance-campaign-worker-active"
-        worker_release_path = worker_stage / ".rcp-acceptance-campaign-worker-release"
+        worker_workspace = worker_stage / "workspace"
+        worker_active_path = worker_workspace / ".rcp-acceptance-campaign-worker-active"
+        worker_release_path = worker_workspace / ".rcp-acceptance-campaign-worker-release"
         _wait_for_path(worker_active_path)
         root = store.agent_task(root_operation_id)
         current_worker = store.agent_task(worker.operation_id)

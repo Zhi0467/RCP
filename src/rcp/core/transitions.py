@@ -5,19 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.control import ExperimentControlState, experiment_control_dependencies
-from rcp.core.attention import project_graph_attention
+from rcp.core.attention import project_counts, project_graph_attention, project_primary_question
 from rcp.core.materialize import (
     apply_transition_generated_operation,
     apply_valid_operation,
     apply_valid_patch,
 )
-from rcp.core.models import Evidence, Experiment, GraphState, Patch, ReplayFailure
+from rcp.core.models import Evidence, Experiment, GraphState, Patch, ProjectNode, ReplayFailure
 from rcp.core.operations import (
     GraphOperation,
     NodeUpdate,
@@ -29,6 +28,7 @@ from rcp.core.transition_models import (
     GraphHeadRef,
     GraphTargetRef,
     GuidanceFieldValidity,
+    ProjectCountsProjection,
     TransitionCauseRef,
     TransitionConflictDetail,
     TransitionEvent,
@@ -44,15 +44,28 @@ GUIDANCE_RULE_ID = "experiment.guidance-validity.v1"
 STATUS_EVENT_RULE_ID = "lifecycle.status-events.v1"
 DEFAULT_MAX_RULE_FIRINGS = 128
 
-
-@dataclass(frozen=True)
-class TransitionRule:
-    rule_id: str
-
-
-RULE_REGISTRY: tuple[TransitionRule, ...] = (
-    TransitionRule(STATUS_EVENT_RULE_ID),
-    TransitionRule(GUIDANCE_RULE_ID),
+# Transition identity deliberately names its complete provenance contract. New
+# optional Patch fields do not become durable identity inputs by accident.
+_TRANSITION_PROVENANCE_FIELDS = (
+    "schema_generation",
+    "kind",
+    "author",
+    "producer",
+    "run_truth_scope",
+    "repositories_read",
+    "processed_cursors",
+    "source_operation_id",
+    "source_effect_id",
+    "source_effect_sha256",
+    "experiment_control_node_id",
+    "experiment_decision_bundle",
+    "project_identity",
+    "project_home_transfer",
+    "authorized_by",
+    "profile",
+    "task_id",
+    "episode_id",
+    "branch_merge",
 )
 
 
@@ -68,6 +81,8 @@ class ProjectTransitionProjection(BaseModel):
     head: GraphHeadRef
     graph: GraphState
     attention: GraphAttentionProjection
+    primary_question: ProjectNode | None
+    counts: ProjectCountsProjection
     experiment_control: dict[str, ExperimentControlState]
     guidance_validity: dict[str, ExperimentGuidanceValidity]
     ruleset_tag: str
@@ -187,12 +202,12 @@ class GraphTransitionManager:
         source_actions: list[tuple[Patch, GraphOperation]] = []
         groups: list[TransitionInitiatingGroup] = []
         for group_index, patch in enumerate(patches):
+            if not patch.ops:
+                raise ValueError("every initiating patch must contain a semantic operation")
             indexes: list[int] = []
             for operation in patch.ops:
                 indexes.append(len(source_actions))
                 source_actions.append((patch, operation))
-            if not indexes:
-                continue
             groups.append(
                 TransitionInitiatingGroup(
                     group_id=f"group-{group_index + 1}",
@@ -311,26 +326,11 @@ class GraphTransitionManager:
     @staticmethod
     def _require_compatible_envelopes(patches: list[Patch]) -> None:
         first = patches[0]
-        fields = (
-            "schema_generation",
-            "kind",
-            "author",
-            "producer",
-            "source_operation_id",
-            "source_effect_id",
-            "source_effect_sha256",
-            "project_identity",
-            "project_home_transfer",
-            "authorized_by",
-            "profile",
-            "task_id",
-            "episode_id",
-            "experiment_control_node_id",
-            "experiment_decision_bundle",
-        )
         for patch in patches[1:]:
             mismatched = [
-                field for field in fields if getattr(patch, field) != getattr(first, field)
+                field
+                for field in _TRANSITION_PROVENANCE_FIELDS
+                if getattr(patch, field) != getattr(first, field)
             ]
             if mismatched:
                 raise ValueError(
@@ -602,10 +602,13 @@ def _project_projection(
                 invalidation_event_by_field.get((node_id, "next_action_stale")),
             ),
         )
+    attention = project_graph_attention(state)
     return ProjectTransitionProjection(
         head=head,
         graph=state,
-        attention=project_graph_attention(state),
+        attention=attention,
+        primary_question=project_primary_question(state),
+        counts=project_counts(state, attention),
         experiment_control=controls,
         guidance_validity=guidance,
         ruleset_tag=ruleset_tag,
@@ -827,25 +830,12 @@ def _transition_id(
     envelopes = []
     for patch in patches:
         document = patch.model_dump(mode="json")
-        # T1 added this optional canonical identity payload after transition ids
-        # were already durable.  It is not valid on a transition-producing
-        # patch, so its model default must not change historical hashes.
+        envelope = {field: document[field] for field in _TRANSITION_PROVENANCE_FIELDS}
+        # T1 predates the explicit allowlist and already established this
+        # historical omission for its default value.
         if document.get("project_home_transfer") is None:
-            document.pop("project_home_transfer", None)
-        for field in (
-            "revision",
-            "created_at",
-            "summary",
-            "change_summary",
-            "ops",
-            "admission",
-            "admission_messages",
-            "human_action",
-            "agent_action",
-            "transition",
-        ):
-            document.pop(field, None)
-        envelopes.append(document)
+            envelope.pop("project_home_transfer")
+        envelopes.append(envelope)
     return _sha256(
         {
             "pre_head": pre_head.model_dump(mode="json"),

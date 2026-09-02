@@ -27,6 +27,7 @@ from rcp.runs.shared import _record_patch_applied_receipt
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest
 from rcp.storage import (
+    ACTIVE_AGENT_TASK_STATUSES,
     AgentTaskRecord,
     AppStore,
     GraphWatcherRecord,
@@ -51,7 +52,7 @@ from rcp.watchers import (
     ready_graph_watcher_groups,
 )
 
-from .helpers import append_fixture_patch
+from .helpers import append_fixture_patch, wait_until
 from .helpers import create_named_app as create_app
 
 _CREATED_AT = "2026-08-12T00:00:00+00:00"
@@ -172,23 +173,14 @@ def _test_authorizer(store: AppStore) -> AuthorizedHuman:
 
 
 def _wait_for_terminal_task(store: AppStore, operation_id: str) -> AgentTaskRecord:
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
+    def settled() -> AgentTaskRecord | None:
         task = store.agent_task(operation_id)
         assert task is not None
-        if task.status in {"succeeded", "failed", "paused", "stopped"}:
+        if task.status not in ACTIVE_AGENT_TASK_STATUSES:
             return task
-        time.sleep(0.01)
-    raise AssertionError(f"watcher wake {operation_id} did not settle")
+        return None
 
-
-def _wait_until(predicate, *, detail: str) -> None:
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError(detail)
+    return wait_until(settled, detail=f"watcher wake {operation_id} did not settle")
 
 
 def _continuation() -> WatcherContinuation:
@@ -1220,7 +1212,7 @@ def test_transient_reconciliation_failure_retries_without_a_new_revision(
     app.state.graph_watcher_retry_worker.start()
     try:
         app.state.graph_watcher_retry_worker.signal()
-        _wait_until(lambda: bool(deliveries), detail="reconciliation retry did not wake")
+        wait_until(lambda: bool(deliveries), detail="reconciliation retry did not wake")
         assert replay_calls == 2
         assert deliveries == [["reconcile-retry"]]
         assert service.history.state().revision == revision
@@ -1347,7 +1339,7 @@ def test_due_reconciliation_survives_retry_worker_stop_then_start(
         # The stale generation selects the due project, then observes its invalid
         # lease. The replacement must still find and process that same due work.
         release_first.set()
-        _wait_until(lambda: bool(deliveries), detail="replacement generation lost due retry")
+        wait_until(lambda: bool(deliveries), detail="replacement generation lost due retry")
         assert replay_calls == 2
         assert deliveries == [["generation-reconcile-retry"]]
     finally:
@@ -1676,7 +1668,10 @@ def test_app_lifespan_evaluates_conditions_satisfied_before_restart(
     monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_delivery)
     with TestClient(reopened) as client:
         assert client.get("/api/health").status_code == 200
-        time.sleep(0.05)
+        wait_until(
+            lambda: deliveries if deliveries else None,
+            detail="startup graph watcher delivery did not run",
+        )
 
     assert len(deliveries) == 1
     assert set(deliveries[0]) == {"startup-hook", "startup-retry"}
@@ -1915,6 +1910,65 @@ def test_retry_worker_keeps_the_watcher_poller_nonblocking(tmp_path) -> None:
         worker.stop()
 
 
+def test_retry_worker_lifecycle_stays_bounded_during_reconciliation(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.services.store
+    delivery = app.state.services.watcher_delivery
+    store.create_watchers(
+        [
+            _graph_record(
+                "slow-reconciliation",
+                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
+            ).model_copy(update={"project_id": project_id, "armed_revision": 0})
+        ]
+    )
+    delivery._retry.schedule(project_id)
+    original_reconcile = delivery._reconcile_graph_boundaries
+    reconciliation_started = threading.Event()
+    release_reconciliation = threading.Event()
+
+    def blocked_reconciliation(*args, **kwargs):
+        reconciliation_started.set()
+        assert release_reconciliation.wait(timeout=3)
+        return original_reconcile(*args, **kwargs)
+
+    monkeypatch.setattr(delivery, "_reconcile_graph_boundaries", blocked_reconciliation)
+    worker = app.state.graph_watcher_retry_worker
+    worker.start()
+    worker.signal()
+    assert reconciliation_started.wait(1), "retry reconciliation did not start"
+
+    signal_finished = threading.Event()
+    stop_finished = threading.Event()
+    signal_thread = threading.Thread(
+        target=lambda: (worker.signal(), signal_finished.set()),
+        name="signal-during-watcher-reconciliation",
+    )
+    stop_thread = threading.Thread(
+        target=lambda: (worker.stop(timeout=0.01), stop_finished.set()),
+        name="stop-during-watcher-reconciliation",
+    )
+    signal_thread.start()
+    stop_thread.start()
+    try:
+        signal_was_bounded = signal_finished.wait(0.2)
+        stop_was_bounded = stop_finished.wait(0.2)
+    finally:
+        release_reconciliation.set()
+        signal_thread.join(timeout=1)
+        stop_thread.join(timeout=1)
+        worker.stop()
+
+    assert signal_was_bounded, "signal waited for graph reconciliation"
+    assert stop_was_bounded, "stop(timeout=) waited for graph reconciliation"
+
+
 def test_retry_worker_stop_then_start_invalidates_the_slow_prior_generation() -> None:
     first_started = threading.Event()
     release_first = threading.Event()
@@ -2122,7 +2176,7 @@ def test_periodic_poll_delivers_mixed_group_after_external_completes(
         groups = app.state.watcher_poller.poll_once()
         # `notified` is written after the delivery callback returns, so waiting on
         # the callback alone races the flag this test asserts.
-        _wait_until(
+        wait_until(
             lambda: all(
                 store.watcher(watcher_id).notified
                 for watcher_id in ("periodic-external", "periodic-graph")
@@ -2187,14 +2241,14 @@ def test_periodic_poll_retries_pure_graph_delivery_after_transient_failure(
     app.state.graph_watcher_retry_worker.start()
     try:
         assert app.state.watcher_poller.poll_once() == []
-        _wait_until(lambda: len(attempts) == 1, detail="first graph delivery was not attempted")
+        wait_until(lambda: len(attempts) == 1, detail="first graph delivery was not attempted")
         first = store.watcher("periodic-retry-graph")
         assert isinstance(first, GraphWatcherRecord)
         assert first.notified is False
 
         assert app.state.watcher_poller.poll_once() == []
         # Same race: the retry attempt is recorded before `notified` is written.
-        _wait_until(
+        wait_until(
             lambda: len(attempts) == 2 and store.watcher("periodic-retry-graph").notified,
             detail="graph delivery retry did not mark the watcher notified",
         )

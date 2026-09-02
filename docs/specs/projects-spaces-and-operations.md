@@ -253,10 +253,12 @@ Remote-source copies, derived session slices, and display caches are project
 owned, bounded, and never canonical truth. Clearing the open project's cache
 affects only that project and is blocked only by its active readers.
 
-Clearing every project's rebuildable cache is a separate app-wide danger action
-with an explicit warning and is blocked while any project has an active reader.
-Neither action touches provider originals, canonical state, repositories,
-tasks, chats, drafts, views, or paper content.
+In a personal space, clearing every project's rebuildable cache is a separate
+app-wide danger action with an explicit warning and is blocked while any project
+has an active reader. A team space exposes only the project-owned action because
+membership in one project grants no authority over another project's cache.
+Neither action touches provider originals, canonical state, repositories, tasks,
+chats, drafts, views, or paper content.
 
 ## Process and lock ownership
 

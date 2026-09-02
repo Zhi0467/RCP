@@ -168,18 +168,19 @@ export function ProjectSettings({
 }: Props) {
   const skillCatalog = skillCatalogFrom(project);
   const savedSkillDefaults = skillDefaultsFrom(project);
-  const [scope, setScope] = useState<string[]>(() => stagedOrSaved(project).scope);
+  const restoredSettings = useMemo(() => stagedOrSaved(project), [project.id]);
+  const [scope, setScope] = useState<string[]>(() => restoredSettings.scope);
   const [autoResearchInvocationCeiling, setAutoResearchInvocationCeiling] = useState(
-    () => stagedOrSaved(project).autoResearchInvocationCeiling,
+    () => restoredSettings.autoResearchInvocationCeiling,
   );
   const [profiles, setProfiles] = useState<Record<AgentExecutionProfile, AgentProfileSettings>>(
-    () => stagedOrSaved(project).profiles,
+    () => restoredSettings.profiles,
   );
   const [providerPaths, setProviderPaths] = useState<MachineProviderPaths>(
-    () => stagedOrSaved(project).providerPaths,
+    () => restoredSettings.providerPaths,
   );
   const [skillDefaults, setSkillDefaults] = useState<SkillDefaults>(
-    () => stagedOrSaved(project).skillDefaults,
+    () => restoredSettings.skillDefaults,
   );
   const [inspectedPackage, setInspectedPackage] = useState<SkillCatalogEntry | null>(null);
   const [saving, setSaving] = useState(false);
@@ -195,13 +196,12 @@ export function ProjectSettings({
   // — a finished background run, a cache clear — handed down a new object
   // carrying byte-identical settings.
   useEffect(() => {
-    const restored = stagedOrSaved(project);
-    setScope(restored.scope);
-    setAutoResearchInvocationCeiling(restored.autoResearchInvocationCeiling);
-    setProfiles(restored.profiles);
-    setProviderPaths(restored.providerPaths);
-    setSkillDefaults(restored.skillDefaults);
-  }, [project.id]);
+    setScope(restoredSettings.scope);
+    setAutoResearchInvocationCeiling(restoredSettings.autoResearchInvocationCeiling);
+    setProfiles(restoredSettings.profiles);
+    setProviderPaths(restoredSettings.providerPaths);
+    setSkillDefaults(restoredSettings.skillDefaults);
+  }, [restoredSettings]);
 
   // Cache metrics are server-owned, so they follow every snapshot.
   useEffect(() => {
@@ -720,26 +720,28 @@ export function ProjectSettings({
           <CacheMeter label="Remote sources" metric={cacheMetrics.remote_sources} />
           <CacheMeter label="Session slices" metric={cacheMetrics.session_slices} />
         </div>
-        <div className="app-cache-danger-row">
-          <TriangleAlert size={16} aria-hidden="true" />
-          <strong>Every project</strong>
-          <button
-            className="button danger compact"
-            type="button"
-            disabled={clearingAllCaches}
-            onClick={() => {
-              showClearAllCachesWarning(
-                () => setStatus(null),
-                () => setClearAllCachesOpen(true),
-              );
-            }}
-          >
-            <Trash2 size={13} /> Clear all project caches
-          </button>
-        </div>
+        {spaceKind === "personal" ? (
+          <div className="app-cache-danger-row">
+            <TriangleAlert size={16} aria-hidden="true" />
+            <strong>Every project</strong>
+            <button
+              className="button danger compact"
+              type="button"
+              disabled={clearingAllCaches}
+              onClick={() => {
+                showClearAllCachesWarning(
+                  () => setStatus(null),
+                  () => setClearAllCachesOpen(true),
+                );
+              }}
+            >
+              <Trash2 size={13} /> Clear all project caches
+            </button>
+          </div>
+        ) : null}
       </section>
 
-      {clearAllCachesOpen && (
+      {spaceKind === "personal" && clearAllCachesOpen && (
         <div
           className="modal-backdrop"
           onMouseDown={(event) => {

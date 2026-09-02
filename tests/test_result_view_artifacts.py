@@ -44,15 +44,33 @@ def test_result_view_descriptor_has_strict_public_contract() -> None:
         ResultViewDescriptor.model_validate({**_descriptor_values(), "state": "expired"})
 
 
-def test_ordinary_html_preview_has_unified_selection_bridge_not_result_view_gestures() -> None:
-    document, _csp = html_preview_document(b"<p>ordinary artifact</p>")
+def test_ordinary_html_preview_uses_a_private_port_for_trusted_actions() -> None:
+    forged_reference = (
+        b"<script>window.parent.postMessage({kind:'rcp-reference',"
+        b"url:'https://example.invalid'},'*')</script>"
+    )
+    document, _csp = html_preview_document(forged_reference + b"<p>ordinary artifact</p>")
 
     assert "rcp-result-view-gesture" not in document
-    assert "event.source!==artifact.contentWindow" in document
+    assert "example.invalid" in document
+    assert "secret" not in document
+    assert document.index("listen(window,'message'") < document.index('<iframe id="artifact"')
+    assert "const channel=new MessageChannel();" in document
+    assert "const privatePort=channel.port1;" in document
+    assert "[outwardPort]" in document
+    assert "event.source!==frame.contentWindow" in document
+    assert "event.ports.length!==1" in document
+    assert "listen(artifactPort,'message'" in document
+    assert document.index("listen(artifactPort,'message'") < document.index(
+        "value.kind!=='rcp-reference'"
+    )
+    assert "event.isTrusted" in document
     assert "new TextEncoder()" in document
     assert "type:'rcp-artifact-selection'" in document
     assert "kind:'rcp-artifact-box-start'" in document
     assert "value.kind!=='rcp-reference'" in document
+    assert "artifact.contentWindow?.postMessage" not in document
+    assert "portPost(artifactPort,{kind:'rcp-artifact-box-start'})" in document
 
 
 def test_result_view_preview_strictly_bridges_bounded_gestures_outward() -> None:
@@ -61,7 +79,8 @@ def test_result_view_preview_strictly_bridges_bounded_gestures_outward() -> None
         result_view_gestures=True,
     )
 
-    assert "event.source!==artifact.contentWindow" in document
+    assert "event.source!==legacyArtifact.contentWindow" in document
+    assert document.index("const legacyArtifact") > document.index("</iframe>")
     assert "const expectedKeys=['description','gesture','type','version'];" in document
     assert "const keys=Object.keys(value).sort();" in document
     assert "keys.length!==expectedKeys.length" in document

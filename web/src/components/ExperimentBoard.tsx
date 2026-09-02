@@ -1,14 +1,15 @@
 import { ChevronRight, FlaskConical, WifiOff } from "lucide-react";
 import { useMemo } from "react";
-import {
-  buildExperimentBoard,
-  experimentBoardRouteToken,
-  experimentTerminalLabel,
-  type ExperimentBoardItem,
-} from "../experimentBoard";
+import { experimentBoardRouteToken, experimentTerminalLabel } from "../experimentBoard";
 import { activeExperimentGuidanceText } from "../experimentGuidance";
 import { experimentHealthLabel, experimentHealthTone } from "./ExperimentRunDetail";
-import type { ExperimentLoopIndexEntry } from "../types";
+import type { ExperimentLoopHealth, ExperimentLoopIndexEntry } from "../types";
+
+interface ExperimentBoardItem {
+  entry: ExperimentLoopIndexEntry;
+  health: ExperimentLoopHealth;
+  lastActivityAt: string | null;
+}
 
 interface Props {
   entries: ExperimentLoopIndexEntry[];
@@ -16,7 +17,27 @@ interface Props {
 }
 
 export function ExperimentBoard({ entries, onOpen }: Props) {
-  const board = useMemo(() => buildExperimentBoard(entries), [entries]);
+  const board = useMemo(() => {
+    const grouped = {
+      needsAction: [] as ExperimentBoardItem[],
+      inProgress: [] as ExperimentBoardItem[],
+      finished: [] as ExperimentBoardItem[],
+    };
+    for (const entry of entries) {
+      const item = {
+        entry,
+        health: entry.control.health,
+        lastActivityAt: entry.control.operational.current_last_activity_at,
+      };
+      if (entry.control.run_section === "actionable") grouped.needsAction.push(item);
+      else if (entry.control.run_section === "running") grouped.inProgress.push(item);
+      else grouped.finished.push(item);
+    }
+    grouped.needsAction.sort(compareBoardItems);
+    grouped.inProgress.sort(compareBoardItems);
+    grouped.finished.sort(compareBoardItems);
+    return grouped;
+  }, [entries]);
   const count = entries.length;
 
   return (
@@ -142,4 +163,16 @@ function formatActivity(timestamp: string | null): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function compareBoardItems(left: ExperimentBoardItem, right: ExperimentBoardItem): number {
+  const leftActivity = left.lastActivityAt ?? "";
+  const rightActivity = right.lastActivityAt ?? "";
+  return (
+    rightActivity.localeCompare(leftActivity) ||
+    right.entry.node.updated_rev - left.entry.node.updated_rev ||
+    left.entry.project_name.localeCompare(right.entry.project_name) ||
+    left.entry.project_id.localeCompare(right.entry.project_id) ||
+    left.entry.node.id.localeCompare(right.entry.node.id)
+  );
 }

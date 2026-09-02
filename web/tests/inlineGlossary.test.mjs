@@ -100,6 +100,7 @@ test("proposal prose uses the shared inline glossary treatment", () => {
           ],
         },
       ],
+      proposalActions: { "prop/plasticity": [{ text: "Approve or reject." }] },
       glossaryIndex,
       draft: null,
       onDecision() {},

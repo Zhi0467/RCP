@@ -10,28 +10,13 @@ from typing import TYPE_CHECKING
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
-from rcp.storage.models import (  # noqa: F401
+from rcp.storage.models import (
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
     _EXPERIMENT_EPISODE_PINNED_FIELDS,
     _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC,
-    _PROJECT_ID_TABLES,
-    ACTIVE_AGENT_TASK_STATUSES,
-    SPACE_NAME_MAX_LENGTH,
-    AgentCommandInvocationRecord,
-    AgentTaskContractRecord,
-    AgentTaskEventRecord,
-    AgentTaskKind,
-    AgentTaskReceiptRecord,
-    AgentTaskReceiptTier,
+    AgentTaskAdmissionConflict,
     AgentTaskRecord,
-    AgentTaskStatus,
-    AgentUsageCell,
-    AgentUsageCountReason,
-    AgentUsageMetric,
-    AgentUsageRecord,
-    AgentUsageSnapshot,
     AutoResearchChildExperimentRecord,
-    ChatSessionContextRecord,
     EpisodeBudgetMeter,
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
@@ -41,46 +26,12 @@ from rcp.storage.models import (  # noqa: F401
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
     ExperimentWatcherResourceRecord,
-    GraphCondition,
-    GraphWatcherRecord,
-    NodeStatusGraphCondition,
-    ProjectRecord,
-    ProjectStageRecord,
-    ProposalResolvedGraphCondition,
-    ProviderSkillInventoryRecord,
-    ResultViewConflict,
-    ResultViewRecord,
-    SpaceKind,
-    SpaceUserKind,
-    SpaceUserRecord,
     StoredWatcherRecord,
-    TeamAuthenticationError,
-    TeamInvitationRecord,
     WatcherClaimConflict,
     WatcherContinuation,
-    WatcherDeliveryRecord,
-    WatcherRecord,
-    WatcherStatus,
     WatcherStopRequest,
-    _canonical_space_id,
-    _canonical_uuid4,
-    _discard_failed_team_initialization,
     _experiment_pinned_value,
-    _new_enrollment_code,
-    _new_member_token,
-    _new_session_token,
     _optional_str,
-    _parse_enrollment_code,
-    _plain_html_name,
-    _required_timestamp,
-    _result_view_html_bytes,
-    _result_view_is_visible,
-    _result_view_reference_time,
-    _sha256,
-    _stored_space_kind,
-    _validated_result_view_html,
-    normalize_space_name,
-    watcher_next_check_at,
 )
 
 if TYPE_CHECKING:
@@ -433,7 +384,7 @@ class ExperimentStoreMixin:
         ):
             raise ValueError("The Experiment recovery has no paid invocation ancestor.")
         if self._has_active_chat_overlap(connection, record):
-            raise ValueError("Another task is already active in this conversation.")
+            raise AgentTaskAdmissionConflict("Another task is already active in this conversation.")
         self._insert_agent_task(
             connection,
             record,
@@ -1016,8 +967,8 @@ class ExperimentStoreMixin:
         connection: sqlite3.Connection,
         records: list[StoredWatcherRecord],
         *,
+        binding: WatcherBinding,
         stops: list[WatcherStopRequest] | None = None,
-        binding: WatcherBinding | None = None,
         expected_watcher_snapshot_token: str | None = None,
     ) -> list[StoredWatcherRecord]:
         """Persist one loop handoff in the caller's transaction.
@@ -1034,29 +985,23 @@ class ExperimentStoreMixin:
         records = [self._prepare_watcher_for_insert(record) for record in records]
         if records:
             self._validate_watch_list(records)
-        if binding is None:
-            raise ValueError("an Experiment handoff requires its bound watcher context")
         continuation = records[0].continuation if records else binding.continuation
         if continuation.patch_kind != "experiment_loop":
             raise ValueError("idempotent Experiment persistence requires loop watchers")
         episode_id = continuation.control_episode_id
         assert episode_id is not None
-        if (
-            binding is not None
-            and records
-            and any(
-                (
-                    record.project_id != binding.project_id
-                    or record.origin_operation_id != binding.origin_operation_id
-                    or record.origin_task_kind != binding.origin_task_kind
-                    or record.graph_target != binding.graph_target
-                    or record.chat_id != binding.chat_id
-                    or record.node_id != binding.node_id
-                    or record.execution_host != binding.execution_host
-                    or record.continuation != binding.continuation
-                )
-                for record in records
+        if records and any(
+            (
+                record.project_id != binding.project_id
+                or record.origin_operation_id != binding.origin_operation_id
+                or record.origin_task_kind != binding.origin_task_kind
+                or record.graph_target != binding.graph_target
+                or record.chat_id != binding.chat_id
+                or record.node_id != binding.node_id
+                or record.execution_host != binding.execution_host
+                or record.continuation != binding.continuation
             )
+            for record in records
         ):
             raise ValueError("Experiment watcher handoff changed its bound continuation context.")
         stop_ids = [item.stop_watcher_id for item in stop_requests]
@@ -1135,8 +1080,8 @@ class ExperimentStoreMixin:
         self,
         records: list[StoredWatcherRecord],
         *,
+        binding: WatcherBinding,
         stops: list[WatcherStopRequest] | None = None,
-        binding: WatcherBinding | None = None,
         expected_watcher_snapshot_token: str | None = None,
     ) -> list[StoredWatcherRecord]:
         """Persist one loop handoff atomically with the episode's graceful stop."""
@@ -1628,6 +1573,24 @@ class ExperimentStoreMixin:
     ) -> str | None:
         """Validate the immutable candidate on an Experiment invocation's lineage root."""
 
+        unrecoverable = connection.execute(
+            """
+            SELECT payload_json FROM graph_run_receipts
+            WHERE operation_id = ? AND category = 'experiment_unrecoverable_deliverable'
+            ORDER BY receipt_id DESC LIMIT 1
+            """,
+            (operation_id,),
+        ).fetchone()
+        if unrecoverable is not None:
+            try:
+                payload = json.loads(unrecoverable["payload_json"])
+            except (json.JSONDecodeError, TypeError):
+                payload = None
+            diagnostic = payload.get("diagnostic") if isinstance(payload, dict) else None
+            if isinstance(diagnostic, str) and diagnostic.strip():
+                return "This Experiment-loop turn cannot continue: " + diagnostic.strip()
+            return "This Experiment-loop turn cannot continue because its output was unreadable."
+
         current_id = operation_id
         seen: set[str] = set()
         while True:
@@ -2100,9 +2063,15 @@ class ExperimentStoreMixin:
                 control_node_id,
                 selected_episode_id,
             )
-        if quiescent:
-            self.mark_episode_stop_skipped(selected_episode_id)
-        return self.experiment_episode(selected_episode_id)
+            if quiescent:
+                self._mark_episode_stop_skipped_in_connection(
+                    connection,
+                    selected_episode_id,
+                    diagnostic=None,
+                    now=self.now(),
+                )
+            stored = self._experiment_episode_row(connection, selected_episode_id)
+            return self._experiment_episode_record(stored) if stored is not None else None
 
     def _settle_experiment_loop_stop(
         self,
@@ -2771,16 +2740,39 @@ class ExperimentStoreMixin:
             if requested is None
             else requested
         )
-        return {
-            control_node_id: self._derive_experiment_loop_runtime(
-                tasks_by_control.get(control_node_id, []),
-                watchers_by_control.get(control_node_id, []),
-                receipt_categories,
-                episodes,
-                parents_by_control.get(control_node_id),
-            )
-            for control_node_id in control_node_ids
-        }
+        projected: dict[str, ExperimentLoopRuntime] = {}
+        for control_node_id in control_node_ids:
+            parent = parents_by_control.get(control_node_id)
+            try:
+                projected[control_node_id] = self._derive_experiment_loop_runtime(
+                    tasks_by_control.get(control_node_id, []),
+                    watchers_by_control.get(control_node_id, []),
+                    receipt_categories,
+                    episodes,
+                    parent,
+                )
+            except ValueError as exc:
+                # A malformed durable ledger is a per-control degraded fact. It
+                # must remain visible without hiding healthy sibling controls;
+                # SQLite/IO failures still escape and fail the whole snapshot.
+                if parent is None:
+                    raise
+                diagnostic = f"Stored Experiment runtime is inconsistent: {exc}"
+                projected[control_node_id] = ExperimentLoopRuntime(
+                    episode_id=parent.episode_id,
+                    invocations_used=max(parent.invocations_used, 1),
+                    invocation_ceiling=parent.invocation_ceiling,
+                    control_revision=0,
+                    episode_live=parent.status in _LIVE_EPISODE_STATUSES,
+                    watcher_degraded=True,
+                    decision_bundle=[],
+                    completion_criteria=[],
+                    stop_requested=parent.stop_requested_at is not None,
+                    stop_settled=parent.stop_settled_at is not None,
+                    session_diagnostic=diagnostic[:2_000],
+                    projection_diagnostic=diagnostic[:2_000],
+                )
+        return projected
 
     @classmethod
     def _derive_experiment_loop_runtime(

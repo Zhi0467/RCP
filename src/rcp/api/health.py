@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -26,13 +27,12 @@ HealthCompositionDependency = Annotated[
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 
 
-@router.get("/api/health")
-async def health(
-    *,
-    catalog: CatalogDependency,
-    composition: HealthCompositionDependency,
-    store: StoreDependency,
-) -> dict[str, object]:
+def _health_store_snapshot(
+    store: AppStore,
+    catalog: ProjectCatalog,
+) -> tuple[int, str | None, int]:
+    """Read the SQLite-backed health fields away from the event loop."""
+
     with store.connection() as connection:
         active_agent_tasks = int(
             connection.execute(
@@ -42,12 +42,27 @@ async def health(
                 """
             ).fetchone()[0]
         )
+    return active_agent_tasks, store.space_name, len(catalog.cards())
+
+
+@router.get("/api/health")
+async def health(
+    *,
+    catalog: CatalogDependency,
+    composition: HealthCompositionDependency,
+    store: StoreDependency,
+) -> dict[str, object]:
+    active_agent_tasks, space_name, project_count = await asyncio.to_thread(
+        _health_store_snapshot,
+        store,
+        catalog,
+    )
     payload: dict[str, object] = {
         "status": "ok",
         "version": __version__,
         "space_id": composition.space_id,
         "space_kind": composition.space_kind,
-        "space_name": store.space_name,
+        "space_name": space_name,
         "instance_id": composition.instance_metadata.instance_id,
         "pid": composition.instance_metadata.pid,
         "data_dir_id": composition.instance_metadata.data_dir_id,
@@ -56,7 +71,7 @@ async def health(
         "web_build_id": composition.instance_metadata.web_build_id,
         "team_shell_protocol": team_shell_protocol_range(),
         "active_agent_tasks": active_agent_tasks,
-        "projects": len(catalog.cards()),
+        "projects": project_count,
         "agent_mode": composition.agent_mode,
         "project_creation": project_creation_control(composition.space_kind).model_dump(
             mode="json"

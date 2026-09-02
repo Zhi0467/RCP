@@ -614,6 +614,53 @@ def test_process_advisory_lock_acquires_when_contention_resolves_within_one_read
     assert acquired.is_set() is True
 
 
+def test_process_advisory_lock_drains_chatty_holder_stderr() -> None:
+    chatty_holder = (
+        "import sys\n"
+        'sys.stderr.write("x" * (2 * 1024 * 1024))\n'
+        "sys.stderr.flush()\n"
+        'print("acquired", flush=True)\n'
+        "sys.stdin.read()\n"
+    )
+
+    def acquire() -> None:
+        with _process_advisory_lock(
+            [sys.executable, "-c", chatty_holder],
+            "probe:/state/.agent-run.lock",
+        ):
+            pass
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(acquire)
+        future.result(timeout=10)
+
+
+def test_remote_transaction_waits_past_handshake_timeout_after_contended(
+    tmp_path, monkeypatch
+) -> None:
+    contended_holder = (
+        'import sys, time\nprint("contended", flush=True)\ntime.sleep(0.2)\n'
+        'print("acquired", flush=True)\nfor line in sys.stdin:\n    pass\n'
+    )
+    workspace = SSHStateWorkspace(tmp_path / ".research", "research.example", "/srv/project")
+    monkeypatch.setattr(
+        workspace,
+        "_ssh",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, "", ""),
+    )
+    monkeypatch.setattr(workspace, "_remote_manifest_exists", lambda: False)
+    monkeypatch.setattr(
+        "rcp.transport.state._remote_advisory_lock_command",
+        lambda _host, _path: [sys.executable, "-c", contended_holder],
+    )
+    monkeypatch.setattr("rcp.transport.state.STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS", 0.1)
+
+    with workspace.transaction():
+        pass
+
+    assert workspace.reachable is True
+
+
 def test_process_advisory_lock_uses_one_waiter_during_long_contention(
     tmp_path, monkeypatch
 ) -> None:
@@ -1252,6 +1299,14 @@ def test_remote_refresh_and_transaction_use_one_canonical_lock_and_sync(
     ]
     assert lock_calls == ["/srv/project/.research/.refresh.lock"]
     assert len([call for call in rsync_calls if "--delete" in call]) == 1
+    sync_call = next(call for call in rsync_calls if "--delete" in call)
+    assert {
+        "--exclude=.refresh.lock",
+        "--exclude=.agent-run.lock",
+        "--exclude=.append.lock",
+        "--exclude=.chat.lock",
+        "--exclude=.publish",
+    }.issubset(sync_call)
 
     ssh_calls.clear()
     rsync_calls.clear()

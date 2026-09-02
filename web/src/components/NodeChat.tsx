@@ -158,6 +158,19 @@ function artifactContextStorageKey(projectId: string, chatId: string): string {
   return `rcp:artifact-context:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`;
 }
 
+export function reconcileChatRunScope(
+  current: string[],
+  requested: string[],
+  projectTruthScope: string[],
+  reset: boolean,
+): string[] {
+  const allowed = new Set(projectTruthScope);
+  const candidate = reset ? requested : current;
+  return candidate.filter(
+    (repository, index) => allowed.has(repository) && candidate.indexOf(repository) === index,
+  );
+}
+
 export function parseArtifactContextPayload(value: unknown): ArtifactContextPayload | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
@@ -326,6 +339,7 @@ export function NodeChat({
         ...(pendingTurn
           ? [
               {
+                lineId: `pending:${pendingTurn.clientId}`,
                 role: "human" as const,
                 text: pendingTurn.text,
                 taskId: pendingTurn.clientId,
@@ -348,7 +362,12 @@ export function NodeChat({
       ),
     [historyMessages, project.agent_profiles, relatedTasks, surface],
   );
-  const [scope, setScope] = useState(runScope);
+  const [scope, setScope] = useState(() =>
+    reconcileChatRunScope([], runScope, project.project_truth_scope, true),
+  );
+  const scopeIdentityRef = useRef(`${project.id}\0${chatId}`);
+  const requestedScopeKey = runScope.join("\0");
+  const projectTruthScopeKey = project.project_truth_scope.join("\0");
   const draftKey = chatDraftStorageKey(project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
   const artifactContextKey = artifactContextStorageKey(project.id, chatId);
@@ -511,6 +530,15 @@ export function NodeChat({
   const attachmentsPreparing = attachments.some((item) => item.status === "preparing");
   const attachmentsUnready = attachments.some((item) => item.status !== "ready");
   const dictating = dictationState !== "idle" && dictationState !== "error";
+  useEffect(() => {
+    const identity = `${project.id}\0${chatId}`;
+    const reset = scopeIdentityRef.current !== identity;
+    scopeIdentityRef.current = identity;
+    setScope((current) =>
+      reconcileChatRunScope(current, runScope, project.project_truth_scope, reset),
+    );
+  }, [chatId, project.id, projectTruthScopeKey, requestedScopeKey]);
+
   useEffect(() => {
     setModeState((current) =>
       current.pinned || current.value === derivedMode
@@ -1098,8 +1126,8 @@ export function NodeChat({
         onScroll={handleChatScroll}
         ref={chatLinesRef}
       >
-        {transcript.map((line, index) => {
-          const messageId = `${line.taskId}:${index}`;
+        {transcript.map((line) => {
+          const messageId = line.lineId;
           const task = relatedTasks.find((candidate) => candidate.operation_id === line.taskId);
           const activeLineTask = task && isActiveTask(task) ? task : null;
           const pausedLineTask =
@@ -1111,7 +1139,7 @@ export function NodeChat({
             line.role === "human" && line.text.length > CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD;
           const expanded = expandedHumanMessageIds.has(messageId);
           return (
-            <div className={`node-chat-line ${line.role}`} key={`${line.taskId}-${index}`}>
+            <div className={`node-chat-line ${line.role}`} key={line.lineId}>
               {line.role === "human" && line.mode && (
                 <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
               )}

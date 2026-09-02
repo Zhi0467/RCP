@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -136,6 +137,7 @@ def resolve_project_write_scope(
     remote_stage: RemoteRunStage | None,
     app_data_dir: Path | None,
     repository_inventory: list[RegisteredRepositoryRoot],
+    additional_protected_write_paths: list[str] | None = None,
 ) -> ProjectWriteScope:
     """Resolve and verify one exact Work-like scope on its execution machine."""
 
@@ -150,6 +152,7 @@ def resolve_project_write_scope(
         raise ValueError("write-scope execution host does not match its task stage")
     if remote_stage is not None and remote_stage.host != machine.host:
         raise ValueError("write-scope remote stage belongs to a different execution host")
+    path_semantics = _ExecutionPathSemantics.for_execution(remote=remote_stage is not None)
 
     aliases = sorted(set(admitted_aliases))
     if aliases != sorted(admitted_aliases):
@@ -170,7 +173,8 @@ def resolve_project_write_scope(
         for alias in aliases
         if manifest.repository_map[alias].machine == execution_machine
     ]
-    declared_paths: list[str] = [stage_root, workspace_root]
+    explicit_protected = list(additional_protected_write_paths or [])
+    declared_paths: list[str] = [stage_root, workspace_root, *explicit_protected]
     for repository in eligible:
         pointer = pointers.get(repository.alias)
         if pointer is None:
@@ -242,6 +246,7 @@ def resolve_project_write_scope(
             registered_root,
             account_home=account_home,
             app_data_dir=app_data_dir if remote_stage is None else None,
+            path_semantics=path_semantics,
         )
         _reject_repository_ownership_overlap(
             repository=repository,
@@ -252,6 +257,7 @@ def resolve_project_write_scope(
             registered_root=registered_root,
             inventory=execution_inventory,
             canonical_inventory=canonical_inventory,
+            path_semantics=path_semantics,
         )
         repository_roots.append(
             WritableRepositoryRoot(
@@ -264,6 +270,8 @@ def resolve_project_write_scope(
     state_repository = manifest.repository_map[manifest.state.repository]
     state_research_declared = str(PurePosixPath(state_repository.path) / ".research")
     protected = [str(PurePosixPath(item.path) / ".research") for item in repository_roots]
+    protected.extend(explicit_protected)
+    protected.extend(canonical[path] for path in explicit_protected)
     try:
         state_canonical, _unused_home = _canonical_directories(
             [state_research_declared],
@@ -344,33 +352,67 @@ def _canonical_directories(
     return canonical, str(Path.home().resolve())
 
 
+@dataclass(frozen=True)
+class _ExecutionPathSemantics:
+    """One answer for path identity on the filesystem doing the execution."""
+
+    remote: bool
+
+    @classmethod
+    def for_execution(cls, *, remote: bool) -> _ExecutionPathSemantics:
+        return cls(remote=remote)
+
+    def normalized(self, value: str | Path) -> PurePosixPath:
+        return PurePosixPath(os.path.normpath(os.fspath(value)))
+
+    def equal(self, left: str | Path, right: str | Path) -> bool:
+        if not self.remote:
+            try:
+                return os.path.samefile(left, right)
+            except OSError:
+                pass
+        return self.normalized(left) == self.normalized(right)
+
+    def overlaps(self, left: str | Path, right: str | Path) -> bool:
+        if not self.remote:
+            left_path = Path(left)
+            right_path = Path(right)
+            if self.equal(left_path, right_path):
+                return True
+            return any(self.equal(parent, right_path) for parent in left_path.parents) or any(
+                self.equal(left_path, parent) for parent in right_path.parents
+            )
+        left_path = self.normalized(left)
+        right_path = self.normalized(right)
+        return (
+            left_path == right_path
+            or left_path in right_path.parents
+            or right_path in left_path.parents
+        )
+
+
 def _reject_broad_repository_root(
     root: str,
     *,
     account_home: str,
     app_data_dir: Path | None,
+    path_semantics: _ExecutionPathSemantics,
 ) -> None:
-    candidate = PurePosixPath(root)
     broad_temporary_roots = {
         PurePosixPath("/tmp"),
         PurePosixPath("/private/tmp"),
         PurePosixPath(str(Path(tempfile.gettempdir()).resolve())),
     }
-    if candidate == PurePosixPath("/"):
+    if path_semantics.equal(root, "/"):
         raise ValueError("the filesystem root cannot be a project repository write root")
-    if candidate == PurePosixPath(account_home):
+    if path_semantics.equal(root, account_home):
         raise ValueError("the execution account home cannot be a project repository write root")
-    if candidate in broad_temporary_roots:
+    if any(path_semantics.equal(root, candidate) for candidate in broad_temporary_roots):
         raise ValueError("a broad temporary directory cannot be a project repository write root")
     if app_data_dir is None:
         return
     data_root = app_data_dir.expanduser().resolve()
-    local_root = Path(root)
-    if (
-        local_root == data_root
-        or data_root in local_root.parents
-        or local_root in data_root.parents
-    ):
+    if path_semantics.overlaps(root, data_root):
         raise ValueError("the RCP application data directory cannot be a repository write root")
 
 
@@ -382,6 +424,7 @@ def _reject_repository_ownership_overlap(
     registered_root: str,
     inventory: list[RegisteredRepositoryRoot],
     canonical_inventory: dict[str, str],
+    path_semantics: _ExecutionPathSemantics,
 ) -> None:
     alias = repository.alias
     declared_root = repository.path
@@ -395,8 +438,8 @@ def _reject_repository_ownership_overlap(
         if is_admitted_owner:
             continue
         if not (
-            _paths_overlap(declared_root, owner.path)
-            or _paths_overlap(registered_root, canonical_inventory[owner.path])
+            path_semantics.overlaps(declared_root, owner.path)
+            or path_semantics.overlaps(registered_root, canonical_inventory[owner.path])
         ):
             continue
         relation = (
@@ -406,16 +449,6 @@ def _reject_repository_ownership_overlap(
             f"repository {alias!r} overlaps {relation} on this execution host: "
             f"{owner.project_id}/{owner.alias}"
         )
-
-
-def _paths_overlap(left: str, right: str) -> bool:
-    left_path = PurePosixPath(os.path.normpath(left))
-    right_path = PurePosixPath(os.path.normpath(right))
-    return (
-        left_path == right_path
-        or left_path in right_path.parents
-        or right_path in left_path.parents
-    )
 
 
 def _scope_fingerprint(payload: dict[str, object]) -> str:

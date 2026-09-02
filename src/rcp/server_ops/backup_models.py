@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import stat
 import uuid
@@ -25,6 +24,13 @@ from rcp.limits import (
     BACKUP_INVENTORY_MAX_ENTRIES,
 )
 from rcp.providers import PROVIDERS, ProviderId
+from rcp.server_ops._local_primitives import (
+    canonical_json_bytes,
+    normalized_absolute_non_root_path,
+)
+from rcp.server_ops._local_primitives import (
+    canonical_uuid4 as _canonical_uuid4,
+)
 from rcp.server_ops.github import GitHubRepositoryRef
 from rcp.server_ops.models import redact_server_text
 from rcp.skill_registry import SkillDefaults
@@ -40,7 +46,6 @@ _ACCOUNT = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,127}")
 
 BACKUP_APP_DATA_DATABASE = "rcp.sqlite3"
 BACKUP_APP_DATA_CAPTURED = frozenset({"project-sources"})
-BACKUP_APP_DATA_DEFERRED = frozenset()
 BACKUP_APP_DATA_EXCLUSIONS = frozenset(
     {
         "bootstrap-manifests",
@@ -112,16 +117,6 @@ BackupCanonicalFileKind = Literal[
 ]
 
 
-def _canonical_uuid4(value: str, *, label: str) -> str:
-    try:
-        parsed = uuid.UUID(value)
-    except (AttributeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a canonical UUID4") from exc
-    if parsed.version != 4 or str(parsed) != value:
-        raise ValueError(f"{label} must be a lowercase, hyphenated canonical UUID4")
-    return value
-
-
 def _safe_line(value: str, *, label: str, maximum: int = 4096) -> str:
     if (
         not isinstance(value, str)
@@ -150,12 +145,7 @@ def _relative_path(value: str, *, label: str) -> str:
 
 def _absolute_path(value: str, *, label: str) -> str:
     _safe_line(value, label=label)
-    path = PurePosixPath(value)
-    if not path.is_absolute() or path == PurePosixPath("/") or ".." in path.parts:
-        raise ValueError(f"{label} must be a normalized absolute non-root path")
-    if str(path) != value:
-        raise ValueError(f"{label} must be normalized")
-    return value
+    return normalized_absolute_non_root_path(value, label=label)
 
 
 def _direct_entry_name(value: str, *, label: str) -> str:
@@ -218,14 +208,7 @@ def _is_canonical_project_source(path: PurePosixPath) -> bool:
 
 
 def _canonical_json_sha256(value: object) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
 class _StrictBackupModel(BaseModel):
@@ -1302,7 +1285,6 @@ def inspect_app_data_capture_plan(data_dir: Path) -> BackupAppDataCapturePlan:
 
     excluded: list[str] = []
     captured: list[str] = []
-    deferred: list[str] = []
     unclassified: list[str] = []
     database_path: str | None = None
     database_reason: str | None = None
@@ -1321,8 +1303,6 @@ def inspect_app_data_capture_plan(data_dir: Path) -> BackupAppDataCapturePlan:
             excluded.append(entry.name)
         elif entry.name in BACKUP_APP_DATA_CAPTURED:
             captured.append(entry.name)
-        elif entry.name in BACKUP_APP_DATA_DEFERRED:
-            deferred.append(entry.name)
         else:
             unclassified.append(entry.name)
     if database_path is None and database_reason is None:
@@ -1333,7 +1313,7 @@ def inspect_app_data_capture_plan(data_dir: Path) -> BackupAppDataCapturePlan:
         database_unavailable_reason=database_reason,
         excluded_entries=tuple(excluded),
         captured_entries=tuple(captured),
-        deferred_entries=tuple(deferred),
+        deferred_entries=(),
         unclassified_entries=tuple(unclassified),
     )
 
@@ -1341,7 +1321,6 @@ def inspect_app_data_capture_plan(data_dir: Path) -> BackupAppDataCapturePlan:
 __all__ = [
     "BACKUP_APP_DATA_DATABASE",
     "BACKUP_APP_DATA_CAPTURED",
-    "BACKUP_APP_DATA_DEFERRED",
     "BACKUP_APP_DATA_EXCLUSIONS",
     "BACKUP_MANIFEST_SCHEMA_VERSION",
     "BACKUP_MATERIALIZED_NAMES",

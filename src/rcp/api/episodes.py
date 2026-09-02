@@ -92,6 +92,8 @@ class EpisodeTaskResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     operation_id: str
+    role: Literal["orchestrator", "worker", "wake"]
+    depth: int = Field(ge=0, le=4)
     project_id: str
     kind: OperationalEpisodeTaskKind
     status: AgentTaskStatus
@@ -281,8 +283,14 @@ def serialize_episode(
         else _operational_tasks(store, episode)
     )
     recovery_controls_allowed = episode.ending is None and episode.stop_requested_at is None
+    task_metadata = _episode_task_metadata(store, episode, task_records)
     tasks = [
-        _serialize_task(task, recovery_controls_allowed=recovery_controls_allowed)
+        _serialize_task(
+            task,
+            recovery_controls_allowed=recovery_controls_allowed,
+            role=task_metadata[task.operation_id][0],
+            depth=task_metadata[task.operation_id][1],
+        )
         for task in task_records
     ]
     current_operation_id = task_records[-1].operation_id if task_records else None
@@ -385,13 +393,11 @@ def serialize_episodes(
     project_id: str,
     *,
     mode: EpisodeMode | None = None,
-    limit: int = 50,
-    branch_summary: BranchSummaryResolver | None = None,
     branch_summaries: BranchSummariesResolver | None = None,
 ) -> list[EpisodeResponse]:
     """Serialize the ordered project list, optionally limited to one episode mode."""
 
-    bounded_limit = max(1, min(limit, 500))
+    bounded_limit = 50
     episodes = store.episodes(
         project_id,
         limit=500 if mode is not None else bounded_limit,
@@ -399,8 +405,7 @@ def serialize_episodes(
     selected = [episode for episode in episodes if mode is None or episode.mode == mode][
         :bounded_limit
     ]
-    if branch_summary is not None and branch_summaries is not None:
-        raise ValueError("episode serialization accepts one branch summary strategy")
+    branch_summary: BranchSummaryResolver | None = None
     if branch_summaries is not None:
         branch_episodes = [
             episode
@@ -523,12 +528,68 @@ def _serialize_task(
     task: AgentTaskRecord,
     *,
     recovery_controls_allowed: bool,
+    role: Literal["orchestrator", "worker", "wake"],
+    depth: int,
 ) -> EpisodeTaskResponse:
     public_fields = EpisodeTaskResponse.model_fields.keys()
     values = task.model_dump(include=public_fields)
+    values.update(role=role, depth=depth)
     if not recovery_controls_allowed:
         values.update(can_pause=False, can_resume=False, can_retry=False)
     return EpisodeTaskResponse.model_validate(values)
+
+
+def _episode_task_metadata(
+    store: AppStore,
+    episode: EpisodeRecord,
+    tasks: list[AgentTaskRecord],
+) -> dict[str, tuple[Literal["orchestrator", "worker", "wake"], int]]:
+    """Publish display role/depth from durable actor allocation lineage."""
+
+    by_id = {task.operation_id: task for task in tasks}
+    invocations = (
+        store.auto_research_invocations([task.operation_id for task in tasks])
+        if episode.mode == "auto_research"
+        else {}
+    )
+
+    def actor_id(task: AgentTaskRecord) -> str:
+        invocation = invocations.get(task.operation_id)
+        return invocation.actor_operation_id if invocation is not None else task.operation_id
+
+    def actor_depth(task: AgentTaskRecord) -> int:
+        origin = by_id.get(actor_id(task), task)
+        depth = 0
+        current = origin
+        parent_id = current.parent_operation_id
+        seen = {current.operation_id}
+        while parent_id and parent_id in by_id and parent_id not in seen:
+            seen.add(parent_id)
+            parent = by_id[parent_id]
+            if actor_id(current) != actor_id(parent):
+                depth += 1
+            current = parent
+            parent_id = current.parent_operation_id
+        return min(depth, 4)
+
+    metadata: dict[str, tuple[Literal["orchestrator", "worker", "wake"], int]] = {}
+    for task in tasks:
+        invocation = invocations.get(task.operation_id)
+        continuation_cause = store.agent_task_continuation_cause(task.operation_id)
+        if (
+            continuation_cause
+            in {"watcher_wake", "graph_condition_wake", "message_wake", "lifecycle_wake"}
+            or task.request.get("trigger") == "watcher"
+        ):
+            role: Literal["orchestrator", "worker", "wake"] = "wake"
+        elif invocation is None:
+            role: Literal["orchestrator", "worker", "wake"] = (
+                "orchestrator" if task.operation_id == episode.root_operation_id else "worker"
+            )
+        else:
+            role = invocation.role
+        metadata[task.operation_id] = (role, actor_depth(task))
+    return metadata
 
 
 def _auto_research_projection(

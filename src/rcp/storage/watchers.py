@@ -17,71 +17,19 @@ from rcp.limits import (
     WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
 )
 from rcp.storage.experiments import ExperimentStoreMixin
-from rcp.storage.models import (  # noqa: F401
-    _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
-    _EXPERIMENT_EPISODE_PINNED_FIELDS,
-    _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC,
-    _PROJECT_ID_TABLES,
-    ACTIVE_AGENT_TASK_STATUSES,
-    SPACE_NAME_MAX_LENGTH,
-    AgentCommandInvocationRecord,
-    AgentTaskContractRecord,
-    AgentTaskEventRecord,
-    AgentTaskKind,
-    AgentTaskReceiptRecord,
-    AgentTaskReceiptTier,
+from rcp.storage.models import (
     AgentTaskRecord,
-    AgentTaskStatus,
-    AgentUsageCell,
-    AgentUsageCountReason,
-    AgentUsageMetric,
-    AgentUsageRecord,
-    AgentUsageSnapshot,
     AutoResearchActorBusy,
     AutoResearchRole,
-    ChatSessionContextRecord,
     ExperimentEpisodeRecord,
-    ExperimentLoopRuntime,
-    ExperimentWatcherResourceRecord,
-    GraphCondition,
     GraphWatcherRecord,
-    NodeStatusGraphCondition,
-    ProjectRecord,
-    ProjectStageRecord,
-    ProposalResolvedGraphCondition,
-    ProviderSkillInventoryRecord,
-    ResultViewConflict,
-    ResultViewRecord,
-    SpaceKind,
-    SpaceUserKind,
-    SpaceUserRecord,
     StoredWatcherRecord,
-    TeamAuthenticationError,
-    TeamInvitationRecord,
     WatcherClaimConflict,
     WatcherContinuation,
-    WatcherDeliveryRecord,
     WatcherRecord,
     WatcherStatus,
     WatcherStopRequest,
-    _canonical_space_id,
-    _canonical_uuid4,
-    _discard_failed_team_initialization,
-    _experiment_pinned_value,
-    _new_enrollment_code,
-    _new_member_token,
-    _new_session_token,
-    _optional_str,
-    _parse_enrollment_code,
-    _plain_html_name,
     _required_timestamp,
-    _result_view_html_bytes,
-    _result_view_is_visible,
-    _result_view_reference_time,
-    _sha256,
-    _stored_space_kind,
-    _validated_result_view_html,
-    normalize_space_name,
     watcher_next_check_at,
 )
 from rcp.storage.rows import RowMappingMixin
@@ -987,6 +935,7 @@ class WatcherStoreMixin:
             error = None
         timestamp = checked_at or self.now()
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
             ).fetchone()
@@ -1193,6 +1142,8 @@ class WatcherStoreMixin:
                 self._validate_watcher_notification_scope(connection, record, watchers)
                 if self._experiment_wake_is_stopped(connection, record):
                     return None
+                if self._auto_research_wake_is_stopped(connection, record):
+                    return None
                 if self._has_active_chat_overlap(connection, record):
                     return None
                 if record.kind == "auto_research":
@@ -1232,6 +1183,26 @@ class WatcherStoreMixin:
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
+
+    @staticmethod
+    def _auto_research_wake_is_stopped(
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+    ) -> bool:
+        """Refuse a watcher wake after its Auto-research ending fence wins."""
+
+        if record.episode_id is None:
+            return False
+        row = connection.execute(
+            "SELECT status, ending, stop_requested_at FROM episodes "
+            "WHERE episode_id = ? AND mode = 'auto_research'",
+            (record.episode_id,),
+        ).fetchone()
+        return row is not None and (
+            row["status"] != "running"
+            or row["ending"] is not None
+            or row["stop_requested_at"] is not None
+        )
 
     def resolve_watcher_delivery_authorizer(
         self,
@@ -1328,7 +1299,8 @@ class WatcherStoreMixin:
                 f"""
                 UPDATE watchers
                 SET status = 'stopped', notified = 1, next_check_at = NULL,
-                    stop_reason = ?, stopped_at = COALESCE(stopped_at, ?)
+                    stopped_by = 'loop', stop_reason = ?,
+                    stopped_at = COALESCE(stopped_at, ?)
                 WHERE watcher_id IN ({placeholders})
                   AND status IN ('completed', 'degraded')
                   AND notified = 0 AND notification_operation_id IS NULL

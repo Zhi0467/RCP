@@ -39,12 +39,42 @@ class GraphHeadRef(_StrictTransitionModel):
     transition_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
+class ProposalActionLine(_StrictTransitionModel):
+    """One backend-rendered line describing a pending Proposal's exact effect."""
+
+    label: str | None = None
+    text: str
+
+
 class GraphAttentionProjection(_StrictTransitionModel):
     """Exact graph memberships consumed by attention and Runs surfaces."""
 
     pending_proposal_ids: list[str] = Field(default_factory=list)
     decisions_awaiting_choice_ids: list[str] = Field(default_factory=list)
     open_blocker_ids: list[str] = Field(default_factory=list)
+    proposal_actions: dict[str, list[ProposalActionLine]] = Field(default_factory=dict)
+
+
+class ProjectCountsProjection(_StrictTransitionModel):
+    pending_proposals: int = Field(ge=0)
+    decisions_awaiting_choice: int = Field(ge=0)
+    open_blockers: int = Field(ge=0)
+    asserted: int = Field(ge=0)
+    accepted: int = Field(ge=0)
+    contested: int = Field(ge=0)
+
+
+class GraphMutationAvailability(_StrictTransitionModel):
+    available: bool
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def require_matching_reason(self) -> GraphMutationAvailability:
+        if self.available and self.reason is not None:
+            raise ValueError("available graph mutation cannot carry an unavailable reason")
+        if not self.available and not self.reason:
+            raise ValueError("unavailable graph mutation requires a reason")
+        return self
 
 
 class TransitionCauseRef(_StrictTransitionModel):

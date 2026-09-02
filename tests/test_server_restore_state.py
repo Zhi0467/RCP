@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 import rcp.server_ops.restore as restore_code
-from rcp.__main__ import build_parser
+from rcp.__main__ import InstanceLockHeld, build_parser, instance_lock
 from rcp.api import create_app
 from rcp.core.models import AuthorizedHuman
 from rcp.server_ops.backup import (
@@ -32,13 +32,16 @@ from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.restore import (
     SUPPORTED_RESTORE_DATABASE_SCHEMAS,
     LinuxRestoreMachine,
+    RestoreCheckoutRecoveryOutcome,
     RestoreConfirmation,
     RestoreRefused,
+    RestoreReviewOutcome,
     detach_restore_database,
     prepare_restore_command,
     read_restore_journal,
     restore_journal_path,
     unfinished_restore_operation,
+    write_restore_journal,
 )
 from rcp.server_ops.update import server_update_operation_lock
 from rcp.storage import (
@@ -341,6 +344,123 @@ def test_restore_cli_accepts_confirmed_destination_before_archive_work(
     )
 
 
+def test_restore_command_releases_instance_lock_before_activation(tmp_path: Path) -> None:
+    data_dir = tmp_path / "configured-data"
+    data_dir.mkdir()
+    archive = tmp_path / "archive.age"
+    archive.write_bytes(b"archive")
+    identity_file = tmp_path / "identity.txt"
+    identity_file.write_text("identity", encoding="utf-8")
+
+    class ActivationBoundaryMachine:
+        def __init__(self) -> None:
+            self.journal = SimpleNamespace(
+                operation_id="operation-1",
+                phase="archive_verified",
+                candidate_sqlite_sha256="d" * 64,
+                repository_recoveries=(),
+                project_rebinds=(),
+                project_publications=(),
+                old_authority_review=None,
+                member_roster_review=None,
+            )
+            self.activation_saw_lock_free = False
+
+        def configured_data_dir(self) -> Path:
+            return data_dir
+
+        def admission(self):
+            return instance_lock(data_dir, timeout=0.0)
+
+        def stage_candidate(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                archive_sha256="a" * 64,
+                manifest=SimpleNamespace(space_id="space-1", rcp_source_commit=COMMIT, projects=()),
+            )
+
+        def journal_candidate(self, *_args, **_kwargs):
+            return self.journal
+
+        def install_sqlite_candidate(self, journal):
+            journal.phase = "sqlite_restored"
+            return journal
+
+        def verify_offline_candidate(self, journal):
+            return journal
+
+        def recover_checkouts(self, journal, **_kwargs):
+            return RestoreCheckoutRecoveryOutcome(journal=journal)
+
+        def rebind_checkouts(self, journal):
+            return journal
+
+        def publish_projects(self, journal):
+            return journal
+
+        def review_old_authority(self, journal, **_kwargs):
+            journal.old_authority_review = SimpleNamespace(
+                boundary_sha256="b" * 64,
+                disposition="old-machine-destroyed",
+            )
+            return RestoreReviewOutcome(journal=journal)
+
+        def review_member_roster(self, journal, **_kwargs):
+            journal.member_roster_review = SimpleNamespace(
+                boundary_sha256="c" * 64,
+                members=(),
+            )
+            return RestoreReviewOutcome(journal=journal)
+
+        def prepare_activation(self, journal):
+            with pytest.raises(InstanceLockHeld), instance_lock(data_dir, timeout=0.0):
+                pass
+            journal.phase = "activation_ready"
+            return journal
+
+        def activate_replacement(self, journal):
+            with instance_lock(data_dir, timeout=0.0):
+                self.activation_saw_lock_free = True
+            journal.phase = "complete"
+            return journal
+
+    machine = ActivationBoundaryMachine()
+    arguments = build_parser().parse_args(
+        (
+            "server",
+            "restore",
+            str(archive),
+            "--identity-file",
+            str(identity_file),
+            "--confirm-data-dir",
+            str(data_dir),
+            "--old-authority-disposition",
+            "old-machine-destroyed",
+            "--confirm-old-authority",
+            "b" * 64,
+            "--confirm-member-roster",
+            "c" * 64,
+            "--machine-readable",
+        )
+    )
+
+    output = StringIO()
+    exit_code = run_server_command(
+        arguments,
+        identity=CallerIdentity(uid=0, username="root", host="lab.example"),
+        input_stream=BytesIO(),
+        stream=output,
+        handler=lambda request, caller: prepare_restore_command(
+            request,
+            caller,
+            machine=machine,  # type: ignore[arg-type]
+            resume_executable=Path("/usr/local/bin/rcp"),
+        ),
+    )
+
+    assert exit_code == 0, output.getvalue()
+    assert machine.activation_saw_lock_free is True
+
+
 def test_restore_builds_one_detached_offline_sqlite_candidate(tmp_path: Path) -> None:
     archive, source, manifest = _archive(tmp_path / "backup")
     request = source.project_provisioning_requests()[0]
@@ -371,14 +491,14 @@ def test_restore_builds_one_detached_offline_sqlite_candidate(tmp_path: Path) ->
     assert str(identity) not in journal_text
     assert "AGE-SECRET-KEY" not in journal_text
     assert service.stop_calls == 1
-    assert not any(layout.data_dir.iterdir())
+    assert [path.name for path in layout.data_dir.iterdir()] == ["rcp.lock"]
 
     installed = machine.install_sqlite_candidate(journal)
     verified = machine.verify_offline_candidate(installed)
 
     assert verified.phase == "sqlite_restored"
     assert service.stop_calls == 2
-    assert [path.name for path in layout.data_dir.iterdir()] == ["rcp.sqlite3"]
+    assert {path.name for path in layout.data_dir.iterdir()} == {"rcp.lock", "rcp.sqlite3"}
     target_sha256 = hashlib.sha256((layout.data_dir / "rcp.sqlite3").read_bytes()).hexdigest()
     with pytest.raises(RuntimeError, match="replacement restore is incomplete"):
         create_app(data_dir=layout.data_dir, server_layout=layout)
@@ -446,6 +566,37 @@ def test_restore_journal_serializes_update_and_backup_machine_owners(tmp_path: P
     assert journal.phase == "archive_verified"
 
 
+def test_restore_admission_owns_the_service_instance_lock(tmp_path: Path) -> None:
+    archive, _source, _manifest = _archive(tmp_path / "backup")
+    machine, layout, _service, _identity = _machine(tmp_path, archive)
+
+    with machine.admission():
+        lock = layout.data_dir / "rcp.lock"
+        info = lock.lstat()
+        assert (info.st_uid, info.st_gid) == (os.getuid(), os.getgid())
+        assert info.st_mode & 0o777 == 0o600
+        with (
+            pytest.raises(InstanceLockHeld, match="Another RCP process"),
+            instance_lock(layout.data_dir, timeout=0.0),
+        ):
+            pass
+
+    with instance_lock(layout.data_dir, timeout=0.0):
+        pass
+
+
+def test_restore_refuses_a_concurrent_instance_lock_owner(tmp_path: Path) -> None:
+    archive, _source, _manifest = _archive(tmp_path / "backup")
+    machine, layout, _service, _identity = _machine(tmp_path, archive)
+
+    with (
+        instance_lock(layout.data_dir, timeout=0.0),
+        pytest.raises(RestoreRefused, match="Another RCP process owns"),
+        machine.admission(),
+    ):
+        pass
+
+
 def test_restore_reentry_rebuilds_a_missing_candidate_with_identical_bytes(
     tmp_path: Path,
 ) -> None:
@@ -488,6 +639,62 @@ def test_restore_recovers_crash_after_database_publish_before_phase_advance(
 
     assert recovered.phase == "sqlite_restored"
     machine.verify_offline_candidate(recovered)
+
+
+def test_restore_reentry_accepts_only_phase_owned_data_roots_and_sqlite_sidecars(
+    tmp_path: Path,
+) -> None:
+    archive, _source, _manifest = _archive(tmp_path / "backup")
+    machine, layout, _service, identity = _machine(tmp_path, archive)
+    candidate = machine.stage_candidate(archive, identity, confirmed_by="root@lab uid=0")
+    journal = machine.journal_candidate(candidate, _confirmation(layout))
+    installed = machine.install_sqlite_candidate(journal)
+
+    premature = layout.data_dir / "state-cache"
+    premature.mkdir(mode=0o700)
+    with pytest.raises(RestoreRefused, match="unexpected restore state"):
+        machine.verify_offline_candidate(installed)
+    premature.rmdir()
+
+    rebinding = installed.model_copy(update={"phase": "projects_rebinding"})
+    bootstrap = layout.data_dir / "bootstrap-manifests"
+    bootstrap.mkdir(mode=0o700)
+    write_restore_journal(
+        rebinding,
+        layout,
+        uid=os.getuid(),
+        gid=os.getgid(),
+    )
+    assert machine.install_sqlite_candidate(rebinding) == rebinding
+    assert machine.verify_offline_candidate(rebinding) == rebinding
+
+    publishing = rebinding.model_copy(update={"phase": "projects_publishing"})
+    for name in ("project-sources", "state-cache"):
+        (layout.data_dir / name).mkdir(mode=0o700)
+    for suffix in ("-wal", "-shm"):
+        sidecar = layout.data_dir / f"rcp.sqlite3{suffix}"
+        sidecar.write_bytes(b"crash sidecar")
+        sidecar.chmod(0o600)
+    write_restore_journal(
+        publishing,
+        layout,
+        uid=os.getuid(),
+        gid=os.getgid(),
+    )
+    assert machine.install_sqlite_candidate(publishing) == publishing
+    assert machine.verify_offline_candidate(publishing) == publishing
+
+
+def test_restore_reentry_reports_a_missing_restored_database(tmp_path: Path) -> None:
+    archive, _source, _manifest = _archive(tmp_path / "backup")
+    machine, layout, _service, identity = _machine(tmp_path, archive)
+    candidate = machine.stage_candidate(archive, identity, confirmed_by="root@lab uid=0")
+    journal = machine.journal_candidate(candidate, _confirmation(layout))
+    installed = machine.install_sqlite_candidate(journal)
+    (layout.data_dir / "rcp.sqlite3").unlink()
+
+    with pytest.raises(RestoreRefused, match="lost its restored database"):
+        machine.verify_offline_candidate(installed)
 
 
 @pytest.mark.parametrize(
@@ -566,6 +773,39 @@ def test_provisioning_restore_detachment_is_idempotent_and_keeps_step_receipts(
 
     assert store.project_provisioning_request(running.request_id) == first
     assert store.project_provisioning_step_receipts(running.request_id) == receipts
+
+
+def test_provisioning_restore_detachment_rolls_back_a_stale_transition(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store, _bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lease lab")
+    running = _provisioning_request(store)
+    original = store._transition_project_provisioning_to_restore_reentry
+
+    def make_transition_stale(connection, *, current, **values) -> None:
+        connection.execute(
+            """
+            UPDATE project_provisioning_requests
+            SET revision = revision + 1
+            WHERE request_id = ?
+            """,
+            (current.request_id,),
+        )
+        original(connection, current=current, **values)
+
+    monkeypatch.setattr(
+        store,
+        "_transition_project_provisioning_to_restore_reentry",
+        make_transition_stale,
+    )
+    with pytest.raises(RuntimeError, match="changed during restore detachment"):
+        store.detach_restored_lifecycle(
+            diagnostic="Replacement restore invalidated old machine authority.",
+            confirmed_by="root@lab uid=0",
+            detached_at=CAPTURED_AT.isoformat(),
+        )
+
+    assert store.project_provisioning_request(running.request_id) == running
 
 
 def test_restore_schema_registry_covers_current_and_immutable_upgrade_boundaries(

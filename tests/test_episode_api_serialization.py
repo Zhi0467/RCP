@@ -9,6 +9,7 @@ from rcp.api.episodes import (
     EpisodeMessageBody,
     ReauthorizeEpisodeBody,
     StartEpisodeBody,
+    _episode_task_metadata,
     episode_for_project,
     serialize_episode,
     serialize_episodes,
@@ -225,6 +226,8 @@ def test_auto_episode_projection_includes_mode_state_and_exact_recovery(tmp_path
     assert response.graph_branch is not None
     assert response.graph_branch.branch_id == episode.episode_id
     assert response.tasks[0].graph_target == episode.graph_target
+    assert response.tasks[0].role == "orchestrator"
+    assert response.tasks[0].depth == 0
     assert response.current_operation_id == root.operation_id
     assert response.current_orchestrator_task_id == root.operation_id
     assert response.current_control_task_id == root.operation_id
@@ -240,6 +243,62 @@ def test_auto_episode_projection_includes_mode_state_and_exact_recovery(tmp_path
     }
     assert response.budget.invocations_used == 1
     assert response.can_stop
+
+
+def test_experiment_wake_role_comes_from_its_durable_continuation_cause(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    now = store.now()
+    episode_id = str(uuid.uuid4())
+    request = {
+        "provider": "codex",
+        "run_on": "local",
+        "run_truth_scope": ["repo"],
+        "chat_id": str(uuid.uuid4()),
+        "chat_scope": "node",
+        "node_id": "exp/wake-role",
+        "mode": "work",
+        "trigger": "experiment_run",
+        "patch_kind": "experiment_loop",
+        "control_node_id": "exp/wake-role",
+        "control_revision": 1,
+        "control_episode_id": episode_id,
+        "control_invocation": 1,
+        "control_invocation_ceiling": 2,
+        "control_decision_bundle": [],
+        "control_completion_criteria": ["The wake is attributed."],
+        "watcher_ids": [],
+    }
+    root = AgentTaskRecord(
+        operation_id="experiment-root",
+        project_id="project",
+        episode_id=episode_id,
+        kind="node_chat",
+        status="queued",
+        request=request,
+        created_at=now,
+        updated_at=now,
+        status_message="queued",
+        authorized_by=_authorizer(store),
+    )
+    store.create_experiment_episode_with_invocation(root)
+    store.fail_agent_task(root.operation_id, "waiting for the watcher")
+    wake = root.model_copy(
+        update={
+            "operation_id": "experiment-wake",
+            "parent_operation_id": root.operation_id,
+            "attempt": 2,
+            "request": {**request, "trigger": "watcher"},
+        }
+    )
+    store.create_experiment_recovery_task(wake, continuation_cause="watcher_wake")
+    episode = store.episode(episode_id)
+    assert episode is not None
+
+    metadata = _episode_task_metadata(store, episode, store.episode_tasks(episode_id))
+
+    assert metadata[root.operation_id][0] == "orchestrator"
+    assert metadata[wake.operation_id][0] == "wake"
 
 
 def test_episode_route_bodies_are_strict_and_normalize_only_text() -> None:
@@ -410,7 +469,9 @@ def test_project_ownership_and_mode_filtered_lists_fail_closed(tmp_path) -> None
         store,
         "project",
         mode="auto_research",
-        branch_summary=_branch_summary,
+        branch_summaries=lambda episodes: {
+            episode.episode_id: _branch_summary(episode) for episode in episodes
+        },
     )
     experiment_responses = serialize_episodes(store, "project", mode="experiment_loop")
 

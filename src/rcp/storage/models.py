@@ -71,6 +71,14 @@ class TeamAuthenticationError(RuntimeError):
         self.code = code
 
 
+class AgentTaskAdmissionConflict(ValueError):
+    """A valid task request conflicts with already-admitted operational work."""
+
+
+class ProjectActiveTaskConflict(ValueError):
+    """A project mutation is fenced by one of its active tasks."""
+
+
 class SpaceUserRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -2747,6 +2755,7 @@ class ExperimentLoopRuntime(BaseModel):
     stop_settled: bool = False
     session_bound: bool = False
     session_diagnostic: str | None = None
+    projection_diagnostic: str | None = None
     provider: str | None = None
     model: str | None = None
     reasoning: str | None = None
@@ -3212,9 +3221,9 @@ def _required_timestamp(value: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
-        raise ValueError("result view timestamp is invalid") from exc
+        raise ValueError("timestamp is invalid") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError("result view timestamp must include a timezone")
+        raise ValueError("timestamp must include a timezone")
     return parsed.astimezone(UTC)
 
 
@@ -3258,6 +3267,7 @@ def _result_view_html_bytes(record: ResultViewRecord, html: object) -> bytes:
 
 
 __all__ = [
+    "AgentTaskAdmissionConflict",
     "ACTIVE_AGENT_TASK_STATUSES",
     "AGENT_TASK_TRANSITIONS",
     "AgentCommandInvocationRecord",
@@ -3364,6 +3374,7 @@ __all__ = [
     "ProjectTransferUploadRecord",
     "ProjectTransferUploadStatus",
     "ProjectRecord",
+    "ProjectActiveTaskConflict",
     "ProjectStageRecord",
     "ProposalResolvedGraphCondition",
     "ProviderSkillInventoryRecord",

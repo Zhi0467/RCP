@@ -185,7 +185,7 @@ the complete structured event stream is needed.
 
 ```bash
 uv run pytest
-uv run ruff check src tests
+uv run ruff check src tests packaging web/src-tauri/scripts
 npm --prefix web test
 npm --prefix web run build
 uv run pre-commit run --all-files

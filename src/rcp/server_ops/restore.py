@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import pwd
 import re
@@ -32,7 +31,30 @@ from rcp.limits import (
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     SERVER_RESTORE_DECRYPT_TIMEOUT_SECONDS,
 )
+from rcp.server_ops._local_primitives import (
+    PrivateFileReadError,
+    canonical_json_bytes,
+    canonical_json_line,
+    canonical_json_text,
+    read_stable_private_file,
+)
+from rcp.server_ops._local_primitives import (
+    fsync_directory as _fsync_directory,
+)
+from rcp.server_ops._local_primitives import (
+    fsync_file as _fsync_file,
+)
+from rcp.server_ops._local_primitives import (
+    fsync_file_tree as _fsync_tree,
+)
+from rcp.server_ops._local_primitives import (
+    normalized_absolute_non_root_path as _absolute,
+)
 from rcp.server_ops.backup import BACKUP_ARCHIVE_FORMAT, require_age_1x
+from rcp.server_ops.backup_integrity import (
+    canonical_backup_manifest_bytes,
+    database_schema_sha256,
+)
 from rcp.server_ops.backup_models import BackupArchiveManifest
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.config import (
@@ -103,6 +125,8 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "3abf5220f328382d9abebe6091fd8f73daa634fb1e4bf1ed8993fc2b58f6005b",
         "2e5ba0c68eccff397619edb4f3bf8574b0002d89879a8095acfa001474da23f4",
         "d7530fb1961b8c0d002bc39b92b354e7d3f34681845beeef15caa62b5713132a",
+        "46e5a2762be47bff427ae3e240dd61e7c8048c0c24f78c14e5595d749765a4b7",
+        "198c440b01783e09952742b56efb2b1e4987e405e88e7a59707ab5896f60af69",
     }
 )
 
@@ -127,13 +151,6 @@ class _StrictModel(BaseModel):
 def _digest(value: str, *, label: str) -> str:
     if len(value) != 64 or any(character not in _SHA256 for character in value):
         raise ValueError(f"{label} must be lowercase SHA-256")
-    return value
-
-
-def _absolute(value: str, *, label: str) -> str:
-    path = Path(value)
-    if not path.is_absolute() or path == Path("/") or ".." in path.parts or str(path) != value:
-        raise ValueError(f"{label} must be an absolute normalized non-root path")
     return value
 
 
@@ -809,9 +826,10 @@ def prepare_restore_command(
                 resume_executable=resume_executable,
             )
             return
+        activation_ready = None
         try:
             with resolved_machine.admission():
-                _execute_restore(
+                activation_ready = _execute_restore(
                     request,
                     identity,
                     emitter,
@@ -825,6 +843,32 @@ def prepare_restore_command(
             emitter.emit_step(
                 planned.steps[2].model_copy(update={"state": "failed", "message": str(exc)})
             )
+            return
+        if activation_ready is None:
+            return
+        activation_step = plan.steps[10]
+        try:
+            completed = resolved_machine.activate_replacement(activation_ready)
+        except RestoreRefused as exc:
+            emitter.emit_step(
+                activation_step.model_copy(update={"state": "failed", "message": str(exc)})
+            )
+            return
+        emitter.emit_step(
+            activation_step.model_copy(
+                update={
+                    "state": "succeeded",
+                    "message": (
+                        "The replacement is enabled and its fenced activation readback is durable."
+                    ),
+                    "fields": (
+                        NonsecretField(name="restore_phase", value=completed.phase),
+                        NonsecretField(name="operation_id", value=completed.operation_id),
+                        NonsecretField(name="service_state", value="enabled_active"),
+                    ),
+                }
+            )
+        )
 
     return PreparedServerCommand(plan=plan, execute=execute)
 
@@ -1002,7 +1046,7 @@ def _execute_restore(
     *,
     data_dir: Path,
     resume_executable: Path,
-) -> None:
+) -> RestoreOperationJournal | None:
     planned = emitter.events[0]
     assert isinstance(planned, ServerPlanEvent)
     steps = planned.steps
@@ -1270,20 +1314,21 @@ def _execute_restore(
                 }
             )
         )
-        journal = _run_restore_step(
-            emitter,
-            steps[10],
-            running="Starting the replacement behind its closed activation fence.",
-            operation=lambda: machine.activate_replacement(machine.prepare_activation(journal)),
-            succeeded="The replacement is enabled and its fenced activation readback is durable.",
-            fields=lambda value: (
-                NonsecretField(name="restore_phase", value=value.phase),
-                NonsecretField(name="operation_id", value=value.operation_id),
-                NonsecretField(name="service_state", value="enabled_active"),
-            ),
+        emitter.emit_step(
+            steps[10].model_copy(
+                update={
+                    "state": "running",
+                    "message": "Starting the replacement behind its closed activation fence.",
+                }
+            )
         )
+        try:
+            return machine.prepare_activation(journal)
+        except RestoreRefused as exc:
+            emitter.emit_step(steps[10].model_copy(update={"state": "failed", "message": str(exc)}))
+            raise _ReportedRestoreFailure from exc
     except _ReportedRestoreFailure:
-        return
+        return None
 
 
 def _restore_resume_argv(
@@ -1326,14 +1371,7 @@ def _restore_authority_resume_argv(
 
 
 def _canonical_sha256(value: object) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
 def restore_old_authority_boundary(manifest: BackupArchiveManifest) -> str:
@@ -1558,6 +1596,7 @@ class LinuxRestoreMachine:
         if self._admission_active:
             yield
             return
+        from rcp.__main__ import InstanceLockHeld, instance_lock
         from rcp.server_ops.backup import BackupRunRefused, backup_run_coordination_lock
         from rcp.server_ops.update import UpdateRefused, server_update_operation_lock
 
@@ -1574,12 +1613,26 @@ class LinuxRestoreMachine:
                     expected_uid=self.service_uid,
                     expected_gid=self.service_gid,
                 ),
+                instance_lock(
+                    self.layout.data_dir,
+                    timeout=0.0,
+                    expected_owner=(self.service_uid, self.service_gid),
+                ),
             ):
                 self._admission_active = True
                 try:
                     yield
                 finally:
                     self._admission_active = False
+        except InstanceLockHeld as exc:
+            raise RestoreRefused(
+                "Another RCP process owns the replacement data directory. Stop it before "
+                "rerunning restore."
+            ) from exc
+        except OSError as exc:
+            raise RestoreRefused(
+                "The replacement data-directory lock is unsafe or unavailable."
+            ) from exc
         except (BackupRunRefused, UpdateRefused) as exc:
             raise RestoreRefused(
                 "Another source update or protected backup owns the server machine boundary. "
@@ -1742,7 +1795,9 @@ class LinuxRestoreMachine:
             self.layout,
             expected_uid=self.service_uid,
         )
-        if existing is None and any(self.layout.data_dir.iterdir()):
+        if existing is None and {path.name for path in self.layout.data_dir.iterdir()} != {
+            "rcp.lock"
+        }:
             raise RestoreRefused(
                 "The configured RCP data directory is not fresh and empty. Restore will not "
                 "stop or replace an initialized space."
@@ -1757,7 +1812,7 @@ class LinuxRestoreMachine:
         if existing is not None:
             _require_same_candidate(existing, candidate, confirmation)
             return existing
-        _require_private_empty_directory(
+        _require_private_restore_destination(
             self.layout.data_dir,
             uid=self.service_uid,
             gid=self.service_gid,
@@ -1805,7 +1860,7 @@ class LinuxRestoreMachine:
         if digest != current.candidate_sqlite_sha256:
             raise RestoreRefused("The detached SQLite candidate changed after journal publication.")
         entries = tuple(self.layout.data_dir.iterdir())
-        if not entries:
+        if {entry.name for entry in entries} == {"rcp.lock"}:
             descriptor, temporary_name = tempfile.mkstemp(
                 prefix=".rcp.sqlite3.restore-",
                 dir=self.layout.data_dir,
@@ -2482,11 +2537,8 @@ class LinuxRestoreMachine:
             boundary = restore_member_roster_boundary(current.manifest.captured_at, members)
             if stale_member_id is not None or confirmed_boundary is None:
                 confirm = (*resume_argv, "--confirm-member-roster", boundary)
-                authority_text = json.dumps(
-                    [item.model_dump(mode="json") for item in members],
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
+                authority_text = canonical_json_text(
+                    [item.model_dump(mode="json") for item in members]
                 )
                 fields = [
                     NonsecretField(
@@ -2830,24 +2882,12 @@ class LinuxRestoreMachine:
 
     @staticmethod
     def _project_publication_receipt(capture, imported) -> RestoreProjectPublication:
-        payload = json.dumps(
-            capture.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        ).encode("utf-8")
+        payload = canonical_json_bytes(capture.model_dump(mode="json"))
         assert capture.main_head is not None
         imported_payload = (
             None
             if imported is None or not imported.present
-            else json.dumps(
-                imported.model_dump(mode="json"),
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-                allow_nan=False,
-            ).encode("utf-8")
+            else canonical_json_bytes(imported.model_dump(mode="json"))
         )
         return RestoreProjectPublication(
             project_id=capture.project_id,
@@ -3108,16 +3148,7 @@ def write_restore_journal(
     gid: int,
 ) -> None:
     path = restore_journal_path(layout)
-    payload = (
-        json.dumps(
-            journal.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
+    payload = canonical_json_line(journal.model_dump(mode="json"))
     if len(payload) > BACKUP_RECEIPT_MAX_BYTES:
         raise RestoreRefused("The restore journal exceeds its fixed size bound.")
     if path.exists() or path.is_symlink():
@@ -3205,7 +3236,7 @@ def _extract_verified_archive(
                 raise RestoreRefused(
                     "The restore archive manifest is invalid or unsupported."
                 ) from exc
-            canonical_manifest = _manifest_bytes(manifest)
+            canonical_manifest = canonical_backup_manifest_bytes(manifest)
             if manifest_bytes != canonical_manifest:
                 raise RestoreRefused("The restore archive manifest is not canonical.")
             manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
@@ -3291,40 +3322,10 @@ def _require_regular_archive_member(member: tarfile.TarInfo) -> None:
         raise RestoreRefused("The restore archive contains an unsafe or unsupported member.")
 
 
-def _manifest_bytes(manifest: BackupArchiveManifest) -> bytes:
-    return (
-        json.dumps(
-            manifest.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
-
-
 def _database_schema_sha256(path: Path) -> str:
     uri = f"{path.resolve(strict=True).as_uri()}?mode=ro&immutable=1"
     with sqlite3.connect(uri, uri=True) as connection:
-        connection.row_factory = sqlite3.Row
-        rows = connection.execute(
-            """
-            SELECT type, name, tbl_name, sql
-            FROM sqlite_schema
-            WHERE name NOT LIKE 'sqlite_%'
-            ORDER BY type, name, tbl_name
-            """
-        ).fetchall()
-    payload = [dict(row) for row in rows]
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+        return database_schema_sha256(connection)
 
 
 def _verify_sqlite_integrity(path: Path) -> None:
@@ -3388,10 +3389,56 @@ def _require_restored_target(
     gid: int,
     require_candidate_bytes: bool = True,
 ) -> None:
-    entries = tuple(target.parent.iterdir())
-    if entries != (target,):
+    permitted = {
+        "rcp.lock",
+        target.name,
+        f"{target.name}-wal",
+        f"{target.name}-shm",
+    }
+    if journal.phase in {
+        "projects_rebinding",
+        "checkouts_reconstructed",
+        "projects_publishing",
+        "projects_published",
+        "authority_reviewed",
+        "member_roster_reviewed",
+        "activation_ready",
+        "complete",
+    }:
+        permitted.add("bootstrap-manifests")
+    if journal.phase in {
+        "projects_publishing",
+        "projects_published",
+        "authority_reviewed",
+        "member_roster_reviewed",
+        "activation_ready",
+        "complete",
+    }:
+        permitted.update({"project-sources", "state-cache"})
+    entries = {entry.name: entry for entry in target.parent.iterdir()}
+    if not set(entries).issubset(permitted):
         raise RestoreRefused("The configured data directory contains unexpected restore state.")
-    info = target.lstat()
+    lock = entries.get("rcp.lock")
+    if lock is None:
+        raise RestoreRefused("The configured data directory lost its restore instance lock.")
+    _require_private_regular_file(lock, uid=uid, gid=gid, label="restore instance lock")
+    for suffix in ("-wal", "-shm"):
+        sidecar = entries.get(f"{target.name}{suffix}")
+        if sidecar is not None:
+            _require_private_regular_file(
+                sidecar,
+                uid=uid,
+                gid=gid,
+                label=f"restored database {suffix.removeprefix('-')}",
+            )
+    for name in ("bootstrap-manifests", "project-sources", "state-cache"):
+        root = entries.get(name)
+        if root is not None:
+            _require_private_directory(root, uid=uid, gid=gid, label=f"restored {name} root")
+    restored_database = entries.get(target.name)
+    if restored_database is None:
+        raise RestoreRefused("The configured data directory lost its restored database.")
+    info = restored_database.lstat()
     if (
         not stat.S_ISREG(info.st_mode)
         or (info.st_uid, info.st_gid) != (uid, gid)
@@ -3450,27 +3497,23 @@ def _hash_regular_file(path: Path, *, expected_uid: int | None = None) -> tuple[
 
 
 def _read_private_file(path: Path, *, expected_uid: int, maximum: int) -> bytes:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        info = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid != expected_uid
-            or stat.S_IMODE(info.st_mode) != RESTORE_JOURNAL_MODE
-            or info.st_size > maximum
-        ):
-            raise RestoreRefused("A restore machine record has unsafe ownership, mode, or size.")
-        chunks: list[bytes] = []
-        remaining = info.st_size
-        while remaining:
-            chunk = os.read(descriptor, min(BACKUP_COPY_BUFFER_BYTES, remaining))
-            if not chunk:
-                raise RestoreRefused("A restore machine record is incomplete.")
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        return b"".join(chunks)
-    finally:
-        os.close(descriptor)
+        return read_stable_private_file(
+            path,
+            expected_uid=expected_uid,
+            expected_mode=RESTORE_JOURNAL_MODE,
+            maximum=maximum,
+            chunk_size=BACKUP_COPY_BUFFER_BYTES,
+        )
+    except PrivateFileReadError as exc:
+        messages = {
+            "unavailable": "A restore machine record is unavailable.",
+            "unsafe": "A restore machine record has unsafe ownership, mode, or size.",
+            "incomplete": "A restore machine record is incomplete.",
+            "changed": "A restore machine record changed while reading.",
+            "cannot_read": "A restore machine record cannot be read.",
+        }
+        raise RestoreRefused(messages[exc.failure]) from exc
 
 
 def _require_private_directory(path: Path, *, uid: int, gid: int, label: str) -> None:
@@ -3486,13 +3529,45 @@ def _require_private_directory(path: Path, *, uid: int, gid: int, label: str) ->
         raise RestoreRefused(f"The {label} has unsafe ownership or mode.")
 
 
-def _require_private_empty_directory(path: Path, *, uid: int, gid: int, label: str) -> None:
+def _require_private_restore_destination(
+    path: Path,
+    *,
+    uid: int,
+    gid: int,
+    label: str,
+) -> None:
     _require_private_directory(path, uid=uid, gid=gid, label=label)
-    if any(path.iterdir()):
+    entries = tuple(path.iterdir())
+    if len(entries) != 1 or entries[0].name != "rcp.lock":
         raise RestoreRefused(
             "The configured RCP data directory is not fresh and empty. Restore will not replace "
             "or adopt an initialized space."
         )
+    _require_private_regular_file(
+        entries[0],
+        uid=uid,
+        gid=gid,
+        label="restore instance lock",
+    )
+
+
+def _require_private_regular_file(
+    path: Path,
+    *,
+    uid: int,
+    gid: int,
+    label: str,
+) -> None:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise RestoreRefused(f"The {label} is unavailable.") from exc
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or (info.st_uid, info.st_gid) != (uid, gid)
+        or stat.S_IMODE(info.st_mode) != RESTORE_JOURNAL_MODE
+    ):
+        raise RestoreRefused(f"The {label} has unsafe ownership or mode.")
 
 
 def _chown_tree_parents(path: Path, root: Path, uid: int, gid: int) -> None:
@@ -3501,33 +3576,6 @@ def _chown_tree_parents(path: Path, root: Path, uid: int, gid: int) -> None:
         os.chown(current, uid, gid)
         os.chmod(current, RESTORE_DIRECTORY_MODE)
         current = current.parent
-
-
-def _fsync_file(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _fsync_tree(root: Path) -> None:
-    directories = [root]
-    for path in sorted(root.rglob("*")):
-        if path.is_dir():
-            directories.append(path)
-        elif path.is_file():
-            _fsync_file(path)
-    for directory in reversed(directories):
-        _fsync_directory(directory)
 
 
 def _worker_parser() -> argparse.ArgumentParser:

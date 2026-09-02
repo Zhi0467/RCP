@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import stat
 import tempfile
-import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -21,6 +21,7 @@ from rcp.paper.service import (
     canonical_introduction_backup_source,
     validate_canonical_introduction_backup,
 )
+from rcp.server_ops._local_primitives import canonical_uuid4 as _canonical_uuid4
 from rcp.server_ops.backup_capture import (
     BackupCaptureUnavailable,
     BackupSnapshotProjectInventory,
@@ -46,7 +47,7 @@ from rcp.server_ops.backup_project_io import (
     discard_failed_project_capture,
     fact_backup_sources,
     fsync_directory,
-    fsync_tree,
+    fsync_directory_tree,
     stable_copy_entry,
     stable_copy_fact_entry,
     stable_workspace_bytes,
@@ -64,16 +65,6 @@ BACKUP_PROJECT_FILE_CAPTURE_SCHEMA_VERSION = 1
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _PROJECT_CAPTURE_FAILURE = "The project files were invalid, changing, or unavailable."
-
-
-def _canonical_uuid4(value: str, *, label: str) -> str:
-    try:
-        parsed = uuid.UUID(value)
-    except (AttributeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a canonical UUID4") from exc
-    if parsed.version != 4 or str(parsed) != value:
-        raise ValueError(f"{label} must be a lowercase canonical UUID4")
-    return value
 
 
 class _StrictProjectCaptureModel(BaseModel):
@@ -142,12 +133,15 @@ class BackupProjectFileCaptureReceipt(_StrictProjectCaptureModel):
         ):
             raise ValueError("project-file capture cannot protect another space's project")
         imported_ids = [capture.project_id for capture in self.imported_sources]
+        captured_ids = {
+            project.project_id for project in self.projects if project.status == "captured"
+        }
         if imported_ids and (
             tuple(sorted(imported_ids)) != tuple(imported_ids)
             or len(imported_ids) != len(set(imported_ids))
-            or set(imported_ids) != set(project_ids)
+            or set(imported_ids) != captured_ids
         ):
-            raise ValueError("project-file imported sources must inventory every project")
+            raise ValueError("project-file imported sources must inventory captured projects")
         partial = self.sqlite_capture_status == "partial" or any(
             project.status == "uncaptured" for project in self.projects
         )
@@ -201,14 +195,31 @@ class BackupProjectFileCaptureCoordinator:
             for project in sqlite_receipt.projects
             for operation_id in project.task_operation_ids
         }
-        imported_sources = self._capture_imported_sources(capture_root, sqlite_receipt)
+        imported_sources, imported_source_failures = self._capture_imported_sources(
+            capture_root,
+            sqlite_receipt,
+        )
         projects = tuple(
-            self._capture_or_preserve_failure(
-                capture_root,
-                inventory,
-                operation_projects=operation_projects,
+            (
+                self._capture_or_preserve_failure(
+                    capture_root,
+                    inventory,
+                    operation_projects=operation_projects,
+                )
+                if inventory.project_id not in imported_source_failures
+                else _uncaptured_project(inventory)
             )
             for inventory in sqlite_receipt.projects
+        )
+        captured_project_ids = {
+            project.project_id for project in projects if project.status == "captured"
+        }
+        imported_sources = tuple(
+            capture for capture in imported_sources if capture.project_id in captured_project_ids
+        )
+        self._discard_uncaptured_imported_sources(
+            capture_root,
+            captured_project_ids=captured_project_ids,
         )
         fsync_directory(projects_root)
         completed_at = datetime.now(UTC)
@@ -241,48 +252,68 @@ class BackupProjectFileCaptureCoordinator:
         self,
         capture_root: Path,
         sqlite_receipt: BackupSQLiteCaptureReceipt,
-    ) -> tuple[BackupImportedProviderSourceCapture, ...]:
+    ) -> tuple[tuple[BackupImportedProviderSourceCapture, ...], frozenset[str]]:
         collection_root = capture_root / "project-sources"
         captures: list[BackupImportedProviderSourceCapture] = []
+        failures: set[str] = set()
         for recorded in sqlite_receipt.imported_source_inventories:
-            expected = ImportedProviderSourceInventory.model_validate(recorded.model_dump())
-            store = ImportedProviderSourceStore(self.data_dir, recorded.project_id)
-            if os.path.lexists(store.root):
-                collection_root.mkdir(mode=0o700, exist_ok=True)
-                project_root = collection_root / recorded.project_id
-                project_root.mkdir(mode=0o700)
-                destination = project_root / "provider-history"
-            else:
-                destination = collection_root / recorded.project_id / "provider-history"
-            snapshot = store.capture_snapshot(
-                destination,
-                expected_inventory=expected,
-            )
-            files = tuple(
-                BackupFileEntry(
-                    archive_path=(
-                        f"project-sources/{recorded.project_id}/provider-history/"
-                        f"{item.relative_path}"
-                    ),
-                    source_relative_path=f"provider-history/{item.relative_path}",
-                    group="imported_provider_history",
-                    sha256=item.sha256,
-                    size_bytes=item.size_bytes,
+            project_root = collection_root / recorded.project_id
+            try:
+                expected = ImportedProviderSourceInventory.model_validate(recorded.model_dump())
+                store = ImportedProviderSourceStore(self.data_dir, recorded.project_id)
+                if os.path.lexists(store.root):
+                    collection_root.mkdir(mode=0o700, exist_ok=True)
+                    project_root.mkdir(mode=0o700)
+                    destination = project_root / "provider-history"
+                else:
+                    destination = project_root / "provider-history"
+                snapshot = store.capture_snapshot(
+                    destination,
+                    expected_inventory=expected,
                 )
-                for item in snapshot.files
-            )
-            captures.append(
-                BackupImportedProviderSourceCapture(
-                    project_id=recorded.project_id,
-                    inventory=recorded,
-                    present=snapshot.present,
-                    files=files,
-                    total_bytes=sum(item.size_bytes for item in files),
+                files = tuple(
+                    BackupFileEntry(
+                        archive_path=(
+                            f"project-sources/{recorded.project_id}/provider-history/"
+                            f"{item.relative_path}"
+                        ),
+                        source_relative_path=f"provider-history/{item.relative_path}",
+                        group="imported_provider_history",
+                        sha256=item.sha256,
+                        size_bytes=item.size_bytes,
+                    )
+                    for item in snapshot.files
                 )
-            )
+                captures.append(
+                    BackupImportedProviderSourceCapture(
+                        project_id=recorded.project_id,
+                        inventory=recorded,
+                        present=snapshot.present,
+                        files=files,
+                        total_bytes=sum(item.size_bytes for item in files),
+                    )
+                )
+            except (OSError, TypeError, ValueError):
+                if os.path.lexists(project_root):
+                    shutil.rmtree(project_root)
+                failures.add(recorded.project_id)
         if collection_root.exists():
-            fsync_tree(collection_root)
-        return tuple(captures)
+            fsync_directory_tree(collection_root)
+        return tuple(captures), frozenset(failures)
+
+    def _discard_uncaptured_imported_sources(
+        self,
+        capture_root: Path,
+        *,
+        captured_project_ids: set[str],
+    ) -> None:
+        collection_root = capture_root / "project-sources"
+        if not collection_root.exists():
+            return
+        for project_root in tuple(collection_root.iterdir()):
+            if project_root.name not in captured_project_ids:
+                shutil.rmtree(project_root)
+        fsync_directory_tree(collection_root)
 
     def _validate_capture_boundary(
         self,
@@ -531,7 +562,7 @@ class BackupProjectFileCaptureCoordinator:
             )
 
         ordered = tuple(sorted(files, key=lambda item: item.archive_path))
-        fsync_tree(project_root)
+        fsync_directory_tree(project_root)
         return BackupProjectCapture(
             project_id=inventory.project_id,
             home_space_id=inventory.home_space_id,
@@ -547,6 +578,21 @@ class BackupProjectFileCaptureCoordinator:
 
 def _inventory_state_is_remote(inventory: BackupSnapshotProjectInventory) -> bool:
     return _inventory_state_machine_alias(inventory) is not None
+
+
+def _uncaptured_project(
+    inventory: BackupSnapshotProjectInventory,
+) -> BackupProjectCapture:
+    return BackupProjectCapture(
+        project_id=inventory.project_id,
+        home_space_id=inventory.home_space_id,
+        locator=inventory.locator,
+        status="uncaptured",
+        unavailable_kind="capture_failure",
+        unavailable_reason=_PROJECT_CAPTURE_FAILURE,
+        unavailable_at=datetime.now(UTC),
+        total_bytes=0,
+    )
 
 
 def _inventory_state_machine_alias(

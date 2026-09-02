@@ -253,11 +253,18 @@ def test_kept_view_survives_expiry_and_keep_is_idempotent(tmp_path) -> None:
         kept_filename="throughput-project-26-08-12.html",
         kept_at=(_CREATED + timedelta(minutes=1)).isoformat(),
     )
+    with pytest.raises(ResultViewConflict, match="changed before Keep"):
+        store.mark_result_view_kept(
+            record.view_id,
+            expected_content_sha256=record.content_sha256,
+            kept_filename="must-not-replace-the-first-name.html",
+            kept_at=(_CREATED + timedelta(minutes=2)).isoformat(),
+        )
     retried = store.mark_result_view_kept(
         record.view_id,
         expected_content_sha256=record.content_sha256,
-        kept_filename="must-not-replace-the-first-name.html",
-        kept_at=(_CREATED + timedelta(minutes=2)).isoformat(),
+        kept_filename=kept.kept_filename,
+        kept_at=kept.kept_at,
     )
 
     assert retried == kept

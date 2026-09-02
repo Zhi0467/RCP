@@ -27,7 +27,6 @@ import { EpisodeReportLink } from "./EpisodeReportLink";
 
 export function AutoResearchEpisodeCard({
   episode,
-  tasks,
   messages,
   initiallyExpanded,
   busyAction,
@@ -41,7 +40,6 @@ export function AutoResearchEpisodeCard({
   onOperateTask,
 }: {
   episode: Episode;
-  tasks: AgentTask[];
   messages: EpisodeMessage[];
   initiallyExpanded: boolean;
   busyAction: string | null;
@@ -59,10 +57,7 @@ export function AutoResearchEpisodeCard({
   const [additionalInvocations, setAdditionalInvocations] = useState("");
   const [message, setMessage] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
-  const taskRows = useMemo(
-    () => episodeTaskRows(episode, episode.tasks.length > 0 ? episode.tasks : tasks),
-    [episode, tasks],
-  );
+  const taskRows = useMemo(() => episodeTaskRows(episode), [episode]);
   const projection = useMemo(
     () =>
       episodeProjection(
@@ -84,12 +79,7 @@ export function AutoResearchEpisodeCard({
   const controlTaskBusy = taskControl !== null && taskActionId === taskControl.task.operation_id;
   const anotherActionBusy = busyAction !== null || taskActionId !== null;
   const episodeTimestamp = formatTimestamp(episode.created_at);
-  const showStop =
-    episode.can_stop &&
-    projection.health !== "stopping" &&
-    projection.health !== "completed" &&
-    projection.health !== "stopped" &&
-    projection.health !== "failed";
+  const showStop = episode.can_stop || stopBusy;
 
   useEffect(() => {
     if (!expanded) return;

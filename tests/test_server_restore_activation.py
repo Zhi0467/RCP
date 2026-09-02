@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import rcp.api.app as app_module
+from rcp.__main__ import instance_lock
 from rcp.api import create_app
 from rcp.server_ops.backup_capture import _database_schema_sha256
 from rcp.server_ops.backup_models import BackupArchiveManifest, BackupFileEntry
@@ -111,6 +112,8 @@ def _layout(tmp_path: Path) -> ServerLayout:
     ):
         path.mkdir(parents=True, mode=0o700, exist_ok=True)
         path.chmod(0o700)
+    with instance_lock(layout.data_dir, timeout=0.0):
+        pass
     return layout
 
 

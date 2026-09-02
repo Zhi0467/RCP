@@ -11,6 +11,7 @@ covered_by:
   - tests/test_api.py::test_server_shutdown_pauses_live_background_seed
   - web/tests/agentTasks.test.mjs
 invariants: [8, 10b]
+last_checked: 2026-09-01 — automated lifecycle coverage passed; the full browser journey was not redriven.
 ---
 
 # Agent work is durable

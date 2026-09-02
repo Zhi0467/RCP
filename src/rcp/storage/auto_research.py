@@ -863,6 +863,24 @@ class AutoResearchStoreMixin:
             ).fetchone()
         return self._auto_research_invocation_record(row) if row is not None else None
 
+    def auto_research_invocations(
+        self,
+        operation_ids: list[str],
+    ) -> dict[str, AutoResearchInvocationRecord]:
+        """Load one bounded episode task set's durable actor lineage in one read."""
+
+        unique_ids = list(dict.fromkeys(operation_ids))
+        if not unique_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in unique_ids)
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM auto_research_invocations WHERE operation_id IN ({placeholders})",
+                unique_ids,
+            ).fetchall()
+        records = [self._auto_research_invocation_record(row) for row in rows]
+        return {record.operation_id: record for record in records}
+
     def auto_research_invocation_role(self, operation_id: str) -> AutoResearchRole | None:
         invocation = self.auto_research_invocation(operation_id)
         return invocation.role if invocation is not None else None
@@ -1557,10 +1575,17 @@ class AutoResearchStoreMixin:
                 stopped_by = COALESCE(stopped_by, 'loop'),
                 stop_reason = COALESCE(stop_reason, ?),
                 stopped_at = COALESCE(stopped_at, ?)
-            WHERE episode_id = ? AND origin_task_kind = 'auto_research'
-              AND status IN ('active', 'degraded', 'completed')
+            WHERE status IN ('active', 'degraded', 'completed')
+              AND (
+                  episode_id = ?
+                  OR EXISTS (
+                      SELECT 1 FROM graph_runs AS origin
+                      WHERE origin.operation_id = watchers.origin_operation_id
+                        AND origin.episode_id = ?
+                  )
+              )
             """,
-            (reason, stopped_at, episode_id),
+            (reason, stopped_at, episode_id, episode_id),
         ).rowcount
 
     def auto_research_is_quiescent(self, episode_id: str) -> bool:

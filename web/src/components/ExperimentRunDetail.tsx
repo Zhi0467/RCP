@@ -594,7 +594,7 @@ function WatcherDetail({
   onCheckWatcher: (watcherId: string) => void;
 }) {
   const external = isExternalWatcherRecord(watcher);
-  const canCheckNow = external && watcher.status === "degraded" && !watcher.notified;
+  const canCheckNow = watcher.can_check_now;
   const checkBusy = watcherCheckBusyId === watcher.watcher_id;
   return (
     <li className={`experiment-run-watcher ${watcher.status}`}>
@@ -604,7 +604,7 @@ function WatcherDetail({
           <strong className="mono experiment-run-breakable">
             {external ? watcher.watcher_id : graphConditionLabel(watcher.condition)}
           </strong>
-          <span>{watcherDeliveryLabel(watcher)}</span>
+          <span>{watcher.delivery_label}</span>
         </summary>
         <Facts
           className="experiment-run-watcher-facts"
@@ -703,14 +703,6 @@ function WatcherDetail({
       </details>
     </li>
   );
-}
-
-function watcherDeliveryLabel(watcher: WatcherRecord): string {
-  if (watcher.notification_operation_id) return "Delivery claimed";
-  if (watcher.status === "stopped") return "Stopped · not delivered";
-  if (watcher.status === "completed" && !watcher.notified) return "Pending delivery";
-  if (watcher.notified) return "Acknowledged · not delivered";
-  return "Not delivered";
 }
 
 function watcherGroupSummary(group: ExperimentWatcherGroup): string {

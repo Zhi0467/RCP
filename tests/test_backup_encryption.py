@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -27,6 +28,7 @@ from rcp.server_ops.backup import (
     protect_backup_archive,
     read_backup_archive_receipt,
     read_backup_outcome,
+    reconcile_backup_archive_publications,
     require_age_1x,
     write_backup_outcome,
 )
@@ -218,6 +220,66 @@ def test_backup_rejects_unsupported_age_and_changed_capture_bytes(tmp_path: Path
         )
     assert not tuple(destination.glob("*.tar.age"))
     assert not tuple(destination.glob("*.receipt.json"))
+
+
+def test_interrupted_archive_publication_recovers_only_its_exact_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    age = _fake_age(tmp_path)
+    capture_root, database = _capture(tmp_path)
+    destination = tmp_path / "backups"
+    destination.mkdir()
+    installed = _installed(destination)
+    original_publish = backup_owner._publish_new_json
+
+    def interrupt_receipt(path: Path, model) -> str:
+        if path.name.endswith(".tar.age.receipt.json"):
+            raise OSError("simulated crash after archive publication")
+        return original_publish(path, model)
+
+    monkeypatch.setattr(backup_owner, "_publish_new_json", interrupt_receipt)
+    with pytest.raises(BackupRunRefused, match="stream and verify"):
+        protect_backup_archive(
+            installed=installed,
+            manifest=_manifest(database),
+            capture_root=capture_root,
+            age_version="1.1.1",
+            age_executable=str(age),
+            protected_at=CAPTURED_AT + timedelta(minutes=1),
+        )
+
+    [archive_path] = tuple(destination.glob("*.tar.age"))
+    [intent_path] = tuple(destination.glob(".rcp-backup-publication-*.json"))
+    assert archive_path.is_file()
+    assert intent_path.is_file()
+    assert not tuple(destination.glob("*.tar.age.receipt.json"))
+    unknown = destination / (
+        "rcp-team-backup-v1-20260830T120000000000Z-1417a462-8b46-45f8-8882-69a216718258.tar.age"
+    )
+    unknown.write_bytes(archive_path.read_bytes())
+    unknown.chmod(0o600)
+
+    monkeypatch.setattr(backup_owner, "_publish_new_json", original_publish)
+    [recovered] = reconcile_backup_archive_publications(
+        installed=installed,
+        expected_uid=os.geteuid(),
+    )
+
+    assert recovered.archive_path == archive_path
+    assert recovered.receipt_path.is_file()
+    assert not intent_path.exists()
+    assert unknown.is_file()
+    assert (
+        read_backup_archive_receipt(
+            recovered.receipt_path,
+            expected_destination=destination,
+            expected_installation_id=INSTALLATION_ID,
+            expected_uid=os.geteuid(),
+            verify_digest=True,
+        )
+        == recovered.receipt
+    )
 
 
 def test_last_backup_outcome_is_atomically_replaceable_machine_status(tmp_path: Path) -> None:

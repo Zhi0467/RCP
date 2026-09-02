@@ -41,6 +41,7 @@ from rcp.runs.shared import (
     _remove_local_tree,
     _safe_stage_name,
     _stage_or_reuse_task_input,
+    _touch_local_stage,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.storage import AgentTaskKind, AgentTaskReceiptRecord, AgentTaskRecord, AppStore
@@ -102,8 +103,9 @@ def _stage_chat_patch_inputs(
     )
     patch_path = str(workspace / "patch.json")
     validator_staged = stage_patch_validation_mailbox(
-        local_stage=local_stage,
+        local_stage=workspace if remote_stage is None else None,
         remote_stage=remote_stage,
+        local_input_stage=local_stage if remote_stage is None else None,
         task_id=task_id,
         turn_id=turn_id,
         timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
@@ -396,6 +398,113 @@ def _clear_stale_turn_handoffs(
     clear_turn_handoff_files(mailbox)
 
 
+def _prepare_local_chat_workspace(
+    stage: Path,
+    *,
+    execution: AgentTaskExecution | None,
+    saved_stage: bool,
+) -> Path:
+    """Create a split workspace or reopen the layout recorded for a saved stage."""
+
+    task: AgentTaskRecord | None = None
+    if execution is not None:
+        task = execution.store.agent_task(execution.operation_id)
+        if task is None:
+            raise ValueError("The local conversation stage has no durable task binding.")
+    if saved_stage:
+        if task is None or task.stage_root != str(stage) or task.stage_host:
+            raise ValueError("The saved local conversation stage binding is unavailable.")
+        workspace = _local_chat_workspace_for_task(execution.store, task)
+        if workspace == stage:
+            _touch_local_stage(stage)
+            return stage
+        require_existing = True
+    else:
+        workspace = stage / "workspace"
+        require_existing = False
+        if task is not None:
+            chat_id = task.request.get("chat_id")
+            if (
+                task.kind not in {"node_chat", "project_chat"}
+                or not isinstance(chat_id, str)
+                or not chat_id
+            ):
+                raise ValueError("The local conversation stage has no durable chat binding.")
+            layout = execution.store.chat_stage_layout(
+                project_id=task.project_id,
+                kind=task.kind,
+                chat_id=chat_id,
+                stage_host="",
+                stage_root=str(stage),
+            )
+            if layout is None and execution.store.chat_stage_has_prior_binding(
+                operation_id=task.operation_id,
+                project_id=task.project_id,
+                kind=task.kind,
+                chat_id=chat_id,
+                stage_host="",
+                stage_root=str(stage),
+            ):
+                _touch_local_stage(stage)
+                return stage
+    if os.path.lexists(workspace):
+        if workspace.is_symlink() or not workspace.is_dir():
+            raise ValueError("The saved provider workspace is unsafe.")
+    elif require_existing:
+        raise ValueError(
+            "The saved provider workspace is unavailable; retry this chat turn instead."
+        )
+    else:
+        workspace.mkdir(mode=0o700)
+    if not saved_stage and execution is not None and not require_existing:
+        execution.store.record_chat_stage_layout(
+            execution.operation_id,
+            stage_root=str(stage),
+            workspace_root=str(workspace),
+        )
+    _touch_local_stage(stage)
+    return workspace
+
+
+def _local_chat_workspace_for_task(store: AppStore, task: AgentTaskRecord) -> Path:
+    """Resolve a saved local provider cwd only from its durable layout provenance."""
+
+    if not task.stage_root:
+        raise ValueError("The conversation's source stage is unavailable.")
+    if task.stage_host:
+        raise ValueError("A remote conversation has no local workspace path.")
+    chat_id = task.request.get("chat_id")
+    if (
+        task.kind not in {"node_chat", "project_chat"}
+        or not isinstance(chat_id, str)
+        or not chat_id
+    ):
+        raise ValueError("The conversation stage has no durable chat binding.")
+    layout = store.chat_stage_layout(
+        project_id=task.project_id,
+        kind=task.kind,
+        chat_id=chat_id,
+        stage_host="",
+        stage_root=task.stage_root,
+    )
+    stage = Path(task.stage_root)
+    return stage / "workspace" if layout == "split-v1" else stage
+
+
+def _local_chat_artifact_directory(
+    store: AppStore,
+    task: AgentTaskRecord,
+    scope_id: str,
+) -> Path:
+    """Reconstruct one local output boundary from durable stage-layout provenance."""
+
+    if not task.stage_root:
+        raise ValueError("The artifact's source stage is unavailable.")
+    if task.request.get("mode") not in {"discuss", "work"}:
+        raise ValueError("The artifact's source task has no recognized chat mode.")
+    return _local_chat_workspace_for_task(store, task) / "turns" / scope_id / "artifacts"
+
+
 def _prepare_local_artifact_directory(
     stage: Path,
     scope_id: str,
@@ -561,7 +670,7 @@ def stage_artifact_context(
         )
     elif origin.stage_root:
         data = read_local_regular_file(
-            Path(origin.stage_root) / "turns" / scope_id / "artifacts",
+            _local_chat_artifact_directory(execution.store, origin, scope_id),
             descriptor.name,
             max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
         )
@@ -675,7 +784,7 @@ def finalize_artifact_revision(
         source_stage.replace_artifact_bytes(source_scope_id, source.name, data)
     elif origin.stage_root:
         replace_local_regular_file(
-            Path(origin.stage_root) / "turns" / source_scope_id / "artifacts",
+            _local_chat_artifact_directory(execution.store, origin, source_scope_id),
             source.name,
             data,
         )
@@ -932,6 +1041,7 @@ def _validated_local_chat_resume_stage(
 
 def _chat_read_dirs(
     context: ChatContext,
+    local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
     service: ProjectService,
     execution_machine: str,
@@ -950,6 +1060,9 @@ def _chat_read_dirs(
                 read_dirs.append(state_root)
         return read_dirs
     read_dirs = [item for item in read_dirs if item.exists()]
+    if local_stage is None:
+        raise ValueError("The local chat input stage is unavailable.")
+    read_dirs.append(local_stage / "inputs")
     read_dirs.append(service.manifest.research_dir)
     return read_dirs
 
@@ -965,6 +1078,7 @@ def _project_write_scope(
     execution: AgentTaskExecution | None,
     capability: AgentCapability,
     stage_only: bool = False,
+    local_stage: Path | None = None,
 ) -> ProjectWriteScope:
     """Resolve one durable provider-neutral scope from project-owned authority."""
 
@@ -992,7 +1106,7 @@ def _project_write_scope(
     stage_root = (
         str(remote_stage.root)
         if remote_stage is not None and remote_stage.root is not None
-        else str(workspace)
+        else str(local_stage or workspace)
     )
     return resolve_project_write_scope(
         manifest=service.manifest,
@@ -1006,6 +1120,11 @@ def _project_write_scope(
         remote_stage=remote_stage,
         app_data_dir=data_dir,
         repository_inventory=service.repository_ownership_inventory(project_id=project_id),
+        additional_protected_write_paths=(
+            [str(local_stage / "inputs")]
+            if remote_stage is None and local_stage is not None and workspace == local_stage
+            else None
+        ),
     )
 
 

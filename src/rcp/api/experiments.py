@@ -33,7 +33,7 @@ from rcp.runs.experiment_admission import (
 from rcp.runs.experiment_loop import experiment_watcher_delivery_request
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest
-from rcp.storage import AppStore, EpisodeNotRunning, EpisodeRecord
+from rcp.storage import AgentTaskAdmissionConflict, AppStore, EpisodeNotRunning, EpisodeRecord
 from rcp.transport import StateUnavailable
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -146,9 +146,10 @@ def run_experiment(
             experiment_request,
             authorized_by=authorized_by,
         )
+    except AgentTaskAdmissionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
-        status = 409 if "already running" in str(exc) else 422
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return record.model_dump(mode="json")
 
 

@@ -319,31 +319,35 @@ def html_preview_document(data: bytes, *, result_view_gestures: bool = False) ->
     sanitizer = _ArtifactHTMLSanitizer()
     sanitizer.feed(source)
     sanitizer.close()
-    secret = secrets.token_urlsafe(24)
-    secret_json = json.dumps(secret)
-    bootstrap = f"""<script>(()=>{{
-const secret={secret_json};
-const send=window.parent.postMessage.bind(window.parent);
-const closest=Element.prototype.closest;
+    bootstrap = """<script>(()=>{
+const channel=new MessageChannel();
+const privatePort=channel.port1;
+const outwardPort=channel.port2;
+const portPost=Function.prototype.call.bind(MessagePort.prototype.postMessage);
+const portStart=Function.prototype.call.bind(MessagePort.prototype.start);
+const listen=Function.prototype.call.bind(EventTarget.prototype.addEventListener);
+const parentPost=window.parent.postMessage.bind(window.parent);
+const closest=Function.prototype.call.bind(Element.prototype.closest);
 const utf8=new TextEncoder();
-const bounded=(value,limit)=>{{
+const bounded=(value,limit)=>{
   const text=String(value||'').replace(/\\s+/g,' ').trim();
   if(utf8.encode(text).byteLength<=limit) return text;
   let result='';
-  for(const character of text){{
+  for(const character of text){
     if(utf8.encode(result+character).byteLength>limit) break;
     result+=character;
-  }}
+  }
   return result;
-}};
-window.addEventListener('click',(event)=>{{
+};
+const send=(value)=>portPost(privatePort,value);
+listen(window,'click',(event)=>{
   if(!event.isTrusted || !(event.target instanceof Element)) return;
-  const anchor=closest.call(event.target,'a[data-rcp-href]');
+  const anchor=closest(event.target,'a[data-rcp-href]');
   if(!anchor) return;
   event.preventDefault(); event.stopImmediatePropagation();
-  send({{kind:'rcp-reference',secret,url:anchor.getAttribute('data-rcp-href')}},'*');
-}},true);
-document.addEventListener('mouseup',()=>{{
+  send({kind:'rcp-reference',url:anchor.getAttribute('data-rcp-href')});
+},true);
+listen(document,'mouseup',()=>{
   const selection=document.getSelection();
   const text=bounded(selection?.toString(),4096);
   if(!text || !selection?.rangeCount) return;
@@ -351,31 +355,31 @@ document.addEventListener('mouseup',()=>{{
   const container=range.commonAncestorContainer.nodeType===Node.ELEMENT_NODE
     ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
   const surrounding=bounded(container?.textContent,6144);
-  send({{kind:'rcp-artifact-selection',secret,selection:{{kind:'text',text,surrounding_text:surrounding}}}},'*');
-}});
+  send({kind:'rcp-artifact-selection',selection:{kind:'text',text,surrounding_text:surrounding}});
+});
 let boxing=false,startX=0,startY=0,box=null;
-window.addEventListener('message',(event)=>{{
-  if(event.source!==window.parent || !event.data ||
-     event.data.kind!=='rcp-artifact-box-start' || event.data.secret!==secret) return;
+listen(privatePort,'message',(event)=>{
+  if(!event.data || event.data.kind!=='rcp-artifact-box-start') return;
   boxing=true;
   document.documentElement.style.cursor='crosshair';
-}});
-document.addEventListener('pointerdown',(event)=>{{
+});
+portStart(privatePort);
+listen(document,'pointerdown',(event)=>{
   if(!boxing || event.button!==0) return;
   event.preventDefault(); event.stopImmediatePropagation();
   startX=event.clientX; startY=event.clientY;
   box=document.createElement('div');
-  Object.assign(box.style,{{position:'fixed',zIndex:'2147483647',pointerEvents:'none',
-    border:'2px solid #bd5b36',background:'rgba(189,91,54,.12)',left:`${{startX}}px`,top:`${{startY}}px`}});
+  Object.assign(box.style,{position:'fixed',zIndex:'2147483647',pointerEvents:'none',
+    border:'2px solid #bd5b36',background:'rgba(189,91,54,.12)',left:`${startX}px`,top:`${startY}px`});
   document.documentElement.appendChild(box);
-}},true);
-document.addEventListener('pointermove',(event)=>{{
+},true);
+listen(document,'pointermove',(event)=>{
   if(!box) return;
   const left=Math.min(startX,event.clientX),top=Math.min(startY,event.clientY);
-  Object.assign(box.style,{{left:`${{left}}px`,top:`${{top}}px`,
-    width:`${{Math.abs(event.clientX-startX)}}px`,height:`${{Math.abs(event.clientY-startY)}}px`}});
-}},true);
-document.addEventListener('pointerup',(event)=>{{
+  Object.assign(box.style,{left:`${left}px`,top:`${top}px`,
+    width:`${Math.abs(event.clientX-startX)}px`,height:`${Math.abs(event.clientY-startY)}px`});
+},true);
+listen(document,'pointerup',(event)=>{
   if(!box) return;
   event.preventDefault(); event.stopImmediatePropagation();
   const left=Math.max(0,Math.min(startX,event.clientX));
@@ -388,22 +392,23 @@ document.addEventListener('pointerup',(event)=>{{
   const labels=[];
   const seen=new Set();
   const steps=5;
-  for(let xi=0;xi<=steps;xi++) for(let yi=0;yi<=steps;yi++){{
+  for(let xi=0;xi<=steps;xi++) for(let yi=0;yi<=steps;yi++){
     const x=left+(right-left)*xi/steps,y=top+(bottom-top)*yi/steps;
     let element=document.elementFromPoint(x,y);
-    for(let depth=0;element&&depth<3;depth++,element=element.parentElement){{
+    for(let depth=0;element&&depth<3;depth++,element=element.parentElement){
       const tag=element.tagName?.toLowerCase();
       if(tag==='html'||tag==='body'||tag==='head'||tag==='style'||tag==='script') continue;
       const value=bounded(element.getAttribute?.('aria-label') || element.textContent,512);
-      if(value){{if(!seen.has(value)){{seen.add(value);labels.push(value);}}break;}}
-    }}
-  }}
-  send({{kind:'rcp-artifact-selection',secret,selection:{{kind:'box',
-    rect:{{x:left/innerWidth,y:top/innerHeight,width:boxWidth/innerWidth,height:boxHeight/innerHeight}},
-    viewport:{{width:innerWidth,height:innerHeight}},labels:bounded(labels.join(' | '),4096)}}}},'*');
-}},true);
+      if(value){if(!seen.has(value)){seen.add(value);labels.push(value);}break;}
+    }
+  }
+  send({kind:'rcp-artifact-selection',selection:{kind:'box',
+    rect:{x:left/innerWidth,y:top/innerHeight,width:boxWidth/innerWidth,height:boxHeight/innerHeight},
+    viewport:{width:innerWidth,height:innerHeight},labels:bounded(labels.join(' | '),4096)}});
+},true);
+parentPost({kind:'rcp-artifact-channel',version:1},'*',[outwardPort]);
 document.currentScript?.remove();
-}})();</script>"""
+})();</script>"""
     # Chromium does not currently enforce ``navigate-to``. The opaque sandbox is
     # the boundary that prevents this document from navigating the RCP parent;
     # inline scripts may still navigate their own isolated child frame. Keep the
@@ -419,30 +424,47 @@ document.currentScript?.remove();
         + bootstrap
         + "".join(sanitizer.parts)
     )
-    wrapper_script = f"""<script>
-const artifact=document.getElementById('artifact');
-window.addEventListener('message',(event)=>{{
+    wrapper_script = """<script>(()=>{
+const artifact=()=>document.getElementById('artifact');
+const listen=Function.prototype.call.bind(EventTarget.prototype.addEventListener);
+const portPost=Function.prototype.call.bind(MessagePort.prototype.postMessage);
+const portStart=Function.prototype.call.bind(MessagePort.prototype.start);
+const parentPost=window.parent.postMessage.bind(window.parent);
+const openWindow=window.open.bind(window);
+const URLConstructor=URL;
+let artifactPort=null;
+listen(window,'message',(event)=>{
   const value=event.data;
-  if(event.source!==artifact.contentWindow || !value || value.secret!=={secret_json}) return;
-  if(value.kind==='rcp-artifact-selection' && value.selection && window.parent!==window){{
-    window.parent.postMessage({{type:'rcp-artifact-selection',version:1,selection:value.selection}},'*');
-    return;
-  }}
-  if(value.kind!=='rcp-reference' || typeof value.url!=='string') return;
-  try {{
-    const target=new URL(value.url);
-    if(target.protocol==='http:' || target.protocol==='https:')
-      window.open(target.href,'_blank','noopener,noreferrer');
-  }} catch {{}}
-}});
-window.addEventListener('message',(event)=>{{
+  const frame=artifact();
+  if(artifactPort || !frame || event.source!==frame.contentWindow || !value ||
+     value.kind!=='rcp-artifact-channel' || value.version!==1 ||
+     Object.keys(value).length!==2 || event.ports.length!==1) return;
+  artifactPort=event.ports[0];
+  listen(artifactPort,'message',(portEvent)=>{
+    const value=portEvent.data;
+    if(!value || typeof value!=='object') return;
+    if(value.kind==='rcp-artifact-selection' && value.selection && window.parent!==window){
+      parentPost({type:'rcp-artifact-selection',version:1,selection:value.selection},'*');
+      return;
+    }
+    if(value.kind!=='rcp-reference' || typeof value.url!=='string') return;
+    try {
+      const target=new URLConstructor(value.url);
+      if(target.protocol==='http:' || target.protocol==='https:')
+        openWindow(target.href,'_blank','noopener,noreferrer');
+    } catch {}
+  });
+  portStart(artifactPort);
+},true);
+listen(window,'message',(event)=>{
   if(event.source!==window.parent || !event.data ||
      event.data.type!=='rcp-artifact-box-start') return;
-  artifact.contentWindow?.postMessage({{kind:'rcp-artifact-box-start',secret:{secret_json}}},'*');
-}});
-    </script>"""
+  if(artifactPort) portPost(artifactPort,{kind:'rcp-artifact-box-start'});
+});
+})();</script>"""
+    result_view_script = ""
     if result_view_gestures:
-        wrapper_script += """<script>(()=>{
+        result_view_script = """<script>(()=>{
 const legacyArtifact=document.getElementById('artifact');
 const expectedKeys=['description','gesture','type','version'];
 const utf8=new TextEncoder();
@@ -469,8 +491,9 @@ window.addEventListener('message',(event)=>{
         '<!doctype html><meta charset="utf-8">'
         "<title>Artifact preview</title>"
         "<style>html,body,iframe{border:0;margin:0;width:100%;height:100%;display:block}</style>"
-        f'<iframe id="artifact" sandbox="allow-scripts" srcdoc="{html.escape(artifact, quote=True)}">'
-        "</iframe>" + wrapper_script
+        + wrapper_script
+        + f'<iframe id="artifact" sandbox="allow-scripts" srcdoc="{html.escape(artifact, quote=True)}">'
+        "</iframe>" + result_view_script
     )
     wrapper_csp = (
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "

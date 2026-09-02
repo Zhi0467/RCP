@@ -10,24 +10,26 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const {
-  ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
-  OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
-  cacheProjectTabState,
   cachedSnapshotCanReplace,
   canonicalRevisionNeedsReload,
-  inactiveProjectTabState,
   humanSyncSuccessNotice,
   latestSnapshotRequestCanApply,
   loadCanonicalRevision,
   persistProjectHumanDraft,
   proposalChoicesClearedNotice,
-  projectIdsForCacheHeartbeat,
   projectIsStillReadable,
-  projectTabStateForOpen,
   reconcileInactiveProjectTabState,
+} = await server.ssrLoadModule("/src/App.tsx");
+const {
+  ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
+  OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
+  cacheProjectTabState,
+  inactiveProjectTabState,
+  projectIdsForCacheHeartbeat,
+  projectTabStateForOpen,
   singleFlightProjectCacheHeartbeat,
   startProjectCachePolling,
-} = await server.ssrLoadModule("/src/App.tsx");
+} = await server.ssrLoadModule("/src/hooks/useProjectTabs.ts");
 
 after(() => server.close());
 
@@ -278,6 +280,7 @@ test("inactive advancement rebases only snapshot and draft while retaining the t
       pending_proposal_ids: [],
       decisions_awaiting_choice_ids: [],
       open_blocker_ids: [],
+      proposal_actions: {},
     },
     graph: { ...graph, revision: 5, nodes: { [node.id]: movedNode } },
   };
@@ -389,6 +392,7 @@ test("authoritative inactive snapshots prune resolved choices and clear missing 
       pending_proposal_ids: [pending.id],
       decisions_awaiting_choice_ids: [],
       open_blocker_ids: [],
+      proposal_actions: { [pending.id]: [{ text: "Review the pending Proposal." }] },
     },
     graph: {
       ...oldGraph,

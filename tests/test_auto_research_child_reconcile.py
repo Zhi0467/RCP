@@ -351,6 +351,51 @@ def test_transient_recovery_failure_keeps_admission_for_exact_later_retry(tmp_pa
     wait_for_task(store, child_id)
 
 
+def test_recovery_cancels_an_admission_with_no_resolved_provider_or_machine(tmp_path) -> None:
+    store, episode, root = _setup(tmp_path)
+    key = "permanently-unresolved-worker"
+    child_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"rcp:auto_research:{episode.episode_id}:spawn:{key}",
+        )
+    )
+    instruction = "Continue only through a resolved ordinary Work profile."
+    _admit_command(
+        store,
+        episode,
+        root,
+        command_id="unresolved-worker-command",
+        key=key,
+        child_id=child_id,
+        child_kind="work",
+        arguments={"seat_node_id": "blk/runtime", "instruction_file": "worker.md"},
+        file_kind="instruction",
+        filename="worker.md",
+        content=instruction,
+    )
+
+    def unresolved_request(*args, **kwargs) -> RunRequest:
+        return _worker_request(*args, **kwargs).model_copy(
+            update={"provider": None, "run_on": None}
+        )
+
+    result = reconcile_pending_auto_research_child_admissions(
+        store,
+        BackgroundAgentTasks(store, _successful_stream),
+        _UnusedExperimentCoordinator(),  # type: ignore[arg-type]
+        worker_request_factory=unresolved_request,
+        seat_node_type=lambda _project_id, _episode_id, _node_id: "blocker",
+    )
+
+    admission = store.auto_research_child_admission(child_id)
+    command = store.agent_command("unresolved-worker-command")
+    assert result.cancelled == 1 and result.deferred == 0
+    assert admission is not None and admission.state == "cancelled"
+    assert command is not None and command.status == "invalid"
+    assert store.auto_research_finish_blockers(episode.episode_id) == []
+
+
 def test_restart_recovers_completed_unavailable_spawn_owner_without_rewriting_it(
     tmp_path,
 ) -> None:

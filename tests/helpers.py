@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from pydantic import TypeAdapter
 
@@ -22,6 +23,7 @@ _TASK_POLL_INTERVAL = 0.01
 
 _GRAPH_OPERATION_ADAPTER = TypeAdapter(GraphOperation)
 _PROPOSAL_OPERATION_ADAPTER = TypeAdapter(ProposalOperation)
+_T = TypeVar("_T")
 
 _RCP_OWNED_ITEM_FIELDS = {
     "create_nodes": ("nodes", {"standing", "created_rev", "updated_rev"}),
@@ -102,6 +104,27 @@ def fabricated_authorizer(display_name: str = "Campaign owner") -> AuthorizedHum
     )
 
 
+def wait_until(
+    probe: Callable[[], _T | None],
+    *,
+    timeout: float = 5.0,
+    interval: float = _TASK_POLL_INTERVAL,
+    detail: str | Callable[[], str] = "condition was not met",
+    allow_falsy: bool = False,
+) -> _T:
+    """Return the first settled result; opt in when false or zero means settled."""
+
+    deadline = time.monotonic() + timeout
+    while True:
+        result = probe()
+        if result is not None and (allow_falsy or bool(result)):
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(detail() if callable(detail) else detail)
+        time.sleep(min(interval, remaining))
+
+
 def wait_for_task(
     app_or_store: Any,
     operation_id: str,
@@ -112,19 +135,25 @@ def wait_for_task(
     """Poll the store until the task leaves every active status."""
 
     store = _store_of(app_or_store)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+
+    def settled_task() -> AgentTaskRecord | None:
         record = store.agent_task(operation_id)
         assert record is not None, f"task {operation_id} was never recorded"
         if record.status not in ACTIVE_AGENT_TASK_STATUSES:
-            if expect is not None:
-                assert record.status == expect, (
-                    f"task {operation_id} settled as {record.status!r}, expected {expect!r}: "
-                    f"{record.error or record.status_message}"
-                )
             return record
-        time.sleep(_TASK_POLL_INTERVAL)
-    raise AssertionError(f"task {operation_id} did not settle within {timeout}s")
+        return None
+
+    record = wait_until(
+        settled_task,
+        timeout=timeout,
+        detail=f"task {operation_id} did not settle within {timeout}s",
+    )
+    if expect is not None:
+        assert record.status == expect, (
+            f"task {operation_id} settled as {record.status!r}, expected {expect!r}: "
+            f"{record.error or record.status_message}"
+        )
+    return record
 
 
 def wait_for_task_response(
@@ -137,20 +166,25 @@ def wait_for_task_response(
 ) -> dict[str, Any]:
     """Poll the task route until the task leaves every active status."""
 
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    def settled_task() -> dict[str, Any] | None:
         response = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
         assert response.status_code == 200, response.text
         task = response.json()
         if task["status"] not in ACTIVE_AGENT_TASK_STATUSES:
-            if expect is not None:
-                assert task["status"] == expect, (
-                    f"task {operation_id} settled as {task['status']!r}, expected {expect!r}: "
-                    f"{task.get('error') or task.get('status_message')}"
-                )
             return task
-        time.sleep(_TASK_POLL_INTERVAL)
-    raise AssertionError(f"task {operation_id} did not settle within {timeout}s")
+        return None
+
+    task = wait_until(
+        settled_task,
+        timeout=timeout,
+        detail=f"task {operation_id} did not settle within {timeout}s",
+    )
+    if expect is not None:
+        assert task["status"] == expect, (
+            f"task {operation_id} settled as {task['status']!r}, expected {expect!r}: "
+            f"{task.get('error') or task.get('status_message')}"
+        )
+    return task
 
 
 def append_fixture_patch(service: Any, patch: Patch, **kwargs: Any):

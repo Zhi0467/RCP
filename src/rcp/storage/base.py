@@ -5,7 +5,7 @@ import os
 import sqlite3
 import stat
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,73 +15,14 @@ from rcp.limits import BACKUP_SQLITE_BUSY_SLEEP_SECONDS, BACKUP_SQLITE_PAGES_PER
 from rcp.providers import PROVIDER_IDS, legacy_runtime_id
 from rcp.storage.auto_research import migrate_legacy_auto_research
 from rcp.storage.episodes import migrate_legacy_episodes
-from rcp.storage.models import (  # noqa: F401
-    _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
-    _EXPERIMENT_EPISODE_PINNED_FIELDS,
-    _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC,
-    _PROJECT_ID_TABLES,
-    ACTIVE_AGENT_TASK_STATUSES,
-    SPACE_NAME_MAX_LENGTH,
-    AgentCommandInvocationRecord,
-    AgentTaskContractRecord,
-    AgentTaskEventRecord,
-    AgentTaskKind,
-    AgentTaskReceiptRecord,
-    AgentTaskReceiptTier,
-    AgentTaskRecord,
-    AgentTaskStatus,
-    AgentUsageCell,
-    AgentUsageCountReason,
-    AgentUsageMetric,
-    AgentUsageRecord,
-    AgentUsageSnapshot,
-    ChatSessionContextRecord,
-    ExperimentEpisodeRecord,
-    ExperimentLoopRuntime,
-    ExperimentWatcherResourceRecord,
-    GraphCondition,
-    GraphWatcherRecord,
-    NodeStatusGraphCondition,
-    ProjectRecord,
-    ProjectStageRecord,
-    ProjectTransferActivationReceipt,
-    ProjectTransferImportRecord,
-    ProjectTransferRestoreReentryReceipt,
-    ProposalResolvedGraphCondition,
-    ProviderSkillInventoryRecord,
-    ResultViewConflict,
-    ResultViewRecord,
+from rcp.storage.models import (
     SpaceKind,
-    SpaceUserKind,
     SpaceUserRecord,
-    StoredWatcherRecord,
-    TeamAuthenticationError,
-    TeamInvitationRecord,
-    WatcherClaimConflict,
-    WatcherContinuation,
-    WatcherDeliveryRecord,
-    WatcherRecord,
-    WatcherStatus,
-    WatcherStopRequest,
     _canonical_space_id,
-    _canonical_uuid4,
     _discard_failed_team_initialization,
-    _experiment_pinned_value,
     _new_enrollment_code,
-    _new_member_token,
-    _new_session_token,
-    _optional_str,
-    _parse_enrollment_code,
-    _plain_html_name,
-    _required_timestamp,
-    _result_view_html_bytes,
-    _result_view_is_visible,
-    _result_view_reference_time,
-    _sha256,
     _stored_space_kind,
-    _validated_result_view_html,
     normalize_space_name,
-    watcher_next_check_at,
 )
 
 if TYPE_CHECKING:
@@ -1313,7 +1254,21 @@ class AppStoreBase:
                 );
                 """
             )
-            self._migrate_episode_lineage(connection)
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS storage_schema_migrations (
+                    migration_version INTEGER PRIMARY KEY CHECK(migration_version >= 1),
+                    migration_name TEXT NOT NULL UNIQUE,
+                    completed_at TEXT NOT NULL
+                )
+                """
+            )
+            self._run_storage_schema_migration(
+                connection,
+                version=1,
+                name="episode_lineage_v1",
+                migration=self._migrate_episode_lineage,
+            )
             # Legacy graph_runs tables may still expose campaign_id (or no
             # lineage column at all) until the migration above.  Build the
             # branch-merge index only after episode_id is guaranteed to exist.
@@ -1605,8 +1560,24 @@ class AppStoreBase:
                 "CREATE INDEX IF NOT EXISTS watchers_graph_conditions "
                 "ON watchers(project_id, status, notified, graph_condition_json)"
             )
-            migrate_legacy_episodes(connection)
-            self._migrate_experiment_episode_state(connection)
+            self._run_storage_schema_migration(
+                connection,
+                version=2,
+                name="legacy_episode_ledger_v1",
+                migration=migrate_legacy_episodes,
+            )
+            self._run_storage_schema_migration(
+                connection,
+                version=3,
+                name="experiment_episode_state_v1",
+                migration=self._migrate_experiment_episode_state,
+            )
+            self._run_storage_schema_migration(
+                connection,
+                version=4,
+                name="agent_usage_counted_dedupe_v1",
+                migration=self._migrate_agent_usage_counted_dedupe,
+            )
             if has_legacy_campaigns:
                 # The generic parent/report copy must finish before the source
                 # tables move under private archive names.
@@ -1639,6 +1610,63 @@ class AppStoreBase:
                     (code_id, code_hash, self.now()),
                 )
         return bootstrap_code
+
+    def _run_storage_schema_migration(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        version: int,
+        name: str,
+        migration: Callable[[sqlite3.Connection], None],
+    ) -> None:
+        """Run one expensive one-way migration once inside initialization."""
+
+        row = connection.execute(
+            """
+            SELECT migration_version, migration_name
+            FROM storage_schema_migrations
+            WHERE migration_version = ? OR migration_name = ?
+            """,
+            (version, name),
+        ).fetchone()
+        if row is not None:
+            if row["migration_version"] != version or row["migration_name"] != name:
+                raise RuntimeError("RCP storage migration identity is inconsistent.")
+            return
+        migration(connection)
+        connection.execute(
+            """
+            INSERT INTO storage_schema_migrations(
+                migration_version, migration_name, completed_at
+            ) VALUES (?, ?, ?)
+            """,
+            (version, name, self.now()),
+        )
+
+    @staticmethod
+    def _migrate_agent_usage_counted_dedupe(connection: sqlite3.Connection) -> None:
+        """Repair historical duplicates once, then enforce one counted usage report."""
+
+        connection.execute(
+            """
+            UPDATE agent_usage
+            SET counted = 0, count_reason = 'duplicate'
+            WHERE counted = 1
+              AND rowid NOT IN (
+                SELECT MIN(rowid)
+                FROM agent_usage
+                WHERE counted = 1
+                GROUP BY operation_id, provider_profile, dedupe_key
+              )
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS agent_usage_counted_dedupe
+            ON agent_usage(operation_id, provider_profile, dedupe_key)
+            WHERE counted = 1
+            """
+        )
 
     @classmethod
     def _migrate_episode_lineage(cls, connection: sqlite3.Connection) -> None:

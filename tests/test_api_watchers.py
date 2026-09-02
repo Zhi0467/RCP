@@ -59,9 +59,12 @@ def test_degraded_watcher_can_be_checked_now_through_the_api(manifest, tmp_path:
         )
 
     app.state.watcher_poller.check_runner = recovered
-    response = TestClient(app).post(
-        f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/check"
-    )
+    client = TestClient(app)
+    listed = client.get(f"/api/projects/{project_id}/watchers")
+    assert listed.status_code == 200
+    assert listed.json()[0]["can_check_now"] is True
+    assert listed.json()[0]["delivery_label"] == "Not delivered"
+    response = client.post(f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/check")
 
     assert response.status_code == 200
     assert calls == [
@@ -74,6 +77,8 @@ def test_degraded_watcher_can_be_checked_now_through_the_api(manifest, tmp_path:
     assert response.json()["status"] == "active"
     assert response.json()["consecutive_error_count"] == 0
     assert response.json()["last_error"] is None
+    assert response.json()["can_check_now"] is False
+    assert response.json()["delivery_label"] == "Not delivered"
 
 
 def test_check_watcher_now_rejects_missing_graph_and_ineligible_records(
@@ -158,6 +163,7 @@ def test_project_watchers_lists_and_stops_an_ordinary_watcher(manifest, tmp_path
     assert len(listed_payload) == 1
     assert listed_payload[0]["watcher_id"] == watcher.watcher_id
     assert listed_payload[0]["status"] == "active"
+    assert listed_payload[0]["can_check_now"] is False
 
     stopped = client.post(f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/stop")
     assert stopped.status_code == 200

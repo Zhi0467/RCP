@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import rcp.storage.base as storage_base_module
 from rcp.api import create_app
 from rcp.config import load_manifest
 from rcp.history import HistoryManager
@@ -26,6 +27,51 @@ from .server_upgrade_harness import (
 
 def test_immutable_server_boundary_registry_is_complete() -> None:
     verify_fixture_registry()
+
+
+def test_pre_ledger_fixture_records_migrations_and_never_rescans(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixture = next(
+        path
+        for path in immutable_fixture_directories()
+        if path.name == "pre-storage-migration-ledger-v12-c3191bf"
+    )
+    copied = tmp_path / "fixture"
+    shutil.copytree(fixture, copied)
+    database = _materialize_database(copied / "data")
+
+    AppStore(database)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT migration_version FROM storage_schema_migrations ORDER BY migration_version"
+        ).fetchall() == [(1,), (2,), (3,), (4,)]
+
+    def unexpected_migration(*_args) -> None:
+        raise AssertionError("completed legacy migration was rescanned")
+
+    monkeypatch.setattr(
+        AppStore,
+        "_migrate_episode_lineage",
+        classmethod(unexpected_migration),
+    )
+    monkeypatch.setattr(
+        storage_base_module,
+        "migrate_legacy_episodes",
+        unexpected_migration,
+    )
+    monkeypatch.setattr(
+        AppStore,
+        "_migrate_experiment_episode_state",
+        staticmethod(unexpected_migration),
+    )
+    monkeypatch.setattr(
+        AppStore,
+        "_migrate_agent_usage_counted_dedupe",
+        staticmethod(unexpected_migration),
+    )
+
+    AppStore(database)
 
 
 @pytest.mark.parametrize("fixture", immutable_fixture_directories(), ids=lambda path: path.name)

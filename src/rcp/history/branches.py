@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING
 from rcp.core.materialize import (
     AcceptedPatchObserver,
     MaterializationResult,
-    apply_valid_patch,
     materialize_patches,
+    materialize_patches_from_state,
 )
 from rcp.core.models import (
     AuthorizedHuman,
@@ -37,7 +37,7 @@ from rcp.core.transitions import (
     accepted_transition_head_chain_failure,
     project_transition_projection,
 )
-from rcp.core.validation import ValidationReport, validate_patch
+from rcp.core.validation import ValidationReport
 from rcp.history.delta import RevisionSummary, render_revision_summary
 from rcp.transport import BatchPublishFailed, StateUnavailable
 
@@ -1121,7 +1121,6 @@ def read_branch_snapshots(
             accepted_patch_observer=remember_main_state,
         )
         parent.require_writable(main.state)
-        parent.head_ref(main)  # Validate the exact main transition chain once.
         main_heads = _main_heads_by_revision(main)
         main_states = _main_states_by_revision(parent, main, accepted_main_states)
         main_receipts = _main_merge_receipts(main)
@@ -1295,78 +1294,14 @@ def _replay_branch_tail(
     base_state: GraphState,
     patches: list[Patch],
 ) -> MaterializationResult:
-    state = base_state
-    reports: dict[int, ValidationReport] = {}
-    for patch in patches:
-        if patch.admission == "rejected":
-            report = ValidationReport()
-            report.messages.extend(patch.admission_messages)
-            reports[patch.revision] = report
-            state = state.model_copy(
-                update={
-                    "revision": patch.revision,
-                    "validation_messages": [
-                        *state.validation_messages,
-                        *patch.admission_messages,
-                    ],
-                }
-            )
-            continue
-        report = validate_patch(
-            state,
-            patch,
-            state.project_truth_scope,
-            repository_aliases=sorted(branch.manifest.repository_map),
-            machine_aliases=sorted(branch.manifest.machine_map),
-            default_run_truth_scope=list(branch.manifest.agent.default_run_truth_scope),
-            state_repository=branch.manifest.state.repository,
-            mode="replay",
-        )
-        report.messages.extend(patch.admission_messages)
-        reports[patch.revision] = report
-        if report.rejected:
-            failure = next(item for item in report.messages if item.level == "reject")
-            state = state.model_copy(
-                update={
-                    "replay_status": "degraded",
-                    "replay_failure": ReplayFailure(
-                        revision=patch.revision,
-                        created_at=patch.created_at,
-                        code=failure.code,
-                        message=failure.message,
-                    ),
-                }
-            )
-            break
-        try:
-            state = apply_valid_patch(state, patch)
-        except (AttributeError, KeyError, TypeError, ValueError) as exc:
-            report.reject(
-                "malformed-operation",
-                f"Patch operations could not be applied atomically: {exc}.",
-                patch.revision,
-            )
-            state = state.model_copy(
-                update={
-                    "replay_status": "degraded",
-                    "replay_failure": ReplayFailure(
-                        revision=patch.revision,
-                        created_at=patch.created_at,
-                        code="malformed-operation",
-                        message=f"Patch operations could not be applied atomically: {exc}.",
-                    ),
-                }
-            )
-            break
-        state = state.model_copy(
-            update={
-                "validation_messages": [
-                    *state.validation_messages,
-                    *patch.admission_messages,
-                ]
-            }
-        )
-    return MaterializationResult(state=state, reports=reports, patches=patches)
+    return materialize_patches_from_state(
+        patches,
+        initial_state=base_state,
+        repository_aliases=sorted(branch.manifest.repository_map),
+        machine_aliases=sorted(branch.manifest.machine_map),
+        default_run_truth_scope=list(branch.manifest.agent.default_run_truth_scope),
+        state_repository=branch.manifest.state.repository,
+    )
 
 
 def _main_merge_receipts(

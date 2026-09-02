@@ -43,6 +43,7 @@ from rcp.runs.auto_research import (
 )
 from rcp.runs.auto_research_admission import (
     AutoResearchChildResumeResult,
+    auto_research_admission_exhausted,
     pause_auto_research_child_work,
     start_auto_research_child_work,
     stop_auto_research_child_work,
@@ -59,10 +60,13 @@ from rcp.storage import (
     AutoResearchExperimentAllowanceReached,
     AutoResearchLifecycleNoticeRecord,
     AutoResearchStateRecord,
+    EpisodeNotRunning,
     EpisodeRecord,
     GraphWatcherRecord,
     NodeStatusGraphCondition,
     ProjectRecord,
+    WatcherContinuation,
+    WatcherRecord,
 )
 from rcp.storage.auto_research_children import auto_research_inbox_projection
 
@@ -344,6 +348,7 @@ def _create_worker_recovery(
     parent: AgentTaskRecord,
     *,
     operation_id: str = "worker-recovery",
+    status: str = "paused",
 ) -> AgentTaskRecord:
     request = RunRequest.model_validate(parent.request).model_copy(
         update={"session_id": parent.native_session_id}
@@ -369,7 +374,10 @@ def _create_worker_recovery(
         dispatch_authority=parent.dispatch_authority,
     )
     _, stored = store.create_auto_research_child_work_recovery("worker", task)
-    store.pause_agent_task(stored.operation_id, detail="latest paused attempt")
+    if status == "paused":
+        store.pause_agent_task(stored.operation_id, detail="latest paused attempt")
+    elif status != "queued":
+        raise AssertionError(f"unsupported recovery status: {status}")
     latest = store.agent_task(stored.operation_id)
     assert latest is not None
     return latest
@@ -716,6 +724,183 @@ def test_worker_stop_recovers_the_split_after_durable_route_stop(
     assert replayed.status == "pausing"
     assert settled.status == "paused"
     assert signals == [worker.operation_id, worker.operation_id]
+
+
+def test_worker_stop_rereads_the_route_before_pausing_its_current_attempt(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store, auto_research, root = _setup_auto_research(tmp_path)
+    stage = tmp_path / "worker-stage"
+    stage.mkdir()
+    worker = _create_routed_worker(
+        store,
+        auto_research,
+        root,
+        status="paused",
+        native_session_id="worker-session",
+        stage_root=str(stage),
+    )
+    background = BackgroundAgentTasks(store, _successful_stream)
+    request_stop = store.request_auto_research_child_work_stop
+    raced_attempt: AgentTaskRecord | None = None
+
+    def stop_after_route_advances(worker_id: str):
+        nonlocal raced_attempt
+        raced_attempt = _create_worker_recovery(
+            store,
+            auto_research,
+            worker,
+            operation_id="worker-raced-recovery",
+            status="queued",
+        )
+        return request_stop(worker_id)
+
+    monkeypatch.setattr(store, "request_auto_research_child_work_stop", stop_after_route_advances)
+
+    stopped_attempt = stop_auto_research_child_work(
+        background,
+        auto_research.episode_id,
+        worker.operation_id,
+    )
+
+    assert raced_attempt is not None
+    assert stopped_attempt.operation_id == raced_attempt.operation_id
+    assert stopped_attempt.status == "pausing"
+    assert store.agent_task(worker.operation_id).status == "paused"  # type: ignore[union-attr]
+
+
+def test_worker_recovery_cannot_advance_a_durably_stopped_route(tmp_path) -> None:
+    store, auto_research, root = _setup_auto_research(tmp_path)
+    stage = tmp_path / "worker-stage"
+    stage.mkdir()
+    worker = _create_routed_worker(
+        store,
+        auto_research,
+        root,
+        status="paused",
+        native_session_id="worker-session",
+        stage_root=str(stage),
+    )
+    before = store.auto_research_child_work(worker.operation_id)
+    assert before is not None
+    store.request_auto_research_child_work_stop(worker.operation_id)
+
+    with pytest.raises(EpisodeNotRunning, match="child Work route is stopping"):
+        _create_worker_recovery(
+            store,
+            auto_research,
+            worker,
+            operation_id="recovery-after-stop",
+            status="queued",
+        )
+
+    stopped = store.auto_research_child_work(worker.operation_id)
+    assert stopped is not None
+    assert stopped.current_operation_id == before.current_operation_id
+    assert stopped.stop_requested_at is not None
+    assert store.agent_task("recovery-after-stop") is None
+
+
+def test_auto_research_stop_fences_child_work_watchers_and_late_wakes(tmp_path) -> None:
+    store, auto_research, root = _setup_auto_research(tmp_path)
+    worker = _create_routed_worker(store, auto_research, root, status="succeeded")
+    continuation_values = {
+        name: worker.request[name]
+        for name in WatcherContinuation.model_fields
+        if name in worker.request
+    }
+    for list_field in ("workflow_ids", "skill_ids", "resolved_skill_packages"):
+        if continuation_values.get(list_field) is None:
+            continuation_values[list_field] = []
+    wake_watcher_id = "child-work-completion"
+    wake_watcher = WatcherRecord(
+        watcher_id=wake_watcher_id,
+        project_id=auto_research.project_id,
+        origin_operation_id=worker.operation_id,
+        origin_task_kind="node_chat",
+        chat_id=str(worker.request["chat_id"]),
+        node_id=str(worker.request["node_id"]),
+        episode_id=auto_research.episode_id,
+        graph_target=auto_research.graph_target,
+        check_command="true",
+        log_path="/tmp/child-work-completion.log",
+        cwd="/tmp",
+        continuation=WatcherContinuation.model_validate(continuation_values),
+        status="completed",
+        notified=False,
+        created_at=store.now(),
+        completed_at=store.now(),
+    )
+    lineage_watcher_id = "legacy-child-work-lineage"
+    lineage_watcher = wake_watcher.model_copy(
+        update={
+            "watcher_id": lineage_watcher_id,
+            "status": "active",
+            "completed_at": None,
+        }
+    )
+    store.create_watchers([wake_watcher, lineage_watcher])
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE watchers SET episode_id = NULL WHERE watcher_id = ?",
+            (lineage_watcher_id,),
+        )
+    store.request_episode_stop(auto_research.episode_id)
+    wake_request = dict(worker.request)
+    wake_request.update(trigger="watcher", message=None, watcher_ids=[wake_watcher_id])
+    now = store.now()
+    wake = AgentTaskRecord(
+        operation_id="late-child-work-wake",
+        project_id=auto_research.project_id,
+        episode_id=auto_research.episode_id,
+        graph_target=auto_research.graph_target,
+        kind="node_chat",
+        status="queued",
+        request=wake_request,
+        created_at=now,
+        updated_at=now,
+        status_message="late watcher wake",
+        authorized_by=auto_research.authorized_by,
+        dispatch_authority=worker.dispatch_authority,
+    )
+
+    assert store.create_watcher_notification_task(wake, [wake_watcher_id]) is None
+    assert store.agent_task(wake.operation_id) is None
+    assert store.watcher(wake_watcher_id).notified is False  # type: ignore[union-attr]
+    assert store.settle_auto_research_watchers(auto_research.episode_id) == 2
+    for watcher_id in (wake_watcher_id, lineage_watcher_id):
+        stopped_watcher = store.watcher(watcher_id)
+        assert stopped_watcher is not None
+        assert stopped_watcher.status == "stopped"
+        assert stopped_watcher.notified is True
+
+
+def test_exhaustion_hook_failure_is_recorded_without_reopening_the_episode(tmp_path) -> None:
+    store, auto_research, root = _setup_auto_research(tmp_path)
+
+    def fail_wrapup(_episode: EpisodeRecord) -> None:
+        raise RuntimeError("wrap-up unavailable")
+
+    background = BackgroundAgentTasks(
+        store,
+        _successful_stream,
+        on_auto_research_admission_exhausted=fail_wrapup,
+    )
+
+    auto_research_admission_exhausted(background, auto_research)
+
+    episode = store.episode(auto_research.episode_id)
+    assert episode is not None
+    assert episode.ending == "exhausted"
+    receipts = store.agent_task_receipts(root.operation_id)
+    failure = next(
+        receipt
+        for receipt in receipts
+        if receipt.category == "auto_research_admission_exhausted_callback_failed"
+    )
+    assert failure.tier == "diagnostic"
+    assert failure.payload == {"exception_type": "RuntimeError"}
 
 
 def test_resume_uses_the_latest_leaf_exact_session_without_spending_another_unit(
@@ -1167,7 +1352,14 @@ def test_watch_graph_uses_live_state_and_the_explicit_execution_host(tmp_path) -
     context = _context(store, auto_research, root)
     planned_watcher_id = str(uuid.uuid4())
 
-    assert effects.seat_node_type(auto_research.project_id, "blk/check") == "blocker"
+    assert (
+        effects.seat_node_type(
+            auto_research.project_id,
+            auto_research.episode_id,
+            "blk/check",
+        )
+        == "blocker"
+    )
     outcome = effects.watch_graph(
         context,
         WatchGraphArguments(

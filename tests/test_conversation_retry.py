@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent
+from rcp.runs.chat import _local_chat_artifact_directory
 from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
@@ -74,11 +78,14 @@ def _retry_task(
     body: dict[str, object],
     *,
     retry_body: dict[str, object] | None = None,
+    after_failure: Callable[[dict[str, object]], None] | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     started = client.post(f"/api/projects/{project_id}/tasks/{kind}", json=body)
     assert started.status_code == 202
     failed = wait_for_task_response(client, project_id, started.json()["operation_id"])
     assert failed["status"] == "failed"
+    if after_failure is not None:
+        after_failure(failed)
     retried_response = client.post(
         f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry",
         json=retry_body or {},
@@ -177,7 +184,10 @@ def test_same_provider_discuss_retry_receives_exact_failure(manifest, tmp_path) 
     _assert_retry_receipt(app, str(retried["operation_id"]))
 
 
-def test_same_provider_work_retry_ignores_unchanged_predecessor_outputs(manifest, tmp_path) -> None:
+@pytest.mark.parametrize("legacy_layout", [False, True])
+def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_outputs(
+    manifest, tmp_path, legacy_layout: bool
+) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -219,6 +229,19 @@ def test_same_provider_work_retry_ignores_unchanged_predecessor_outputs(manifest
     app.state.background_tasks.stream = stream
     client = TestClient(app)
     project_id = app.state.default_project_id
+
+    def make_legacy(_failed: dict[str, object]) -> None:
+        if not legacy_layout:
+            return
+        with store.connection() as connection:
+            connection.execute(
+                "DELETE FROM graph_run_receipts WHERE category = 'chat_stage_layout'"
+            )
+            connection.execute(
+                "UPDATE graph_runs SET write_scope_fingerprint = NULL WHERE operation_id = ?",
+                (str(_failed["operation_id"]),),
+            )
+
     _, retried = _retry_task(
         client,
         project_id,
@@ -229,14 +252,24 @@ def test_same_provider_work_retry_ignores_unchanged_predecessor_outputs(manifest
             "run_truth_scope": ["repo-a"],
             "mode": "work",
         },
+        after_failure=make_legacy,
     )
 
     original_contract = _assert_retry_contract(launcher, expected_failure=failure)
     assert "Operational authority" in original_contract
-    assert launcher.workspaces[0] == launcher.workspaces[1]
+    if legacy_layout:
+        assert launcher.workspaces[1] == launcher.workspaces[0].parent
+    else:
+        assert launcher.workspaces[0] == launcher.workspaces[1]
     workspace = launcher.workspaces[1]
-    assert (workspace / "patch.json").read_text(encoding="utf-8") == agent_patch_json(stale_patch)
-    assert (workspace / "watch.json").read_text(encoding="utf-8") == stale_watch
+    retained_workspace = launcher.workspaces[0] if legacy_layout else workspace
+    assert (retained_workspace / "patch.json").read_text(encoding="utf-8") == agent_patch_json(
+        stale_patch
+    )
+    assert (retained_workspace / "watch.json").read_text(encoding="utf-8") == stale_watch
+    if legacy_layout:
+        assert not (workspace / "patch.json").exists()
+        assert not (workspace / "watch.json").exists()
     assert "rq/stale-retry-deliverable" not in service.history.state().nodes
     assert retried["result"]["graph_update"]["status"] == "none"
     assert store.watchers(project_id) == []
@@ -245,11 +278,47 @@ def test_same_provider_work_retry_ignores_unchanged_predecessor_outputs(manifest
         for item in store.agent_task_receipts(str(retried["operation_id"]))
         if item.category == "retry_deliverable_comparison"
     ]
-    assert {(item["filename"], item["unchanged"], item["consumed"]) for item in comparisons} == {
-        ("patch.json", True, False),
-        ("watch.json", True, False),
-    }
+    assert {
+        (
+            item["filename"],
+            item["predecessor_sha256"],
+            item["retry_sha256"],
+            item["unchanged"],
+            item["consumed"],
+        )
+        for item in comparisons
+    } == (
+        {
+            ("patch.json", None, None, False, False),
+            ("watch.json", None, None, False, False),
+        }
+        if legacy_layout
+        else {
+            (
+                "patch.json",
+                hashlib.sha256(agent_patch_json(stale_patch).encode()).hexdigest(),
+                hashlib.sha256(agent_patch_json(stale_patch).encode()).hexdigest(),
+                True,
+                False,
+            ),
+            (
+                "watch.json",
+                hashlib.sha256(stale_watch.encode()).hexdigest(),
+                hashlib.sha256(stale_watch.encode()).hexdigest(),
+                True,
+                False,
+            ),
+        }
+    )
     _assert_retry_receipt(app, str(retried["operation_id"]))
+    if legacy_layout:
+        launch = next(
+            receipt
+            for receipt in store.agent_task_receipts(str(retried["operation_id"]))
+            if receipt.category == "agent_launch"
+        )
+        assert launch.payload["canonical_write_roots"][0] == str(workspace)
+        assert str(workspace / "inputs") in launch.payload["protected_write_paths"]
 
 
 def test_same_provider_work_retry_applies_semantically_valid_patch_to_live_state(
@@ -307,13 +376,29 @@ def test_same_provider_work_retry_applies_semantically_valid_patch_to_live_state
     assert "rq/retry-applied-live" in service.history.state().nodes
 
 
-def test_cross_provider_work_retry_uses_a_fresh_retry_contract(manifest, tmp_path) -> None:
+@pytest.mark.parametrize("legacy_layout", [False, True])
+def test_cross_provider_work_retry_uses_a_fresh_retry_contract(
+    manifest, tmp_path, legacy_layout: bool
+) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     failure = "The first provider disconnected after a submission may have completed."
     objective = "Check whether the bounded run landed before taking any further action."
-    launcher = _FailThenSucceedLauncher(failure)
+
+    class HandoffArtifactLauncher(_FailThenSucceedLauncher):
+        async def stream(self, _provider, prompt, **kwargs):
+            if not self.workspaces:
+                workspace = Path(kwargs["cwd"])
+                artifact_directory = next((workspace / "turns").glob("*/artifacts"))
+                artifact_directory.joinpath("handoff.html").write_text(
+                    "<html><body>handoff artifact</body></html>",
+                    encoding="utf-8",
+                )
+            async for event in super().stream(_provider, prompt, **kwargs):
+                yield event
+
+    launcher = HandoffArtifactLauncher(failure)
 
     async def stream(_project_id, kind, request, execution):
         assert kind == "project_chat"
@@ -329,7 +414,25 @@ def test_cross_provider_work_retry_uses_a_fresh_retry_contract(manifest, tmp_pat
     app.state.background_tasks.stream = stream
     client = TestClient(app)
     project_id = app.state.default_project_id
-    _, retried = _retry_task(
+    store = app.state.background_tasks.store
+
+    def make_legacy(failed: dict[str, object]) -> None:
+        if not legacy_layout:
+            return
+        stage = launcher.workspaces[0].parent
+        (stage / "workspace" / "turns").rename(stage / "turns")
+        with store.connection() as connection:
+            connection.execute(
+                "DELETE FROM graph_run_receipts "
+                "WHERE operation_id = ? AND category = 'chat_stage_layout'",
+                (str(failed["operation_id"]),),
+            )
+            connection.execute(
+                "UPDATE graph_runs SET write_scope_fingerprint = NULL WHERE operation_id = ?",
+                (str(failed["operation_id"]),),
+            )
+
+    failed, retried = _retry_task(
         client,
         project_id,
         "project_chat",
@@ -340,9 +443,13 @@ def test_cross_provider_work_retry_uses_a_fresh_retry_contract(manifest, tmp_pat
             "mode": "work",
         },
         retry_body={"provider": "claude"},
+        after_failure=make_legacy,
     )
 
     assert launcher.sessions == [None, None]
+    assert launcher.workspaces[1] == (
+        launcher.workspaces[0].parent if legacy_layout else launcher.workspaces[0]
+    )
     assert launcher.contract_paths[1].name.endswith("-base.md")
     retry_contract = launcher.contracts[1]
     assert retry_contract.startswith("# RCP Work task contract")
@@ -364,6 +471,19 @@ def test_cross_provider_work_retry_uses_a_fresh_retry_contract(manifest, tmp_pat
     launch = next(item for item in receipts if item.category == "agent_launch")
     assert launch.payload["launch_kind"] == "retry"
     assert launch.payload["continuation_cause"] == "handoff"
+    layout_receipts = [
+        receipt
+        for operation_id in (str(failed["operation_id"]), str(retried["operation_id"]))
+        for receipt in store.agent_task_receipts(operation_id)
+        if receipt.category == "chat_stage_layout"
+    ]
+    assert len(layout_receipts) == (0 if legacy_layout else 1)
+    origin = store.agent_task(str(failed["operation_id"]))
+    assert origin is not None
+    retained = (
+        _local_chat_artifact_directory(store, origin, str(failed["operation_id"])) / "handoff.html"
+    )
+    assert "handoff artifact" in retained.read_text(encoding="utf-8")
 
 
 def test_same_provider_paper_coach_retry_receives_exact_failure(manifest, tmp_path) -> None:

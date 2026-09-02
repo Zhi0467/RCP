@@ -8,6 +8,7 @@ covered_by:
   - tests/test_main.py
   - tests/test_web_assets.py
 invariants: [1, 2, 6]
+last_checked: 2026-09-01 — automated coverage passed; the complete browser journey was not redriven.
 ---
 
 # Start the app and build a first graph

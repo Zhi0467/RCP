@@ -24,6 +24,7 @@ from rcp.runs.chat import (
     _logical_chat_turn_operation_id,
     _prepare_chat_prompt_state,
     _prepare_local_artifact_directory,
+    _prepare_local_chat_workspace,
     _read_chat_patch,
     _record_artifact_discovery_receipt,
     _record_chat_context_receipt,
@@ -209,9 +210,13 @@ async def stream_discuss_run(
                 else:
                     local_stage = expected_stage
                     local_stage.mkdir(parents=True, exist_ok=True)
+                workspace = _prepare_local_chat_workspace(
+                    local_stage,
+                    execution=execution,
+                    saved_stage=saved_stage,
+                )
                 if execution is not None:
                     execution.checkpoint_stage("", str(local_stage))
-                workspace = local_stage
             _refresh_result_view_retention(
                 execution,
                 request,
@@ -235,7 +240,7 @@ async def stream_discuss_run(
             else:
                 assert local_stage is not None
                 artifact_directory = _prepare_local_artifact_directory(
-                    local_stage, artifact_scope_id, reuse=resuming
+                    workspace, artifact_scope_id, reuse=resuming
                 )
 
             token = _task_token(execution)
@@ -281,6 +286,7 @@ async def stream_discuss_run(
                 attachment_pointers.append(artifact_context_pointer)
             read_dirs = _chat_read_dirs(
                 context,
+                local_stage,
                 remote_stage,
                 service,
                 execution_machine.alias,

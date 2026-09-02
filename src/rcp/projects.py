@@ -33,7 +33,11 @@ from rcp.config import (
     Manifest,
     load_manifest,
 )
-from rcp.core.attention import project_graph_attention
+from rcp.core.attention import (
+    project_counts,
+    project_graph_attention,
+    project_graph_mutation_availability,
+)
 from rcp.core.materialize import MaterializationResult
 from rcp.core.models import Experiment, GraphState
 from rcp.core.transition_models import GraphAttentionProjection, GraphTargetRef
@@ -64,6 +68,7 @@ from rcp.storage import (
     AgentTaskKind,
     AppStore,
     EpisodeRecord,
+    ExperimentControlProjectionSnapshot,
     ExperimentEpisodeProjectionSnapshot,
     ExperimentLoopRuntime,
     ProjectProvisioningRequestRecord,
@@ -104,6 +109,7 @@ _DISPLAY_SNAPSHOT_FIELDS = {
     "last_refresh_at",
     "attention",
     "counts",
+    "graph_mutation",
     "coverage",
     "graph",
     "paper",
@@ -1955,26 +1961,31 @@ class ProjectCatalog:
             snapshot["home_space_id"] = record.home_space_id
             allow_pre_identity = record.home_space_id is None
         _ensure_snapshot_freshness(snapshot)
-        if "attention" not in snapshot:
-            graph_payload = snapshot.get("graph")
-            if not isinstance(graph_payload, dict):
+        graph_payload = snapshot.get("graph")
+        if not isinstance(graph_payload, dict):
+            return "invalid", None
+        try:
+            graph = GraphState.model_validate(graph_payload)
+            expected_attention = project_graph_attention(graph)
+            attention_payload = snapshot.get("attention")
+            counts = snapshot.get("counts")
+            if not isinstance(counts, dict):
                 return "invalid", None
-            try:
-                graph = GraphState.model_validate(graph_payload)
-                attention = project_graph_attention(graph)
-                snapshot["attention"] = attention.model_dump(mode="json")
-                counts = snapshot.get("counts")
-                if not isinstance(counts, dict):
-                    return "invalid", None
-                counts.update(
-                    {
-                        "pending_proposals": len(attention.pending_proposal_ids),
-                        "decisions_awaiting_choice": len(attention.decisions_awaiting_choice_ids),
-                        "open_blockers": len(attention.open_blocker_ids),
-                    }
+            if attention_payload is None:
+                snapshot["attention"] = expected_attention.model_dump(mode="json")
+                counts.update(project_counts(graph, expected_attention).model_dump(mode="json"))
+            elif (
+                isinstance(attention_payload, dict) and "proposal_actions" not in attention_payload
+            ):
+                attention_payload["proposal_actions"] = expected_attention.model_dump(mode="json")[
+                    "proposal_actions"
+                ]
+            if "graph_mutation" not in snapshot:
+                snapshot["graph_mutation"] = project_graph_mutation_availability(graph).model_dump(
+                    mode="json"
                 )
-            except (TypeError, ValueError):
-                return "invalid", None
+        except (TypeError, ValueError):
+            return "invalid", None
         if not _valid_display_snapshot(
             project_id,
             snapshot,
@@ -2270,6 +2281,35 @@ class ProjectDisplayCache:
         self._complete_live_control(project_id, payload)
         return payload
 
+    def complete_cached_transition_control(
+        self,
+        project_id: str,
+        snapshot: dict[str, object],
+        read_models: dict[str, ExperimentControlProjectionSnapshot],
+    ) -> dict[str, object]:
+        """Complete a validated cached graph with one already-observed control snapshot."""
+
+        payload = dict(snapshot)
+        state = GraphState.model_validate(payload["graph"])
+        cached_controls = payload.get("experiment_control")
+        if not isinstance(cached_controls, dict):
+            raise ValueError("Cached project snapshot has no completed Experiment control map.")
+        controls = dict(cached_controls)
+        controls.update(
+            self._controls_from_read_models(
+                project_id,
+                state,
+                read_models,
+                experiment_ids=[
+                    experiment_id
+                    for experiment_id in read_models
+                    if isinstance(state.nodes.get(experiment_id), Experiment)
+                ],
+            )
+        )
+        payload["experiment_control"] = controls
+        return payload
+
     def transition_payload(
         self,
         project_id: str,
@@ -2391,38 +2431,28 @@ class ProjectDisplayCache:
 
         state = GraphState.model_validate(snapshot["graph"])
         experiment_ids = [node.id for node in state.nodes.values() if node.type == "experiment"]
-        initial_read_models = self._store.experiment_control_projection_snapshots(
+        read_models = self._store.experiment_control_projection_snapshots(
             project_id,
             experiment_ids,
             graph_target=GraphTargetRef(),
         )
-        settle_ids = [
-            experiment_id
-            for experiment_id, read_model in initial_read_models.items()
-            if read_model.runtime.stop_requested
-            and not read_model.runtime.stop_settled
-            and not read_model.runtime.task_active
-        ]
-        for experiment_id in settle_ids:
-            episode_snapshot = initial_read_models[experiment_id].episode
-            if episode_snapshot is not None:
-                episode = episode_snapshot.episode
-                self._store.settle_experiment_loop_stop(
-                    project_id,
-                    experiment_id,
-                    episode_id=episode.episode_id,
-                    graph_target=episode.graph_target,
-                )
-        read_models = (
-            self._store.experiment_control_projection_snapshots(
-                project_id,
-                experiment_ids,
-                graph_target=GraphTargetRef(),
-            )
-            if settle_ids
-            else initial_read_models
+        snapshot["experiment_control"] = self._controls_from_read_models(
+            project_id,
+            state,
+            read_models,
         )
+
+    def _controls_from_read_models(
+        self,
+        project_id: str,
+        state: GraphState,
+        read_models: dict[str, ExperimentControlProjectionSnapshot],
+        *,
+        experiment_ids: list[str] | None = None,
+    ) -> dict[str, object]:
         controls: dict[str, object] = {}
+        if experiment_ids is None:
+            experiment_ids = [node.id for node in state.nodes.values() if node.type == "experiment"]
         for experiment_id in experiment_ids:
             read_model = read_models[experiment_id]
             runtime = read_model.runtime
@@ -2444,7 +2474,7 @@ class ProjectDisplayCache:
                 read_model.latest_report_episode_id,
             )
             controls[experiment_id] = control
-        snapshot["experiment_control"] = controls
+        return controls
 
     async def reconcile_cached_project(self, project_id: str) -> None:
         try:
@@ -2702,6 +2732,7 @@ def _valid_display_snapshot(
             "canonical_state",
             "attention",
             "counts",
+            "graph_mutation",
             "coverage",
             "graph",
             "paper",
@@ -2724,13 +2755,15 @@ def _valid_display_snapshot(
         return False
     if attention != expected_attention:
         return False
+    try:
+        mutation = project_graph_mutation_availability(graph_state)
+        if snapshot["graph_mutation"] != mutation.model_dump(mode="json"):
+            return False
+    except (KeyError, TypeError, ValueError):
+        return False
     counts = snapshot["counts"]
     assert isinstance(counts, dict)
-    expected_counts = {
-        "pending_proposals": len(attention.pending_proposal_ids),
-        "decisions_awaiting_choice": len(attention.decisions_awaiting_choice_ids),
-        "open_blockers": len(attention.open_blocker_ids),
-    }
+    expected_counts = project_counts(graph_state, attention).model_dump(mode="json")
     if any(
         type(counts.get(key)) is not int or counts[key] != value
         for key, value in expected_counts.items()

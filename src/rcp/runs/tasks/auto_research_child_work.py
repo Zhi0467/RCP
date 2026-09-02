@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Literal, get_args
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
 from rcp.agents.command_mailbox import (
@@ -18,6 +18,7 @@ from rcp.agents.command_mailbox import (
 from rcp.agents.command_protocol import (
     CommandRequest,
     CommandResponse,
+    CommandVerb,
     MessageCommandRequest,
     ValidateCommandRequest,
 )
@@ -44,6 +45,7 @@ from rcp.runs.chat import (
     _clear_stale_turn_handoffs,
     _logical_chat_turn_operation_id,
     _prepare_local_artifact_directory,
+    _prepare_local_chat_workspace,
     _project_write_scope,
     _record_chat_context_receipt,
     _stage_chat_patch_inputs,
@@ -96,6 +98,7 @@ _CHILD_WORK_HANDOFFS_CLEARED_RECEIPT = "auto_research_child_work_handoffs_cleare
 def _prepare_auto_research_child_work_handoffs(
     execution: AgentTaskExecution,
     *,
+    local_stage: Path | None,
     workspace: Path,
     remote_stage: RemoteRunStage | None,
 ) -> None:
@@ -107,12 +110,22 @@ def _prepare_auto_research_child_work_handoffs(
     ):
         return
     _clear_stale_turn_handoffs(workspace, remote_stage)
+    if local_stage is not None:
+        RunStageMailbox.for_stage(
+            local_stage=local_stage / "inputs",
+            remote_stage=None,
+        ).remove(AUTO_RESEARCH_MAIL_HANDOFF_FILE)
     execution.store.record_agent_task_receipt(
         execution.operation_id,
         _CHILD_WORK_HANDOFFS_CLEARED_RECEIPT,
         {
             "version": 1,
-            "files": ["patch.json", "watch.json", "messages.json", "lifecycle.json"],
+            "files": [
+                "patch.json",
+                "watch.json",
+                "inputs/messages.json" if local_stage is not None else "messages.json",
+                "lifecycle.json",
+            ],
         },
     )
 
@@ -127,7 +140,10 @@ def _stage_auto_research_child_work_mail(
 ) -> str | None:
     """Stage only the batch durably claimed by this exact ordinary Work turn."""
 
-    mailbox = RunStageMailbox.for_stage(local_stage=local_stage, remote_stage=remote_stage)
+    mailbox = RunStageMailbox.for_stage(
+        local_stage=local_stage / "inputs" if local_stage is not None else None,
+        remote_stage=remote_stage,
+    )
     delivery_operation_id = _auto_research_child_mail_allocation_id(
         execution,
         route,
@@ -216,6 +232,9 @@ def _auto_research_child_work_contract(
         if mail_path is not None
         else ""
     )
+    allowed_verbs = {"validate", "message"}
+    denied_verbs = [verb for verb in get_args(CommandVerb) if verb not in allowed_verbs]
+    denied_commands = ", ".join(f"`{verb.replace('_', '-')}`" for verb in denied_verbs)
     return f"""
 
 ## Auto-research child Work boundary
@@ -229,8 +248,7 @@ hearsay; the canonical graph and research files remain the source of graph truth
   `{reply_command}`
 - Use a stable idempotency key for the same reply intent. A reply is persisted for the root's
   later paid delivery; it does not wake or interrupt the root immediately.
-- Do not invoke `apply`, `status`, `spawn`, `pause`, `resume`, `stop`, `watch-graph`, `episode`,
-  `inbox`, or `finish`. The child broker rejects those root-only commands.
+- Do not invoke {denied_commands}. The child broker rejects those root-only commands.
 - Do not write `watch.json`, register a watcher, spawn another task or episode, or try to wake
   yourself. RCP ignores child watcher output.
 """.strip()
@@ -381,8 +399,12 @@ async def _stage_auto_research_child_work_turn(
             else:
                 local_stage = expected_stage
                 local_stage.mkdir(parents=True, exist_ok=True)
+            workspace = _prepare_local_chat_workspace(
+                local_stage,
+                execution=execution,
+                saved_stage=saved_stage,
+            )
             execution.checkpoint_stage("", str(local_stage))
-            workspace = local_stage
         token = _task_token(execution)
         _roll_result_view_retention(request, execution, local_stage, remote_stage)
         patch_inputs = _stage_chat_patch_inputs(
@@ -395,8 +417,9 @@ async def _stage_auto_research_child_work_turn(
         )
         patch_inputs.validator_staged.cleanup()
         child_staged = stage_command_mailbox(
-            local_stage=local_stage,
+            local_stage=workspace if remote_stage is None else None,
             remote_stage=remote_stage,
+            local_input_stage=local_stage if remote_stage is None else None,
             episode_id=route.episode_id,
             task_id=execution.operation_id,
             turn_id=f"{token}:auto-research-child-work",
@@ -421,6 +444,7 @@ async def _stage_auto_research_child_work_turn(
         if not reusing_checkpoint or continuation == "message_wake":
             _prepare_auto_research_child_work_handoffs(
                 execution,
+                local_stage=local_stage,
                 workspace=workspace,
                 remote_stage=remote_stage,
             )
@@ -439,7 +463,7 @@ async def _stage_auto_research_child_work_turn(
         prepared_result_view = _prepare_result_view_turn(
             request,
             execution,
-            local_stage,
+            workspace if remote_stage is None else None,
             remote_stage,
             focused_node=context.node,
             logical_operation_id=artifact_scope_id,
@@ -453,12 +477,13 @@ async def _stage_auto_research_child_work_turn(
         else:
             assert local_stage is not None
             artifact_directory = _prepare_local_artifact_directory(
-                local_stage,
+                workspace,
                 artifact_scope_id,
                 reuse=resuming,
             )
         read_dirs = _chat_read_dirs(
             context,
+            local_stage,
             remote_stage,
             service,
             resolved.execution_machine_alias,
@@ -467,6 +492,7 @@ async def _stage_auto_research_child_work_turn(
             context,
             service,
             resolved.execution_machine_alias,
+            local_stage=local_stage,
             workspace=workspace,
             remote_stage=remote_stage,
             data_dir=data_dir,
@@ -949,7 +975,8 @@ async def stream_auto_research_child_work_run(
     if maintenance_paused:
         return
     mailbox = RunStageMailbox.for_stage(
-        local_stage=turn.local_stage, remote_stage=turn.remote_stage
+        local_stage=turn.workspace if turn.remote_stage is None else None,
+        remote_stage=turn.remote_stage,
     )
     mailbox.remove("watch.json")
     execution.store.record_agent_task_receipt(

@@ -13,6 +13,7 @@ covered_by:
   - tests/test_api.py::test_work_lock_ownership_loss_preserves_the_answer_and_skips_graph_apply
   - tests/test_api.py::test_background_work_can_pause_while_waiting_for_canonical_state
 invariants: [8, 9]
+last_checked: 2026-09-01 — automated recovery coverage passed; the full API journey was not redriven.
 ---
 
 # RCP recovers agent-run ownership; the human never removes a lock

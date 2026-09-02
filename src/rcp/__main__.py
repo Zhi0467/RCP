@@ -7,6 +7,7 @@ import json
 import os
 import signal
 import socket
+import stat
 import sys
 import threading
 import time
@@ -693,11 +694,25 @@ def _reserved_server_socket(host: str, port: int) -> Iterator[socket.socket]:
 
 @contextmanager
 def instance_lock(
-    data_dir: Path, *, timeout: float = SERVER_LOCK_DEFAULT_TIMEOUT_SECONDS
+    data_dir: Path,
+    *,
+    timeout: float = SERVER_LOCK_DEFAULT_TIMEOUT_SECONDS,
+    expected_owner: tuple[int, int] | None = None,
 ) -> Iterator[None]:
     data_dir.mkdir(parents=True, exist_ok=True)
     path = data_dir / "rcp.lock"
-    with path.open("a+", encoding="utf-8") as handle:
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "r+", encoding="utf-8") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError("The RCP instance lock is not a regular file.")
+        if expected_owner is not None:
+            if info.st_size == 0 and (info.st_uid, info.st_gid) == (os.geteuid(), os.getegid()):
+                os.fchown(handle.fileno(), *expected_owner)
+                info = os.fstat(handle.fileno())
+            if (info.st_uid, info.st_gid) != expected_owner:
+                raise OSError("The RCP instance lock has unsafe ownership.")
         os.fchmod(handle.fileno(), 0o600)
         deadline = time.monotonic() + timeout
         while True:

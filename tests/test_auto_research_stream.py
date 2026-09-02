@@ -598,9 +598,14 @@ def _dispatcher(store: AppStore, replies: list[str] | None = None) -> AutoResear
             stop=unavailable,
             message=message,
             watch_graph=unavailable,
+            apply=unavailable,
+            episode=unavailable,
+            inbox=unavailable,
             finish=lambda _context, _planned_effect_id: AutoResearchCommandEffectResult(),
-            seat_node_type=lambda _project_id, _node_id: "blocker",
+            seat_node_type=lambda _project_id, _episode_id, _node_id: "blocker",
             reconcile_unknown=lambda _context, _request, _planned_effect_id: None,
+            worker_lookup=unavailable,
+            verify_spawn=unavailable,
         ),
     )
 
@@ -650,12 +655,16 @@ class _WorkerLauncher:
         self.contracts: list[str] = []
         self.requested_session_ids: list[str | None] = []
         self.read_dirs: list[list[Path]] = []
+        self.workspaces: list[Path] = []
+        self.write_scopes = []
         self.invocation_gates: list[ProviderInvocationGate | None] = []
 
     async def stream(self, _provider, prompt, **kwargs):
         self.calls += 1
         self.requested_session_ids.append(kwargs["session_id"])
         self.read_dirs.append(list(kwargs["read_dirs"]))
+        self.workspaces.append(Path(kwargs["cwd"]))
+        self.write_scopes.append(kwargs["write_scope"])
         invocation_gate = kwargs.get("invocation_gate")
         self.invocation_gates.append(invocation_gate)
 
@@ -1189,10 +1198,11 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
             async for event in super().stream(provider, prompt, **kwargs):
                 yield event
 
+    launcher = Launcher(session_id="orchestrator-session", writer=writer)
     events = await _events(
         stream_auto_research_orchestrator_run(
             service,
-            Launcher(session_id="orchestrator-session", writer=writer),
+            launcher,
             AutoResearchRunRequest.model_validate(root.request),
             tmp_path / "data",
             execution,
@@ -1202,6 +1212,10 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
 
     assert events[-1].event == "done", [(event.event, event.text) for event in events]
     assert observed == {"capability": "orchestrate", "session_id": None}
+    assert len(launcher.workspaces) == 1
+    orchestrator_stage = launcher.workspaces[0]
+    assert orchestrator_stage / "inputs" in launcher.read_dirs[0]
+    assert str(orchestrator_stage / "inputs") in launcher.write_scopes[0].protected_write_paths
     assert len(command_results) == 4
     assert command_results[0]["status"] == "ok"
     assert command_results[0]["result"]["episode"]["episode_id"] == auto_research.episode_id
@@ -2204,10 +2218,11 @@ async def test_fresh_turn_fences_clear_and_recovery_preserves_only_authorized_ha
             (workspace / name).exists() for name in ("patch.json", "watch.json", "messages.json")
         )
 
+    fresh_launcher = _WorkerLauncher(writer=fresh_writer)
     fresh_events = await _events(
         stream_auto_research_worker_run(
             service,
-            _WorkerLauncher(writer=fresh_writer),
+            fresh_launcher,
             AutoResearchRunRequest.model_validate(worker.request),
             tmp_path / "fresh-data",
             _execution(store, worker),
@@ -2215,6 +2230,9 @@ async def test_fresh_turn_fences_clear_and_recovery_preserves_only_authorized_ha
         )
     )
     assert fresh_events[-1].event == "done"
+    assert fresh_launcher.workspaces == [stage]
+    assert stage / "inputs" in fresh_launcher.read_dirs[0]
+    assert str(stage / "inputs") in fresh_launcher.write_scopes[0].protected_write_paths
     assert [
         receipt.category
         for receipt in store.agent_task_receipts(worker.operation_id)

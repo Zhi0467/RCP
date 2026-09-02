@@ -35,6 +35,7 @@ from rcp.limits import (
     SERVER_INSTALL_SERVICE_TIMEOUT_SECONDS,
     SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
 )
+from rcp.server_ops._local_primitives import fsync_directory as _fsync_directory
 from rcp.server_ops.cli import (
     CallerIdentity,
     PreparedServerCommand,
@@ -223,7 +224,6 @@ def discover_bootstrap_repository(bootstrap_root: Path | None = None) -> GitHubR
     candidates = (
         (bootstrap_root,) if bootstrap_root is not None else (Path.cwd(), Path(__file__).parents[3])
     )
-    failures = 0
     for candidate in candidates:
         root = candidate.expanduser().resolve()
         result = _run_process(
@@ -240,17 +240,12 @@ def discover_bootstrap_repository(bootstrap_root: Path | None = None) -> GitHubR
             timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
         )
         if result.returncode != 0:
-            failures += 1
             continue
         try:
             return normalize_github_repository(result.stdout.strip())
         except ValueError:
-            failures += 1
-    if failures:
-        raise ValueError(
-            "server install must run from an RCP GitHub checkout with a supported origin"
-        )
-    raise ValueError("server install could not locate its bootstrap checkout")
+            continue
+    raise ValueError("server install must run from an RCP GitHub checkout with a supported origin")
 
 
 def _absolute_invoked_executable(value: Path | None) -> Path:
@@ -454,7 +449,7 @@ def _execute_install(
         request.team_name,
     )
     try:
-        facts = _run_step(
+        _run_step(
             emitter,
             steps[0],
             running="Validating Ubuntu, architecture, systemd, and required tool versions.",
@@ -570,7 +565,6 @@ def _execute_install(
             ),
             recovery_argv=retry,
         )
-        _ = facts
     except _ReportedInstallFailure:
         return
 
@@ -909,6 +903,58 @@ class LinuxInstallMachine:
                 grant_needed=probe != "ready",
                 deploy_key_label=f"rcp-source:{config.installation_id}",
                 public_key=public_key,
+            )
+
+        private_exists = private_path.exists() or private_path.is_symlink()
+        public_exists = public_path.exists() or public_path.is_symlink()
+        if private_exists or public_exists:
+            if not private_exists or not public_exists:
+                raise InstallRefused(
+                    "An interrupted source-key creation left only one key half. Preserve and "
+                    "inspect both credential paths; install will not replace either side."
+                )
+            _require_owned_file(
+                private_path,
+                uid=self._service_uid_value,
+                gid=self._service_gid_value,
+                mode=_PRIVATE_KEY_MODE,
+                label="source private key",
+            )
+            _require_owned_file(
+                public_path,
+                uid=self._service_uid_value,
+                gid=self._service_gid_value,
+                mode=_PUBLIC_KEY_MODE,
+                label="source public key",
+            )
+            public_key, fingerprint = _read_public_key(public_path)
+            installation_id = _source_key_installation_id(public_key)
+            config = create_installed_server_config(
+                installation_id=installation_id,
+                source=ServerSourceConfig(
+                    origin=repository.ssh_origin,
+                    authentication="deploy_key",
+                    public_key_fingerprint=fingerprint,
+                ),
+            )
+            validated_public_key = self._validate_source_key_pair(
+                config,
+                private_path,
+                public_path,
+            )
+            probe = self._probe_source(repository.ssh_origin, source=config.source)
+            if probe == "unavailable":
+                raise InstallRefused(
+                    "GitHub source access is unreachable from the rcp account. Restore DNS and "
+                    "network access, then rerun without changing the recovered key."
+                )
+            write_installed_server_config(config, self.layout.config_path)
+            return SourceAccess(
+                config=config,
+                repository=repository,
+                grant_needed=probe != "ready",
+                deploy_key_label=f"rcp-source:{installation_id}",
+                public_key=validated_public_key,
             )
 
         public_probe = self._probe_source(repository.https_origin, source=None)
@@ -1504,6 +1550,12 @@ class LinuxInstallMachine:
             label="source public key",
         )
         public_key, fingerprint = _read_public_key(public)
+        installation_id = _source_key_installation_id(public_key)
+        if installation_id != config.installation_id:
+            raise InstallRefused(
+                "The source public-key label differs from the installed configuration. Install "
+                "will not replace either side."
+            )
         if fingerprint != config.source.public_key_fingerprint:
             raise InstallRefused(
                 "The source public key fingerprint differs from the installed configuration. "
@@ -1951,6 +2003,22 @@ def _read_public_key(path: Path) -> tuple[str, str]:
     return public_key, fingerprint
 
 
+def _source_key_installation_id(public_key: str) -> str:
+    parts = public_key.split()
+    if len(parts) != 3 or not parts[2].startswith("rcp-source:"):
+        raise InstallRefused(
+            "The source public key does not carry one exact RCP installation label."
+        )
+    installation_id = parts[2].removeprefix("rcp-source:")
+    try:
+        parsed = uuid.UUID(installation_id)
+    except ValueError as exc:
+        raise InstallRefused("The source public-key label has an invalid installation id.") from exc
+    if parsed.version != 4 or str(parsed) != installation_id:
+        raise InstallRefused("The source public-key label has an invalid installation id.")
+    return installation_id
+
+
 def _wrapper_text(layout: ServerLayout) -> str:
     return (
         "#!/bin/sh\n"
@@ -2302,14 +2370,6 @@ def _converge_current_release(layout: ServerLayout, release: Path) -> None:
         ) from exc
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _read_team_health() -> dict[str, object] | None:

@@ -17,14 +17,6 @@ export interface AgentTaskGroup {
   attempts: AgentTask[];
 }
 
-export interface RunTaskProjection {
-  actionable: AgentTaskGroup[];
-  running: AgentTaskGroup[];
-  completed: AgentTaskGroup[];
-}
-
-export type RunSectionKey = "running" | "actionable" | "completed";
-
 export interface ExperimentRun {
   node: GraphNode;
   control: ExperimentControlState;
@@ -103,42 +95,6 @@ export function visibleChatWatchers(
     if (nodeLoopWatcher || chatSelfWakeWatcher) visible.set(watcher.watcher_id, watcher);
   }
   return [...visible.values()];
-}
-
-export type RunEntry =
-  | { kind: "task"; id: string; observedAt: string | null; group: AgentTaskGroup }
-  | { kind: "experiment"; id: string; observedAt: string | null; experiment: ExperimentRun }
-  | { kind: "blocker"; id: string; observedAt: string | null; node: GraphNode };
-
-export interface RunProjection {
-  running: RunEntry[];
-  actionable: RunEntry[];
-  completed: RunEntry[];
-}
-
-export interface RunProjectionInput {
-  nodes: GraphNode[];
-  tasks: AgentTask[];
-  watchers?: WatcherRecord[];
-  experimentControl: Record<string, ExperimentControlState>;
-  actionableBlockerIds: ReadonlySet<string>;
-  dismissedTaskIds?: ReadonlySet<string>;
-}
-
-export function buildRunTaskProjection(
-  tasks: AgentTask[],
-  dismissedTaskIds: ReadonlySet<string> = new Set(),
-): RunTaskProjection {
-  const groups = groupAgentTasks(tasks).filter(
-    (group) => !isTaskNotificationSuperseded(group.latest, tasks),
-  );
-  return {
-    actionable: groups.filter(
-      (group) => group.latest.awaiting_human && !dismissedTaskIds.has(group.latest.operation_id),
-    ),
-    running: groups.filter((group) => group.latest.active),
-    completed: groups.filter((group) => group.latest.settled),
-  };
 }
 
 export function isExperimentLoopTask(task: AgentTask): boolean {
@@ -253,51 +209,6 @@ function watcherGroupCountKey(watcher: ExternalWatcherRecord): keyof ExperimentW
   }
 }
 
-export function buildRunProjection(input: RunProjectionInput): RunProjection {
-  const watchers = input.watchers ?? [];
-  const experimentControl = input.experimentControl;
-  const ingestion = buildRunTaskProjection(
-    input.tasks.filter((task) => task.kind === "seed" || task.kind === "refresh"),
-    input.dismissedTaskIds ?? new Set<string>(),
-  );
-  const sections: Record<RunSectionKey, RunEntry[]> = {
-    running: ingestion.running.map(taskEntry),
-    actionable: ingestion.actionable.map(taskEntry),
-    completed: ingestion.completed.map(taskEntry),
-  };
-  input.nodes
-    .filter((node) => node.type === "experiment")
-    .forEach((node) => {
-      const control = experimentControl[node.id];
-      if (!control) {
-        throw new Error(`Experiment ${node.id} is missing its backend control projection.`);
-      }
-      if (!control.health || !control.recommendation || !control.run_section) {
-        throw new Error(`Experiment ${node.id} has an incomplete backend control projection.`);
-      }
-      const run = buildExperimentRun(node, control, input.tasks, watchers);
-      sections[control.run_section].push(experimentEntry(run));
-    });
-  input.nodes
-    .filter((node) => input.actionableBlockerIds.has(node.id))
-    .forEach((node) => {
-      if (node.type !== "blocker") {
-        throw new Error(`Attention member ${node.id} is not a Blocker.`);
-      }
-      sections.actionable.push({
-        kind: "blocker",
-        id: node.id,
-        observedAt: newestTimestamp(node.source_refs.map((source) => source.timestamp)),
-        node,
-      });
-    });
-  return {
-    running: sortRunEntries(sections.running),
-    actionable: sortRunEntries(sections.actionable),
-    completed: sortRunEntries(sections.completed),
-  };
-}
-
 export function groupAgentTasks(tasks: AgentTask[]): AgentTaskGroup[] {
   const byId = new Map(tasks.map((task) => [task.operation_id, task]));
   const grouped = new Map<string, AgentTask[]>();
@@ -352,48 +263,9 @@ function taskEpisodeId(task: AgentTask): string | null {
   return typeof value === "string" && value ? value : null;
 }
 
-function taskEntry(group: AgentTaskGroup): RunEntry {
-  return { kind: "task", id: group.rootId, observedAt: group.latest.updated_at, group };
-}
-
-function experimentEntry(experiment: ExperimentRun): RunEntry {
-  const observedAt = newestTimestamp([
-    experiment.taskGroup?.latest.updated_at,
-    experiment.control.operational.current_last_activity_at,
-    ...experiment.watchers.flatMap((watcher) => [
-      watcher.completed_at,
-      watcherLastObservedAt(watcher),
-      watcher.created_at,
-    ]),
-  ]);
-  return { kind: "experiment", id: experiment.node.id, observedAt, experiment };
-}
-
 /** An Experiment-loop watcher is released by Stop loop, never one watcher at a time. */
 export function watcherIsIndividuallyStoppable(watcher: WatcherRecord): boolean {
   return watcher.continuation?.patch_kind !== "experiment_loop";
-}
-
-function sortRunEntries(entries: RunEntry[]): RunEntry[] {
-  return [...entries].sort((left, right) => {
-    const leftAt = left.observedAt ? Date.parse(left.observedAt) : Number.NaN;
-    const rightAt = right.observedAt ? Date.parse(right.observedAt) : Number.NaN;
-    const leftKnown = Number.isFinite(leftAt);
-    const rightKnown = Number.isFinite(rightAt);
-    if (leftKnown && rightKnown && leftAt !== rightAt) return rightAt - leftAt;
-    if (leftKnown !== rightKnown) return leftKnown ? -1 : 1;
-    return left.id.localeCompare(right.id);
-  });
-}
-
-function newestTimestamp(values: (string | null | undefined)[]): string | null {
-  return (
-    values
-      .filter(
-        (value): value is string => typeof value === "string" && Number.isFinite(Date.parse(value)),
-      )
-      .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null
-  );
 }
 
 function logicalRootId(task: AgentTask, byId: Map<string, AgentTask>): string {
@@ -414,16 +286,5 @@ function compareTaskAscending(left: AgentTask, right: AgentTask): number {
   return (
     left.created_at.localeCompare(right.created_at) ||
     left.operation_id.localeCompare(right.operation_id)
-  );
-}
-
-function isTaskNotificationSuperseded(task: AgentTask, tasks: AgentTask[]): boolean {
-  if ((task.kind !== "seed" && task.kind !== "refresh") || !task.awaiting_human || task.paused)
-    return false;
-  return tasks.some(
-    (candidate) =>
-      (candidate.kind === "seed" || candidate.kind === "refresh") &&
-      candidate.settled &&
-      compareTaskAscending(candidate, task) > 0,
   );
 }

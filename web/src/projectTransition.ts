@@ -1,44 +1,21 @@
-import type { GraphAttentionProjection } from "./types";
+import type {
+  GraphAttentionProjection,
+  GraphHeadRef as TransitionGraphHead,
+  GraphTargetRef as TransitionGraphTarget,
+  ProjectTransitionProjection,
+  RevisionedTransitionGraph,
+  TransitionTrigger,
+  TransitionTriggerManifest,
+} from "./types";
 
-export type TransitionGraphTarget =
-  { kind: "main"; branch_id?: null } | { kind: "branch"; branch_id: string };
-
-export interface TransitionGraphHead {
-  target: TransitionGraphTarget;
-  revision: number;
-  transition_id: string | null;
-}
-
-export interface RevisionedTransitionGraph {
-  revision: number;
-}
-
-/**
- * A local structural view of the backend transition response. Shared API types can extend this
- * interface without making the reducer depend on the rest of ProjectSnapshot.
- */
-export interface ProjectTransitionProjection<Graph extends RevisionedTransitionGraph, Control> {
-  head: TransitionGraphHead;
-  graph: Graph;
-  attention: GraphAttentionProjection;
-  experiment_control: Control;
-  ruleset_tag: string | null;
-  transition_id: string | null;
-  canonical: boolean;
-  base_head?: TransitionGraphHead | null;
-}
-
-export interface TransitionTrigger {
-  operation: string;
-  node_types: string[];
-  node_fields: string[];
-  relations: string[];
-}
-
-export interface TransitionTriggerManifest {
-  ruleset_tag: string;
-  triggers: TransitionTrigger[];
-}
+export type {
+  ProjectTransitionProjection,
+  RevisionedTransitionGraph,
+  TransitionGraphHead,
+  TransitionGraphTarget,
+  TransitionTrigger,
+  TransitionTriggerManifest,
+};
 
 /** Undefined dimensions are unknown, while an empty array means the edit has no such tags. */
 export interface StagedTransitionEdit {
@@ -262,21 +239,51 @@ export function transitionSnapshotRefusal<Graph extends RevisionedTransitionGrap
 function validAttentionProjection(value: unknown): value is GraphAttentionProjection {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const payload = value as Record<string, unknown>;
-  const fields = ["pending_proposal_ids", "decisions_awaiting_choice_ids", "open_blocker_ids"];
+  const fields = [
+    "pending_proposal_ids",
+    "decisions_awaiting_choice_ids",
+    "open_blocker_ids",
+    "proposal_actions",
+  ];
   if (
     Object.keys(payload).some((key) => !fields.includes(key)) ||
     fields.some((field) => !Object.hasOwn(payload, field))
   ) {
     return false;
   }
-  return fields.every((field) => {
-    const ids = payload[field];
-    return (
-      Array.isArray(ids) &&
-      ids.every((id) => typeof id === "string" && id.length > 0) &&
-      new Set(ids).size === ids.length
-    );
-  });
+  const idFields = fields.slice(0, 3);
+  if (
+    !idFields.every((field) => {
+      const ids = payload[field];
+      return (
+        Array.isArray(ids) &&
+        ids.every((id) => typeof id === "string" && id.length > 0) &&
+        new Set(ids).size === ids.length
+      );
+    })
+  )
+    return false;
+  const actions = payload.proposal_actions;
+  if (typeof actions !== "object" || actions === null || Array.isArray(actions)) return false;
+  const pendingIds = payload.pending_proposal_ids as string[];
+  const actionMap = actions as Record<string, unknown>;
+  return (
+    Object.keys(actionMap).length === pendingIds.length &&
+    pendingIds.every((proposalId) => {
+      const lines = actionMap[proposalId];
+      return (
+        Array.isArray(lines) &&
+        lines.length > 0 &&
+        lines.every(
+          (line) =>
+            typeof line === "object" &&
+            line !== null &&
+            !Array.isArray(line) &&
+            typeof (line as Record<string, unknown>).text === "string",
+        )
+      );
+    })
+  );
 }
 
 function triggerCouldMatch(trigger: TransitionTrigger, edit: StagedTransitionEdit): boolean {

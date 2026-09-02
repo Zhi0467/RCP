@@ -15,6 +15,7 @@ import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import BinaryIO, TextIO
 
 from pydantic import ValidationError
@@ -45,7 +46,6 @@ from rcp.server_ops.models import (
 
 SERVER_CLI_EXIT_FAILED = 1
 SERVER_CLI_EXIT_OPERATOR_ACTION = 3
-SERVER_CLI_EXIT_UNAVAILABLE = 69
 SERVER_CLI_EXIT_WRONG_IDENTITY = 77
 SERVER_CLI_TERMINAL_RESERVE_BYTES = 64 * 1024
 SERVER_CLI_INTERACTIVE_FIELD_LIMIT = 8
@@ -341,7 +341,10 @@ def _git_commit(value: str) -> str:
 
 def _absolute_path(value: str, label: str) -> str:
     try:
-        return absolute_path(value, label=label)
+        path = Path(value)
+        if ".." in path.parts:
+            raise ValueError(f"{label} must be absolute and normalized")
+        return absolute_path(str(path), label=label)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
@@ -639,34 +642,6 @@ def _wrong_identity_command(
     )
 
 
-def _unavailable_command(
-    request: ServerCommandRequest,
-    identity: CallerIdentity,
-) -> PreparedServerCommand:
-    target = MachineTarget(host=identity.host, os_account=identity.username)
-    pending = ServerStep(
-        number=1,
-        title="Run the concrete server operation",
-        purpose="Dispatch to the one concrete owner of this server operation.",
-        performed_by="system",
-        target=target,
-        phase="operation_dispatch",
-        state="pending",
-        expected_success=f"{request.command} completes and publishes its verified result.",
-        message=f"RCP will dispatch {request.command} through its concrete owner.",
-    )
-    unavailable = pending.model_copy(
-        update={
-            "state": "unavailable",
-            "message": (
-                f"{request.command} is not installed yet. Its owning implementation packet "
-                "must land before this operation can run."
-            ),
-        }
-    )
-    return _single_step_command(request.command, pending, unavailable)
-
-
 def _preparation_failed_command(
     request: ServerCommandRequest,
     identity: CallerIdentity,
@@ -767,7 +742,6 @@ class ServerEventEmitter:
                 "succeeded",
                 "failed",
                 "operator_action_needed",
-                "unavailable",
             }
             and (final.step.number == len(self._plan.steps) or final.step.state != "succeeded")
         ):
@@ -813,7 +787,7 @@ class ServerEventEmitter:
         )
         if not all_succeeded and (
             not isinstance(final, ServerStepEvent)
-            or final.step.state not in {"failed", "operator_action_needed", "unavailable"}
+            or final.step.state not in {"failed", "operator_action_needed"}
         ):
             self.fail_unexpected()
             final = self._events[-1]
@@ -821,8 +795,6 @@ class ServerEventEmitter:
             exit_code = 0
         elif isinstance(final, ServerStepEvent) and final.step.state == "operator_action_needed":
             exit_code = SERVER_CLI_EXIT_OPERATOR_ACTION
-        elif isinstance(final, ServerStepEvent) and final.step.state == "unavailable":
-            exit_code = SERVER_CLI_EXIT_UNAVAILABLE
         else:
             exit_code = failed_exit_code
         return ServerCommandExecution(events=tuple(self._events), exit_code=exit_code)
@@ -836,7 +808,7 @@ class ServerEventEmitter:
         self._stream.flush()
 
     def _is_terminal_event(self, event: ServerStepEvent) -> bool:
-        return event.step.state in {"failed", "operator_action_needed", "unavailable"} or (
+        return event.step.state in {"failed", "operator_action_needed"} or (
             event.step.state == "succeeded" and event.step.number == len(self._plan.steps)
         )
 
@@ -900,7 +872,7 @@ class _InteractiveServerRenderer:
         if step.state == "running":
             self._current_line(headline, finish=False)
             return
-        terminal = step.state in {"failed", "operator_action_needed", "unavailable"}
+        terminal = step.state in {"failed", "operator_action_needed"}
         final_success = step.state == "succeeded" and step.number == self.plan_size
         self._current_line(headline, finish=terminal or final_success)
         if not terminal and not final_success:
@@ -992,7 +964,6 @@ def _step_status(state: str) -> tuple[str, str]:
         "succeeded": ("DONE", _ANSI_GREEN),
         "failed": ("FAILED", _ANSI_RED),
         "operator_action_needed": ("ACTION REQUIRED", _ANSI_YELLOW),
-        "unavailable": ("UNAVAILABLE", _ANSI_RED),
     }[state]
 
 
@@ -1023,7 +994,6 @@ __all__ = [
     "PreparedServerCommand",
     "SERVER_CLI_EXIT_FAILED",
     "SERVER_CLI_EXIT_OPERATOR_ACTION",
-    "SERVER_CLI_EXIT_UNAVAILABLE",
     "SERVER_CLI_EXIT_WRONG_IDENTITY",
     "SERVER_CLI_TERMINAL_RESERVE_BYTES",
     "ServerCommandHandler",

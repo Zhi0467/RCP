@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import time
 import uuid
 from pathlib import Path
 from threading import Event
@@ -25,7 +24,7 @@ from rcp.skill_registry import SkillReference
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
 from rcp.watchers import WatcherBinding
 
-from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task
+from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task, wait_until
 from .helpers import create_named_app as create_app
 
 EXPERIMENT_ID = "exp/bounded-loop"
@@ -426,6 +425,40 @@ def test_stop_with_only_watchers_left_terminalizes_them_and_settles_at_once(
     assert control["reasons"] == []
 
 
+def test_stop_settlement_rolls_back_watcher_changes_when_episode_terminalization_fails(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+    loop.start_episode(status="running")
+    loop.arm_watcher("atomic-stop-watcher")
+    stopping = loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    assert stopping is not None and stopping.stop_settled_at is None
+    loop.store.complete_agent_task("loop-root", applied_revision=None, result={})
+    original = loop.store._mark_episode_stop_skipped_in_connection
+
+    def fail_terminalization(*_args, **_kwargs):
+        raise RuntimeError("injected episode terminalization failure")
+
+    monkeypatch.setattr(
+        loop.store,
+        "_mark_episode_stop_skipped_in_connection",
+        fail_terminalization,
+    )
+    with pytest.raises(RuntimeError, match="injected episode terminalization failure"):
+        loop.store.settle_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+
+    watcher = loop.store.watcher("atomic-stop-watcher")
+    episode = loop.store.episode(loop.episode_id)
+    assert watcher is not None and watcher.status == "active" and watcher.notified is False
+    assert episode is not None and episode.status == "stopping"
+    assert episode.stop_settled_at is None
+
+    monkeypatch.setattr(loop.store, "_mark_episode_stop_skipped_in_connection", original)
+    settled = loop.store.settle_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
+    assert settled is not None and settled.stop_settled_at is not None
+    assert loop.store.watcher("atomic-stop-watcher").status == "stopped"  # type: ignore[union-attr]
+
+
 def test_stop_is_idempotent(manifest, tmp_path) -> None:
     loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
     loop.start_episode()
@@ -580,14 +613,18 @@ def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
     assert request.session_id == f"restart-{status}-session"
     assert captured["continuation"] == expected_continuation
     assert recovered.stage_root == str(stage)
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
+
+    def stopped_episode():
         settled_episode = loop.store.episode(loop.episode_id)
         if settled_episode is not None and settled_episode.status == "stopped":
-            break
-        time.sleep(0.01)
-    else:
-        raise AssertionError("the recovered turn did not settle the durable Stop fence")
+            return settled_episode
+        return None
+
+    wait_until(
+        stopped_episode,
+        timeout=2,
+        detail="the recovered turn did not settle the durable Stop fence",
+    )
     assert loop.store.episode(loop.episode_id).invocations_used == 1  # type: ignore[union-attr]
     assert "experiment_stop_recovery" in {
         receipt.category for receipt in loop.store.agent_task_receipts(recovered.operation_id)
@@ -682,19 +719,30 @@ def test_an_unclaimed_completion_cannot_win_a_wake_after_a_persisted_stop(
     assert runtime.invocations_used == 1
 
 
-def test_a_stop_settles_on_the_next_derivation_after_its_turn_ends(manifest, tmp_path) -> None:
+def test_a_stop_settles_only_under_the_operation_lock_after_its_turn_ends(
+    manifest, tmp_path
+) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app)
     loop.start_episode(status="running")
     loop.arm_watcher("still-running")
     assert loop.stop()["operational"]["stop_settled"] is False
 
-    # The authorized turn finishes on its own. Nothing replays the stop; the
-    # next derivation reconciles it, which is what survives a restart.
+    # The authorized turn finishes on its own. The ordinary project snapshot is
+    # read-only and cannot reconcile the Stop outside the operation lock.
     loop.store.complete_agent_task("loop-root", applied_revision=None, result={})
 
     control = loop.control()
     assert control["operational"]["stop_requested"] is True
+    assert control["operational"]["stop_settled"] is False
+    assert loop.store.watcher("still-running").status == "active"
+
+    # The cross-project Experiment owner takes the operation lock and performs
+    # the same recovery reconciliation used after restart.
+    response = loop.client.get("/api/episodes?mode=experiment_loop")
+    assert response.status_code == 200, response.text
+
+    control = loop.control()
     assert control["operational"]["stop_settled"] is True
     assert loop.store.watcher("still-running").status == "stopped"
     assert control["ready"] is True

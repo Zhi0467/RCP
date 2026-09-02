@@ -64,6 +64,16 @@ _PROVISIONING_TRANSITIONS: dict[ProjectProvisioningStatus, frozenset[ProjectProv
     "completed": frozenset(),
     "cancelled": frozenset(),
 }
+_RESTORE_REENTRY_PROVISIONING_TRANSITIONS: dict[
+    ProjectProvisioningStatus, frozenset[ProjectProvisioningStatus]
+] = {
+    status: (
+        frozenset()
+        if status in {"completed", "cancelled"}
+        else frozenset({"operator_action_needed"})
+    )
+    for status in _PROVISIONING_TRANSITIONS
+}
 _MESSAGE_TEXT_ADAPTER = TypeAdapter(MessageText)
 _PROJECT_CONFIG_FIELDS = frozenset(
     {
@@ -2766,8 +2776,42 @@ class ProjectProvisioningStoreMixin:
                 actions=(CommandAction(argv=resume),),
                 resume_argv=resume,
             )
-            connection.execute(
-                """
+            self._transition_project_provisioning_to_restore_reentry(
+                connection,
+                current=current,
+                machines_json=_canonical_json([item.model_dump(mode="json") for item in machines]),
+                repositories_json=_canonical_json(
+                    [item.model_dump(mode="json") for item in repositories]
+                ),
+                provider_checks_json=_canonical_json(
+                    [item.model_dump(mode="json") for item in provider_checks]
+                ),
+                diagnostic=normalized,
+                operator_action_json=_canonical_json(action.model_dump(mode="json")),
+                now=now,
+            )
+
+    @staticmethod
+    def _transition_project_provisioning_to_restore_reentry(
+        connection: sqlite3.Connection,
+        *,
+        current: ProjectProvisioningRequestRecord,
+        machines_json: str,
+        repositories_json: str,
+        provider_checks_json: str,
+        diagnostic: str,
+        operator_action_json: str,
+        now: str,
+    ) -> None:
+        """Apply the closed restore-only transition with a stale-row fence."""
+
+        target_status: ProjectProvisioningStatus = "operator_action_needed"
+        if target_status not in _RESTORE_REENTRY_PROVISIONING_TRANSITIONS[current.status]:
+            raise ValueError(
+                f"project provisioning cannot detach {current.status} for restore reentry"
+            )
+        cursor = connection.execute(
+            """
                 UPDATE project_provisioning_requests
                 SET status = 'operator_action_needed', machines_json = ?,
                     repositories_json = ?, provider_checks_json = ?,
@@ -2775,19 +2819,23 @@ class ProjectProvisioningStoreMixin:
                     final_review_digest = NULL, revision = revision + 1,
                     updated_at = ?, setup_started_at = COALESCE(setup_started_at, ?),
                     ready_at = NULL
-                WHERE request_id = ?
+                WHERE request_id = ? AND revision = ? AND status = ?
                 """,
-                (
-                    _canonical_json([item.model_dump(mode="json") for item in machines]),
-                    _canonical_json([item.model_dump(mode="json") for item in repositories]),
-                    _canonical_json([item.model_dump(mode="json") for item in provider_checks]),
-                    normalized,
-                    _canonical_json(action.model_dump(mode="json")),
-                    now,
-                    now,
-                    current.request_id,
-                ),
-            )
+            (
+                machines_json,
+                repositories_json,
+                provider_checks_json,
+                diagnostic,
+                operator_action_json,
+                now,
+                now,
+                current.request_id,
+                current.revision,
+                current.status,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("project provisioning changed during restore detachment")
 
     def detach_project_transfers_for_restore(
         self,

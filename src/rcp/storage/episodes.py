@@ -152,6 +152,30 @@ class EpisodeStoreMixin:
             ).fetchall()
         return [self._episode_record(row) for row in rows]
 
+    def auto_research_episode_ids(self, episode_id: str | None = None) -> list[str]:
+        """Return Auto-research episode ids without scanning every project."""
+
+        with self.connection() as connection:
+            if episode_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT episode_id
+                    FROM episodes
+                    WHERE mode = 'auto_research'
+                    ORDER BY created_at, episode_id
+                    """
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT episode_id
+                    FROM episodes
+                    WHERE episode_id = ? AND mode = 'auto_research'
+                    """,
+                    (episode_id,),
+                ).fetchall()
+        return [str(row["episode_id"]) for row in rows]
+
     def episodes_awaiting_report(self) -> list[EpisodeRecord]:
         """Return durable hidden wrap-ups that startup must reconcile."""
 
@@ -223,7 +247,12 @@ class EpisodeStoreMixin:
             """
             UPDATE experiment_episode_state
             SET native_session_id = NULL, stage_host = NULL, stage_root = NULL, updated_at = ?
-            WHERE native_session_id IS NOT NULL OR stage_host IS NOT NULL OR stage_root IS NOT NULL
+            WHERE episode_id IN (
+                SELECT episode_id FROM episodes
+                WHERE mode = 'experiment_loop'
+                  AND status IN ('queued', 'running', 'stopping', 'wrapping_up')
+            )
+              AND (native_session_id IS NOT NULL OR stage_host IS NOT NULL OR stage_root IS NOT NULL)
             """,
             (now,),
         )
@@ -780,73 +809,92 @@ class EpisodeStoreMixin:
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
-            ).fetchone()
-            if row is None:
-                raise KeyError(episode_id)
-            episode = self._episode_record(row)
-            if episode.ending == "stopped" and episode.wrapup_state == "skipped":
-                return episode
-            if (
-                connection.execute(
-                    "SELECT 1 FROM episode_wrapups WHERE episode_id = ?", (episode_id,)
-                ).fetchone()
-                is not None
-            ):
-                raise EpisodeNotRunning("report generation has already begun")
-            if episode.status not in {"queued", "running", "stopping"}:
-                raise EpisodeNotRunning("the episode has already ended")
-            receipt_json, receipt_sha256 = compact_episode_receipt(
-                {
-                    "diagnostic": diagnostic,
-                    "ending": "stopped",
-                    "episode_id": episode_id,
-                }
-            )
-            concluding = connection.execute(
-                """
-                SELECT operation_id FROM episode_invocations
-                WHERE episode_id = ? ORDER BY invocation_number DESC LIMIT 1
-                """,
-                (episode_id,),
-            ).fetchone()
-            wrapup = EpisodeWrapupRecord(
-                episode_id=episode_id,
-                ending="stopped",
-                partial=True,
-                concluding_operation_id=(concluding["operation_id"] if concluding else None),
-                receipt_json=receipt_json,
-                receipt_sha256=receipt_sha256,
-                state="skipped",
-                diagnostic=diagnostic,
-                created_at=now,
-                updated_at=now,
-                finished_at=now,
-            )
-            self._insert_episode_wrapup(connection, wrapup)
-            connection.execute(
-                """
-                UPDATE episodes
-                SET status = 'stopped', stop_requested_at = COALESCE(stop_requested_at, ?),
-                    stop_settled_at = COALESCE(stop_settled_at, ?), ending = 'stopped',
-                    ending_diagnostic = ?, wrapup_state = 'skipped', wrapup_error = NULL,
-                    updated_at = ?, ended_at = COALESCE(ended_at, ?)
-                WHERE episode_id = ?
-                """,
-                (now, now, diagnostic, now, now, episode_id),
-            )
-            self._terminalize_auto_research_child_experiment_with_notice(
+            return self._mark_episode_stop_skipped_in_connection(
                 connection,
-                child_episode_id=episode_id,
-                status="stopped",
-                ending="stopped",
+                episode_id,
                 diagnostic=diagnostic,
-                created_at=now,
+                now=now,
             )
-        stored = self.episode(episode_id)
-        assert stored is not None
-        return stored
+
+    def _mark_episode_stop_skipped_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        episode_id: str,
+        *,
+        diagnostic: str | None,
+        now: str,
+    ) -> EpisodeRecord:
+        """Settle Stop through a caller-owned write transaction."""
+
+        row = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(episode_id)
+        episode = self._episode_record(row)
+        if episode.ending == "stopped" and episode.wrapup_state == "skipped":
+            return episode
+        if (
+            connection.execute(
+                "SELECT 1 FROM episode_wrapups WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+            is not None
+        ):
+            raise EpisodeNotRunning("report generation has already begun")
+        if episode.status not in {"queued", "running", "stopping"}:
+            raise EpisodeNotRunning("the episode has already ended")
+        receipt_json, receipt_sha256 = compact_episode_receipt(
+            {
+                "diagnostic": diagnostic,
+                "ending": "stopped",
+                "episode_id": episode_id,
+            }
+        )
+        concluding = connection.execute(
+            """
+            SELECT operation_id FROM episode_invocations
+            WHERE episode_id = ? ORDER BY invocation_number DESC LIMIT 1
+            """,
+            (episode_id,),
+        ).fetchone()
+        wrapup = EpisodeWrapupRecord(
+            episode_id=episode_id,
+            ending="stopped",
+            partial=True,
+            concluding_operation_id=(concluding["operation_id"] if concluding else None),
+            receipt_json=receipt_json,
+            receipt_sha256=receipt_sha256,
+            state="skipped",
+            diagnostic=diagnostic,
+            created_at=now,
+            updated_at=now,
+            finished_at=now,
+        )
+        self._insert_episode_wrapup(connection, wrapup)
+        connection.execute(
+            """
+            UPDATE episodes
+            SET status = 'stopped', stop_requested_at = COALESCE(stop_requested_at, ?),
+                stop_settled_at = COALESCE(stop_settled_at, ?), ending = 'stopped',
+                ending_diagnostic = ?, wrapup_state = 'skipped', wrapup_error = NULL,
+                updated_at = ?, ended_at = COALESCE(ended_at, ?)
+            WHERE episode_id = ?
+            """,
+            (now, now, diagnostic, now, now, episode_id),
+        )
+        self._terminalize_auto_research_child_experiment_with_notice(
+            connection,
+            child_episode_id=episode_id,
+            status="stopped",
+            ending="stopped",
+            diagnostic=diagnostic,
+            created_at=now,
+        )
+        updated = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        assert updated is not None
+        return self._episode_record(updated)
 
     def allocate_episode_report_attempt(
         self,
@@ -1783,16 +1831,7 @@ class EpisodeStoreMixin:
 
     @staticmethod
     def _status_for_ending(ending: str) -> str:
-        try:
-            return {
-                "completed": "completed",
-                "exhausted": "needs_action",
-                "human_pause": "needs_action",
-                "failed": "failed",
-                "stopped": "stopped",
-            }[ending]
-        except KeyError as exc:
-            raise ValueError("the episode has no valid semantic ending") from exc
+        return _status_for_ending(ending)
 
 
 def migrate_legacy_episodes(connection: sqlite3.Connection) -> None:
@@ -1853,7 +1892,7 @@ def _migrate_campaign_episodes(connection: sqlite3.Connection) -> None:
             operational_used=len(invocation_rows),
         )
         ending = _campaign_ending(campaign, report)
-        status = _campaign_status(campaign, ending, report is not None)
+        status = _campaign_status(campaign, ending)
         wrapup_state = _legacy_wrapup_state(
             status=status, ending=ending, has_report=report is not None
         )
@@ -2385,12 +2424,10 @@ def _campaign_ending(campaign: sqlite3.Row, report: sqlite3.Row | None) -> str |
     }.get(str(campaign["status"]))
 
 
-def _campaign_status(campaign: sqlite3.Row, ending: str | None, has_report: bool) -> str:
+def _campaign_status(campaign: sqlite3.Row, ending: str | None) -> str:
     status = str(campaign["status"])
     if ending is None:
         return status
-    if status == "wrapping_up" and not has_report:
-        return _status_for_ending(ending)
     return _status_for_ending(ending)
 
 
@@ -2600,14 +2637,17 @@ def _insert_legacy_wrapup(
     )
 
 
-def _status_for_ending(ending: str | None) -> str:
-    return {
-        "completed": "completed",
-        "exhausted": "needs_action",
-        "human_pause": "needs_action",
-        "failed": "failed",
-        "stopped": "stopped",
-    }.get(ending, "failed")
+def _status_for_ending(ending: str) -> str:
+    try:
+        return {
+            "completed": "completed",
+            "exhausted": "needs_action",
+            "human_pause": "needs_action",
+            "failed": "failed",
+            "stopped": "stopped",
+        }[ending]
+    except KeyError as exc:
+        raise ValueError("the episode has no valid semantic ending") from exc
 
 
 def _legacy_table_exists(connection: sqlite3.Connection, table: str) -> bool:

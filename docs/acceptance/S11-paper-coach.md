@@ -7,6 +7,7 @@ covered_by:
   - tests/test_api.py::test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record
   - tests/test_api.py::test_paper_resume_rejects_settings_change_before_launch
 invariants: [3, 4]
+last_checked: 2026-09-01 — focused coverage passed; the full browser journey was not redriven.
 ---
 
 # The coach reads and never writes

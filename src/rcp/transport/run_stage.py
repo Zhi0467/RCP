@@ -114,6 +114,9 @@ for target in glob.glob('/tmp/rcp-run.*'):
             )
         if result.returncode or not _safe_root(remote_root):
             raise StateUnavailable(result.stderr.strip() or "could not create remote run stage")
+        safe = self._directory_probe(remote_root)
+        if safe.returncode:
+            raise StateUnavailable(safe.stderr.strip() or "could not safely adopt remote run stage")
         self.root = PurePosixPath(remote_root)
         prepared = self._ssh(["mkdir", "-p", str(self.root / "inputs"), str(self.workspace)])
         if prepared.returncode:
@@ -148,7 +151,7 @@ for target in glob.glob('/tmp/rcp-run.*'):
         return None if result.returncode == 255 else False
 
     def _directory_probe(self, root: str) -> subprocess.CompletedProcess[str]:
-        """Check the saved root itself without following a replacement symlink."""
+        """Check the saved root itself without following an unsafe replacement."""
 
         script = """
 import os,stat,sys
@@ -158,7 +161,12 @@ except (FileNotFoundError,NotADirectoryError):
     raise SystemExit(1)
 except OSError as exc:
     print(str(exc),file=sys.stderr); raise SystemExit(2)
-raise SystemExit(0 if stat.S_ISDIR(info.st_mode) else 1)
+if not stat.S_ISDIR(info.st_mode):
+    print('remote run stage is not a directory',file=sys.stderr); raise SystemExit(1)
+if info.st_uid!=os.geteuid():
+    print('remote run stage has the wrong owner',file=sys.stderr); raise SystemExit(1)
+if stat.S_IMODE(info.st_mode)!=0o700:
+    print('remote run stage has unsafe permissions',file=sys.stderr); raise SystemExit(1)
 """
         return self._ssh(["python3", "-c", script, root])
 

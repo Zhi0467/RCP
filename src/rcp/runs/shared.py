@@ -35,6 +35,9 @@ if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
 
 _STAGE_RETENTION_SECONDS = RUN_STAGE_RETENTION_DAYS * 24 * 3600
+_LOCAL_STAGE_DIRECTORY_FLAGS = (
+    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+)
 _MAX_PATCH_CANDIDATES = 8
 _STATE_PATH_FIELDS = (
     "graph_path",
@@ -226,6 +229,27 @@ def _existing_patch_digest(
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _existing_exact_patch_digest(
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+) -> str | None:
+    """Fingerprint only the exact ``patch.json`` consumed by chat runs."""
+
+    try:
+        if remote_stage is not None:
+            if "patch.json" not in remote_stage.list_workspace_files():
+                return None
+            text = remote_stage.read_text(remote_stage.workspace / "patch.json")
+        else:
+            path = workspace / "patch.json"
+            if not path.is_file():
+                return None
+            text = path.read_text(encoding="utf-8")
+    except (OSError, StateUnavailable, ValueError):
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _retry_deliverable_is_unchanged(
     execution: AgentTaskExecution | None,
     *,
@@ -334,6 +358,21 @@ def _sweep_stale_stages(root: Path, *, now: float) -> None:
                 # Retention is best effort; a live run must not fail because an
                 # unrelated expired stage could not be reclaimed.
                 continue
+
+
+def _touch_local_stage(stage: Path) -> None:
+    """Refresh one exact local stage without following its final path component."""
+
+    if not stage.is_absolute():
+        raise ValueError("local run stage must be absolute")
+    try:
+        stage_fd = os.open(stage, _LOCAL_STAGE_DIRECTORY_FLAGS)
+    except OSError as exc:
+        raise StateUnavailable(f"local run stage is unavailable: {stage}") from exc
+    try:
+        os.utime(stage_fd, None)
+    finally:
+        os.close(stage_fd)
 
 
 def _remove_local_tree(target: Path, boundary: Path) -> None:

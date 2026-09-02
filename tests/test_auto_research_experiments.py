@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import threading
-import time
 import uuid
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
@@ -38,7 +37,7 @@ from rcp.storage import (
     ProjectRecord,
 )
 
-from .helpers import fabricated_authorizer, wait_for_task
+from .helpers import fabricated_authorizer, wait_for_task, wait_until
 
 EXPERIMENT_ID = "exp/orchestrated-loop"
 PROJECT_ID = "project"
@@ -1251,14 +1250,18 @@ def test_restart_recovers_the_stopped_predecessor_before_starting_its_replacemen
 
     finish_recovery.set()
     wait_for_task(store, recovery.operation_id, expect="succeeded")
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
+
+    def stopped_predecessor():
         stopped_predecessor = store.episode(STOP_RECOVERY_PREDECESSOR)
         if stopped_predecessor is not None and stopped_predecessor.status == "stopped":
-            break
-        time.sleep(0.01)
-    stopped_predecessor = store.episode(STOP_RECOVERY_PREDECESSOR)
-    assert stopped_predecessor is not None and stopped_predecessor.status == "stopped"
+            return stopped_predecessor
+        return None
+
+    wait_until(
+        stopped_predecessor,
+        timeout=2,
+        detail="the recovered predecessor did not settle its Stop fence",
+    )
     assert "experiment_stop_recovery" in {
         receipt.category for receipt in store.agent_task_receipts(recovery.operation_id)
     }
@@ -1317,7 +1320,7 @@ def test_kickoff_replaces_a_live_predecessor_even_when_its_runtime_is_idle(
     assert route is not None and route.state == "running"
 
 
-def test_pending_replacement_rechecks_readiness_and_emits_terminal_failure_notice(
+def test_pending_replacement_waits_for_temporary_readiness_and_retries_same_intent(
     manifest: Manifest,
     tmp_path: Path,
 ) -> None:
@@ -1367,16 +1370,81 @@ def test_pending_replacement_rechecks_readiness_and_emits_terminal_failure_notic
     release.set()
     wait_for_task(store, predecessor.operation_id, expect="succeeded")
 
-    assert coordinator.reconcile(parent_id) == 1
+    assert coordinator.reconcile(parent_id) == 0
     route = store.auto_research_child_experiment(READINESS_REPLACEMENT)
     assert route is not None
-    assert route.state == "cancelled"
-    assert route.terminal_diagnostic is not None
-    assert "Blocker blk/new-readiness-failure is open." in route.terminal_diagnostic
+    assert route.state == "pending"
+    assert route.terminal_diagnostic is None
     notices = store.auto_research_lifecycle_notices(parent_id)
     failed = [item for item in notices if item.source_id == READINESS_REPLACEMENT]
-    assert len(failed) == 1
-    assert failed[0].source_kind == "experiment_replacement"
-    assert failed[0].source_event == "failed"
-    assert failed[0].payload["status"] == "failed"
-    assert "Blocker blk/new-readiness-failure is open." in str(failed[0].payload["diagnostic"])
+    assert failed == []
+
+    blocker = service.history.state().nodes["blk/new-readiness-failure"]
+    service.history.append(
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="Resolved the temporary replacement gate.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "update_nodes",
+                    "nodes": [
+                        {
+                            "id": blocker.id,
+                            "base_updated_rev": blocker.updated_rev,
+                            "changes": {"status": "resolved"},
+                        }
+                    ],
+                }
+            ],
+        )
+    )
+
+    assert coordinator.reconcile(parent_id) == 1
+    route = store.auto_research_child_experiment(READINESS_REPLACEMENT)
+    assert route is not None and route.state == "running"
+    assert route.request == {
+        "goal": "Run after the predecessor stops.",
+        "invocation_limit": None,
+    }
+
+
+def test_pending_replacement_with_corrupt_durable_intent_fails_terminally(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    _service_value, store, _background, coordinator, parent_id, root_id = _setup(
+        manifest,
+        tmp_path,
+    )
+    child_id = "00000000-0000-4000-8000-000000000415"
+    admission_id = "admission-corrupt-replacement"
+    _admit(
+        store,
+        parent_episode_id=parent_id,
+        child_episode_id=child_id,
+        admission_id=admission_id,
+    )
+    now = store.now()
+    store.reserve_auto_research_experiment_replacement(
+        AutoResearchChildExperimentRecord(
+            child_episode_id=child_id,
+            auto_research_episode_id=parent_id,
+            project_id=PROJECT_ID,
+            control_node_id=EXPERIMENT_ID,
+            state="pending",
+            replaces_episode_id="00000000-0000-4000-8000-000000000416",
+            request={"goal": 17, "invocation_limit": None},
+            parent_operation_id=root_id,
+            created_at=now,
+            updated_at=now,
+        ),
+        admission_id=admission_id,
+    )
+
+    assert coordinator.reconcile(parent_id) == 1
+    route = store.auto_research_child_experiment(child_id)
+    assert route is not None and route.state == "cancelled"
+    assert route.terminal_diagnostic is not None
+    assert "invalid goal" in route.terminal_diagnostic

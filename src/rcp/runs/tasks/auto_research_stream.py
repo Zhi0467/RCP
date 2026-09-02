@@ -64,7 +64,7 @@ from rcp.runs.chat import (
     _read_chat_patch,
 )
 from rcp.runs.shared import (
-    _existing_patch_digest,
+    _existing_exact_patch_digest,
     _parent_task_contract_path,
     _ProviderOutcome,
     _record_agent_launch_receipt,
@@ -184,7 +184,7 @@ async def stream_auto_research_orchestrator_run(
             ),
         )
         context = _auto_research_context(service, turn.request, stage)
-        _prepare_orchestrator_handoffs(execution, turn, stage)
+        _prepare_turn_handoffs(execution, turn, stage)
 
         messages_path = _stage_claimed_mail(execution, turn, stage)
         lifecycle_path = _stage_claimed_lifecycle(execution, turn, stage)
@@ -254,6 +254,7 @@ async def stream_auto_research_orchestrator_run(
             )
             read_dirs = _chat_read_dirs(
                 context,
+                stage.local,
                 stage.remote,
                 service,
                 turn.request.run_on or "",
@@ -262,6 +263,7 @@ async def stream_auto_research_orchestrator_run(
                 context,
                 service,
                 turn.request.run_on or "",
+                local_stage=stage.local,
                 workspace=stage.workspace,
                 remote_stage=stage.remote,
                 data_dir=data_dir,
@@ -270,7 +272,7 @@ async def stream_auto_research_orchestrator_run(
             )
             write_dirs = [Path(item) for item in write_scope.repository_roots]
             retry_patch_digest = (
-                _existing_patch_digest(stage.workspace, stage.remote)
+                _existing_exact_patch_digest(stage.workspace, stage.remote)
                 if execution.continuation == "retry"
                 else None
             )
@@ -444,7 +446,7 @@ async def stream_auto_research_worker_run(
             )
         stage = _open_worker_stage(service, data_dir, execution, turn)
         context = _auto_research_context(service, turn.request, stage)
-        _prepare_worker_handoffs(execution, turn, stage)
+        _prepare_turn_handoffs(execution, turn, stage)
 
         messages_path = _stage_claimed_mail(execution, turn, stage)
         token = _task_token(execution)
@@ -500,6 +502,7 @@ async def stream_auto_research_worker_run(
             )
             read_dirs = _chat_read_dirs(
                 context,
+                stage.local,
                 stage.remote,
                 service,
                 turn.request.run_on or "",
@@ -508,6 +511,7 @@ async def stream_auto_research_worker_run(
                 context,
                 service,
                 turn.request.run_on or "",
+                local_stage=stage.local,
                 workspace=stage.workspace,
                 remote_stage=stage.remote,
                 data_dir=data_dir,
@@ -516,7 +520,7 @@ async def stream_auto_research_worker_run(
             )
             write_dirs = [Path(item) for item in write_scope.repository_roots]
             retry_patch_digest = (
-                _existing_patch_digest(stage.workspace, stage.remote)
+                _existing_exact_patch_digest(stage.workspace, stage.remote)
                 if execution.continuation == "retry"
                 else None
             )
@@ -1099,34 +1103,9 @@ def _claimed_messages(
     ]
 
 
-def _prepare_worker_handoffs(
+def _prepare_turn_handoffs(
     execution: AgentTaskExecution,
-    turn: _CanonicalWorkerTurn,
-    stage: _WorkerStage,
-) -> None:
-    cleared = execution.store.auto_research_handoffs_cleared(turn.allocation_operation_id)
-    if turn.recovering_allocation and cleared:
-        return
-    _clear_stale_turn_handoffs(stage.workspace, stage.remote)
-    execution.store.mark_auto_research_handoffs_cleared(turn.allocation_operation_id)
-    execution.store.record_agent_task_receipt(
-        turn.allocation_operation_id,
-        _HANDOFFS_CLEARED_RECEIPT,
-        {
-            "version": 1,
-            "files": [
-                "patch.json",
-                "watch.json",
-                AUTO_RESEARCH_MAIL_HANDOFF_FILE,
-                AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE,
-            ],
-        },
-    )
-
-
-def _prepare_orchestrator_handoffs(
-    execution: AgentTaskExecution,
-    turn: _CanonicalOrchestratorTurn,
+    turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
     stage: _WorkerStage,
 ) -> None:
     cleared = execution.store.auto_research_handoffs_cleared(turn.allocation_operation_id)
@@ -1835,7 +1814,7 @@ async def _settle_worker_patch(
                 execution=execution,
                 role=f"auto_research_{_actor_role}_patch_correction_{correction_rounds}",
             )
-            pre_launch_digest = _existing_patch_digest(stage.workspace, stage.remote)
+            pre_launch_digest = _existing_exact_patch_digest(stage.workspace, stage.remote)
             _record_agent_launch_receipt(
                 execution,
                 cast(RunRequest, turn.request),
