@@ -12,6 +12,7 @@ from dataclasses import replace
 
 import pytest
 
+import rcp
 from rcp import __version__
 from rcp.__main__ import (
     EXIT_REFUSED_OCCUPIED,
@@ -81,6 +82,36 @@ def _serve_args(**overrides) -> Namespace:
     }
     values.update(overrides)
     return Namespace(**values)
+
+
+def test_version_prints_build_identity_without_a_subcommand(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(rcp, "__version__", "0.3.2")
+    monkeypatch.setattr(sys, "argv", ["rcp", "--version"])
+
+    main()
+
+    assert capsys.readouterr().out == "rcp 0.3.2 build none commit none\n"
+
+
+def test_version_machine_readable_uses_the_server_event_shape(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(rcp, "__version__", "0.3.2+build.412.gfe06636")
+    monkeypatch.setattr(sys, "argv", ["rcp", "--version", "--machine-readable"])
+
+    main()
+
+    event = json.loads(capsys.readouterr().out)
+    fields = {item["name"]: item["value"] for item in event["step"]["fields"]}
+    assert event["version"] == 1
+    assert event["event"] == "step"
+    assert event["command"] == "version"
+    assert event["step"]["state"] == "succeeded"
+    assert fields == {
+        "version": "0.3.2+build.412.gfe06636",
+        "base_version": "0.3.2",
+        "build": 412,
+        "commit": "fe06636",
+        "outcome": "succeeded",
+    }
 
 
 def test_instance_lock_rejects_a_second_server_for_the_same_data(tmp_path) -> None:

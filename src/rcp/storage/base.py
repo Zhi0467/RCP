@@ -126,6 +126,105 @@ class AppStoreBase:
             raise ValueError("the SQLite snapshot failed its integrity check")
         return store
 
+    def storage_schema_ledger_head(self) -> int:
+        """Return the newest migration recorded in this store's ledger."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT MAX(migration_version) FROM storage_schema_migrations"
+            ).fetchone()
+        return int(row[0] or 0)
+
+    @classmethod
+    def storage_schema_registry_head(cls) -> int:
+        """Return the newest migration this RCP build knows how to apply."""
+
+        return cls._STORAGE_SCHEMA_MIGRATIONS[-1][0]
+
+    def check_storage_schema_migrations(self) -> tuple[int, int, tuple[str, ...]]:
+        """Validate a read-only database and report its known pending migrations."""
+
+        if not getattr(self, "_read_only_snapshot", False):
+            raise ValueError("storage migration checks require a read-only SQLite snapshot")
+        registry = self._STORAGE_SCHEMA_MIGRATIONS
+        registry_head = registry[-1][0]
+        with self.connection() as connection:
+            tables = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            }
+            ledger_exists = "storage_schema_migrations" in tables
+            if ledger_exists:
+                rows = connection.execute(
+                    """
+                    SELECT migration_version, migration_name
+                    FROM storage_schema_migrations
+                    ORDER BY migration_version
+                    """
+                ).fetchall()
+                applied = tuple((int(row[0]), str(row[1])) for row in rows)
+                if not self._storage_schema_has_rcp_core(tables):
+                    raise RuntimeError(
+                        "RCP storage schema validation failed: RCP tables are missing"
+                    )
+            else:
+                applied = ()
+                if tables and not self._storage_schema_is_known_pre_ledger(connection, tables):
+                    raise RuntimeError(
+                        "RCP storage schema validation failed: migration ledger is missing"
+                    )
+
+            if applied != registry[: len(applied)]:
+                raise RuntimeError(
+                    "RCP storage schema validation failed: migration ledger is unknown"
+                )
+            if any(name.startswith("_storage_migration_old_") for name in tables):
+                raise RuntimeError(
+                    "RCP storage schema validation failed: migration scratch table remains"
+                )
+
+            foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if foreign_keys:
+                raise RuntimeError("RCP storage schema validation failed: foreign keys are invalid")
+            quick_check = [
+                str(row[0]) for row in connection.execute("PRAGMA quick_check").fetchall()
+            ]
+            if quick_check != ["ok"]:
+                raise RuntimeError(
+                    "RCP storage schema validation failed: SQLite quick check failed"
+                )
+
+            pending = tuple(name for _, name in registry[len(applied) :])
+            if not pending:
+                self._validate_storage_schema(connection)
+        ledger_head = applied[-1][0] if applied else 0
+        return ledger_head, registry_head, pending
+
+    def _storage_schema_is_known_pre_ledger(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+    ) -> bool:
+        """Recognize the retained server-era database family that predates the ledger."""
+
+        if not self._storage_schema_has_rcp_core(tables):
+            return False
+        current_without_ledger = {
+            (row[0], row[1]): row
+            for row in self._baseline_storage_schema()
+            if row[1] != "storage_schema_migrations"
+        }
+        actual = {(row[0], row[1]): row for row in self._storage_schema(connection)}
+        return actual != current_without_ledger
+
+    @staticmethod
+    def _storage_schema_has_rcp_core(tables: set[str]) -> bool:
+        required = {"graph_run_events", "graph_runs", "projects", "space_identity"}
+        return required <= tables
+
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
         if getattr(self, "_read_only_snapshot", False):
