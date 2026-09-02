@@ -29,7 +29,7 @@ repos:
         name: prettier
         entry: npm --prefix web exec -- prettier --write --ignore-unknown
         language: system
-        files: ^web/(src|tests)/.*\.(ts|tsx|mjs|css)$|^web/[^/]*\.(json|html)$
+        files: ^web/(src|tests)/.*\.(ts|tsx|mjs|css)$|^web/[^/]*\.(json|html|ts)$|^web/src-tauri/(capabilities/.*|[^/]+\.json)$
         require_serial: true
 
   - repo: https://github.com/pre-commit/pre-commit-hooks

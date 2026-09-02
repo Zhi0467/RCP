@@ -598,9 +598,14 @@ def _dispatcher(store: AppStore, replies: list[str] | None = None) -> AutoResear
             stop=unavailable,
             message=message,
             watch_graph=unavailable,
+            apply=unavailable,
+            episode=unavailable,
+            inbox=unavailable,
             finish=lambda _context, _planned_effect_id: AutoResearchCommandEffectResult(),
-            seat_node_type=lambda _project_id, _node_id: "blocker",
+            seat_node_type=lambda _project_id, _episode_id, _node_id: "blocker",
             reconcile_unknown=lambda _context, _request, _planned_effect_id: None,
+            worker_lookup=unavailable,
+            verify_spawn=unavailable,
         ),
     )
 

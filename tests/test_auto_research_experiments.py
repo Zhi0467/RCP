@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import threading
-import time
 import uuid
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
@@ -38,7 +37,7 @@ from rcp.storage import (
     ProjectRecord,
 )
 
-from .helpers import fabricated_authorizer, wait_for_task
+from .helpers import fabricated_authorizer, wait_for_task, wait_until
 
 EXPERIMENT_ID = "exp/orchestrated-loop"
 PROJECT_ID = "project"
@@ -1251,14 +1250,18 @@ def test_restart_recovers_the_stopped_predecessor_before_starting_its_replacemen
 
     finish_recovery.set()
     wait_for_task(store, recovery.operation_id, expect="succeeded")
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
+
+    def stopped_predecessor():
         stopped_predecessor = store.episode(STOP_RECOVERY_PREDECESSOR)
         if stopped_predecessor is not None and stopped_predecessor.status == "stopped":
-            break
-        time.sleep(0.01)
-    stopped_predecessor = store.episode(STOP_RECOVERY_PREDECESSOR)
-    assert stopped_predecessor is not None and stopped_predecessor.status == "stopped"
+            return stopped_predecessor
+        return None
+
+    wait_until(
+        stopped_predecessor,
+        timeout=2,
+        detail="the recovered predecessor did not settle its Stop fence",
+    )
     assert "experiment_stop_recovery" in {
         receipt.category for receipt in store.agent_task_receipts(recovery.operation_id)
     }

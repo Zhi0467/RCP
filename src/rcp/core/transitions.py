@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -67,17 +66,6 @@ _TRANSITION_PROVENANCE_FIELDS = (
     "task_id",
     "episode_id",
     "branch_merge",
-)
-
-
-@dataclass(frozen=True)
-class TransitionRule:
-    rule_id: str
-
-
-RULE_REGISTRY: tuple[TransitionRule, ...] = (
-    TransitionRule(STATUS_EVENT_RULE_ID),
-    TransitionRule(GUIDANCE_RULE_ID),
 )
 
 

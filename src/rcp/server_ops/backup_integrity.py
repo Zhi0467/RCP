@@ -3,25 +3,16 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
 
+from rcp.server_ops._local_primitives import canonical_json_bytes, canonical_json_line
 from rcp.server_ops.backup_models import BackupArchiveManifest
 
 
 def canonical_backup_manifest_bytes(manifest: BackupArchiveManifest) -> bytes:
     """Return the one byte representation stored in protected archives."""
 
-    return (
-        json.dumps(
-            manifest.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
+    return canonical_json_line(manifest.model_dump(mode="json"))
 
 
 def database_schema_sha256(connection: sqlite3.Connection) -> str:
@@ -44,14 +35,7 @@ def database_schema_sha256(connection: sqlite3.Connection) -> str:
         }
         for row in rows
     ]
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 __all__ = ["canonical_backup_manifest_bytes", "database_schema_sha256"]

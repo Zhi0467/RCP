@@ -46,13 +46,16 @@ path = "src/rcp/__init__.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --strict-markers"
 
 [tool.ruff]
 target-version = "py311"
 line-length = 100
 extend-exclude = [
-  "web",
+  "web/dist",
+  "web/node_modules",
+  "web/src-tauri/gen",
+  "web/src-tauri/target",
 ]
 
 [tool.ruff.lint]

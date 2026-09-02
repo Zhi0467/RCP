@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import pwd
 import re
@@ -31,6 +30,25 @@ from rcp.limits import (
     MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     SERVER_RESTORE_DECRYPT_TIMEOUT_SECONDS,
+)
+from rcp.server_ops._local_primitives import (
+    PrivateFileReadError,
+    canonical_json_bytes,
+    canonical_json_line,
+    canonical_json_text,
+    read_stable_private_file,
+)
+from rcp.server_ops._local_primitives import (
+    fsync_directory as _fsync_directory,
+)
+from rcp.server_ops._local_primitives import (
+    fsync_file as _fsync_file,
+)
+from rcp.server_ops._local_primitives import (
+    fsync_file_tree as _fsync_tree,
+)
+from rcp.server_ops._local_primitives import (
+    normalized_absolute_non_root_path as _absolute,
 )
 from rcp.server_ops.backup import BACKUP_ARCHIVE_FORMAT, require_age_1x
 from rcp.server_ops.backup_integrity import (
@@ -132,13 +150,6 @@ class _StrictModel(BaseModel):
 def _digest(value: str, *, label: str) -> str:
     if len(value) != 64 or any(character not in _SHA256 for character in value):
         raise ValueError(f"{label} must be lowercase SHA-256")
-    return value
-
-
-def _absolute(value: str, *, label: str) -> str:
-    path = Path(value)
-    if not path.is_absolute() or path == Path("/") or ".." in path.parts or str(path) != value:
-        raise ValueError(f"{label} must be an absolute normalized non-root path")
     return value
 
 
@@ -1331,14 +1342,7 @@ def _restore_authority_resume_argv(
 
 
 def _canonical_sha256(value: object) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
 def restore_old_authority_boundary(manifest: BackupArchiveManifest) -> str:
@@ -2504,11 +2508,8 @@ class LinuxRestoreMachine:
             boundary = restore_member_roster_boundary(current.manifest.captured_at, members)
             if stale_member_id is not None or confirmed_boundary is None:
                 confirm = (*resume_argv, "--confirm-member-roster", boundary)
-                authority_text = json.dumps(
-                    [item.model_dump(mode="json") for item in members],
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
+                authority_text = canonical_json_text(
+                    [item.model_dump(mode="json") for item in members]
                 )
                 fields = [
                     NonsecretField(
@@ -2852,24 +2853,12 @@ class LinuxRestoreMachine:
 
     @staticmethod
     def _project_publication_receipt(capture, imported) -> RestoreProjectPublication:
-        payload = json.dumps(
-            capture.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        ).encode("utf-8")
+        payload = canonical_json_bytes(capture.model_dump(mode="json"))
         assert capture.main_head is not None
         imported_payload = (
             None
             if imported is None or not imported.present
-            else json.dumps(
-                imported.model_dump(mode="json"),
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-                allow_nan=False,
-            ).encode("utf-8")
+            else canonical_json_bytes(imported.model_dump(mode="json"))
         )
         return RestoreProjectPublication(
             project_id=capture.project_id,
@@ -3130,16 +3119,7 @@ def write_restore_journal(
     gid: int,
 ) -> None:
     path = restore_journal_path(layout)
-    payload = (
-        json.dumps(
-            journal.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
+    payload = canonical_json_line(journal.model_dump(mode="json"))
     if len(payload) > BACKUP_RECEIPT_MAX_BYTES:
         raise RestoreRefused("The restore journal exceeds its fixed size bound.")
     if path.exists() or path.is_symlink():
@@ -3485,27 +3465,23 @@ def _hash_regular_file(path: Path, *, expected_uid: int | None = None) -> tuple[
 
 
 def _read_private_file(path: Path, *, expected_uid: int, maximum: int) -> bytes:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        info = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid != expected_uid
-            or stat.S_IMODE(info.st_mode) != RESTORE_JOURNAL_MODE
-            or info.st_size > maximum
-        ):
-            raise RestoreRefused("A restore machine record has unsafe ownership, mode, or size.")
-        chunks: list[bytes] = []
-        remaining = info.st_size
-        while remaining:
-            chunk = os.read(descriptor, min(BACKUP_COPY_BUFFER_BYTES, remaining))
-            if not chunk:
-                raise RestoreRefused("A restore machine record is incomplete.")
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        return b"".join(chunks)
-    finally:
-        os.close(descriptor)
+        return read_stable_private_file(
+            path,
+            expected_uid=expected_uid,
+            expected_mode=RESTORE_JOURNAL_MODE,
+            maximum=maximum,
+            chunk_size=BACKUP_COPY_BUFFER_BYTES,
+        )
+    except PrivateFileReadError as exc:
+        messages = {
+            "unavailable": "A restore machine record is unavailable.",
+            "unsafe": "A restore machine record has unsafe ownership, mode, or size.",
+            "incomplete": "A restore machine record is incomplete.",
+            "changed": "A restore machine record changed while reading.",
+            "cannot_read": "A restore machine record cannot be read.",
+        }
+        raise RestoreRefused(messages[exc.failure]) from exc
 
 
 def _require_private_directory(path: Path, *, uid: int, gid: int, label: str) -> None:
@@ -3568,33 +3544,6 @@ def _chown_tree_parents(path: Path, root: Path, uid: int, gid: int) -> None:
         os.chown(current, uid, gid)
         os.chmod(current, RESTORE_DIRECTORY_MODE)
         current = current.parent
-
-
-def _fsync_file(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _fsync_tree(root: Path) -> None:
-    directories = [root]
-    for path in sorted(root.rglob("*")):
-        if path.is_dir():
-            directories.append(path)
-        elif path.is_file():
-            _fsync_file(path)
-    for directory in reversed(directories):
-        _fsync_directory(directory)
 
 
 def _worker_parser() -> argparse.ArgumentParser:

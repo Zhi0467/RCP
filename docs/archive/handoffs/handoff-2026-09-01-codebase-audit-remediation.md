@@ -1,14 +1,17 @@
 # Codebase audit remediation handoff
 
 Date: 2026-09-01
-Status: active. A read-only audit of `src/rcp`, `web/src`, `tests/`, and `docs/`
+Status: archived at human direction on 2026-09-01. A read-only audit of `src/rcp`, `web/src`, `tests/`, and `docs/`
 on 2026-09-01 produced the findings below. Every finding was verified by reading
 the code; the few that could only be reasoned about are marked *plausible*. Plan
 steps 1 through 6 are implemented and verified on the remediation branch: H1
-through H10 and M1 through M35 are closed with focused regressions. Steps 7
-and 8 remain. The
-human confirmed the list and asked for the remediation to land on a dedicated
-branch and pull request; implementation continues in that same PR.
+through H10 and M1 through M35 are closed with focused regressions. Steps 7 and
+8 landed their bounded, evidence-backed changes; the remaining refactor-only
+items are accepted exceptions below. The human asked to archive and push this
+state so another agent can finish the PR's final gate. The last full backend run
+reached 3,297 passed and 9 skipped before exposing two stale test expectations;
+both were corrected and their focused 18-test gate passes, but the full rerun was
+explicitly deferred to that next agent.
 
 Settled decisions:
 
@@ -430,6 +433,52 @@ across `transport/state.py`, `transport/run_stage.py`, `server_ops/update*.py`,
 
 ---
 
+## Accepted exceptions
+
+- Local filesystem and serialization primitives were consolidated inside
+  `server_ops`, where the duplicated contracts shared one lifecycle. Copies in
+  transfer, storage, sources, and core remain with their concrete owners;
+  crossing those boundaries would create a generic utility package rather than
+  remove a demonstrated drift bug. Independently shipped `remote_*.py` modules
+  remain self-contained by design.
+- The new Work-turn runtime owns the genuinely shared streaming, mailbox,
+  validation, Patch-apply, correction-read, and graph-repair mechanisms.
+  Remaining similarly shaped staging and repair functions retain different
+  watcher, episode, prompt, result-view, and postcommit policies; another
+  extraction would require the forbidden kind selector or a callback facade.
+- Storage creation/history helpers, Auto-research storage operations,
+  `build_revision_summaries`, patch-validator preparation, paper snapshot path,
+  and recovery role branches remain as focused storage/test seams. Deleting
+  them showed no runtime defect and would trade direct boundary tests for mocks.
+- `GraphTransitionManager` remains the live coherent transition owner.
+  `TransitionCauseRef(kind="event")` remains part of the persisted trace shape;
+  removing it would be a compatibility change rather than dead-code cleanup.
+- The acceptance agent remains an explicit, documented source-build mode used
+  by acceptance scenarios, CLI reload, health identity, and recovery tests. It
+  is not an accidental production fallback, so moving it outside the wheel
+  would break the maintained acceptance workflow.
+- Auto-research recovery's default attempt bound and watcher phase remain
+  explicit owner inputs. The two Experiment-control helpers retain distinct
+  main-target and branch-target reconciliation contracts.
+- Watcher storage branches on persisted continuation identity inside the
+  transaction that owns the state change. Dispatch policy remains at explicit
+  request composition; mailbox identity remains at the one authentication
+  owner; incoming transfer remains a named checkout protocol. Splitting these
+  paths would duplicate checks without changing authority.
+- Large-file and broad literal-limit findings are not defects by themselves.
+  `create_app`, `AppStore._initialize`, restore, and update checkpoint retain
+  their current boundaries absent a measured owner collision; checkpoint's
+  temporary restore is deliberate recovery proof. Operation-specific protocol
+  deadlines remain beside their owners instead of becoming context-free
+  constants.
+- Twenty-one ordinary polling loops now consume `tests.helpers.wait_until`.
+  Subprocess, PTY, live-server, detached-process, lock-timing, and negative
+  delivery loops remain explicit because their timing is the behavior under
+  test. Small duplicated fixture constructors and synthetic `/tmp` paths are
+  accepted as local test readability, not production contracts.
+
+---
+
 ## What the audit found solid
 
 Transactional discipline in storage (`BEGIN IMMEDIATE` plus compare-and-swap
@@ -461,12 +510,14 @@ pass for the touched area.
    M14, M22, M23, M24, M25, M26.
 6. **Frontend — completed 2026-09-01.** M29 to M35 and the section 3 frontend
    derivations, including the artifact sandbox and the two Stop surfaces.
-7. **Consolidation.** Filesystem primitives, `work.py` and `experiment_loop.py`
-   mechanism, auto-research duplicates, dead surface, unused configurability,
-   `noqa: F401` blocks, limits into `limits.py`.
-8. **Tests and docs.** `wait_until`, the handoff README, S96 status, the
+7. **Consolidation — completed 2026-09-01.** Shared local server primitives,
+   Work-turn runtime, Auto-research duplicates, confirmed server/web dead
+   surface, unused configuration, and storage `noqa: F401` blocks were closed;
+   the remaining refactor-only proposals are accepted exceptions above.
+8. **Tests and docs — completed 2026-09-01.** `wait_until`, the handoff README, S96 status, the
    `last_passed` key, ruff and pytest config, prettier scope, `AGENTS.md`
-   ordering and headroom.
+   ordering and headroom. The final full-suite rerun is transferred to the next
+   PR agent as recorded in the opening status.
 
 Findings closed as rejected are moved to a "Rejected" list in this file with a
 one-line reason in the same commit.

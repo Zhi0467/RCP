@@ -1,29 +1,12 @@
-import { buildExperimentRun } from "./runProjection";
 import type {
   AgentTask,
   AppView,
   ExperimentControlState,
-  ExperimentLoopHealth,
   ExperimentLoopIndexEntry,
   GraphNode,
   GraphTargetRef,
   WatcherRecord,
 } from "./types";
-
-export type ExperimentBoardSection = "needs_action" | "in_progress" | "finished";
-
-export interface ExperimentBoardItem {
-  entry: ExperimentLoopIndexEntry;
-  health: ExperimentLoopHealth;
-  section: ExperimentBoardSection;
-  lastActivityAt: string | null;
-}
-
-export interface ExperimentBoardProjection {
-  needsAction: ExperimentBoardItem[];
-  inProgress: ExperimentBoardItem[];
-  finished: ExperimentBoardItem[];
-}
 
 export interface ProjectHashRoute {
   projectId: string | null;
@@ -49,38 +32,6 @@ export interface ExperimentExecutionProjection {
 }
 
 const INDEX_ROUTE_PREFIX = "rcp-index:";
-
-export function buildExperimentBoard(
-  entries: ExperimentLoopIndexEntry[],
-): ExperimentBoardProjection {
-  const projection: ExperimentBoardProjection = {
-    needsAction: [],
-    inProgress: [],
-    finished: [],
-  };
-  for (const entry of entries) {
-    const run = buildExperimentRun(entry.node, entry.control, [], []);
-    const runSection = entry.control.run_section;
-    const item: ExperimentBoardItem = {
-      entry,
-      health: run.health,
-      section:
-        runSection === "running"
-          ? "in_progress"
-          : runSection === "actionable"
-            ? "needs_action"
-            : "finished",
-      lastActivityAt: entry.control.operational.current_last_activity_at,
-    };
-    if (item.section === "needs_action") projection.needsAction.push(item);
-    else if (item.section === "in_progress") projection.inProgress.push(item);
-    else projection.finished.push(item);
-  }
-  projection.needsAction.sort(compareBoardItems);
-  projection.inProgress.sort(compareBoardItems);
-  projection.finished.sort(compareBoardItems);
-  return projection;
-}
 
 export function experimentTerminalLabel(status: unknown): string {
   if (status === "completed") return "Succeeded";
@@ -393,17 +344,5 @@ function graphTargetsEqual(left: GraphTargetRef, right: GraphTargetRef): boolean
   return (
     left?.kind === right.kind &&
     (left.kind === "main" || (right.kind === "branch" && left.branch_id === right.branch_id))
-  );
-}
-
-function compareBoardItems(left: ExperimentBoardItem, right: ExperimentBoardItem): number {
-  const leftActivity = left.lastActivityAt ?? "";
-  const rightActivity = right.lastActivityAt ?? "";
-  return (
-    rightActivity.localeCompare(leftActivity) ||
-    right.entry.node.updated_rev - left.entry.node.updated_rev ||
-    left.entry.project_name.localeCompare(right.entry.project_name) ||
-    left.entry.project_id.localeCompare(right.entry.project_id) ||
-    left.entry.node.id.localeCompare(right.entry.node.id)
   );
 }

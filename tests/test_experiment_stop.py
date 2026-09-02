@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import time
 import uuid
 from pathlib import Path
 from threading import Event
@@ -25,7 +24,7 @@ from rcp.skill_registry import SkillReference
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
 from rcp.watchers import WatcherBinding
 
-from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task
+from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task, wait_until
 from .helpers import create_named_app as create_app
 
 EXPERIMENT_ID = "exp/bounded-loop"
@@ -614,14 +613,18 @@ def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
     assert request.session_id == f"restart-{status}-session"
     assert captured["continuation"] == expected_continuation
     assert recovered.stage_root == str(stage)
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
+
+    def stopped_episode():
         settled_episode = loop.store.episode(loop.episode_id)
         if settled_episode is not None and settled_episode.status == "stopped":
-            break
-        time.sleep(0.01)
-    else:
-        raise AssertionError("the recovered turn did not settle the durable Stop fence")
+            return settled_episode
+        return None
+
+    wait_until(
+        stopped_episode,
+        timeout=2,
+        detail="the recovered turn did not settle the durable Stop fence",
+    )
     assert loop.store.episode(loop.episode_id).invocations_used == 1  # type: ignore[union-attr]
     assert "experiment_stop_recovery" in {
         receipt.category for receipt in loop.store.agent_task_receipts(recovered.operation_id)

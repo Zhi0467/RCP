@@ -32,6 +32,8 @@ from rcp.limits import (
     SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
 )
+from rcp.server_ops._local_primitives import canonical_json_text
+from rcp.server_ops._local_primitives import canonical_uuid4 as _canonical_uuid4
 from rcp.server_ops.models import SERVER_CLI_MAX_STEPS, ServerStep, redact_server_text
 from rcp.server_ops.update_cutover import TERMINAL_UPDATE_STATES, UpdateOperationState
 from rcp.server_runtime import ServerMetadata, read_server_metadata
@@ -110,16 +112,6 @@ class ServerControlUnavailable(ServerControlError):
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
-
-
-def _canonical_uuid4(value: str, *, label: str) -> str:
-    try:
-        parsed = uuid.UUID(value)
-    except (AttributeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a canonical UUID4") from exc
-    if parsed.version != 4 or str(parsed) != value:
-        raise ValueError(f"{label} must be a lowercase, hyphenated canonical UUID4")
-    return value
 
 
 class ServerControlRequest(_StrictModel):
@@ -754,15 +746,7 @@ class ServerControlRestoreResult(_StrictModel):
         readback = (
             self.readback
             if isinstance(self.readback, RestoreActivationReadback)
-            else RestoreActivationReadback.model_validate_json(
-                json.dumps(
-                    self.readback,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                    allow_nan=False,
-                )
-            )
+            else RestoreActivationReadback.model_validate_json(canonical_json_text(self.readback))
         )
         if (
             readback.instance_id != self.instance_id

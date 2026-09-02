@@ -11,7 +11,12 @@ from rcp.agents.acceptance import ACCEPTANCE_GENERIC_WATCHER_MARKER
 from rcp.core.models import Patch
 from rcp.storage import AgentTaskRecord, AppStore, WatcherRecord
 
-from .helpers import TASK_SETTLE_TIMEOUT, append_fixture_patch, wait_for_task_response
+from .helpers import (
+    TASK_SETTLE_TIMEOUT,
+    append_fixture_patch,
+    wait_for_task_response,
+    wait_until,
+)
 from .helpers import create_named_app as create_app
 
 _EXPERIMENT_ID = "exp/acceptance-loop"
@@ -72,8 +77,7 @@ def _wait_for_new_task(
     *,
     timeout: float = TASK_SETTLE_TIMEOUT,
 ) -> AgentTaskRecord:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    def new_task() -> AgentTaskRecord | None:
         matches = [
             task
             for task in store.agent_tasks(project_id)
@@ -82,8 +86,14 @@ def _wait_for_new_task(
         if matches:
             assert len(matches) == 1
             return matches[0]
-        time.sleep(0.02)
-    raise AssertionError("watcher completion did not create its background task")
+        return None
+
+    return wait_until(
+        new_task,
+        timeout=timeout,
+        interval=0.02,
+        detail="watcher completion did not create its background task",
+    )
 
 
 def _wait_for_watcher_status(
@@ -96,14 +106,21 @@ def _wait_for_watcher_status(
 ) -> list[WatcherRecord]:
     """Wait for the lifespan-owned periodic poller to persist one status."""
 
-    deadline = time.monotonic() + timeout
     latest: list[WatcherRecord] = []
-    while time.monotonic() < deadline:
+
+    def matching_watchers() -> list[WatcherRecord] | None:
+        nonlocal latest
         latest = store.watchers(project_id, chat_id=chat_id)
         if len(latest) == 2 and all(record.status == status for record in latest):
             return latest
-        time.sleep(0.02)
-    raise AssertionError(f"periodic watcher poller did not persist {status}: {latest}")
+        return None
+
+    return wait_until(
+        matching_watchers,
+        timeout=timeout,
+        interval=0.02,
+        detail=lambda: f"periodic watcher poller did not persist {status}: {latest}",
+    )
 
 
 def _receipt_categories(task: dict[str, object]) -> set[str]:

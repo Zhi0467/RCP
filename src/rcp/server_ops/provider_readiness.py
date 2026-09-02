@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shlex
 import socket
@@ -15,6 +14,7 @@ from typing import BinaryIO, Literal, Protocol
 from rcp.agents.launcher import AgentLauncher, ProviderReadiness
 from rcp.config import AGENT_EXECUTION_PROFILES, AgentExecutionProfile, load_manifest
 from rcp.providers import AgentCapability, ProviderId, profile_for
+from rcp.server_ops._local_primitives import canonical_json_bytes
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.control import (
     ServerControlClient,
@@ -871,7 +871,7 @@ def _target(
         "binary_path": binary_path,
     }
     return _ProviderTarget(
-        target_id=hashlib.sha256(_canonical_json(identity).encode("utf-8")).hexdigest(),
+        target_id=hashlib.sha256(canonical_json_bytes(identity)).hexdigest(),
         number=number,
         profile=profile,
         provider=provider,
@@ -909,17 +909,7 @@ def _boundary_digest(
             for target in targets
         ],
     }
-    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
-
-
-def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def _resolved_runtime_id(provider: ProviderId, value: str) -> str:

@@ -4,11 +4,7 @@
   "description": "The RCP application window. Artifact preview windows intentionally do not match this capability.",
   "windows": ["main"],
   "remote": {
-    "urls": [
-      "http://127.0.0.1:*/*",
-      "http://localhost:*/*",
-      "https://*.rcp.localhost:*/*"
-    ]
+    "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*", "https://*.rcp.localhost:*/*"]
   },
   "permissions": [
     "core:default",

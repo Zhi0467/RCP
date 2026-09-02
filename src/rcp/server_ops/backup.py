@@ -5,7 +5,6 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import io
-import json
 import os
 import re
 import shutil
@@ -28,6 +27,20 @@ from rcp.limits import (
     BACKUP_COPY_BUFFER_BYTES,
     BACKUP_RECEIPT_MAX_BYTES,
     SERVER_BACKUP_CONFIGURATION_TIMEOUT_SECONDS,
+)
+from rcp.server_ops._local_primitives import (
+    PrivateFileReadError,
+    canonical_json_line,
+    read_stable_private_file,
+)
+from rcp.server_ops._local_primitives import (
+    canonical_uuid4 as _canonical_uuid4,
+)
+from rcp.server_ops._local_primitives import (
+    fsync_directory as _fsync_directory,
+)
+from rcp.server_ops._local_primitives import (
+    write_all as _write_all,
 )
 from rcp.server_ops.backup_capture import (
     BackupSQLiteCaptureReceipt,
@@ -88,16 +101,6 @@ class _StrictModel(BaseModel):
         frozen=True,
         revalidate_instances="always",
     )
-
-
-def _canonical_uuid4(value: str, *, label: str) -> str:
-    try:
-        parsed = uuid.UUID(value)
-    except (AttributeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a canonical UUID4") from exc
-    if parsed.version != 4 or str(parsed) != value:
-        raise ValueError(f"{label} must be a lowercase canonical UUID4")
-    return value
 
 
 def _aware_time(value: datetime, *, label: str) -> datetime:
@@ -1445,51 +1448,30 @@ def _atomic_replace_private(path: Path, payload: bytes) -> None:
 
 
 def _model_bytes(model: BaseModel) -> bytes:
-    payload = (
-        json.dumps(
-            model.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
+    payload = canonical_json_line(model.model_dump(mode="json"))
     if len(payload) > BACKUP_RECEIPT_MAX_BYTES:
         raise ValueError("backup status exceeds its size bound")
     return payload
 
 
 def _read_private_file(path: Path, *, expected_uid: int, maximum: int) -> bytes:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    chunks: list[bytes] = []
     try:
-        before = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_uid != expected_uid
-            or stat.S_IMODE(before.st_mode) != _ARCHIVE_MODE
-            or before.st_size > maximum
-        ):
-            raise ValueError("private backup record has unsafe ownership, mode, or size")
-        remaining = before.st_size
-        while remaining:
-            chunk = os.read(descriptor, min(BACKUP_COPY_BUFFER_BYTES, remaining))
-            if not chunk:
-                raise ValueError("private backup record is incomplete")
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        after = os.fstat(descriptor)
-        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-            after.st_mtime_ns,
-        ):
-            raise ValueError("private backup record changed while reading")
-    finally:
-        os.close(descriptor)
-    return b"".join(chunks)
+        return read_stable_private_file(
+            path,
+            expected_uid=expected_uid,
+            expected_mode=_ARCHIVE_MODE,
+            maximum=maximum,
+            chunk_size=BACKUP_COPY_BUFFER_BYTES,
+        )
+    except PrivateFileReadError as exc:
+        messages = {
+            "unavailable": "private backup record is unavailable",
+            "unsafe": "private backup record has unsafe ownership, mode, or size",
+            "incomplete": "private backup record is incomplete",
+            "changed": "private backup record changed while reading",
+            "cannot_read": "private backup record cannot be read",
+        }
+        raise ValueError(messages[exc.failure]) from exc
 
 
 def _validate_destination_boundary(destination: Path) -> None:
@@ -1552,23 +1534,6 @@ def discard_backup_capture_root(
 
 def _recipient_fingerprint(recipient: str) -> str:
     return hashlib.sha256(recipient.encode("ascii")).hexdigest()
-
-
-def _write_all(descriptor: int, payload: bytes) -> None:
-    view = memoryview(payload)
-    while view:
-        written = os.write(descriptor, view)
-        if written <= 0:
-            raise OSError("short backup write")
-        view = view[written:]
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 __all__ = [

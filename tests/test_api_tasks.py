@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 import uuid
 
 import httpx
@@ -11,8 +10,9 @@ from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.storage import ACTIVE_AGENT_TASK_STATUSES
 
-from .helpers import append_fixture_patch, create_named_app, seed_patch
+from .helpers import append_fixture_patch, create_named_app, seed_patch, wait_until
 
 
 def _event_frame(event: AgentEvent) -> str:
@@ -24,15 +24,15 @@ def _wait_for_run(
     project_id: str,
     operation_id: str,
 ) -> dict[str, object]:
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
+    def settled_run() -> dict[str, object] | None:
         response = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
         assert response.status_code == 200
         record = response.json()
-        if record["status"] not in {"queued", "running"}:
+        if record["status"] not in ACTIVE_AGENT_TASK_STATUSES:
             return record
-        time.sleep(0.01)
-    raise AssertionError("background run did not finish")
+        return None
+
+    return wait_until(settled_run, timeout=2, detail="background run did not finish")
 
 
 @pytest.mark.parametrize("action", ["content", "download"])

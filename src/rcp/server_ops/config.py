@@ -14,6 +14,7 @@ from typing import Literal
 import tomlkit
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
+from rcp.server_ops._local_primitives import fsync_directory as _fsync_directory
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import SERVER_CLI_MAX_FIELD_CHARS
 
@@ -353,14 +354,6 @@ def _reject_symlink_ancestry(path: Path) -> None:
             raise ValueError(
                 f"installed-server configuration ancestry cannot contain a symlink: {candidate}"
             )
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 __all__ = [

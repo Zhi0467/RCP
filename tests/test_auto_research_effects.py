@@ -1352,7 +1352,14 @@ def test_watch_graph_uses_live_state_and_the_explicit_execution_host(tmp_path) -
     context = _context(store, auto_research, root)
     planned_watcher_id = str(uuid.uuid4())
 
-    assert effects.seat_node_type(auto_research.project_id, "blk/check") == "blocker"
+    assert (
+        effects.seat_node_type(
+            auto_research.project_id,
+            auto_research.episode_id,
+            "blk/check",
+        )
+        == "blocker"
+    )
     outcome = effects.watch_graph(
         context,
         WatchGraphArguments(

@@ -90,6 +90,7 @@ from .helpers import (
     refresh_patch,
     seed_patch,
     shape_invalid_patch,
+    wait_until,
 )
 from .helpers import wait_for_task_response as _wait_for_run
 
@@ -5144,15 +5145,19 @@ def _wait_for_status(
     operation_id: str,
     statuses: set[str],
 ) -> dict[str, object]:
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
+    def matching_status() -> dict[str, object] | None:
         response = client.get(f"/api/projects/{project_id}/tasks/{operation_id}")
         assert response.status_code == 200
         record = response.json()
         if record["status"] in statuses:
             return record
-        time.sleep(0.01)
-    raise AssertionError(f"background run did not reach {sorted(statuses)}")
+        return None
+
+    return wait_until(
+        matching_status,
+        timeout=2,
+        detail=f"background run did not reach {sorted(statuses)}",
+    )
 
 
 @pytest.mark.asyncio

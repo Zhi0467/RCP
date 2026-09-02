@@ -19,8 +19,8 @@ import http.cookies
 import http.server
 import ipaddress
 import os
-import socket
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
@@ -129,15 +129,31 @@ def _generate_certificate(directory: Path, name: str, hosts: list[str]) -> tuple
     san = ",".join(f"DNS:{host}" for host in hosts)
     subprocess.run(
         [
-            "openssl", "req", "-x509", "-nodes",
-            "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
-            "-sha256", "-days", str(CERT_DAYS),
-            "-keyout", str(key_path), "-out", str(cert_path),
-            "-subj", f"/CN=RCP local HTTPS probe ({name})",
-            "-addext", f"subjectAltName={san}",
-            "-addext", "basicConstraints=critical,CA:FALSE",
-            "-addext", "keyUsage=critical,digitalSignature,keyEncipherment",
-            "-addext", "extendedKeyUsage=serverAuth",
+            "openssl",
+            "req",
+            "-x509",
+            "-nodes",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:P-256",
+            "-sha256",
+            "-days",
+            str(CERT_DAYS),
+            "-keyout",
+            str(key_path),
+            "-out",
+            str(cert_path),
+            "-subj",
+            f"/CN=RCP local HTTPS probe ({name})",
+            "-addext",
+            f"subjectAltName={san}",
+            "-addext",
+            "basicConstraints=critical,CA:FALSE",
+            "-addext",
+            "keyUsage=critical,digitalSignature,keyEncipherment",
+            "-addext",
+            "extendedKeyUsage=serverAuth",
         ],
         check=True,
         capture_output=True,
@@ -330,7 +346,9 @@ def _origins() -> dict[str, Origin]:
     return {
         "a": Origin("a", f"rcp-{UUID_A}.rcp.localhost", ("127.0.0.1", "::1"), PORT_A),
         "b": Origin("b", f"rcp-{UUID_B}.rcp.localhost", ("127.0.0.1", "::1"), PORT_B),
-        "other": Origin("other", f"rcp-{UUID_OTHER}.rcp.localhost", ("127.0.0.1", "::1"), PORT_OTHER),
+        "other": Origin(
+            "other", f"rcp-{UUID_OTHER}.rcp.localhost", ("127.0.0.1", "::1"), PORT_OTHER
+        ),
     }
 
 
@@ -487,8 +505,15 @@ def main() -> int:
         # Prove the probe's own TLS stack answers before blaming the WebView.
         preflight = subprocess.run(
             [
-                "curl", "--silent", "--output", "/dev/null", "--write-out", "%{http_code}",
-                "--cacert", str(pinned_cert), f"{origins['a'].url}/favicon.ico",
+                "curl",
+                "--silent",
+                "--output",
+                "/dev/null",
+                "--write-out",
+                "%{http_code}",
+                "--cacert",
+                str(pinned_cert),
+                f"{origins['a'].url}/favicon.ico",
             ],
             capture_output=True,
             text=True,
@@ -508,7 +533,12 @@ def main() -> int:
         # because then nothing proves the trust was app-scoped.
         system_trust = subprocess.run(
             [
-                "curl", "--silent", "--output", "/dev/null", "--write-out", "%{http_code}",
+                "curl",
+                "--silent",
+                "--output",
+                "/dev/null",
+                "--write-out",
+                "%{http_code}",
                 f"{origins['a'].url}/favicon.ico",
             ],
             capture_output=True,
@@ -542,10 +572,14 @@ def main() -> int:
         try:
             process = subprocess.Popen(
                 [
-                    cargo, "run",
-                    "--manifest-path", str(crate / "Cargo.toml"),
-                    "--features", "https-trust-probe",
-                    "--example", "local_https_origin_probe",
+                    cargo,
+                    "run",
+                    "--manifest-path",
+                    str(crate / "Cargo.toml"),
+                    "--features",
+                    "https-trust-probe",
+                    "--example",
+                    "local_https_origin_probe",
                 ],
                 cwd=crate,
                 env=environment,

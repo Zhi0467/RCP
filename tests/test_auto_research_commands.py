@@ -232,6 +232,10 @@ class _Effects:
     finish_calls: int = 0
 
     def bundle(self) -> AutoResearchCommandEffects:
+        unavailable = lambda *_args: AutoResearchCommandEffectResult(  # noqa: E731
+            status="unavailable",
+            message="not configured by this command test",
+        )
         return AutoResearchCommandEffects(
             validate=lambda _context, _arguments: AutoResearchCommandEffectResult(),
             status=lambda _context, _arguments: AutoResearchCommandEffectResult(),
@@ -241,9 +245,11 @@ class _Effects:
             stop=self.stop,
             message=self.message,
             watch_graph=self.watch_graph,
+            apply=unavailable,
             episode=self.episode,
+            inbox=unavailable,
             finish=self.finish,
-            seat_node_type=lambda _project_id, _node_id: self.seat_type,
+            seat_node_type=lambda _project_id, _episode_id, _node_id: self.seat_type,
             reconcile_unknown=self.reconcile_unknown,
             worker_lookup=self.worker_lookup,
             verify_spawn=self.verify_spawn,

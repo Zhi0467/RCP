@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import socket
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import BinaryIO, Literal, Protocol
 
+from rcp.server_ops._local_primitives import canonical_json_bytes
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.control import (
     ServerControlClient,
@@ -1298,15 +1298,7 @@ class ProjectProvisionCoordinator:
 
 
 def _digest(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
 __all__ = [

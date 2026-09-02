@@ -443,7 +443,7 @@ def test_failed_committed_restart_stays_loud_and_is_recoverable(
     assert actions.calls[-1] == "stop"
 
     actions.fail_repair = False
-    recovered, recovered_digest = coordinator.repair_committed(failed, failed_digest)
+    recovered, recovered_digest = coordinator.repair_selected_release(failed, failed_digest)
 
     assert recovered.state == "committed"
     assert recovered.failure is None

@@ -10,24 +10,26 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const {
-  ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
-  OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
-  cacheProjectTabState,
   cachedSnapshotCanReplace,
   canonicalRevisionNeedsReload,
-  inactiveProjectTabState,
   humanSyncSuccessNotice,
   latestSnapshotRequestCanApply,
   loadCanonicalRevision,
   persistProjectHumanDraft,
   proposalChoicesClearedNotice,
-  projectIdsForCacheHeartbeat,
   projectIsStillReadable,
-  projectTabStateForOpen,
   reconcileInactiveProjectTabState,
+} = await server.ssrLoadModule("/src/App.tsx");
+const {
+  ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
+  OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
+  cacheProjectTabState,
+  inactiveProjectTabState,
+  projectIdsForCacheHeartbeat,
+  projectTabStateForOpen,
   singleFlightProjectCacheHeartbeat,
   startProjectCachePolling,
-} = await server.ssrLoadModule("/src/App.tsx");
+} = await server.ssrLoadModule("/src/hooks/useProjectTabs.ts");
 
 after(() => server.close());
 

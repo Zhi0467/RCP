@@ -34,6 +34,8 @@ from rcp.runs.auto_research import (
     AutoResearchCommandInvalid,
     AutoResearchCommandUnavailable,
     AutoResearchValidateCommand,
+    project_auto_research_episode,
+    validate_auto_research_worker_request,
 )
 from rcp.runs.auto_research_admission import (
     ensure_auto_research_child_work_spawned,
@@ -206,22 +208,7 @@ def auto_research_command_effects(
             raise AutoResearchCommandUnavailable(
                 "The Auto-research episode status is no longer available."
             )
-        meter = store.episode_budget_meter(episode.episode_id)
-        result: dict[str, object] = {
-            "episode": {
-                "episode_id": episode.episode_id,
-                "status": episode.status,
-                "ending": episode.ending,
-                "stop_requested": episode.stop_requested_at is not None,
-                "operational_invocations_remaining": meter.invocations_remaining,
-            },
-            "budget": meter.model_dump(mode="json"),
-            "experiment_allowance": store.auto_research_experiment_allowance(
-                episode.episode_id
-            ).model_dump(mode="json"),
-            "children": _child_registry_status(store, episode.episode_id),
-            "lifecycle": _lifecycle_registry_status(store, episode.episode_id),
-        }
+        result = project_auto_research_episode(store, episode.episode_id).status_result()
         if arguments.worker_id is not None:
             route, leaf = _worker_leaf(store, context, arguments.worker_id)
             result["worker"] = _worker_status(route, leaf)
@@ -270,11 +257,10 @@ def auto_research_command_effects(
                 snapshot.text,
                 planned_worker_id,
             )
-            _validate_worker_request(
-                context,
+            validate_auto_research_worker_request(
                 arguments,
-                planned_worker_id,
                 snapshot.text,
+                planned_worker_id,
                 request,
             )
             worker = start_auto_research_child_work(
@@ -754,7 +740,7 @@ def auto_research_command_effects(
             )
         return None
 
-    def seat_node_type(_project_id: str, node_id: str) -> str | None:
+    def seat_node_type(_project_id: str, _episode_id: str, node_id: str) -> str | None:
         node = graph_state().nodes.get(node_id)
         return node.type if node is not None else None
 
@@ -793,11 +779,10 @@ def auto_research_command_effects(
                 "Auto-research Spawn created an ordinary Work task with incorrect routing."
             )
         request = RunRequest.model_validate(root.request)
-        _validate_worker_request(
-            context,
+        validate_auto_research_worker_request(
             arguments,
-            worker_id,
             snapshot.text,
+            worker_id,
             request,
         )
         return ensure_auto_research_child_work_spawned(
@@ -912,61 +897,6 @@ def _finish_actor_operation_id(
     return binding.actor_operation_id
 
 
-def _child_registry_status(store: AppStore, episode_id: str) -> dict[str, object]:
-    work_routes = store.auto_research_child_works(episode_id)
-    experiment_routes = store.auto_research_child_experiments(episode_id)
-    work: list[dict[str, object]] = []
-    for route in work_routes[-16:]:
-        current = store.agent_task(route.current_operation_id)
-        work.append(
-            {
-                "worker_id": route.worker_id,
-                "control_node_id": route.control_node_id,
-                "current_operation_id": route.current_operation_id,
-                "status": current.status if current is not None else "missing",
-                "attempt": current.attempt if current is not None else None,
-                "stop_requested": route.stop_requested_at is not None,
-            }
-        )
-    experiments: list[dict[str, object]] = []
-    for route in experiment_routes[-16:]:
-        child = store.episode(route.child_episode_id)
-        experiments.append(
-            {
-                "episode_id": route.child_episode_id,
-                "control_node_id": route.control_node_id,
-                "route_state": route.state,
-                "status": child.status if child is not None else route.state,
-                "ending": child.ending if child is not None else None,
-                "replaces_episode_id": route.replaces_episode_id,
-            }
-        )
-    admissions = store.pending_auto_research_child_admissions(episode_id)
-    return {
-        "work_count": len(work_routes),
-        "work": work,
-        "omitted_work_count": max(0, len(work_routes) - len(work)),
-        "experiment_count": len(experiment_routes),
-        "experiments": experiments,
-        "omitted_experiment_count": max(0, len(experiment_routes) - len(experiments)),
-        "pending_admission_count": len(admissions),
-        "pending_admission_ids": [item.admission_id for item in admissions[:16]],
-    }
-
-
-def _lifecycle_registry_status(store: AppStore, episode_id: str) -> dict[str, object]:
-    notices = store.auto_research_lifecycle_notices(episode_id)
-    counts = {"pending": 0, "delivered": 0, "acknowledged": 0}
-    for notice in notices:
-        counts[notice.state] += 1
-    pending = [notice.notice_id for notice in notices if notice.state == "pending"]
-    return {
-        "counts": counts,
-        "pending_notice_ids": pending[:16],
-        "omitted_pending_count": max(0, len(pending) - 16),
-    }
-
-
 def _is_canonical_uuid(value: str | None) -> bool:
     if value is None:
         return False
@@ -1055,35 +985,6 @@ def _watcher_command_result(
         "completed_immediately": completed_immediately,
         "disposition": disposition,
     }
-
-
-def _validate_worker_request(
-    context: AutoResearchCommandContext,
-    arguments: SpawnArguments,
-    planned_worker_id: str,
-    instruction: str,
-    request: RunRequest,
-) -> None:
-    if (
-        request.mode != "work"
-        or request.trigger != "orchestrator"
-        or request.patch_kind != "work"
-        or request.chat_scope != "node"
-        or request.node_id != arguments.seat_node_id
-        or request.message != instruction
-        or request.chat_id != planned_worker_id
-    ):
-        raise AutoResearchCommandInvalid(
-            "The resolved worker request changed its ordinary Work mode, seat, or instruction."
-        )
-    if request.provider is None or request.run_on is None:
-        raise AutoResearchCommandUnavailable(
-            "The Auto-research worker profile did not resolve a provider and execution machine."
-        )
-    if request.session_id is not None or request.watcher_ids or request.result_view is not None:
-        raise AutoResearchCommandInvalid(
-            "A newly seated Auto-research worker must start with a fresh session and no wake state."
-        )
 
 
 def _worker_leaf(

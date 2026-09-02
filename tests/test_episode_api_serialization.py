@@ -412,7 +412,9 @@ def test_project_ownership_and_mode_filtered_lists_fail_closed(tmp_path) -> None
         store,
         "project",
         mode="auto_research",
-        branch_summary=_branch_summary,
+        branch_summaries=lambda episodes: {
+            episode.episode_id: _branch_summary(episode) for episode in episodes
+        },
     )
     experiment_responses = serialize_episodes(store, "project", mode="experiment_loop")
 

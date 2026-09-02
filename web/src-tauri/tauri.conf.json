@@ -23,12 +23,7 @@
     "active": true,
     "category": "DeveloperTool",
     "copyright": "Copyright 2026 RCP contributors",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns"
-    ],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns"],
     "macOS": {
       "infoPlist": "Info.plist",
       "minimumSystemVersion": "13.0",

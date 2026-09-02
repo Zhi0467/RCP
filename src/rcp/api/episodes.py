@@ -393,13 +393,11 @@ def serialize_episodes(
     project_id: str,
     *,
     mode: EpisodeMode | None = None,
-    limit: int = 50,
-    branch_summary: BranchSummaryResolver | None = None,
     branch_summaries: BranchSummariesResolver | None = None,
 ) -> list[EpisodeResponse]:
     """Serialize the ordered project list, optionally limited to one episode mode."""
 
-    bounded_limit = max(1, min(limit, 500))
+    bounded_limit = 50
     episodes = store.episodes(
         project_id,
         limit=500 if mode is not None else bounded_limit,
@@ -407,8 +405,7 @@ def serialize_episodes(
     selected = [episode for episode in episodes if mode is None or episode.mode == mode][
         :bounded_limit
     ]
-    if branch_summary is not None and branch_summaries is not None:
-        raise ValueError("episode serialization accepts one branch summary strategy")
+    branch_summary: BranchSummaryResolver | None = None
     if branch_summaries is not None:
         branch_episodes = [
             episode

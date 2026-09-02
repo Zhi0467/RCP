@@ -17,7 +17,6 @@ const {
   failedTaskActionNeedsAuthoritativeProjectReload,
   loadExperimentWatcherPoll,
   terminalTaskNeedsAuthoritativeProjectReload,
-  terminalTasksSince,
 } = await server.ssrLoadModule("/src/App.tsx");
 const { cloneAgentTasksSnapshot, reconcileKnownActiveTasks } = await server.ssrLoadModule(
   "/src/hooks/useAgentTasks.ts",
@@ -86,28 +85,6 @@ test("hidden Experiment report wrap-up keeps authoritative polling alive", () =>
       "experiment/other": { health: "needs_action" },
     }),
     false,
-  );
-});
-
-test("poll reconciliation observes every task that terminalized, not only the selected active task", () => {
-  const previous = [
-    withTaskAnswers({ operation_id: "newer", kind: "auto_research", status: "running" }),
-    withTaskAnswers({ operation_id: "merge", kind: "branch_merge", status: "running" }),
-    withTaskAnswers({ operation_id: "chat", kind: "project_chat", status: "succeeded" }),
-  ];
-  const current = [
-    withTaskAnswers({ ...previous[0], status: "running" }),
-    withTaskAnswers({ ...previous[1], status: "succeeded" }),
-    previous[2],
-  ];
-
-  assert.deepEqual(
-    terminalTasksSince(previous, current).map((task) => task.operation_id),
-    ["merge"],
-  );
-  assert.equal(
-    terminalTasksSince(previous, current).some(terminalTaskNeedsAuthoritativeProjectReload),
-    true,
   );
 });
 

@@ -19,7 +19,6 @@ from rcp.core.models import (
     ProjectNode,
     ResearchQuestion,
 )
-from rcp.core.operations import SetOntologyOperation
 
 if TYPE_CHECKING:
     from rcp.core.validation.report import ValidationReport
@@ -45,16 +44,6 @@ BASE_FIELD_NAMES = frozenset(
     )
     for field in model.model_fields
 )
-
-
-def parse_ontology_operation(
-    operation: SetOntologyOperation,
-    report: ValidationReport,
-    revision: int | None,
-) -> OntologyState:
-    ontology = operation.ontology
-    validate_ontology_structure(ontology, report, revision)
-    return ontology
 
 
 def validate_ontology_structure(

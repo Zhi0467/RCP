@@ -10,29 +10,13 @@ from typing import TYPE_CHECKING
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
-from rcp.storage.models import (  # noqa: F401
+from rcp.storage.models import (
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
     _EXPERIMENT_EPISODE_PINNED_FIELDS,
     _MISSING_EXPERIMENT_EPISODE_CONTEXT_DIAGNOSTIC,
-    _PROJECT_ID_TABLES,
-    ACTIVE_AGENT_TASK_STATUSES,
-    SPACE_NAME_MAX_LENGTH,
-    AgentCommandInvocationRecord,
     AgentTaskAdmissionConflict,
-    AgentTaskContractRecord,
-    AgentTaskEventRecord,
-    AgentTaskKind,
-    AgentTaskReceiptRecord,
-    AgentTaskReceiptTier,
     AgentTaskRecord,
-    AgentTaskStatus,
-    AgentUsageCell,
-    AgentUsageCountReason,
-    AgentUsageMetric,
-    AgentUsageRecord,
-    AgentUsageSnapshot,
     AutoResearchChildExperimentRecord,
-    ChatSessionContextRecord,
     EpisodeBudgetMeter,
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
@@ -42,46 +26,12 @@ from rcp.storage.models import (  # noqa: F401
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
     ExperimentWatcherResourceRecord,
-    GraphCondition,
-    GraphWatcherRecord,
-    NodeStatusGraphCondition,
-    ProjectRecord,
-    ProjectStageRecord,
-    ProposalResolvedGraphCondition,
-    ProviderSkillInventoryRecord,
-    ResultViewConflict,
-    ResultViewRecord,
-    SpaceKind,
-    SpaceUserKind,
-    SpaceUserRecord,
     StoredWatcherRecord,
-    TeamAuthenticationError,
-    TeamInvitationRecord,
     WatcherClaimConflict,
     WatcherContinuation,
-    WatcherDeliveryRecord,
-    WatcherRecord,
-    WatcherStatus,
     WatcherStopRequest,
-    _canonical_space_id,
-    _canonical_uuid4,
-    _discard_failed_team_initialization,
     _experiment_pinned_value,
-    _new_enrollment_code,
-    _new_member_token,
-    _new_session_token,
     _optional_str,
-    _parse_enrollment_code,
-    _plain_html_name,
-    _required_timestamp,
-    _result_view_html_bytes,
-    _result_view_is_visible,
-    _result_view_reference_time,
-    _sha256,
-    _stored_space_kind,
-    _validated_result_view_html,
-    normalize_space_name,
-    watcher_next_check_at,
 )
 
 if TYPE_CHECKING:
@@ -1017,8 +967,8 @@ class ExperimentStoreMixin:
         connection: sqlite3.Connection,
         records: list[StoredWatcherRecord],
         *,
+        binding: WatcherBinding,
         stops: list[WatcherStopRequest] | None = None,
-        binding: WatcherBinding | None = None,
         expected_watcher_snapshot_token: str | None = None,
     ) -> list[StoredWatcherRecord]:
         """Persist one loop handoff in the caller's transaction.
@@ -1035,29 +985,23 @@ class ExperimentStoreMixin:
         records = [self._prepare_watcher_for_insert(record) for record in records]
         if records:
             self._validate_watch_list(records)
-        if binding is None:
-            raise ValueError("an Experiment handoff requires its bound watcher context")
         continuation = records[0].continuation if records else binding.continuation
         if continuation.patch_kind != "experiment_loop":
             raise ValueError("idempotent Experiment persistence requires loop watchers")
         episode_id = continuation.control_episode_id
         assert episode_id is not None
-        if (
-            binding is not None
-            and records
-            and any(
-                (
-                    record.project_id != binding.project_id
-                    or record.origin_operation_id != binding.origin_operation_id
-                    or record.origin_task_kind != binding.origin_task_kind
-                    or record.graph_target != binding.graph_target
-                    or record.chat_id != binding.chat_id
-                    or record.node_id != binding.node_id
-                    or record.execution_host != binding.execution_host
-                    or record.continuation != binding.continuation
-                )
-                for record in records
+        if records and any(
+            (
+                record.project_id != binding.project_id
+                or record.origin_operation_id != binding.origin_operation_id
+                or record.origin_task_kind != binding.origin_task_kind
+                or record.graph_target != binding.graph_target
+                or record.chat_id != binding.chat_id
+                or record.node_id != binding.node_id
+                or record.execution_host != binding.execution_host
+                or record.continuation != binding.continuation
             )
+            for record in records
         ):
             raise ValueError("Experiment watcher handoff changed its bound continuation context.")
         stop_ids = [item.stop_watcher_id for item in stop_requests]
@@ -1136,8 +1080,8 @@ class ExperimentStoreMixin:
         self,
         records: list[StoredWatcherRecord],
         *,
+        binding: WatcherBinding,
         stops: list[WatcherStopRequest] | None = None,
-        binding: WatcherBinding | None = None,
         expected_watcher_snapshot_token: str | None = None,
     ) -> list[StoredWatcherRecord]:
         """Persist one loop handoff atomically with the episode's graceful stop."""

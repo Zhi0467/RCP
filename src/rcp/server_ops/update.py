@@ -29,6 +29,7 @@ from rcp.limits import (
     SERVER_UPDATE_CHECKPOINT_TIMEOUT_SECONDS,
     SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
 )
+from rcp.server_ops._local_primitives import fsync_directory as _fsync_directory
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.config import InstalledServerConfig, load_installed_server_config
 from rcp.server_ops.control import ServerControlClient, ServerControlError
@@ -2799,14 +2800,6 @@ def _owned_file_bytes(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 __all__ = [

@@ -192,26 +192,6 @@ import {
 } from "./textScale";
 import { NOTICE_TIMEOUT_MS } from "./uiConstants";
 
-export { revisionSummariesUrl } from "./hooks/useProjectHistory";
-export {
-  shouldLoadVisibleChatTranscript,
-  visibleChatTranscriptIds,
-  visibleUnreadChatId,
-} from "./hooks/useChatState";
-export { LIVE_EPISODE_POLL_INTERVAL_MS } from "./hooks/useEpisodeDialogs";
-export { startLiveEpisodePolling };
-export { relatedNodeWindowAction } from "./hooks/useGraphSelection";
-export {
-  ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
-  OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
-  PROJECT_TAB_CACHE_LIMIT,
-  cacheProjectTabState,
-  inactiveProjectTabState,
-  projectIdsForCacheHeartbeat,
-  projectTabStateForOpen,
-  singleFlightProjectCacheHeartbeat,
-  startProjectCachePolling,
-} from "./hooks/useProjectTabs";
 import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from "./projectTabs";
 
 const PROVIDER_SKILL_READINESS_POLL_DELAY_MS = 1_000;
@@ -325,11 +305,6 @@ export function experimentControlsNeedWrapupPolling(
   controls: Readonly<Record<string, Pick<ExperimentControlState, "health">>>,
 ): boolean {
   return Object.values(controls).some((control) => control.health === "wrapping_up");
-}
-
-export function terminalTasksSince(previous: AgentTask[], current: AgentTask[]): AgentTask[] {
-  const previouslyActive = new Set(previous.filter(isActiveTask).map((task) => task.operation_id));
-  return current.filter((task) => previouslyActive.has(task.operation_id) && !isActiveTask(task));
 }
 
 export function activeBranchMergeTask(episode: Episode): AgentTask | null {

@@ -8,21 +8,12 @@ Active:
   foundation, provisioning, backup, restore, and member-removal lanes are
   implemented; two of them still owe a live drive. The desktop team-space lane
   is in progress, and the read-only Server Settings projection is complete.
-  Transfer is implemented through validated history-only target import and
-  imported-provider-history lifecycle support; archive relay/decode, activation,
-  cleanup, UI, and the live lab drill remain.
+  Transfer implementation, including relay, activation, cleanup, and UI, is
+  complete; its source-built desktop/SSH lab drive remains.
   Read the handoff's packet status table for the current state of any packet.
   Its dated implementation log and completed packet sections were archived to
   [the evidence file](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-evidence.md)
   on 2026-09-01; the handoff itself retains only work with an open drive.
-- [Codebase audit remediation](handoff-2026-09-01-codebase-audit-remediation.md)
-  — the verified findings of the 2026-09-01 read-only audit: ten high and
-  thirty-five medium bugs, duplicated primitives and dead surface, kind selectors
-  in shared plumbing, frontend derivations of backend state, and test/doc/tooling
-  drift. Nothing is implemented yet. Remediation lands on a dedicated branch and
-  pull request in the order of the handoff's plan; the handoff is archived when
-  its closure condition is met.
-
 This directory contains only human-confirmed work that is ready to implement and
 not yet complete. A handoff is an execution contract, not a chronological diary.
 Its opening status must state:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -24,7 +23,7 @@ from rcp.runs.auto_research_recovery import (
 )
 from rcp.storage import AppStore, ProjectRecord
 
-from .helpers import fabricated_authorizer, wait_for_task
+from .helpers import fabricated_authorizer, wait_for_task, wait_until
 
 
 def _sse(event: AgentEvent) -> str:
@@ -81,13 +80,10 @@ def _install_recovery_callback(tasks: BackgroundAgentTasks) -> None:
 
 
 def _wait_for_recovery(store: AppStore, recovery_id: str):
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        recovery = store.auto_research_recovery(recovery_id)
-        if recovery is not None:
-            return recovery
-        time.sleep(0.01)
-    raise AssertionError(f"auto_research recovery did not appear: {recovery_id}")
+    return wait_until(
+        lambda: store.auto_research_recovery(recovery_id),
+        detail=f"auto_research recovery did not appear: {recovery_id}",
+    )
 
 
 def _recovery_delay_seconds(recovery) -> int:
@@ -366,20 +362,21 @@ def test_repeated_provider_failures_share_one_bounded_allocation_recovery(
         expected_operation_id: str | None = None,
     ):
         if admitted_operation_id is not None:
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
+
+            def child_settled() -> bool:
                 child = store.agent_task(admitted_operation_id)
                 current = store.auto_research_recovery(recovery_id)
-                if (
+                return bool(
                     child is not None
                     and child.status == "failed"
                     and current is not None
                     and current.operation_id == admitted_operation_id
-                ):
-                    break
-                time.sleep(0.01)
-            else:
-                raise AssertionError("recovery child did not settle before admission checkpoint")
+                )
+
+            wait_until(
+                child_settled,
+                detail="recovery child did not settle before admission checkpoint",
+            )
         return complete_recovery(
             recovery_id,
             admitted_operation_id=admitted_operation_id,
@@ -398,22 +395,29 @@ def test_repeated_provider_failures_share_one_bounded_allocation_recovery(
             tasks,
             as_of=recovery.next_attempt_at,
         )
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            recovery = store.auto_research_recovery("task:root")
-            assert recovery is not None
-            current = store.agent_task(recovery.operation_id or "")
+
+        def failed_recovery(
+            expected_attempt=expected_attempt,
+            expected_consumed=expected_consumed,
+            expected_status=expected_status,
+        ):
+            candidate = store.auto_research_recovery("task:root")
+            assert candidate is not None
+            current = store.agent_task(candidate.operation_id or "")
             if (
-                recovery.attempts == expected_consumed
-                and recovery.status == expected_status
+                candidate.attempts == expected_consumed
+                and candidate.status == expected_status
                 and current is not None
                 and current.attempt == expected_attempt
                 and current.status == "failed"
             ):
-                break
-            time.sleep(0.01)
-        else:
-            raise AssertionError(f"auto_research recovery attempt {expected_attempt} did not fail")
+                return candidate
+            return None
+
+        recovery = wait_until(
+            failed_recovery,
+            detail=f"auto_research recovery attempt {expected_attempt} did not fail",
+        )
         assert recovery.attempts == expected_consumed
         if expected_delay is None:
             assert recovery.status == "exhausted"
@@ -476,21 +480,24 @@ def test_admission_and_provider_failures_share_durable_allocation_attempt_cap(
         restarted,
         as_of=recovery.next_attempt_at,
     )
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        recovery = restarted.store.auto_research_recovery("task:root")
-        assert recovery is not None
-        current = restarted.store.agent_task(recovery.operation_id or "")
+
+    def failed_recovery():
+        candidate = restarted.store.auto_research_recovery("task:root")
+        assert candidate is not None
+        current = restarted.store.agent_task(candidate.operation_id or "")
         if (
-            recovery.attempts == 2
-            and recovery.status == "pending"
+            candidate.attempts == 2
+            and candidate.status == "pending"
             and current is not None
             and current.status == "failed"
         ):
-            break
-        time.sleep(0.01)
-    else:
-        raise AssertionError("mixed recovery provider attempt did not fail")
+            return candidate
+        return None
+
+    recovery = wait_until(
+        failed_recovery,
+        detail="mixed recovery provider attempt did not fail",
+    )
     assert recovery.status == "pending"
     assert _recovery_delay_seconds(recovery) == 480
 
@@ -530,14 +537,15 @@ def test_typed_structural_orchestrator_failure_fences_atomically(tmp_path: Path)
     _install_recovery_callback(tasks)
     auto_research, root = _start(tasks)
     wait_for_task(store, root.operation_id, expect="failed")
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        fenced = store.episode(auto_research.episode_id)
-        if fenced is not None and fenced.status == "wrapping_up":
-            break
-        time.sleep(0.01)
-    else:
-        raise AssertionError("typed failure did not fence the auto_research")
+    fenced = wait_until(
+        lambda: (
+            candidate
+            if (candidate := store.episode(auto_research.episode_id)) is not None
+            and candidate.status == "wrapping_up"
+            else None
+        ),
+        detail="typed failure did not fence the auto_research",
+    )
     assert fenced.status == "wrapping_up"
     assert fenced.ending == "failed"
     assert fenced.ending_diagnostic == "typed structural failure"

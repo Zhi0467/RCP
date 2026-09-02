@@ -16,6 +16,7 @@ from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.providers import ProviderUsage
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
+    ACTIVE_AGENT_TASK_STATUSES,
     AgentTaskRecord,
     AppStore,
     ChatSessionContextRecord,
@@ -2068,7 +2069,7 @@ def test_agent_usage_snapshot_counts_latest_input_context_once_per_native_sessio
     assert {cell.counted_records for cell in snapshot.generated.cells} == {1, 2}
 
 
-@pytest.mark.parametrize("status", ["queued", "running", "pausing"])
+@pytest.mark.parametrize("status", sorted(ACTIVE_AGENT_TASK_STATUSES))
 def test_project_record_deletion_refuses_active_task(tmp_path, status) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     store.upsert_project(_project("project"))

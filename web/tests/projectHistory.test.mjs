@@ -19,7 +19,7 @@ const { setupExistingResearchSelection, setupFinalConfirmation } = await server.
 const { ProjectHistoryDrawer } = await server.ssrLoadModule(
   "/src/components/ProjectHistoryDrawer.tsx",
 );
-const { revisionSummariesUrl } = await server.ssrLoadModule("/src/App.tsx");
+const { revisionSummariesUrl } = await server.ssrLoadModule("/src/hooks/useProjectHistory.ts");
 
 after(() => server.close());
 

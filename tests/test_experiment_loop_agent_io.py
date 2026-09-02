@@ -22,6 +22,7 @@ from rcp.runs.experiment_loop import (
     stage_chat_experiment_watcher_resources,
 )
 from rcp.runs.shared import _parent_task_contract_path
+from rcp.runs.tasks import experiment_loop as experiment_loop_task_module
 from rcp.runs.tasks.experiment_loop import (
     _apply_work_patch,
     _required_work_continuation_session_id,
@@ -49,6 +50,31 @@ from .helpers import append_fixture_patch, seed_patch
 from .helpers import create_named_app as create_app
 
 _EXPERIMENT_ID = "exp/native-wake"
+
+
+def test_initial_loop_patch_read_preserves_storage_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_read(*_args: object, **_kwargs: object) -> str | None:
+        raise OSError("retained patch unavailable")
+
+    monkeypatch.setattr(experiment_loop_task_module, "_read_chat_patch", fail_read)
+    turn = SimpleNamespace(workspace=tmp_path, remote_stage=None, execution=None)
+    settled = experiment_loop_task_module._SettledExperimentDeliverables(
+        native_session_id="native-session"
+    )
+
+    result = experiment_loop_task_module._read_initial_patch_deliverable(
+        turn,
+        predecessor_digest=None,
+        settled=settled,
+    )
+
+    assert result.failure is not None
+    assert result.failure.message == (
+        "The agent wrote a patch file that could not be read: retained patch unavailable"
+    )
 
 
 def _empty_project_write_scope(workspace: Path, project_id: str) -> ProjectWriteScope:

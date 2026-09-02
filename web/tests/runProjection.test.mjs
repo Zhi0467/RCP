@@ -4,8 +4,6 @@ import test from "node:test";
 
 import {
   buildExperimentRun,
-  buildRunProjection,
-  buildRunTaskProjection,
   experimentRecommendation,
   experimentWatcherDisplayItems,
   graphConditionLabel,
@@ -190,102 +188,6 @@ function graphWatcher(id, nodeId, episodeId, status, condition, fields = {}) {
   };
 }
 
-function byId(projection) {
-  return new Map([
-    ...projection.running.map((entry) => [entry.id, ["running", entry]]),
-    ...projection.actionable.map((entry) => [entry.id, ["actionable", entry]]),
-    ...projection.completed.map((entry) => [entry.id, ["completed", entry]]),
-  ]);
-}
-
-test("task retries group under their logical root and classify by the latest attempt", () => {
-  const projection = buildRunTaskProjection([
-    task("root", "failed", "2026-07-28T00:00:00Z"),
-    task("retry-1", "failed", "2026-07-28T01:00:00Z", "root"),
-    task("retry-2", "running", "2026-07-28T02:00:00Z", "retry-1"),
-    task("paused", "paused", "2026-07-28T03:00:00Z"),
-    task("done", "succeeded", "2026-07-28T04:00:00Z"),
-  ]);
-
-  assert.deepEqual(
-    projection.running[0].attempts.map((item) => item.operation_id),
-    ["root", "retry-1", "retry-2"],
-  );
-  assert.equal(projection.running[0].latest.operation_id, "retry-2");
-  assert.deepEqual(
-    projection.actionable.map((group) => group.rootId),
-    ["paused"],
-  );
-  assert.deepEqual(
-    projection.completed.map((group) => group.rootId),
-    ["done"],
-  );
-});
-
-test("dismissed and superseded ingestion failures leave the action queue", () => {
-  const failed = task("failed", "failed", "2026-07-28T00:00:00Z");
-  const laterSuccess = task("later", "succeeded", "2026-07-28T01:00:00Z");
-  const dismissed = task("dismissed", "failed", "2026-07-28T02:00:00Z");
-  const projection = buildRunTaskProjection(
-    [laterSuccess, dismissed, failed],
-    new Set(["dismissed"]),
-  );
-  assert.deepEqual(projection.actionable, []);
-  assert.deepEqual(
-    projection.completed.map((group) => group.rootId),
-    ["later"],
-  );
-});
-
-test("Runs includes Experiment-loop tasks once and excludes generic chat and coach tasks", () => {
-  const node = experiment("experiment/include");
-  const loop = loopTask("loop-task", node.id, "episode-current", "running", "2026-08-06T03:00:00Z");
-  const projection = buildRunProjection({
-    nodes: [node],
-    tasks: [
-      loop,
-      task("generic-chat", "running", "2026-08-06T04:00:00Z", null, {
-        kind: "node_chat",
-        request: { patch_kind: "work" },
-      }),
-      task("coach", "failed", "2026-08-06T05:00:00Z", null, {
-        kind: "paper_coach",
-      }),
-      task("refresh", "running", "2026-08-06T02:00:00Z"),
-    ],
-    experimentControl: {
-      [node.id]: control(
-        {
-          episode_id: "episode-current",
-          invocations_used: 1,
-          invocations_remaining: 2,
-          health: "agent_active",
-          recommendation: "wait",
-          run_section: "running",
-          live: true,
-          can_start: false,
-          can_stop: true,
-        },
-        {
-          task_active: true,
-          current_operation_id: loop.operation_id,
-          current_status: "running",
-        },
-      ),
-    },
-    actionableBlockerIds: new Set(),
-  });
-
-  assert.deepEqual(
-    projection.running.map((entry) => [entry.kind, entry.id]),
-    [
-      ["experiment", node.id],
-      ["task", "refresh"],
-    ],
-  );
-  assert.equal(projection.actionable.length, 0);
-});
-
 test("backend operation identity selects the exact task even when a newer row exists", () => {
   const node = experiment("experiment/retry-active");
   const episodeId = "episode-retry-active";
@@ -331,17 +233,6 @@ test("backend operation identity selects the exact task even when a newer row ex
     step: "review",
     label: "Review the loop state",
   });
-
-  const entry = byId(
-    buildRunProjection({
-      nodes: [node],
-      tasks: [failed, retry],
-      experimentControl: { [node.id]: staleControl },
-      actionableBlockerIds: new Set(),
-    }),
-  ).get(node.id);
-  assert.equal(entry[0], "actionable");
-  assert.equal(entry[1].experiment.currentTask.operation_id, failed.operation_id);
 });
 
 test("Experiment watcher projection keeps each immutable group and ungrouped history distinct", () => {
@@ -515,243 +406,6 @@ test("Chats project node-owned loop watchers separately from conversation self-w
   );
 });
 
-test("Experiment projection places the backend-published health and section", () => {
-  const nodes = [
-    experiment("terminal-live", "completed"),
-    experiment("stopping-live"),
-    experiment("stopping-failed"),
-    experiment("healthy-wait"),
-    experiment("degraded-wait"),
-    experiment("ceiling-pending"),
-    experiment("graph-gated"),
-    experiment("session-unavailable"),
-    experiment("human-stopped"),
-    experiment("terminal", "superseded"),
-  ];
-  const controls = {
-    "terminal-live": control(
-      {
-        episode_id: "ep-terminal-live",
-        invocations_used: 1,
-        invocations_remaining: 2,
-        health: "agent_active",
-        recommendation: "wait",
-        run_section: "running",
-        live: true,
-      },
-      { task_active: true, current_operation_id: "terminal-live-task", current_status: "running" },
-    ),
-    "stopping-live": control(
-      {
-        ready: false,
-        reasons: ["A graceful stop is finishing the current loop turn."],
-        episode_id: "ep-stopping-live",
-        invocations_used: 1,
-        invocations_remaining: 2,
-        health: "stopping",
-        recommendation: "wait",
-        run_section: "running",
-        live: true,
-        stop_pending: true,
-      },
-      {
-        task_active: true,
-        stop_requested: true,
-        current_operation_id: "stopping-live-task",
-        current_status: "pausing",
-      },
-    ),
-    "stopping-failed": control(
-      {
-        ready: false,
-        reasons: ["A graceful stop is finishing the current loop turn."],
-        episode_id: "ep-stopping-failed",
-        invocations_used: 1,
-        invocations_remaining: 2,
-        health: "stopping",
-        recommendation: "wait",
-        run_section: "actionable",
-        live: true,
-        stop_pending: true,
-      },
-      {
-        task_active: true,
-        stop_requested: true,
-        current_operation_id: "stopping-failed-task",
-        current_status: "failed",
-      },
-    ),
-    "healthy-wait": control(
-      {
-        ready: false,
-        reasons: ["An experiment loop is already active."],
-        episode_id: "ep-healthy",
-        invocations_used: 1,
-        invocations_remaining: 2,
-        active: true,
-        health: "waiting_on_watchers",
-        recommendation: "wait",
-        run_section: "running",
-        live: true,
-      },
-      { detached_work_active: true },
-    ),
-    "degraded-wait": control(
-      {
-        ready: false,
-        reasons: ["An experiment loop is already active."],
-        episode_id: "ep-degraded",
-        invocations_used: 1,
-        invocations_remaining: 2,
-        active: true,
-        health: "degraded",
-        recommendation: "keep_loop",
-        run_section: "running",
-        live: true,
-      },
-      { detached_work_active: true },
-    ),
-    "ceiling-pending": control(
-      {
-        episode_id: "ep-ceiling",
-        invocations_used: 3,
-        invocations_remaining: 0,
-        paused: true,
-        health: "paused_at_limit",
-        recommendation: "start_episode",
-        run_section: "actionable",
-      },
-      { watcher_completion_pending: true },
-    ),
-    "graph-gated": control(
-      {
-        ready: false,
-        reasons: ["Blocker blocker/upstream is open."],
-        graph_reasons: ["Blocker blocker/upstream is open."],
-        episode_id: "ep-gated",
-        invocations_used: 1,
-        invocations_remaining: 2,
-        health: "needs_action",
-        recommendation: "resolve_requirements",
-        run_section: "actionable",
-        can_start: false,
-      },
-      { detached_work_active: true },
-    ),
-    "session-unavailable": control(
-      {
-        episode_id: "ep-session",
-        invocations_used: 1,
-        invocations_remaining: 2,
-        health: "needs_action",
-        recommendation: "review",
-        run_section: "actionable",
-      },
-      {
-        watcher_completion_pending: true,
-        session: {
-          ...control().operational.session,
-          diagnostic: "The bound native session is unavailable.",
-        },
-      },
-    ),
-    "human-stopped": control(
-      {
-        episode_id: "ep-stopped",
-        invocations_used: 1,
-        invocations_remaining: 2,
-        health: "human_stopped",
-        recommendation: "start_episode",
-        run_section: "actionable",
-      },
-      { stop_requested: true, stop_settled: true },
-    ),
-    terminal: control({
-      health: "completed",
-      recommendation: "none",
-      run_section: "completed",
-    }),
-  };
-  const tasks = [
-    loopTask(
-      "terminal-live-task",
-      "terminal-live",
-      "ep-terminal-live",
-      "running",
-      "2026-08-06T01:00:00Z",
-    ),
-    loopTask(
-      "stopping-live-task",
-      "stopping-live",
-      "ep-stopping-live",
-      "pausing",
-      "2026-08-06T02:00:00Z",
-    ),
-    loopTask(
-      "stopping-failed-task",
-      "stopping-failed",
-      "ep-stopping-failed",
-      "failed",
-      "2026-08-06T03:00:00Z",
-    ),
-  ];
-  const watchers = [
-    watcher("healthy", "healthy-wait", "ep-healthy", "active"),
-    watcher("degraded", "degraded-wait", "ep-degraded", "degraded"),
-    watcher("ceiling", "ceiling-pending", "ep-ceiling", "completed"),
-    watcher("gated", "graph-gated", "ep-gated", "active"),
-    watcher("session", "session-unavailable", "ep-session", "completed"),
-  ];
-  const entries = byId(
-    buildRunProjection({
-      nodes,
-      tasks,
-      watchers,
-      experimentControl: controls,
-      actionableBlockerIds: new Set(),
-    }),
-  );
-
-  assert.deepEqual(
-    entries.get("terminal-live").map((value, index) => (index ? value.experiment.health : value)),
-    ["running", "agent_active"],
-  );
-  assert.deepEqual(
-    entries.get("stopping-live").map((value, index) => (index ? value.experiment.health : value)),
-    ["running", "stopping"],
-  );
-  assert.deepEqual(experimentRecommendation(entries.get("stopping-live")[1].experiment), {
-    step: "wait",
-    label: "Wait for the current turn to finish",
-  });
-  assert.deepEqual(
-    entries.get("stopping-failed").map((value, index) => (index ? value.experiment.health : value)),
-    ["actionable", "stopping"],
-  );
-  assert.deepEqual(
-    entries.get("healthy-wait").map((value, index) => (index ? value.experiment.health : value)),
-    ["running", "waiting_on_watchers"],
-  );
-  assert.deepEqual(
-    entries.get("degraded-wait").map((value, index) => (index ? value.experiment.health : value)),
-    ["running", "degraded"],
-  );
-  assert.deepEqual(
-    entries.get("ceiling-pending").map((value, index) => (index ? value.experiment.health : value)),
-    ["actionable", "paused_at_limit"],
-  );
-  assert.equal(entries.get("graph-gated")[0], "actionable");
-  assert.equal(entries.get("session-unavailable")[0], "actionable");
-  assert.deepEqual(
-    entries.get("human-stopped").map((value, index) => (index ? value.experiment.health : value)),
-    ["actionable", "human_stopped"],
-  );
-  assert.deepEqual(
-    entries.get("terminal").map((value, index) => (index ? value.experiment.health : value)),
-    ["completed", "completed"],
-  );
-});
-
 test("an unsettled Experiment stop exposes exact paused recovery before graceful waiting", () => {
   const node = experiment("experiment/stopping-paused");
   const paused = {
@@ -797,17 +451,6 @@ test("an unsettled Experiment stop exposes exact paused recovery before graceful
     step: "resume",
     label: "Resume this episode, or switch provider",
   });
-
-  const entry = byId(
-    buildRunProjection({
-      nodes: [node],
-      tasks: [paused],
-      experimentControl: { [node.id]: experimentControl },
-      actionableBlockerIds: new Set(),
-    }),
-  ).get(node.id);
-  assert.equal(entry[0], "actionable");
-  assert.equal(entry[1].experiment.health, "needs_action");
 });
 
 test("historical watchers stay visible without driving current health or task selection", () => {
@@ -975,22 +618,6 @@ test("Experiment recommendation copy follows the backend recommendation enum", (
       health: "human_stopped",
     }).step,
     "resolve_requirements",
-  );
-});
-
-test("entries remain newest first within each section", () => {
-  const projection = buildRunProjection({
-    nodes: [],
-    tasks: [
-      task("older", "running", "2026-08-06T01:00:00Z"),
-      task("newer", "running", "2026-08-06T02:00:00Z"),
-    ],
-    experimentControl: {},
-    actionableBlockerIds: new Set(),
-  });
-  assert.deepEqual(
-    projection.running.map((entry) => entry.id),
-    ["newer", "older"],
   );
 });
 

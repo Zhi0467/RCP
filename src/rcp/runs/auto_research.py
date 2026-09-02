@@ -58,6 +58,7 @@ from rcp.storage import (
 
 if TYPE_CHECKING:
     from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
+    from rcp.service import RunRequest
 
 AutoResearchActorRole = Literal["orchestrator", "worker"]
 AutoResearchWakeCause = Literal["watcher", "graph_condition", "message", "lifecycle"]
@@ -277,6 +278,120 @@ def settle_auto_research_stop(
     return store.mark_episode_stop_skipped(episode_id, diagnostic=diagnostic)
 
 
+@dataclass(frozen=True)
+class AutoResearchEpisodeProjection:
+    """One durable episode/child projection shared by Status and wrap-up."""
+
+    episode: dict[str, object]
+    budget: dict[str, object]
+    experiment_allowance: dict[str, object]
+    work: tuple[dict[str, object], ...]
+    work_count: int
+    experiments: tuple[dict[str, object], ...]
+    experiment_count: int
+    pending_admission_ids: tuple[str, ...]
+    pending_admission_count: int
+    lifecycle_counts: dict[str, int]
+    pending_notice_ids: tuple[str, ...]
+
+    def status_result(self) -> dict[str, object]:
+        return {
+            "episode": self.episode,
+            "budget": self.budget,
+            "experiment_allowance": self.experiment_allowance,
+            "children": {
+                "work_count": self.work_count,
+                "work": list(self.work),
+                "omitted_work_count": max(0, self.work_count - len(self.work)),
+                "experiment_count": self.experiment_count,
+                "experiments": [
+                    {key: value for key, value in item.items() if key != "diagnostic"}
+                    for item in self.experiments
+                ],
+                "omitted_experiment_count": max(
+                    0,
+                    self.experiment_count - len(self.experiments),
+                ),
+                "pending_admission_count": self.pending_admission_count,
+                "pending_admission_ids": list(self.pending_admission_ids),
+            },
+            "lifecycle": {
+                "counts": self.lifecycle_counts,
+                "pending_notice_ids": list(self.pending_notice_ids),
+                "omitted_pending_count": max(
+                    0,
+                    self.lifecycle_counts["pending"] - len(self.pending_notice_ids),
+                ),
+            },
+        }
+
+
+def project_auto_research_episode(
+    store: AppStore,
+    episode_id: str,
+) -> AutoResearchEpisodeProjection:
+    """Project bounded operational state without selecting a consumer or command."""
+
+    episode = _auto_research_episode(store, episode_id)
+    meter = store.episode_budget_meter(episode_id)
+    work_routes = store.auto_research_child_works(episode_id)
+    work: list[dict[str, object]] = []
+    for route in work_routes[-16:]:
+        current = store.agent_task(route.current_operation_id)
+        work.append(
+            {
+                "worker_id": route.worker_id,
+                "control_node_id": route.control_node_id,
+                "current_operation_id": route.current_operation_id,
+                "status": current.status if current is not None else "missing",
+                "attempt": current.attempt if current is not None else None,
+                "stop_requested": route.stop_requested_at is not None,
+            }
+        )
+    experiment_routes = store.auto_research_child_experiments(episode_id)
+    experiments: list[dict[str, object]] = []
+    for route in experiment_routes[-16:]:
+        child = store.episode(route.child_episode_id)
+        experiments.append(
+            {
+                "episode_id": route.child_episode_id,
+                "control_node_id": route.control_node_id,
+                "route_state": route.state,
+                "status": child.status if child is not None else route.state,
+                "ending": child.ending if child is not None else None,
+                "replaces_episode_id": route.replaces_episode_id,
+                "diagnostic": route.terminal_diagnostic,
+            }
+        )
+    admissions = store.pending_auto_research_child_admissions(episode_id)
+    notices = store.auto_research_lifecycle_notices(episode_id)
+    lifecycle_counts = {"pending": 0, "delivered": 0, "acknowledged": 0}
+    for notice in notices:
+        lifecycle_counts[notice.state] += 1
+    pending_notice_ids = [notice.notice_id for notice in notices if notice.state == "pending"]
+    return AutoResearchEpisodeProjection(
+        episode={
+            "episode_id": episode.episode_id,
+            "status": episode.status,
+            "ending": episode.ending,
+            "stop_requested": episode.stop_requested_at is not None,
+            "operational_invocations_remaining": meter.invocations_remaining,
+        },
+        budget=meter.model_dump(mode="json"),
+        experiment_allowance=store.auto_research_experiment_allowance(episode_id).model_dump(
+            mode="json"
+        ),
+        work=tuple(work),
+        work_count=len(work_routes),
+        experiments=tuple(experiments),
+        experiment_count=len(experiment_routes),
+        pending_admission_ids=tuple(item.admission_id for item in admissions[:16]),
+        pending_admission_count=len(admissions),
+        lifecycle_counts=lifecycle_counts,
+        pending_notice_ids=tuple(pending_notice_ids[:16]),
+    )
+
+
 def auto_research_wrapup_spec(
     store: AppStore,
     signal: AutoResearchEndingSignal,
@@ -298,7 +413,7 @@ def auto_research_wrapup_spec(
         raise ValueError("the Auto-research root actor lost its latest continuation task")
 
     state = store.auto_research_state(episode.episode_id)
-    meter = store.episode_budget_meter(episode.episode_id)
+    projection = project_auto_research_episode(store, episode.episode_id)
     tasks = store.auto_research_tasks(episode.episode_id)
     task_statuses: dict[str, int] = {}
     actor_rows: dict[str, dict[str, object]] = {}
@@ -336,39 +451,26 @@ def auto_research_wrapup_spec(
         for event in events
         if event.event_kind == "command"
     ][-16:]
-    work_routes = store.auto_research_child_works(episode.episode_id)
-    child_work: list[dict[str, object]] = []
-    for route in work_routes[-16:]:
-        current = store.agent_task(route.current_operation_id)
-        child_work.append(
-            {
-                "worker_id": _receipt_text(route.worker_id, 160),
-                "control_node_id": _receipt_text(route.control_node_id, 240),
-                "current_operation_id": _receipt_text(route.current_operation_id, 160),
-                "status": current.status if current is not None else "missing",
-                "attempt": current.attempt if current is not None else None,
-                "stop_requested": route.stop_requested_at is not None,
-            }
-        )
-    experiment_routes = store.auto_research_child_experiments(episode.episode_id)
-    child_experiments: list[dict[str, object]] = []
-    for route in experiment_routes[-16:]:
-        child = store.episode(route.child_episode_id)
-        child_experiments.append(
-            {
-                "episode_id": _receipt_text(route.child_episode_id, 160),
-                "control_node_id": _receipt_text(route.control_node_id, 240),
-                "route_state": route.state,
-                "status": child.status if child is not None else route.state,
-                "ending": child.ending if child is not None else None,
-                "replaces_episode_id": _receipt_text(route.replaces_episode_id, 160),
-                "diagnostic": _receipt_text(route.terminal_diagnostic, 480),
-            }
-        )
+    child_work = [
+        {
+            **item,
+            "worker_id": _receipt_text(item.get("worker_id"), 160),
+            "control_node_id": _receipt_text(item.get("control_node_id"), 240),
+            "current_operation_id": _receipt_text(item.get("current_operation_id"), 160),
+        }
+        for item in projection.work
+    ]
+    child_experiments = [
+        {
+            **item,
+            "episode_id": _receipt_text(item.get("episode_id"), 160),
+            "control_node_id": _receipt_text(item.get("control_node_id"), 240),
+            "replaces_episode_id": _receipt_text(item.get("replaces_episode_id"), 160),
+            "diagnostic": _receipt_text(item.get("diagnostic"), 480),
+        }
+        for item in projection.experiments
+    ]
     lifecycle_notices = store.auto_research_lifecycle_notices(episode.episode_id)
-    lifecycle_counts = {"pending": 0, "delivered": 0, "acknowledged": 0}
-    for notice in lifecycle_notices:
-        lifecycle_counts[notice.state] += 1
     lifecycle_facts = [
         {
             "notice_id": _receipt_text(notice.notice_id, 160),
@@ -389,48 +491,52 @@ def auto_research_wrapup_spec(
         }
         for notice in lifecycle_notices[-16:]
     ]
-    experiment_allowance = store.auto_research_experiment_allowance(episode.episode_id)
-    pending_admissions = store.pending_auto_research_child_admissions(episode.episode_id)
     receipt: dict[str, object] = {
         "starting_instruction": _receipt_text(
             state.starting_instruction if state is not None else None,
             1_200,
         ),
         "operational_meter": {
-            "ceiling": meter.invocation_ceiling,
-            "used": meter.invocations_used,
-            "remaining": meter.invocations_remaining,
-            "observed_input_tokens": meter.observed_input_tokens,
-            "observed_generated_tokens": meter.observed_generated_tokens,
+            "ceiling": projection.budget["invocation_ceiling"],
+            "used": projection.budget["invocations_used"],
+            "remaining": projection.budget["invocations_remaining"],
+            "observed_input_tokens": projection.budget["observed_input_tokens"],
+            "observed_generated_tokens": projection.budget["observed_generated_tokens"],
         },
         "task_status_counts": dict(sorted(task_statuses.items())),
         "actors": list(actor_rows.values())[-16:],
         "omitted_actor_count": max(0, len(actor_rows) - 16),
         "command_facts": command_facts,
         "graph_results": graph_results[-16:],
-        "experiment_allowance": experiment_allowance.model_dump(mode="json"),
+        "experiment_allowance": projection.experiment_allowance,
         "child_work": child_work,
-        "omitted_child_work_count": max(0, len(work_routes) - len(child_work)),
+        "omitted_child_work_count": max(0, projection.work_count - len(child_work)),
         "child_experiments": child_experiments,
-        "omitted_child_experiment_count": max(0, len(experiment_routes) - len(child_experiments)),
+        "omitted_child_experiment_count": max(
+            0,
+            projection.experiment_count - len(child_experiments),
+        ),
         "lifecycle": {
-            "counts": lifecycle_counts,
+            "counts": projection.lifecycle_counts,
             "facts": lifecycle_facts,
             "omitted_fact_count": max(0, len(lifecycle_notices) - len(lifecycle_facts)),
         },
         "pending_child_admission_ids": [
-            _receipt_text(item.admission_id, 160) for item in pending_admissions[:16]
+            _receipt_text(admission_id, 160) for admission_id in projection.pending_admission_ids
         ],
-        "omitted_pending_child_admission_count": max(0, len(pending_admissions) - 16),
+        "omitted_pending_child_admission_count": max(
+            0,
+            projection.pending_admission_count - len(projection.pending_admission_ids),
+        ),
     }
     if _receipt_size(receipt) > AGENT_TASK_RECEIPT_MAX_BYTES:
         receipt["actors"] = list(actor_rows.values())[-8:]
         receipt["command_facts"] = command_facts[-8:]
         receipt["graph_results"] = graph_results[-8:]
         receipt["child_work"] = child_work[-8:]
-        receipt["omitted_child_work_count"] = max(0, len(work_routes) - 8)
+        receipt["omitted_child_work_count"] = max(0, projection.work_count - 8)
         receipt["child_experiments"] = child_experiments[-8:]
-        receipt["omitted_child_experiment_count"] = max(0, len(experiment_routes) - 8)
+        receipt["omitted_child_experiment_count"] = max(0, projection.experiment_count - 8)
         lifecycle = receipt["lifecycle"]
         assert isinstance(lifecycle, dict)
         lifecycle["facts"] = lifecycle_facts[-8:]
@@ -617,7 +723,7 @@ AutoResearchUnknownCommandReconciler = Callable[
     [AutoResearchCommandContext, CommandRequest, str | None],
     AutoResearchCommandEffectResult | None,
 ]
-AutoResearchSeatNodeType = Callable[[str, str], str | None]
+AutoResearchSeatNodeType = Callable[[str, str, str], str | None]
 AutoResearchWorkerLookup = Callable[
     [AutoResearchCommandContext, str],
     AgentTaskRecord,
@@ -626,30 +732,6 @@ AutoResearchSpawnVerifier = Callable[
     [AutoResearchCommandContext, SpawnArguments, str],
     AgentTaskRecord,
 ]
-
-
-def _unsupported_apply(
-    _context: AutoResearchCommandContext,
-    _arguments: ApplyArguments,
-    _planned_apply_id: str,
-) -> AutoResearchCommandEffectResult:
-    raise AutoResearchCommandUnavailable("In-turn Apply is not available in this runtime.")
-
-
-def _unsupported_episode(
-    _context: AutoResearchCommandContext,
-    _arguments: EpisodeArguments,
-    _planned_episode_effect_id: str,
-) -> AutoResearchCommandEffectResult:
-    raise AutoResearchCommandUnavailable("Experiment episode control is not available.")
-
-
-def _unsupported_inbox(
-    _context: AutoResearchCommandContext,
-    _arguments: InboxArguments,
-    _planned_inbox_effect_id: str,
-) -> AutoResearchCommandEffectResult:
-    raise AutoResearchCommandUnavailable("The lifecycle inbox is not available.")
 
 
 @dataclass(frozen=True)
@@ -672,11 +754,11 @@ class AutoResearchCommandEffects:
     finish: AutoResearchFinishCommand
     seat_node_type: AutoResearchSeatNodeType
     reconcile_unknown: AutoResearchUnknownCommandReconciler
-    apply: AutoResearchApplyCommand = _unsupported_apply
-    episode: AutoResearchEpisodeCommand = _unsupported_episode
-    inbox: AutoResearchInboxCommand = _unsupported_inbox
-    worker_lookup: AutoResearchWorkerLookup | None = None
-    verify_spawn: AutoResearchSpawnVerifier | None = None
+    apply: AutoResearchApplyCommand
+    episode: AutoResearchEpisodeCommand
+    inbox: AutoResearchInboxCommand
+    worker_lookup: AutoResearchWorkerLookup
+    verify_spawn: AutoResearchSpawnVerifier
 
 
 @dataclass
@@ -733,12 +815,16 @@ class AutoResearchCommandDispatcher:
             raise AutoResearchCommandInvalid("The Auto-research command mailbox is missing.")
 
         planned_worker_id = (
-            _planned_worker_id(context.episode.episode_id, request.idempotency_key)
+            auto_research_planned_effect_id(
+                context.episode.episode_id,
+                "spawn",
+                request.idempotency_key,
+            )
             if isinstance(request, SpawnCommandRequest) and request.idempotency_key is not None
             else None
         )
         planned_message_id = (
-            _planned_effect_id(
+            auto_research_planned_effect_id(
                 context.episode.episode_id,
                 "message",
                 request.idempotency_key,
@@ -747,7 +833,7 @@ class AutoResearchCommandDispatcher:
             else None
         )
         planned_watcher_id = (
-            _planned_effect_id(
+            auto_research_planned_effect_id(
                 context.episode.episode_id,
                 "watch_graph",
                 request.idempotency_key,
@@ -756,7 +842,7 @@ class AutoResearchCommandDispatcher:
             else None
         )
         planned_apply_id = (
-            _planned_effect_id(
+            auto_research_planned_effect_id(
                 context.episode.episode_id,
                 "apply",
                 request.idempotency_key,
@@ -765,7 +851,7 @@ class AutoResearchCommandDispatcher:
             else None
         )
         planned_resume_operation_id = (
-            _planned_effect_id(
+            auto_research_planned_effect_id(
                 context.episode.episode_id,
                 "resume",
                 request.idempotency_key,
@@ -774,7 +860,7 @@ class AutoResearchCommandDispatcher:
             else None
         )
         planned_episode_effect_id = (
-            _planned_effect_id(
+            auto_research_planned_effect_id(
                 context.episode.episode_id,
                 "episode",
                 request.idempotency_key,
@@ -783,7 +869,7 @@ class AutoResearchCommandDispatcher:
             else None
         )
         planned_inbox_effect_id = (
-            _planned_effect_id(
+            auto_research_planned_effect_id(
                 context.episode.episode_id,
                 "inbox",
                 request.idempotency_key,
@@ -792,7 +878,7 @@ class AutoResearchCommandDispatcher:
             else None
         )
         planned_finish_effect_id = (
-            _planned_effect_id(
+            auto_research_planned_effect_id(
                 context.episode.episode_id,
                 "finish",
                 request.idempotency_key,
@@ -1573,8 +1659,9 @@ class AutoResearchCommandDispatcher:
         start_payload: dict[str, object],
     ) -> str:
         planned_worker_id = start_payload.get("planned_worker_id")
-        expected_worker_id = _planned_worker_id(
+        expected_worker_id = auto_research_planned_effect_id(
             context.episode.episode_id,
+            "spawn",
             request.idempotency_key,
         )
         if planned_worker_id != expected_worker_id:
@@ -1621,7 +1708,7 @@ class AutoResearchCommandDispatcher:
         else:
             return None
         planned_effect_id = start_payload.get(field)
-        expected_effect_id = _planned_effect_id(
+        expected_effect_id = auto_research_planned_effect_id(
             context.episode.episode_id,
             verb,
             request.idempotency_key,
@@ -1681,8 +1768,7 @@ class AutoResearchCommandDispatcher:
                     )
                 worker = self._require_worker(context, recipient_task_id)
                 if (
-                    self.effects.worker_lookup is None
-                    and recipient_task_id
+                    recipient_task_id
                     != self.store.auto_research_actor_binding(
                         worker.operation_id
                     ).actor_operation_id
@@ -1704,6 +1790,7 @@ class AutoResearchCommandDispatcher:
             assert planned_worker_id is not None
             node_type = self.effects.seat_node_type(
                 context.task.project_id,
+                context.episode.episode_id,
                 request.arguments.seat_node_id,
             )
             if node_type is None or node_type.casefold() not in {"experiment", "blocker"}:
@@ -1762,19 +1849,7 @@ class AutoResearchCommandDispatcher:
         context: AutoResearchCommandContext,
         operation_id: str,
     ) -> AgentTaskRecord:
-        if self.effects.worker_lookup is not None:
-            return self.effects.worker_lookup(context, operation_id)
-        worker = self.store.agent_task(operation_id)
-        if worker is None or worker.episode_id != context.episode.episode_id:
-            raise AutoResearchCommandInvalid(
-                "The worker control target is outside this Auto-research episode."
-            )
-        worker_request = AutoResearchRunRequest.model_validate(worker.request)
-        if worker_request.role != "worker":
-            raise AutoResearchCommandInvalid(
-                "The worker control target is not an Auto-research worker."
-            )
-        return worker
+        return self.effects.worker_lookup(context, operation_id)
 
     def _verify_spawn_worker(
         self,
@@ -1784,42 +1859,7 @@ class AutoResearchCommandDispatcher:
     ) -> AgentTaskRecord:
         """Mechanically prove the canonical worker row matches the spawn intent."""
 
-        if self.effects.verify_spawn is not None:
-            return self.effects.verify_spawn(context, arguments, planned_worker_id)
-
-        worker = self.store.agent_task(planned_worker_id)
-        if worker is None:
-            raise AutoResearchCommandUnavailable(
-                "Auto-research Spawn returned without durably creating its planned worker."
-            )
-        if (
-            worker.kind != "auto_research"
-            or worker.project_id != context.episode.project_id
-            or worker.episode_id != context.episode.episode_id
-            or worker.parent_operation_id != context.task.operation_id
-        ):
-            raise AutoResearchCommandUnavailable(
-                "Auto-research Spawn created a worker with incorrect parent lineage."
-            )
-        if self.store.auto_research_invocation_role(worker.operation_id) != "worker":
-            raise AutoResearchCommandUnavailable(
-                "Auto-research Spawn did not record the canonical worker invocation role."
-            )
-        try:
-            worker_request = AutoResearchRunRequest.model_validate(worker.request)
-        except ValueError as exc:
-            raise AutoResearchCommandUnavailable(
-                "Auto-research Spawn created a worker with an invalid run request."
-            ) from exc
-        if (
-            worker_request.episode_id != context.episode.episode_id
-            or worker_request.role != "worker"
-            or worker_request.control_node_id != arguments.seat_node_id
-        ):
-            raise AutoResearchCommandUnavailable(
-                "Auto-research Spawn created a worker that does not match its recorded seat."
-            )
-        return worker
+        return self.effects.verify_spawn(context, arguments, planned_worker_id)
 
     def _finish(
         self,
@@ -1889,15 +1929,34 @@ class AutoResearchCommandDispatcher:
         )
 
 
-def _planned_worker_id(episode_id: str, idempotency_key: str | None) -> str:
-    if idempotency_key is None:
-        raise ValueError("a spawn command requires an idempotency key")
-    return str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{episode_id}:spawn:{idempotency_key}",
+def validate_auto_research_worker_request(
+    arguments: SpawnArguments,
+    instruction: str,
+    planned_worker_id: str,
+    request: RunRequest,
+) -> None:
+    """Validate the fresh ordinary-Work contract used by live and recovery paths."""
+
+    if (
+        request.mode != "work"
+        or request.trigger != "orchestrator"
+        or request.patch_kind != "work"
+        or request.chat_scope != "node"
+        or request.node_id != arguments.seat_node_id
+        or request.message != instruction
+        or request.chat_id != planned_worker_id
+    ):
+        raise AutoResearchCommandInvalid(
+            "The resolved worker request changed its ordinary Work mode, seat, or instruction."
         )
-    )
+    if request.provider is None or request.run_on is None:
+        raise AutoResearchCommandUnavailable(
+            "The Auto-research worker profile did not resolve a provider and execution machine."
+        )
+    if request.session_id is not None or request.watcher_ids or request.result_view is not None:
+        raise AutoResearchCommandInvalid(
+            "A newly seated Auto-research worker must start with a fresh session and no wake state."
+        )
 
 
 def _apply_admission_limit_outcome() -> AutoResearchCommandEffectResult:
@@ -1911,9 +1970,10 @@ def _apply_admission_limit_outcome() -> AutoResearchCommandEffectResult:
     )
 
 
-def _planned_effect_id(
+def auto_research_planned_effect_id(
     episode_id: str,
     verb: Literal[
+        "spawn",
         "apply",
         "message",
         "watch_graph",

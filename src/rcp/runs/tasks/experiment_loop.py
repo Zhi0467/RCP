@@ -33,8 +33,8 @@ from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.core.authority import AgentProfile
-from rcp.core.models import ExperimentDecisionPin, Patch
-from rcp.history import PatchRejected, ReplayHalted
+from rcp.core.models import ExperimentDecisionPin
+from rcp.history import ReplayHalted
 from rcp.limits import (
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
@@ -85,8 +85,6 @@ from rcp.runs.shared import (
     _pinned_to_profile,
     _ProviderOutcome,
     _record_agent_launch_receipt,
-    _record_patch_applied_receipt,
-    _record_patch_receipt,
     _retry_deliverable_is_unchanged,
     _sse,
     _stage_context_paths,
@@ -102,13 +100,11 @@ from rcp.runs.tasks.work import (
     _bounded_graph_messages,
     _capture_retry_deliverable_baseline,
     _clears_stale_turn_handoffs,
-    _close_work_validator_mailbox,
     _ComposedWorkPrompt,
     _DeliverableFailure,
     _DeliverableRead,
     _DeliverableStep,
     _finalize_work_turn,
-    _read_correction_patch,
     _record_work_graph_rejection,
     _record_work_lock_lost,
     _record_work_lock_wait,
@@ -118,10 +114,23 @@ from rcp.runs.tasks.work import (
     _SettledWorkDeliverables,
     _stage_retry_diagnostics,
     _StagedWorkInputs,
-    _stream_turn_agent_events,
     _work_graph_repairable,
     _work_patch_proposal_ids,
     _WorkValidatorMailboxLifecycle,
+)
+from rcp.runs.tasks.work_turn_runtime import (
+    _PreparedWorkPatch,
+    apply_work_patch,
+    read_correction_patch,
+    settle_graph_repair_patch,
+    start_work_validator_mailbox,
+    validate_work_patch_live,
+)
+from rcp.runs.tasks.work_turn_runtime import (
+    close_work_validator_mailbox as _close_work_validator_mailbox,
+)
+from rcp.runs.tasks.work_turn_runtime import (
+    stream_turn_agent_events as _stream_turn_agent_events,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
@@ -134,13 +143,6 @@ from rcp.watchers import (
     validate_graph_conditions,
     validate_watch_specs,
 )
-
-
-@dataclass(frozen=True)
-class _PreparedWorkPatch:
-    patch: Patch
-    change_summary: tuple[str, ...]
-    proposal_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -752,7 +754,6 @@ def _read_initial_patch_deliverable(
         text = None
     # Loop graph admission is a joint Patch/watch handoff. Nothing in the
     # pre-handoff path may validate-correct-and-apply it.
-    failure = None
     if text is None and failure is None:
         settled.graph_update = GraphUpdateResult(status="none")
     return _DeliverableRead(text=text, failure=failure)
@@ -1379,9 +1380,8 @@ async def _apply_experiment_loop_turn(
                 final_patch_text = None
                 loop_patch_correction_rounds = PATCH_CORRECTION_MAX_ROUNDS
                 continue
-            corrected = _read_correction_patch(
-                turn.workspace,
-                turn.remote_stage,
+            corrected = read_correction_patch(
+                lambda: _read_chat_patch(turn.workspace, turn.remote_stage),
                 pre_launch_digest=pre_launch_digest,
             )
             if corrected.problem == "unreadable":
@@ -1788,7 +1788,10 @@ async def stream_experiment_loop_task(
     answer = turn.answer
 
     settled = _SettledExperimentDeliverables(native_session_id=outcome.session_id)
-    _read_initial_patch_deliverable(turn, retry_patch_digest, settled)
+    initial_patch = _read_initial_patch_deliverable(turn, retry_patch_digest, settled)
+    if initial_patch.failure is not None:
+        yield _sse(AgentEvent(event="error", text=initial_patch.failure.message))
+        return
     if settled.stop:
         return
     async with aclosing(
@@ -2018,57 +2021,28 @@ async def _stream_work_graph_repair(
     ) as stream:
         async for frame in stream:
             yield frame
-    if not outcome.completed:
-        if outcome.failed or outcome.paused:
-            return
-        yield _sse(AgentEvent(event="error", text=f"{request.provider} produced no result."))
-        return
-    try:
-        patch_text = _read_chat_patch(workspace, remote_stage)
-    except (OSError, StateUnavailable, ValueError) as exc:
-        yield _sse(AgentEvent(event="error", text=f"The repaired patch could not be read: {exc}"))
-        return
-    if patch_text is None:
-        yield _sse(AgentEvent(event="error", text="The repair did not write patch.json."))
-        return
-    if (
-        pre_launch_digest is not None
-        and hashlib.sha256(patch_text.encode("utf-8")).hexdigest() == pre_launch_digest
-    ):
-        yield _sse(
-            AgentEvent(
-                event="error",
-                text="The repair left patch.json byte-identical to the rejected patch.",
-            )
-        )
-        return
-    try:
-        graph_update, failure = _apply_work_patch(
+    repair = settle_graph_repair_patch(
+        outcome,
+        provider=request.provider,
+        pre_launch_digest=pre_launch_digest,
+        read_patch=lambda: _read_chat_patch(workspace, remote_stage),
+        apply_patch=lambda text: _apply_work_patch(
             service,
             execution,
-            patch_text,
+            text,
             run_truth_scope=context.run_truth_scope,
             control_node_id=request.control_node_id,
             control_decision_bundle=request.control_decision_bundle,
-        )
-    except RunLockCancelled:
-        yield _sse(
-            AgentEvent(
-                event="paused",
-                text="Paused while waiting for canonical state. The retained patch is preserved.",
-            )
-        )
+        ),
+        bounded_messages=_bounded_graph_messages,
+        record_rejection=lambda update: _record_work_graph_rejection(execution, update),
+    )
+    for frame in repair.frames:
+        yield frame
+    if repair.graph_update is None or repair.patch_text is None:
         return
-    if graph_update is None:
-        assert failure is not None
-        graph_update = GraphUpdateResult(
-            status="rejected",
-            change_summary=list(failure.change_summary),
-            proposal_ids=list(failure.proposal_ids),
-            validation_messages=_bounded_graph_messages(failure.message),
-            correction_rounds=1,
-        )
-        _record_work_graph_rejection(execution, graph_update)
+    graph_update = repair.graph_update
+    patch_text = repair.patch_text
     if (
         not request.control_episode_id
         or not request.control_node_id
@@ -2173,33 +2147,19 @@ def _start_work_validator_mailbox(
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin],
 ) -> _WorkValidatorMailboxLifecycle:
-    stop = asyncio.Event()
-    try:
-        task = asyncio.create_task(
-            serve_patch_validation_mailbox(
-                staged=staged,
-                execution=execution,
-                validate=lambda text: _validate_work_patch_live(
-                    service,
-                    text,
-                    run_truth_scope=run_truth_scope,
-                    control_node_id=control_node_id,
-                    control_decision_bundle=control_decision_bundle,
-                    source_operation_id=_work_patch_source_operation_id(execution),
-                ),
-                stop=stop,
-                budget=budget,
-            )
-        )
-    except BaseException:
-        with suppress(BaseException):
-            staged.cleanup()
-        raise
-    return _WorkValidatorMailboxLifecycle(
-        staged=staged,
+    return start_work_validator_mailbox(
+        staged,
         execution=execution,
-        stop=stop,
-        task=task,
+        budget=budget,
+        serve=serve_patch_validation_mailbox,
+        validate=lambda text: _validate_work_patch_live(
+            service,
+            text,
+            run_truth_scope=run_truth_scope,
+            control_node_id=control_node_id,
+            control_decision_bundle=control_decision_bundle,
+            source_operation_id=_work_patch_source_operation_id(execution),
+        ),
     )
 
 
@@ -2274,35 +2234,20 @@ def _validate_work_patch_live(
     source_effect_id: str | None = None,
     profile: AgentProfile = "ordinary",
 ) -> PatchValidationResult:
-    try:
-        candidate = _prepare_work_patch_candidate(
+    return validate_work_patch_live(
+        service,
+        patch_text,
+        prepare_candidate=lambda text: _prepare_work_patch_candidate(
             service,
-            patch_text,
+            text,
             run_truth_scope=run_truth_scope,
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
             source_operation_id=source_operation_id,
             source_effect_id=source_effect_id,
             profile=profile,
-        )
-        prepared, report, state = service.history.validate_candidate(candidate.patch)
-    except (ReplayHalted, StateUnavailable, OSError) as exc:
-        return PatchValidationResult(status="unavailable", messages=[str(exc)])
-    except ValueError as exc:
-        return PatchValidationResult(status="invalid", messages=[str(exc)])
-    rejects = [item.message for item in report.messages if item.level == "reject"]
-    if rejects:
-        return PatchValidationResult(
-            status="invalid",
-            messages=_bounded_graph_messages(*rejects),
-            live_revision=state.revision,
-            candidate_revision=prepared.revision,
-        )
-    return PatchValidationResult(
-        status="valid",
-        messages=_bounded_graph_messages(*(item.message for item in report.flags)),
-        live_revision=state.revision,
-        candidate_revision=prepared.revision,
+        ),
+        bounded_messages=_bounded_graph_messages,
     )
 
 
@@ -2320,132 +2265,43 @@ def _apply_work_patch(
 ) -> tuple[GraphUpdateResult | None, _DeliverableFailure | None]:
     """Validate and atomically apply one Experiment-loop Patch candidate."""
 
-    if execution is not None:
-        execution.store.record_agent_task_patch_output(execution.operation_id, patch_text)
-        execution.store.record_agent_task_receipt(
-            execution.operation_id,
-            "patch_retained",
-            {"byte_length": len(patch_text.encode("utf-8")), "file_name": "patch.json"},
-            tier="diagnostic",
-        )
-    change_summary: tuple[str, ...] = ()
-    proposal_ids: tuple[str, ...] = ()
     source_operation_id = source_operation_id or _work_patch_source_operation_id(execution)
-    canonical_patch: Patch | None = None
-    try:
-        candidate = _prepare_work_patch_candidate(
+    return apply_work_patch(
+        service,
+        execution,
+        patch_text,
+        prepare_candidate=lambda text: _prepare_work_patch_candidate(
             service,
-            patch_text,
+            text,
             run_truth_scope=run_truth_scope,
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
             source_operation_id=source_operation_id,
             source_effect_id=source_effect_id,
             profile=profile,
-        )
-        patch = candidate.patch
-        change_summary = candidate.change_summary
-        proposal_ids = candidate.proposal_ids
-        _record_patch_receipt(
-            execution,
-            patch,
-            byte_length=len(patch_text.encode("utf-8")),
-        )
-        if not patch.ops:
-            return GraphUpdateResult(status="none"), None
-        workspace = service.history.workspace
-        with workspace.run_lock(
-            on_wait=(lambda message: _record_work_lock_wait(execution, message, workspace.location))
-            if execution is not None
-            else None,
-            on_lost=(lambda message: _record_work_lock_lost(execution, message, workspace.location))
-            if execution is not None
-            else None,
-            cancelled=(execution.control.pause_requested.is_set if execution is not None else None),
-        ) as lease:
-            lease.assert_owned()
-            if source_operation_id:
-                matches = [
-                    item
-                    for item in service.history.load_patches()
-                    if (
-                        item.source_effect_id == source_effect_id
-                        if source_effect_id is not None
-                        else item.source_operation_id == source_operation_id
-                    )
-                    and item.admission == "accepted"
-                ]
-                if len(matches) > 1:
-                    raise ValueError("One agent effect has multiple canonical Patch commits.")
-                if matches:
-                    canonical_patch = matches[0]
-                    if (
-                        canonical_patch.source_operation_id != source_operation_id
-                        or canonical_patch.source_effect_sha256 != patch.source_effect_sha256
-                        or canonical_patch.kind != "experiment_loop"
-                        or canonical_patch.experiment_control_node_id != control_node_id
-                    ):
-                        raise ValueError(
-                            "Experiment-loop invocation source is bound to a different canonical "
-                            "Patch."
-                        )
-                    result = service.history.current_materialization()
-                    appended = canonical_patch
-                elif not patch.ops:
-                    return GraphUpdateResult(status="none"), None
-                else:
-                    appended, result = service.history.append(
-                        patch,
-                        discard_on_reject=True,
-                    )
-            else:
-                appended, result = service.history.append(
-                    patch,
-                    discard_on_reject=True,
-                )
-    except PatchRejected as exc:
-        messages = [item.message for item in exc.report.messages if item.level == "reject"]
-        detail = "; ".join(messages) or str(exc) or "The graph rejected the Experiment-loop Patch."
-        if execution is not None:
-            execution.store.record_agent_task_receipt(
-                execution.operation_id,
-                "patch_rejected",
-                {"messages": [item.model_dump(mode="json") for item in exc.report.messages[:16]]},
-                tier="diagnostic",
-            )
-        return None, _DeliverableFailure(
-            detail,
-            correctable=True,
-            change_summary=change_summary,
-            proposal_ids=proposal_ids,
-        )
-    except (ReplayHalted, StateUnavailable) as exc:
-        return None, _DeliverableFailure(
-            str(exc),
-            correctable=False,
-            change_summary=change_summary,
-            proposal_ids=proposal_ids,
-        )
-    except ValueError as exc:
-        return None, _DeliverableFailure(
-            str(exc),
-            correctable=True,
-            change_summary=change_summary,
-            proposal_ids=proposal_ids,
-        )
-
-    if canonical_patch is not None:
-        change_summary = tuple(canonical_patch.change_summary)
-        proposal_ids = tuple(_work_patch_proposal_ids(canonical_patch))
-    report = result.reports[appended.revision]
-    _record_patch_applied_receipt(execution, result.state)
-    return (
-        GraphUpdateResult(
-            status="applied",
-            applied_revision=appended.revision,
-            change_summary=list(change_summary),
-            proposal_ids=list(proposal_ids),
-            validation_messages=_bounded_graph_messages(*(item.message for item in report.flags)),
         ),
-        None,
+        source_operation_id=source_operation_id,
+        source_effect_id=source_effect_id,
+        canonical_matches=lambda canonical, candidate: (
+            canonical.source_operation_id == source_operation_id
+            and canonical.source_effect_sha256 == candidate.source_effect_sha256
+            and canonical.kind == "experiment_loop"
+            and canonical.experiment_control_node_id == control_node_id
+        ),
+        canonical_binding_error=(
+            "Experiment-loop invocation source is bound to a different canonical Patch."
+        ),
+        rejected_patch_error="The graph rejected the Experiment-loop Patch.",
+        proposal_ids_for_patch=_work_patch_proposal_ids,
+        bounded_messages=_bounded_graph_messages,
+        record_lock_wait=(
+            (lambda message, location: _record_work_lock_wait(execution, message, location))
+            if execution is not None
+            else None
+        ),
+        record_lock_lost=(
+            (lambda message, location: _record_work_lock_lost(execution, message, location))
+            if execution is not None
+            else None
+        ),
     )

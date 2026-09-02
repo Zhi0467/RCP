@@ -8,6 +8,7 @@ covered_by:
   - web/tests/projectSetup.test.mjs
   - web/src-tauri/src/commands.rs::tests::folder_selection_result_preserves_cancel_and_path
 reported_by: confirmed by the human on 2026-08-24
+last_checked: 2026-09-01 — Web coverage passed; the native desktop picker was not redriven.
 ---
 
 # Choose a local repository folder in the desktop setup wizard

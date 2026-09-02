@@ -18,7 +18,6 @@ from rcp.projects import (
 from rcp.providers import configured_runtime_id
 from rcp.server_ops.backup_models import (
     BACKUP_APP_DATA_CAPTURED,
-    BACKUP_APP_DATA_DEFERRED,
     BACKUP_APP_DATA_EXCLUSIONS,
     BACKUP_MANIFEST_SCHEMA_VERSION,
     BACKUP_RESEARCH_CANONICAL_ROOTS,
@@ -58,7 +57,6 @@ FINGERPRINT = "SHA256:" + ("A" * 43)
 
 def test_backup_root_classification_is_an_exact_closed_policy() -> None:
     assert {"project-sources"} == BACKUP_APP_DATA_CAPTURED
-    assert not BACKUP_APP_DATA_DEFERRED
     assert {
         "bootstrap-manifests",
         "chat-attachments",

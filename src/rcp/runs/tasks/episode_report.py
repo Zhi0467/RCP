@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -109,7 +109,7 @@ async def stream_episode_report_run(
         stage = _open_exact_report_stage(service, turn)
         output_name, report_output_path = _exact_report_output(turn.wrapup, stage)
         mailbox = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
-        capability = _report_capability(execution, turn.wrapup)
+        capability: AgentCapability = "work_auto"
         write_scope = resolve_project_write_scope(
             manifest=service.manifest,
             project_id=turn.task.project_id,
@@ -493,16 +493,6 @@ def _inputs_path(stage: _ReportStage) -> Path:
         return Path(str(stage.remote.root / "inputs"))
     assert stage.local is not None
     return stage.local / "inputs"
-
-
-def _report_capability(
-    execution: AgentTaskExecution,
-    wrapup: EpisodeWrapupRecord,
-) -> AgentCapability:
-    profile: Literal["ordinary", "orchestrator"] = "ordinary"
-    if wrapup.concluding_operation_id is not None:
-        profile = execution.store.agent_task_profile(wrapup.concluding_operation_id)
-    return "orchestrate" if profile == "orchestrator" else "work_auto"
 
 
 def _prior_attempt_diagnostic(

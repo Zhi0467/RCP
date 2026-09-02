@@ -35,6 +35,7 @@ from rcp.limits import (
     SERVER_INSTALL_SERVICE_TIMEOUT_SECONDS,
     SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
 )
+from rcp.server_ops._local_primitives import fsync_directory as _fsync_directory
 from rcp.server_ops.cli import (
     CallerIdentity,
     PreparedServerCommand,
@@ -223,7 +224,6 @@ def discover_bootstrap_repository(bootstrap_root: Path | None = None) -> GitHubR
     candidates = (
         (bootstrap_root,) if bootstrap_root is not None else (Path.cwd(), Path(__file__).parents[3])
     )
-    failures = 0
     for candidate in candidates:
         root = candidate.expanduser().resolve()
         result = _run_process(
@@ -240,17 +240,12 @@ def discover_bootstrap_repository(bootstrap_root: Path | None = None) -> GitHubR
             timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
         )
         if result.returncode != 0:
-            failures += 1
             continue
         try:
             return normalize_github_repository(result.stdout.strip())
         except ValueError:
-            failures += 1
-    if failures:
-        raise ValueError(
-            "server install must run from an RCP GitHub checkout with a supported origin"
-        )
-    raise ValueError("server install could not locate its bootstrap checkout")
+            continue
+    raise ValueError("server install must run from an RCP GitHub checkout with a supported origin")
 
 
 def _absolute_invoked_executable(value: Path | None) -> Path:
@@ -454,7 +449,7 @@ def _execute_install(
         request.team_name,
     )
     try:
-        facts = _run_step(
+        _run_step(
             emitter,
             steps[0],
             running="Validating Ubuntu, architecture, systemd, and required tool versions.",
@@ -570,7 +565,6 @@ def _execute_install(
             ),
             recovery_argv=retry,
         )
-        _ = facts
     except _ReportedInstallFailure:
         return
 
@@ -2376,14 +2370,6 @@ def _converge_current_release(layout: ServerLayout, release: Path) -> None:
         ) from exc
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _read_team_health() -> dict[str, object] | None:

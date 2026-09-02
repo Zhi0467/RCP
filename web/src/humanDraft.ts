@@ -274,29 +274,6 @@ export function proposalTargetsNode(
   });
 }
 
-export function stageAttemptRelease(
-  draft: HumanDraft,
-  graph: GraphState,
-  nodeId: string,
-  attemptId: string,
-): HumanDraft {
-  const node = graph.nodes[nodeId];
-  if (!node || draft.removed_node_ids.includes(nodeId)) return draft;
-  const existing = draft.nodes[nodeId];
-  const next = cloneDraft(draft);
-  const already = existing?.cancel_attempt_ids ?? [];
-  next.nodes[nodeId] = {
-    ...existing,
-    base_updated_rev:
-      existing?.base_updated_rev === node.updated_rev
-        ? existing.base_updated_rev
-        : node.updated_rev,
-    changes: { ...existing?.changes },
-    cancel_attempt_ids: already.includes(attemptId) ? already : [...already, attemptId],
-  };
-  return normalizeHumanDraft(next, graph);
-}
-
 export function stageNodeRemoval(
   draft: HumanDraft,
   graph: GraphState,

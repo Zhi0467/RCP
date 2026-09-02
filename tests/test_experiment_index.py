@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import threading
-import time
 import uuid
 from pathlib import Path
 
@@ -27,7 +26,7 @@ from rcp.storage import (
     ProjectRecord,
 )
 
-from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task
+from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task, wait_until
 from .helpers import create_named_app as create_app
 
 
@@ -922,10 +921,9 @@ def test_display_cache_refresh_failure_is_diagnostic_not_task_failure(
     completed = wait_for_task(store, task.operation_id)
 
     assert completed.status == "succeeded"
-    deadline = time.monotonic() + 2
-    failure = None
-    while time.monotonic() < deadline and failure is None:
-        failure = next(
+
+    def refresh_failure():
+        return next(
             (
                 item
                 for item in store.agent_task_receipts(task.operation_id)
@@ -933,8 +931,12 @@ def test_display_cache_refresh_failure_is_diagnostic_not_task_failure(
             ),
             None,
         )
-        time.sleep(0.01)
-    assert failure is not None
+
+    failure = wait_until(
+        refresh_failure,
+        timeout=2,
+        detail="display cache refresh failure receipt was not recorded",
+    )
     assert failure.payload["exception_type"] == "OSError"
 
 

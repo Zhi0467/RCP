@@ -23,6 +23,8 @@ from rcp.limits import (
     BACKUP_STABLE_READ_ATTEMPTS,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
 )
+from rcp.server_ops._local_primitives import fsync_directory
+from rcp.server_ops._local_primitives import write_all as _write_all
 from rcp.server_ops.backup_models import BackupFileEntry
 from rcp.service import (
     CanonicalChatBackupSource,
@@ -354,15 +356,6 @@ def _prepare_destination_parent(project_root: Path, parent: Path) -> None:
                 raise ValueError("project backup destination ancestry is unsafe") from None
 
 
-def _write_all(descriptor: int, data: bytes) -> None:
-    remaining = memoryview(data)
-    while remaining:
-        written = os.write(descriptor, remaining)
-        if written <= 0:
-            raise OSError("short backup file write")
-        remaining = remaining[written:]
-
-
 def discard_failed_project_capture(capture_root: Path, project_root: Path) -> None:
     expected_parent = capture_root / "projects"
     if project_root.parent != expected_parent or not project_root.name:
@@ -381,16 +374,7 @@ def _unlink_if_present(path: Path) -> None:
         path.unlink()
 
 
-def fsync_directory(path: Path) -> None:
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def fsync_tree(root: Path) -> None:
+def fsync_directory_tree(root: Path) -> None:
     pending = [root]
     directories: list[Path] = []
     observed_entries = 0
@@ -420,7 +404,7 @@ __all__ = [
     "discard_failed_project_capture",
     "fact_backup_sources",
     "fsync_directory",
-    "fsync_tree",
+    "fsync_directory_tree",
     "stable_copy_entry",
     "stable_copy_fact_entry",
     "stable_workspace_bytes",

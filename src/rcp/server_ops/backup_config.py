@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import BinaryIO, Protocol, TypeVar
 
 from rcp.limits import SERVER_BACKUP_CONFIGURATION_TIMEOUT_SECONDS
+from rcp.server_ops._local_primitives import fsync_directory as _fsync_directory
 from rcp.server_ops.cli import (
     CallerIdentity,
     PreparedServerCommand,
@@ -599,14 +600,6 @@ def _reject_configuration_path_ancestry(path: Path) -> None:
                 "The server-configuration directory ancestry contains a symlink. Inspect "
                 "/etc/rcp and rerun the same command."
             )
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def backup_service_unit_text() -> str:

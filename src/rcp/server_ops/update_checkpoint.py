@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import re
 import sqlite3
@@ -26,6 +25,26 @@ from rcp.limits import (
     BACKUP_RECEIPT_MAX_BYTES,
 )
 from rcp.runs.shared import checkpoint_local_recovery_stages
+from rcp.server_ops._local_primitives import (
+    PrivateFileReadError,
+    canonical_json_line,
+    read_stable_private_file,
+)
+from rcp.server_ops._local_primitives import (
+    canonical_uuid4 as _canonical_uuid4,
+)
+from rcp.server_ops._local_primitives import (
+    fsync_directory as _fsync_directory,
+)
+from rcp.server_ops._local_primitives import (
+    fsync_file_tree as _fsync_tree,
+)
+from rcp.server_ops._local_primitives import (
+    normalized_absolute_non_root_path as _absolute_path,
+)
+from rcp.server_ops._local_primitives import (
+    write_all as _write_all,
+)
 from rcp.server_ops.backup_capture import (
     BackupSQLiteCaptureReceipt,
     read_immutable_backup_receipt,
@@ -73,30 +92,6 @@ class _StrictModel(BaseModel):
         frozen=True,
         revalidate_instances="always",
     )
-
-
-def _canonical_uuid4(value: str, *, label: str) -> str:
-    try:
-        parsed = uuid.UUID(value)
-    except (AttributeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a canonical UUID4") from exc
-    if parsed.version != 4 or str(parsed) != value:
-        raise ValueError(f"{label} must be a lowercase canonical UUID4")
-    return value
-
-
-def _absolute_path(value: str, *, label: str) -> str:
-    if (
-        not value
-        or value != value.strip()
-        or len(value.encode("utf-8")) > 4096
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
-    ):
-        raise ValueError(f"{label} must be one bounded absolute path")
-    path = Path(value)
-    if not path.is_absolute() or path == Path("/") or ".." in path.parts or str(path) != value:
-        raise ValueError(f"{label} must be absolute and normalized")
-    return value
 
 
 def _relative_path(value: str, *, label: str) -> str:
@@ -1328,7 +1323,7 @@ def _advance_journal(path: Path, journal: RollbackJournal, phase: str) -> Rollba
 
 
 def _write_journal(path: Path, journal: RollbackJournal) -> None:
-    payload = _model_bytes(journal)
+    payload = canonical_json_line(journal.model_dump(mode="json"))
     descriptor, temporary_name = tempfile.mkstemp(prefix=".rollback-journal-", dir=path.parent)
     temporary = Path(temporary_name)
     try:
@@ -1830,7 +1825,7 @@ def _copy_checkpoint_file(source: Path, destination: Path, *, mode: int) -> None
 
 
 def _write_new_model(path: Path, model: BaseModel) -> None:
-    payload = _model_bytes(model)
+    payload = canonical_json_line(model.model_dump(mode="json"))
     descriptor = os.open(
         path,
         os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
@@ -1860,53 +1855,24 @@ def _write_new_payload(path: Path, payload: bytes) -> None:
     _fsync_directory(path.parent)
 
 
-def _model_bytes(model: BaseModel) -> bytes:
-    return (
-        json.dumps(
-            model.model_dump(mode="json"),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
-
-
 def _read_private_file(path: Path, *, expected_uid: int, expected_mode: int) -> bytes:
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    except OSError as exc:
-        raise UpdateCheckpointRefused("A private update receipt is unavailable.") from exc
-    try:
-        metadata = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != expected_uid
-            or stat.S_IMODE(metadata.st_mode) != expected_mode
-            or metadata.st_size > _MAX_JSON_BYTES
-        ):
-            raise UpdateCheckpointRefused("A private update receipt has unsafe ownership or mode.")
-        chunks: list[bytes] = []
-        remaining = metadata.st_size
-        while remaining:
-            chunk = os.read(descriptor, min(BACKUP_COPY_BUFFER_BYTES, remaining))
-            if not chunk:
-                raise UpdateCheckpointRefused("A private update receipt is incomplete.")
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        final = os.fstat(descriptor)
-        path_final = path.lstat()
-        stable = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-        if any(getattr(metadata, name) != getattr(final, name) for name in stable) or any(
-            getattr(final, name) != getattr(path_final, name) for name in stable
-        ):
-            raise UpdateCheckpointRefused("A private update receipt changed while reading.")
-        return b"".join(chunks)
-    except OSError as exc:
-        raise UpdateCheckpointRefused("A private update receipt cannot be read.") from exc
-    finally:
-        os.close(descriptor)
+        return read_stable_private_file(
+            path,
+            expected_uid=expected_uid,
+            expected_mode=expected_mode,
+            maximum=_MAX_JSON_BYTES,
+            chunk_size=BACKUP_COPY_BUFFER_BYTES,
+        )
+    except PrivateFileReadError as exc:
+        messages = {
+            "unavailable": "A private update receipt is unavailable.",
+            "unsafe": "A private update receipt has unsafe ownership or mode.",
+            "incomplete": "A private update receipt is incomplete.",
+            "changed": "A private update receipt changed while reading.",
+            "cannot_read": "A private update receipt cannot be read.",
+        }
+        raise UpdateCheckpointRefused(messages[exc.failure]) from exc
 
 
 def _require_directory(path: Path, *, expected_uid: int | None, label: str) -> None:
@@ -1948,41 +1914,6 @@ def _file_sha256(path: Path) -> tuple[str, int]:
     finally:
         os.close(descriptor)
     return digest.hexdigest(), size
-
-
-def _write_all(descriptor: int, payload: bytes) -> None:
-    remaining = memoryview(payload)
-    while remaining:
-        written = os.write(descriptor, remaining)
-        if written <= 0:
-            raise OSError("short checkpoint write")
-        remaining = remaining[written:]
-
-
-def _fsync_tree(root: Path) -> None:
-    for current, _directories, files in os.walk(root, topdown=False, followlinks=False):
-        current_path = Path(current)
-        for name in files:
-            descriptor = os.open(
-                current_path / name,
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-            )
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-        _fsync_directory(current_path)
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(
-        path,
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-    )
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _remove_tree(path: Path) -> None:

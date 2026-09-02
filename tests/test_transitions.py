@@ -561,7 +561,7 @@ def test_status_event_survives_later_node_removal() -> None:
     assert event.cause.action_index == 0
 
 
-def test_recorded_expanded_actions_replay_without_loading_rule_registry(monkeypatch) -> None:
+def test_recorded_expanded_actions_replay_without_rerunning_rules() -> None:
     setup = _setup_patch()
     base = materialize_patches(
         [setup],
@@ -573,8 +573,6 @@ def test_recorded_expanded_actions_replay_without_loading_rule_registry(monkeypa
         base.state,
         [_resolve_patch(revision=2)],
     )
-    monkeypatch.setattr("rcp.core.transitions.RULE_REGISTRY", ())
-
     replay = materialize_patches(
         [setup, prepared.patch],
         initial_truth_scope=["repo"],

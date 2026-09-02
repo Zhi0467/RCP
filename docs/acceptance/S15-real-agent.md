@@ -5,6 +5,7 @@ tier: live
 driver: api
 covered_by: none
 invariants: [4, 4b, 5, 11]
+last_checked: 2026-09-01 — metadata was audited; the live provider drive was not rerun.
 ---
 
 # One real agent run, end to end

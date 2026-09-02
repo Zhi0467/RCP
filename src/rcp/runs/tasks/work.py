@@ -6,9 +6,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
-from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Literal
 
 from rcp.agents import (
     AgentEvent,
@@ -22,19 +20,18 @@ from rcp.agents import (
 from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
-from rcp.agents.context import ChatContext
 from rcp.agents.prompts import (
     CHAT_MASTER_CONTEXT_VERSION,
     invoked_package_pointers,
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.attachments import ChatAttachmentStore
-from rcp.background import AgentTaskContinuation, AgentTaskExecution
+from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.core.authority import AgentProfile
 from rcp.core.models import Patch
 from rcp.core.operations import CreateProposalsOperation
-from rcp.history import PatchRejected, ReplayHalted
+from rcp.history import ReplayHalted
 from rcp.limits import (
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
@@ -65,7 +62,6 @@ from rcp.runs.chat import (
     stage_artifact_context,
 )
 from rcp.runs.experiment_loop import (
-    StagedExperimentWatcherResource,
     read_experiment_watcher_outputs,
     stage_chat_experiment_watcher_resources,
 )
@@ -81,8 +77,6 @@ from rcp.runs.shared import (
     _pinned_to_profile,
     _ProviderOutcome,
     _record_agent_launch_receipt,
-    _record_patch_applied_receipt,
-    _record_patch_receipt,
     _retry_deliverable_is_unchanged,
     _sse,
     _stage_context_paths,
@@ -97,7 +91,6 @@ from rcp.runs.tasks.experiment_watcher_maintenance import (
     _process_experiment_watcher_maintenance,
 )
 from rcp.runs.tasks.result_views import (
-    ResultViewSnapshot,
     _finalize_result_view_turn,
     _preflight_result_view_revision,
     _prepare_result_view_turn,
@@ -105,10 +98,38 @@ from rcp.runs.tasks.result_views import (
     _record_result_view_rejection,
     _roll_result_view_retention,
 )
+from rcp.runs.tasks.work_turn_runtime import (
+    WorkTurn,
+    _AppliedWorkTurn,
+    _ComposedWorkPrompt,
+    _CorrectionPatchRead,
+    _DeliverableFailure,
+    _DeliverableRead,
+    _DeliverableStep,
+    _PreparedWorkPatch,
+    _ResolvedWorkExecution,
+    _RetryDeliverableBaseline,
+    _SettledWorkDeliverables,
+    _StagedWorkInputs,
+    _WorkValidatorMailboxLifecycle,
+    apply_work_patch,
+    read_correction_patch,
+    settle_graph_repair_patch,
+    start_work_validator_mailbox,
+    validate_work_patch_live,
+)
+from rcp.runs.tasks.work_turn_runtime import (
+    clears_stale_turn_handoffs as _clears_stale_turn_handoffs,
+)
+from rcp.runs.tasks.work_turn_runtime import (
+    close_work_validator_mailbox as _close_work_validator_mailbox,
+)
+from rcp.runs.tasks.work_turn_runtime import (
+    stream_turn_agent_events as _stream_turn_agent_events,
+)
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
-from rcp.skill_registry import SkillSelection
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
-from rcp.storage import ResultViewRecord, WatcherContinuation
+from rcp.storage import WatcherContinuation
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.watchers import (
     WatcherBinding,
@@ -117,240 +138,8 @@ from rcp.watchers import (
     parse_watch_json,
 )
 
-
-@dataclass(frozen=True)
-class _DeliverableFailure:
-    message: str
-    correctable: bool
-    change_summary: tuple[str, ...] = ()
-    proposal_ids: tuple[str, ...] = ()
-
-
 # Auto-research shares the same patch-failure value while its orchestration remains separate.
 _WorkPatchFailure = _DeliverableFailure
-
-
-_NEW_LOGICAL_WORK_TURN_CONTINUATIONS = frozenset(
-    {
-        "fresh",
-        "handoff",
-        "retry",
-        "watcher_wake",
-        "graph_condition_wake",
-        "message_wake",
-        "lifecycle_wake",
-    }
-)
-_SAME_LOGICAL_WORK_TURN_CONTINUATIONS = frozenset({"resume", "graph_repair"})
-
-
-def _clears_stale_turn_handoffs(continuation: AgentTaskContinuation) -> bool:
-    if continuation in _NEW_LOGICAL_WORK_TURN_CONTINUATIONS:
-        return True
-    if continuation in _SAME_LOGICAL_WORK_TURN_CONTINUATIONS:
-        return False
-    raise ValueError(f"Unsupported Work continuation: {continuation}")
-
-
-@dataclass(frozen=True)
-class _PreparedWorkPatch:
-    patch: Patch
-    change_summary: tuple[str, ...]
-    proposal_ids: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class _CorrectionPatchRead:
-    text: str | None
-    problem: Literal["unreadable", "missing", "unchanged"] | None = None
-    detail: str | None = None
-
-
-@dataclass
-class _WorkValidatorMailboxLifecycle:
-    staged: StagedCommandMailbox
-    execution: AgentTaskExecution | None
-    stop: asyncio.Event
-    task: asyncio.Task[None]
-    closed: bool = False
-
-    async def close(self, *, primary_error: BaseException | None = None) -> None:
-        if self.closed:
-            return
-        self.closed = True
-        await _close_work_validator_mailbox(
-            self.staged,
-            stop=self.stop,
-            task=self.task,
-            execution=self.execution,
-            primary_error=primary_error,
-        )
-
-
-@dataclass
-class WorkTurn:
-    """Cross-phase state carried by one operational Work turn."""
-
-    service: ProjectService
-    request: RunRequest
-    execution: AgentTaskExecution | None
-    context: ChatContext
-    workspace: Path
-    local_stage: Path | None
-    remote_stage: RemoteRunStage | None
-    execution_host: str
-    provider_binary: str | None
-    read_dirs: list[Path]
-    write_dirs: list[Path]
-    write_scope: ProjectWriteScope
-    patch_inputs: _ChatPatchInputs
-    validator_lifecycle: _WorkValidatorMailboxLifecycle
-    validator_budget: PatchValidationBudget
-    outcome: _ProviderOutcome
-    answer: str | None = None
-
-    @property
-    def continuation(self) -> AgentTaskContinuation:
-        return self.execution.continuation if self.execution is not None else "fresh"
-
-    @property
-    def surface(self) -> AgentSurface:
-        return "project_chat" if self.request.chat_scope == "project" else "node_chat"
-
-    @property
-    def reusing_checkpoint(self) -> bool:
-        return bool(self.execution is not None and self.execution.reuses_native_checkpoint)
-
-    @property
-    def resuming(self) -> bool:
-        return self.continuation == "resume"
-
-    @property
-    def retrying(self) -> bool:
-        return self.continuation == "retry"
-
-    @property
-    def waking(self) -> bool:
-        return self.continuation == "watcher_wake"
-
-    @property
-    def retry_attempt(self) -> bool:
-        return self.continuation in {"retry", "handoff"}
-
-    @property
-    def uses_master_protocol(self) -> bool:
-        return (
-            self.request.trigger in {"human", "orchestrator"}
-            and self.request.patch_kind == "work"
-            and not self.retry_attempt
-        )
-
-
-async def _stream_turn_agent_events(
-    turn: WorkTurn,
-    launcher: AgentLauncher,
-    prompt: str,
-    *,
-    session_id: str | None,
-    required_session_id: str | None = None,
-    outcome: _ProviderOutcome,
-    validator_staged: StagedCommandMailbox | None = None,
-    validator_lifecycle: _WorkValidatorMailboxLifecycle | None = None,
-) -> AsyncIterator[str]:
-    """Stream one Work provider continuation from the turn's staged execution context."""
-
-    async with aclosing(
-        _stream_work_agent_events(
-            launcher,
-            turn.request,
-            prompt,
-            workspace=turn.workspace,
-            session_id=session_id,
-            read_dirs=turn.read_dirs,
-            write_dirs=turn.write_dirs,
-            write_scope=turn.write_scope,
-            execution_host=turn.execution_host,
-            execution=turn.execution,
-            remote_stage=turn.remote_stage,
-            capability="work_auto",
-            outcome=outcome,
-            binary=turn.provider_binary,
-            validator_staged=validator_staged or turn.patch_inputs.validator_staged,
-            validator_lifecycle=(
-                validator_lifecycle if validator_staged is not None else turn.validator_lifecycle
-            ),
-            required_session_id=required_session_id,
-        )
-    ) as stream:
-        async for frame in stream:
-            yield frame
-
-
-@dataclass(frozen=True)
-class _ResolvedWorkExecution:
-    request: RunRequest
-    execution_machine_alias: str
-    execution_host: str
-    provider_binary: str | None
-    revision_preflight: tuple[ResultViewRecord, ResultViewSnapshot] | None
-
-
-@dataclass(frozen=True)
-class _StagedWorkInputs:
-    token: str
-    artifact_scope_id: str
-    artifact_directory: Path | PurePosixPath
-    prepared_result_view: _PreparedResultView | None
-    experiment_resources: list[StagedExperimentWatcherResource]
-    experiment_resource_pointers: list[dict[str, object]]
-    skill_selection: SkillSelection
-    skill_pointers: list[dict[str, object]]
-    attachment_pointers: list[dict[str, object]]
-    repositories: list[dict[str, object]]
-
-
-@dataclass(frozen=True)
-class _ComposedWorkPrompt:
-    contract_path: str
-    prompt: str
-    base_contract_path: str
-
-
-@dataclass(frozen=True)
-class _RetryDeliverableBaseline:
-    patch_digest: str | None
-    watch_digest: str | None
-    experiment_watch_digests: dict[str, str]
-
-
-@dataclass
-class _SettledWorkDeliverables:
-    native_session_id: str | None
-    graph_update: GraphUpdateResult = field(
-        default_factory=lambda: GraphUpdateResult(status="none")
-    )
-    watch_correction_rounds: int = 0
-    stop: bool = False
-
-
-@dataclass
-class _AppliedWorkTurn:
-    graph_update: GraphUpdateResult
-    native_session_id: str | None
-    stop: bool = False
-
-
-@dataclass(frozen=True)
-class _DeliverableRead:
-    text: str | None
-    failure: _DeliverableFailure | None = None
-
-
-@dataclass(frozen=True)
-class _DeliverableStep:
-    failure: _DeliverableFailure | None = None
-    frames: tuple[str, ...] = ()
-    stop: bool = False
 
 
 def _read_correction_patch(
@@ -359,20 +148,10 @@ def _read_correction_patch(
     *,
     pre_launch_digest: str | None,
 ) -> _CorrectionPatchRead:
-    """Classify one correction round's patch output without applying policy."""
-
-    try:
-        corrected = _read_chat_patch(workspace, remote_stage)
-    except (OSError, StateUnavailable, ValueError) as exc:
-        return _CorrectionPatchRead(text=None, problem="unreadable", detail=str(exc))
-    if corrected is None:
-        return _CorrectionPatchRead(text=None, problem="missing")
-    if (
-        pre_launch_digest is not None
-        and hashlib.sha256(corrected.encode("utf-8")).hexdigest() == pre_launch_digest
-    ):
-        return _CorrectionPatchRead(text=None, problem="unchanged")
-    return _CorrectionPatchRead(text=corrected)
+    return read_correction_patch(
+        lambda: _read_chat_patch(workspace, remote_stage),
+        pre_launch_digest=pre_launch_digest,
+    )
 
 
 def _work_patch_source_operation_id(
@@ -1256,7 +1035,6 @@ def _watch_correction_contract(
     turn: WorkTurn,
     composed: _ComposedWorkPrompt,
     diagnostics_path: str,
-    validator_command: str,
 ) -> str:
     return PromptFactory.continuation_task_contract(
         original_contract_path=composed.base_contract_path,
@@ -1544,74 +1322,57 @@ async def _settle_watch_deliverable(
             f"task-{staged.token}-watch-correction-{correction_rounds}.json",
             {"problem": failure.message},
         )
-        correction_validator: StagedCommandMailbox | None = None
-        correction_lifecycle: _WorkValidatorMailboxLifecycle | None = None
-        try:
-            validator_command = turn.patch_inputs.validator_command
-            correction_contract = _watch_correction_contract(
-                turn,
-                composed,
-                diagnostics_path,
-                validator_command,
-            )
-            correction_path, correction_prompt = _stage_task_contract(
-                turn.local_stage,
-                turn.remote_stage,
-                f"task-{staged.token}-watch-correction-{correction_rounds}.md",
-                correction_contract,
-                execution=turn.execution,
-                role=f"watch_correction_{correction_rounds}",
-            )
-            _record_agent_launch_receipt(
-                turn.execution,
-                turn.request,
-                prompt=correction_prompt,
-                contract_path=correction_path,
-                remote=bool(turn.execution_host),
-                resumed=True,
-                write_scope=turn.write_scope,
-                continuation="watch_correction",
-                extra={
-                    "surface": turn.surface,
-                    "mode": "work",
-                    "capability": "work_auto",
-                    "network_access": True,
-                    "launch_kind": "watch_correction",
-                    "correction_round": correction_rounds,
-                    "write_directory_count": len(turn.write_dirs),
-                    "canonical_state_boundary": "prompt_only",
-                },
-            )
-            correction_outcome = _ProviderOutcome(session_id=settled.native_session_id)
-            correction_error: str | None = None
-            correction_stream = _stream_agent_events(
-                launcher,
-                turn.request,
-                correction_prompt,
-                workspace=turn.workspace,
-                session_id=settled.native_session_id,
-                read_dirs=turn.read_dirs,
-                write_dirs=turn.write_dirs,
-                write_scope=turn.write_scope,
-                execution_host=turn.execution_host,
-                execution=turn.execution,
-                remote_stage=turn.remote_stage,
-                capability="work_auto",
-                outcome=correction_outcome,
-                binary=turn.provider_binary,
-            )
-        except BaseException as exc:
-            if correction_lifecycle is not None:
-                await correction_lifecycle.close(primary_error=exc)
-            elif correction_validator is not None and not correction_validator.credential.expired:
-                await _close_work_validator_mailbox(
-                    correction_validator,
-                    stop=None,
-                    task=None,
-                    execution=turn.execution,
-                    primary_error=exc,
-                )
-            raise
+        correction_contract = _watch_correction_contract(
+            turn,
+            composed,
+            diagnostics_path,
+        )
+        correction_path, correction_prompt = _stage_task_contract(
+            turn.local_stage,
+            turn.remote_stage,
+            f"task-{staged.token}-watch-correction-{correction_rounds}.md",
+            correction_contract,
+            execution=turn.execution,
+            role=f"watch_correction_{correction_rounds}",
+        )
+        _record_agent_launch_receipt(
+            turn.execution,
+            turn.request,
+            prompt=correction_prompt,
+            contract_path=correction_path,
+            remote=bool(turn.execution_host),
+            resumed=True,
+            write_scope=turn.write_scope,
+            continuation="watch_correction",
+            extra={
+                "surface": turn.surface,
+                "mode": "work",
+                "capability": "work_auto",
+                "network_access": True,
+                "launch_kind": "watch_correction",
+                "correction_round": correction_rounds,
+                "write_directory_count": len(turn.write_dirs),
+                "canonical_state_boundary": "prompt_only",
+            },
+        )
+        correction_outcome = _ProviderOutcome(session_id=settled.native_session_id)
+        correction_error: str | None = None
+        correction_stream = _stream_agent_events(
+            launcher,
+            turn.request,
+            correction_prompt,
+            workspace=turn.workspace,
+            session_id=settled.native_session_id,
+            read_dirs=turn.read_dirs,
+            write_dirs=turn.write_dirs,
+            write_scope=turn.write_scope,
+            execution_host=turn.execution_host,
+            execution=turn.execution,
+            remote_stage=turn.remote_stage,
+            capability="work_auto",
+            outcome=correction_outcome,
+            binary=turn.provider_binary,
+        )
         async with aclosing(correction_stream) as stream:
             async for frame in stream:
                 event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
@@ -2215,55 +1976,25 @@ async def _stream_work_graph_repair(
     ) as stream:
         async for frame in stream:
             yield frame
-    if not outcome.completed:
-        if outcome.failed or outcome.paused:
-            return
-        yield _sse(AgentEvent(event="error", text=f"{request.provider} produced no result."))
-        return
-    try:
-        patch_text = _read_chat_patch(workspace, remote_stage)
-    except (OSError, StateUnavailable, ValueError) as exc:
-        yield _sse(AgentEvent(event="error", text=f"The repaired patch could not be read: {exc}"))
-        return
-    if patch_text is None:
-        yield _sse(AgentEvent(event="error", text="The repair did not write patch.json."))
-        return
-    if (
-        pre_launch_digest is not None
-        and hashlib.sha256(patch_text.encode("utf-8")).hexdigest() == pre_launch_digest
-    ):
-        yield _sse(
-            AgentEvent(
-                event="error",
-                text="The repair left patch.json byte-identical to the rejected patch.",
-            )
-        )
-        return
-    try:
-        graph_update, failure = _apply_work_patch(
+    repair = settle_graph_repair_patch(
+        outcome,
+        provider=request.provider,
+        pre_launch_digest=pre_launch_digest,
+        read_patch=lambda: _read_chat_patch(workspace, remote_stage),
+        apply_patch=lambda text: _apply_work_patch(
             service,
             execution,
-            patch_text,
+            text,
             run_truth_scope=context.run_truth_scope,
-        )
-    except RunLockCancelled:
-        yield _sse(
-            AgentEvent(
-                event="paused",
-                text="Paused while waiting for canonical state. The retained patch is preserved.",
-            )
-        )
+        ),
+        bounded_messages=_bounded_graph_messages,
+        record_rejection=lambda update: _record_work_graph_rejection(execution, update),
+    )
+    for frame in repair.frames:
+        yield frame
+    if repair.graph_update is None:
         return
-    if graph_update is None:
-        assert failure is not None
-        graph_update = GraphUpdateResult(
-            status="rejected",
-            change_summary=list(failure.change_summary),
-            proposal_ids=list(failure.proposal_ids),
-            validation_messages=_bounded_graph_messages(failure.message),
-            correction_rounds=1,
-        )
-        _record_work_graph_rejection(execution, graph_update)
+    graph_update = repair.graph_update
     try:
         _append_chat_graph_receipt(
             service,
@@ -2295,164 +2026,18 @@ def _start_work_validator_mailbox(
     budget: PatchValidationBudget,
     run_truth_scope: list[str],
 ) -> _WorkValidatorMailboxLifecycle:
-    stop = asyncio.Event()
-    try:
-        task = asyncio.create_task(
-            serve_patch_validation_mailbox(
-                staged=staged,
-                execution=execution,
-                validate=lambda text: _validate_work_patch_live(
-                    service,
-                    text,
-                    run_truth_scope=run_truth_scope,
-                    source_operation_id=_work_patch_source_operation_id(execution),
-                ),
-                stop=stop,
-                budget=budget,
-            )
-        )
-    except BaseException:
-        with suppress(BaseException):
-            staged.cleanup()
-        raise
-    return _WorkValidatorMailboxLifecycle(
-        staged=staged,
+    return start_work_validator_mailbox(
+        staged,
         execution=execution,
-        stop=stop,
-        task=task,
+        budget=budget,
+        serve=serve_patch_validation_mailbox,
+        validate=lambda text: _validate_work_patch_live(
+            service,
+            text,
+            run_truth_scope=run_truth_scope,
+            source_operation_id=_work_patch_source_operation_id(execution),
+        ),
     )
-
-
-async def _wait_for_work_validator_task(
-    task: asyncio.Task[None],
-) -> tuple[BaseException | None, asyncio.CancelledError | None]:
-    """Wait without allowing caller cancellation to abandon an owned mailbox task."""
-
-    caller_cancelled: asyncio.CancelledError | None = None
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError as exc:
-            if caller_cancelled is None:
-                caller_cancelled = exc
-        except BaseException:
-            break
-    try:
-        task.result()
-    except BaseException as exc:
-        return exc, caller_cancelled
-    return None, caller_cancelled
-
-
-async def _close_work_validator_mailbox(
-    staged: StagedCommandMailbox,
-    *,
-    stop: asyncio.Event | None,
-    task: asyncio.Task[None] | None,
-    execution: AgentTaskExecution | None,
-    primary_error: BaseException | None = None,
-) -> None:
-    if stop is not None:
-        stop.set()
-
-    serve_error: BaseException | None = None
-    caller_cancelled: asyncio.CancelledError | None = None
-    if task is not None:
-        serve_error, caller_cancelled = await _wait_for_work_validator_task(task)
-
-    cleanup_task = asyncio.create_task(asyncio.to_thread(staged.cleanup))
-    cleanup_error, cleanup_cancelled = await _wait_for_work_validator_task(cleanup_task)
-    if caller_cancelled is None:
-        caller_cancelled = cleanup_cancelled
-
-    def warning(message: str) -> None:
-        if execution is None:
-            return
-        with suppress(Exception):
-            execution.store.record_agent_task_event(
-                execution.operation_id,
-                message,
-                level="warning",
-            )
-
-    expected_errors = (OSError, StateUnavailable, ValueError)
-    if primary_error is not None:
-        if serve_error is not None and not isinstance(serve_error, asyncio.CancelledError):
-            warning(f"Patch validator became unavailable: {serve_error}")
-        if cleanup_error is not None and not isinstance(cleanup_error, asyncio.CancelledError):
-            warning(f"Patch validator cleanup failed: {cleanup_error}")
-        return
-
-    if caller_cancelled is not None:
-        if serve_error is not None and not isinstance(serve_error, asyncio.CancelledError):
-            warning(f"Patch validator became unavailable: {serve_error}")
-        if cleanup_error is not None and not isinstance(cleanup_error, asyncio.CancelledError):
-            warning(f"Patch validator cleanup failed: {cleanup_error}")
-        raise caller_cancelled
-
-    if serve_error is not None:
-        if isinstance(serve_error, expected_errors):
-            warning(f"Patch validator became unavailable: {serve_error}")
-        else:
-            if cleanup_error is not None:
-                warning(f"Patch validator cleanup failed: {cleanup_error}")
-            raise serve_error
-    if cleanup_error is not None:
-        if isinstance(cleanup_error, expected_errors):
-            warning(f"Patch validator cleanup failed: {cleanup_error}")
-        else:
-            raise cleanup_error
-
-
-async def _stream_work_agent_events(
-    launcher: AgentLauncher,
-    request: RunRequest,
-    prompt: str,
-    *,
-    workspace: Path,
-    session_id: str | None,
-    read_dirs: list[Path],
-    write_dirs: list[Path],
-    write_scope: ProjectWriteScope,
-    execution_host: str,
-    execution: AgentTaskExecution | None,
-    remote_stage: RemoteRunStage | None,
-    capability: Literal["work_auto"],
-    outcome: _ProviderOutcome,
-    binary: str | None,
-    validator_staged: StagedCommandMailbox,
-    validator_lifecycle: _WorkValidatorMailboxLifecycle,
-    required_session_id: str | None = None,
-) -> AsyncIterator[str]:
-    primary_error: BaseException | None = None
-    try:
-        async with aclosing(
-            _stream_agent_events(
-                launcher,
-                request,
-                prompt,
-                workspace=workspace,
-                session_id=session_id,
-                read_dirs=read_dirs,
-                write_dirs=write_dirs,
-                write_scope=write_scope,
-                execution_host=execution_host,
-                execution=execution,
-                remote_stage=remote_stage,
-                capability=capability,
-                outcome=outcome,
-                binary=binary,
-                invocation_gate=validator_staged.invocation_gate,
-                required_session_id=required_session_id,
-            )
-        ) as stream:
-            async for frame in stream:
-                yield frame
-    except BaseException as exc:
-        primary_error = exc
-        raise
-    finally:
-        await validator_lifecycle.close(primary_error=primary_error)
 
 
 def _prepare_work_patch_candidate(
@@ -2500,33 +2085,18 @@ def _validate_work_patch_live(
     source_effect_id: str | None = None,
     profile: AgentProfile = "ordinary",
 ) -> PatchValidationResult:
-    try:
-        candidate = _prepare_work_patch_candidate(
+    return validate_work_patch_live(
+        service,
+        patch_text,
+        prepare_candidate=lambda text: _prepare_work_patch_candidate(
             service,
-            patch_text,
+            text,
             run_truth_scope=run_truth_scope,
             source_operation_id=source_operation_id,
             source_effect_id=source_effect_id,
             profile=profile,
-        )
-        prepared, report, state = service.history.validate_candidate(candidate.patch)
-    except (ReplayHalted, StateUnavailable, OSError) as exc:
-        return PatchValidationResult(status="unavailable", messages=[str(exc)])
-    except ValueError as exc:
-        return PatchValidationResult(status="invalid", messages=[str(exc)])
-    rejects = [item.message for item in report.messages if item.level == "reject"]
-    if rejects:
-        return PatchValidationResult(
-            status="invalid",
-            messages=_bounded_graph_messages(*rejects),
-            live_revision=state.revision,
-            candidate_revision=prepared.revision,
-        )
-    return PatchValidationResult(
-        status="valid",
-        messages=_bounded_graph_messages(*(item.message for item in report.flags)),
-        live_revision=state.revision,
-        candidate_revision=prepared.revision,
+        ),
+        bounded_messages=_bounded_graph_messages,
     )
 
 
@@ -2589,130 +2159,40 @@ def _apply_work_patch(
 ) -> tuple[GraphUpdateResult | None, _DeliverableFailure | None]:
     """Validate and atomically apply one Work patch candidate."""
 
-    if execution is not None:
-        execution.store.record_agent_task_patch_output(execution.operation_id, patch_text)
-        execution.store.record_agent_task_receipt(
-            execution.operation_id,
-            "patch_retained",
-            {"byte_length": len(patch_text.encode("utf-8")), "file_name": "patch.json"},
-            tier="diagnostic",
-        )
-    change_summary: tuple[str, ...] = ()
-    proposal_ids: tuple[str, ...] = ()
     source_operation_id = source_operation_id or _work_patch_source_operation_id(execution)
-    canonical_patch: Patch | None = None
-    try:
-        candidate = _prepare_work_patch_candidate(
+    return apply_work_patch(
+        service,
+        execution,
+        patch_text,
+        prepare_candidate=lambda text: _prepare_work_patch_candidate(
             service,
-            patch_text,
+            text,
             run_truth_scope=run_truth_scope,
             source_operation_id=source_operation_id,
             source_effect_id=source_effect_id,
             profile=profile,
-        )
-        patch = candidate.patch
-        change_summary = candidate.change_summary
-        proposal_ids = candidate.proposal_ids
-        _record_patch_receipt(
-            execution,
-            patch,
-            byte_length=len(patch_text.encode("utf-8")),
-        )
-        if not patch.ops:
-            return GraphUpdateResult(status="none"), None
-        workspace = service.history.workspace
-        with workspace.run_lock(
-            on_wait=(lambda message: _record_work_lock_wait(execution, message, workspace.location))
-            if execution is not None
-            else None,
-            on_lost=(lambda message: _record_work_lock_lost(execution, message, workspace.location))
-            if execution is not None
-            else None,
-            cancelled=(execution.control.pause_requested.is_set if execution is not None else None),
-        ) as lease:
-            lease.assert_owned()
-            if source_operation_id:
-                matches = [
-                    item
-                    for item in service.history.load_patches()
-                    if (
-                        item.source_effect_id == source_effect_id
-                        if source_effect_id is not None
-                        else item.source_operation_id == source_operation_id
-                    )
-                    and item.admission == "accepted"
-                ]
-                if len(matches) > 1:
-                    raise ValueError("One agent effect has multiple canonical Patch commits.")
-                if matches:
-                    canonical_patch = matches[0]
-                    if (
-                        canonical_patch.source_operation_id != source_operation_id
-                        or canonical_patch.source_effect_sha256 != patch.source_effect_sha256
-                        or canonical_patch.kind != "work"
-                    ):
-                        raise ValueError(
-                            "Work invocation source is bound to a different canonical Patch."
-                        )
-                    result = service.history.current_materialization()
-                    appended = canonical_patch
-                elif not patch.ops:
-                    return GraphUpdateResult(status="none"), None
-                else:
-                    appended, result = service.history.append(
-                        patch,
-                        discard_on_reject=True,
-                    )
-            else:
-                appended, result = service.history.append(
-                    patch,
-                    discard_on_reject=True,
-                )
-    except PatchRejected as exc:
-        messages = [item.message for item in exc.report.messages if item.level == "reject"]
-        detail = "; ".join(messages) or str(exc) or "The graph rejected the Work patch."
-        if execution is not None:
-            execution.store.record_agent_task_receipt(
-                execution.operation_id,
-                "patch_rejected",
-                {"messages": [item.model_dump(mode="json") for item in exc.report.messages[:16]]},
-                tier="diagnostic",
-            )
-        return None, _DeliverableFailure(
-            detail,
-            correctable=True,
-            change_summary=change_summary,
-            proposal_ids=proposal_ids,
-        )
-    except (ReplayHalted, StateUnavailable) as exc:
-        return None, _DeliverableFailure(
-            str(exc),
-            correctable=False,
-            change_summary=change_summary,
-            proposal_ids=proposal_ids,
-        )
-    except ValueError as exc:
-        return None, _DeliverableFailure(
-            str(exc),
-            correctable=True,
-            change_summary=change_summary,
-            proposal_ids=proposal_ids,
-        )
-
-    if canonical_patch is not None:
-        change_summary = tuple(canonical_patch.change_summary)
-        proposal_ids = tuple(_work_patch_proposal_ids(canonical_patch))
-    report = result.reports[appended.revision]
-    _record_patch_applied_receipt(execution, result.state)
-    return (
-        GraphUpdateResult(
-            status="applied",
-            applied_revision=appended.revision,
-            change_summary=list(change_summary),
-            proposal_ids=list(proposal_ids),
-            validation_messages=_bounded_graph_messages(*(item.message for item in report.flags)),
         ),
-        None,
+        source_operation_id=source_operation_id,
+        source_effect_id=source_effect_id,
+        canonical_matches=lambda canonical, candidate: (
+            canonical.source_operation_id == source_operation_id
+            and canonical.source_effect_sha256 == candidate.source_effect_sha256
+            and canonical.kind == "work"
+        ),
+        canonical_binding_error="Work invocation source is bound to a different canonical Patch.",
+        rejected_patch_error="The graph rejected the Work patch.",
+        proposal_ids_for_patch=_work_patch_proposal_ids,
+        bounded_messages=_bounded_graph_messages,
+        record_lock_wait=(
+            (lambda message, location: _record_work_lock_wait(execution, message, location))
+            if execution is not None
+            else None
+        ),
+        record_lock_lost=(
+            (lambda message, location: _record_work_lock_lost(execution, message, location))
+            if execution is not None
+            else None
+        ),
     )
 
 

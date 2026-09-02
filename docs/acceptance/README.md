@@ -93,7 +93,7 @@ This index is checked against frontmatter by `tests/test_documentation.py`.
 | [S81](S81-live-canonical-state.md) | Canonical graph changes appear without UI reload | implemented | api + browser |
 | [S90](S90-desktop-chat-dictation.md) | Speech becomes an editable chat draft | pending | desktop |
 | [S95](S95-durable-team-space.md) | A team space outlives every serving process | pending | pytest + api + ssh |
-| [S96](S96-joining-a-team-space.md) | Join a team space once and stay joined | implemented | pytest + api + browser |
+| [S96](S96-joining-a-team-space.md) | Join a team space once and stay joined | pending | pytest + api + browser |
 | [S98](S98-move-a-project-into-a-team-space.md) | Hand a personal project to the lab once | pending | pytest + browser + desktop + ssh |
 | [S99](S99-attribution-travels-with-history.md) | History says who authorized a change | implemented | pytest + browser |
 | [S100](S100-permission-is-checked-twice.md) | Nothing unauthorized starts or lands | implemented | pytest |

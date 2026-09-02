@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import sqlite3
@@ -24,6 +23,17 @@ from rcp.limits import (
     BACKUP_RECEIPT_MAX_BYTES,
 )
 from rcp.projects import BackupProjectUnavailable, inspect_backup_project_registration
+from rcp.server_ops._local_primitives import (
+    canonical_json_line,
+    normalized_absolute_non_root_path,
+    write_all,
+)
+from rcp.server_ops._local_primitives import (
+    canonical_uuid4 as _canonical_uuid4,
+)
+from rcp.server_ops._local_primitives import (
+    fsync_directory as _fsync_directory,
+)
 from rcp.server_ops.backup_integrity import database_schema_sha256
 from rcp.server_ops.backup_models import (
     BackupAppDataCapturePlan,
@@ -52,16 +62,6 @@ class BackupProjectInventoryUnavailable(ValueError):
     """One captured catalog project has no valid typed file inventory."""
 
 
-def _canonical_uuid4(value: str, *, label: str) -> str:
-    try:
-        parsed = uuid.UUID(value)
-    except (AttributeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a canonical UUID4") from exc
-    if parsed.version != 4 or str(parsed) != value:
-        raise ValueError(f"{label} must be a lowercase, hyphenated canonical UUID4")
-    return value
-
-
 def _safe_line(value: str, *, label: str, maximum: int = 4096) -> str:
     if (
         not isinstance(value, str)
@@ -85,12 +85,7 @@ def _plain_filename(value: str, *, label: str) -> str:
 
 def _absolute_path(value: str, *, label: str) -> str:
     _safe_line(value, label=label)
-    path = PurePosixPath(value)
-    if not path.is_absolute() or path == PurePosixPath("/") or ".." in path.parts:
-        raise ValueError(f"{label} must be a normalized absolute non-root path")
-    if str(path) != value:
-        raise ValueError(f"{label} must be normalized")
-    return value
+    return normalized_absolute_non_root_path(value, label=label)
 
 
 def _safe_project_locator(value: str) -> str | None:
@@ -705,27 +700,13 @@ def _file_sha256(path: Path) -> tuple[str, int]:
 def write_immutable_backup_receipt(path: Path, receipt: BaseModel) -> str:
     """Publish one strict bounded JSON receipt as a new read-only file."""
 
-    payload = (
-        json.dumps(
-            receipt.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
+    payload = canonical_json_line(receipt.model_dump(mode="json"))
     if len(payload) > BACKUP_RECEIPT_MAX_BYTES:
         raise BackupCaptureUnavailable("The backup receipt exceeds its size bound.")
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags, 0o400)
     try:
-        view = memoryview(payload)
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                raise OSError("short immutable receipt write")
-            view = view[written:]
+        write_all(descriptor, payload)
         os.fchmod(descriptor, 0o400)
         os.fsync(descriptor)
     finally:
@@ -806,14 +787,6 @@ def validate_backup_sqlite_snapshot(receipt: BackupSQLiteCaptureReceipt) -> None
         raise BackupCaptureUnavailable(
             "The SQLite snapshot identity no longer matches its receipt."
         )
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 __all__ = [

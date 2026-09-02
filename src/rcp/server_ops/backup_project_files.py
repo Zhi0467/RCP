@@ -8,7 +8,6 @@ import re
 import shutil
 import stat
 import tempfile
-import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -22,6 +21,7 @@ from rcp.paper.service import (
     canonical_introduction_backup_source,
     validate_canonical_introduction_backup,
 )
+from rcp.server_ops._local_primitives import canonical_uuid4 as _canonical_uuid4
 from rcp.server_ops.backup_capture import (
     BackupCaptureUnavailable,
     BackupSnapshotProjectInventory,
@@ -47,7 +47,7 @@ from rcp.server_ops.backup_project_io import (
     discard_failed_project_capture,
     fact_backup_sources,
     fsync_directory,
-    fsync_tree,
+    fsync_directory_tree,
     stable_copy_entry,
     stable_copy_fact_entry,
     stable_workspace_bytes,
@@ -65,16 +65,6 @@ BACKUP_PROJECT_FILE_CAPTURE_SCHEMA_VERSION = 1
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _PROJECT_CAPTURE_FAILURE = "The project files were invalid, changing, or unavailable."
-
-
-def _canonical_uuid4(value: str, *, label: str) -> str:
-    try:
-        parsed = uuid.UUID(value)
-    except (AttributeError, ValueError) as exc:
-        raise ValueError(f"{label} must be a canonical UUID4") from exc
-    if parsed.version != 4 or str(parsed) != value:
-        raise ValueError(f"{label} must be a lowercase canonical UUID4")
-    return value
 
 
 class _StrictProjectCaptureModel(BaseModel):
@@ -308,7 +298,7 @@ class BackupProjectFileCaptureCoordinator:
                     shutil.rmtree(project_root)
                 failures.add(recorded.project_id)
         if collection_root.exists():
-            fsync_tree(collection_root)
+            fsync_directory_tree(collection_root)
         return tuple(captures), frozenset(failures)
 
     def _discard_uncaptured_imported_sources(
@@ -323,7 +313,7 @@ class BackupProjectFileCaptureCoordinator:
         for project_root in tuple(collection_root.iterdir()):
             if project_root.name not in captured_project_ids:
                 shutil.rmtree(project_root)
-        fsync_tree(collection_root)
+        fsync_directory_tree(collection_root)
 
     def _validate_capture_boundary(
         self,
@@ -572,7 +562,7 @@ class BackupProjectFileCaptureCoordinator:
             )
 
         ordered = tuple(sorted(files, key=lambda item: item.archive_path))
-        fsync_tree(project_root)
+        fsync_directory_tree(project_root)
         return BackupProjectCapture(
             project_id=inventory.project_id,
             home_space_id=inventory.home_space_id,
