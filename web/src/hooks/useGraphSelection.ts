@@ -49,6 +49,7 @@ interface UseGraphSelectionOptions {
   projectId: string | null;
   loadedProjectId: string | null;
   loading: boolean;
+  getActiveProjectId: () => string | null;
 }
 
 export interface ExperimentSelectionState {
@@ -132,6 +133,7 @@ export function useGraphSelection({
   projectId,
   loadedProjectId,
   loading,
+  getActiveProjectId,
 }: UseGraphSelectionOptions) {
   const [view, setView] = useState<AppView>(initialView);
   const [trustView, setTrustView] = useState<TrustView>(readTrustView);
@@ -423,11 +425,14 @@ export function useGraphSelection({
     [projectId, selectedAutoResearchEpisodeId, selectedExperimentRoute],
   );
   const replaceExactAutoResearchSelection = useCallback(
-    (episodeId: string) => {
+    (episodeProjectId: string, episodeId: string) => {
+      // A start or reauthorization can settle after the human switched project tabs, so the
+      // live active project and pinned episode decide, never the ones this render captured.
       const replacementHref = exactAutoResearchEpisodeHref(
-        projectId,
+        getActiveProjectId(),
+        episodeProjectId,
         episodeId,
-        selectedAutoResearchEpisodeId,
+        selectionSnapshotRef.current.selectedAutoResearchEpisodeId,
       );
       if (!replacementHref) return;
       window.history.replaceState(null, "", replacementHref);
@@ -438,7 +443,7 @@ export function useGraphSelection({
         autoResearchEpisodeId: episodeId,
       });
     },
-    [projectId, selectedAutoResearchEpisodeId],
+    [getActiveProjectId],
   );
   const selectExperiment = useCallback(
     (nodeId: string | null) => {

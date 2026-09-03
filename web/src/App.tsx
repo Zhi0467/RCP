@@ -775,6 +775,7 @@ export default function App() {
     projectId,
     loadedProjectId: project?.id ?? null,
     loading,
+    getActiveProjectId,
   });
   const selectedIndexedExperiment = experimentIndexEntryForRoute(
     experimentLoops,
@@ -2619,7 +2620,7 @@ export default function App() {
         starting_instruction: startingInstruction,
       });
       replaceEpisode(started);
-      replaceExactAutoResearchSelection(started.episode_id);
+      replaceExactAutoResearchSelection(started.project_id, started.episode_id);
       closeAutoResearchDialog();
       changeView("execution");
       try {
@@ -2660,7 +2661,7 @@ export default function App() {
     try {
       const nextEpisode = await reauthorizeEpisode(apiBase, episodeId, invocationCeiling);
       replaceEpisode(nextEpisode);
-      replaceExactAutoResearchSelection(nextEpisode.episode_id);
+      replaceExactAutoResearchSelection(nextEpisode.project_id, nextEpisode.episode_id);
       await reload();
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
