@@ -27,7 +27,7 @@ from rcp.runs.chat import (
 )
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, ArtifactRevisionCandidateRecord
-from rcp.transport import LocalStateWorkspace, RemoteRunStage
+from rcp.transport import LocalStateWorkspace, RemoteRunStage, StateUnavailable
 from rcp.transport.remote_lock_holder import replace_staged_artifact
 
 from .helpers import authorized_human, create_named_app
@@ -870,6 +870,68 @@ def test_revision_conflict_preserves_external_edit_until_human_rejects(
             f"/api/projects/{app.state.default_project_id}/tasks/{candidate.source_operation_id}"
         ).json()["result"]["artifacts"][0]
     )
+
+
+def test_revision_accept_conflicts_when_external_edit_has_invalid_media_bytes(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    _, candidate, kept_filename, _, _ = _seed_pending_local_candidate(
+        app,
+        tmp_path,
+        kept=True,
+    )
+    assert kept_filename is not None
+    workspace = app.state.service.history.workspace
+    invalid_html = b"\x00not HTML"
+    workspace.replace_kept_artifact(kept_filename, invalid_html)
+
+    response = TestClient(app).post(
+        f"/api/projects/{app.state.default_project_id}"
+        f"/artifact-revisions/{candidate.candidate_id}/accept"
+    )
+
+    assert response.status_code == 409, response.text
+    assert "changed after this candidate" in response.json()["detail"]
+    assert workspace.read_kept_artifact(kept_filename) == invalid_html
+    conflicted = app.state.background_tasks.store.artifact_revision_candidate(
+        candidate.candidate_id
+    )
+    assert conflicted is not None and conflicted.status == "conflicted"
+    assert conflicted.diagnostic == response.json()["detail"]
+
+
+def test_revision_accept_keeps_transiently_unavailable_source_pending(
+    manifest,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    _, candidate, kept_filename, first, _ = _seed_pending_local_candidate(
+        app,
+        tmp_path,
+        kept=True,
+    )
+    assert kept_filename is not None
+    workspace = app.state.service.history.workspace
+    original_read = workspace.read_kept_artifact
+
+    def unavailable(*_args, **_kwargs) -> bytes:
+        raise StateUnavailable("temporary read failure")
+
+    monkeypatch.setattr(workspace, "read_kept_artifact", unavailable)
+
+    response = TestClient(app).post(
+        f"/api/projects/{app.state.default_project_id}"
+        f"/artifact-revisions/{candidate.candidate_id}/accept"
+    )
+
+    assert response.status_code == 503, response.text
+    pending = app.state.background_tasks.store.artifact_revision_candidate(candidate.candidate_id)
+    assert pending is not None and pending.status == "pending"
+    assert pending.diagnostic is None
+    assert original_read(kept_filename) == first
 
 
 def test_revision_accept_detects_an_edit_during_publication(

@@ -694,7 +694,7 @@ def accept_artifact_revision_candidate(
             )
             raise HTTPException(status_code=409, detail=conflicted.diagnostic) from exc
         try:
-            source, current_data = _load_agent_artifact(
+            source, current_data = _read_agent_artifact_bytes(
                 store,
                 service.history.workspace,
                 project_id,
@@ -705,6 +705,18 @@ def accept_artifact_revision_candidate(
         except HTTPException:
             store.reset_artifact_revision_acceptance(candidate_id)
             raise
+        except FileNotFoundError as exc:
+            store.reset_artifact_revision_acceptance(candidate_id)
+            raise HTTPException(status_code=410, detail="Preview unavailable") from exc
+        except (OSError, StateUnavailable) as exc:
+            store.reset_artifact_revision_acceptance(candidate_id)
+            raise HTTPException(status_code=503, detail="Preview unavailable") from exc
+        except ValueError as exc:
+            conflicted = store.conflict_artifact_revision_candidate(
+                candidate_id,
+                "The current artifact is no longer a readable supported artifact.",
+            )
+            raise HTTPException(status_code=409, detail=conflicted.diagnostic) from exc
         current_sha256 = hashlib.sha256(current_data).hexdigest()
         if current_sha256 != candidate.candidate_sha256:
             if current_sha256 != candidate.base_sha256:
@@ -1103,6 +1115,36 @@ def _load_agent_artifact(
     action: Literal["open", "download", "keep"],
 ) -> tuple[AgentArtifactResponse, bytes]:
     """Resolve an attachment only through its persisted task descriptor and stage."""
+    try:
+        projected, data = _read_agent_artifact_bytes(
+            store,
+            workspace,
+            project_id,
+            operation_id,
+            artifact_id,
+            action,
+        )
+        media_type = validate_artifact_bytes(projected.name, data)
+        if media_type != projected.media_type:
+            raise ValueError("artifact media type changed")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=410, detail="Preview unavailable") from exc
+    except StateUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Preview unavailable") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=410, detail="Preview unavailable") from exc
+    return projected, data
+
+
+def _read_agent_artifact_bytes(
+    store: AppStore,
+    workspace: StateWorkspace,
+    project_id: str,
+    operation_id: str,
+    artifact_id: str,
+    action: Literal["open", "download", "keep"],
+) -> tuple[AgentArtifactResponse, bytes]:
+    """Read bounded source bytes without applying viewer-specific media validation."""
     record = store.agent_task(operation_id)
     if (
         record is None
@@ -1122,44 +1164,34 @@ def _load_agent_artifact(
             status_code=410 if action in {"open", "download"} else 409,
             detail=projected.unavailable_reason or f"Artifact {action} unavailable",
         )
-    try:
-        scope_id = _logical_chat_turn_operation_id(store, record.operation_id)
-        expected_descriptor = descriptor_for(scope_id, descriptor.name)
-        if (
-            expected_descriptor.artifact_id != descriptor.artifact_id
-            or expected_descriptor.name != descriptor.name
-            or expected_descriptor.media_type != descriptor.media_type
-        ):
-            raise ValueError("artifact descriptor does not match its task scope")
-        if descriptor.kept_filename is not None:
-            data = workspace.read_kept_artifact(
-                descriptor.kept_filename,
-                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-            )
-        elif not record.stage_root:
-            raise FileNotFoundError(descriptor.name)
-        elif record.stage_host:
-            stage = RemoteRunStage(record.stage_host).attach_artifact_source(record.stage_root)
-            data = stage.read_artifact_bytes(
-                scope_id,
-                descriptor.name,
-                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-            )
-        else:
-            data = read_local_regular_file(
-                _local_chat_artifact_directory(store, record, scope_id),
-                descriptor.name,
-                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-            )
-        media_type = validate_artifact_bytes(descriptor.name, data)
-        if media_type != descriptor.media_type:
-            raise ValueError("artifact media type changed")
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=410, detail="Preview unavailable") from exc
-    except StateUnavailable as exc:
-        raise HTTPException(status_code=503, detail="Preview unavailable") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=410, detail="Preview unavailable") from exc
+    scope_id = _logical_chat_turn_operation_id(store, record.operation_id)
+    expected_descriptor = descriptor_for(scope_id, descriptor.name)
+    if (
+        expected_descriptor.artifact_id != descriptor.artifact_id
+        or expected_descriptor.name != descriptor.name
+        or expected_descriptor.media_type != descriptor.media_type
+    ):
+        raise ValueError("artifact descriptor does not match its task scope")
+    if descriptor.kept_filename is not None:
+        data = workspace.read_kept_artifact(
+            descriptor.kept_filename,
+            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+        )
+    elif not record.stage_root:
+        raise FileNotFoundError(descriptor.name)
+    elif record.stage_host:
+        stage = RemoteRunStage(record.stage_host).attach_artifact_source(record.stage_root)
+        data = stage.read_artifact_bytes(
+            scope_id,
+            descriptor.name,
+            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+        )
+    else:
+        data = read_local_regular_file(
+            _local_chat_artifact_directory(store, record, scope_id),
+            descriptor.name,
+            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+        )
     return projected, data
 
 
