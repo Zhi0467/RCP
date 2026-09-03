@@ -72,6 +72,7 @@ class AppStoreBase:
             raise ValueError("space kind must be 'personal' or 'team'")
         self.path = path
         self._read_only_snapshot = False
+        self._immutable_read_only = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize(space_kind)
 
@@ -81,6 +82,7 @@ class AppStoreBase:
         store = cls.__new__(cls)
         store.path = path
         store._read_only_snapshot = False
+        store._immutable_read_only = False
         store.path.parent.mkdir(parents=True, exist_ok=True)
         initial_space_id = str(uuid.uuid4())
         try:
@@ -106,24 +108,37 @@ class AppStoreBase:
     def open_read_only_snapshot(cls, path: Path) -> AppStore:
         """Open one completed SQLite snapshot without migrations or write authority."""
 
+        return cls._open_read_only(path, immutable=True)
+
+    @classmethod
+    def open_read_only(cls, path: Path) -> AppStore:
+        """Open a live SQLite database and its WAL without migrations or write authority."""
+
+        return cls._open_read_only(path, immutable=False)
+
+    @classmethod
+    def _open_read_only(cls, path: Path, *, immutable: bool) -> AppStore:
+        description = "snapshot" if immutable else "database"
+
         if not isinstance(path, Path) or not path.is_absolute() or ".." in path.parts:
-            raise ValueError("the SQLite snapshot path must be absolute and normalized")
+            raise ValueError(f"the SQLite {description} path must be absolute and normalized")
         try:
             mode = path.lstat().st_mode
         except OSError as exc:
-            raise ValueError("the SQLite snapshot is unavailable") from exc
+            raise ValueError(f"the SQLite {description} is unavailable") from exc
         if not stat.S_ISREG(mode):
-            raise ValueError("the SQLite snapshot must be a safe regular file")
+            raise ValueError(f"the SQLite {description} must be a safe regular file")
         store = cls.__new__(cls)
         store.path = path
         store._read_only_snapshot = True
+        store._immutable_read_only = immutable
         try:
             with store.connection() as connection:
                 result = [row[0] for row in connection.execute("PRAGMA quick_check").fetchall()]
         except sqlite3.Error as exc:
-            raise ValueError("the SQLite snapshot could not be validated") from exc
+            raise ValueError(f"the SQLite {description} could not be validated") from exc
         if result != ["ok"]:
-            raise ValueError("the SQLite snapshot failed its integrity check")
+            raise ValueError(f"the SQLite {description} failed its integrity check")
         return store
 
     def storage_schema_ledger_head(self) -> int:
@@ -208,7 +223,7 @@ class AppStoreBase:
         connection: sqlite3.Connection,
         tables: set[str],
     ) -> bool:
-        """Recognize the retained server-era database family that predates the ledger."""
+        """Recognize only pre-ledger databases accepted by the real apply path."""
 
         if not self._storage_schema_has_rcp_core(tables):
             return False
@@ -218,7 +233,29 @@ class AppStoreBase:
             if row[1] != "storage_schema_migrations"
         }
         actual = {(row[0], row[1]): row for row in self._storage_schema(connection)}
-        return actual != current_without_ledger
+        if actual == current_without_ledger:
+            return False
+
+        probe = sqlite3.connect(":memory:", timeout=30.0)
+        probe.row_factory = sqlite3.Row
+        try:
+            connection.backup(probe)
+            probe.execute("PRAGMA foreign_keys = OFF")
+            probe.execute("PRAGMA legacy_alter_table = ON")
+            probe.execute("BEGIN IMMEDIATE")
+            self._run_storage_schema_migrations(
+                probe,
+                None,
+                initial_space_id=None,
+                initial_space_name=None,
+                issue_bootstrap=False,
+                require_new=False,
+                schema_template=False,
+                schema_capture=None,
+            )
+        finally:
+            probe.close()
+        return True
 
     @staticmethod
     def _storage_schema_has_rcp_core(tables: set[str]) -> bool:
@@ -228,7 +265,9 @@ class AppStoreBase:
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
         if getattr(self, "_read_only_snapshot", False):
-            uri = f"{self.path.resolve(strict=True).as_uri()}?mode=ro&immutable=1"
+            uri = f"{self.path.resolve(strict=True).as_uri()}?mode=ro"
+            if getattr(self, "_immutable_read_only", False):
+                uri += "&immutable=1"
             connection = sqlite3.connect(uri, timeout=30.0, uri=True)
         else:
             connection = sqlite3.connect(self.path, timeout=30.0)
@@ -1988,6 +2027,7 @@ class AppStoreBase:
         template = self.__class__.__new__(self.__class__)
         template.path = Path(":memory:")
         template._read_only_snapshot = False
+        template._immutable_read_only = False
         captured: list[tuple[str, str, str, str]] = []
         template._initialize(None, _schema_template=True, _schema_capture=captured)
         result = tuple(captured)
@@ -1997,18 +2037,7 @@ class AppStoreBase:
     def _normalize_legacy_startup_schema(self, connection: sqlite3.Connection) -> None:
         """Converge every supported pre-ledger table shape on the baseline schema."""
 
-        expected = {(row[0], row[1]): row for row in self._baseline_storage_schema()}
-        actual = {(row[0], row[1]): row for row in self._storage_schema(connection)}
-        changed_tables = [
-            name
-            for (object_type, name), row in expected.items()
-            if object_type == "table" and actual.get((object_type, name)) != row
-        ]
-        unexpected = sorted(set(changed_tables) - self._SCHEMA_NORMALIZED_TABLES)
-        if unexpected:
-            raise RuntimeError(
-                "RCP storage migration found an unowned table shape: " + ", ".join(unexpected)
-            )
+        expected, changed_tables = self._legacy_startup_schema_normalization_plan(connection)
         for table in changed_tables:
             self._rebuild_storage_table(connection, table, expected[("table", table)][3])
 
@@ -2019,6 +2048,26 @@ class AppStoreBase:
             if (object_type, name) in actual:
                 connection.execute(f'DROP {object_type.upper()} "{name}"')
             connection.execute(row[3])
+
+    def _legacy_startup_schema_normalization_plan(
+        self,
+        connection: sqlite3.Connection,
+    ) -> tuple[dict[tuple[str, str], tuple[str, str, str, str]], tuple[str, ...]]:
+        """Return the table changes owned by migration 5 or refuse an unowned shape."""
+
+        expected = {(row[0], row[1]): row for row in self._baseline_storage_schema()}
+        actual = {(row[0], row[1]): row for row in self._storage_schema(connection)}
+        changed_tables = tuple(
+            name
+            for (object_type, name), row in expected.items()
+            if object_type == "table" and actual.get((object_type, name)) != row
+        )
+        unexpected = sorted(set(changed_tables) - self._SCHEMA_NORMALIZED_TABLES)
+        if unexpected:
+            raise RuntimeError(
+                "RCP storage migration found an unowned table shape: " + ", ".join(unexpected)
+            )
+        return expected, changed_tables
 
     @staticmethod
     def _rebuild_storage_table(

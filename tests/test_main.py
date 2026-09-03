@@ -33,6 +33,7 @@ from rcp.__main__ import (
     main,
 )
 from rcp.api.app import inspect_installed_replacement_startup
+from rcp.server_ops.models import ServerStepEvent
 from rcp.server_runtime import (
     ServerMetadata,
     read_server_metadata,
@@ -93,6 +94,16 @@ def test_version_prints_build_identity_without_a_subcommand(monkeypatch, capsys)
     assert capsys.readouterr().out == "rcp 0.3.2 build none commit none\n"
 
 
+def test_no_arguments_retains_argparse_required_command_exit(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", ["rcp"])
+
+    with pytest.raises(SystemExit) as raised:
+        main()
+
+    assert raised.value.code == 2
+    assert "a command is required" in capsys.readouterr().err
+
+
 def test_version_machine_readable_uses_the_server_event_shape(monkeypatch, capsys) -> None:
     monkeypatch.setattr(rcp, "__version__", "0.3.2+build.412.gfe06636")
     monkeypatch.setattr(sys, "argv", ["rcp", "--version", "--machine-readable"])
@@ -101,6 +112,7 @@ def test_version_machine_readable_uses_the_server_event_shape(monkeypatch, capsy
 
     event = json.loads(capsys.readouterr().out)
     fields = {item["name"]: item["value"] for item in event["step"]["fields"]}
+    assert set(event) == set(ServerStepEvent.model_fields)
     assert event["version"] == 1
     assert event["event"] == "step"
     assert event["command"] == "version"

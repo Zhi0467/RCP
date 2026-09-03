@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from rcp.__main__ import EXIT_MIGRATION_UNKNOWN, main
+from rcp.__main__ import main
+from rcp.migrate_cli import EXIT_MIGRATION_UNKNOWN
 from rcp.storage import AppStore
 
 from .server_upgrade_harness import immutable_fixture_directories, verify_fixture_integrity
@@ -43,6 +44,22 @@ def _copy_fixture_database(fixture: Path, destination: Path) -> Path:
     database.write_bytes(gzip.decompress(compressed.read_bytes()))
     compressed.unlink()
     return database
+
+
+def _database_bytes(database: Path) -> tuple[bytes, bytes | None]:
+    wal = database.with_name(f"{database.name}-wal")
+    return database.read_bytes(), wal.read_bytes() if wal.exists() else None
+
+
+def _assert_database_bytes_unchanged(
+    database: Path,
+    before: tuple[bytes, bytes | None],
+) -> None:
+    main_before, wal_before = before
+    assert database.read_bytes() == main_before
+    if wal_before is not None:
+        wal = database.with_name(f"{database.name}-wal")
+        assert wal.read_bytes() == wal_before
 
 
 def _event_fields(output: str) -> tuple[dict[str, object], dict[str, object]]:
@@ -101,6 +118,47 @@ def test_migrate_check_reports_current_storage_with_no_pending_migrations(
     assert errors == ""
 
 
+def test_migrate_check_reads_an_uncheckpointed_wal_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = AppStore(tmp_path / "source" / "rcp.sqlite3")
+    with closing(sqlite3.connect(source.path)) as source_connection:
+        schema = "\n".join(source_connection.iterdump())
+
+    data_dir = tmp_path / "wal"
+    data_dir.mkdir()
+    database = data_dir / "rcp.sqlite3"
+    connection = sqlite3.connect(database)
+    try:
+        assert connection.execute("PRAGMA journal_mode = WAL").fetchone()[0] == "wal"
+        connection.execute("PRAGMA wal_autocheckpoint = 0")
+        connection.executescript(schema)
+
+        wal = database.with_name(f"{database.name}-wal")
+        assert wal.exists()
+        before = _database_bytes(database)
+
+        code, output, errors = _run_cli(
+            monkeypatch,
+            capsys,
+            "migrate",
+            "--check",
+            "--data-dir",
+            str(data_dir),
+        )
+
+        head = AppStore._STORAGE_SCHEMA_MIGRATIONS[-1][0]
+        assert code == 0
+        assert f"ledger head {head}, registry head {head}" in output
+        assert "no pending migrations" in output
+        assert errors == ""
+        _assert_database_bytes_unchanged(database, before)
+    finally:
+        connection.close()
+
+
 @pytest.mark.parametrize("fixture", immutable_fixture_directories(), ids=lambda path: path.name)
 def test_migrate_check_accepts_every_frozen_server_fixture_without_writing(
     fixture: Path,
@@ -109,7 +167,7 @@ def test_migrate_check_accepts_every_frozen_server_fixture_without_writing(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     database = _copy_fixture_database(fixture, tmp_path)
-    before = database.read_bytes()
+    before = _database_bytes(database)
 
     code, output, errors = _run_cli(
         monkeypatch,
@@ -124,7 +182,7 @@ def test_migrate_check_accepts_every_frozen_server_fixture_without_writing(
     assert "pending migrations exist" in output
     assert any(name in output for _, name in AppStore._STORAGE_SCHEMA_MIGRATIONS)
     assert errors == ""
-    assert database.read_bytes() == before
+    _assert_database_bytes_unchanged(database, before)
 
 
 @pytest.mark.parametrize("unknown", ["name", "head"])
@@ -181,7 +239,7 @@ def test_migrate_refuses_unknown_state_before_applying(
             "UPDATE storage_schema_migrations SET migration_name = 'unknown_v1' "
             "WHERE migration_version = 1"
         )
-    before = database.read_bytes()
+    before = _database_bytes(database)
 
     code, output, errors = _run_cli(
         monkeypatch,
@@ -194,7 +252,37 @@ def test_migrate_refuses_unknown_state_before_applying(
     assert code == EXIT_MIGRATION_UNKNOWN
     assert output == ""
     assert "unknown storage state" in errors
-    assert database.read_bytes() == before
+    _assert_database_bytes_unchanged(database, before)
+
+
+def test_migrate_check_and_apply_reject_unowned_pre_ledger_table_shapes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    data_dir = tmp_path / "unowned"
+    database = data_dir / "rcp.sqlite3"
+    AppStore(database)
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("DROP TABLE storage_schema_migrations")
+        for table in ("graph_run_events", "graph_runs", "projects", "space_identity"):
+            connection.execute(f'ALTER TABLE "{table}" ADD COLUMN bogus TEXT')
+    before = _database_bytes(database)
+
+    for argv in (("migrate", "--check"), ("migrate",)):
+        code, output, errors = _run_cli(
+            monkeypatch,
+            capsys,
+            *argv,
+            "--data-dir",
+            str(data_dir),
+        )
+
+        assert code == EXIT_MIGRATION_UNKNOWN
+        assert output == ""
+        assert "unknown storage state" in errors
+        assert "unowned table shape" in errors
+        _assert_database_bytes_unchanged(database, before)
 
 
 @pytest.mark.parametrize("state", ["missing-ledger", "invalid-sqlite", "invalid-schema"])
@@ -307,7 +395,7 @@ def test_migrate_refuses_another_process_instance_lock_without_touching_database
     data_dir = tmp_path / "locked"
     database = data_dir / "rcp.sqlite3"
     AppStore(database)
-    before = database.read_bytes()
+    before = _database_bytes(database)
     holder = subprocess.Popen(
         [
             sys.executable,
@@ -346,4 +434,4 @@ def test_migrate_refuses_another_process_instance_lock_without_touching_database
     assert code != 0
     assert output == ""
     assert "Another RCP process" in errors
-    assert database.read_bytes() == before
+    _assert_database_bytes_unchanged(database, before)

@@ -78,16 +78,17 @@ baseline checks in `AGENTS.md` plus the phase's own checks.
 
 Status: implemented on branch `deploy/phase0-contract`. The exit proof is met:
 fresh, current, every frozen server-upgrade boundary, unknown-ledger,
-ledger-ahead-of-registry, apply, and held-instance-lock migration cases are
-covered; the frozen fixture bytes remain unchanged under `--check`; and health
-and both version renderings assert the new identity fields.
+ledger-ahead-of-registry, uncheckpointed-WAL, unowned pre-ledger shape, apply,
+and held-instance-lock migration cases are covered; the database and any
+pre-existing WAL bytes remain unchanged under `--check`; and health and both
+version renderings assert the new identity fields.
 
 Lands: `GET /api/health` adds `build`, `commit`, and `schema_ledger_head`
 beside `version`; `rcp --version` prints the same three facts; `rcp migrate
 --check` and `rcp migrate` run the storage ledger without serving and exit
 nonzero on any unknown state; both emit the machine-readable event stream.
 
-Owner files: `src/rcp/__init__.py`, `src/rcp/__main__.py`,
+Owner files: `src/rcp/__init__.py`, `src/rcp/__main__.py`, `src/rcp/migrate_cli.py`,
 `src/rcp/api/health.py`, `src/rcp/storage/base.py` (read-only use of the
 ledger), `docs/specs/server-and-machine-operations.md`,
 `docs/specs/api-web-and-desktop-projections.md`.

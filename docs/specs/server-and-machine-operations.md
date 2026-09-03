@@ -126,7 +126,9 @@ as `0.3.2+build.412.gfe06636` reports `build 412 commit fe06636`. The full
 version remains the package's verbatim `__version__`; its base version is the
 part before the first `+`. With `--machine-readable`, the command emits one JSON
 event in the existing machine-operation event shape carrying `version`,
-`base_version`, `build`, and `commit`.
+`base_version`, `build`, and `commit`. Because the event's nonsecret field type
+does not admit null, a missing build or commit is the string `none`; the
+equivalent fields in `/api/health` are JSON null.
 
 `rcp migrate [--data-dir PATH] [--machine-readable]` and `rcp migrate --check`
 resolve their data directory exactly as `rcp serve` does. Both acquire that
@@ -136,9 +138,11 @@ nonzero with a plain message and leaves the database unchanged. It never skips
 the lock, migrates under a running server, or falls back to a copy.
 
 `rcp migrate --check` is read-only. It does not create a missing database, apply
-a migration, or write to an existing database. It reports the applied ledger
-head, registry head, and ordered pending migration names, and distinguishes
-these exit-zero results:
+a migration to the target, or change existing database or WAL bytes. It opens
+the live database in SQLite read-only mode so every committed WAL transaction is
+included; SQLite may create or touch its normal sidecars while reading. The
+command reports the applied ledger head, registry head, and ordered pending
+migration names, and distinguishes these exit-zero results:
 
 - **fresh**: no database file exists; the next ordinary open will construct the
   current schema;
