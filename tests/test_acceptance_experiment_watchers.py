@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
@@ -217,26 +216,6 @@ def _poll_after_due(app, watchers: list[WatcherRecord]) -> None:
     app.state.watcher_poller.clock = lambda: "2100-01-01T00:00:00+00:00"
 
 
-def _wait_for_fixture_jobs(watchers: list[WatcherRecord], *, timeout: float = 30.0) -> None:
-    """Let every detached fixture job finish before a poller can observe the group.
-
-    Each job is its own process sleeping from its own start, so under load one
-    ``.done`` file can land a poll interval ahead of the other. Delivering a wake
-    for the watcher that genuinely finished first is correct — coalescing joins
-    the watchers already complete at delivery, it does not wait for stragglers —
-    so a test about one coalesced wake must settle the jobs before polling starts.
-    """
-
-    deadline = time.monotonic() + timeout
-    pending = [Path(watcher.log_path).with_suffix(".done") for watcher in watchers]
-    while time.monotonic() < deadline:
-        if all(path.is_file() for path in pending):
-            return
-        time.sleep(0.02)
-    missing = [str(path) for path in pending if not path.is_file()]
-    raise AssertionError(f"detached fixture jobs did not finish within {timeout}s: {missing}")
-
-
 def _assert_completed_job_artifacts(watchers: list[WatcherRecord]) -> None:
     for watcher in watchers:
         log_path = Path(watcher.log_path)
@@ -245,29 +224,47 @@ def _assert_completed_job_artifacts(watchers: list[WatcherRecord]) -> None:
         assert log_path.with_suffix(".done").read_text(encoding="utf-8") == "done\n"
 
 
-def _finish_fixture_jobs_synchronously(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Leave the fixture's job artifacts in their finished state before arming.
+def _fixture_job_logs(cwd: Path) -> list[Path]:
+    """The log paths the fixture's watcher checks are built against."""
 
-    The real fixture spawns two detached interpreters that sleep before writing
-    their markers, so shortening the sleep only biases the race: arming can
-    still run its `test -f` before either process has started. Writing the end
-    state where those jobs would have written it takes the wall clock out of
-    the question entirely.
+    return [Path(spec["log_path"]) for spec in acceptance._watch_specs(cwd)]
 
-    Paths come from the module's own `_watch_specs`, so this cannot drift from
-    the layout the watcher checks are built against.
+
+def _complete_fixture_job_artifacts(log_paths: Iterable[Path]) -> None:
+    """Write what a finished fixture job leaves behind, exactly as the real one does."""
+
+    for log_path in log_paths:
+        name = log_path.stem
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{name}: completed\n")
+        log_path.with_suffix(".status").write_text("completed\n", encoding="utf-8")
+        log_path.with_suffix(".done").write_text("done\n", encoding="utf-8")
+
+
+def _double_fixture_jobs(monkeypatch: pytest.MonkeyPatch, *, finished: bool) -> None:
+    """Put the fixture's job artifacts under the test's control instead of a clock.
+
+    The real fixture spawns two detached interpreters that sleep for
+    `ACCEPTANCE_AGENT_JOB_SECONDS` before writing their markers, so both the
+    arming check and the first poll after a restart race those processes.
+    Shortening the sleep only biases that race. Writing the same artifacts
+    directly decides each stage outright.
+
+    ``finished=False`` leaves them mid-run, which is the state S42 needs while
+    RCP is still up, and it also makes both markers appear together later, so
+    no poll can ever see a real subset of the group.
     """
 
-    def start_finished(cwd: Path) -> None:
-        for spec in acceptance._watch_specs(cwd):
-            log_path = Path(spec["log_path"])
+    def start(cwd: Path) -> None:
+        log_paths = _fixture_job_logs(cwd)
+        for log_path in log_paths:
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            name = log_path.stem
-            log_path.write_text(f"{name}: started\n{name}: completed\n", encoding="utf-8")
-            log_path.with_suffix(".status").write_text("completed\n", encoding="utf-8")
-            log_path.with_suffix(".done").write_text("done\n", encoding="utf-8")
+            log_path.write_text(f"{log_path.stem}: started\n", encoding="utf-8")
+            log_path.with_suffix(".status").write_text("running\n", encoding="utf-8")
+        if finished:
+            _complete_fixture_job_artifacts(log_paths)
 
-    monkeypatch.setattr(acceptance, "_start_fixture_jobs", start_finished)
+    monkeypatch.setattr(acceptance, "_start_fixture_jobs", start)
 
 
 def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
@@ -288,7 +285,7 @@ def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
     opening; only this one needs forcing.
     """
 
-    _finish_fixture_jobs_synchronously(monkeypatch)
+    _double_fixture_jobs(monkeypatch, finished=True)
     app = create_app(
         str(manifest.path),
         data_dir=tmp_path / "acceptance-data",
@@ -342,8 +339,14 @@ def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
 
 
 def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
-    manifest, tmp_path: Path
+    manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The scenario turns on RCP reloading *active* records after a restart and
+    # detecting completion on its first new poll. Real detached jobs finish on
+    # their own clock, so a slow correction turn can complete them before the
+    # restart and quietly retire that path. Hold them mid-run instead, and
+    # release them below once the first process is gone.
+    _double_fixture_jobs(monkeypatch, finished=False)
     data_dir = tmp_path / "acceptance-data"
     app = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
     client = TestClient(app)
@@ -376,12 +379,9 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
 
         armed = app.state.background_tasks.store.watchers(project_id, chat_id=chat_id)
         assert len(armed) == 2
-        # `arm_watchers` validates every spec it is handed, so a watcher whose
-        # check already passes is persisted completed rather than active. The
-        # fixture jobs finish after `ACCEPTANCE_AGENT_JOB_SECONDS`, and a loaded
-        # runner can spend longer than that inside the correction turn, so the
-        # status here belongs to the race, not to arming's promise. What arming
-        # owes is two distinct watchers that nothing has delivered yet.
+        # Held mid-run above, so arming's own check saw them incomplete and this
+        # is the restart-from-active state the scenario promises, not a race.
+        assert {record.status for record in armed} == {"active"}
         assert all(not record.notified for record in armed)
         assert len({_watcher_spec(record) for record in armed}) == 2
         assert all(record.continuation.patch_kind == "work" for record in armed)
@@ -396,9 +396,11 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
         client.close()
         app.state.background_tasks.shutdown()
 
-    # Both jobs must be finished before the poller starts, or the group coalesces
-    # a real subset and this test's single-wake assertion becomes load-dependent.
-    _wait_for_fixture_jobs(armed)
+    # "Close RCP, let both fixture jobs finish, and reopen it." Both markers
+    # appear together and only now, so the reopened poller reloads two active
+    # records and detects completion on its first ask, and no poll can ever see
+    # a real subset of the group.
+    _complete_fixture_job_artifacts(Path(record.log_path) for record in armed)
 
     # Reopening the same data directory proves the active watcher ledger is durable.
     reopened = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
