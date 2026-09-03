@@ -1,10 +1,15 @@
 # External supervisor and release artifacts handoff
 
 Date: 2026-09-02
-Status: active, human-confirmed on 2026-09-02. Phase 0 is implemented on branch
-`deploy/phase0-contract`; Phases 1 through 6 remain. The decisions are settled in
+Status: active, human-confirmed on 2026-09-02. Phase 0 is implemented: health
+reports build, commit, and the storage ledger head, and `rcp --version` and
+`rcp migrate --check` exist. Phase 1 is implemented pending its GitHub proof.
+The Phase 2 code half is implemented; the lab update from the public origin,
+source deploy-key revocation, the later removal pull request, and the
+fresh-install and old-archive proofs remain. The decisions are settled in
 [the supervisor decision](../decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md)
-and repeated in the next section so this file stands alone. Phases 1 and 2 may
+and repeated in the next section so this file stands alone. Phases 3 through 6
+wait for
 start now. Phases 3 through 6 wait for
 [the dev-team-space-and-server handoff](handoff-2026-08-27-dev-team-space-and-server.md)
 to meet its closure condition and be archived, because the human has frozen new
@@ -103,9 +108,9 @@ from package metadata, so a source checkout reports `build: null` honestly.
 
 ### Phase 1 — one build per merge, promotion without rebuild
 
-Lands: a `build` job in `.github/workflows/ci.yml` on `push` to `main` that
+Implemented: a `build` job in `.github/workflows/ci.yml` on `push` to `main` that
 builds the `rcp` wheel with the `+build.<N>.g<sha7>` local version, runs
-`uv export --frozen` with hashes, writes a SHA-256 manifest, and creates
+`uv export --frozen --no-dev` with hashes, writes a SHA-256 manifest, and creates
 prerelease `build/<N>`; the workflow's `concurrency.cancel-in-progress` narrowed
 to pull-request runs only, because today's setting cancels an earlier `main`
 run when a second merge lands and would silently drop that merge's build; a
@@ -123,12 +128,13 @@ Must not change: the wheel contents beyond the version string; the existing
 lint, pytest, old-data, and web jobs; `__version__` semantics for a source
 checkout.
 
-Exit proof: two merges landing within one minute yield two downloadable builds,
-neither run cancelled; one promotion
-yields a `stable` release whose assets are byte-identical to the build's,
-proven by the manifest hashes; a promotion whose base version mismatches the
-tag fails with a plain message; the prune workflow's dry run lists only builds
-past the window.
+Pending GitHub exit proof after merge, requiring human action: land two merges
+within one minute and observe two downloadable builds with neither run
+cancelled; promote one build and observe a `stable` release whose downloaded
+assets verify byte-for-byte against the build manifest; dispatch the prune
+workflow in dry-run mode and observe that it lists only builds past the window.
+The base-version mismatch refusal is implemented and covered locally with its
+plain error message; none of the GitHub observations above is claimed yet.
 
 ### Phase 2 — public repository and protected `main`
 
