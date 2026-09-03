@@ -109,6 +109,7 @@ def _source_transition_fixture(
     *,
     authentication: str,
     public_probe: str,
+    checkout_origin: str | None = None,
 ):
     layout = _layout(tmp_path)
     _prepare_owned_roots(layout)
@@ -135,7 +136,7 @@ def _source_transition_fixture(
     if authentication == "deploy_key":
         private.write_bytes(b"private-key\n")
         public.write_bytes(b"public-key\n")
-    remote_origin = [source.origin]
+    remote_origin = [checkout_origin or source.origin]
     probe_calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
     git_calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
 
@@ -988,6 +989,53 @@ def test_update_public_source_never_probes_or_uses_ssh(
     assert inspection.config.source.authentication == "public"
     assert inspection.source_transition is None
     assert fixture.layout.config_path.read_bytes() == before
+    assert fixture.probe_calls == []
+    assert fixture.git_calls == []
+
+
+def test_update_public_source_finishes_interrupted_checkout_rewrite_before_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="public",
+        public_probe="ready",
+        checkout_origin=SSH_ORIGIN,
+    )
+
+    inspection = fixture.machine.inspect()
+    fetched = fixture.machine.fetch_target(inspection)
+
+    assert fetched.target_commit == BASE
+    assert fixture.remote_origin == [HTTPS_ORIGIN]
+    assert fixture.probe_calls == []
+    assert [argv for argv, _environment in fixture.git_calls] == [
+        ("remote", "set-url", "origin", HTTPS_ORIGIN),
+        ("fetch", "--prune", "origin", "main"),
+    ]
+    assert all("GIT_SSH_COMMAND" not in environment for _argv, environment in fixture.git_calls)
+
+
+def test_update_public_source_still_refuses_a_third_party_origin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    third_origin = "https://github.com/other/rcp.git"
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="public",
+        public_probe="ready",
+        checkout_origin=third_origin,
+    )
+
+    inspection = fixture.machine.inspect()
+    with pytest.raises(UpdateRefused, match="origin differs"):
+        fixture.machine.fetch_target(inspection)
+
+    assert fixture.remote_origin == [third_origin]
     assert fixture.probe_calls == []
     assert fixture.git_calls == []
 

@@ -781,6 +781,59 @@ def test_existing_public_source_never_probes_ssh(
     assert probes == [(REPOSITORY.https_origin, None)]
 
 
+def test_public_source_finishes_interrupted_checkout_rewrite_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    layout, machine, config, private, public = _configured_source_install(
+        tmp_path,
+        authentication="public",
+    )
+    layout.source_checkout.mkdir(parents=True)
+    (layout.source_checkout / ".git").mkdir()
+    layout.restore_operations_root.mkdir(parents=True, mode=0o700)
+    layout.update_checkpoints_root.mkdir(parents=True, mode=0o700)
+    origin = [REPOSITORY.ssh_origin]
+    git_commands: list[tuple[tuple[str, ...], dict[str, str]]] = []
+
+    def git_text(_root: Path, argv: tuple[str, ...], **_kwargs) -> str:
+        if argv == ("remote", "get-url", "origin"):
+            return origin[0]
+        if argv[0] == "status":
+            return ""
+        if argv == ("rev-parse", "origin/main"):
+            return COMMIT
+        raise AssertionError(argv)
+
+    def run_git(_root: Path, argv: tuple[str, ...], **kwargs) -> None:
+        environment = kwargs["environment"]
+        assert "GIT_SSH_COMMAND" not in environment
+        git_commands.append((argv, environment))
+        if argv[:3] == ("remote", "set-url", "origin"):
+            origin[0] = argv[3]
+        elif argv[0] == "fetch":
+            assert origin[0] == REPOSITORY.https_origin
+
+    monkeypatch.setattr(server_install, "load_installed_server_config", lambda _path: config)
+    monkeypatch.setattr(machine, "_probe_source", lambda *_args, **_kwargs: "ready")
+    monkeypatch.setattr(machine, "_git_text", git_text)
+    monkeypatch.setattr(machine, "_run_git", run_git)
+    monkeypatch.setattr(machine, "_current_release_commit", lambda: None)
+
+    for _run in range(2):
+        access = machine.prepare_source_access(REPOSITORY)
+        assert machine.converge_source_checkout(access) == ManagedCheckout(
+            commit=COMMIT,
+            is_current_release=False,
+        )
+
+    assert not private.exists() and not public.exists()
+    assert origin == [REPOSITORY.https_origin]
+    assert [
+        argv for argv, _environment in git_commands if argv[:3] == ("remote", "set-url", "origin")
+    ] == [("remote", "set-url", "origin", REPOSITORY.https_origin)]
+
+
 def test_public_source_with_retired_key_files_is_refused_with_manual_recovery(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -808,7 +861,7 @@ def test_public_source_with_retired_key_files_is_refused_with_manual_recovery(
         machine.prepare_source_access(REPOSITORY)
 
 
-def test_source_transition_refuses_a_third_checkout_origin_without_mutation(
+def test_public_source_refuses_a_third_checkout_origin_without_mutation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -822,7 +875,7 @@ def test_source_transition_refuses_a_third_checkout_origin_without_mutation(
     machine = server_install.LinuxInstallMachine(layout)
     machine._service_uid = os.getuid()
     machine._service_gid = os.getgid()
-    access = _source_access(private=False, source_transitioned=True)
+    access = _source_access(private=False)
     third_origin = "https://github.com/openai/not-rcp.git"
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr(
@@ -845,6 +898,91 @@ def test_source_transition_refuses_a_third_checkout_origin_without_mutation(
 
     assert marker.read_bytes() == b"untouched\n"
     assert calls == []
+
+
+def test_source_transition_set_url_failure_converges_on_next_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    layout, machine, config, private, public = _configured_source_install(
+        tmp_path,
+        authentication="deploy_key",
+    )
+    layout.source_checkout.mkdir(parents=True)
+    (layout.source_checkout / ".git").mkdir()
+    layout.restore_operations_root.mkdir(parents=True, mode=0o700)
+    layout.update_checkpoints_root.mkdir(parents=True, mode=0o700)
+    loaded_config = [config]
+    origin = [REPOSITORY.ssh_origin]
+    set_url_attempts = 0
+
+    def write_config(updated, path: Path) -> None:
+        assert private.exists() and public.exists()
+        path.write_text(render_installed_server_config(updated), encoding="utf-8")
+        loaded_config[0] = updated
+
+    def run_as_service(argv: tuple[str, ...], **kwargs):
+        assert argv[0:3] == ("git", "ls-remote", "--exit-code")
+        assert "GIT_SSH_COMMAND" not in kwargs["environment"]
+        return subprocess.CompletedProcess(argv, 0, COMMIT, "")
+
+    def git_text(_root: Path, argv: tuple[str, ...], **_kwargs) -> str:
+        if argv == ("remote", "get-url", "origin"):
+            return origin[0]
+        if argv[0] == "status":
+            return ""
+        if argv == ("rev-parse", "origin/main"):
+            return COMMIT
+        raise AssertionError(argv)
+
+    def run_git(_root: Path, argv: tuple[str, ...], **kwargs) -> None:
+        nonlocal set_url_attempts
+        assert "GIT_SSH_COMMAND" not in kwargs["environment"]
+        if argv[:3] == ("remote", "set-url", "origin"):
+            set_url_attempts += 1
+            if set_url_attempts == 1:
+                raise InstallRefused(kwargs["error"])
+            origin[0] = argv[3]
+        elif argv[0] == "fetch":
+            assert origin[0] == REPOSITORY.https_origin
+
+    monkeypatch.setattr(
+        server_install,
+        "load_installed_server_config",
+        lambda _path: loaded_config[0],
+    )
+    monkeypatch.setattr(server_install, "write_installed_server_config", write_config)
+    monkeypatch.setattr(machine, "_validate_source_key_pair", lambda *_args: "public-key")
+    monkeypatch.setattr(machine, "_run_as_service", run_as_service)
+    monkeypatch.setattr(machine, "_git_text", git_text)
+    monkeypatch.setattr(machine, "_run_git", run_git)
+    monkeypatch.setattr(machine, "_current_release_commit", lambda: None)
+
+    with pytest.raises(
+        InstallRefused,
+        match=(
+            "The managed checkout origin could not be changed from the retired deploy-key SSH "
+            "origin to the public HTTPS origin."
+        ),
+    ):
+        machine.prepare_source_access(REPOSITORY)
+
+    installed = parse_installed_server_config(layout.config_path.read_text(encoding="utf-8"))
+    assert installed.source == ServerSourceConfig(
+        origin=REPOSITORY.https_origin,
+        authentication="public",
+    )
+    assert not private.exists() and not public.exists()
+    assert origin == [REPOSITORY.ssh_origin]
+
+    access = machine.prepare_source_access(REPOSITORY)
+    assert machine.converge_source_checkout(access) == ManagedCheckout(
+        commit=COMMIT,
+        is_current_release=False,
+    )
+    assert access.source_transitioned is False
+    assert origin == [REPOSITORY.https_origin]
+    assert set_url_attempts == 2
 
 
 def test_existing_source_key_must_match_recorded_public_key(monkeypatch, tmp_path: Path) -> None:

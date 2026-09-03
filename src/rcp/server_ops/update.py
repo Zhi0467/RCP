@@ -44,6 +44,7 @@ from rcp.server_ops.install import (
     SourceTransition,
     _run_as_account,
     converge_public_source,
+    finish_public_checkout_origin,
     normalize_github_repository,
     source_git_environment,
     source_transition_message,
@@ -2231,6 +2232,18 @@ class LinuxUpdateMachine:
             mode=None,
             label="managed source Git directory",
         )
+        try:
+            repository = normalize_github_repository(config.source.origin)
+        except ValueError:
+            repository = None
+        if repository is not None:
+            finish_public_checkout_origin(
+                self.layout,
+                config,
+                repository,
+                run_git=self._run_git,
+                git_text=self._git_text,
+            )
         origin = self._git_text(source, ("remote", "get-url", "origin"), environment=environment)
         branch = self._git_text(
             source, ("symbolic-ref", "--short", "HEAD"), environment=environment

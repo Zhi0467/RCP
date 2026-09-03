@@ -246,6 +246,42 @@ def source_transition_message(transition: SourceTransition) -> str:
     )
 
 
+def finish_public_checkout_origin(
+    layout: ServerLayout,
+    config: InstalledServerConfig,
+    repository: GitHubRepository,
+    *,
+    run_git: Callable[..., None],
+    git_text: Callable[..., str],
+) -> bool:
+    """Finish the checkout rewrite for one public-source transition."""
+
+    if config.source.authentication != "public":
+        return False
+    source = layout.source_checkout
+    if not source.exists():
+        return False
+    environment = source_git_environment(config.source, layout)
+    origin = git_text(
+        source,
+        ("remote", "get-url", "origin"),
+        environment=environment,
+    )
+    if not _is_repository_ssh_origin(origin, repository=repository):
+        return False
+    run_git(
+        source,
+        ("remote", "set-url", "origin", config.source.origin),
+        environment=environment,
+        timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
+        error=(
+            "The managed checkout origin could not be changed from the retired "
+            "deploy-key SSH origin to the public HTTPS origin."
+        ),
+    )
+    return True
+
+
 def converge_public_source(
     layout: ServerLayout,
     config: InstalledServerConfig,
@@ -298,25 +334,13 @@ def converge_public_source(
             "the two source-key paths, and remove any remainder by hand."
         ) from exc
 
-    source = layout.source_checkout
-    if source.exists():
-        environment = source_git_environment(transitioned_config.source, layout)
-        origin = git_text(
-            source,
-            ("remote", "get-url", "origin"),
-            environment=environment,
-        )
-        if _is_repository_ssh_origin(origin, repository=repository):
-            run_git(
-                source,
-                ("remote", "set-url", "origin", transition.source_origin),
-                environment=environment,
-                timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
-                error=(
-                    "The managed checkout origin could not be changed from the retired "
-                    "deploy-key SSH origin to the public HTTPS origin."
-                ),
-            )
+    finish_public_checkout_origin(
+        layout,
+        transitioned_config,
+        repository,
+        run_git=run_git,
+        git_text=git_text,
+    )
     return transition
 
 
@@ -1220,6 +1244,13 @@ class LinuxInstallMachine:
                 "The managed source path is not the RCP-owned Git checkout; install will not "
                 "replace or adopt it."
             )
+        finish_public_checkout_origin(
+            self.layout,
+            access.config,
+            access.repository,
+            run_git=self._run_git,
+            git_text=self._git_text,
+        )
         origin = self._git_text(source, ("remote", "get-url", "origin"), environment=environment)
         if origin != access.config.source.origin:
             raise InstallRefused(
@@ -2654,6 +2685,7 @@ __all__ = [
     "discover_bootstrap_repository",
     "enable_backup_timer",
     "fence_backup_timer_before_unit_change",
+    "finish_public_checkout_origin",
     "install_backup_unit_files",
     "normalize_github_repository",
     "prepare_install_command",
