@@ -68,6 +68,14 @@ test("the composer compute checklist uses native checkbox semantics", () => {
   assert.doesNotMatch(checklist, /role="menu"|role="menuitemcheckbox"/);
 });
 
+test("Settings masks stale compute status and requires Save before Probe", () => {
+  const source = readFileSync(new URL("../src/views/ProjectSettings.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /connectionNeedsSave\s*\?\s*undefined/);
+  assert.match(source, /Save before probing/);
+  assert.match(source, /readinessRequest\?\.pending\s*\|\|\s*computeConfigurationIsDirty/);
+});
+
 test("compute controls introduce no sub-10px primary or status text", () => {
   const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
   const composer = styles.slice(

@@ -53,6 +53,14 @@ export function profileRunConfig(profile: AgentProfile): AgentRunConfig {
   };
 }
 
+export async function settleReadinessRefresh(refresh: () => Promise<void>): Promise<void> {
+  try {
+    await refresh();
+  } catch {
+    // App owns the visible readiness error; this click must not reject unhandled.
+  }
+}
+
 export function AgentConfigControls({
   project,
   value,
@@ -219,7 +227,9 @@ export function AgentConfigControls({
                 aria-label="Re-check provider CLIs"
                 onClick={() => {
                   setReprobing(true);
-                  void onRefreshReadiness().finally(() => setReprobing(false));
+                  void settleReadinessRefresh(onRefreshReadiness).finally(() =>
+                    setReprobing(false),
+                  );
                 }}
               >
                 {reprobing ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}

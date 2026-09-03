@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
+from rcp.api.tasks import _validate_stored_task_request
 from rcp.background import AgentTaskExecution
 from rcp.config import ComputeConnectionConfig
 from rcp.providers import ProviderSkillReference
@@ -332,6 +335,9 @@ def test_fresh_chat_master_contains_only_selected_nonsecret_compute_metadata(
             "run_truth_scope": ["repo-a"],
             "mode": mode,
             "active_compute_ids": ["gpu"],
+            "resolved_compute_context": {
+                "active": [{"id": "forged", "name": "Client forged", "kind": "local"}]
+            },
         },
     )
     assert response.status_code == 202, response.text
@@ -343,6 +349,17 @@ def test_fresh_chat_master_contains_only_selected_nonsecret_compute_metadata(
     assert task.request["provider"] == "codex"
     assert task.request["run_on"] == "laptop"
     assert task.request["active_compute_ids"] == ["gpu"]
+    assert task.request["resolved_compute_context"] == {
+        "active": [
+            {
+                "id": "gpu",
+                "name": "GPU VM",
+                "kind": "ssh",
+                "ssh_target": "alice@gpu.example",
+                "access_hint": "Use /scratch/shared for temporary outputs",
+            }
+        ]
+    }
     assert launcher.sessions == [None]
     assert launcher.launch_kwargs[0].get("host", "") == ""
 
@@ -370,6 +387,75 @@ def test_fresh_chat_master_contains_only_selected_nonsecret_compute_metadata(
             }
         ]
     }
+
+
+@pytest.mark.parametrize("manifest_change", ["retarget", "delete"])
+def test_admitted_compute_snapshot_survives_manifest_change_before_launch(
+    manifest,
+    tmp_path,
+    manifest_change: str,
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    gpu = ComputeConnectionConfig(
+        id="gpu",
+        name="Admission GPU",
+        kind="ssh",
+        ssh_target="alice@admitted.example",
+        access_hint="Use /scratch/admitted",
+    )
+    _configure_compute_connections(service, [gpu])
+    project_id = app.state.default_project_id
+    chat_id = "757241ec-60af-4784-b315-44003a93c1dd"
+    launch_gate = threading.Event()
+    launcher = _RecordingLauncher("admission-native-session")
+
+    async def stream(_project_id, kind, request, execution):
+        await asyncio.to_thread(launch_gate.wait)
+        async for frame in stream_discuss_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+    response = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": chat_id,
+            "message": "Use the admitted GPU.",
+            "mode": "discuss",
+            "active_compute_ids": ["gpu"],
+        },
+    )
+    assert response.status_code == 202, response.text
+    operation_id = response.json()["operation_id"]
+    admitted = app.state.background_tasks.store.agent_task(operation_id)
+    assert admitted is not None
+    assert admitted.request["resolved_compute_context"]["active"][0]["ssh_target"] == (
+        "alice@admitted.example"
+    )
+
+    if manifest_change == "retarget":
+        _configure_compute_connections(
+            service,
+            [gpu.model_copy(update={"ssh_target": "alice@changed.example"})],
+        )
+    else:
+        _configure_compute_connections(service, [])
+    _validate_stored_task_request(service, "project_chat", admitted.request)
+    launch_gate.set()
+    assert wait_for_task_response(client, project_id, operation_id)["status"] == "succeeded"
+
+    master = Path(launcher.prompts[0].splitlines()[1]).read_text(encoding="utf-8")
+    assert "alice@admitted.example" in master
+    assert "Use /scratch/admitted" in master
+    assert "alice@changed.example" not in master
 
 
 def test_resumed_chat_sends_only_named_compute_add_remove_update_deltas(manifest, tmp_path) -> None:

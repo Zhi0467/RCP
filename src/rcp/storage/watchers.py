@@ -1359,6 +1359,10 @@ class WatcherStoreMixin:
         policy = {
             "patch_kind": continuation.patch_kind,
             "control_node_id": continuation.control_node_id,
+            "active_compute_ids": continuation.active_compute_ids,
+            "resolved_compute_context": continuation.resolved_compute_context.model_dump(
+                mode="json"
+            ),
         }
         return json.dumps(policy, sort_keys=True, separators=(",", ":"))
 

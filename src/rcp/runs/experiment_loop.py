@@ -372,6 +372,8 @@ def experiment_watcher_delivery_request(
         invoked_workflow_ids=[],
         invoked_skill_ids=[],
         resolved_skill_packages=continuation.resolved_skill_packages,
+        active_compute_ids=continuation.active_compute_ids,
+        resolved_compute_context=continuation.resolved_compute_context,
         watcher_ids=[item.watcher_id for item in group],
     )
 

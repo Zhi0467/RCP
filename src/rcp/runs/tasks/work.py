@@ -547,7 +547,7 @@ def _compose_fresh_prompt(
 ) -> _ComposedWorkPrompt:
     assert turn.request.message is not None
     focused_node_id = str(turn.context.node["id"]) if turn.context.node else None
-    compute_profiles = turn.service.compute_prompt_profiles(turn.request.active_compute_ids)
+    compute_profiles = turn.service.compute_prompt_profiles(turn.request.resolved_compute_context)
     if not turn.uses_master_protocol:
         human_request_path = _stage_task_input(
             turn.local_stage,

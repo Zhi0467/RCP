@@ -142,7 +142,10 @@ agent machine rather than inviting credentials into RCP. The explicit **Probe**
 action refreshes those results; ordinary project polling reuses the last matrix
 and does not launch SSH work. The floating connection list uses native checkbox
 semantics, and unsaved connection edits are not copied into local settings-draft
-storage.
+storage. Editing a connection masks its saved probe result and disables **Probe**
+with a concise save-first label until the metadata is saved. A compute-settings
+save also invalidates older in-flight readiness responses, so a late old-target
+success cannot replace the empty state left by a failed new-target probe.
 
 ## Paper
 

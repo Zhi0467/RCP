@@ -36,6 +36,8 @@ from rcp.config import (
     ComputeConnectionConfig,
     MachineConfig,
     Manifest,
+    ResolvedComputeContext,
+    ResolvedComputeProfile,
 )
 from rcp.control import derive_experiment_control_state
 from rcp.core.attention import (
@@ -838,6 +840,11 @@ class RunRequest(BaseModel):
         default_factory=list,
         max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
     )
+    # This value is accepted only from RCP's own admission and durable rows.
+    # HTTP admission discards any client copy before resolving the selected ids.
+    resolved_compute_context: ResolvedComputeContext = Field(
+        default_factory=ResolvedComputeContext,
+    )
 
     @model_validator(mode="after")
     def result_view_requires_node_work(self) -> RunRequest:
@@ -1602,20 +1609,22 @@ class ProjectService:
 
     def resolve_compute_request(self, request: RunRequest) -> RunRequest:
         ids = list(dict.fromkeys(request.active_compute_ids))
-        selected_compute_connections(self.manifest, ids)
-        return request.model_copy(update={"active_compute_ids": ids})
-
-    def compute_prompt_profiles(self, ids: list[str]) -> list[dict[str, str]]:
-        return [
-            {
-                "id": connection.id,
-                "name": connection.name,
-                "kind": connection.kind,
-                "ssh_target": connection.ssh_target,
-                "access_hint": connection.access_hint,
+        selected = selected_compute_connections(self.manifest, ids)
+        context = ResolvedComputeContext(
+            active=tuple(
+                ResolvedComputeProfile.model_validate(connection) for connection in selected
+            )
+        )
+        return request.model_copy(
+            update={
+                "active_compute_ids": ids,
+                "resolved_compute_context": context,
             }
-            for connection in selected_compute_connections(self.manifest, ids)
-        ]
+        )
+
+    @staticmethod
+    def compute_prompt_profiles(context: ResolvedComputeContext) -> list[dict[str, str]]:
+        return [profile.model_dump(mode="json") for profile in context.active]
 
     def resolve_provider_path(
         self,

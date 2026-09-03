@@ -7,11 +7,13 @@ covered_by:
   - tests/test_api_project_state.py
   - tests/test_compute_connections.py
   - tests/test_config.py
+  - tests/test_api.py
   - tests/test_transport_containment.py
   - tests/test_chat_prompt_protocol.py
   - tests/test_prompts.py
   - web/tests/compute.test.mjs
   - web/tests/projectSession.test.mjs
+  - web/tests/providerReadiness.test.mjs
   - web/tests/settingsDraft.test.mjs
 invariants: [4, 5, 10d]
 last_checked: >-
@@ -23,8 +25,10 @@ last_checked: >-
   disposable acceptance-agent Work launch confirmed exact selected metadata,
   an unchanged local execution binding, and secret-free provider context, while
   regressions cover initial Discuss/Work context, resumed add/remove/update/no-op
-  deltas, redacted diagnostics, bounded schemas, and stale-status invalidation.
-  Live authentication/host-key targets remain pending.
+  deltas, immutable admission and watcher snapshots, delayed-launch manifest
+  changes, redacted diagnostics, bounded schemas, stale-status masking, and
+  in-flight readiness invalidation. Live authentication/host-key targets remain
+  pending.
 ---
 
 # Attach compute without moving the agent

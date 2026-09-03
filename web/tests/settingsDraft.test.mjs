@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  computeConnectionNeedsSave,
   computeConnectionsChanged,
   deserializeSettingsDraft,
   machineProviderPathUpdates,
@@ -247,8 +248,13 @@ test("compute changes compare complete non-secret connection metadata", () => {
   ];
 
   assert.equal(computeConnectionsChanged(saved, structuredClone(saved)), false);
+  assert.equal(computeConnectionNeedsSave(saved, structuredClone(saved[0])), false);
   assert.equal(
     computeConnectionsChanged(saved, [{ ...saved[0], ssh_target: "alice@gpu-2.example" }]),
+    true,
+  );
+  assert.equal(
+    computeConnectionNeedsSave(saved, { ...saved[0], ssh_target: "alice@gpu-2.example" }),
     true,
   );
 });

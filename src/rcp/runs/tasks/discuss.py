@@ -388,7 +388,7 @@ async def stream_discuss_run(
                         invoked_provider_skills=request.resolved_provider_skills,
                         attachments=attachment_pointers,
                         compute_connections=service.compute_prompt_profiles(
-                            request.active_compute_ids
+                            request.resolved_compute_context
                         ),
                     )
                     current_contract_path, current_prompt = _stage_task_contract(
@@ -452,7 +452,7 @@ async def stream_discuss_run(
                     {"alias": item.alias, "host": item.host, "path": item.path}
                     for item in context.repositories
                 ]
-                compute_profiles = service.compute_prompt_profiles(request.active_compute_ids)
+                compute_profiles = service.compute_prompt_profiles(request.resolved_compute_context)
                 focused_node_id = str(context.node["id"]) if context.node else None
                 stable_prompt_values: dict[str, object] = {
                     "project": {"name": context.project_name},

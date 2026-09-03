@@ -80,7 +80,9 @@ def run_experiment(
         )
         if not control.ready:
             raise HTTPException(status_code=409, detail=" ".join(control.reasons))
-        supplied = RunRequest.model_validate(body)
+        client_request = dict(body)
+        client_request.pop("resolved_compute_context", None)
+        supplied = RunRequest.model_validate(client_request)
         if supplied.result_view is not None:
             raise ValueError("Result views require an ordinary node Work turn.")
         if not supplied.chat_id:

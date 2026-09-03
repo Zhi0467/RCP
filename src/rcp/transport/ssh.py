@@ -25,9 +25,13 @@ def ssh_arguments(
     strict_host_key_checking: bool = False,
 ) -> list[str]:
     validate_ssh_destination(host)
-    options = _multiplexed_ssh_options()
     if strict_host_key_checking:
-        options.extend(["-o", "StrictHostKeyChecking=yes"])
+        # A pre-existing multiplexed master has already completed host-key
+        # negotiation and can bypass the strict policy on this invocation.
+        # OpenSSH documents ``-S none`` as disabling connection sharing.
+        options = [*SSH_OPTIONS, "-o", "StrictHostKeyChecking=yes", "-S", "none"]
+    else:
+        options = _multiplexed_ssh_options()
     return ["ssh", *options, host, command]
 
 

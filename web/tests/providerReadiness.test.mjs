@@ -11,8 +11,12 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { shouldRequestProviderReadiness } = await server.ssrLoadModule("/src/App.tsx");
-const { AgentConfigControls } = await server.ssrLoadModule(
+const {
+  advanceProjectReadinessGeneration,
+  projectReadinessRequestCanApply,
+  shouldRequestProviderReadiness,
+} = await server.ssrLoadModule("/src/App.tsx");
+const { AgentConfigControls, settleReadinessRefresh } = await server.ssrLoadModule(
   "/src/components/AgentConfigControls.tsx",
 );
 
@@ -60,4 +64,33 @@ test("missing readiness is called checking only while a request is actually pend
   assert.doesNotMatch(checking, /The readiness request failed/);
   assert.match(failed, /The readiness request failed/);
   assert.doesNotMatch(failed, /Checking codex on this machine/);
+});
+
+test("a compute-settings save invalidates an older deferred readiness response", async () => {
+  const generations = new Map();
+  const requestGeneration = generations.get("project") ?? 0;
+  let complete;
+  const deferred = new Promise((resolve) => {
+    complete = resolve;
+  });
+  let applied = { compute_status: {} };
+  const consume = deferred.then((readiness) => {
+    if (projectReadinessRequestCanApply(generations, "project", requestGeneration)) {
+      applied = readiness;
+    }
+  });
+
+  advanceProjectReadinessGeneration(generations, "project");
+  applied = { compute_status: {} }; // The save response clears the old target's status.
+  await assert.rejects(Promise.reject(new Error("new probe failed")), /new probe failed/);
+  complete({ compute_status: { local: { gpu: { status_label: "stale green" } } } });
+  await consume;
+
+  assert.deepEqual(applied, { compute_status: {} });
+});
+
+test("the provider re-check consumes the visible App-owned rejection", async () => {
+  await settleReadinessRefresh(async () => {
+    throw new Error("shown through readinessError");
+  });
 });

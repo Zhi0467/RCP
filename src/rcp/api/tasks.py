@@ -986,7 +986,11 @@ def _validated_task_request(
     if kind == "paper_coach":
         return _resolved_coach_request(service, CoachRequest.model_validate(body))
 
-    request = RunRequest.model_validate(body).model_copy(
+    client_request = dict(body)
+    # Resolved compute metadata is a server-owned admission snapshot. A client
+    # may echo or forge this field, but it never participates in resolution.
+    client_request.pop("resolved_compute_context", None)
+    request = RunRequest.model_validate(client_request).model_copy(
         update={
             "trigger": "human",
             "patch_kind": "work",
@@ -1065,7 +1069,12 @@ def _validate_stored_task_request(
     request = RunRequest.model_validate(body)
     if kind in {"seed", "refresh"}:
         service.history.require_writable()
-    resolved_run = _resolved_graph_request(service, kind, request)
+    resolved_run = _resolved_graph_request(
+        service,
+        kind,
+        request,
+        admit_compute_context=False,
+    )
     return service.resolve_skill_selection(resolved_run)
 
 

@@ -27,7 +27,7 @@ from rcp.api.app import (
 from rcp.api.tasks import _validate_stored_task_request, _validated_task_request
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
-from rcp.config import MachineConfig
+from rcp.config import ComputeConnectionConfig, MachineConfig
 from rcp.core.attention import decision_awaits_choice
 from rcp.core.models import AuthorizedHuman, Blocker, Decision, GraphState, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -6547,6 +6547,18 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
             control_invocation_ceiling=3,
             control_decision_bundle=[],
             control_completion_criteria=["The detached fixture exits cleanly."],
+            active_compute_ids=["gpu"],
+            resolved_compute_context={
+                "active": [
+                    {
+                        "id": "gpu",
+                        "name": "Episode GPU",
+                        "kind": "ssh",
+                        "ssh_target": "alice@episode.example",
+                        "access_hint": "Use /scratch/episode",
+                    }
+                ]
+            },
         ),
         status="completed",
         created_at=now,
@@ -6588,6 +6600,8 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
     assert request.reasoning == "medium"
     assert request.run_on == "laptop"
     assert request.run_truth_scope == ["repo-a"]
+    assert request.active_compute_ids == ["gpu"]
+    assert request.resolved_compute_context.active[0].ssh_target == "alice@episode.example"
     assert request.chat_id != maintenance_chat_id
     delivered = store.watcher(watcher.watcher_id)
     assert delivered is not None
@@ -8023,12 +8037,29 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     chat_id = str(uuid.uuid4())
-    request = RunRequest(
-        chat_scope="project",
-        message="Launch the detached fixture.",
-        chat_id=chat_id,
-        run_truth_scope=["repo-a"],
-        mode="work",
+    surfaces = ("seed", "refresh", "node_chat", "project_chat", "paper_coach")
+    service.history.update_agent_settings(
+        service.manifest.agent.default_run_truth_scope,
+        {surface: service.manifest.agent_profile(surface) for surface in surfaces},
+        compute_connections=[
+            ComputeConnectionConfig(
+                id="gpu",
+                name="Watcher GPU",
+                kind="ssh",
+                ssh_target="alice@watcher.example",
+                access_hint="Use /scratch/watcher",
+            )
+        ],
+    )
+    request = service.resolve_compute_request(
+        RunRequest(
+            chat_scope="project",
+            message="Launch the detached fixture.",
+            chat_id=chat_id,
+            run_truth_scope=["repo-a"],
+            mode="work",
+            active_compute_ids=["gpu"],
+        )
     )
     execution = _chat_task_execution(
         store,
@@ -8080,6 +8111,11 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     assert all(record.status == "active" for record in armed)
     assert all(record.origin_operation_id == "watch-origin" for record in armed)
     assert all(record.continuation.patch_kind == "work" for record in armed)
+    assert all(record.continuation.active_compute_ids == ["gpu"] for record in armed)
+    assert all(
+        record.continuation.resolved_compute_context.active[0].ssh_target == "alice@watcher.example"
+        for record in armed
+    )
     assert any(
         receipt.category == "watchers_armed"
         for receipt in store.agent_task_receipts("watch-origin")
@@ -8087,13 +8123,12 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
 
     store.complete_agent_task("watch-origin", applied_revision=None, result={"messages": []})
     external = next(record for record in armed if isinstance(record, WatcherRecord))
-    wake = request.model_copy(
-        update={
-            "message": "RCP watcher update for the completed fixture.",
-            "trigger": "watcher",
-            "watcher_ids": [external.watcher_id],
-        }
+    service.history.update_agent_settings(
+        service.manifest.agent.default_run_truth_scope,
+        {surface: service.manifest.agent_profile(surface) for surface in surfaces},
+        compute_connections=[],
     )
+    wake = _generic_watcher_delivery_request([external])
     wake_execution = _chat_task_execution(
         store,
         operation_id="watch-wake",
@@ -8113,6 +8148,9 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     ]
 
     assert not _error_texts(wake_frames)
+    wake_contract = _local_task_contract(wake_launcher.prompts[0])
+    assert "`gpu` — Watcher GPU: kind: SSH; target: `alice@watcher.example`" in wake_contract
+    assert "access hint: Use /scratch/watcher" in wake_contract
     transcript = service.chat_transcript(chat_id)
     assert transcript is not None
     assert [message.role for message in transcript.messages] == ["user", "assistant", "assistant"]
@@ -8121,6 +8159,10 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
         message.text != "RCP watcher update for the completed fixture."
         for message in transcript.messages
     )
+    assert transcript.messages[-1].active_compute_ids == ["gpu"]
+    reloaded_wake = RunRequest.model_validate(store.agent_task("watch-wake").request)  # type: ignore[union-attr]
+    assert reloaded_wake.active_compute_ids == ["gpu"]
+    assert reloaded_wake.resolved_compute_context.active[0].ssh_target == "alice@watcher.example"
     persisted = store.watchers(app.state.default_project_id)
     assert len(persisted) == 2
     assert any(isinstance(record, GraphWatcherRecord) for record in persisted)

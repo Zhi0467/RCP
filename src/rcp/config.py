@@ -121,6 +121,44 @@ class ComputeConnectionConfig(BaseModel):
         return self
 
 
+class ResolvedComputeProfile(BaseModel):
+    """One immutable, non-secret compute profile captured at task admission."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    name: str = Field(min_length=1, max_length=80)
+    kind: Literal["local", "ssh"]
+    ssh_target: str = Field(default="", max_length=255)
+    access_hint: str = Field(default="", max_length=512)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_profile(cls, value: object) -> dict[str, object]:
+        if isinstance(value, BaseModel):
+            value = value.model_dump(mode="python")
+        validated = ComputeConnectionConfig.model_validate(value)
+        return validated.model_dump(mode="python")
+
+
+class ResolvedComputeContext(BaseModel):
+    """The bounded active compute set frozen into one admitted task."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    active: tuple[ResolvedComputeProfile, ...] = Field(
+        default_factory=tuple,
+        max_length=COMPUTE_CONNECTION_MAX_COUNT,
+    )
+
+    @model_validator(mode="after")
+    def active_ids_are_unique(self) -> ResolvedComputeContext:
+        ids = [profile.id for profile in self.active]
+        if len(ids) != len(set(ids)):
+            raise ValueError("resolved compute context cannot repeat a connection")
+        return self
+
+
 class RepositoryConfig(BaseModel):
     alias: str
     machine: str

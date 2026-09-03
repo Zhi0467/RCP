@@ -44,6 +44,14 @@ export function computeConnectionsChanged(
   return settingsFingerprint(saved) !== settingsFingerprint(current);
 }
 
+export function computeConnectionNeedsSave(
+  saved: readonly ComputeConnection[],
+  current: ComputeConnection,
+): boolean {
+  const persisted = saved.find((connection) => connection.id === current.id);
+  return persisted === undefined || settingsFingerprint(persisted) !== settingsFingerprint(current);
+}
+
 function withSortedKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withSortedKeys);
   if (!isRecord(value)) return value;

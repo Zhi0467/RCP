@@ -267,6 +267,7 @@ def test_conversation_requests_carry_mode_and_nothing_else_authorizes_the_graph(
         "attachment_batch_id": None,
         "attachments": [],
         "active_compute_ids": [],
+        "resolved_compute_context": {"active": []},
     }
 
 

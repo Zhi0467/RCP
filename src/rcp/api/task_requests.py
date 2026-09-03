@@ -14,6 +14,8 @@ def _resolved_graph_request(
     service: ProjectService,
     kind: AgentTaskKind,
     request: RunRequest,
+    *,
+    admit_compute_context: bool = True,
 ) -> RunRequest:
     surface: AgentSurface = kind
     profile = service.resolve_agent_profile(
@@ -39,7 +41,7 @@ def _resolved_graph_request(
     )
     result = service.resolve_skill_request(resolved)
     assert isinstance(result, RunRequest)
-    return service.resolve_compute_request(result)
+    return service.resolve_compute_request(result) if admit_compute_context else result
 
 
 def _resolved_auto_research_request(

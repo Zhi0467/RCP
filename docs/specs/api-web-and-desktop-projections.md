@@ -545,6 +545,8 @@ this personal path browser. Every SSH destination is centrally rejected before
 OpenSSH when it is empty, option-shaped, or contains unsupported characters.
 Editing the repository location, host, or path aborts and invalidates an
 in-flight browse request, so a late response cannot replace the new target.
+Strict host-key browser calls use a direct OpenSSH transport with connection
+sharing disabled, so an existing multiplexed master cannot bypass the check.
 
 The desktop may add shell-only dictation, update, reconnection, and packaging
 behavior only where an active acceptance contract owns it. Browser verification

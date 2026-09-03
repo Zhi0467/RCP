@@ -160,3 +160,16 @@ def test_ssh_control_directory_refuses_unsafe_replacement(
 def test_ssh_arguments_reject_option_shaped_destinations(host: str) -> None:
     with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
         ssh_arguments(host, "true")
+
+
+def test_strict_host_key_ssh_never_reuses_a_multiplexed_connection(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "rcp.transport.ssh._control_directory_path",
+        lambda: (_ for _ in ()).throw(AssertionError("strict transport must be direct")),
+    )
+
+    argv = ssh_arguments("research.example", "true", strict_host_key_checking=True)
+
+    assert argv[argv.index("-S") : argv.index("-S") + 2] == ["-S", "none"]
+    assert "StrictHostKeyChecking=yes" in argv
+    assert not any("ControlMaster=" in item or "ControlPath=" in item for item in argv)

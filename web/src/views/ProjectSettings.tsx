@@ -26,6 +26,7 @@ import { AgentConfigControls, profileRunConfig } from "../components/AgentConfig
 import { AgentUsageWidgets } from "../components/AgentUsageWidgets";
 import { SkillPackageInspector } from "../components/SkillPackageInspector";
 import {
+  computeConnectionNeedsSave,
   computeConnectionsChanged,
   deserializeSettingsDraft,
   machineProviderPathUpdates,
@@ -288,6 +289,10 @@ export function ProjectSettings({
       connection.name.trim().length > 0 &&
       (connection.kind === "local" || connection.ssh_target.trim().length > 0),
   );
+  const computeConfigurationIsDirty = computeConnectionsChanged(
+    project.compute_connections ?? [],
+    computeConnections,
+  );
 
   const toggleRepository = (alias: string) => {
     setStatus(null);
@@ -386,10 +391,6 @@ export function ProjectSettings({
       providerPaths,
     );
     if (pathUpdates) body.machine_provider_paths = pathUpdates;
-    const computeConfigurationChanged = computeConnectionsChanged(
-      project.compute_connections ?? [],
-      computeConnections,
-    );
     try {
       const saved = await api<ProjectSnapshot>(`${apiBase}/settings`, {
         method: "PUT",
@@ -399,7 +400,7 @@ export function ProjectSettings({
       setComputeConnections(saved.compute_connections);
       // The save response intentionally carries no live probe. Preserve prior
       // readiness only when its compute cache key did not change.
-      onSaved(saved, !computeConfigurationChanged);
+      onSaved(saved, !computeConfigurationIsDirty);
       try {
         await onRefreshReadiness();
         setStatus({ kind: "saved", text: "Saved." });
@@ -667,7 +668,12 @@ export function ProjectSettings({
             <button
               className="button secondary compact"
               type="button"
-              disabled={writesDisabled || readinessRequest?.pending}
+              disabled={writesDisabled || readinessRequest?.pending || computeConfigurationIsDirty}
+              title={
+                computeConfigurationIsDirty
+                  ? "Save compute changes before probing"
+                  : "Probe compute connections"
+              }
               onClick={() => void onRefreshReadiness().catch(() => {})}
             >
               {readinessRequest?.pending ? (
@@ -675,7 +681,7 @@ export function ProjectSettings({
               ) : (
                 <ScanSearch size={13} />
               )}
-              Probe
+              {computeConfigurationIsDirty ? "Save first" : "Probe"}
             </button>
             <button
               className="button secondary compact"
@@ -720,122 +726,136 @@ export function ProjectSettings({
           </div>
         </header>
         <div className="compute-connection-list">
-          {computeConnections.map((connection) => (
-            <article className="compute-connection" key={connection.id}>
-              <div className="compute-connection-fields">
-                <label>
-                  <span>Name</span>
-                  <input
-                    type="text"
-                    maxLength={80}
-                    value={connection.name}
-                    disabled={writesDisabled}
-                    onChange={(event) => {
-                      const name = event.target.value;
-                      setComputeConnections((currentConnections) =>
-                        currentConnections.map((item) =>
-                          item.id === connection.id ? { ...item, name } : item,
-                        ),
-                      );
-                      setStatus(null);
-                    }}
-                  />
-                </label>
-                <label>
-                  <span>Type</span>
-                  <select
-                    value={connection.kind}
-                    disabled={writesDisabled}
-                    onChange={(event) => {
-                      const kind = event.target.value as ComputeConnection["kind"];
-                      setComputeConnections((currentConnections) =>
-                        currentConnections.map((item) =>
-                          item.id === connection.id
-                            ? { ...item, kind, ssh_target: kind === "local" ? "" : item.ssh_target }
-                            : item,
-                        ),
-                      );
-                      setStatus(null);
-                    }}
-                  >
-                    <option value="local">Local</option>
-                    <option value="ssh">SSH</option>
-                  </select>
-                </label>
-                {connection.kind === "ssh" ? (
+          {computeConnections.map((connection) => {
+            const connectionNeedsSave = computeConnectionNeedsSave(
+              project.compute_connections ?? [],
+              connection,
+            );
+            return (
+              <article className="compute-connection" key={connection.id}>
+                <div className="compute-connection-fields">
                   <label>
-                    <span>SSH target</span>
+                    <span>Name</span>
                     <input
                       type="text"
-                      placeholder="user@host"
-                      maxLength={255}
-                      value={connection.ssh_target}
+                      maxLength={80}
+                      value={connection.name}
                       disabled={writesDisabled}
                       onChange={(event) => {
-                        const ssh_target = event.target.value;
+                        const name = event.target.value;
                         setComputeConnections((currentConnections) =>
                           currentConnections.map((item) =>
-                            item.id === connection.id ? { ...item, ssh_target } : item,
+                            item.id === connection.id ? { ...item, name } : item,
                           ),
                         );
                         setStatus(null);
                       }}
                     />
                   </label>
-                ) : null}
-                <label className="compute-access-hint">
-                  <span>Access hint (no credentials)</span>
-                  <input
-                    type="text"
-                    maxLength={512}
-                    placeholder="Optional path, scheduler, or environment"
-                    value={connection.access_hint}
+                  <label>
+                    <span>Type</span>
+                    <select
+                      value={connection.kind}
+                      disabled={writesDisabled}
+                      onChange={(event) => {
+                        const kind = event.target.value as ComputeConnection["kind"];
+                        setComputeConnections((currentConnections) =>
+                          currentConnections.map((item) =>
+                            item.id === connection.id
+                              ? {
+                                  ...item,
+                                  kind,
+                                  ssh_target: kind === "local" ? "" : item.ssh_target,
+                                }
+                              : item,
+                          ),
+                        );
+                        setStatus(null);
+                      }}
+                    >
+                      <option value="local">Local</option>
+                      <option value="ssh">SSH</option>
+                    </select>
+                  </label>
+                  {connection.kind === "ssh" ? (
+                    <label>
+                      <span>SSH target</span>
+                      <input
+                        type="text"
+                        placeholder="user@host"
+                        maxLength={255}
+                        value={connection.ssh_target}
+                        disabled={writesDisabled}
+                        onChange={(event) => {
+                          const ssh_target = event.target.value;
+                          setComputeConnections((currentConnections) =>
+                            currentConnections.map((item) =>
+                              item.id === connection.id ? { ...item, ssh_target } : item,
+                            ),
+                          );
+                          setStatus(null);
+                        }}
+                      />
+                    </label>
+                  ) : null}
+                  <label className="compute-access-hint">
+                    <span>Access hint (no credentials)</span>
+                    <input
+                      type="text"
+                      maxLength={512}
+                      placeholder="Optional path, scheduler, or environment"
+                      value={connection.access_hint}
+                      disabled={writesDisabled}
+                      onChange={(event) => {
+                        const access_hint = event.target.value;
+                        setComputeConnections((currentConnections) =>
+                          currentConnections.map((item) =>
+                            item.id === connection.id ? { ...item, access_hint } : item,
+                          ),
+                        );
+                        setStatus(null);
+                      }}
+                    />
+                  </label>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`Remove ${connection.name || "compute connection"}`}
                     disabled={writesDisabled}
-                    onChange={(event) => {
-                      const access_hint = event.target.value;
+                    onClick={() => {
                       setComputeConnections((currentConnections) =>
-                        currentConnections.map((item) =>
-                          item.id === connection.id ? { ...item, access_hint } : item,
-                        ),
+                        currentConnections.filter((item) => item.id !== connection.id),
                       );
                       setStatus(null);
                     }}
-                  />
-                </label>
-                <button
-                  className="icon-button"
-                  type="button"
-                  aria-label={`Remove ${connection.name || "compute connection"}`}
-                  disabled={writesDisabled}
-                  onClick={() => {
-                    setComputeConnections((currentConnections) =>
-                      currentConnections.filter((item) => item.id !== connection.id),
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+                <div className="compute-probe-list">
+                  {executionMachines.map((machine) => {
+                    const probe = connectionNeedsSave
+                      ? undefined
+                      : project.compute_status?.[machine]?.[connection.id];
+                    const presentation = connectionNeedsSave
+                      ? { label: "Save before probing", tone: "pending" as const }
+                      : computeProbePresentation(probe);
+                    return (
+                      <div className={`compute-probe ${presentation.tone}`} key={machine}>
+                        <span className="compute-probe-dot" aria-hidden="true" />
+                        <strong>{machine}</strong>
+                        <span>{presentation.label}</span>
+                        {probe?.required_action ? <em>{probe.required_action}</em> : null}
+                        {probe && presentation.tone === "error" && !probe.required_action ? (
+                          <em>{probe.diagnostic}</em>
+                        ) : null}
+                      </div>
                     );
-                    setStatus(null);
-                  }}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-              <div className="compute-probe-list">
-                {executionMachines.map((machine) => {
-                  const probe = project.compute_status?.[machine]?.[connection.id];
-                  const presentation = computeProbePresentation(probe);
-                  return (
-                    <div className={`compute-probe ${presentation.tone}`} key={machine}>
-                      <span className="compute-probe-dot" aria-hidden="true" />
-                      <strong>{machine}</strong>
-                      <span>{presentation.label}</span>
-                      {probe?.required_action ? <em>{probe.required_action}</em> : null}
-                      {probe && presentation.tone === "error" && !probe.required_action ? (
-                        <em>{probe.diagnostic}</em>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            </article>
-          ))}
+                  })}
+                </div>
+              </article>
+            );
+          })}
           {!computeConnections.length ? (
             <div className="settings-empty">No compute connections configured.</div>
           ) : null}

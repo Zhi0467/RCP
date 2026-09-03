@@ -276,12 +276,17 @@ discard the briefly shipped v3 field during migration.
 The human attaches configured computes through the conversation composer. The
 task request and canonical chat record persist the selected ids so reload and
 recovery render the last truthful active set. Only selected profiles are eligible
-for agent context. The first master/task context describes their names, local or
-SSH access route, and optional non-secret access hint. Later ordinary additions
-and updates send the same bounded profile metadata in a concise delta so a
-resumed native session can use a newly attached or retargeted resource; removals
-send only the display name. Compute metadata never grants authority and never
-includes credential contents or paths.
+for agent context. Admission resolves those ids once into a bounded, immutable,
+server-owned non-secret profile snapshot stored with the task; client-supplied
+resolved metadata is ignored. Fresh and resumed prompts, Retry, recovery, and
+generic or Experiment watcher wakes use that snapshot rather than re-reading a
+later manifest. Watcher continuations persist both the selected ids and resolved
+snapshot; older rows default to an empty selection. The first master/task context
+describes the names, local or SSH access route, and optional non-secret access
+hint. Later ordinary additions and updates send the same bounded profile metadata
+in a concise delta so a resumed native session can use a newly attached or
+retargeted resource; removals send only the display name. Compute metadata never
+grants authority and never includes credential contents or paths.
 
 ### Team execution accounts and credentials
 

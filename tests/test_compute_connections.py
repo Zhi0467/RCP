@@ -4,9 +4,15 @@ import json
 import subprocess
 
 import pytest
+from pydantic import ValidationError
 
 from rcp.compute import _probe_one, probe_compute_connections, selected_compute_connections
-from rcp.config import ComputeConnectionConfig, Manifest
+from rcp.config import (
+    ComputeConnectionConfig,
+    Manifest,
+    ResolvedComputeContext,
+    ResolvedComputeProfile,
+)
 from rcp.limits import ACTIVE_COMPUTE_ID_MAX_COUNT
 from rcp.service import RunRequest
 from rcp.transport.remote_compute_probe import classify_ssh_failure, probe_connection
@@ -211,3 +217,18 @@ def test_active_compute_ids_are_bounded_before_request_or_prompt_assembly(manife
         RunRequest(active_compute_ids=ids)
     with pytest.raises(ValueError, match="exceed the limit of 32"):
         selected_compute_connections(manifest, ids)
+
+    profiles = tuple(
+        ResolvedComputeProfile(id=compute_id, name=compute_id, kind="local") for compute_id in ids
+    )
+    with pytest.raises(ValidationError, match="at most 32 items"):
+        ResolvedComputeContext(active=profiles)
+
+
+def test_resolved_compute_context_is_immutable() -> None:
+    context = ResolvedComputeContext(
+        active=(ResolvedComputeProfile(id="gpu", name="GPU", kind="local"),)
+    )
+
+    with pytest.raises(ValidationError, match="Instance is frozen"):
+        context.active[0].name = "Changed"  # type: ignore[misc]
