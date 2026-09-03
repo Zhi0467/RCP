@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from rcp.agents import acceptance
 from rcp.agents.acceptance import ACCEPTANCE_GENERIC_WATCHER_MARKER
 from rcp.core.models import Patch
 from rcp.storage import AgentTaskRecord, AppStore, WatcherRecord
@@ -244,6 +245,31 @@ def _assert_completed_job_artifacts(watchers: list[WatcherRecord]) -> None:
         assert log_path.with_suffix(".done").read_text(encoding="utf-8") == "done\n"
 
 
+def _finish_fixture_jobs_synchronously(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave the fixture's job artifacts in their finished state before arming.
+
+    The real fixture spawns two detached interpreters that sleep before writing
+    their markers, so shortening the sleep only biases the race: arming can
+    still run its `test -f` before either process has started. Writing the end
+    state where those jobs would have written it takes the wall clock out of
+    the question entirely.
+
+    Paths come from the module's own `_watch_specs`, so this cannot drift from
+    the layout the watcher checks are built against.
+    """
+
+    def start_finished(cwd: Path) -> None:
+        for spec in acceptance._watch_specs(cwd):
+            log_path = Path(spec["log_path"])
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            name = log_path.stem
+            log_path.write_text(f"{name}: started\n{name}: completed\n", encoding="utf-8")
+            log_path.with_suffix(".status").write_text("completed\n", encoding="utf-8")
+            log_path.with_suffix(".done").write_text("done\n", encoding="utf-8")
+
+    monkeypatch.setattr(acceptance, "_start_fixture_jobs", start_finished)
+
+
 def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
     manifest,
     tmp_path: Path,
@@ -252,17 +278,17 @@ def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
     """Pin the arming outcome that makes the armed status unassertable in S42.
 
     `arm_watchers` validates every spec, so one whose check already passes is
-    persisted completed rather than active. The fixture jobs finish after
+    persisted completed rather than active. The real fixture jobs finish after
     `ACCEPTANCE_AGENT_JOB_SECONDS`, and a loaded runner can spend longer than
     that inside the correction turn, which is how S42 read completed on a
-    docs-only pull request. Shortening the job reproduces that side of the race
-    on any machine, instead of waiting for a runner slow enough to find it.
+    docs-only pull request. Here the jobs are already finished when arming
+    runs, so the outcome does not depend on which side won.
 
     The complementary case, arming while the jobs still run, is S42's own
     opening; only this one needs forcing.
     """
 
-    monkeypatch.setattr("rcp.agents.acceptance.ACCEPTANCE_AGENT_JOB_SECONDS", 0.01)
+    _finish_fixture_jobs_synchronously(monkeypatch)
     app = create_app(
         str(manifest.path),
         data_dir=tmp_path / "acceptance-data",
@@ -297,6 +323,11 @@ def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
         # watcher's status afterwards, so arming alone completed these.
         assert not app.state.watcher_poller.is_running()
         assert {record.status for record in armed} == {"completed"}
+        # The completion carries arming's own check: its exit code and the
+        # instant it recorded. A later poll would have moved `last_checked_at`
+        # past `completed_at`, so this ties the status to arming itself.
+        assert all(record.last_exit_code == 0 for record in armed)
+        assert all(record.completed_at == record.last_checked_at for record in armed)
         # Completed at arming is still undelivered, which is what the rest of
         # the journey depends on.
         assert all(not record.notified for record in armed)
