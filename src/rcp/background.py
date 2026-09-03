@@ -28,6 +28,7 @@ from rcp.runs.auto_research_admission import (
     auto_research_admission_exhausted,
     auto_research_for_request,
     ensure_auto_research_wake_spawned,
+    preflight_auto_research_task_resume,
     proven_committed_auto_research_dispatches,
     proven_reserved_auto_research_roots,
     retry_auto_research_task,
@@ -484,8 +485,11 @@ class BackgroundAgentTasks:
                 "This task's native session was not checkpointed or validated by RCP. "
                 "Retry it instead."
             )
-        preflight_experiment_episode_recovery(self, previous)
-        request = self._request_from_record(previous).model_copy(
+        original = self._request_from_record(previous)
+        if isinstance(original, AutoResearchRunRequest):
+            preflight_auto_research_task_resume(self, previous, original)
+        preflight_experiment_episode_recovery(self, previous, request=original)
+        request = original.model_copy(
             update={"session_id": previous.native_session_id, **skill_update(skills)}
         )
         continuation: AgentTaskContinuation = (

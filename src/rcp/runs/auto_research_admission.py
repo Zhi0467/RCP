@@ -1387,6 +1387,8 @@ def retry_auto_research_task(
     clean_orchestrator_retry = original.role == "orchestrator" and (
         session_limit or continuation_unavailable or not owned_checkpoint
     )
+    episode = tasks.store.episode(original.episode_id)
+    stopping = episode is not None and episode.stop_requested_at is not None
     problem: str | None = None
     if previous.stage_root:
         if previous.stage_host:
@@ -1408,14 +1410,20 @@ def retry_auto_research_task(
             problem = "the saved continuation context is unavailable"
         elif not owned_checkpoint:
             problem = "the prior task has no complete RCP-owned session and stage"
+    elif stopping:
+        problem = (
+            "the native provider session reached its limit"
+            if session_limit
+            else "the saved continuation context is unavailable"
+            if continuation_unavailable
+            else "the prior task has no complete RCP-owned session and stage"
+        )
     if problem is not None:
-        episode = tasks.store.episode(original.episode_id)
-        if episode is not None and episode.stop_requested_at is not None:
-            tasks.store.abandon_auto_research_recovery(
+        if stopping:
+            tasks.store.abandon_auto_research_recovery_and_settle_stop(
                 previous.operation_id,
                 diagnostic=problem,
             )
-            settle_auto_research_stop(tasks.store, episode.episode_id, diagnostic=problem)
         raise ValueError(
             "Auto-research recovery cannot start a fresh provider session because "
             f"{problem}. Its original allocation and operational history were preserved."
@@ -1470,6 +1478,28 @@ def retry_auto_research_task(
             level="warning",
         )
     return retried
+
+
+def preflight_auto_research_task_resume(
+    tasks: BackgroundAgentTasks,
+    previous: AgentTaskRecord,
+    original: AutoResearchRunRequest,
+) -> None:
+    """Prove an exact Auto-research Resume before admitting its child task."""
+
+    problem = _exact_child_resume_problem(tasks, previous)
+    if problem is None:
+        return
+    episode = tasks.store.episode(original.episode_id)
+    if episode is not None and episode.stop_requested_at is not None:
+        tasks.store.abandon_auto_research_recovery_and_settle_stop(
+            previous.operation_id,
+            diagnostic=problem,
+        )
+    raise ValueError(
+        "Auto-research Resume requires its exact saved session and stage, but "
+        f"{problem}. Its original allocation and operational history were preserved."
+    )
 
 
 def pause_auto_research_worker(

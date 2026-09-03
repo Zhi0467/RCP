@@ -3042,6 +3042,22 @@ class AgentTaskStoreMixin:
                 ),
                 parameters=(now, now),
             )
+            if requested_by == "human":
+                episode = connection.execute(
+                    """
+                    SELECT episode.stop_requested_at, episode.ending
+                    FROM graph_runs AS run
+                    JOIN episodes AS episode ON episode.episode_id = run.episode_id
+                    WHERE run.operation_id = ?
+                    """,
+                    (operation_id,),
+                ).fetchone()
+                if episode is not None and (
+                    episode["stop_requested_at"] is not None or episode["ending"] is not None
+                ):
+                    raise ValueError(
+                        "This task's parent episode is stopping or ended and cannot be paused."
+                    )
             self._require_agent_task_transition(operation_id, transition)
             if transition.outcome == "refused":
                 raise ValueError("Only a queued or running operation can be paused.")

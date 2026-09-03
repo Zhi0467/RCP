@@ -254,10 +254,6 @@ class AutoResearchStoreMixin:
                         "Auto-research tasks retain the root human authorizer snapshot"
                     )
                 role = TypeAdapter(AutoResearchRole).validate_python(parent["role"])
-                if episode.status == "stopping" and parent["status"] != "paused":
-                    raise EpisodeNotRunning(
-                        "a stopping episode only admits recovery of an explicitly paused turn"
-                    )
                 if episode.status not in {"running", "stopping"}:
                     raise EpisodeNotRunning(
                         "the episode cannot recover after its ending is durable"
@@ -296,6 +292,11 @@ class AutoResearchStoreMixin:
                     and record.request.get("session_id") is None
                     and parent["actor_operation_id"] == episode.root_operation_id
                 )
+                if episode.stop_requested_at is not None and clean_orchestrator_retry:
+                    raise EpisodeNotRunning(
+                        "a stopping episode only admits recovery through its exact saved "
+                        "session and stage"
+                    )
                 if clean_orchestrator_retry:
                     if (record.stage_host or "") != (parent["stage_host"] or ""):
                         raise ValueError("a clean Retry must preserve its actor-owned stage host")
@@ -1460,46 +1461,99 @@ class AutoResearchStoreMixin:
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                """
-                SELECT run.* FROM graph_runs AS run
-                JOIN auto_research_invocations AS invocation
-                  ON invocation.operation_id = run.operation_id
-                WHERE run.operation_id = ?
-                """,
-                (operation_id,),
-            ).fetchone()
-            if row is None:
-                raise KeyError(operation_id)
-            connection.execute(
-                """
-                INSERT INTO graph_run_receipts (
-                    operation_id, created_at, tier, category, payload_json
-                ) SELECT ?, ?, 'diagnostic', 'auto_research_recovery_abandoned', ?
-                  WHERE NOT EXISTS (
-                    SELECT 1 FROM graph_run_receipts
-                    WHERE operation_id = ?
-                      AND category = 'auto_research_recovery_abandoned'
-                  )
-                """,
-                (
-                    operation_id,
-                    now,
-                    json.dumps({"diagnostic": detail}, separators=(",", ":")),
-                    operation_id,
-                ),
-            )
-            connection.execute(
-                """
-                UPDATE auto_research_recoveries
-                SET status = 'blocked', next_attempt_at = NULL, diagnostic = ?, updated_at = ?
-                WHERE operation_id = ? OR admitted_operation_id = ?
-                """,
-                (detail, now, operation_id, operation_id),
+            self._abandon_auto_research_recovery_in_connection(
+                connection,
+                operation_id,
+                diagnostic=detail,
+                now=now,
             )
         stored = self.agent_task(operation_id)
         assert stored is not None
         return stored
+
+    def abandon_auto_research_recovery_and_settle_stop(
+        self,
+        operation_id: str,
+        *,
+        diagnostic: str,
+    ) -> EpisodeRecord:
+        """Abandon one unusable exact continuation and settle Stop if now quiescent."""
+
+        detail = " ".join(diagnostic.split())[:2000]
+        if not detail:
+            raise ValueError("recovery abandonment requires a diagnostic")
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            episode_id = self._abandon_auto_research_recovery_in_connection(
+                connection,
+                operation_id,
+                diagnostic=detail,
+                now=now,
+            )
+            episode = self._load_auto_research_episode(connection, episode_id)
+            if episode.stop_requested_at is None:
+                raise EpisodeNotRunning(
+                    "Auto-research recovery can only settle a durable Stop request."
+                )
+            if self._auto_research_is_quiescent_in_connection(connection, episode_id):
+                return self._mark_episode_stop_skipped_in_connection(
+                    connection,
+                    episode_id,
+                    diagnostic=detail,
+                    now=now,
+                )
+            return episode
+
+    def _abandon_auto_research_recovery_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        operation_id: str,
+        *,
+        diagnostic: str,
+        now: str,
+    ) -> str:
+        row = connection.execute(
+            """
+            SELECT run.status, invocation.episode_id
+            FROM graph_runs AS run
+            JOIN auto_research_invocations AS invocation
+              ON invocation.operation_id = run.operation_id
+            WHERE run.operation_id = ?
+            """,
+            (operation_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(operation_id)
+        if row["status"] not in {"paused", "interrupted", "failed"}:
+            raise ValueError("only a paused, interrupted, or failed task can be abandoned")
+        connection.execute(
+            """
+            INSERT INTO graph_run_receipts (
+                operation_id, created_at, tier, category, payload_json
+            ) SELECT ?, ?, 'diagnostic', 'auto_research_recovery_abandoned', ?
+              WHERE NOT EXISTS (
+                SELECT 1 FROM graph_run_receipts
+                WHERE operation_id = ?
+                  AND category = 'auto_research_recovery_abandoned'
+              )
+            """,
+            (
+                operation_id,
+                now,
+                json.dumps({"diagnostic": diagnostic}, separators=(",", ":")),
+                operation_id,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE auto_research_recoveries
+            SET status = 'blocked', next_attempt_at = NULL, diagnostic = ?, updated_at = ?
+            WHERE operation_id = ? OR admitted_operation_id = ?
+            """,
+            (diagnostic, now, operation_id, operation_id),
+        )
+        return str(row["episode_id"])
 
     def settle_auto_research_watchers(self, episode_id: str) -> int:
         """Retain every current Auto watcher once any parent ending is fenced."""
@@ -1592,39 +1646,46 @@ class AutoResearchStoreMixin:
         """Whether all mode tasks are settled enough for the generic ending manager."""
 
         with self.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT run.operation_id, run.status, invocation.role,
-                       EXISTS (
-                         SELECT 1 FROM graph_runs AS child
-                         WHERE child.parent_operation_id = run.operation_id
-                           AND child.episode_id = run.episode_id
-                           AND child.attempt = run.attempt + 1
-                       ) AS has_recovery_child,
-                       EXISTS (
-                         SELECT 1 FROM graph_run_receipts AS receipt
-                         WHERE receipt.operation_id = run.operation_id
-                           AND receipt.category = 'auto_research_recovery_abandoned'
-                       ) AS recovery_abandoned,
-                       EXISTS (
-                         SELECT 1 FROM graph_run_receipts AS receipt
-                         WHERE receipt.operation_id = run.operation_id
-                           AND receipt.category = 'auto_research_orchestrator_failure'
-                       ) AS terminal_failure,
-                       (
-                         SELECT recovery.status FROM auto_research_recoveries AS recovery
-                         WHERE recovery.episode_id = invocation.episode_id
-                           AND (recovery.operation_id = run.operation_id
-                                OR recovery.admitted_operation_id = run.operation_id)
-                         ORDER BY recovery.updated_at DESC LIMIT 1
-                       ) AS recovery_status
-                FROM graph_runs AS run
-                JOIN auto_research_invocations AS invocation
-                  ON invocation.operation_id = run.operation_id
-                WHERE invocation.episode_id = ?
-                """,
-                (episode_id,),
-            ).fetchall()
+            return self._auto_research_is_quiescent_in_connection(connection, episode_id)
+
+    @staticmethod
+    def _auto_research_is_quiescent_in_connection(
+        connection: sqlite3.Connection,
+        episode_id: str,
+    ) -> bool:
+        rows = connection.execute(
+            """
+            SELECT run.operation_id, run.status, invocation.role,
+                   EXISTS (
+                     SELECT 1 FROM graph_runs AS child
+                     WHERE child.parent_operation_id = run.operation_id
+                       AND child.episode_id = run.episode_id
+                       AND child.attempt = run.attempt + 1
+                   ) AS has_recovery_child,
+                   EXISTS (
+                     SELECT 1 FROM graph_run_receipts AS receipt
+                     WHERE receipt.operation_id = run.operation_id
+                       AND receipt.category = 'auto_research_recovery_abandoned'
+                   ) AS recovery_abandoned,
+                   EXISTS (
+                     SELECT 1 FROM graph_run_receipts AS receipt
+                     WHERE receipt.operation_id = run.operation_id
+                       AND receipt.category = 'auto_research_orchestrator_failure'
+                   ) AS terminal_failure,
+                   (
+                     SELECT recovery.status FROM auto_research_recoveries AS recovery
+                     WHERE recovery.episode_id = invocation.episode_id
+                       AND (recovery.operation_id = run.operation_id
+                            OR recovery.admitted_operation_id = run.operation_id)
+                     ORDER BY recovery.updated_at DESC LIMIT 1
+                   ) AS recovery_status
+            FROM graph_runs AS run
+            JOIN auto_research_invocations AS invocation
+              ON invocation.operation_id = run.operation_id
+            WHERE invocation.episode_id = ?
+            """,
+            (episode_id,),
+        ).fetchall()
         for row in rows:
             if row["has_recovery_child"] or row["recovery_abandoned"] or row["terminal_failure"]:
                 continue
