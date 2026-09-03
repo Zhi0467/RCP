@@ -125,13 +125,13 @@ jobs:
           mkdir -p dist
           uv export --frozen --no-emit-project --format requirements-txt --output-file dist/requirements.lock.txt
       - name: Stamp the build version
-        run: python packaging/release_build.py stamp-version --run-number "${{ github.run_number }}" --sha "${{ github.sha }}"
+        run: uv run --no-project python packaging/release_build.py stamp-version --run-number "${{ github.run_number }}" --sha "${{ github.sha }}"
       - name: Build the wheel
         run: uv build --wheel --out-dir dist
       - name: Remove the uv output marker
         run: rm -f dist/.gitignore
       - name: Write the asset manifest
-        run: python packaging/release_build.py write-manifest dist --output manifest.sha256
+        run: uv run --no-project python packaging/release_build.py write-manifest dist --output manifest.sha256
       - name: Publish the build prerelease
         env:
           GH_TOKEN: ${{ github.token }}
