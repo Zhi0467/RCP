@@ -10,7 +10,6 @@ fresh-install and old-archive proofs remain. The decisions are settled in
 [the supervisor decision](../decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md)
 and repeated in the next section so this file stands alone. Phases 3 through 6
 wait for
-start now. Phases 3 through 6 wait for
 [the dev-team-space-and-server handoff](handoff-2026-08-27-dev-team-space-and-server.md)
 to meet its closure condition and be archived, because the human has frozen new
 team and server lifecycle surface until that first lab deployment is closed.
