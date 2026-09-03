@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import {
+  exactRunExperimentSelectionHref,
   projectHashAfterViewChange,
-  selectedExperimentHref,
   type ExperimentRouteIdentity,
   type ProjectHashRoute,
 } from "../experimentBoard";
@@ -410,16 +410,16 @@ export function useGraphSelection({
 
   const selectExperiment = useCallback(
     (nodeId: string | null) => {
-      if (nodeId && selectedExperimentRoute && projectId) {
-        window.history.replaceState(
-          null,
-          "",
-          selectedExperimentHref(projectId, nodeId, selectedExperimentRoute),
-        );
-      }
+      const replacementHref = exactRunExperimentSelectionHref(
+        projectId,
+        nodeId,
+        selectedExperimentRoute,
+        selectedAutoResearchEpisodeId,
+      );
+      if (replacementHref) window.history.replaceState(null, "", replacementHref);
       dispatchExperimentSelection({ kind: "select", experimentId: nodeId });
     },
-    [projectId, selectedExperimentRoute],
+    [projectId, selectedAutoResearchEpisodeId, selectedExperimentRoute],
   );
   const clearExperimentFocus = useCallback(() => {
     dispatchExperimentSelection({ kind: "clear_focus" });

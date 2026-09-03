@@ -108,7 +108,7 @@ export function experimentBoardHref(
   return `#/projects/${encodeURIComponent(projectId)}?${fields.join("&")}`;
 }
 
-export function selectedExperimentHref(
+function selectedExperimentHref(
   projectId: string,
   experimentId: string,
   exactRoute: ExperimentRouteIdentity | null,
@@ -117,6 +117,18 @@ export function selectedExperimentHref(
     projectId,
     exactRoute?.experiment_id === experimentId ? exactRoute : experimentId,
   );
+}
+
+export function exactRunExperimentSelectionHref(
+  projectId: string | null,
+  experimentId: string | null,
+  exactExperimentRoute: ExperimentRouteIdentity | null,
+  exactAutoResearchEpisodeId: string | null,
+): string | null {
+  if (!projectId || !experimentId || (!exactExperimentRoute && !exactAutoResearchEpisodeId)) {
+    return null;
+  }
+  return selectedExperimentHref(projectId, experimentId, exactExperimentRoute);
 }
 
 export function parseProjectHash(hash: string): ProjectHashRoute {

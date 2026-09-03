@@ -20,7 +20,7 @@ const {
   projectTabShortcut,
   projectViewportRef,
 } = await server.ssrLoadModule("/src/projectTabs.ts");
-const { branchExperimentPollingKey, parseProjectHash, selectedExperimentHref } =
+const { branchExperimentPollingKey, exactRunExperimentSelectionHref, parseProjectHash } =
   await server.ssrLoadModule("/src/experimentBoard.ts");
 const { reduceExperimentSelection } = await server.ssrLoadModule("/src/hooks/useGraphSelection.ts");
 const { ProjectDock } = await server.ssrLoadModule("/src/components/ProjectDock.tsx");
@@ -107,10 +107,11 @@ test("collapsing and re-expanding keeps an exact branch Experiment URL", () => {
   assert.deepEqual(reexpanded.selectedExperimentRoute, route);
   assert.deepEqual(
     parseProjectHash(
-      selectedExperimentHref(
+      exactRunExperimentSelectionHref(
         "project-one",
         reexpanded.selectedExperimentRunId,
         reexpanded.selectedExperimentRoute,
+        reexpanded.selectedAutoResearchEpisodeId,
       ),
     ).experimentRoute,
     route,
@@ -124,7 +125,25 @@ test("selecting another card replaces an old exact branch Experiment URL", () =>
     graph_target: { kind: "branch", branch_id: "parent-episode" },
     parent_episode_id: "parent-episode",
   };
-  const href = selectedExperimentHref("project-one", "experiment/new", oldRoute);
+  const href = exactRunExperimentSelectionHref("project-one", "experiment/new", oldRoute, null);
+
+  assert.deepEqual(parseProjectHash(href), {
+    projectId: "project-one",
+    view: "execution",
+    projectViewSpecified: true,
+    experimentId: "experiment/new",
+    experimentRoute: null,
+    autoResearchEpisodeId: null,
+  });
+});
+
+test("selecting an Experiment replaces an exact Auto-research episode URL", () => {
+  const href = exactRunExperimentSelectionHref(
+    "project-one",
+    "experiment/new",
+    null,
+    "auto-research-episode",
+  );
 
   assert.deepEqual(parseProjectHash(href), {
     projectId: "project-one",
