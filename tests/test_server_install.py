@@ -1105,6 +1105,28 @@ def test_public_source_removes_one_remaining_key_and_reports_transition(
     assert access.retired_deploy_key_label == f"rcp-source:{INSTALLATION_ID}"
 
 
+def test_public_source_refuses_to_retire_keys_through_an_unsafe_credentials_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    layout, machine, config, private, public = _configured_source_install(
+        tmp_path,
+        authentication="public",
+    )
+    real_root = layout.credentials_root
+    elsewhere = tmp_path / "elsewhere"
+    real_root.rename(elsewhere)
+    real_root.symlink_to(elsewhere)
+    (elsewhere / private.name).write_bytes(b"retired-key\n")
+    monkeypatch.setattr(server_install, "load_installed_server_config", lambda _path: config)
+    monkeypatch.setattr(machine, "_probe_source", lambda *_args, **_kwargs: "ready")
+
+    with pytest.raises(server_install.InstallRefused, match="not a regular directory"):
+        machine.prepare_source_access(REPOSITORY)
+
+    assert (elsewhere / private.name).read_bytes() == b"retired-key\n"
+
+
 def test_deploy_key_transition_refuses_a_third_checkout_origin_before_mutation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

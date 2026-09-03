@@ -282,6 +282,10 @@ def finish_public_source_transition(
     public_path = layout.credentials_root / _SOURCE_PUBLIC_KEY
     removed_keys = any(path.exists() or path.is_symlink() for path in (private_path, public_path))
     if removed_keys:
+        try:
+            _require_owned_directory(layout.credentials_root, uid=service_uid, gid=service_gid)
+        except InstallRefused as exc:
+            raise refusal(str(exc)) from exc
         private_path.unlink(missing_ok=True)
         public_path.unlink(missing_ok=True)
         _fsync_directory(layout.credentials_root)
