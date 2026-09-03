@@ -6468,6 +6468,159 @@ button.relation-map-node:hover {
   position: relative;
   transition: box-shadow 0.14s ease;
 }
+.chat-annotatable-answer {
+  border-radius: 4px;
+}
+.chat-annotatable-answer::selection,
+.chat-annotatable-answer *::selection {
+  background: color-mix(in srgb, var(--plum) 28%, transparent);
+}
+.chat-annotatable-answer:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--plum) 42%, transparent);
+  outline-offset: 4px;
+}
+.chat-annotation-summary {
+  display: flex;
+  flex-basis: 100%;
+}
+.chat-annotation-count {
+  align-items: center;
+  background: color-mix(in srgb, var(--chat-mode-soft) 68%, var(--paper));
+  border: 1px solid color-mix(in srgb, var(--chat-mode-accent) 62%, var(--line));
+  border-radius: 999px;
+  color: var(--chat-mode-accent);
+  display: inline-flex;
+  font: 700 9px var(--mono);
+  gap: 5px;
+  padding: 5px 9px;
+}
+.chat-annotation-count:hover,
+.chat-annotation-count.is-open,
+.chat-annotation-count:focus-visible {
+  background: color-mix(in srgb, var(--chat-mode-soft) 86%, var(--paper));
+  border-color: var(--chat-mode-accent);
+}
+.chat-annotation-review {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  bottom: calc(100% + 8px);
+  box-shadow: var(--shadow);
+  left: 9px;
+  max-height: min(380px, 62vh);
+  overflow: hidden;
+  position: absolute;
+  right: 9px;
+  z-index: 18;
+}
+.chat-annotation-review > header,
+.chat-annotation-composer > header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  padding: 7px 9px;
+}
+.chat-annotation-review > header strong,
+.chat-annotation-composer > header strong {
+  font: 700 10px var(--mono);
+}
+.chat-annotation-review-list {
+  max-height: min(330px, 54vh);
+  overflow: auto;
+  padding: 3px 9px 9px;
+}
+.chat-annotation-review article {
+  display: grid;
+  gap: 6px;
+  padding: 8px 0;
+}
+.chat-annotation-review article + article {
+  border-top: 1px solid var(--line);
+}
+.chat-annotation-review blockquote,
+.chat-annotation-composer blockquote {
+  border-left: 2px solid var(--chat-mode-accent, var(--plum));
+  color: var(--ink-soft);
+  font-family: var(--editorial);
+  line-height: 1.45;
+  margin: 0;
+  max-height: 84px;
+  overflow: auto;
+  padding: 4px 7px;
+  white-space: pre-wrap;
+}
+.chat-annotation-review textarea {
+  flex: none;
+  font-size: 11px;
+  height: 58px;
+  min-height: 58px;
+  padding: 6px 7px;
+  resize: vertical;
+  width: 100%;
+}
+.chat-annotation-review article > button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--red);
+  display: inline-flex;
+  font-size: 9px;
+  gap: 3px;
+  justify-self: end;
+  padding: 2px;
+}
+.chat-annotation-composer {
+  --chat-mode-accent: var(--plum);
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--plum) 65%, var(--line));
+  border-radius: 9px;
+  box-shadow: 0 16px 42px rgb(50 36 32 / 22%);
+  display: grid;
+  gap: 8px;
+  overflow: hidden;
+  position: fixed;
+  width: 320px;
+  z-index: 1200;
+}
+.chat-annotation-composer blockquote {
+  margin: 0 10px;
+}
+.chat-annotation-composer textarea {
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  font: 11px/1.45 var(--body);
+  height: 68px;
+  margin: 0 10px;
+  padding: 7px 8px;
+  resize: none;
+}
+.chat-annotation-composer textarea:focus-visible {
+  border-color: var(--plum);
+  outline: 2px solid color-mix(in srgb, var(--plum) 30%, transparent);
+  outline-offset: 1px;
+}
+.chat-annotation-composer > .button {
+  justify-self: end;
+  margin: 0 10px 10px;
+}
+@media (max-width: 640px) {
+  .chat-annotation-composer {
+    bottom: max(10px, env(safe-area-inset-bottom));
+    left: 10px !important;
+    max-height: min(440px, calc(100vh - 20px));
+    right: 10px;
+    top: auto !important;
+    width: auto;
+  }
+  .chat-annotation-composer blockquote {
+    max-height: 96px;
+  }
+  .chat-annotation-composer textarea {
+    height: 84px;
+  }
+}
 .artifact-context-chip {
   align-items: center;
   background: color-mix(in srgb, var(--chat-mode-soft) 62%, var(--paper));
