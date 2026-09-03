@@ -9,6 +9,9 @@ from rcp.core.models import AuthorizedHuman
 from rcp.storage.models import (
     AGENT_TASK_PROJECTION_FIELDS,
     AgentTaskRecord,
+    AutoResearchSpaceRunEpisodeState,
+    AutoResearchSpaceRunProjectionSnapshot,
+    AutoResearchSpaceRunTaskState,
     EpisodeBudgetMeter,
     EpisodeEnding,
     EpisodeInvocationCeilingReached,
@@ -22,6 +25,7 @@ from rcp.storage.models import (
     EpisodeWrapupRecord,
     _required_timestamp,
 )
+from rcp.storage.rows import _agent_task_control_flags
 
 _LIVE_EPISODE_STATUSES = ("queued", "running", "stopping", "wrapping_up")
 _REPORT_ATTEMPT_LIMIT = 3
@@ -175,6 +179,191 @@ class EpisodeStoreMixin:
                     (episode_id,),
                 ).fetchall()
         return [str(row["episode_id"]) for row in rows]
+
+    def auto_research_space_run_projection_snapshots(
+        self,
+        project_ids: set[str],
+        *,
+        completed_since: str,
+    ) -> list[AutoResearchSpaceRunProjectionSnapshot]:
+        """Batch only the lifecycle inputs needed by the space Runs projection."""
+
+        if not project_ids:
+            return []
+        ordered_project_ids = sorted(project_ids)
+        placeholders = ", ".join("?" for _ in ordered_project_ids)
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            episode_rows = connection.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT episode_id, project_id, mode, graph_target_json,
+                           root_operation_id, status, stop_requested_at, ending,
+                           wrapup_state, created_at, updated_at, ended_at
+                    FROM episodes
+                    WHERE project_id IN ({placeholders})
+                      AND mode = 'auto_research'
+                      AND status NOT IN ('completed', 'stopped')
+                    UNION ALL
+                    SELECT episode_id, project_id, mode, graph_target_json,
+                           root_operation_id, status, stop_requested_at, ending,
+                           wrapup_state, created_at, updated_at, ended_at
+                    FROM episodes
+                    WHERE project_id IN ({placeholders})
+                      AND mode = 'auto_research'
+                      AND status IN ('completed', 'stopped')
+                      AND wrapup_state IN ('pending', 'running')
+                    UNION ALL
+                    SELECT episode_id, project_id, mode, graph_target_json,
+                           root_operation_id, status, stop_requested_at, ending,
+                           wrapup_state, created_at, updated_at, ended_at
+                    FROM episodes
+                    WHERE project_id IN ({placeholders})
+                      AND mode = 'auto_research'
+                      AND status IN ('completed', 'stopped')
+                      AND wrapup_state NOT IN ('pending', 'running')
+                      AND julianday(COALESCE(ended_at, updated_at)) >= julianday(?)
+                )
+                ORDER BY created_at DESC, episode_id DESC
+                """,
+                (
+                    *ordered_project_ids,
+                    *ordered_project_ids,
+                    *ordered_project_ids,
+                    completed_since,
+                ),
+            ).fetchall()
+            if not episode_rows:
+                return []
+            lifecycle_episode_ids = [
+                str(row["episode_id"])
+                for row in episode_rows
+                if row["status"] not in {"completed", "failed", "stopped"}
+            ]
+            task_rows: list[sqlite3.Row] = []
+            recovery_rows: list[sqlite3.Row] = []
+            report_rows: list[sqlite3.Row] = []
+            if lifecycle_episode_ids:
+                episode_placeholders = ", ".join("?" for _ in lifecycle_episode_ids)
+                task_rows = connection.execute(
+                    f"""
+                    SELECT run.operation_id, run.episode_id, run.kind, run.status,
+                           run.created_at, run.last_activity_at, run.attempt,
+                           run.parent_operation_id, run.native_session_id,
+                           run.history_only, run.stage_host, run.stage_root, run.visible,
+                           run.rowid AS row_order,
+                           invocation.actor_operation_id, invocation.role,
+                           EXISTS (
+                               SELECT 1 FROM graph_run_receipts AS receipt
+                               WHERE receipt.operation_id = run.operation_id
+                                 AND receipt.category IN (
+                                     'experiment_recovery_abandoned',
+                                     'auto_research_recovery_abandoned'
+                                 )
+                           ) AS recovery_abandoned
+                    FROM graph_runs AS run
+                    LEFT JOIN auto_research_invocations AS invocation
+                      ON invocation.operation_id = run.operation_id
+                    WHERE run.episode_id IN ({episode_placeholders})
+                      AND run.visible = 1
+                      AND run.kind != 'episode_report'
+                    ORDER BY run.created_at, run.operation_id
+                    """,
+                    lifecycle_episode_ids,
+                ).fetchall()
+                recovery_rows = connection.execute(
+                    f"""
+                    SELECT episode_id, operation_id, admitted_operation_id, status,
+                           updated_at, recovery_id
+                    FROM auto_research_recoveries
+                    WHERE episode_id IN ({episode_placeholders})
+                    ORDER BY updated_at DESC, recovery_id DESC
+                    """,
+                    lifecycle_episode_ids,
+                ).fetchall()
+                report_rows = connection.execute(
+                    f"""
+                    SELECT episode_id FROM episode_reports
+                    WHERE episode_id IN ({episode_placeholders})
+                    """,
+                    lifecycle_episode_ids,
+                ).fetchall()
+
+        recoveries: dict[tuple[str, str], tuple[str, str]] = {}
+        for row in recovery_rows:
+            episode_id = str(row["episode_id"])
+            recovery = (str(row["operation_id"]), str(row["status"]))
+            for operation_id in (row["operation_id"], row["admitted_operation_id"]):
+                if operation_id is not None:
+                    recoveries.setdefault((episode_id, str(operation_id)), recovery)
+
+        tasks_by_episode: dict[str, list[AutoResearchSpaceRunTaskState]] = {
+            str(row["episode_id"]): [] for row in episode_rows
+        }
+        for row in task_rows:
+            data = dict(row)
+            episode_id = str(data["episode_id"])
+            recovery_operation_id, recovery_status = recoveries.get(
+                (episode_id, str(data["operation_id"])),
+                (None, None),
+            )
+            can_pause, can_resume, can_retry = _agent_task_control_flags(
+                data,
+                recovery_abandoned=bool(data["recovery_abandoned"]),
+            )
+            tasks_by_episode[episode_id].append(
+                AutoResearchSpaceRunTaskState(
+                    operation_id=str(data["operation_id"]),
+                    status=data["status"],
+                    created_at=str(data["created_at"]),
+                    last_activity_at=data["last_activity_at"],
+                    attempt=int(data["attempt"]),
+                    parent_operation_id=data["parent_operation_id"],
+                    row_order=int(data["row_order"]),
+                    actor_operation_id=data["actor_operation_id"],
+                    role=data["role"],
+                    can_pause=can_pause,
+                    can_resume=can_resume,
+                    can_retry=can_retry,
+                    recovery_operation_id=recovery_operation_id,
+                    recovery_status=recovery_status,
+                )
+            )
+
+        report_episode_ids = {str(row["episode_id"]) for row in report_rows}
+        snapshots: list[AutoResearchSpaceRunProjectionSnapshot] = []
+        for row in episode_rows:
+            data = dict(row)
+            data["graph_target"] = json.loads(data.pop("graph_target_json"))
+            episode = AutoResearchSpaceRunEpisodeState.model_validate(data)
+            tasks = tasks_by_episode[episode.episode_id]
+            root = next(
+                (task for task in tasks if task.operation_id == episode.root_operation_id),
+                None,
+            )
+            actor_operation_id = root.actor_operation_id if root is not None else None
+            current_orchestrator = max(
+                (
+                    task
+                    for task in tasks
+                    if task.role is not None and task.actor_operation_id == actor_operation_id
+                ),
+                key=lambda task: task.row_order,
+                default=None,
+            )
+            snapshots.append(
+                AutoResearchSpaceRunProjectionSnapshot(
+                    episode=episode,
+                    tasks=tasks,
+                    current_orchestrator_task_id=(
+                        current_orchestrator.operation_id
+                        if current_orchestrator is not None
+                        else None
+                    ),
+                    has_report=episode.episode_id in report_episode_ids,
+                )
+            )
+        return snapshots
 
     def episodes_awaiting_report(self) -> list[EpisodeRecord]:
         """Return durable hidden wrap-ups that startup must reconcile."""

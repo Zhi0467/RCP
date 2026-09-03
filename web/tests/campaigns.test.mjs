@@ -8,6 +8,7 @@ import {
   loadEpisodeMessages,
   loadEpisodes,
   loadExperimentEpisodes,
+  loadSpaceRuns,
   mergeEpisodeToMain,
   reauthorizeEpisode,
   sendEpisodeMessage,
@@ -567,6 +568,7 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
   };
   try {
     await loadEpisodes("/api/projects/demo", "auto_research");
+    await loadEpisodes("/api/projects/demo", "auto_research", "episode/older");
     await startEpisode("/api/projects/demo", {
       mode: "auto_research",
       invocation_ceiling: 8,
@@ -578,6 +580,7 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
     await loadEpisodeMessages("/api/projects/demo", "episode/alpha");
     await sendEpisodeMessage("/api/projects/demo", "episode/alpha", "Check the blocker");
     await loadExperimentEpisodes();
+    await loadSpaceRuns();
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -585,6 +588,11 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
   assert.deepEqual(requests, [
     {
       path: "/api/projects/demo/episodes?mode=auto_research",
+      method: "GET",
+      body: null,
+    },
+    {
+      path: "/api/projects/demo/episodes?mode=auto_research&episode_id=episode%2Folder",
       method: "GET",
       body: null,
     },
@@ -623,6 +631,7 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
       body: JSON.stringify({ body: "Check the blocker" }),
     },
     { path: "/api/episodes?mode=experiment_loop", method: "GET", body: null },
+    { path: "/api/space/runs", method: "GET", body: null },
   ]);
   assert.equal(
     requests.some(({ path }) => path.includes("campaign")),

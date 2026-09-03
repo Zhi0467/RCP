@@ -28,6 +28,7 @@ from rcp.runs.auto_research_admission import (
     auto_research_admission_exhausted,
     auto_research_for_request,
     ensure_auto_research_wake_spawned,
+    preflight_auto_research_task_resume,
     proven_committed_auto_research_dispatches,
     proven_reserved_auto_research_roots,
     retry_auto_research_task,
@@ -58,6 +59,7 @@ from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import (
     CoachRequest,
     GraphUpdateResult,
+    ProjectService,
     RunRequest,
     resolve_dispatch_authority,
 )
@@ -484,8 +486,11 @@ class BackgroundAgentTasks:
                 "This task's native session was not checkpointed or validated by RCP. "
                 "Retry it instead."
             )
-        preflight_experiment_episode_recovery(self, previous)
-        request = self._request_from_record(previous).model_copy(
+        original = self._request_from_record(previous)
+        if isinstance(original, AutoResearchRunRequest):
+            preflight_auto_research_task_resume(self, previous)
+        preflight_experiment_episode_recovery(self, previous, request=original)
+        request = original.model_copy(
             update={"session_id": previous.native_session_id, **skill_update(skills)}
         )
         continuation: AgentTaskContinuation = (
@@ -747,6 +752,38 @@ class BackgroundAgentTasks:
             stage_host=previous.stage_host,
             stage_root=previous.stage_root,
             authorized_by=authorized_by,
+        )
+
+    def retry_auto_research(
+        self,
+        operation_id: str,
+        *,
+        service: ProjectService,
+        provider: str | None = None,
+        model: str | None = None,
+        reasoning: str | None = None,
+        run_on: str | None = None,
+        skills: SkillSelection | None = None,
+    ) -> AgentTaskRecord:
+        """Run the HTTP Retry path with target readiness owned by Auto-research."""
+
+        self._require_startup_effects_open("provider task retry")
+        previous = self._require_operation(operation_id)
+        if not previous.can_retry:
+            raise ValueError("Only a paused, interrupted, or failed task can be retried.")
+        original = self._request_from_record(previous)
+        if not isinstance(original, AutoResearchRunRequest):
+            raise ValueError("This task is not an Auto-research task.")
+        return retry_auto_research_task(
+            self,
+            previous,
+            original,
+            provider=provider,
+            model=model,
+            reasoning=reasoning,
+            run_on=run_on,
+            skills=skills,
+            service=service,
         )
 
     def pause(self, operation_id: str) -> AgentTaskRecord:

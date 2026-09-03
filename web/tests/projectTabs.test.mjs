@@ -20,7 +20,7 @@ const {
   projectTabShortcut,
   projectViewportRef,
 } = await server.ssrLoadModule("/src/projectTabs.ts");
-const { branchExperimentPollingKey, parseProjectHash } =
+const { branchExperimentPollingKey, exactRunExperimentSelectionHref, parseProjectHash } =
   await server.ssrLoadModule("/src/experimentBoard.ts");
 const { reduceExperimentSelection } = await server.ssrLoadModule("/src/hooks/useGraphSelection.ts");
 const { ProjectDock } = await server.ssrLoadModule("/src/components/ProjectDock.tsx");
@@ -62,8 +62,14 @@ test("leaving Runs and returning preserves the exact branch Experiment identity"
       selectedExperimentRunId: null,
       focusExperimentRunId: null,
       selectedExperimentRoute: null,
+      selectedAutoResearchEpisodeId: null,
     },
-    { kind: "route", experimentId: route.experiment_id, experimentRoute: route },
+    {
+      kind: "route",
+      experimentId: route.experiment_id,
+      experimentRoute: route,
+      autoResearchEpisodeId: null,
+    },
   );
   const away = reduceExperimentSelection(selected, { kind: "view_changed" });
   const returned = reduceExperimentSelection(away, { kind: "view_changed" });
@@ -74,6 +80,169 @@ test("leaving Runs and returning preserves the exact branch Experiment identity"
     branchExperimentPollingKey("project-one", returned.selectedExperimentRoute),
     '["project-one","experiment/shared","child-episode","parent-episode","parent-episode"]',
   );
+});
+
+test("collapsing and re-expanding keeps an exact branch Experiment URL", () => {
+  const route = {
+    experiment_id: "experiment/shared",
+    episode_id: "child-episode",
+    graph_target: { kind: "branch", branch_id: "parent-episode" },
+    parent_episode_id: "parent-episode",
+  };
+  const selected = {
+    selectedExperimentRunId: route.experiment_id,
+    focusExperimentRunId: route.experiment_id,
+    selectedExperimentRoute: route,
+    selectedAutoResearchEpisodeId: null,
+  };
+  const collapsed = reduceExperimentSelection(selected, {
+    kind: "select",
+    experimentId: null,
+  });
+  const reexpanded = reduceExperimentSelection(collapsed, {
+    kind: "select",
+    experimentId: route.experiment_id,
+  });
+
+  assert.deepEqual(reexpanded.selectedExperimentRoute, route);
+  assert.deepEqual(
+    parseProjectHash(
+      exactRunExperimentSelectionHref(
+        "project-one",
+        reexpanded.selectedExperimentRunId,
+        reexpanded.selectedExperimentRoute,
+        reexpanded.selectedAutoResearchEpisodeId,
+      ),
+    ).experimentRoute,
+    route,
+  );
+});
+
+test("selecting another card replaces an old exact branch Experiment URL", () => {
+  const oldRoute = {
+    experiment_id: "experiment/old",
+    episode_id: "child-episode",
+    graph_target: { kind: "branch", branch_id: "parent-episode" },
+    parent_episode_id: "parent-episode",
+  };
+  const href = exactRunExperimentSelectionHref("project-one", "experiment/new", oldRoute, null);
+
+  assert.deepEqual(parseProjectHash(href), {
+    projectId: "project-one",
+    view: "execution",
+    projectViewSpecified: true,
+    experimentId: "experiment/new",
+    experimentRoute: null,
+    autoResearchEpisodeId: null,
+  });
+});
+
+test("selecting an Experiment replaces an exact Auto-research episode URL", () => {
+  const href = exactRunExperimentSelectionHref(
+    "project-one",
+    "experiment/new",
+    null,
+    "auto-research-episode",
+  );
+
+  assert.deepEqual(parseProjectHash(href), {
+    projectId: "project-one",
+    view: "execution",
+    projectViewSpecified: true,
+    experimentId: "experiment/new",
+    experimentRoute: null,
+    autoResearchEpisodeId: null,
+  });
+});
+
+test("showing an Experiment replaces an exact Auto-research episode URL", () => {
+  const route = parseProjectHash(
+    "#/projects/project-one?view=runs&mode=auto_research&episode=completed-episode",
+  );
+  const selected = reduceExperimentSelection(
+    {
+      selectedExperimentRunId: null,
+      focusExperimentRunId: null,
+      selectedExperimentRoute: null,
+      selectedAutoResearchEpisodeId: null,
+    },
+    {
+      kind: "route",
+      experimentId: route.experimentId,
+      experimentRoute: route.experimentRoute,
+      autoResearchEpisodeId: route.autoResearchEpisodeId,
+    },
+  );
+  const experimentId = "experiment/new";
+  const href = exactRunExperimentSelectionHref(
+    route.projectId,
+    experimentId,
+    selected.selectedExperimentRoute,
+    selected.selectedAutoResearchEpisodeId,
+    "show",
+  );
+  const shown = reduceExperimentSelection(selected, { kind: "show", experimentId });
+
+  assert.deepEqual(parseProjectHash(href), {
+    projectId: "project-one",
+    view: "execution",
+    projectViewSpecified: true,
+    experimentId,
+    experimentRoute: null,
+    autoResearchEpisodeId: null,
+  });
+  assert.deepEqual(shown, {
+    selectedExperimentRunId: experimentId,
+    focusExperimentRunId: experimentId,
+    selectedExperimentRoute: null,
+    selectedAutoResearchEpisodeId: null,
+  });
+});
+
+test("showing an Experiment replaces its exact branch Experiment URL", () => {
+  const route = parseProjectHash(
+    "#/projects/project-one?view=runs&experiment=experiment%2Fshared&episode=child-episode&target=branch&branch=parent-episode&parent=parent-episode",
+  );
+  const selected = reduceExperimentSelection(
+    {
+      selectedExperimentRunId: null,
+      focusExperimentRunId: null,
+      selectedExperimentRoute: null,
+      selectedAutoResearchEpisodeId: null,
+    },
+    {
+      kind: "route",
+      experimentId: route.experimentId,
+      experimentRoute: route.experimentRoute,
+      autoResearchEpisodeId: route.autoResearchEpisodeId,
+    },
+  );
+  const href = exactRunExperimentSelectionHref(
+    route.projectId,
+    route.experimentId,
+    selected.selectedExperimentRoute,
+    selected.selectedAutoResearchEpisodeId,
+    "show",
+  );
+  const shown = reduceExperimentSelection(selected, {
+    kind: "show",
+    experimentId: route.experimentId,
+  });
+
+  assert.deepEqual(parseProjectHash(href), {
+    projectId: "project-one",
+    view: "execution",
+    projectViewSpecified: true,
+    experimentId: "experiment/shared",
+    experimentRoute: null,
+    autoResearchEpisodeId: null,
+  });
+  assert.deepEqual(shown, {
+    selectedExperimentRunId: "experiment/shared",
+    focusExperimentRunId: "experiment/shared",
+    selectedExperimentRoute: null,
+    selectedAutoResearchEpisodeId: null,
+  });
 });
 
 test("tab restoration retains the branch target instead of resolving the node id on main", () => {
@@ -88,12 +257,14 @@ test("tab restoration retains the branch target instead of resolving the node id
       selectedExperimentRunId: "experiment/main",
       focusExperimentRunId: null,
       selectedExperimentRoute: null,
+      selectedAutoResearchEpisodeId: null,
     },
     {
       kind: "restore",
       experimentId: route.experiment_id,
       focusExperimentId: null,
       experimentRoute: route,
+      autoResearchEpisodeId: null,
     },
   );
 
@@ -101,12 +272,42 @@ test("tab restoration retains the branch target instead of resolving the node id
     selectedExperimentRunId: route.experiment_id,
     focusExperimentRunId: null,
     selectedExperimentRoute: route,
+    selectedAutoResearchEpisodeId: null,
   });
   assert.notStrictEqual(restored.selectedExperimentRoute, route);
   assert.equal(
     branchExperimentPollingKey("project-one", restored.selectedExperimentRoute),
     '["project-one","experiment/shared","child-episode","parent-episode","parent-episode"]',
   );
+});
+
+test("Runs routing and tab selection retain an exact Auto-research episode", () => {
+  const route = parseProjectHash(
+    "#/projects/project-one?view=runs&mode=auto_research&episode=completed-episode",
+  );
+  const selected = reduceExperimentSelection(
+    {
+      selectedExperimentRunId: null,
+      focusExperimentRunId: null,
+      selectedExperimentRoute: null,
+      selectedAutoResearchEpisodeId: null,
+    },
+    {
+      kind: "route",
+      experimentId: route.experimentId,
+      experimentRoute: route.experimentRoute,
+      autoResearchEpisodeId: route.autoResearchEpisodeId,
+    },
+  );
+
+  assert.equal(route.autoResearchEpisodeId, "completed-episode");
+  assert.deepEqual(selected, {
+    selectedExperimentRunId: null,
+    focusExperimentRunId: null,
+    selectedExperimentRoute: null,
+    selectedAutoResearchEpisodeId: "completed-episode",
+  });
+  assert.strictEqual(reduceExperimentSelection(selected, { kind: "view_changed" }), selected);
 });
 
 test("an explicit malformed Runs route clears a cached exact branch selection", () => {
@@ -121,12 +322,14 @@ test("an explicit malformed Runs route clears a cached exact branch selection", 
       selectedExperimentRunId: null,
       focusExperimentRunId: null,
       selectedExperimentRoute: null,
+      selectedAutoResearchEpisodeId: null,
     },
     {
       kind: "restore",
       experimentId: cachedRoute.experiment_id,
       focusExperimentId: null,
       experimentRoute: cachedRoute,
+      autoResearchEpisodeId: null,
     },
   );
   const explicitMalformedRoute = parseProjectHash(
@@ -137,6 +340,7 @@ test("an explicit malformed Runs route clears a cached exact branch selection", 
         kind: "route",
         experimentId: explicitMalformedRoute.experimentId,
         experimentRoute: explicitMalformedRoute.experimentRoute,
+        autoResearchEpisodeId: explicitMalformedRoute.autoResearchEpisodeId,
       })
     : cached;
 
@@ -147,6 +351,7 @@ test("an explicit malformed Runs route clears a cached exact branch selection", 
     selectedExperimentRunId: null,
     focusExperimentRunId: null,
     selectedExperimentRoute: null,
+    selectedAutoResearchEpisodeId: null,
   });
   assert.equal(parseProjectHash("#/projects/project-one").projectViewSpecified, false);
 });

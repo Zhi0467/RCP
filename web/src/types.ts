@@ -806,6 +806,29 @@ export interface ExperimentLoopIndexEntry {
   episode: Episode;
 }
 
+export type SpaceRunSection = "needs_action" | "completed";
+export type SpaceRunMode = "experiment_loop" | "auto_research";
+export type SpaceRunHealthTone =
+  "running" | "waiting" | "degraded" | "stopping" | "stopped" | "actionable" | "completed";
+
+/** A space-level episode summary whose lifecycle placement is decided by the backend. */
+export interface SpaceRunIndexEntry {
+  episode_id: string;
+  project_id: string;
+  project_name: string;
+  project_reachable: boolean | null;
+  mode: SpaceRunMode;
+  title: string;
+  graph_target: GraphTargetRef;
+  parent_episode_id: string | null;
+  experiment_id: string | null;
+  started_at: string;
+  last_activity_at: string;
+  health_label: string;
+  health_tone: SpaceRunHealthTone;
+  run_section: SpaceRunSection;
+}
+
 export interface WatcherContinuation {
   provider: string;
   model: string | null;

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Annotated, Literal, cast
 
@@ -19,7 +20,11 @@ from rcp.api.dependencies import (
     require_project_membership,
 )
 from rcp.api.episode_branches import graph_branch_summary
-from rcp.api.episodes import EpisodeResponse, serialize_episode
+from rcp.api.episodes import (
+    EpisodeResponse,
+    serialize_episode,
+    space_auto_research_episode_projection,
+)
 from rcp.api.experiment_controls import ExperimentControlResponse, _experiment_control_response
 from rcp.api.identity import IdentityAccess
 from rcp.api.team_shell_protocol import acknowledge_team_shell_protocol
@@ -40,6 +45,7 @@ from rcp.sources import (
 )
 from rcp.storage import (
     AppStore,
+    AutoResearchSpaceRunProjectionSnapshot,
     ExperimentControlProjectionSnapshot,
     ExperimentEpisodeProjectionSnapshot,
     ExperimentLoopRuntime,
@@ -92,6 +98,39 @@ class ExperimentLoopIndexEntryResponse(BaseModel):
     episode: EpisodeResponse
 
 
+SPACE_RUNS_COMPLETED_TTL = timedelta(days=7)
+SpaceRunMode = Literal["experiment_loop", "auto_research"]
+SpaceRunSection = Literal["needs_action", "completed"]
+SpaceRunTone = Literal[
+    "running",
+    "waiting",
+    "degraded",
+    "stopping",
+    "stopped",
+    "actionable",
+    "completed",
+]
+
+
+class SpaceRunIndexEntryResponse(BaseModel):
+    """One backend-decided run summary for the space project index."""
+
+    episode_id: str
+    project_id: str
+    project_name: str
+    project_reachable: bool | None
+    mode: SpaceRunMode
+    title: str
+    graph_target: GraphTargetRef
+    parent_episode_id: str | None
+    experiment_id: str | None
+    started_at: str
+    last_activity_at: str
+    health_label: str
+    health_tone: SpaceRunTone
+    run_section: SpaceRunSection
+
+
 @router.get("/api/projects")
 def projects(
     request: Request,
@@ -121,6 +160,25 @@ def experiment_episodes(
     # Start from durable loop parents rather than graph nodes: a branch may
     # create an Experiment that does not exist on main at all.
     visible = store.member_project_ids(identity_access.acting_user(request).user_id)
+    return _experiment_episode_entries(
+        catalog=catalog,
+        project_display_cache=project_display_cache,
+        store=store,
+        experiment_operation_lock=experiment_operation_lock,
+        visible=visible,
+    )
+
+
+def _experiment_episode_entries(
+    *,
+    catalog: ProjectCatalog,
+    project_display_cache: ProjectDisplayCache,
+    store: AppStore,
+    experiment_operation_lock: KeyedLocks,
+    visible: set[str],
+) -> list[ExperimentLoopIndexEntryResponse]:
+    """Build the exact Experiment index once for both index projections."""
+
     entries: list[ExperimentLoopIndexEntryResponse] = []
     branch_summary = partial(graph_branch_summary, store=store, catalog=catalog)
     for record in store.projects():
@@ -175,7 +233,7 @@ def experiment_episodes(
             episode = episode_snapshot.episode
             if (
                 episode.project_id != record.project_id
-                or episode.mode != mode
+                or episode.mode != "experiment_loop"
                 or episode.control_node_id != control_node_id
             ):
                 raise ValueError("Experiment runtime does not identify its exact durable episode.")
@@ -314,6 +372,160 @@ def experiment_episodes(
                     )
                 )
     return entries
+
+
+@router.get("/api/space/runs", response_model=list[SpaceRunIndexEntryResponse])
+def space_runs(
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    project_display_cache: DisplayCacheDependency,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    experiment_operation_lock: ExperimentOperationLockDependency,
+) -> list[SpaceRunIndexEntryResponse]:
+    """Publish current and recent episode parents across the visible space."""
+
+    visible = store.member_project_ids(identity_access.acting_user(request).user_id)
+    records = {
+        record.project_id: record for record in store.projects() if record.project_id in visible
+    }
+    as_of = datetime.fromisoformat(store.now()).astimezone(UTC)
+    completed_since = (as_of - SPACE_RUNS_COMPLETED_TTL).isoformat()
+    entries = [
+        _space_experiment_run(entry)
+        for entry in _experiment_episode_entries(
+            catalog=catalog,
+            project_display_cache=project_display_cache,
+            store=store,
+            experiment_operation_lock=experiment_operation_lock,
+            visible=visible,
+        )
+    ]
+    for snapshot in store.auto_research_space_run_projection_snapshots(
+        set(records),
+        completed_since=completed_since,
+    ):
+        episode = snapshot.episode
+        record = records[episode.project_id]
+        entry = _space_auto_research_run(
+            snapshot,
+            project_name=record.name,
+            project_reachable=record.reachable,
+        )
+        entries.append(entry)
+    return sorted(
+        (entry for entry in entries if _space_run_is_visible(entry, as_of=as_of)),
+        key=lambda entry: (entry.started_at, entry.episode_id),
+        reverse=True,
+    )
+
+
+def _space_experiment_run(
+    entry: ExperimentLoopIndexEntryResponse,
+) -> SpaceRunIndexEntryResponse:
+    control = entry.control
+    health_labels = {
+        "starting": "Starting",
+        "agent_active": "Agent active",
+        "waiting_on_watchers": "Waiting on watchers",
+        "degraded": "Watcher degraded",
+        "stopping": "Stopping gracefully",
+        "wrapping_up": "Wrapping up",
+        "failed": "Failed",
+        "human_stopped": "Human-stopped",
+        "paused_at_limit": "Paused at invocation limit",
+        "needs_action": "Needs action",
+        "completed": "Completed",
+    }
+    health_tones: dict[str, SpaceRunTone] = {
+        "starting": "running",
+        "agent_active": "running",
+        "waiting_on_watchers": "waiting",
+        "degraded": "degraded",
+        "stopping": "stopping",
+        "wrapping_up": "running",
+        "failed": "degraded",
+        "human_stopped": "stopped",
+        "paused_at_limit": "actionable",
+        "needs_action": "actionable",
+        "completed": "completed",
+    }
+    return SpaceRunIndexEntryResponse(
+        episode_id=entry.episode.episode_id,
+        project_id=entry.project_id,
+        project_name=entry.project_name,
+        project_reachable=entry.project_reachable,
+        mode="experiment_loop",
+        title=entry.node.title,
+        graph_target=entry.graph_target,
+        parent_episode_id=entry.parent_episode_id,
+        experiment_id=entry.node.id,
+        started_at=entry.episode.created_at,
+        last_activity_at=(
+            entry.episode.ended_at or entry.episode.updated_at
+            if control.run_section == "completed"
+            else entry.control.operational.current_last_activity_at or entry.episode.updated_at
+        ),
+        health_label=health_labels[control.health],
+        health_tone=health_tones[control.health],
+        run_section="completed" if control.run_section == "completed" else "needs_action",
+    )
+
+
+def _space_auto_research_run(
+    snapshot: AutoResearchSpaceRunProjectionSnapshot,
+    *,
+    project_name: str,
+    project_reachable: bool | None,
+) -> SpaceRunIndexEntryResponse:
+    episode = snapshot.episode
+    health, run_section, last_activity_at = space_auto_research_episode_projection(snapshot)
+    health_labels = {
+        "starting": "Starting",
+        "active": "Active",
+        "recovering": "Recovering",
+        "needs_action": "Needs action",
+        "stopping": "Stopping gracefully",
+        "wrapping_up": "Wrapping up",
+        "completed": "Completed",
+        "stopped": "Stopped",
+        "failed": "Failed",
+    }
+    health_tones: dict[str, SpaceRunTone] = {
+        "starting": "running",
+        "active": "running",
+        "recovering": "waiting",
+        "needs_action": "actionable",
+        "stopping": "stopping",
+        "wrapping_up": "running",
+        "completed": "completed",
+        "stopped": "stopped",
+        "failed": "degraded",
+    }
+    return SpaceRunIndexEntryResponse(
+        episode_id=episode.episode_id,
+        project_id=episode.project_id,
+        project_name=project_name,
+        project_reachable=project_reachable,
+        mode="auto_research",
+        title="Auto-research",
+        graph_target=episode.graph_target,
+        parent_episode_id=None,
+        experiment_id=None,
+        started_at=episode.created_at,
+        last_activity_at=last_activity_at,
+        health_label=health_labels[health],
+        health_tone=health_tones[health],
+        run_section=run_section,
+    )
+
+
+def _space_run_is_visible(entry: SpaceRunIndexEntryResponse, *, as_of: datetime) -> bool:
+    if entry.run_section == "needs_action":
+        return True
+    completed_at = datetime.fromisoformat(entry.last_activity_at).astimezone(UTC)
+    return completed_at >= as_of - SPACE_RUNS_COMPLETED_TTL
 
 
 @router.get("/api/space/users")

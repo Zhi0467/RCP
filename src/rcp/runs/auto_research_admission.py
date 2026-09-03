@@ -35,7 +35,7 @@ from rcp.runs.auto_research import (
 )
 from rcp.runs.experiment_admission import experiment_start_message
 from rcp.runs.task_policy import AgentTaskContinuation, resolved_dispatch_authority, skill_update
-from rcp.service import RunRequest
+from rcp.service import ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import (
     AgentTaskRecord,
@@ -1361,6 +1361,7 @@ def retry_auto_research_task(
     reasoning: str | None,
     run_on: str | None,
     skills: SkillSelection | None,
+    service: ProjectService | None = None,
 ) -> AgentTaskRecord:
     """Recover one paid Auto-research allocation without changing its binding."""
 
@@ -1387,35 +1388,59 @@ def retry_auto_research_task(
     clean_orchestrator_retry = original.role == "orchestrator" and (
         session_limit or continuation_unavailable or not owned_checkpoint
     )
-    problem: str | None = None
-    if previous.stage_root:
+    logical_problem = (
+        "the native provider session reached its limit"
+        if session_limit
+        else "the saved continuation context is unavailable"
+        if continuation_unavailable
+        else "the prior task has no complete RCP-owned session and stage"
+        if not owned_checkpoint
+        else None
+    )
+    problem = logical_problem if not clean_orchestrator_retry else None
+    if (
+        logical_problem is not None
+        and clean_orchestrator_retry
+        and _settle_unusable_recovery_if_stopping(tasks, previous, logical_problem)
+    ):
+        problem = logical_problem
+    if problem is None and previous.stage_root:
         if previous.stage_host:
-            if (
-                RemoteRunStage(previous.stage_host).directory_exists(previous.stage_root)
-                is not True
-            ):
-                problem = "the saved provider workspace is unavailable"
+            try:
+                available = RemoteRunStage(previous.stage_host).directory_exists(
+                    previous.stage_root
+                )
+            except Exception as exc:
+                if logical_problem is not None and _settle_unusable_recovery_if_stopping(
+                    tasks, previous, logical_problem
+                ):
+                    problem = logical_problem
+                else:
+                    raise OSError(
+                        "The saved provider workspace could not be checked because its remote "
+                        "infrastructure is unavailable."
+                    ) from exc
+            else:
+                if available is None:
+                    if logical_problem is not None and _settle_unusable_recovery_if_stopping(
+                        tasks, previous, logical_problem
+                    ):
+                        problem = logical_problem
+                    else:
+                        raise OSError(
+                            "The saved provider workspace could not be checked because its remote "
+                            "infrastructure is unavailable."
+                        )
+                elif available is False:
+                    problem = "the saved provider workspace is unavailable"
         else:
             stage = Path(previous.stage_root)
             if not stage.is_dir() or stage.is_symlink():
                 problem = "the saved provider workspace is unavailable"
-    elif not clean_orchestrator_retry:
+    elif problem is None and not clean_orchestrator_retry:
         problem = "the prior task has no complete RCP-owned session and stage"
-    if not clean_orchestrator_retry:
-        if session_limit:
-            problem = "the native provider session reached its limit"
-        elif continuation_unavailable:
-            problem = "the saved continuation context is unavailable"
-        elif not owned_checkpoint:
-            problem = "the prior task has no complete RCP-owned session and stage"
     if problem is not None:
-        episode = tasks.store.episode(original.episode_id)
-        if episode is not None and episode.stop_requested_at is not None:
-            tasks.store.abandon_auto_research_recovery(
-                previous.operation_id,
-                diagnostic=problem,
-            )
-            settle_auto_research_stop(tasks.store, episode.episode_id, diagnostic=problem)
+        _settle_unusable_recovery_if_stopping(tasks, previous, problem)
         raise ValueError(
             "Auto-research recovery cannot start a fresh provider session because "
             f"{problem}. Its original allocation and operational history were preserved."
@@ -1440,17 +1465,29 @@ def retry_auto_research_task(
             **skill_update(skills, mode="json"),
         }
     )
-    retried = tasks._create_and_spawn(
-        previous.project_id,
-        previous.kind,
-        request,
-        parent=previous,
-        continuation="retry",
-        estimate_seconds=previous.estimate_seconds,
-        estimate_samples=previous.estimate_samples,
-        stage_host=previous.stage_host,
-        stage_root=previous.stage_root,
-    )
+    if service is not None:
+        try:
+            _require_auto_research_retry_target_ready(service, request)
+        except ValueError as exc:
+            _settle_unusable_recovery_if_stopping(tasks, previous, str(exc))
+            raise
+    try:
+        retried = tasks._create_and_spawn(
+            previous.project_id,
+            previous.kind,
+            request,
+            parent=previous,
+            continuation="retry",
+            estimate_seconds=previous.estimate_seconds,
+            estimate_samples=previous.estimate_samples,
+            stage_host=previous.stage_host,
+            stage_root=previous.stage_root,
+        )
+    except EpisodeNotRunning:
+        if clean_orchestrator_retry:
+            assert logical_problem is not None
+            _settle_unusable_recovery_if_stopping(tasks, previous, logical_problem)
+        raise
     if classification is not None:
         tasks.store.record_agent_task_receipt(
             retried.operation_id,
@@ -1470,6 +1507,67 @@ def retry_auto_research_task(
             level="warning",
         )
     return retried
+
+
+def _settle_unusable_recovery_if_stopping(
+    tasks: BackgroundAgentTasks,
+    previous: AgentTaskRecord,
+    diagnostic: str,
+) -> bool:
+    return (
+        tasks.store.abandon_auto_research_recovery_and_settle_if_stopping(
+            previous.operation_id,
+            diagnostic=diagnostic,
+        )
+        is not None
+    )
+
+
+def _require_auto_research_retry_target_ready(
+    service: ProjectService,
+    request: AutoResearchRunRequest,
+) -> None:
+    """Recheck the pinned provider target immediately before Retry allocation."""
+
+    if request.provider is None or request.run_on is None:
+        raise ValueError("Auto-research Retry requires its pinned provider and execution machine.")
+    machine = service.manifest.machine_map.get(request.run_on)
+    if machine is None:
+        raise ValueError(f"unknown execution machine: {request.run_on}")
+    binary = machine.provider_paths.get(request.provider)
+    readiness = service.launcher.readiness(
+        request.provider,
+        host=machine.host,
+        binary=binary,
+        refresh=True,
+    )
+    if readiness.installed and readiness.authenticated:
+        return
+    diagnostic = (
+        readiness.reason or f"{request.provider} is not ready on {request.run_on}"
+    ).strip()
+    if diagnostic.endswith("."):
+        diagnostic = diagnostic[:-1]
+    detail = f"Auto-research Retry cannot start: {diagnostic}. The current task was left unchanged."
+    if readiness.path_state == "unreachable":
+        raise OSError(detail)
+    raise ValueError(detail)
+
+
+def preflight_auto_research_task_resume(
+    tasks: BackgroundAgentTasks,
+    previous: AgentTaskRecord,
+) -> None:
+    """Prove an exact Auto-research Resume before admitting its child task."""
+
+    problem = _exact_child_resume_problem(tasks, previous)
+    if problem is None:
+        return
+    _settle_unusable_recovery_if_stopping(tasks, previous, problem)
+    raise ValueError(
+        "Auto-research Resume requires its exact saved session and stage, but "
+        f"{problem}. Its original allocation and operational history were preserved."
+    )
 
 
 def pause_auto_research_worker(

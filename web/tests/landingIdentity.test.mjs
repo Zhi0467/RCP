@@ -46,7 +46,7 @@ function landingProps(identityValue = identity) {
     projects: [],
     invitations: [],
     async onAnswerInvitation() {},
-    experimentLoops: [],
+    spaceRuns: [],
     onOpen() {},
     onOpenExperiment() {},
     onCreate() {},

@@ -40,6 +40,7 @@ class AppStoreBase:
         (4, "agent_usage_counted_dedupe_v1"),
         (5, "legacy_startup_schema_v1"),
         (6, "artifact_revision_candidates_v1"),
+        (7, "space_run_projection_indexes_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -458,6 +459,12 @@ class AppStoreBase:
             version=6,
             name="artifact_revision_candidates_v1",
             migration=self._migrate_artifact_revision_candidates,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=7,
+            name="space_run_projection_indexes_v1",
+            migration=self._migrate_space_run_projection_indexes,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1901,6 +1908,35 @@ class AppStoreBase:
                 (code_id, code_hash, self.now()),
             )
         return bootstrap_code
+
+    @staticmethod
+    def _migrate_space_run_projection_indexes(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS episodes_space_runs_current "
+            "ON episodes(project_id, created_at DESC, episode_id) "
+            "WHERE mode = 'auto_research' "
+            "AND status NOT IN ('completed', 'stopped')"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS episodes_space_runs_wrapping "
+            "ON episodes(project_id, created_at DESC, episode_id) "
+            "WHERE mode = 'auto_research' "
+            "AND status IN ('completed', 'stopped') "
+            "AND wrapup_state IN ('pending', 'running')"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS episodes_space_runs_recent "
+            "ON episodes("
+            "project_id, julianday(COALESCE(ended_at, updated_at)), "
+            "created_at DESC, episode_id) "
+            "WHERE mode = 'auto_research' "
+            "AND status IN ('completed', 'stopped') "
+            "AND wrapup_state NOT IN ('pending', 'running')"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS auto_research_recoveries_episode "
+            "ON auto_research_recoveries(episode_id, updated_at DESC, recovery_id DESC)"
+        )
 
     def _run_storage_schema_migration(
         self,

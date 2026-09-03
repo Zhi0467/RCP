@@ -2282,6 +2282,57 @@ class EpisodeRecord(BaseModel):
         return max(0, self.invocation_ceiling - self.invocations_used)
 
 
+class AutoResearchSpaceRunEpisodeState(BaseModel):
+    """Only the parent fields needed by the five-second space projection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    episode_id: str
+    project_id: str
+    mode: Literal["auto_research"]
+    graph_target: GraphTargetRef
+    root_operation_id: str | None
+    status: EpisodeStatus
+    stop_requested_at: str | None
+    ending: EpisodeEnding | None
+    wrapup_state: EpisodeWrapupState
+    created_at: str
+    updated_at: str
+    ended_at: str | None
+
+
+class AutoResearchSpaceRunTaskState(BaseModel):
+    """Compact task facts used by the canonical episode projection policy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: str
+    status: AgentTaskStatus
+    created_at: str
+    last_activity_at: str | None
+    attempt: int = Field(ge=1)
+    parent_operation_id: str | None
+    row_order: int = Field(ge=1)
+    actor_operation_id: str | None
+    role: AutoResearchRole | None
+    can_pause: bool
+    can_resume: bool
+    can_retry: bool
+    recovery_operation_id: str | None
+    recovery_status: AutoResearchRecoveryStatus | None
+
+
+class AutoResearchSpaceRunProjectionSnapshot(BaseModel):
+    """One parent plus its batched lifecycle inputs for the space Runs ledger."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    episode: AutoResearchSpaceRunEpisodeState
+    tasks: list[AutoResearchSpaceRunTaskState]
+    current_orchestrator_task_id: str | None
+    has_report: bool
+
+
 class EpisodeBudgetMeter(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -3407,6 +3458,9 @@ __all__ = [
     "AutoResearchRecoveryStatus",
     "AutoResearchRole",
     "AutoResearchStateRecord",
+    "AutoResearchSpaceRunEpisodeState",
+    "AutoResearchSpaceRunProjectionSnapshot",
+    "AutoResearchSpaceRunTaskState",
     "ChatSessionContextRecord",
     "ExperimentEpisodeRecord",
     "ExperimentEpisodeProjectionSnapshot",

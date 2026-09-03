@@ -91,11 +91,24 @@ def _branch_summary(
 def episodes(
     project_id: str,
     mode: Literal["auto_research", "experiment_loop"] | None = None,
+    episode_id: str | None = None,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
 ) -> list[EpisodeResponse]:
     require_registered_project(catalog, project_id)
+    if episode_id is not None:
+        episode = _episode_for_http(store, catalog, project_id, episode_id)
+        if mode is not None and episode.mode != mode:
+            raise HTTPException(status_code=404, detail="Episode not found")
+        return [
+            serialize_episode(
+                store,
+                project_id,
+                episode,
+                branch_summary=_branch_summary(store, catalog),
+            )
+        ]
     return serialize_episodes(
         store,
         project_id,

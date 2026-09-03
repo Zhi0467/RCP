@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 import uuid
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
-from rcp.agents import AgentEvent
+from rcp.agents import AgentEvent, ProviderReadiness
 from rcp.background import AgentTaskExecution
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import GraphBranchMetadata
@@ -27,7 +31,7 @@ from rcp.storage import (
     EpisodeReportRecord,
 )
 
-from .helpers import authorized_human, create_named_app, wait_for_task
+from .helpers import authorized_human, create_named_app, wait_for_task, wait_until
 
 
 def _sse(event: AgentEvent) -> str:
@@ -48,6 +52,127 @@ def settling_auto_research_stream(stage: Path):
         yield _sse(AgentEvent(event="done"))
 
     return stream
+
+
+def exact_recovery_stream(stage: Path):
+    async def stream(
+        _project_id: str,
+        kind: str,
+        request: object,
+        execution: AgentTaskExecution,
+    ) -> AsyncIterator[str]:
+        assert kind == "auto_research"
+        assert isinstance(request, AutoResearchRunRequest)
+        assert request.session_id == "recoverable-session"
+        execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id=request.session_id))
+        yield _sse(AgentEvent(event="done"))
+
+    return stream
+
+
+def create_recoverable_auto_episode(
+    store: AppStore,
+    history: HistoryManager,
+    project_id: str,
+    *,
+    episode_id: str,
+    status: str,
+    stage: Path,
+    stage_host: str | None = None,
+) -> tuple[EpisodeRecord, AgentTaskRecord]:
+    episode_id = str(
+        uuid.UUID(bytes=hashlib.sha256(episode_id.encode("utf-8")).digest()[:16], version=4)
+    )
+    now = store.now()
+    operation_id = f"{episode_id}-root"
+    authorizer = authorized_human(store)
+    graph_base_head = history.head_ref()
+    graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
+    history.create_auto_research_branch(
+        GraphBranchMetadata(
+            branch_id=episode_id,
+            episode_id=episode_id,
+            project_id=project_id,
+            base_head=graph_base_head,
+            head=GraphHeadRef(
+                target=graph_target,
+                revision=graph_base_head.revision,
+                transition_id=graph_base_head.transition_id,
+            ),
+            authorized_by=authorizer,
+        )
+    )
+    run_request = AutoResearchRunRequest(
+        episode_id=episode_id,
+        role="orchestrator",
+        actor_operation_id=operation_id,
+        provider="codex",
+        model="test-model",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo-a"],
+        instruction="Recover the exact authorized turn.",
+    )
+    episode = EpisodeRecord(
+        episode_id=episode_id,
+        project_id=project_id,
+        mode="auto_research",
+        graph_target=graph_target,
+        graph_base_head=graph_base_head,
+        status="queued",
+        invocation_ceiling=2,
+        authorized_by=authorizer,
+        created_at=now,
+        updated_at=now,
+    )
+    root = AgentTaskRecord(
+        operation_id=operation_id,
+        project_id=project_id,
+        episode_id=episode_id,
+        graph_target=graph_target,
+        kind="auto_research",
+        status="queued",
+        request=run_request.model_dump(mode="json"),
+        created_at=now,
+        updated_at=now,
+        status_message="queued",
+        authorized_by=authorizer,
+        dispatch_authority=AgentDispatchAuthority(
+            profile="orchestrator",
+            task_contract="orchestrate",
+            scope=AgentDispatchScope(
+                run_truth_scope=["repo-a"],
+                episode_id=episode_id,
+                patch_kind="work",
+            ),
+        ),
+    )
+    episode, root = store.create_auto_research_episode_with_root_task(
+        episode,
+        AutoResearchStateRecord(
+            episode_id=episode_id,
+            starting_instruction="Recover the exact authorized turn.",
+            created_at=now,
+            updated_at=now,
+        ),
+        root,
+    )
+    store.checkpoint_agent_task(
+        root.operation_id,
+        native_session_id="recoverable-session",
+        stage_host=stage_host,
+        stage_root=str(stage),
+    )
+    if status == "failed":
+        store.fail_agent_task(root.operation_id, "recoverable provider failure")
+    elif status == "interrupted":
+        store.interrupt_active_agent_tasks()
+    elif status != "queued":
+        raise ValueError(f"unsupported recoverable fixture status: {status}")
+    root = store.agent_task(root.operation_id)
+    assert root is not None and root.status == status
+    return episode, root
 
 
 def create_terminal_auto_episode(
@@ -256,6 +381,491 @@ def test_episode_list_start_and_stop_use_only_the_canonical_surface(manifest, tm
             task.kind != "episode_report"
             for task in store.episode_tasks(episode_id, include_hidden=True)
         )
+
+
+@pytest.mark.parametrize(
+    ("status", "action"),
+    [("failed", "retry"), ("interrupted", "resume"), ("interrupted", "retry")],
+)
+def test_stopping_episode_recovery_controls_execute_exact_allocation(
+    manifest,
+    tmp_path,
+    monkeypatch,
+    status: str,
+    action: str,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    tasks = app.state.background_tasks
+    store = tasks.store
+    stage = tmp_path / f"{status}-{action}-stage"
+    stage.mkdir()
+    tasks.stream = exact_recovery_stream(stage)
+    service = app.state.catalog.open(project_id)
+    monkeypatch.setattr(
+        service.launcher,
+        "readiness",
+        lambda provider, **_kwargs: ProviderReadiness(
+            provider=provider,
+            installed=True,
+            authenticated=True,
+            path_state="resolved",
+        ),
+    )
+
+    with TestClient(app) as client:
+        episode, root = create_recoverable_auto_episode(
+            store,
+            service.history,
+            project_id,
+            episode_id=f"{status}-{action}",
+            status=status,
+            stage=stage,
+        )
+        stopped = client.post(f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop")
+        assert stopped.status_code == 200, stopped.text
+        projected_root = next(
+            task for task in stopped.json()["tasks"] if task["operation_id"] == root.operation_id
+        )
+        assert projected_root[f"can_{action}"] is True
+        assert projected_root["can_pause"] is False
+
+        recovered = client.post(f"/api/projects/{project_id}/tasks/{root.operation_id}/{action}")
+        assert recovered.status_code == 202, recovered.text
+        child_id = recovered.json()["operation_id"]
+        child = wait_for_task(store, child_id, expect="succeeded")
+        wait_until(
+            lambda: (
+                current
+                if (current := store.episode(episode.episode_id)) is not None
+                and current.status == "stopped"
+                else None
+            ),
+            detail="exact Stop-fenced recovery did not settle its episode",
+        )
+
+    assert child.parent_operation_id == root.operation_id
+    assert child.native_session_id == root.native_session_id == "recoverable-session"
+    assert child.stage_root == root.stage_root == str(stage)
+    allocation = store.auto_research_invocation(child.operation_id)
+    assert allocation is not None
+    assert allocation.allocation_operation_id == root.operation_id
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == 1
+    assert store.episode_report(episode.episode_id) is None
+
+
+@pytest.mark.parametrize(
+    ("status", "action"),
+    [("failed", "retry"), ("interrupted", "resume")],
+)
+def test_stopping_episode_remote_outage_preserves_recovery(
+    manifest,
+    tmp_path,
+    monkeypatch,
+    status: str,
+    action: str,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    stage = tmp_path / f"remote-{action}-stage"
+    stage.mkdir()
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
+        lambda _stage, _root: None,
+    )
+
+    with TestClient(app) as client:
+        episode, root = create_recoverable_auto_episode(
+            store,
+            app.state.catalog.open(project_id).history,
+            project_id,
+            episode_id=f"remote-{action}",
+            status=status,
+            stage=stage,
+            stage_host="worker.example",
+        )
+        stopped = client.post(f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop")
+        assert stopped.status_code == 200, stopped.text
+
+        unavailable = client.post(f"/api/projects/{project_id}/tasks/{root.operation_id}/{action}")
+
+    assert unavailable.status_code == 503, unavailable.text
+    assert unavailable.json() == {
+        "detail": (
+            "The saved provider workspace could not be checked because its remote "
+            "infrastructure is unavailable."
+        )
+    }
+    current = store.episode(episode.episode_id)
+    assert current is not None and current.status == "stopping"
+    assert current.stop_settled_at is None
+    assert store.auto_research_task_recovery_child(root.operation_id) is None
+    preserved = store.agent_task(root.operation_id)
+    assert preserved is not None
+    assert preserved.can_resume is (action == "resume")
+    assert preserved.can_retry is True
+    assert "auto_research_recovery_abandoned" not in {
+        receipt.category for receipt in store.agent_task_receipts(root.operation_id)
+    }
+
+
+@pytest.mark.parametrize(
+    "unusable",
+    [
+        "missing_stage",
+        "missing_remote_stage",
+        "clean_session",
+    ],
+)
+def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
+    manifest,
+    tmp_path,
+    monkeypatch,
+    unusable: str,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    stage = tmp_path / f"{unusable}-stage"
+    if unusable == "clean_session":
+        stage.mkdir()
+    if unusable == "missing_remote_stage":
+        monkeypatch.setattr(
+            "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
+            lambda _stage, _root: False,
+        )
+
+    with TestClient(app) as client:
+        episode, root = create_recoverable_auto_episode(
+            store,
+            app.state.catalog.open(project_id).history,
+            project_id,
+            episode_id=unusable,
+            status="failed",
+            stage=stage,
+            stage_host="worker.example" if unusable == "missing_remote_stage" else None,
+        )
+        if unusable == "clean_session":
+            store.record_agent_task_receipt(
+                root.operation_id,
+                "provider_terminal_error",
+                {"classification": "session_limit"},
+            )
+        stopped = client.post(f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop")
+        assert stopped.status_code == 200, stopped.text
+        assert stopped.json()["status"] == "stopping"
+
+        refused = client.post(f"/api/projects/{project_id}/tasks/{root.operation_id}/retry")
+
+    assert refused.status_code == 409, refused.text
+    assert "cannot start a fresh provider session" in refused.json()["detail"]
+    settled = store.episode(episode.episode_id)
+    assert settled is not None
+    assert settled.status == "stopped"
+    assert settled.ending == "stopped"
+    assert settled.stop_settled_at is not None
+    assert store.auto_research_task_recovery_child(root.operation_id) is None
+    assert "auto_research_recovery_abandoned" in {
+        receipt.category for receipt in store.agent_task_receipts(root.operation_id)
+    }
+
+
+def test_stopping_episode_known_failure_precedes_remote_retry_probes(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    service = app.state.catalog.open(project_id)
+    host = "worker.example"
+    service.manifest.machine_map["laptop"].host = host
+    monkeypatch.setattr(service.history, "_reload_manifest", lambda: None)
+    store = app.state.background_tasks.store
+    stage = tmp_path / "remote-session-limit-stage"
+    stage.mkdir()
+
+    with TestClient(app) as client:
+        episode, root = create_recoverable_auto_episode(
+            store,
+            service.history,
+            project_id,
+            episode_id="session-limit-remote-outage",
+            status="failed",
+            stage=stage,
+            stage_host=host,
+        )
+        store.record_agent_task_receipt(
+            root.operation_id,
+            "provider_terminal_error",
+            {"classification": "session_limit"},
+        )
+        request = AutoResearchRunRequest.model_validate(root.request)
+        assert request.run_on == "laptop"
+        assert root.stage_host == service.manifest.machine_map[request.run_on].host == host
+        stage_probes: list[str] = []
+        readiness_probes: list[str] = []
+
+        def unreachable_remote_stage(_stage, _root):
+            stage_probes.append(host)
+            raise OSError("host unreachable")
+
+        def unreachable_readiness(*_args, **_kwargs):
+            readiness_probes.append(host)
+            raise OSError("host unreachable")
+
+        monkeypatch.setattr(
+            "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
+            unreachable_remote_stage,
+        )
+        monkeypatch.setattr(service.launcher, "readiness", unreachable_readiness)
+        stopped = client.post(f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop")
+        assert stopped.status_code == 200, stopped.text
+
+        refused = client.post(f"/api/projects/{project_id}/tasks/{root.operation_id}/retry")
+
+    assert refused.status_code == 409, refused.text
+    assert "native provider session reached its limit" in refused.json()["detail"]
+    assert stage_probes == []
+    assert readiness_probes == []
+    settled = store.episode(episode.episode_id)
+    assert settled is not None and settled.status == "stopped"
+    assert settled.stop_settled_at is not None
+    assert "auto_research_recovery_abandoned" in {
+        receipt.category for receipt in store.agent_task_receipts(root.operation_id)
+    }
+
+
+def test_retry_stop_during_missing_remote_stage_probe_abandons_and_settles(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    stage = tmp_path / "remote-stop-race-stage"
+    stage.mkdir()
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+
+    def missing_remote_stage(_stage, _root):
+        probe_started.set()
+        assert release_probe.wait(timeout=2)
+        return False
+
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
+        missing_remote_stage,
+    )
+
+    with TestClient(app) as client:
+        episode, root = create_recoverable_auto_episode(
+            store,
+            app.state.catalog.open(project_id).history,
+            project_id,
+            episode_id="remote-stage-stop-race",
+            status="failed",
+            stage=stage,
+            stage_host="worker.example",
+        )
+        retry_url = f"/api/projects/{project_id}/tasks/{root.operation_id}/retry"
+        stop_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop"
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                retry = executor.submit(client.post, retry_url)
+                assert probe_started.wait(timeout=2)
+                stopped = client.post(stop_url)
+                assert stopped.status_code == 200, stopped.text
+                assert stopped.json()["status"] == "stopping"
+                release_probe.set()
+                refused = retry.result(timeout=2)
+        finally:
+            release_probe.set()
+
+    assert refused.status_code == 409, refused.text
+    settled = store.episode(episode.episode_id)
+    assert settled is not None and settled.status == "stopped"
+    assert settled.stop_settled_at is not None
+    assert store.auto_research_task_recovery_child(root.operation_id) is None
+    assert "auto_research_recovery_abandoned" in {
+        receipt.category for receipt in store.agent_task_receipts(root.operation_id)
+    }
+
+
+def test_clean_retry_stop_during_final_admission_abandons_and_settles(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    tasks = app.state.background_tasks
+    store = tasks.store
+    service = app.state.catalog.open(project_id)
+    stage = tmp_path / "clean-retry-stop-race-stage"
+    stage.mkdir()
+    admission_started = threading.Event()
+    release_admission = threading.Event()
+    create_and_spawn = tasks._create_and_spawn
+
+    def blocked_create_and_spawn(*args, **kwargs):
+        admission_started.set()
+        assert release_admission.wait(timeout=2)
+        return create_and_spawn(*args, **kwargs)
+
+    monkeypatch.setattr(tasks, "_create_and_spawn", blocked_create_and_spawn)
+    monkeypatch.setattr(
+        service.launcher,
+        "readiness",
+        lambda provider, **_kwargs: ProviderReadiness(
+            provider=provider,
+            installed=True,
+            authenticated=True,
+            path_state="resolved",
+        ),
+    )
+
+    with TestClient(app) as client:
+        episode, root = create_recoverable_auto_episode(
+            store,
+            service.history,
+            project_id,
+            episode_id="clean-retry-stop-race",
+            status="failed",
+            stage=stage,
+        )
+        store.record_agent_task_receipt(
+            root.operation_id,
+            "provider_terminal_error",
+            {"classification": "session_limit"},
+        )
+        retry_url = f"/api/projects/{project_id}/tasks/{root.operation_id}/retry"
+        stop_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop"
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                retry = executor.submit(client.post, retry_url)
+                assert admission_started.wait(timeout=2)
+                stopped = client.post(stop_url)
+                assert stopped.status_code == 200, stopped.text
+                assert stopped.json()["status"] == "stopping"
+                release_admission.set()
+                refused = retry.result(timeout=2)
+        finally:
+            release_admission.set()
+
+    assert refused.status_code == 409, refused.text
+    settled = store.episode(episode.episode_id)
+    assert settled is not None and settled.status == "stopped"
+    assert settled.stop_settled_at is not None
+    assert store.auto_research_task_recovery_child(root.operation_id) is None
+    assert "auto_research_recovery_abandoned" in {
+        receipt.category for receipt in store.agent_task_receipts(root.operation_id)
+    }
+
+
+@pytest.mark.parametrize("order", ["stop_then_pause", "pause_then_stop"])
+def test_episode_pause_endpoint_obeys_the_atomic_stop_ordering(
+    manifest,
+    tmp_path,
+    order: str,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    stage = tmp_path / "pause-order-stage"
+    stage.mkdir()
+
+    with TestClient(app) as client:
+        episode, root = create_recoverable_auto_episode(
+            store,
+            app.state.catalog.open(project_id).history,
+            project_id,
+            episode_id=order,
+            status="queued",
+            stage=stage,
+        )
+        pause_url = f"/api/projects/{project_id}/tasks/{root.operation_id}/pause"
+        stop_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop"
+        if order == "stop_then_pause":
+            stopped = client.post(stop_url)
+            paused = client.post(pause_url)
+            assert stopped.status_code == 200, stopped.text
+            assert paused.status_code == 409, paused.text
+            assert "parent episode is stopping or ended" in paused.json()["detail"]
+            task = store.agent_task(root.operation_id)
+            assert task is not None and task.status == "queued"
+        else:
+            paused = client.post(pause_url)
+            stopped = client.post(stop_url)
+            assert paused.status_code == 202, paused.text
+            assert paused.json()["status"] == "pausing"
+            assert stopped.status_code == 200, stopped.text
+            assert stopped.json()["status"] == "stopping"
+
+
+def test_exact_episode_query_reaches_a_parent_beyond_the_interleaved_list_bound(
+    manifest, tmp_path
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    as_of = datetime.now(UTC)
+    target_id = str(uuid.uuid4())
+    rows = [
+        (
+            target_id,
+            project_id,
+            "auto_research",
+            None,
+            "completed",
+            (as_of - timedelta(hours=2)).isoformat(),
+        )
+    ]
+    for index in range(60):
+        mode = "auto_research" if index % 2 == 0 else "experiment_loop"
+        rows.append(
+            (
+                str(uuid.uuid4()),
+                project_id,
+                mode,
+                f"experiment/{index}" if mode == "experiment_loop" else None,
+                "completed",
+                (as_of - timedelta(minutes=index)).isoformat(),
+            )
+        )
+    with store.connection() as connection:
+        connection.executemany(
+            """
+            INSERT INTO episodes (
+                episode_id, project_id, mode, control_node_id, status,
+                invocation_ceiling, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            """,
+            [(*row, row[-1]) for row in rows],
+        )
+
+    client = TestClient(app)
+    bounded = client.get(f"/api/projects/{project_id}/episodes")
+    exact = client.get(
+        f"/api/projects/{project_id}/episodes",
+        params={"mode": "auto_research", "episode_id": target_id},
+    )
+
+    assert bounded.status_code == 200, bounded.text
+    assert len(bounded.json()) == 50
+    assert target_id not in {episode["episode_id"] for episode in bounded.json()}
+    assert exact.status_code == 200, exact.text
+    assert [episode["episode_id"] for episode in exact.json()] == [target_id]
 
 
 def test_episode_mail_is_durable_when_immediate_delivery_fails(

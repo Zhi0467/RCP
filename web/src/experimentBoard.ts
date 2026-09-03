@@ -5,6 +5,7 @@ import type {
   ExperimentLoopIndexEntry,
   GraphNode,
   GraphTargetRef,
+  SpaceRunIndexEntry,
   WatcherRecord,
 } from "./types";
 
@@ -14,6 +15,7 @@ export interface ProjectHashRoute {
   projectViewSpecified: boolean;
   experimentId: string | null;
   experimentRoute: ExperimentRouteIdentity | null;
+  autoResearchEpisodeId: string | null;
 }
 
 export interface ExperimentRouteIdentity {
@@ -29,9 +31,11 @@ export interface ExperimentExecutionProjection {
   watchers: WatcherRecord[];
   experimentControl: Record<string, ExperimentControlState>;
   exactBranchEntry: ExperimentLoopIndexEntry | null;
+  staleMainRoute: ExperimentRouteIdentity | null;
 }
 
 const INDEX_ROUTE_PREFIX = "rcp-index:";
+const AUTO_RESEARCH_ROUTE_PREFIX = "rcp-auto-research:";
 
 export function experimentTerminalLabel(status: unknown): string {
   if (status === "completed") return "Succeeded";
@@ -44,12 +48,47 @@ export function experimentBoardRouteToken(entry: ExperimentLoopIndexEntry): stri
   return `${INDEX_ROUTE_PREFIX}${JSON.stringify(experimentRouteIdentity(entry))}`;
 }
 
-export function experimentBoardHref(projectId: string, experimentSelection: string): string {
-  const route = experimentRouteFromToken(experimentSelection);
-  if (experimentSelection.startsWith(INDEX_ROUTE_PREFIX) && !route) {
+export function spaceRunRouteToken(entry: SpaceRunIndexEntry): string {
+  if (entry.mode === "auto_research") {
+    return `${AUTO_RESEARCH_ROUTE_PREFIX}${entry.episode_id}`;
+  }
+  if (!entry.experiment_id) return "";
+  return `${INDEX_ROUTE_PREFIX}${JSON.stringify({
+    experiment_id: entry.experiment_id,
+    episode_id: entry.episode_id,
+    graph_target: entry.graph_target,
+    parent_episode_id: entry.parent_episode_id,
+  })}`;
+}
+
+export function experimentBoardHref(
+  projectId: string,
+  experimentSelection: string | ExperimentRouteIdentity,
+): string {
+  if (
+    typeof experimentSelection === "string" &&
+    experimentSelection.startsWith(AUTO_RESEARCH_ROUTE_PREFIX)
+  ) {
+    const episodeId = experimentSelection.slice(AUTO_RESEARCH_ROUTE_PREFIX.length);
+    return episodeId
+      ? `#/projects/${encodeURIComponent(projectId)}?view=runs&mode=auto_research&episode=${encodeURIComponent(episodeId)}`
+      : `#/projects/${encodeURIComponent(projectId)}?view=runs`;
+  }
+  const route =
+    typeof experimentSelection === "string"
+      ? experimentRouteFromToken(experimentSelection)
+      : experimentSelection;
+  if (
+    typeof experimentSelection === "string" &&
+    experimentSelection.startsWith(INDEX_ROUTE_PREFIX) &&
+    !route
+  ) {
     return `#/projects/${encodeURIComponent(projectId)}?view=runs`;
   }
-  const experimentId = route?.experiment_id ?? experimentSelection;
+  const experimentId =
+    typeof experimentSelection === "string"
+      ? (route?.experiment_id ?? experimentSelection)
+      : experimentSelection.experiment_id;
   const fields = [
     "view=runs",
     `experiment=${encodeURIComponent(experimentId)}`,
@@ -69,6 +108,31 @@ export function experimentBoardHref(projectId: string, experimentSelection: stri
   return `#/projects/${encodeURIComponent(projectId)}?${fields.join("&")}`;
 }
 
+function selectedExperimentHref(
+  projectId: string,
+  experimentId: string,
+  exactRoute: ExperimentRouteIdentity | null,
+): string {
+  return experimentBoardHref(
+    projectId,
+    exactRoute?.experiment_id === experimentId ? exactRoute : experimentId,
+  );
+}
+
+export function exactRunExperimentSelectionHref(
+  projectId: string | null,
+  experimentId: string | null,
+  exactExperimentRoute: ExperimentRouteIdentity | null,
+  exactAutoResearchEpisodeId: string | null,
+  selectionKind: "select" | "show" = "select",
+): string | null {
+  if (!projectId || !experimentId || (!exactExperimentRoute && !exactAutoResearchEpisodeId)) {
+    return null;
+  }
+  if (selectionKind === "show") return experimentBoardHref(projectId, experimentId);
+  return selectedExperimentHref(projectId, experimentId, exactExperimentRoute);
+}
+
 export function parseProjectHash(hash: string): ProjectHashRoute {
   const queryStart = hash.indexOf("?");
   const pathname = queryStart === -1 ? hash : hash.slice(0, queryStart);
@@ -80,6 +144,7 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
       projectViewSpecified: false,
       experimentId: null,
       experimentRoute: null,
+      autoResearchEpisodeId: null,
     };
   }
   let projectId: string;
@@ -92,6 +157,7 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
       projectViewSpecified: false,
       experimentId: null,
       experimentRoute: null,
+      autoResearchEpisodeId: null,
     };
   }
   const params = new URLSearchParams(queryStart === -1 ? "" : hash.slice(queryStart + 1));
@@ -102,16 +168,19 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
       projectViewSpecified: params.has("view"),
       experimentId: null,
       experimentRoute: null,
+      autoResearchEpisodeId: null,
     };
   }
   const encodedExperiment = params.get("experiment");
   if (!encodedExperiment) {
+    const autoResearchEpisodeId = autoResearchEpisodeFromParams(params);
     return {
       projectId,
       view: "execution",
       projectViewSpecified: true,
       experimentId: null,
       experimentRoute: null,
+      autoResearchEpisodeId,
     };
   }
   const experimentRoute = experimentRouteFromParams(encodedExperiment, params);
@@ -122,6 +191,7 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
       projectViewSpecified: true,
       experimentId: null,
       experimentRoute: null,
+      autoResearchEpisodeId: null,
     };
   }
   return {
@@ -130,6 +200,7 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
     projectViewSpecified: true,
     experimentId: encodedExperiment,
     experimentRoute,
+    autoResearchEpisodeId: null,
   };
 }
 
@@ -173,6 +244,10 @@ export function projectExperimentExecution(
       watchers,
       experimentControl,
       exactBranchEntry: null,
+      staleMainRoute:
+        route && !mainExperimentRouteMatchesControl(route, experimentControl[route.experiment_id])
+          ? route
+          : null,
     };
   }
 
@@ -210,6 +285,7 @@ export function projectExperimentExecution(
       watchers: projectedWatchers,
       experimentControl: projectedControl,
       exactBranchEntry: null,
+      staleMainRoute: null,
     };
   }
 
@@ -222,7 +298,20 @@ export function projectExperimentExecution(
     watchers: projectedWatchers,
     experimentControl: projectedControl,
     exactBranchEntry: exactEntry,
+    staleMainRoute: null,
   };
+}
+
+export function mainExperimentRouteMatchesControl(
+  route: ExperimentRouteIdentity,
+  control: ExperimentControlState | undefined,
+): boolean {
+  return Boolean(
+    route.graph_target.kind === "main" &&
+    control?.episode_id === route.episode_id &&
+    control.episode?.episode_id === route.episode_id &&
+    graphTargetsEqual(control.episode.graph_target, route.graph_target),
+  );
 }
 
 export function experimentStopPath(
@@ -296,6 +385,21 @@ function experimentRouteFromParams(
     };
   }
   return null;
+}
+
+function autoResearchEpisodeFromParams(params: URLSearchParams): string | null {
+  if (params.get("mode") !== "auto_research") return null;
+  const episodeId = params.get("episode");
+  if (
+    !episodeId ||
+    params.has("experiment") ||
+    params.has("target") ||
+    params.has("branch") ||
+    params.has("parent")
+  ) {
+    return null;
+  }
+  return episodeId;
 }
 
 function parseExperimentRouteIdentity(candidate: unknown): ExperimentRouteIdentity | null {
