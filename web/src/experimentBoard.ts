@@ -124,10 +124,12 @@ export function exactRunExperimentSelectionHref(
   experimentId: string | null,
   exactExperimentRoute: ExperimentRouteIdentity | null,
   exactAutoResearchEpisodeId: string | null,
+  selectionKind: "select" | "show" = "select",
 ): string | null {
   if (!projectId || !experimentId || (!exactExperimentRoute && !exactAutoResearchEpisodeId)) {
     return null;
   }
+  if (selectionKind === "show") return experimentBoardHref(projectId, experimentId);
   return selectedExperimentHref(projectId, experimentId, exactExperimentRoute);
 }
 

@@ -155,6 +155,96 @@ test("selecting an Experiment replaces an exact Auto-research episode URL", () =
   });
 });
 
+test("showing an Experiment replaces an exact Auto-research episode URL", () => {
+  const route = parseProjectHash(
+    "#/projects/project-one?view=runs&mode=auto_research&episode=completed-episode",
+  );
+  const selected = reduceExperimentSelection(
+    {
+      selectedExperimentRunId: null,
+      focusExperimentRunId: null,
+      selectedExperimentRoute: null,
+      selectedAutoResearchEpisodeId: null,
+    },
+    {
+      kind: "route",
+      experimentId: route.experimentId,
+      experimentRoute: route.experimentRoute,
+      autoResearchEpisodeId: route.autoResearchEpisodeId,
+    },
+  );
+  const experimentId = "experiment/new";
+  const href = exactRunExperimentSelectionHref(
+    route.projectId,
+    experimentId,
+    selected.selectedExperimentRoute,
+    selected.selectedAutoResearchEpisodeId,
+    "show",
+  );
+  const shown = reduceExperimentSelection(selected, { kind: "show", experimentId });
+
+  assert.deepEqual(parseProjectHash(href), {
+    projectId: "project-one",
+    view: "execution",
+    projectViewSpecified: true,
+    experimentId,
+    experimentRoute: null,
+    autoResearchEpisodeId: null,
+  });
+  assert.deepEqual(shown, {
+    selectedExperimentRunId: experimentId,
+    focusExperimentRunId: experimentId,
+    selectedExperimentRoute: null,
+    selectedAutoResearchEpisodeId: null,
+  });
+});
+
+test("showing an Experiment replaces its exact branch Experiment URL", () => {
+  const route = parseProjectHash(
+    "#/projects/project-one?view=runs&experiment=experiment%2Fshared&episode=child-episode&target=branch&branch=parent-episode&parent=parent-episode",
+  );
+  const selected = reduceExperimentSelection(
+    {
+      selectedExperimentRunId: null,
+      focusExperimentRunId: null,
+      selectedExperimentRoute: null,
+      selectedAutoResearchEpisodeId: null,
+    },
+    {
+      kind: "route",
+      experimentId: route.experimentId,
+      experimentRoute: route.experimentRoute,
+      autoResearchEpisodeId: route.autoResearchEpisodeId,
+    },
+  );
+  const href = exactRunExperimentSelectionHref(
+    route.projectId,
+    route.experimentId,
+    selected.selectedExperimentRoute,
+    selected.selectedAutoResearchEpisodeId,
+    "show",
+  );
+  const shown = reduceExperimentSelection(selected, {
+    kind: "show",
+    experimentId: route.experimentId,
+  });
+
+  assert.deepEqual(parseProjectHash(href), {
+    projectId: "project-one",
+    view: "execution",
+    projectViewSpecified: true,
+    experimentId: "experiment/shared",
+    experimentRoute: null,
+    autoResearchEpisodeId: null,
+  });
+  assert.deepEqual(shown, {
+    selectedExperimentRunId: "experiment/shared",
+    focusExperimentRunId: "experiment/shared",
+    selectedExperimentRoute: null,
+    selectedAutoResearchEpisodeId: null,
+  });
+});
+
 test("tab restoration retains the branch target instead of resolving the node id on main", () => {
   const route = {
     experiment_id: "experiment/shared",

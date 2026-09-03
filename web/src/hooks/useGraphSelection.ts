@@ -408,30 +408,38 @@ export function useGraphSelection({
     [openNode],
   );
 
-  const selectExperiment = useCallback(
-    (nodeId: string | null) => {
+  const replaceExactRunExperimentSelection = useCallback(
+    (nodeId: string | null, selectionKind: "select" | "show") => {
       const replacementHref = exactRunExperimentSelectionHref(
         projectId,
         nodeId,
         selectedExperimentRoute,
         selectedAutoResearchEpisodeId,
+        selectionKind,
       );
       if (replacementHref) window.history.replaceState(null, "", replacementHref);
-      dispatchExperimentSelection({ kind: "select", experimentId: nodeId });
     },
     [projectId, selectedAutoResearchEpisodeId, selectedExperimentRoute],
+  );
+  const selectExperiment = useCallback(
+    (nodeId: string | null) => {
+      replaceExactRunExperimentSelection(nodeId, "select");
+      dispatchExperimentSelection({ kind: "select", experimentId: nodeId });
+    },
+    [replaceExactRunExperimentSelection],
   );
   const clearExperimentFocus = useCallback(() => {
     dispatchExperimentSelection({ kind: "clear_focus" });
   }, []);
   const showExperiment = useCallback(
     (nodeId: string) => {
+      replaceExactRunExperimentSelection(nodeId, "show");
       dispatchExperimentSelection({ kind: "show", experimentId: nodeId });
       setSelectedNode(null);
       setCompanionNode(null);
       changeView("execution");
     },
-    [changeView],
+    [changeView, replaceExactRunExperimentSelection],
   );
   const beginExperimentStop = useCallback((nodeId: string) => {
     setExperimentStopId(nodeId);
