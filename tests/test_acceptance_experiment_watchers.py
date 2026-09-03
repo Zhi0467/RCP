@@ -123,6 +123,50 @@ def _wait_for_watcher_status(
     )
 
 
+def _count_poll_passes(app) -> list[None]:
+    """Count finished watcher poll passes, keeping whatever callback was set.
+
+    `poll_once` persists every watcher check in `_check_records` before
+    `_finish_poll` hands the completed groups to `on_completed`, so the rows can
+    already read completed while delivery has decided nothing. Only
+    `on_poll_completed` runs after every group's callback in the same pass, so
+    it is the one signal that a delivery decision has been made and reconciled.
+    """
+
+    passes: list[None] = []
+    inner = app.state.watcher_poller.on_poll_completed
+
+    def counted() -> None:
+        if inner is not None:
+            inner()
+        passes.append(None)
+
+    app.state.watcher_poller.on_poll_completed = counted
+    return passes
+
+
+def _wait_for_delivery_pass(
+    passes: list[None],
+    *,
+    after: int,
+    timeout: float = TASK_SETTLE_TIMEOUT,
+) -> None:
+    """Wait for one whole poll pass to finish, so an absence assertion means something.
+
+    At the ceiling the watchers are meant to stay unnotified, so there is no
+    delivery mark on the rows to wait for the way a delivering test can. A
+    finished pass is the available proof that delivery ran and chose to queue
+    nothing.
+    """
+
+    wait_until(
+        lambda: len(passes) > after,
+        timeout=timeout,
+        interval=0.02,
+        detail=f"no watcher poll pass finished after pass {after}",
+    )
+
+
 def _wait_for_ready_experiment_control(
     client: TestClient,
     project_id: str,
@@ -256,6 +300,7 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
     reopened = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
     reopened.state.watcher_poller.interval = 0.05
     _poll_after_due(reopened, armed)
+    poll_passes = _count_poll_passes(reopened)
     reopened_store = reopened.state.background_tasks.store
     with TestClient(reopened) as reopened_client:
         persisted = reopened_store.watchers(project_id, chat_id=chat_id)
@@ -287,7 +332,7 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
         assert reopened.state.service.history.load_patches() == baseline_patches
 
         task_count = len(reopened_store.agent_tasks(project_id))
-        time.sleep(0.15)
+        _wait_for_delivery_pass(poll_passes, after=len(poll_passes))
         assert len(reopened_store.agent_tasks(project_id)) == task_count
         assert reopened.state.service.history.load_patches() == baseline_patches
 
@@ -346,6 +391,7 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
     reopened = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
     reopened.state.watcher_poller.interval = 0.05
     _poll_after_due(reopened, armed)
+    poll_passes = _count_poll_passes(reopened)
     reopened_store = reopened.state.background_tasks.store
     with TestClient(reopened) as reopened_client:
         persisted = reopened_store.watchers(project_id, chat_id=chat_id)
@@ -359,13 +405,16 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
         )
         _assert_completed_job_artifacts(pending)
         assert all(not record.notified for record in pending)
+        # Readiness settles on the persisted rows, which `_check_records` writes
+        # before delivery runs at all, so it cannot stand in for a delivery
+        # decision. Wait for a whole pass, or the absence below passes for the
+        # uninteresting reason that nothing has been decided yet.
+        _wait_for_delivery_pass(poll_passes, after=len(poll_passes))
         control = _wait_for_ready_experiment_control(reopened_client, project_id)
         assert control["paused"] is False
         assert control["ready"] is True
         assert control["invocations_used"] == 1
         assert control["invocations_remaining"] == 0
-        # Checked once readiness has settled, so the ceiling genuinely delivered
-        # no wake rather than merely not having delivered one yet.
         assert {
             task.operation_id for task in reopened_store.agent_tasks(project_id)
         } == before_ceiling_ids
@@ -431,7 +480,7 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
         assert patches[-1].source_operation_id == reauthorized_record["operation_id"]
 
         task_count = len(reopened_store.agent_tasks(project_id))
-        time.sleep(0.15)
+        _wait_for_delivery_pass(poll_passes, after=len(poll_passes))
         assert len(reopened_store.agent_tasks(project_id)) == task_count
         assert len(reopened.state.service.history.load_patches()) == len(patches)
 

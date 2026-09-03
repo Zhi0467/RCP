@@ -84,7 +84,9 @@ jobs:
       - run: npm --prefix web ci
       - run: npm --prefix web run build
       - run: uv sync --frozen
-      - run: uv run pytest tests/test_server_upgrade.py
+      # `-n0` opts out of the repository-wide `-n auto`: one file lands on one
+      # worker under `--dist loadfile`, so the rest are started for nothing.
+      - run: uv run pytest tests/test_server_upgrade.py -n0
         env:
           RCP_RUN_EXACT_BASE_UPGRADE: "1"
 

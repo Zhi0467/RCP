@@ -139,18 +139,20 @@ async def async_wait_until(
     timeout: float = TASK_SETTLE_TIMEOUT,
     interval: float = _TASK_POLL_INTERVAL,
     detail: str | Callable[[], str] = "condition was not met",
+    allow_falsy: bool = False,
 ) -> _T:
     """`wait_until` for a probe that must not block the running event loop.
 
     A concurrency test drives the work it is waiting on through that same loop,
     so polling it with the synchronous helper would deadlock. Awaiting here
-    yields between probes instead.
+    yields between probes instead. The settle rule is `wait_until`'s, so the two
+    agree on what a falsy result means.
     """
 
     deadline = time.monotonic() + timeout
     while True:
         result = probe()
-        if result:
+        if result is not None and (allow_falsy or bool(result)):
             return result
         remaining = deadline - time.monotonic()
         if remaining <= 0:

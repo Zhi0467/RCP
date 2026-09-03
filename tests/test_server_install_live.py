@@ -2495,16 +2495,40 @@ def _run(
 
 
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
-    # `_run` always starts a new session, so this group only ever holds that
-    # child and its descendants. Once the last of them exits, macOS reports the
-    # empty group as EPERM rather than ESRCH, so both mean the same thing here:
-    # nothing is left to signal, and `wait` reaps the child either way.
-    with contextlib.suppress(ProcessLookupError, PermissionError):
+    """Kill the group `_run` started, escalating for a member this account cannot signal.
+
+    `_run` always starts a new session, so the group holds only that child and
+    its descendants. EPERM does not mean the group is empty: macOS reports an
+    unreaped zombie group that way, and so does a group whose live member this
+    account may not signal, which for the sudo-driven commands in this file
+    means a root-owned descendant outlived its parent. Suppressing it would
+    leak that privileged process onto the host.
+
+    Reaping the child tells the two apart, because only a live member still
+    answers afterwards. A group that answers signal 0 without complaint is not
+    escalated: this pid is free once the child is reaped, so a signalable group
+    at that number is somebody else's.
+    """
+
+    try:
         os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        process.wait(timeout=5)
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            _kill_privileged_process_group(process)
+        return
     process.wait(timeout=5)
 
 
-def _kill_privileged_process_group(process: subprocess.Popen[str]) -> None:
+def _kill_privileged_process_group(
+    process: subprocess.Popen[bytes] | subprocess.Popen[str],
+) -> None:
     """Kill the root coordinator and its service-account rollback worker."""
 
     result = _run(
@@ -2543,6 +2567,65 @@ def test_bounded_command_runner_stops_excess_output(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(pytest.fail.Exception, match="exceeded its output bound"):
         _run((sys.executable, "-c", "print('x' * 4096)"), timeout=5)
+
+
+def test_group_kill_escalates_only_for_a_member_it_cannot_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EPERM is ambiguous, so the reaped-group case must not reach sudo.
+
+    macOS answers EPERM both for an unreaped zombie group and for a group whose
+    live member this account may not signal. Escalating the first would demand
+    passwordless sudo for an ordinary bounded command; suppressing the second
+    would leak a root-owned descendant onto the live host.
+    """
+
+    escalated: list[int] = []
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_kill_privileged_process_group",
+        lambda process: escalated.append(process.pid),
+    )
+
+    class Process:
+        def __init__(self) -> None:
+            self.pid = 4321
+            self.waits: list[float] = []
+
+        def wait(self, timeout: float) -> int:
+            self.waits.append(timeout)
+            return -signal.SIGKILL
+
+    def killpg_script(*results: type[BaseException] | None):
+        remaining = list(results)
+
+        def killpg(pid: int, number: int) -> None:
+            assert pid == 4321
+            outcome = remaining.pop(0)
+            if outcome is not None:
+                raise outcome(1, "scripted")
+
+        return killpg
+
+    # A group emptied by reaping the child is done, not escalated.
+    monkeypatch.setattr(os, "killpg", killpg_script(PermissionError, ProcessLookupError))
+    reaped = Process()
+    _kill_process_group(reaped)  # type: ignore[arg-type]
+    assert escalated == []
+    assert reaped.waits == [5]
+
+    # A group that still refuses signal 0 holds something we must not abandon.
+    monkeypatch.setattr(os, "killpg", killpg_script(PermissionError, PermissionError))
+    privileged = Process()
+    _kill_process_group(privileged)  # type: ignore[arg-type]
+    assert escalated == [4321]
+
+    # ESRCH on the kill itself is the ordinary already-gone case.
+    monkeypatch.setattr(os, "killpg", killpg_script(ProcessLookupError))
+    gone = Process()
+    _kill_process_group(gone)  # type: ignore[arg-type]
+    assert escalated == [4321]
+    assert gone.waits == [5]
 
 
 def test_privileged_process_group_kill_uses_sudo(monkeypatch: pytest.MonkeyPatch) -> None:
