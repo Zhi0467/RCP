@@ -11,6 +11,7 @@ from rcp.agents import acceptance
 from rcp.agents.acceptance import ACCEPTANCE_GENERIC_WATCHER_MARKER
 from rcp.core.models import Patch
 from rcp.storage import AgentTaskRecord, AppStore, WatcherRecord
+from rcp.watchers import WatchSpec, run_watcher_check
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -265,6 +266,42 @@ def _double_fixture_jobs(monkeypatch: pytest.MonkeyPatch, *, finished: bool) -> 
             _complete_fixture_job_artifacts(log_paths)
 
     monkeypatch.setattr(acceptance, "_start_fixture_jobs", start)
+
+
+def test_the_detached_fixture_jobs_write_what_their_watcher_checks_ask_for(
+    tmp_path: Path,
+) -> None:
+    """Ask the real launcher directly, since two tests above double it out.
+
+    S41 still drives it end to end and does fail when the detached payload
+    regresses, but only as a watcher that never completes, a minute later. This
+    names the launcher itself, so a break in it reads as a break in it.
+    """
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    acceptance._start_fixture_jobs(stage)
+
+    specs = [WatchSpec(**spec) for spec in acceptance._watch_specs(stage)]
+    assert len(specs) == 2
+    assert len({spec.check_command for spec in specs}) == 2
+
+    # The workers are detached and sleep before writing, so this is the one
+    # place that legitimately waits on them rather than deciding for them.
+    wait_until(
+        lambda: all(Path(spec.log_path).with_suffix(".done").is_file() for spec in specs),
+        timeout=TASK_SETTLE_TIMEOUT,
+        detail="the detached fixture jobs never wrote their completion markers",
+    )
+
+    for spec in specs:
+        log_path = Path(spec.log_path)
+        name = log_path.stem
+        assert log_path.read_text(encoding="utf-8") == f"{name}: started\n{name}: completed\n"
+        assert log_path.with_suffix(".status").read_text(encoding="utf-8") == "completed\n"
+        assert log_path.with_suffix(".done").read_text(encoding="utf-8") == "done\n"
+        # The shipped checker, not a hand-rolled one, must call this complete.
+        assert run_watcher_check(spec).state == "complete"
 
 
 def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
