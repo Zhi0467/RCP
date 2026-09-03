@@ -39,19 +39,34 @@ test("annotation composer stays beside the selection and inside the viewport", (
   assert.deepEqual(
     chatAnnotationComposerPosition(
       { left: 100, right: 180, top: 140 },
-      { width: 1000, height: 800 },
+      { left: 0, top: 0, width: 1000, height: 800 },
+      { width: 320, height: 228 },
     ),
     { left: 190, top: 140 },
   );
   assert.deepEqual(
     chatAnnotationComposerPosition(
       { left: 700, right: 790, top: 760 },
-      { width: 800, height: 800 },
+      { left: 0, top: 0, width: 800, height: 800 },
+      { width: 320, height: 228 },
     ),
     { left: 370, top: 560 },
   );
   assert.deepEqual(
-    chatAnnotationComposerPosition({ left: 4, right: 796, top: -10 }, { width: 800, height: 800 }),
+    chatAnnotationComposerPosition(
+      { left: 4, right: 796, top: -10 },
+      { left: 0, top: 0, width: 800, height: 800 },
+      { width: 320, height: 228 },
+    ),
     { left: 12, top: 12 },
+  );
+
+  assert.deepEqual(
+    chatAnnotationComposerPosition(
+      { left: 720, right: 760, top: 400 },
+      { left: 0, top: 48, width: 844, height: 196 },
+      { width: 320, height: 172 },
+    ),
+    { left: 390, top: 60 },
   );
 });

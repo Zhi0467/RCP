@@ -25,7 +25,11 @@ export interface ChatAnnotationComposerPosition {
 }
 
 export interface ChatAnnotationViewportMetrics {
+  left: number;
+  top: number;
+  width: number;
   height: number;
+  right: number;
   bottom: number;
 }
 
@@ -35,8 +39,6 @@ export interface ChatAnnotationTextControlSelection {
   selectionEnd: number | null;
 }
 
-const CHAT_ANNOTATION_COMPOSER_WIDTH = 320;
-const CHAT_ANNOTATION_COMPOSER_HEIGHT = 228;
 const CHAT_ANNOTATION_COMPOSER_GAP = 10;
 const CHAT_ANNOTATION_VIEWPORT_MARGIN = 12;
 
@@ -110,40 +112,55 @@ export function chatAnnotationTextControlSelection(
 }
 
 export function chatAnnotationViewportMetrics(
-  layoutViewportHeight: number,
-  visualViewport: { height: number; offsetTop: number },
+  layoutViewport: { width: number; height: number },
+  visualViewport?: {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  } | null,
 ): ChatAnnotationViewportMetrics {
+  const left = Math.max(0, visualViewport?.offsetLeft ?? 0);
+  const top = Math.max(0, visualViewport?.offsetTop ?? 0);
+  const width = Math.max(
+    0,
+    Math.min(visualViewport?.width ?? layoutViewport.width, layoutViewport.width - left),
+  );
+  const height = Math.max(
+    0,
+    Math.min(visualViewport?.height ?? layoutViewport.height, layoutViewport.height - top),
+  );
   return {
-    height: Math.max(0, visualViewport.height),
-    bottom: Math.max(0, layoutViewportHeight - visualViewport.offsetTop - visualViewport.height),
+    left,
+    top,
+    width,
+    height,
+    right: Math.max(0, layoutViewport.width - left - width),
+    bottom: Math.max(0, layoutViewport.height - top - height),
   };
 }
 
 export function chatAnnotationComposerPosition(
   anchor: ChatAnnotationAnchor,
-  viewport: { width: number; height: number },
+  viewport: Pick<ChatAnnotationViewportMetrics, "left" | "top" | "width" | "height">,
+  composer: { width: number; height: number },
 ): ChatAnnotationComposerPosition {
+  const viewportRight = viewport.left + viewport.width;
+  const viewportBottom = viewport.top + viewport.height;
   const rightPlacement = anchor.right + CHAT_ANNOTATION_COMPOSER_GAP;
-  const leftPlacement = anchor.left - CHAT_ANNOTATION_COMPOSER_WIDTH - CHAT_ANNOTATION_COMPOSER_GAP;
-  const availableRight = viewport.width - rightPlacement - CHAT_ANNOTATION_VIEWPORT_MARGIN;
+  const leftPlacement = anchor.left - composer.width - CHAT_ANNOTATION_COMPOSER_GAP;
   const left =
-    availableRight >= CHAT_ANNOTATION_COMPOSER_WIDTH
+    rightPlacement + composer.width <= viewportRight - CHAT_ANNOTATION_VIEWPORT_MARGIN
       ? rightPlacement
-      : leftPlacement >= CHAT_ANNOTATION_VIEWPORT_MARGIN
+      : leftPlacement >= viewport.left + CHAT_ANNOTATION_VIEWPORT_MARGIN
         ? leftPlacement
         : Math.max(
-            CHAT_ANNOTATION_VIEWPORT_MARGIN,
-            Math.min(
-              anchor.left,
-              viewport.width - CHAT_ANNOTATION_COMPOSER_WIDTH - CHAT_ANNOTATION_VIEWPORT_MARGIN,
-            ),
+            viewport.left + CHAT_ANNOTATION_VIEWPORT_MARGIN,
+            Math.min(anchor.left, viewportRight - composer.width - CHAT_ANNOTATION_VIEWPORT_MARGIN),
           );
   const top = Math.max(
-    CHAT_ANNOTATION_VIEWPORT_MARGIN,
-    Math.min(
-      anchor.top,
-      viewport.height - CHAT_ANNOTATION_COMPOSER_HEIGHT - CHAT_ANNOTATION_VIEWPORT_MARGIN,
-    ),
+    viewport.top + CHAT_ANNOTATION_VIEWPORT_MARGIN,
+    Math.min(anchor.top, viewportBottom - composer.height - CHAT_ANNOTATION_VIEWPORT_MARGIN),
   );
   return { left, top };
 }

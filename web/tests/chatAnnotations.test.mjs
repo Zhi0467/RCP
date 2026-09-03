@@ -87,15 +87,34 @@ test("a comment edited blank survives a switch away and back and still blocks se
   assert.match(nodeChatSource, /!annotationsComplete \|\|/);
 });
 
-test("the mobile sheet follows the soft-keyboard viewport and remains scrollable", () => {
-  assert.deepEqual(chatAnnotationViewportMetrics(800, { height: 390, offsetTop: 50 }), {
-    height: 390,
-    bottom: 360,
+test("the composer follows the soft-keyboard viewport at every layout width", () => {
+  assert.deepEqual(
+    chatAnnotationViewportMetrics(
+      { width: 844, height: 520 },
+      { width: 844, height: 196, offsetLeft: 0, offsetTop: 48 },
+    ),
+    {
+      left: 0,
+      top: 48,
+      width: 844,
+      height: 196,
+      right: 0,
+      bottom: 276,
+    },
+  );
+  assert.deepEqual(chatAnnotationViewportMetrics({ width: 800, height: 800 }), {
+    left: 0,
+    top: 0,
+    width: 800,
+    height: 800,
+    right: 0,
+    bottom: 0,
   });
   assert.match(nodeChatSource, /window\.visualViewport/);
-  assert.match(nodeChatSource, /viewport\.addEventListener\("resize", update\)/);
+  assert.match(nodeChatSource, /getBoundingClientRect\(\)/);
+  assert.match(nodeChatSource, /new ResizeObserver\(update\)/);
   assert.match(
     styles,
-    /@media \(max-width: 640px\)[\s\S]*?--chat-annotation-viewport-bottom[\s\S]*?--chat-annotation-viewport-height[\s\S]*?overflow-y: auto[\s\S]*?overscroll-behavior: contain/,
+    /\.chat-annotation-composer\s*\{[\s\S]*?--chat-annotation-viewport-height[\s\S]*?overflow-y: auto[\s\S]*?overscroll-behavior: contain/,
   );
 });

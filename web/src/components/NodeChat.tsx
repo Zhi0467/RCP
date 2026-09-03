@@ -21,6 +21,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -61,6 +62,8 @@ import {
   parseStagedChatAnnotations,
   replaceTextSpan,
   stagedChatAnnotationsAreComplete,
+  type ChatAnnotationAnchor,
+  type ChatAnnotationComposerPosition,
   type ChatAnnotationViewportMetrics,
   type StagedChatAnnotation,
 } from "../chatInput";
@@ -162,14 +165,16 @@ interface DictationSpan {
 interface SelectedChatAnnotationComposer {
   step: "comment";
   selectedText: string;
-  position: { left: number; top: number };
+  anchor: ChatAnnotationAnchor;
+  position: ChatAnnotationComposerPosition | null;
 }
 
 interface KeyboardChatAnnotationComposer {
   step: "select";
   answerText: string;
   selectedText: string;
-  position: { left: number; top: number };
+  anchor: ChatAnnotationAnchor;
+  position: ChatAnnotationComposerPosition | null;
 }
 
 type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
@@ -446,6 +451,7 @@ export function NodeChat({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const annotationCommentRef = useRef<HTMLTextAreaElement | null>(null);
   const annotationSelectionRef = useRef<HTMLTextAreaElement | null>(null);
+  const annotationComposerRef = useRef<HTMLFormElement | null>(null);
   const annotationOriginRef = useRef<HTMLElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentSetIdRef = useRef<string | null>(null);
@@ -616,23 +622,56 @@ export function NodeChat({
   }, [annotations, annotationsKey]);
 
   useEffect(() => {
-    if (!annotationComposerOpen || !window.visualViewport) {
+    if (!annotationComposerOpen) {
       setAnnotationViewport(null);
       return;
     }
     const viewport = window.visualViewport;
-    const update = () =>
-      setAnnotationViewport(chatAnnotationViewportMetrics(window.innerHeight, viewport));
+    const update = () => {
+      setAnnotationViewport(
+        chatAnnotationViewportMetrics(
+          { width: window.innerWidth, height: window.innerHeight },
+          viewport,
+        ),
+      );
+    };
     update();
-    viewport.addEventListener("resize", update);
-    viewport.addEventListener("scroll", update);
+    viewport?.addEventListener("resize", update);
+    viewport?.addEventListener("scroll", update);
     window.addEventListener("resize", update);
     return () => {
-      viewport.removeEventListener("resize", update);
-      viewport.removeEventListener("scroll", update);
+      viewport?.removeEventListener("resize", update);
+      viewport?.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
     };
   }, [annotationComposerOpen]);
+
+  useLayoutEffect(() => {
+    const composer = annotationComposerRef.current;
+    if (!composer || !annotationComposer || !annotationViewport) return;
+    const update = () => {
+      const rect = composer.getBoundingClientRect();
+      const position = chatAnnotationComposerPosition(
+        annotationComposer.anchor,
+        annotationViewport,
+        rect,
+      );
+      setAnnotationComposer((current) => {
+        if (
+          !current ||
+          current.anchor !== annotationComposer.anchor ||
+          (current.position?.left === position.left && current.position.top === position.top)
+        )
+          return current;
+        return { ...current, position };
+      });
+    };
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(update);
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, [annotationComposer, annotationViewport]);
 
   useEffect(() => {
     if (lastChatIdRef.current !== chatId) {
@@ -940,10 +979,8 @@ export function NodeChat({
     setAnnotationComposer({
       step: "comment",
       selectedText,
-      position: chatAnnotationComposerPosition(rect, {
-        width: window.innerWidth,
-        height: window.innerHeight,
-      }),
+      anchor: { left: rect.left, right: rect.right, top: rect.top },
+      position: null,
     });
     window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
   };
@@ -963,10 +1000,8 @@ export function NodeChat({
       step: "select",
       answerText,
       selectedText: "",
-      position: chatAnnotationComposerPosition(rect, {
-        width: window.innerWidth,
-        height: window.innerHeight,
-      }),
+      anchor: { left: rect.left, right: rect.right, top: rect.top },
+      position: null,
     });
     window.requestAnimationFrame(() => {
       annotationSelectionRef.current?.focus();
@@ -988,7 +1023,8 @@ export function NodeChat({
     setAnnotationComposer({
       step: "comment",
       selectedText,
-      position: annotationComposer.position,
+      anchor: annotationComposer.anchor,
+      position: null,
     });
     window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
   };
@@ -1796,17 +1832,23 @@ export function NodeChat({
       {annotationComposer && typeof document !== "undefined"
         ? createPortal(
             <form
+              ref={annotationComposerRef}
               className="chat-annotation-composer"
               aria-label={
                 annotationComposer.step === "select" ? "Select answer text" : "Add annotation"
               }
               style={
                 {
-                  left: annotationComposer.position.left,
-                  top: annotationComposer.position.top,
+                  left: annotationComposer.position?.left,
+                  top: annotationComposer.position?.top,
+                  visibility: annotationComposer.position ? undefined : "hidden",
                   ...(annotationViewport
                     ? {
+                        "--chat-annotation-viewport-left": `${annotationViewport.left}px`,
+                        "--chat-annotation-viewport-top": `${annotationViewport.top}px`,
+                        "--chat-annotation-viewport-width": `${annotationViewport.width}px`,
                         "--chat-annotation-viewport-height": `${annotationViewport.height}px`,
+                        "--chat-annotation-viewport-right": `${annotationViewport.right}px`,
                         "--chat-annotation-viewport-bottom": `${annotationViewport.bottom}px`,
                       }
                     : {}),

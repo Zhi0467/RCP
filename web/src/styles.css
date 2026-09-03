@@ -6591,9 +6591,11 @@ button.relation-map-node:hover {
   box-shadow: 0 16px 42px rgb(50 36 32 / 22%);
   display: grid;
   gap: 8px;
-  overflow: hidden;
+  max-height: max(0px, calc(var(--chat-annotation-viewport-height, 100dvh) - 24px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   position: fixed;
-  width: 320px;
+  width: min(320px, max(0px, calc(var(--chat-annotation-viewport-width, 100vw) - 24px)));
   z-index: 1200;
 }
 .chat-annotation-composer blockquote {
@@ -6632,14 +6634,12 @@ button.relation-map-node:hover {
     bottom: calc(
       var(--chat-annotation-viewport-bottom, 0px) + max(10px, env(safe-area-inset-bottom))
     );
-    left: 10px !important;
+    left: calc(var(--chat-annotation-viewport-left, 0px) + 10px) !important;
     max-height: min(
       440px,
       calc(var(--chat-annotation-viewport-height, 100dvh) - 20px - env(safe-area-inset-bottom))
     );
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    right: 10px;
+    right: calc(var(--chat-annotation-viewport-right, 0px) + 10px);
     top: auto !important;
     width: auto;
   }
