@@ -32,7 +32,15 @@ import {
   useState,
 } from "react";
 import { isActiveTask } from "./agentTasks";
-import { chatIndicator, chatEntryConversationId, groupChatConversations } from "./chatWorkspace";
+import { loadChatTranscript } from "./chatApi";
+import {
+  chatIndicator,
+  chatEntryConversationId,
+  groupChatConversations,
+  startConversationTurn,
+  type ChatKind,
+  type ConversationTurnSubmission,
+} from "./chatWorkspace";
 import {
   api,
   ApiError,
@@ -202,6 +210,17 @@ import {
   type TextScaleAction,
 } from "./textScale";
 import { NOTICE_TIMEOUT_MS } from "./uiConstants";
+import {
+  createWebMcpToolRegistry,
+  projectArtifactToolDefinitions,
+  projectConversationSendToolDefinitions,
+  projectConversationToolDefinitions,
+  projectExperimentStopToolDefinitions,
+  projectExperimentToolDefinitions,
+  projectIndexToolDefinitions,
+  projectReadToolDefinitions,
+  type WebMcpToolRegistry,
+} from "./webmcp";
 
 import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from "./projectTabs";
 
@@ -729,6 +748,22 @@ export default function App() {
     dismissUpdate,
   } = useDesktopShell(desktop);
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
+  const [webMcpArtifactViewerUrl, setWebMcpArtifactViewerUrl] = useState<string | null>(null);
+  const [webMcpExperimentStartProjectId, setWebMcpExperimentStartProjectId] = useState<
+    string | null
+  >(null);
+  const showWebMcpArtifactViewer = useCallback(async (viewerUrl: string, contentUrl: string) => {
+    const response = await fetch(contentUrl, {
+      method: "HEAD",
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      throw new Error(`Artifact content is unavailable (${response.status}).`);
+    }
+    setWebMcpArtifactViewerUrl(viewerUrl);
+    return true;
+  }, []);
   const reportErrorNotice = useCallback((text: string) => {
     setNotice({ kind: "error", text });
   }, []);
@@ -799,6 +834,7 @@ export default function App() {
     project: sessionProject,
     reportError: reportErrorNotice,
   });
+  useEffect(() => setWebMcpArtifactViewerUrl(null), [projectId]);
   const { project, humanDraft } = projectDraftPreviewEffectInputs(projectSession, projectId);
   const graph = project?.graph ?? emptyGraph;
   const paper = project?.paper ?? null;
@@ -2555,24 +2591,39 @@ export default function App() {
     }
   };
 
-  const startAgentTask = async (
-    kind: AgentTaskKind,
-    request: AgentTaskRequest,
-  ): Promise<AgentTask> => {
-    const finishTaskStart = beginTaskStart();
-    if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
-    try {
-      const task = await api<AgentTask>(`${apiBase}/tasks/${kind}`, {
-        method: "POST",
-        body: JSON.stringify(request),
-      });
-      recordStartedTask(task);
-      setNotice(null);
-      return task;
-    } finally {
-      finishTaskStart();
-    }
-  };
+  const startAgentTask = useCallback(
+    async (kind: AgentTaskKind, request: AgentTaskRequest): Promise<AgentTask> => {
+      const finishTaskStart = beginTaskStart();
+      if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
+      try {
+        const task = await api<AgentTask>(`${apiBase}/tasks/${kind}`, {
+          method: "POST",
+          body: JSON.stringify(request),
+        });
+        recordStartedTask(task);
+        setNotice(null);
+        return task;
+      } finally {
+        finishTaskStart();
+      }
+    },
+    [apiBase, beginTaskStart, recordStartedTask],
+  );
+  const loadWebMcpConversation = useCallback(
+    (chatId: string) => loadChatTranscript(apiBase, chatId, api),
+    [apiBase],
+  );
+  const createWebMcpConversation = useCallback(
+    (kind: ChatKind, node: GraphNode | null) => {
+      if (!project) throw new Error("No RCP project is open.");
+      return startConversation(kind, node, project.name);
+    },
+    [project, startConversation],
+  );
+  const startWebMcpConversationTurn = useCallback(
+    (submission: ConversationTurnSubmission) => startConversationTurn(startAgentTask, submission),
+    [startAgentTask],
+  );
 
   const stopWatcher = async (watcherId: string) => {
     if (!apiBase) return;
@@ -2586,18 +2637,30 @@ export default function App() {
     }
   };
 
-  const stopExperimentLoop = async (nodeId: string, episodeId: string | null = null) => {
-    if (!apiBase || experimentStopId) return;
-    const finishExperimentStop = beginExperimentStop(nodeId);
-    try {
-      await api<unknown>(experimentStopPath(apiBase, nodeId, episodeId), { method: "POST" });
-      await Promise.all([reload(), episodeId ? refreshExperimentLoops() : Promise.resolve()]);
-    } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
-    } finally {
-      finishExperimentStop();
-    }
-  };
+  const requestExperimentStop = useCallback(
+    async (nodeId: string, episodeId: string | null = null): Promise<void> => {
+      if (!apiBase) throw new Error("No RCP project is open.");
+      if (experimentStopId) throw new Error("Another Experiment Stop is already being submitted.");
+      const finishExperimentStop = beginExperimentStop(nodeId);
+      try {
+        await api<unknown>(experimentStopPath(apiBase, nodeId, episodeId), { method: "POST" });
+        await Promise.all([reload(), episodeId ? refreshExperimentLoops() : Promise.resolve()]);
+      } finally {
+        finishExperimentStop();
+      }
+    },
+    [apiBase, beginExperimentStop, experimentStopId, refreshExperimentLoops, reload],
+  );
+  const stopExperimentLoop = useCallback(
+    async (nodeId: string, episodeId: string | null = null) => {
+      try {
+        await requestExperimentStop(nodeId, episodeId);
+      } catch (error) {
+        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      }
+    },
+    [requestExperimentStop],
+  );
 
   const checkExperimentWatcher = async (watcherId: string) => {
     if (
@@ -2626,58 +2689,99 @@ export default function App() {
     }
   };
 
-  const runExperiment = async (node: GraphNode) => {
-    if (!project || node.type !== "experiment" || mutationsDisabled) return;
-    if (experimentStartRequiresSync) {
-      setNotice({ kind: "error", text: "Sync staged graph changes before starting an episode." });
-      return;
-    }
-    const control = project.experiment_control?.[node.id];
-    if (!control?.can_start) {
-      const reason = control?.reasons.join(" ") ?? "This experiment is not ready to run.";
-      setNotice({ kind: "error", text: reason });
-      return;
-    }
-    const finishTaskStart = beginTaskStart();
-    if (!finishTaskStart) {
-      setNotice({ kind: "error", text: "Another task start is already being submitted." });
-      return;
-    }
-    try {
-      const chatId = ensureConversation(conversations, "node_chat", node, project.name);
-      const profile = project.agent_profiles.node_chat;
-      const task = await api<AgentTask>(
-        `${apiBase}/experiments/${encodeURIComponent(node.id)}/run`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            provider: profile.provider,
-            model: profile.model || null,
-            reasoning: profile.reasoning,
-            run_on: profile.run_on,
-            run_truth_scope: runScope.length ? runScope : project.default_run_truth_scope,
-            chat_id: chatId,
-          }),
-        },
-      );
-      recordStartedTask(task);
-      setNotice(null);
-      setFloatingChat(null);
-      showExperiment(node.id);
+  const startExperiment = useCallback(
+    async (node: GraphNode): Promise<AgentTask> => {
+      if (!project || node.type !== "experiment") {
+        throw new Error("The requested Experiment is not present in the open project.");
+      }
+      if (mutationsDisabled) throw new Error("Graph mutations are currently disabled.");
+      if (experimentStartRequiresSync) {
+        throw new Error("Sync staged graph changes before starting an episode.");
+      }
+      const control = project.experiment_control?.[node.id];
+      if (!control?.can_start) {
+        throw new Error(control?.reasons.join(" ") ?? "This experiment is not ready to run.");
+      }
+      const finishTaskStart = beginTaskStart();
+      if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
       try {
-        await Promise.all([reload(), refreshEpisodes()]);
-      } catch (error) {
+        const chatId = ensureConversation(conversations, "node_chat", node, project.name);
+        const profile = project.agent_profiles.node_chat;
+        const task = await api<AgentTask>(
+          `${apiBase}/experiments/${encodeURIComponent(node.id)}/run`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              provider: profile.provider,
+              model: profile.model || null,
+              reasoning: profile.reasoning,
+              run_on: profile.run_on,
+              run_truth_scope: runScope.length ? runScope : project.default_run_truth_scope,
+              chat_id: chatId,
+            }),
+          },
+        );
+        recordStartedTask(task);
+        setNotice(null);
+        setFloatingChat(null);
+        showExperiment(node.id);
+        try {
+          await Promise.all([reload(), refreshEpisodes()]);
+        } catch (error) {
+          setNotice({
+            kind: "error",
+            text: `The Experiment started, but Runs could not refresh: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+        return task;
+      } finally {
+        finishTaskStart();
+      }
+    },
+    [
+      apiBase,
+      beginTaskStart,
+      conversations,
+      ensureConversation,
+      experimentStartRequiresSync,
+      mutationsDisabled,
+      project,
+      recordStartedTask,
+      refreshEpisodes,
+      reload,
+      runScope,
+      setFloatingChat,
+      showExperiment,
+    ],
+  );
+  const runExperiment = useCallback(
+    async (node: GraphNode) => {
+      try {
+        await startExperiment(node);
+      } catch (caught) {
         setNotice({
           kind: "error",
-          text: `The Experiment started, but Runs could not refresh: ${error instanceof Error ? error.message : String(error)}`,
+          text: caught instanceof Error ? caught.message : String(caught),
         });
       }
-    } catch (caught) {
-      setNotice({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
-    } finally {
-      finishTaskStart();
-    }
-  };
+    },
+    [startExperiment],
+  );
+  const startWebMcpExperiment = useCallback(
+    async (node: GraphNode): Promise<AgentTask> => {
+      if (!project) throw new Error("No RCP project is open.");
+      const pendingProjectId = project.id;
+      setWebMcpExperimentStartProjectId(pendingProjectId);
+      try {
+        return await startExperiment(node);
+      } finally {
+        setWebMcpExperimentStartProjectId((current) =>
+          current === pendingProjectId ? null : current,
+        );
+      }
+    },
+    [project, startExperiment],
+  );
 
   const runAgent = async (config: AgentRunConfig, scope: string[], message: string | null) => {
     if (!project || taskStarting || mutationsDisabled) return;
@@ -2919,6 +3023,118 @@ export default function App() {
   const continueDesktopProjectOpen = () => {
     continueDesktopProjectAccess(commitProjectOpen);
   };
+  const projectsRef = useRef(projects);
+  projectsRef.current = projects;
+  const requestDesktopProjectOpenRef = useRef(requestDesktopProjectOpen);
+  requestDesktopProjectOpenRef.current = requestDesktopProjectOpen;
+  const commitProjectOpenRef = useRef(commitProjectOpen);
+  commitProjectOpenRef.current = commitProjectOpen;
+  const projectIndexWebMcpTools = useMemo(
+    () =>
+      projectIndexToolDefinitions(
+        () => projectsRef.current,
+        (id) => {
+          if (requestDesktopProjectOpenRef.current(id, null)) return false;
+          // Let the current tool return before switching to the project tool surface. Aborting
+          // its index registration during the call makes the browser report a false stale error.
+          window.setTimeout(() => commitProjectOpenRef.current(id), 0);
+          return true;
+        },
+      ),
+    [],
+  );
+  const projectIndexWebMcpAvailable =
+    !projectId &&
+    !setupOpen &&
+    !loading &&
+    identityReady &&
+    !identityIssue &&
+    actorIdentityChecked &&
+    !teamSessionRequired;
+  const webMcpTools = useMemo(() => {
+    if (project?.id === projectId) {
+      return [
+        ...projectReadToolDefinitions(project),
+        ...projectArtifactToolDefinitions(project, tasks, episodes, showWebMcpArtifactViewer),
+        ...projectConversationToolDefinitions(project, tasks, loadWebMcpConversation, taskStarting),
+        ...projectConversationSendToolDefinitions(
+          project,
+          tasks,
+          loadWebMcpConversation,
+          taskStarting,
+          createWebMcpConversation,
+          startWebMcpConversationTurn,
+        ),
+        ...projectExperimentToolDefinitions(
+          project,
+          tasks,
+          watchers,
+          taskStarting,
+          webMcpExperimentStartProjectId === project.id,
+          mutationsDisabled,
+          experimentStartRequiresSync,
+          startWebMcpExperiment,
+        ),
+        ...projectExperimentStopToolDefinitions(
+          project,
+          requestExperimentStop,
+          experimentStopId !== null,
+        ),
+      ];
+    }
+    return projectIndexWebMcpAvailable ? projectIndexWebMcpTools : [];
+  }, [
+    createWebMcpConversation,
+    episodes,
+    experimentStartRequiresSync,
+    experimentStopId,
+    loadWebMcpConversation,
+    mutationsDisabled,
+    project,
+    projectId,
+    projectIndexWebMcpAvailable,
+    projectIndexWebMcpTools,
+    requestExperimentStop,
+    showWebMcpArtifactViewer,
+    startWebMcpConversationTurn,
+    startWebMcpExperiment,
+    taskStarting,
+    tasks,
+    watchers,
+    webMcpExperimentStartProjectId,
+  ]);
+  const webMcpSurfaceKey =
+    project?.id === projectId
+      ? `project:${project.id}`
+      : projectIndexWebMcpAvailable
+        ? "project-index"
+        : null;
+  const webMcpRegistryRef = useRef<{
+    surfaceKey: string;
+    registry: WebMcpToolRegistry;
+  } | null>(null);
+  useEffect(() => {
+    const current = webMcpRegistryRef.current;
+    if (!webMcpSurfaceKey || webMcpTools.length === 0) {
+      current?.registry.dispose();
+      webMcpRegistryRef.current = null;
+      return;
+    }
+    if (current?.surfaceKey === webMcpSurfaceKey) {
+      current.registry.update(webMcpTools);
+      return;
+    }
+    current?.registry.dispose();
+    const registry = createWebMcpToolRegistry(webMcpTools);
+    webMcpRegistryRef.current = registry ? { surfaceKey: webMcpSurfaceKey, registry } : null;
+  }, [webMcpSurfaceKey, webMcpTools]);
+  useEffect(
+    () => () => {
+      webMcpRegistryRef.current?.registry.dispose();
+      webMcpRegistryRef.current = null;
+    },
+    [],
+  );
   // Leaving a project returns to the index of the space you are in. A team
   // space keeps its own index, so Cmd+T means the same thing in both. Leaving
   // the space itself is the separate, explicit action below.
@@ -4104,6 +4320,22 @@ export default function App() {
         <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>
           {notice.text}
         </button>
+      )}
+      {webMcpArtifactViewerUrl && (
+        <section className="webmcp-artifact-overlay" aria-label="RCP artifact viewer">
+          <header>
+            <strong>Artifact viewer</strong>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Close artifact viewer"
+              onClick={() => setWebMcpArtifactViewerUrl(null)}
+            >
+              <X size={16} />
+            </button>
+          </header>
+          <iframe title="RCP artifact viewer" src={webMcpArtifactViewerUrl} />
+        </section>
       )}
       {desktopAccessSurface}
       {actorNameSurface}
