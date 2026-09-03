@@ -2247,6 +2247,29 @@ export interface SetupExecution {
   host: string;
 }
 
+export interface SshRepositoryBrowseEntry {
+  name: string;
+  path: string;
+  git_repository: boolean;
+  has_research: boolean;
+}
+
+export interface SshRepositoryDirectoryListing {
+  path: string;
+  parent: string | null;
+  entries: SshRepositoryBrowseEntry[];
+  truncated: boolean;
+}
+
+export interface SshRepositoryBrowseResponse {
+  state: "reachable" | "unreachable" | "authentication_failed" | "host_key_failed";
+  rcp_machine: string;
+  host: string;
+  listing: SshRepositoryDirectoryListing | null;
+  diagnostic: string;
+  required_action: string | null;
+}
+
 export interface SetupAgentProfile {
   provider: ProviderId;
   runtime: string;

@@ -66,20 +66,57 @@ test("repository removal preserves another selection and handles an empty remain
 test("only desktop local repositories offer the native folder picker", () => {
   assert.deepEqual(repositoryPickerPresentation("local", true), {
     showPicker: true,
+    showSshBrowser: false,
     hint: null,
   });
   assert.deepEqual(repositoryPickerPresentation("local", false), {
     showPicker: false,
+    showSshBrowser: false,
     hint: "Paste an absolute path. Finder selection is available in the desktop app.",
   });
   assert.deepEqual(repositoryPickerPresentation("ssh", true), {
     showPicker: false,
+    showSshBrowser: true,
     hint: null,
   });
   assert.deepEqual(repositoryPickerPresentation("ssh", false), {
     showPicker: false,
+    showSshBrowser: true,
     hint: null,
   });
+});
+
+test("SSH repositories retain manual paths and offer the bounded remote browser", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(RepositoryEditor, {
+      repository: {
+        id: 8,
+        alias: "gpu",
+        location: "ssh",
+        path: "/home/alice/paper",
+        host: "alice@gpu.example",
+        default_read: true,
+      },
+      canonical: false,
+      only: true,
+      onCanonical() {},
+      onChange() {},
+    }),
+  );
+
+  assert.match(html, /Absolute repository path/);
+  assert.match(html, /value="\/home\/alice\/paper"/);
+  assert.match(html, /Browse SSH…/);
+  assert.doesNotMatch(html, /Choose folder…/);
+});
+
+test("the SSH repository browser does not introduce sub-10px primary or status text", async () => {
+  const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+  const start = styles.indexOf(".ssh-repository-browser {");
+  const end = styles.indexOf(".setup-field > input", start);
+
+  assert.ok(start >= 0 && end > start);
+  assert.doesNotMatch(styles.slice(start, end), /font-size:\s*[0-9](?:\.[0-9]+)?px/);
 });
 
 test("the repository path label targets only its input while the picker stays a sibling", () => {

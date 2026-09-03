@@ -29,7 +29,7 @@ from rcp.keyed_locks import KeyedLocks
 from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON, ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS
 from rcp.service import ProjectService
-from rcp.setup import ProjectSetupManager, ProjectSetupRequest
+from rcp.setup import ProjectSetupManager, ProjectSetupRequest, SshRepositoryBrowseRequest
 from rcp.skill_registry import SkillKind, official_registry
 from rcp.sources import (
     REMOTE_SOURCE_CACHE_LIMITS,
@@ -460,6 +460,19 @@ def preflight_project(
     try:
         return setup.preflight(body).model_dump(mode="json")
     except (FileNotFoundError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/api/project-setup/ssh-paths")
+def browse_project_setup_ssh_paths(
+    body: SshRepositoryBrowseRequest,
+    *,
+    setup: SetupDependency,
+    _personal_entry: PersonalProjectEntryDependency,
+) -> dict[str, object]:
+    try:
+        return setup.browse_ssh_repository_paths(body).model_dump(mode="json")
+    except (OSError, RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 

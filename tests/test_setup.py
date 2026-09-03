@@ -5,13 +5,19 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import ProviderReadiness
 from rcp.api import create_app
 from rcp.config import load_manifest, permissions_for
 from rcp.history import HistoryManager
-from rcp.setup import ProjectSetupRequest, SetupAgents, render_manifest
+from rcp.setup import (
+    ProjectSetupRequest,
+    SetupAgents,
+    SshRepositoryBrowseRequest,
+    render_manifest,
+)
 from rcp.sources import project_cache_roots
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.transport import StateWorkspace
@@ -76,6 +82,7 @@ def test_team_space_rejects_personal_setup_before_interpreting_the_path(
 
     monkeypatch.setattr(app.state.setup, "preflight", fail_if_called)
     monkeypatch.setattr(app.state.setup, "create", fail_if_called)
+    monkeypatch.setattr(app.state.setup, "browse_ssh_repository_paths", fail_if_called)
     monkeypatch.setattr(app.state.catalog, "register", fail_if_called)
     client = TestClient(app)
     payload = _local_payload(str(submitted_path))
@@ -92,6 +99,15 @@ def test_team_space_rejects_personal_setup_before_interpreting_the_path(
             )
         }
 
+    browse = client.post("/api/project-setup/ssh-paths", json={"host": "gpu.example"})
+    assert browse.status_code == 409
+    assert browse.json() == {
+        "detail": (
+            "Existing-checkout setup belongs to a personal space. "
+            "Create a team-project provisioning request instead."
+        )
+    }
+
     registered = client.post("/api/projects", json={"locator": "/"})
     assert registered.status_code == 409
     assert registered.json() == {
@@ -104,6 +120,138 @@ def test_team_space_rejects_personal_setup_before_interpreting_the_path(
     assert not submitted_path.exists()
     assert app.state.catalog.cards() == []
     assert app.state.background_tasks.store.project_provisioning_requests() == []
+
+
+def test_ssh_repository_browser_starts_at_home_and_validates_one_level_listing(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data")
+    commands: list[list[str]] = []
+    payload = {
+        "path": "/home/alice",
+        "parent": "/home",
+        "entries": [
+            {
+                "name": "paper",
+                "path": "/home/alice/paper",
+                "git_repository": True,
+                "has_research": True,
+            }
+        ],
+        "truncated": False,
+    }
+
+    def runner(command, **kwargs):
+        commands.append(command)
+        assert kwargs["timeout"] == 20
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    result = app.state.setup.browse_ssh_repository_paths(
+        SshRepositoryBrowseRequest(host="alice@gpu.example"),
+        runner=runner,
+        rcp_machine="research-mac",
+    )
+
+    assert result.state == "reachable"
+    assert result.listing is not None
+    assert result.listing.path == "/home/alice"
+    assert result.listing.entries[0].git_repository is True
+    assert result.listing.entries[0].has_research is True
+    assert commands[0][-2] == "alice@gpu.example"
+    assert "StrictHostKeyChecking=yes" in commands[0]
+    assert "remote_repository_browser.py" not in commands[0][-1]
+    assert "/home/alice" not in commands[0][-1]
+    assert "password" not in " ".join(commands[0]).casefold()
+
+
+def test_ssh_repository_browser_auth_failure_names_the_exact_rcp_machine(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data")
+
+    def runner(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 255, "", "Permission denied (publickey).")
+
+    result = app.state.setup.browse_ssh_repository_paths(
+        SshRepositoryBrowseRequest(host="alice@gpu.example", path="/home/alice"),
+        runner=runner,
+        rcp_machine="research-mac",
+    )
+
+    assert result.state == "authentication_failed"
+    assert result.listing is None
+    assert result.required_action is not None
+    assert 'RCP machine "research-mac"' in result.required_action
+    assert "does not collect keys or passwords" in result.required_action
+
+
+def test_personal_ssh_repository_browser_endpoint_uses_existing_local_ssh_state(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_app(data_dir=tmp_path / "data")
+    commands: list[list[str]] = []
+    payload = {
+        "path": "/home/alice",
+        "parent": "/home",
+        "entries": [],
+        "truncated": False,
+    }
+
+    def runner(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr("rcp.setup.subprocess.run", runner)
+    monkeypatch.setattr("rcp.setup.socket.gethostname", lambda: "research-mac")
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/project-setup/ssh-paths",
+        json={"host": "alice@gpu.example"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "state": "reachable",
+        "rcp_machine": "research-mac",
+        "host": "alice@gpu.example",
+        "listing": payload,
+        "diagnostic": "Remote directory is available.",
+        "required_action": None,
+    }
+    assert commands[0][0] == "ssh"
+    assert "BatchMode=yes" in commands[0]
+    assert commands[0][-2] == "alice@gpu.example"
+
+    rejected = client.post(
+        "/api/project-setup/ssh-paths",
+        json={"host": "alice@gpu.example", "password": "do-not-accept"},
+    )
+    assert rejected.status_code == 422
+    assert len(commands) == 1
+
+
+def test_ssh_repository_browser_rejects_untrusted_out_of_directory_entries(tmp_path) -> None:
+    app = create_app(data_dir=tmp_path / "data")
+    payload = {
+        "path": "/home/alice",
+        "parent": "/home",
+        "entries": [
+            {
+                "name": "escape",
+                "path": "/etc",
+                "git_repository": False,
+                "has_research": False,
+            }
+        ],
+        "truncated": False,
+    }
+
+    def runner(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    with pytest.raises(ValueError, match="invalid listing"):
+        app.state.setup.browse_ssh_repository_paths(
+            SshRepositoryBrowseRequest(host="alice@gpu.example"),
+            runner=runner,
+        )
 
 
 def test_local_wizard_preflights_without_writing_then_creates(tmp_path) -> None:

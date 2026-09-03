@@ -117,3 +117,4 @@ This index is checked against frontmatter by `tests/test_documentation.py`.
 | [S127](S127-select-codex-provider-runtime.md) | Select Codex exec or app-server per agent profile | implemented | pytest + browser + desktop |
 | [S128](S128-provision-a-team-project-through-desktop-and-server-cli.md) | App-directed team setup is prepared by the server CLI | pending | pytest + browser + desktop + ssh |
 | [S129](S129-compute-connections-are-resources.md) | Attach compute without moving the agent | pending | pytest + browser + ssh |
+| [S130](S130-browse-ssh-repository-folders.md) | Browse a remote repository path without giving RCP credentials | implemented | pytest + browser + fake ssh |

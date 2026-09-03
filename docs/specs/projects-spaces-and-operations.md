@@ -204,9 +204,14 @@ Settings and the personal project card menu open the same wizard with the move
 intent and source project already selected; RCP does not grow a second transfer
 or team-setup wizard.
 
-Personal setup keeps the current path-based local/SSH fields. New team setup
-accepts GitHub.com repository URLs and execution placement, then derives the
-server-managed central checkout paths; it never asks the member to move or
+Personal setup keeps the current path-based local/SSH fields. The local desktop
+field has its native folder picker. The SSH field preserves manual absolute
+entry and may browse from the authenticated remote user's home, one backend-
+validated directory level at a time, using only SSH state already present on
+the RCP-running machine. It labels direct Git repositories and `.research`
+directories, does not recursively scan, and never accepts credentials. New team
+setup accepts GitHub.com repository URLs and execution placement, then derives
+the server-managed central checkout paths; it never asks the member to move or
 upload an existing checkout. This slice accepts only
 `https://github.com/<owner>/<repository>[.git]` and
 `git@github.com:<owner>/<repository>[.git]`, normalizes either to one bounded

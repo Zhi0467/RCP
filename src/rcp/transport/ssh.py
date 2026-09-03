@@ -16,8 +16,16 @@ SSH_OPTIONS = [
 ]
 
 
-def ssh_arguments(host: str, command: str) -> list[str]:
-    return ["ssh", *_multiplexed_ssh_options(), host, command]
+def ssh_arguments(
+    host: str,
+    command: str,
+    *,
+    strict_host_key_checking: bool = False,
+) -> list[str]:
+    options = _multiplexed_ssh_options()
+    if strict_host_key_checking:
+        options.extend(["-o", "StrictHostKeyChecking=yes"])
+    return ["ssh", *options, host, command]
 
 
 def rsync_ssh_arguments() -> list[str]:
