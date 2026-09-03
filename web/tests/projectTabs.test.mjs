@@ -20,8 +20,12 @@ const {
   projectTabShortcut,
   projectViewportRef,
 } = await server.ssrLoadModule("/src/projectTabs.ts");
-const { branchExperimentPollingKey, exactRunExperimentSelectionHref, parseProjectHash } =
-  await server.ssrLoadModule("/src/experimentBoard.ts");
+const {
+  branchExperimentPollingKey,
+  exactAutoResearchEpisodeHref,
+  exactRunExperimentSelectionHref,
+  parseProjectHash,
+} = await server.ssrLoadModule("/src/experimentBoard.ts");
 const { reduceExperimentSelection } = await server.ssrLoadModule("/src/hooks/useGraphSelection.ts");
 const { ProjectDock } = await server.ssrLoadModule("/src/components/ProjectDock.tsx");
 
@@ -308,6 +312,99 @@ test("Runs routing and tab selection retain an exact Auto-research episode", () 
     selectedAutoResearchEpisodeId: "completed-episode",
   });
   assert.strictEqual(reduceExperimentSelection(selected, { kind: "view_changed" }), selected);
+});
+
+test("starting Auto-research from an exact episode URL follows the started episode", () => {
+  const route = parseProjectHash(
+    "#/projects/project-one?view=runs&mode=auto_research&episode=exhausted-episode",
+  );
+  const selected = reduceExperimentSelection(
+    {
+      selectedExperimentRunId: null,
+      focusExperimentRunId: null,
+      selectedExperimentRoute: null,
+      selectedAutoResearchEpisodeId: null,
+    },
+    {
+      kind: "route",
+      experimentId: route.experimentId,
+      experimentRoute: route.experimentRoute,
+      autoResearchEpisodeId: route.autoResearchEpisodeId,
+    },
+  );
+  const startedEpisodeId = "episode/started";
+  const href = exactAutoResearchEpisodeHref(
+    route.projectId,
+    startedEpisodeId,
+    selected.selectedAutoResearchEpisodeId,
+  );
+  const followed = reduceExperimentSelection(selected, {
+    kind: "route",
+    experimentId: null,
+    experimentRoute: null,
+    autoResearchEpisodeId: startedEpisodeId,
+  });
+
+  assert.deepEqual(parseProjectHash(href), {
+    projectId: "project-one",
+    view: "execution",
+    projectViewSpecified: true,
+    experimentId: null,
+    experimentRoute: null,
+    autoResearchEpisodeId: startedEpisodeId,
+  });
+  assert.deepEqual(followed, {
+    selectedExperimentRunId: null,
+    focusExperimentRunId: null,
+    selectedExperimentRoute: null,
+    selectedAutoResearchEpisodeId: startedEpisodeId,
+  });
+  assert.equal(exactAutoResearchEpisodeHref("project-one", startedEpisodeId, null), null);
+});
+
+test("reauthorizing from an exact episode URL follows the fresh episode", () => {
+  const route = parseProjectHash(
+    "#/projects/project-one?view=runs&mode=auto_research&episode=exhausted-episode",
+  );
+  const selected = reduceExperimentSelection(
+    {
+      selectedExperimentRunId: null,
+      focusExperimentRunId: null,
+      selectedExperimentRoute: null,
+      selectedAutoResearchEpisodeId: null,
+    },
+    {
+      kind: "route",
+      experimentId: route.experimentId,
+      experimentRoute: route.experimentRoute,
+      autoResearchEpisodeId: route.autoResearchEpisodeId,
+    },
+  );
+  const freshEpisodeId = "episode/reauthorized";
+  const href = exactAutoResearchEpisodeHref(
+    route.projectId,
+    freshEpisodeId,
+    selected.selectedAutoResearchEpisodeId,
+  );
+  const followed = reduceExperimentSelection(selected, {
+    kind: "route",
+    experimentId: null,
+    experimentRoute: null,
+    autoResearchEpisodeId: freshEpisodeId,
+  });
+
+  assert.equal(selected.selectedAutoResearchEpisodeId, "exhausted-episode");
+  assert.equal(
+    href,
+    "#/projects/project-one?view=runs&mode=auto_research&episode=episode%2Freauthorized",
+  );
+  assert.equal(parseProjectHash(href).autoResearchEpisodeId, freshEpisodeId);
+  assert.deepEqual(followed, {
+    selectedExperimentRunId: null,
+    focusExperimentRunId: null,
+    selectedExperimentRoute: null,
+    selectedAutoResearchEpisodeId: freshEpisodeId,
+  });
 });
 
 test("an explicit malformed Runs route clears a cached exact branch selection", () => {

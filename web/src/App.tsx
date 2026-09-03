@@ -759,6 +759,7 @@ export default function App() {
     clearNodeSelections,
     dockNode,
     restoreDockedNode: restoreDockedGraphNode,
+    replaceExactAutoResearchSelection,
     selectExperiment,
     clearExperimentFocus,
     showExperiment,
@@ -2618,6 +2619,7 @@ export default function App() {
         starting_instruction: startingInstruction,
       });
       replaceEpisode(started);
+      replaceExactAutoResearchSelection(started.episode_id);
       closeAutoResearchDialog();
       changeView("execution");
       try {
@@ -2658,6 +2660,7 @@ export default function App() {
     try {
       const nextEpisode = await reauthorizeEpisode(apiBase, episodeId, invocationCeiling);
       replaceEpisode(nextEpisode);
+      replaceExactAutoResearchSelection(nextEpisode.episode_id);
       await reload();
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
