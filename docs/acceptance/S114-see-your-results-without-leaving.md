@@ -9,10 +9,13 @@ covered_by:
   - tests/test_result_view_artifacts.py
   - web/tests/resultViews.test.mjs
 invariants: [1, 2, 4, 6, 10e]
-last_checked: 2026-08-27 — backend and web regressions pass; the browser drive
-  covers Box, comment, Add to chat, Keep, and live external reread. A rebuilt
-  RCP Dev restart and exact Open report click show the shell with `/content`
-  nested, and the legacy `/preview` URL returns that shell. SSH remains pending.
+last_checked: 2026-09-02 — the source-generated viewer was driven in Safari's
+  WebKit: highlighting text enabled Add highlighted text without creating a rail
+  item, and the explicit button created exactly one commentable selection. A
+  source-built desktop also opened and downloaded the live TIDMAD artifact over
+  the WTH UCSD team's SSH-tunneled HTTPS origin, then closed the preview without
+  leaving the team project. The earlier browser drive covers Box, Add to chat,
+  Keep, and live external reread; remote Keep remains pending.
 ---
 
 # Ask about any task artifact without leaving its chat
@@ -42,9 +45,10 @@ canonical state.
 2. Open the HTML. Confirm the unified viewer shows the page, transient-selection
    rail, and Keep control; no result-view destination, selector, or second card
    exists.
-3. Select text and box a region. Add separate comments, then add the assembled
-   context to the chat. Confirm no task starts automatically and the editable
-   composer remains in Discuss.
+3. Highlight text and confirm it remains an ordinary selection until the human
+   explicitly adds it to the rail. Add that highlight, then box a region. Add
+   separate comments and add the assembled context to the chat. Confirm no task
+   starts automatically and the editable composer remains in Discuss.
 4. Send a question. Confirm the exact originating native session receives the
    bounded selections, comments, final question, and a read-only current copy
    of the artifact. Confirm it answers without editing the file.
@@ -78,6 +82,7 @@ canonical state.
 - `a_source_update_upgrades_legacy_desktop_preview_urls_to_the_viewer_shell`
 - `legacy_inline_image_requests_remain_images_after_the_source_update`
 - `text_and_box_selections_are_transient_not_persisted_annotations`
+- `highlighting_text_does_not_capture_it_without_an_explicit_action`
 - `box_context_includes_bounded_coordinates_and_visible_labels`
 - `selection_comments_assemble_into_a_visible_editable_chat_draft`
 - `adding_context_never_dispatches_a_turn`

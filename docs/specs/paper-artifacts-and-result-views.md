@@ -119,10 +119,13 @@ image request; ordinary navigation to that URL receives the shell.
 
 ### Selection-to-prompt, not annotation
 
-Selections are temporary prompt inputs, not persistent annotations. The human
-may select text or draw a box over the rendered artifact, add one comment or
-question per selection, review the assembled draft, and add it to the ordinary
-chat composer. Nothing is sent until the human sends that composer turn.
+Selections are temporary prompt inputs, not persistent annotations. Highlighting
+text remains an ordinary browser selection until the human explicitly adds that
+highlight to the selection rail; changing a highlight never creates prompt
+context by itself. Drawing a box is already an explicit capture action. The
+human may add one comment or question per captured selection, review the
+assembled draft, and add it to the ordinary chat composer. Nothing is sent until
+the human sends that composer turn.
 
 RCP carries selected text with limited surrounding text. A box carries bounded
 viewport-relative coordinates and the intersecting visible text or SVG labels;

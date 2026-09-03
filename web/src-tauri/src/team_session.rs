@@ -9,7 +9,7 @@ use reqwest::{
     header::{
         HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, SET_COOKIE,
     },
-    Client, Response,
+    Client, Method, RequestBuilder, Response,
 };
 use semver::Version;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -164,6 +164,15 @@ impl TeamSessionState {
     }
 
     pub fn status_for_origin(&self, origin: &Url) -> Result<Option<DesktopStatus>, String> {
+        Ok(self
+            .established_for_origin(origin)?
+            .map(|session| session.status))
+    }
+
+    pub fn established_for_origin(
+        &self,
+        origin: &Url,
+    ) -> Result<Option<EstablishedTeamSession>, String> {
         let established = self.acquire()?;
         Ok(established
             .values()
@@ -171,7 +180,7 @@ impl TeamSessionState {
                 Url::parse(&session.connection.local_origin)
                     .is_ok_and(|candidate| candidate.origin() == origin.origin())
             })
-            .map(|session| session.status.clone()))
+            .cloned())
     }
 
     pub fn established(&self, connection_id: &str) -> Result<EstablishedTeamSession, String> {
@@ -526,6 +535,26 @@ impl TeamSessionState {
             return Err("the target activation proof has an invalid size".into());
         }
         Ok(Zeroizing::new(proof))
+    }
+
+    pub(crate) async fn authenticated_resource_request(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        method: Method,
+        url: Url,
+        timeout: Duration,
+    ) -> Result<Response, String> {
+        let session = self.established(connection_id)?;
+        validate_resource_request(&method, &session.connection.local_origin, &url)?;
+        let (connection, client, cookie) = self
+            .authenticated_request_context(connections, connection_id)
+            .await?;
+        debug_assert_eq!(connection.connection_id, session.connection.connection_id);
+        authenticated_resource_request_builder(&client, method, url, cookie, timeout)
+            .send()
+            .await
+            .map_err(|error| format!("could not reach the team resource: {error}"))
     }
 
     /// Acknowledge cleanup using only the typed public receipt returned by the
@@ -913,6 +942,31 @@ impl TeamSessionState {
             .lock()
             .map_err(|_| "the established team session state is unavailable".to_string())
     }
+}
+
+fn authenticated_resource_request_builder(
+    client: &Client,
+    method: Method,
+    url: Url,
+    cookie: HeaderValue,
+    timeout: Duration,
+) -> RequestBuilder {
+    client
+        .request(method, url)
+        .header(COOKIE, cookie)
+        .timeout(timeout)
+}
+
+fn validate_resource_request(method: &Method, origin: &str, url: &Url) -> Result<(), String> {
+    if method != Method::GET && method != Method::HEAD {
+        return Err("team resource requests are read-only".into());
+    }
+    let expected =
+        Url::parse(origin).map_err(|_| "the saved team origin is invalid".to_string())?;
+    if expected.origin() != url.origin() {
+        return Err("the team resource URL is outside the displayed team space".into());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -1476,6 +1530,50 @@ mod tests {
         assert!(validate_health(&verified, Some(&connection)).is_ok());
         connection.expected_space_id = "77777777-7777-4777-8777-777777777777".into();
         assert!(validate_health(&verified, Some(&connection)).is_err());
+    }
+
+    #[test]
+    fn team_resource_requests_are_read_only_and_same_origin() {
+        let origin = "https://rcp-66666666666646668666666666666666.rcp.localhost:18421";
+        for method in [Method::GET, Method::HEAD] {
+            validate_resource_request(
+                &method,
+                origin,
+                &Url::parse(&format!("{origin}/api/projects/project/artifact")).unwrap(),
+            )
+            .unwrap();
+        }
+        assert!(validate_resource_request(
+            &Method::POST,
+            origin,
+            &Url::parse(&format!("{origin}/api/projects/project/artifact")).unwrap(),
+        )
+        .is_err());
+        assert!(validate_resource_request(
+            &Method::GET,
+            origin,
+            &Url::parse(
+                "https://rcp-66666666666646668666666666666666.rcp.localhost:19421/api/projects/project/artifact",
+            )
+            .unwrap(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn team_resource_request_uses_the_callers_timeout() {
+        let timeout = Duration::from_millis(125);
+        let request = authenticated_resource_request_builder(
+            &Client::new(),
+            Method::GET,
+            Url::parse("https://example.com/resource").unwrap(),
+            HeaderValue::from_static("session=cookie"),
+            timeout,
+        )
+        .build()
+        .unwrap();
+
+        assert_eq!(request.timeout(), Some(&timeout));
     }
 
     #[test]

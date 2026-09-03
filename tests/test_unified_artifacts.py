@@ -101,6 +101,10 @@ def test_viewer_assembles_transient_context_without_dispatch_or_mode_change() ->
     assert "fetch(config.keepUrl" in document
     assert "A prompt can include at most 12 selections." in document
     assert "if(boxWidth<=0||boxHeight<=0)" in document
+    assert 'id="captureText"' in document
+    assert "pendingText={kind:'text'" in document
+    assert "captureText.addEventListener('click'" in document
+    assert "if(raw.kind==='text'&&typeof raw.text==='string') appendSelection" not in document
     assert "connect-src 'self'" in csp
     assert "img-src 'self' data: blob:" in csp
 
