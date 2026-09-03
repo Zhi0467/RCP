@@ -44,6 +44,13 @@ from rcp.server_runtime import (
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _SAFE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_-]{0,79}")
 _NO_VALUE = "none"
+MANAGED_SOURCE_ORIGIN_MISMATCH = "managed source origin differs from installed configuration"
+SOURCE_KEY_PAIR_PROBLEMS = (
+    "source private key is missing or unreadable",
+    "source private key has the wrong type, owner, group, or mode",
+    "source public key is missing or unreadable",
+    "source public key has the wrong type, owner, group, or mode",
+)
 
 DoctorOverallState = Literal[
     "healthy",
@@ -90,6 +97,7 @@ class ServerDoctorReport(_StrictModel):
     source_root: str
     releases_root: str
     configured_origin: str | None
+    configured_authentication: Literal["public", "deploy_key"] | None = None
     configured_branch: str | None
     source_public_key_fingerprint: str | None
     managed_main_head: str | None
@@ -192,6 +200,10 @@ class ServerDoctorReport(_StrictModel):
             NonsecretField(name="source_root", value=self.source_root),
             NonsecretField(name="releases_root", value=self.releases_root),
             NonsecretField(name="configured_origin", value=_shown(self.configured_origin)),
+            NonsecretField(
+                name="configured_authentication",
+                value=_shown(self.configured_authentication),
+            ),
             NonsecretField(name="configured_branch", value=_shown(self.configured_branch)),
             NonsecretField(
                 name="source_public_key_fingerprint",
@@ -513,6 +525,9 @@ class LinuxServerDoctorMachine:
             source_root=str(self.layout.source_checkout),
             releases_root=str(self.layout.releases_root),
             configured_origin=config.source.origin if config is not None else None,
+            configured_authentication=(
+                config.source.authentication if config is not None else None
+            ),
             configured_branch=config.source.branch if config is not None else None,
             source_public_key_fingerprint=(
                 config.source.public_key_fingerprint if config is not None else None
@@ -852,7 +867,7 @@ class LinuxServerDoctorMachine:
         managed = self._git_commit(source, "HEAD")
         upstream = self._git_commit(source, "origin/main")
         if origin is None or origin != config.source.origin:
-            add_problem("managed source origin differs from installed configuration")
+            add_problem(MANAGED_SOURCE_ORIGIN_MISMATCH)
         if branch is None or branch != config.source.branch:
             add_problem("managed source is not checked out on configured main")
         if dirty is None:
@@ -1466,6 +1481,8 @@ def _problem_text(problems: tuple[str, ...]) -> str:
 
 __all__ = [
     "LinuxServerDoctorMachine",
+    "MANAGED_SOURCE_ORIGIN_MISMATCH",
+    "SOURCE_KEY_PAIR_PROBLEMS",
     "ServerDoctorReport",
     "prepare_doctor_command",
     "release_relationship",
