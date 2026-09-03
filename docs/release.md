@@ -77,8 +77,10 @@ gh workflow run promote.yml --repo Zhi0467/RCP -f build=<N> -f tag=v<X.Y.Z>
 
 The workflow verifies the base version, creates release `v<X.Y.Z>` pointing at
 the build's commit, and re-attaches the build's assets unchanged. If the version
-does not match the tag, it stops with a plain message and creates nothing. The
-new release is now `stable`.
+does not match the tag, or a release or Git tag with that name already exists,
+it stops with a plain message and creates nothing. After creating the release it
+confirms the tag resolves to the build's commit and removes the release again if
+it does not. The new release is now `stable`.
 
 Only a human promotes. An agent may prepare the version-bump pull request and
 may tell you which build is green; it does not run the workflow.

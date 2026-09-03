@@ -32,7 +32,7 @@ jobs:
           enable-cache: true
           python-version: "3.12"
 
-      - name: Refuse an existing release
+      - name: Refuse an existing release or tag
         run: |
           if ! [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
             echo "invalid build number $BUILD_NUMBER"
@@ -40,6 +40,10 @@ jobs:
           fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "release $RELEASE_TAG already exists"
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "git tag $RELEASE_TAG already exists; gh release create would reuse its commit instead of the build's"
             exit 1
           fi
 
@@ -77,6 +81,12 @@ jobs:
             --title "$RELEASE_TAG" \
             --notes "Promoted build $BUILD_NUMBER from commit $TARGET_COMMIT." >/dev/null 2>&1; then
             echo "could not create release $RELEASE_TAG"
+            exit 1
+          fi
+          TAG_COMMIT="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha 2>/dev/null || true)"
+          if [[ "$TAG_COMMIT" != "$TARGET_COMMIT" ]]; then
+            gh release delete "$RELEASE_TAG" --cleanup-tag --yes >/dev/null 2>&1 || true
+            echo "release $RELEASE_TAG pointed at ${TAG_COMMIT:-nothing} instead of build commit $TARGET_COMMIT; it was removed again"
             exit 1
           fi
 

@@ -8,8 +8,12 @@ on:
 permissions:
   contents: read
 
+# Pull-request runs share one group per branch and cancel each other. Push runs
+# on main each get their own group: GitHub keeps at most one pending run per
+# group, so a shared group would drop the middle merge's build even with
+# cancel-in-progress off.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
