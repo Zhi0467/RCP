@@ -251,13 +251,26 @@ def finish_public_source_transition(
     config: InstalledServerConfig,
     repository: GitHubRepository,
     *,
+    service_uid: int,
+    service_gid: int,
     run_git: Callable[..., None],
     git_text: Callable[..., str],
+    refusal: type[RuntimeError],
 ) -> SourceTransition | None:
     """Finish any key or checkout work promised by a public source config."""
 
     if config.source.authentication != "public":
         return None
+
+    source = layout.source_checkout
+    source_exists = source.exists() or source.is_symlink()
+    if source_exists:
+        _require_managed_source_checkout(
+            source,
+            uid=service_uid,
+            gid=service_gid,
+            refusal=refusal,
+        )
 
     private_path = layout.credentials_root / _SOURCE_PRIVATE_KEY
     public_path = layout.credentials_root / _SOURCE_PUBLIC_KEY
@@ -268,8 +281,7 @@ def finish_public_source_transition(
         _fsync_directory(layout.credentials_root)
 
     rewrote_origin = False
-    source = layout.source_checkout
-    if source.exists():
+    if source_exists:
         environment = source_git_environment(config.source, layout)
         origin = git_text(
             source,
@@ -303,6 +315,8 @@ def converge_public_source(
     config: InstalledServerConfig,
     repository: GitHubRepository,
     *,
+    service_uid: int,
+    service_gid: int,
     run_as_service: Callable[..., subprocess.CompletedProcess[str]],
     run_git: Callable[..., None],
     git_text: Callable[..., str],
@@ -312,6 +326,15 @@ def converge_public_source(
 
     if config.source.authentication != "deploy_key":
         return None
+    source = layout.source_checkout
+    source_exists = source.exists() or source.is_symlink()
+    if source_exists:
+        _require_managed_source_checkout(
+            source,
+            uid=service_uid,
+            gid=service_gid,
+            refusal=refusal,
+        )
     public_probe = _probe_source_with_runner(
         repository.https_origin,
         source=None,
@@ -322,8 +345,7 @@ def converge_public_source(
     if public_probe != "ready":
         return None
 
-    source = layout.source_checkout
-    if source.exists() or source.is_symlink():
+    if source_exists:
         observed_origin = git_text(
             source,
             ("remote", "get-url", "origin"),
@@ -359,8 +381,11 @@ def converge_public_source(
             layout,
             transitioned_config,
             repository,
+            service_uid=service_uid,
+            service_gid=service_gid,
             run_git=run_git,
             git_text=git_text,
+            refusal=refusal,
         )
     except OSError as exc:
         raise refusal(
@@ -1096,8 +1121,11 @@ class LinuxInstallMachine:
                         self.layout,
                         config,
                         repository,
+                        service_uid=self._service_uid_value,
+                        service_gid=self._service_gid_value,
                         run_git=self._run_git,
                         git_text=self._git_text,
+                        refusal=InstallRefused,
                     )
                 except OSError as exc:
                     raise InstallRefused(
@@ -1123,6 +1151,8 @@ class LinuxInstallMachine:
                 self.layout,
                 config,
                 repository,
+                service_uid=self._service_uid_value,
+                service_gid=self._service_gid_value,
                 run_as_service=lambda argv, **kwargs: self._run_as_service(
                     argv,
                     check=False,
@@ -1273,19 +1303,21 @@ class LinuxInstallMachine:
                     "and network access, then rerun."
                 ),
             )
-        _require_owned_directory(source, uid=self._service_uid_value, gid=self._service_gid_value)
-        git_dir = source / ".git"
-        if git_dir.is_symlink() or not git_dir.is_dir():
-            raise InstallRefused(
-                "The managed source path is not the RCP-owned Git checkout; install will not "
-                "replace or adopt it."
-            )
+        _require_managed_source_checkout(
+            source,
+            uid=self._service_uid_value,
+            gid=self._service_gid_value,
+            refusal=InstallRefused,
+        )
         finish_public_source_transition(
             self.layout,
             access.config,
             access.repository,
+            service_uid=self._service_uid_value,
+            service_gid=self._service_gid_value,
             run_git=self._run_git,
             git_text=self._git_text,
+            refusal=InstallRefused,
         )
         origin = self._git_text(source, ("remote", "get-url", "origin"), environment=environment)
         if origin != access.config.source.origin:
@@ -2188,6 +2220,25 @@ def _require_owned_directory(path: Path, *, uid: int, gid: int) -> None:
     info = path.stat()
     if (info.st_uid, info.st_gid) != (uid, gid):
         raise InstallRefused(f"Managed directory {path} has unexpected ownership.")
+
+
+def _require_managed_source_checkout(
+    source: Path,
+    *,
+    uid: int,
+    gid: int,
+    refusal: type[RuntimeError],
+) -> None:
+    try:
+        _require_owned_directory(source, uid=uid, gid=gid)
+    except InstallRefused as exc:
+        raise refusal(str(exc)) from exc
+    git_dir = source / ".git"
+    if git_dir.is_symlink() or not git_dir.is_dir():
+        raise refusal(
+            "The managed source path is not the RCP-owned Git checkout; install will not "
+            "replace or adopt it."
+        )
 
 
 def _require_owned_file(

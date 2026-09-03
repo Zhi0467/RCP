@@ -43,6 +43,7 @@ from rcp.server_ops.install import (
     InstalledServiceControlRefused,
     InstalledSystemServiceController,
     SourceTransition,
+    _is_repository_ssh_origin,
     _run_as_account,
     converge_public_source,
     finish_public_source_transition,
@@ -1234,6 +1235,8 @@ class LinuxUpdateMachine:
                 self.layout,
                 inspection.config,
                 repository,
+                service_uid=self._service_uid,
+                service_gid=self._service_gid,
                 run_as_service=self._run_service,
                 run_git=self._run_git,
                 git_text=self._git_text,
@@ -1252,8 +1255,11 @@ class LinuxUpdateMachine:
                         self.layout,
                         inspection.config,
                         repository,
+                        service_uid=self._service_uid,
+                        service_gid=self._service_gid,
                         run_git=self._run_git,
                         git_text=self._git_text,
+                        refusal=UpdateRefused,
                     )
                 except OSError as exc:
                     raise UpdateRefused(
@@ -2274,8 +2280,11 @@ class LinuxUpdateMachine:
                 self.layout,
                 config,
                 repository,
+                service_uid=self._service_uid,
+                service_gid=self._service_gid,
                 run_git=self._run_git,
                 git_text=self._git_text,
+                refusal=UpdateRefused,
             )
         origin = self._git_text(source, ("remote", "get-url", "origin"), environment=environment)
         branch = self._git_text(
@@ -2572,10 +2581,18 @@ class LinuxUpdateMachine:
         receipt: BuiltCandidateReceipt,
         target: UpdateTarget,
     ) -> None:
+        config = target.inspection.config
+        source_origin_matches = receipt.source_origin == config.source.origin
+        if not source_origin_matches and config.source.authentication == "public":
+            repository = normalize_github_repository(config.source.origin)
+            source_origin_matches = _is_repository_ssh_origin(
+                receipt.source_origin,
+                repository=repository,
+            )
         if (
-            receipt.installation_id != target.inspection.config.installation_id
-            or receipt.source_origin != target.inspection.config.source.origin
-            or receipt.source_branch != target.inspection.config.source.branch
+            receipt.installation_id != config.installation_id
+            or not source_origin_matches
+            or receipt.source_branch != config.source.branch
             or receipt.base_current_commit != target.inspection.current_commit
             or receipt.base_running_commit != target.inspection.running_commit
             or receipt.base_instance_id != target.inspection.instance_id

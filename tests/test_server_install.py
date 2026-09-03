@@ -746,6 +746,91 @@ def test_existing_deploy_key_source_transitions_before_validating_missing_privat
     assert access.retired_deploy_key_label == f"rcp-source:{INSTALLATION_ID}"
 
 
+@pytest.mark.parametrize("authentication", ["deploy_key", "public"])
+@pytest.mark.parametrize("symlink", ["source", "git"])
+def test_source_transition_refuses_a_symlinked_managed_checkout_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    authentication: Literal["deploy_key", "public"],
+    symlink: Literal["source", "git"],
+) -> None:
+    layout, machine, config, private, public = _configured_source_install(
+        tmp_path,
+        authentication=authentication,
+    )
+    if authentication == "public":
+        private.write_bytes(b"retired-private-key\n")
+        public.write_bytes(b"retired-public-key\n")
+    external_checkout = tmp_path / "external-checkout"
+    subprocess.run(("git", "init", "-q", str(external_checkout)), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(external_checkout),
+            "remote",
+            "add",
+            "origin",
+            REPOSITORY.ssh_origin,
+        ),
+        check=True,
+    )
+    if symlink == "source":
+        layout.source_checkout.symlink_to(external_checkout, target_is_directory=True)
+        expected = f"Managed path {layout.source_checkout} is not a regular directory."
+    else:
+        layout.source_checkout.mkdir(parents=True)
+        (layout.source_checkout / ".git").symlink_to(
+            external_checkout / ".git",
+            target_is_directory=True,
+        )
+        expected = (
+            "The managed source path is not the RCP-owned Git checkout; install will not "
+            "replace or adopt it."
+        )
+    before = {path: path.read_bytes() for path in (layout.config_path, private, public)}
+
+    monkeypatch.setattr(server_install, "load_installed_server_config", lambda _path: config)
+    monkeypatch.setattr(
+        server_install,
+        "write_installed_server_config",
+        lambda *_args: pytest.fail("an unsafe checkout must not rewrite config"),
+    )
+    monkeypatch.setattr(
+        machine,
+        "_run_as_service",
+        lambda *_args, **_kwargs: pytest.fail("an unsafe checkout must be refused before probing"),
+    )
+    monkeypatch.setattr(
+        machine,
+        "_probe_source",
+        lambda *_args, **_kwargs: pytest.fail("an unsafe checkout must be refused before probing"),
+    )
+    monkeypatch.setattr(
+        machine,
+        "_git_text",
+        lambda *_args, **_kwargs: pytest.fail("an unsafe checkout must be refused before Git"),
+    )
+    monkeypatch.setattr(
+        machine,
+        "_run_git",
+        lambda *_args, **_kwargs: pytest.fail("an unsafe checkout must never be rewritten"),
+    )
+
+    with pytest.raises(InstallRefused) as refused:
+        machine.prepare_source_access(REPOSITORY)
+
+    assert str(refused.value) == expected
+    assert {path: path.read_bytes() for path in before} == before
+    observed_origin = subprocess.run(
+        ("git", "-C", str(external_checkout), "remote", "get-url", "origin"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert observed_origin == REPOSITORY.ssh_origin
+
+
 @pytest.mark.parametrize(
     ("public_probe", "ssh_probe", "grant_needed"),
     [

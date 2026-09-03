@@ -1479,6 +1479,30 @@ def test_candidate_receipt_is_private_validated_and_never_overwritten(tmp_path: 
         machine._read_receipt(path)
 
 
+def test_candidate_receipt_accepts_only_the_same_repository_retired_ssh_origin(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    machine = LinuxUpdateMachine(
+        layout,
+        config_loader=lambda _path: _config(layout),
+        doctor=SimpleNamespace(inspect=lambda: None),
+        service_runner=lambda *args, **kwargs: pytest.fail("no subprocess expected"),
+        service_identity=(os.getuid(), os.getgid()),
+        root_identity=(os.getuid(), os.getgid()),
+    )
+    target = UpdateTarget(inspection=_inspection(layout), target_commit=TARGET)
+    retired_origin_receipt = _receipt(layout).model_copy(update={"source_origin": SSH_ORIGIN})
+
+    machine._validate_receipt_for_target(retired_origin_receipt, target)
+
+    different_repository = retired_origin_receipt.model_copy(
+        update={"source_origin": "git@github.com:openai/not-rcp.git"}
+    )
+    with pytest.raises(UpdateRefused, match="different source or live base state"):
+        machine._validate_receipt_for_target(different_repository, target)
+
+
 def test_candidate_receipt_cannot_name_different_web_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
