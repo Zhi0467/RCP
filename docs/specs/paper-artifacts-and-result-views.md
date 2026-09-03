@@ -159,8 +159,11 @@ digest still matches the Work turn's base. If the source already matches the
 candidate, Accept completes the durable decision as recovery from an interrupted
 post-publication write. Any other current digest changes the candidate to
 **Conflict**; the source remains untouched and the human may Reject and request
-a fresh revision. Reject never changes the source. Repeated Accept or Reject of
-the same completed disposition is idempotent.
+a fresh revision. A permanently missing source is the same conflict, while a
+transient storage failure leaves the candidate pending for retry. Review and
+Reject remain available when a current or candidate preview cannot render.
+Reject never changes the source. Repeated Accept or Reject of the same completed
+disposition is idempotent.
 
 The rule is identical for temporary or kept artifacts and local or remote
 stages. Keep and disposition share the same mutation lock, so Keep may move a

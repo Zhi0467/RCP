@@ -708,8 +708,11 @@ def accept_artifact_revision_candidate(
             store.reset_artifact_revision_acceptance(candidate_id)
             raise
         except FileNotFoundError as exc:
-            store.reset_artifact_revision_acceptance(candidate_id)
-            raise HTTPException(status_code=410, detail="Preview unavailable") from exc
+            conflicted = store.conflict_artifact_revision_candidate(
+                candidate_id,
+                "The current artifact is no longer available.",
+            )
+            raise HTTPException(status_code=409, detail=conflicted.diagnostic) from exc
         except (OSError, StateUnavailable) as exc:
             store.reset_artifact_revision_acceptance(candidate_id)
             raise HTTPException(status_code=503, detail="Preview unavailable") from exc

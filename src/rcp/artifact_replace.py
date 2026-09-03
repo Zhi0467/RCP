@@ -174,8 +174,8 @@ def _recover_regular_file_replacements(
             staged = staged_pattern.fullmatch(replacement_name)
             if staged is None:
                 continue
-            expected_sha256, candidate_sha256, token = staged.groups()
-            candidate_fingerprint = None
+            _discard_staged_regular_file(recovery_directory_fd, replacement_name)
+            continue
         replacement_sha256, replacement_fingerprint, replacement_stable = _regular_file_state(
             recovery_directory_fd, replacement_name
         )
@@ -200,7 +200,6 @@ def _recover_regular_file_replacements(
             raise ValueError("artifact replacement recovery found changing source bytes")
         if (
             replacement_sha256 not in {expected_sha256, candidate_sha256}
-            and candidate_fingerprint is not None
             and current_fingerprint == candidate_fingerprint
         ):
             replacement_name = _rename_regular_file_rollback(
@@ -226,13 +225,21 @@ def _recover_regular_file_replacements(
             expected_sha256,
             candidate_sha256,
         }:
-            if candidate_fingerprint is None:
-                raise ValueError("artifact replacement recovery preserved concurrent edits")
             os.unlink(replacement_name, dir_fd=recovery_directory_fd)
             os.fsync(recovery_directory_fd)
             continue
         os.unlink(replacement_name, dir_fd=recovery_directory_fd)
         os.fsync(recovery_directory_fd)
+
+
+def _discard_staged_regular_file(recovery_directory_fd: int, replacement_name: str) -> None:
+    """Remove a pre-publication candidate that cannot have reached the live path."""
+
+    metadata = os.stat(replacement_name, dir_fd=recovery_directory_fd, follow_symlinks=False)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("artifact replacement staging marker is not a regular file")
+    os.unlink(replacement_name, dir_fd=recovery_directory_fd)
+    os.fsync(recovery_directory_fd)
 
 
 def _rename_regular_file_rollback(
@@ -351,8 +358,9 @@ def _regular_file_state(directory_fd: int, name: str) -> tuple[str, str, bool]:
             path.st_ctime_ns,
         )
         digest_sha256 = digest.hexdigest()
+        # st_dev identifies a mount instance and can change across reboot or remount.
+        # st_ino still distinguishes same-byte replacement files on this filesystem.
         fingerprint_identity = (
-            path.st_dev,
             path.st_ino,
             stat.S_IFMT(path.st_mode),
             path.st_size,

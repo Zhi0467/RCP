@@ -40,6 +40,36 @@ def _workspace(tmp_path: Path) -> LocalStateWorkspace:
     return LocalStateWorkspace(research, str(research))
 
 
+def _artifact_staged_marker_name(name: str, expected: bytes, candidate: bytes) -> str:
+    name_hash = hashlib.sha256(name.encode("utf-8")).hexdigest()[:24]
+    return (
+        f".rcp-artifact-{name_hash}-{hashlib.sha256(expected).hexdigest()}-"
+        f"{hashlib.sha256(candidate).hexdigest()}-{'a' * 16}"
+    )
+
+
+def _simulate_remounted_device(monkeypatch) -> None:
+    real_fstat = os.fstat
+    real_stat = os.stat
+
+    class RemountedStat:
+        def __init__(self, original) -> None:
+            self._original = original
+            self.st_dev = original.st_dev + 1
+
+        def __getattr__(self, name: str):
+            return getattr(self._original, name)
+
+    def remounted_fstat(descriptor: int):
+        return RemountedStat(real_fstat(descriptor))
+
+    def remounted_stat(*args, **kwargs):
+        return RemountedStat(real_stat(*args, **kwargs))
+
+    monkeypatch.setattr(os, "fstat", remounted_fstat)
+    monkeypatch.setattr(os, "stat", remounted_stat)
+
+
 def _seed_pending_local_candidate(
     app,
     tmp_path: Path,
@@ -515,16 +545,21 @@ def test_temporary_artifact_revision_preserves_a_save_that_races_rollback(
     assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
 
 
-def test_temporary_artifact_revision_recovers_a_save_displaced_by_rollback(
+@pytest.mark.parametrize(
+    "newest",
+    [b"<p>newest external edit racing rollback</p>", b"<p>candidate</p>"],
+    ids=("different-bytes", "candidate-bytes-new-inode"),
+)
+def test_temporary_artifact_revision_recovers_rollback_after_remount(
     tmp_path: Path,
     monkeypatch,
+    newest: bytes,
 ) -> None:
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     target = artifacts / "result.html"
     original = b"<p>original</p>"
     external = b"<p>external edit before publication</p>"
-    newest = b"<p>newest external edit racing rollback</p>"
     candidate = b"<p>candidate</p>"
     recovery = tmp_path / "recovery" / "turn-1"
     target.write_bytes(original)
@@ -568,6 +603,7 @@ def test_temporary_artifact_revision_recovers_a_save_displaced_by_rollback(
         )
 
     monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange)
+    _simulate_remounted_device(monkeypatch)
     replaced = replace_local_regular_file(
         artifacts,
         target.name,
@@ -631,7 +667,88 @@ def test_conditional_artifact_revision_refuses_agent_writable_recovery_state(
     assert target.read_bytes() == original
 
 
-def test_temporary_artifact_revision_recovers_a_crash_after_displacing_an_edit(
+def test_conditional_artifact_revision_discards_a_partial_prepublication_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    target = artifacts / "result.html"
+    recovery = tmp_path / "recovery" / "turn-1"
+    original = b"<p>original</p>"
+    candidate = b"<p>candidate</p>"
+    target.write_bytes(original)
+    real_write = os.write
+    real_unlink = os.unlink
+    interrupted = False
+
+    def interrupt_candidate_write(descriptor: int, data) -> int:
+        nonlocal interrupted
+        if not interrupted:
+            interrupted = True
+            real_write(descriptor, data[:4])
+            raise OSError("simulated process death during candidate write")
+        return real_write(descriptor, data)
+
+    monkeypatch.setattr(os, "write", interrupt_candidate_write)
+    monkeypatch.setattr(os, "unlink", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(OSError, match="process death during candidate write"):
+        replace_local_regular_file(
+            artifacts,
+            target.name,
+            candidate,
+            expected_sha256=hashlib.sha256(original).hexdigest(),
+            recovery_directory=recovery,
+        )
+
+    marker = next(recovery.iterdir())
+    assert marker.read_bytes() == candidate[:4]
+    assert target.read_bytes() == original
+
+    monkeypatch.setattr(os, "write", real_write)
+    monkeypatch.setattr(os, "unlink", real_unlink)
+    replaced = replace_local_regular_file(
+        artifacts,
+        target.name,
+        candidate,
+        expected_sha256=hashlib.sha256(original).hexdigest(),
+        recovery_directory=recovery,
+    )
+
+    assert replaced is True
+    assert target.read_bytes() == candidate
+    assert not recovery.exists()
+
+
+def test_conditional_artifact_revision_refuses_a_nonregular_staged_marker(
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    target = artifacts / "result.html"
+    recovery = tmp_path / "recovery" / "turn-1"
+    original = b"<p>original</p>"
+    candidate = b"<p>candidate</p>"
+    target.write_bytes(original)
+    recovery.mkdir(parents=True, mode=0o700)
+    marker = recovery / _artifact_staged_marker_name(target.name, original, candidate)
+    marker.mkdir()
+
+    with pytest.raises(ValueError, match="staging marker is not a regular file"):
+        replace_local_regular_file(
+            artifacts,
+            target.name,
+            candidate,
+            expected_sha256=hashlib.sha256(original).hexdigest(),
+            recovery_directory=recovery,
+        )
+
+    assert target.read_bytes() == original
+    assert marker.is_dir()
+
+
+def test_temporary_artifact_revision_recovers_a_pending_exchange_after_remount(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -676,6 +793,7 @@ def test_temporary_artifact_revision_recovers_a_crash_after_displacing_an_edit(
         )
 
     monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange)
+    _simulate_remounted_device(monkeypatch)
     replaced = replace_local_regular_file(
         artifacts,
         target.name,
@@ -721,6 +839,30 @@ def test_kept_artifact_revision_checks_digest_after_staging(
     assert replaced is False
     assert target.read_bytes() == external
     assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
+
+
+def test_kept_artifact_revision_discards_a_partial_prepublication_write(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    artifacts = workspace.root.parent / "artifacts"
+    artifacts.mkdir()
+    target = artifacts / "result.html"
+    original = b"<p>original</p>"
+    candidate = b"<p>candidate</p>"
+    target.write_bytes(original)
+    recovery = workspace.root / ".publish" / "artifact-replacements"
+    recovery.mkdir(parents=True, mode=0o700)
+    marker = recovery / _artifact_staged_marker_name(target.name, original, candidate)
+    marker.write_bytes(candidate[:4])
+
+    replaced = workspace.replace_kept_artifact(
+        target.name,
+        candidate,
+        expected_sha256=hashlib.sha256(original).hexdigest(),
+    )
+
+    assert replaced is True
+    assert target.read_bytes() == candidate
+    assert not marker.exists()
 
 
 def test_remote_temporary_revision_checks_digest_after_stream_staging(
@@ -1233,6 +1375,36 @@ def test_revision_accept_conflicts_when_external_edit_has_invalid_media_bytes(
     )
     assert conflicted is not None and conflicted.status == "conflicted"
     assert conflicted.diagnostic == response.json()["detail"]
+
+
+def test_revision_accept_conflicts_when_current_artifact_was_deleted(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    _, candidate, kept_filename, _, _ = _seed_pending_local_candidate(
+        app,
+        tmp_path,
+        kept=True,
+    )
+    assert kept_filename is not None
+    (app.state.service.history.workspace.root.parent / "artifacts" / kept_filename).unlink()
+    client = TestClient(app)
+    base = (
+        f"/api/projects/{app.state.default_project_id}/artifact-revisions/{candidate.candidate_id}"
+    )
+
+    response = client.post(f"{base}/accept")
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "The current artifact is no longer available."
+    conflicted = app.state.background_tasks.store.artifact_revision_candidate(
+        candidate.candidate_id
+    )
+    assert conflicted is not None and conflicted.status == "conflicted"
+    assert conflicted.diagnostic == response.json()["detail"]
+    retry = client.post(f"{base}/accept")
+    assert retry.status_code == 409
 
 
 def test_revision_accept_keeps_transiently_unavailable_source_pending(

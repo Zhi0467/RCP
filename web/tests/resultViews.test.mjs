@@ -138,3 +138,14 @@ test("artifact revision disposition refreshes the backend-owned source task", ()
   assert.match(nodeChatSource, /versionedArtifactContentUrl/);
   assert.match(appSource, /upsertTask\(next\)/);
 });
+
+test("artifact revision review remains available when its preview is unavailable", () => {
+  const artifactCard = nodeChatSource.slice(
+    nodeChatSource.indexOf("line.artifacts?.map"),
+    nodeChatSource.indexOf('line.role === "agent"', nodeChatSource.indexOf("line.artifacts?.map")),
+  );
+  assert.match(artifactCard, /unavailable && <strong>/);
+  assert.match(artifactCard, /\(!unavailable \|\| revisionCandidate\) && \(/);
+  assert.match(artifactCard, /!unavailable && artifact\.can_open/);
+  assert.match(artifactCard, /revisionCandidate && \([\s\S]*Review revision/);
+});

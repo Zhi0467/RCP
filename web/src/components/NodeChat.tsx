@@ -1317,11 +1317,10 @@ export function NodeChat({
                       {artifact.name}
                       {artifact.kept_filename && <em>Kept</em>}
                     </span>
-                    {unavailable ? (
-                      <strong>{unavailableReason ?? "Preview unavailable"}</strong>
-                    ) : (
+                    {unavailable && <strong>{unavailableReason ?? "Preview unavailable"}</strong>}
+                    {(!unavailable || revisionCandidate) && (
                       <div className="chat-artifact-actions">
-                        {artifact.can_open && (
+                        {!unavailable && artifact.can_open && (
                           <button
                             type="button"
                             onClick={() => void openArtifact(line.taskId, artifact)}
@@ -1329,7 +1328,8 @@ export function NodeChat({
                             <ExternalLink size={12} /> Open
                           </button>
                         )}
-                        {artifact.can_download &&
+                        {!unavailable &&
+                          artifact.can_download &&
                           (desktop ? (
                             <button
                               type="button"

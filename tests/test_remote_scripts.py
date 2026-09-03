@@ -277,6 +277,43 @@ class TestLockHolder:
         assert (root / "graph.json").read_text() == '{"revision": 4}'
         assert not stage.exists()
 
+    def test_replacement_discards_a_partial_prepublication_write(self, tmp_path: Path) -> None:
+        root = tmp_path / "repository" / ".research"
+        stage = root / ".publish" / "artifact-1-1"
+        recovery = root / ".publish" / "artifact-replacements"
+        artifacts = root.parent / "artifacts"
+        stage.mkdir(parents=True)
+        recovery.mkdir(mode=0o700)
+        artifacts.mkdir()
+        name = "result.html"
+        original = b"<p>original</p>"
+        candidate = b"<p>candidate</p>"
+        (stage / "content.bin").write_bytes(candidate)
+        (artifacts / name).write_bytes(original)
+        name_hash = hashlib.sha256(name.encode()).hexdigest()[:24]
+        marker = recovery / (
+            f".rcp-artifact-{name_hash}-{hashlib.sha256(original).hexdigest()}-"
+            f"{hashlib.sha256(candidate).hexdigest()}-{'a' * 16}"
+        )
+        marker.write_bytes(candidate[:4])
+        lock_path = root / ".refresh.lock"
+        command = {
+            "op": "replace-artifact",
+            "root": str(root),
+            "stage": str(stage),
+            "name": name,
+            "expected_sha256": hashlib.sha256(original).hexdigest(),
+        }
+
+        result = run_script(
+            "remote_lock_holder.py", str(lock_path), stdin=json.dumps(command) + "\n"
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout.splitlines()[1]) == {"ok": True, "name": name}
+        assert (artifacts / name).read_bytes() == candidate
+        assert not marker.exists()
+
     def test_refuses_a_stage_outside_the_publish_directory(self, tmp_path: Path) -> None:
         root = tmp_path / ".research"
         elsewhere = tmp_path / "elsewhere"
