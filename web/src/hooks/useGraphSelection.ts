@@ -442,8 +442,11 @@ export function useGraphSelection({
         experimentRoute: null,
         autoResearchEpisodeId: episodeId,
       });
+      // The pinned episode survives leaving Runs, so show the view this new URL describes
+      // rather than leaving another view rendered under a Runs address.
+      changeView("execution");
     },
-    [getActiveProjectId],
+    [changeView, getActiveProjectId],
   );
   const selectExperiment = useCallback(
     (nodeId: string | null) => {
