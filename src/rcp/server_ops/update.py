@@ -1228,7 +1228,20 @@ class LinuxUpdateMachine:
     def inspect(self) -> UpdateInspection:
         inspection, report = self._read_status()
         transition = None
-        if inspection.config.source.authentication == "public":
+        if inspection.config.source.authentication == "deploy_key":
+            repository = normalize_github_repository(inspection.config.source.origin)
+            transition = converge_public_source(
+                self.layout,
+                inspection.config,
+                repository,
+                run_as_service=self._run_service,
+                run_git=self._run_git,
+                git_text=self._git_text,
+                refusal=UpdateRefused,
+            )
+            if transition is not None:
+                inspection, report = self._read_status()
+        elif inspection.config.source.authentication == "public":
             try:
                 repository = normalize_github_repository(inspection.config.source.origin)
             except ValueError:
@@ -1260,20 +1273,6 @@ class LinuxUpdateMachine:
             )
             inspection, report = self._read_status()
         self._validate_inspection(inspection, report)
-        if inspection.config.source.authentication == "deploy_key":
-            repository = normalize_github_repository(inspection.config.source.origin)
-            transition = converge_public_source(
-                self.layout,
-                inspection.config,
-                repository,
-                run_as_service=self._run_service,
-                run_git=self._run_git,
-                git_text=self._git_text,
-                refusal=UpdateRefused,
-            )
-            if transition is not None:
-                inspection, report = self._read_status()
-                self._validate_inspection(inspection, report)
         if transition is not None:
             inspection = replace(inspection, source_transition=transition)
         return inspection

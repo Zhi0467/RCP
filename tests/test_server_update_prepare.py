@@ -112,6 +112,7 @@ def _source_transition_fixture(
     public_probe: str,
     checkout_origin: str | None = None,
     doctor_reports_origin_mismatch: bool = False,
+    doctor_reports_missing_source_key: bool = False,
 ):
     layout = _layout(tmp_path)
     _prepare_owned_roots(layout)
@@ -147,17 +148,27 @@ def _source_transition_fixture(
         return current_config[0]
 
     def write_config(updated, path: Path) -> None:
-        assert private.exists() and public.exists()
+        assert public.exists()
+        assert private.exists() == (not doctor_reports_missing_source_key)
         current_config[0] = updated
         path.write_bytes(b"public-config\n")
 
     def doctor_inspect():
         installed = current_config[0]
+        source_key_problem = (
+            ("source private key is missing or unreadable",)
+            if doctor_reports_missing_source_key and installed.source.authentication == "deploy_key"
+            else ()
+        )
         return SimpleNamespace(
             problems=(
-                (MANAGED_SOURCE_ORIGIN_MISMATCH,)
-                if doctor_reports_origin_mismatch and remote_origin[0] != installed.source.origin
-                else ()
+                source_key_problem
+                or (
+                    (MANAGED_SOURCE_ORIGIN_MISMATCH,)
+                    if doctor_reports_origin_mismatch
+                    and remote_origin[0] != installed.source.origin
+                    else ()
+                )
             ),
             managed_main_head=BASE,
             current_commit=BASE,
@@ -952,6 +963,28 @@ def test_update_transitions_deploy_key_source_before_fetch(
         "GIT_SSH_COMMAND" not in environment
         for _argv, environment in (*fixture.probe_calls, *fixture.git_calls)
     )
+
+
+def test_update_transitions_before_missing_source_key_blocks_doctor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="deploy_key",
+        public_probe="ready",
+        doctor_reports_missing_source_key=True,
+    )
+    fixture.private.unlink()
+
+    inspection = fixture.machine.inspect()
+
+    assert inspection.config.installation_id == INSTALLATION_ID
+    assert inspection.config.source.authentication == "public"
+    assert inspection.source_transition is not None
+    assert not fixture.private.exists() and not fixture.public.exists()
+    assert fixture.remote_origin == [HTTPS_ORIGIN]
 
 
 @pytest.mark.parametrize("public_probe", ["grant_needed", "unavailable"])

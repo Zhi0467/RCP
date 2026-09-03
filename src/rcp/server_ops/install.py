@@ -1119,7 +1119,6 @@ class LinuxInstallMachine:
                         transition.retired_deploy_key_label if transition is not None else None
                     ),
                 )
-            public_key = self._validate_source_key_pair(config, private_path, public_path)
             transition = converge_public_source(
                 self.layout,
                 config,
@@ -1142,6 +1141,7 @@ class LinuxInstallMachine:
                     source_transitioned=True,
                     retired_deploy_key_label=transition.retired_deploy_key_label,
                 )
+            public_key = self._validate_source_key_pair(config, private_path, public_path)
             probe = self._probe_source(repository.ssh_origin, source=config.source)
             if probe == "unavailable":
                 raise InstallRefused(

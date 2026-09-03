@@ -698,6 +698,54 @@ def test_existing_deploy_key_source_transitions_config_keys_and_checkout(
     ]
 
 
+def test_existing_deploy_key_source_transitions_before_validating_missing_private_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    layout, machine, config, private, public = _configured_source_install(
+        tmp_path,
+        authentication="deploy_key",
+    )
+    private.unlink()
+    loaded_config = [config]
+
+    def write_config(updated, path: Path) -> None:
+        assert not private.exists() and public.exists()
+        path.write_text(render_installed_server_config(updated), encoding="utf-8")
+        loaded_config[0] = updated
+
+    monkeypatch.setattr(
+        server_install,
+        "load_installed_server_config",
+        lambda _path: loaded_config[0],
+    )
+    monkeypatch.setattr(server_install, "write_installed_server_config", write_config)
+    monkeypatch.setattr(
+        machine,
+        "_validate_source_key_pair",
+        lambda *_args: pytest.fail("the retired key pair must not be validated"),
+    )
+    monkeypatch.setattr(
+        machine,
+        "_run_as_service",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, COMMIT, ""),
+    )
+
+    access = machine.prepare_source_access(REPOSITORY)
+
+    installed = parse_installed_server_config(layout.config_path.read_text(encoding="utf-8"))
+    assert installed.installation_id == config.installation_id == INSTALLATION_ID
+    assert installed.source == ServerSourceConfig(
+        origin=REPOSITORY.https_origin,
+        authentication="public",
+    )
+    assert not private.exists() and not public.exists()
+    assert access.config == installed
+    assert access.grant_needed is False
+    assert access.source_transitioned is True
+    assert access.retired_deploy_key_label == f"rcp-source:{INSTALLATION_ID}"
+
+
 @pytest.mark.parametrize(
     ("public_probe", "ssh_probe", "grant_needed"),
     [
@@ -1064,9 +1112,13 @@ def test_source_transition_set_url_failure_converges_on_next_run(
     assert set_url_attempts == 2
 
 
-def test_existing_source_key_must_match_recorded_public_key(monkeypatch, tmp_path: Path) -> None:
+def test_existing_source_key_mismatch_is_refused_after_nonready_public_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     layout = _temporary_layout(tmp_path)
     layout.credentials_root.mkdir(parents=True)
+    layout.config_path.parent.mkdir(parents=True)
     private = layout.credentials_root / "source_ed25519"
     public = layout.credentials_root / "source_ed25519.pub"
     private.write_text("private", encoding="utf-8")
@@ -1085,22 +1137,33 @@ def test_existing_source_key_must_match_recorded_public_key(monkeypatch, tmp_pat
         ),
         installation_id=INSTALLATION_ID,
     )
+    layout.config_path.write_text(render_installed_server_config(config), encoding="utf-8")
+    before = {path: path.read_bytes() for path in (layout.config_path, private, public)}
     machine = server_install.LinuxInstallMachine(layout)
     machine._service_uid = os.getuid()
     machine._service_gid = os.getgid()
+
+    calls: list[tuple[str, ...]] = []
+
+    def run_as_service(argv: tuple[str, ...], **_kwargs):
+        calls.append(argv)
+        if argv[0:3] == ("git", "ls-remote", "--exit-code"):
+            return subprocess.CompletedProcess(argv, 128, "", "repository not found")
+        assert argv[0:2] == ("ssh-keygen", "-y")
+        return subprocess.CompletedProcess(argv, 0, "ssh-ed25519 ZGlmZmVyZW50\n", "")
+
+    monkeypatch.setattr(server_install, "load_installed_server_config", lambda _path: config)
     monkeypatch.setattr(
         machine,
         "_run_as_service",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            ("ssh-keygen",),
-            0,
-            "ssh-ed25519 ZGlmZmVyZW50\n",
-            "",
-        ),
+        run_as_service,
     )
 
     with pytest.raises(InstallRefused, match="not one key pair"):
-        machine._validate_source_key_pair(config, private, public)
+        machine.prepare_source_access(REPOSITORY)
+
+    assert {path: path.read_bytes() for path in before} == before
+    assert [argv[0] for argv in calls] == ["git", "ssh-keygen"]
 
 
 def test_install_adopts_exact_key_pair_after_crash_before_config(
