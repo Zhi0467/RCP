@@ -11,6 +11,7 @@ const server = await createServer({
 });
 const {
   LIVE_EPISODE_POLL_INTERVAL_MS,
+  applyEpisodeRefreshResponse,
   startLiveEpisodePolling,
   episodePollingTarget,
   mergeExactEpisode,
@@ -48,6 +49,17 @@ test("an exact routed episode merges beyond the bounded project list", () => {
 
   assert.equal(merged.length, 51);
   assert.equal(merged.filter((item) => item.episode_id === exact.episode_id).length, 1);
+});
+
+test("an older exact episode response cannot replace a newer row selection", () => {
+  const initial = { projectId: "project", episodes: [], messages: {} };
+  const secondResponse = applyEpisodeRefreshResponse(initial, "project", 2, 2, [episode("second")]);
+  const staleFirstResponse = applyEpisodeRefreshResponse(secondResponse, "project", 1, 2, [
+    episode("first"),
+  ]);
+
+  assert.strictEqual(staleFirstResponse, secondResponse);
+  assert.deepEqual(staleFirstResponse.episodes, [episode("second")]);
 });
 
 test("live episode polling is single-flight and keeps failures visible until recovery", async () => {
