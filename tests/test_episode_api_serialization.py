@@ -246,19 +246,33 @@ def test_auto_episode_projection_includes_mode_state_and_exact_recovery(tmp_path
     assert response.can_stop
 
 
-@pytest.mark.parametrize("paused_role", ["orchestrator", "worker"])
-def test_space_projection_matches_stopping_parent_control_mask(tmp_path, paused_role: str) -> None:
+@pytest.mark.parametrize(
+    ("task_role", "task_status", "expected_control", "can_resume"),
+    [
+        ("orchestrator", "paused", "resume", True),
+        ("orchestrator", "failed", "retry", False),
+        ("orchestrator", "interrupted", "retry", True),
+        ("worker", "paused", "resume", True),
+    ],
+)
+def test_stopping_projection_preserves_exact_recovery_control(
+    tmp_path,
+    task_role: str,
+    task_status: str,
+    expected_control: str,
+    can_resume: bool,
+) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
     episode, root = _auto_episode(
         store,
-        f"stopping-{paused_role}",
-        root_status="queued" if paused_role == "orchestrator" else "succeeded",
+        f"stopping-{task_role}-{task_status}",
+        root_status="queued" if task_role == "orchestrator" else "succeeded",
     )
-    paused_task = root
-    if paused_role == "worker":
+    recovery_task = root
+    if task_role == "worker":
         operation_id = f"{episode.episode_id}-worker"
-        paused_task = store.create_auto_research_agent_task(
+        recovery_task = store.create_auto_research_agent_task(
             AgentTaskRecord(
                 operation_id=operation_id,
                 project_id=episode.project_id,
@@ -295,11 +309,11 @@ def test_space_projection_matches_stopping_parent_control_mask(tmp_path, paused_
         connection.execute(
             """
             UPDATE graph_runs
-            SET status = 'paused', native_session_id = 'native-session',
-                phase = 'paused', updated_at = ?, last_activity_at = ?
+            SET status = ?, native_session_id = 'native-session',
+                phase = ?, updated_at = ?, last_activity_at = ?
             WHERE operation_id = ?
             """,
-            (now, now, paused_task.operation_id),
+            (task_status, task_status, now, now, recovery_task.operation_id),
         )
     stopping = store.request_episode_stop(episode.episode_id)
 
@@ -307,19 +321,41 @@ def test_space_projection_matches_stopping_parent_control_mask(tmp_path, paused_
     snapshots = store.auto_research_space_run_projection_snapshots({"project"}, completed_since=now)
     compact = next(item for item in snapshots if item.episode.episode_id == episode.episode_id)
     compact_task = next(
-        task for task in compact.tasks if task.operation_id == paused_task.operation_id
+        task for task in compact.tasks if task.operation_id == recovery_task.operation_id
     )
     compact_health, compact_section, _last_activity_at = space_auto_research_episode_projection(
         compact
     )
 
-    assert compact_task.can_resume
+    full_task = next(task for task in full.tasks if task.operation_id == recovery_task.operation_id)
+    assert not full_task.can_pause
+    assert full_task.can_resume is can_resume
+    assert full_task.can_retry
+    assert compact_task.can_resume is can_resume
     assert compact_task.can_retry
-    assert all(
-        not task.can_pause and not task.can_resume and not task.can_retry for task in full.tasks
+    assert full.current_control_task_id == recovery_task.operation_id
+    assert full.task_control == expected_control
+    assert (full.health, full.recommendation, full.run_section) == (
+        "needs_action",
+        expected_control,
+        "needs_action",
     )
     assert (compact_health, compact_section) == (full.health, full.run_section)
-    assert (compact_health, compact_section) == ("stopping", "needs_action")
+
+
+def test_stopping_projection_masks_pause_while_the_authorized_turn_is_active(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "stopping-active", root_status="queued")
+    assert root.can_pause
+
+    stopping = store.request_episode_stop(episode.episode_id)
+    response = serialize_episode(store, "project", stopping, branch_summary=_branch_summary)
+
+    assert response.current_control_task_id == root.operation_id
+    assert response.tasks[0].can_pause is False
+    assert response.task_control is None
+    assert (response.health, response.recommendation) == ("stopping", "wait")
 
 
 def test_experiment_wake_role_comes_from_its_durable_continuation_cause(tmp_path) -> None:

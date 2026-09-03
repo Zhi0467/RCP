@@ -81,10 +81,19 @@ class _SpaceRunRecoveryProjection:
     status: AutoResearchRecoveryStatus
 
 
-def _episode_allows_task_controls(episode: _EpisodeProjectionParent) -> bool:
-    """Mask task controls once the parent has fenced or requested its ending."""
+def _episode_task_controls(
+    episode: _EpisodeProjectionParent,
+    task: _EpisodeProjectionTask,
+) -> dict[str, bool]:
+    """Mask all controls after ending, or only Pause behind a graceful Stop."""
 
-    return episode.ending is None and episode.stop_requested_at is None
+    if episode.ending is not None:
+        return {"can_pause": False, "can_resume": False, "can_retry": False}
+    return {
+        "can_pause": task.can_pause and episode.stop_requested_at is None,
+        "can_resume": task.can_resume,
+        "can_retry": task.can_retry,
+    }
 
 
 class StartEpisodeBody(BaseModel):
@@ -324,12 +333,11 @@ def serialize_episode(
         if projection_snapshot is not None
         else _operational_tasks(store, episode)
     )
-    recovery_controls_allowed = _episode_allows_task_controls(episode)
     task_metadata = _episode_task_metadata(store, episode, task_records)
     tasks = [
         _serialize_task(
             task,
-            recovery_controls_allowed=recovery_controls_allowed,
+            episode=episode,
             role=task_metadata[task.operation_id][0],
             depth=task_metadata[task.operation_id][1],
         )
@@ -571,15 +579,14 @@ def _episode_run_section(health: EpisodeHealth) -> EpisodeRunSection:
 def _serialize_task(
     task: AgentTaskRecord,
     *,
-    recovery_controls_allowed: bool,
+    episode: _EpisodeProjectionParent,
     role: Literal["orchestrator", "worker", "wake"],
     depth: int,
 ) -> EpisodeTaskResponse:
     public_fields = EpisodeTaskResponse.model_fields.keys()
     values = task.model_dump(include=public_fields)
     values.update(role=role, depth=depth)
-    if not recovery_controls_allowed:
-        values.update(can_pause=False, can_resume=False, can_retry=False)
+    values.update(_episode_task_controls(episode, task))
     return EpisodeTaskResponse.model_validate(values)
 
 
@@ -766,14 +773,9 @@ def space_auto_research_episode_projection(
     """Reuse the canonical lifecycle policy on one compact space-run snapshot."""
 
     episode = snapshot.episode
-    tasks = (
-        snapshot.tasks
-        if _episode_allows_task_controls(episode)
-        else [
-            task.model_copy(update={"can_pause": False, "can_resume": False, "can_retry": False})
-            for task in snapshot.tasks
-        ]
-    )
+    tasks = [
+        task.model_copy(update=_episode_task_controls(episode, task)) for task in snapshot.tasks
+    ]
     tasks_by_id = {task.operation_id: task for task in tasks}
 
     def recovery_for(operation_id: str) -> _SpaceRunRecoveryProjection | None:
