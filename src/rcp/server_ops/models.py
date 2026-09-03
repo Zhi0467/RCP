@@ -26,13 +26,16 @@ SERVER_CLI_PROTOCOL_VERSION = 1
 SERVER_CLI_MAX_STEPS = 256
 SERVER_CLI_MAX_EVENTS = 1 + (SERVER_CLI_MAX_STEPS * 4)
 SERVER_CLI_MAX_ACTIONS = 16
-SERVER_CLI_MAX_FIELDS = 48
+SERVER_CLI_MAX_FIELDS = 49
 SERVER_CLI_MAX_FIELD_CHARS = 2048
 SERVER_CLI_MAX_ARGV = 64
 SERVER_CLI_MAX_ARG_CHARS = 4096
 SERVER_CLI_MAX_EXECUTION_BYTES = 1024 * 1024
 
 ServerCommandName = Literal[
+    "version",
+    "migrate",
+    "migrate --check",
     "server install",
     "server doctor",
     "server provider check",

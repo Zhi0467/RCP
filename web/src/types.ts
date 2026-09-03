@@ -25,6 +25,9 @@ export interface Health {
   status: string;
   agent_mode: "provider" | "acceptance";
   version: string;
+  build?: number | null;
+  commit?: string | null;
+  schema_ledger_head?: number | null;
   space_id: string;
   space_kind: "personal" | "team";
   space_name: string | null;

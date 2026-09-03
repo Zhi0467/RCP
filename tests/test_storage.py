@@ -119,6 +119,19 @@ def test_current_storage_startup_is_read_only_and_preserves_database_bytes(tmp_p
     assert path.read_bytes() == before
 
 
+@pytest.mark.parametrize("opener", ["open_read_only", "open_read_only_snapshot"])
+def test_read_only_storage_openers_refuse_writes(tmp_path, opener: str) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path)
+    store = getattr(AppStore, opener)(path)
+
+    with (
+        store.connection() as connection,
+        pytest.raises(sqlite3.OperationalError, match="readonly"),
+    ):
+        connection.execute("DELETE FROM storage_schema_migrations")
+
+
 def test_current_storage_schema_validator_rejects_corruption(tmp_path) -> None:
     path = tmp_path / "rcp.sqlite3"
     AppStore(path)
