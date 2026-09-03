@@ -735,7 +735,13 @@ class ServerEventEmitter:
     def events(self) -> tuple[ServerPlanEvent | ServerStepEvent, ...]:
         return tuple(self._events)
 
-    def emit_step(self, step: ServerStep, *, timestamp: datetime | None = None) -> None:
+    def emit_step(
+        self,
+        step: ServerStep,
+        *,
+        timestamp: datetime | None = None,
+        announce_success: bool = False,
+    ) -> None:
         event = ServerStepEvent(
             command=self._plan.command,
             timestamp=timestamp or datetime.now(UTC),
@@ -746,7 +752,7 @@ class ServerEventEmitter:
         if not self._is_terminal_event(event):
             _require_terminal_headroom(candidate)
         self._events.append(event)
-        self._render(event)
+        self._render(event, announce_success=announce_success)
 
     def fail_unexpected(self) -> None:
         """End an incomplete stream without exposing exception or subprocess text."""
@@ -816,12 +822,17 @@ class ServerEventEmitter:
             exit_code = failed_exit_code
         return ServerCommandExecution(events=tuple(self._events), exit_code=exit_code)
 
-    def _render(self, event: ServerPlanEvent | ServerStepEvent) -> None:
+    def _render(
+        self,
+        event: ServerPlanEvent | ServerStepEvent,
+        *,
+        announce_success: bool = False,
+    ) -> None:
         if self._machine_readable:
             print(event.model_dump_json(), file=self._stream)
         else:
             assert self._interactive_renderer is not None
-            self._interactive_renderer.render(event)
+            self._interactive_renderer.render(event, announce_success=announce_success)
         self._stream.flush()
 
     def _is_terminal_event(self, event: ServerStepEvent) -> bool:
@@ -871,7 +882,12 @@ class _InteractiveServerRenderer:
         self.color = _supports_color(stream)
         self.live_updates = _supports_live_updates(stream)
 
-    def render(self, event: ServerPlanEvent | ServerStepEvent) -> None:
+    def render(
+        self,
+        event: ServerPlanEvent | ServerStepEvent,
+        *,
+        announce_success: bool = False,
+    ) -> None:
         if isinstance(event, ServerPlanEvent):
             heading = _style(
                 f"RCP  {event.command}",
@@ -891,8 +907,8 @@ class _InteractiveServerRenderer:
             return
         terminal = step.state in {"failed", "operator_action_needed"}
         final_success = step.state == "succeeded" and step.number == self.plan_size
-        self._current_line(headline, finish=terminal or final_success)
-        if not terminal and not final_success:
+        self._current_line(headline, finish=terminal or final_success or announce_success)
+        if not terminal and not final_success and not announce_success:
             return
         _print_wrapped(step.message, self.stream, indent="  ")
         if terminal:

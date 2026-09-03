@@ -24,7 +24,7 @@ const {
 } = await server.ssrLoadModule("/src/experimentBoard.ts");
 const { ExperimentBoard } = await server.ssrLoadModule("/src/components/ExperimentBoard.tsx");
 const { NodeChat } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
-const { ExecutionView } = await server.ssrLoadModule("/src/views/GraphViews.tsx");
+const { ExecutionView, focusRunDetail } = await server.ssrLoadModule("/src/views/GraphViews.tsx");
 
 after(() => server.close());
 
@@ -210,6 +210,7 @@ test("experiment links round-trip through the project hash parser", () => {
     projectViewSpecified: true,
     experimentId: "experiment/alpha beta",
     experimentRoute: null,
+    autoResearchEpisodeId: null,
   });
   assert.deepEqual(parseProjectHash("#/projects/remote%20project%2Fone"), {
     projectId: "remote project/one",
@@ -217,6 +218,7 @@ test("experiment links round-trip through the project hash parser", () => {
     projectViewSpecified: false,
     experimentId: null,
     experimentRoute: null,
+    autoResearchEpisodeId: null,
   });
   assert.deepEqual(parseProjectHash("#/projects/new"), {
     projectId: null,
@@ -224,6 +226,7 @@ test("experiment links round-trip through the project hash parser", () => {
     projectViewSpecified: false,
     experimentId: null,
     experimentRoute: null,
+    autoResearchEpisodeId: null,
   });
   assert.equal(projectHashAfterViewChange(href, "overview"), "#/projects/remote%20project%2Fone");
   assert.equal(projectHashAfterViewChange(href, "execution"), null);
@@ -358,6 +361,105 @@ test("branch projection replaces colliding main state and filters control resour
     ["branch-watcher"],
   );
   assert.equal(projection.experimentControl[indexed.node.id], branchControl);
+});
+
+test("an explicit main route becomes history when the Experiment advances concurrently", () => {
+  const experiment = node("experiment/main", "active");
+  const previousEpisode = episode({
+    episode_id: "episode-previous",
+    control_node_id: experiment.id,
+    graph_target: { kind: "main" },
+  });
+  const currentEpisode = episode({
+    episode_id: "episode-current",
+    control_node_id: experiment.id,
+    graph_target: { kind: "main" },
+  });
+  const currentControl = control({
+    episode_id: currentEpisode.episode_id,
+    episode: currentEpisode,
+  });
+  const route = {
+    experiment_id: experiment.id,
+    episode_id: previousEpisode.episode_id,
+    graph_target: { kind: "main" },
+    parent_episode_id: null,
+  };
+  const projection = projectExperimentExecution(
+    [experiment],
+    [],
+    [],
+    { [experiment.id]: currentControl },
+    route,
+    null,
+  );
+
+  assert.deepEqual(projection.staleMainRoute, route);
+  const html = renderToStaticMarkup(
+    React.createElement(ExecutionView, {
+      graph: {
+        revision: 5,
+        nodes: { [experiment.id]: experiment },
+        edges: {},
+        proposals: {},
+        ambiguities: {},
+        glossary: {},
+        validation_messages: [],
+        belief_transitions: [],
+        replay_status: "complete",
+        replay_failure: null,
+        ontology: { types: [], fields: [], relations: [] },
+      },
+      episodes: [currentEpisode, previousEpisode],
+      episodeMessages: {},
+      episodeAction: null,
+      tasks: [],
+      watchers: [],
+      experimentControl: { [experiment.id]: currentControl },
+      exactExperimentRoute: route,
+      exactExperimentEntry: null,
+      selectedExperimentId: experiment.id,
+      focusExperimentId: experiment.id,
+      runBusy: false,
+      stopBusyId: null,
+      watcherCheckBusyId: null,
+      taskActionId: null,
+      onInspectTask() {},
+      onSelectExperiment() {},
+      onDetailFocused() {},
+      onOpenHistory() {},
+      onRunExperiment() {},
+      onStopExperiment() {},
+      onCheckExperimentWatcher() {},
+      onRecoverExperiment() {},
+      onSwitchExperimentProvider() {},
+      episodeReportHref: () => "#",
+    }),
+  );
+
+  assert.match(html, /The requested Experiment episode is now in History\./);
+  assert.match(html, />Open History</);
+  assert.doesNotMatch(
+    html,
+    /campaign-run-detail|Expand Experiment loop episode|Start episode|Stop loop|episode-current/,
+  );
+});
+
+test("an exact Auto-research route focuses and scrolls its accessible detail", () => {
+  const calls = [];
+  focusRunDetail({
+    focus(options) {
+      calls.push(["focus", options]);
+    },
+    scrollIntoView(options) {
+      calls.push(["scroll", options]);
+    },
+  });
+
+  assert.deepEqual(calls, [
+    ["focus", { preventScroll: true }],
+    ["scroll", { block: "center" }],
+  ]);
 });
 
 test("branch-created Runs detail uses index truth and never offers a main Start action", () => {
@@ -661,6 +763,7 @@ test("partial branch identity fails closed instead of selecting the same id on m
       projectViewSpecified: true,
       experimentId: null,
       experimentRoute: null,
+      autoResearchEpisodeId: null,
     },
   );
 });

@@ -797,6 +797,74 @@ test("long human chat messages render a bounded preview control", () => {
   assert.equal(html.match(/chat-human-message collapsed/g)?.length, 1);
 });
 
+test("active chat task detail starts folded behind a quiet Activity row", () => {
+  const now = "2026-09-02T16:00:00Z";
+  const activeTask = {
+    operation_id: "task-active-chat",
+    project_id: project.id,
+    kind: "project_chat",
+    status: "running",
+    request: {
+      message: "Inspect the current evidence.",
+      chat_id: "chat-active",
+      mode: "discuss",
+      trigger: "human",
+    },
+    created_at: now,
+    updated_at: now,
+    status_message: "Reading the project graph.",
+    attempt: 1,
+    runtime_id: "local",
+    runtime_label: "Local",
+    history_only: false,
+    graph_target: { kind: "main", branch_id: null },
+    estimate_seconds: 60,
+    estimate_samples: 0,
+    phase: "agent",
+    elapsed_seconds: 10,
+    progress: 0.2,
+    can_pause: true,
+    can_resume: false,
+    can_retry: false,
+    active: true,
+    queued: false,
+    pausing: false,
+    awaiting_human: false,
+    paused: false,
+    failed: false,
+    settled: false,
+    finished: false,
+    status_label: "Running",
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(NodeChat, {
+      project,
+      node: null,
+      runScope: ["repo"],
+      tasks: [activeTask],
+      activeTask,
+      historyMessages: [],
+      chatId: "chat-active",
+      onStartTask() {},
+      onInspectTask() {},
+      onOpenInbox() {},
+      onRepairGraphUpdate() {},
+      onClose() {},
+    }),
+  );
+
+  assert.match(html, /<details class="chat-task-activity">/);
+  assert.match(html, /<summary>[\s\S]*Activity<\/span><\/summary>/);
+  assert.match(html, /Reading the project graph\./);
+  assert.match(
+    html,
+    /<span class="chat-task-live" role="status" aria-live="polite" aria-atomic="true">Reading the project graph\.<\/span>/,
+  );
+  assert.ok(html.indexOf("chat-task-live") < html.indexOf('<details class="chat-task-activity">'));
+  assert.doesNotMatch(html, /<details class="chat-task-activity" open=/);
+  assert.doesNotMatch(html, /role="progressbar"/);
+});
+
 test("retry keeps the original task boundary and exposes provider configuration", () => {
   const html = renderToStaticMarkup(
     React.createElement(RunDialog, {

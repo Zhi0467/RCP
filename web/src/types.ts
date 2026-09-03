@@ -25,6 +25,9 @@ export interface Health {
   status: string;
   agent_mode: "provider" | "acceptance";
   version: string;
+  build?: number | null;
+  commit?: string | null;
+  schema_ledger_head?: number | null;
   space_id: string;
   space_kind: "personal" | "team";
   space_name: string | null;
@@ -801,6 +804,29 @@ export interface ExperimentLoopIndexEntry {
   node: GraphNode;
   control: ExperimentControlState;
   episode: Episode;
+}
+
+export type SpaceRunSection = "needs_action" | "completed";
+export type SpaceRunMode = "experiment_loop" | "auto_research";
+export type SpaceRunHealthTone =
+  "running" | "waiting" | "degraded" | "stopping" | "stopped" | "actionable" | "completed";
+
+/** A space-level episode summary whose lifecycle placement is decided by the backend. */
+export interface SpaceRunIndexEntry {
+  episode_id: string;
+  project_id: string;
+  project_name: string;
+  project_reachable: boolean | null;
+  mode: SpaceRunMode;
+  title: string;
+  graph_target: GraphTargetRef;
+  parent_episode_id: string | null;
+  experiment_id: string | null;
+  started_at: string;
+  last_activity_at: string;
+  health_label: string;
+  health_tone: SpaceRunHealthTone;
+  run_section: SpaceRunSection;
 }
 
 export interface WatcherContinuation {
@@ -1800,7 +1826,27 @@ export interface AgentArtifactDescriptor {
   can_open: boolean;
   can_download: boolean;
   can_keep: boolean;
+  can_discuss: boolean;
   can_revise: boolean;
+  revision_candidate?: ArtifactRevisionCandidate | null;
+}
+
+/**
+ * Opaque because the backend publishes the diagnostic and both disposition
+ * decisions; browser code must not derive either from lifecycle spelling.
+ */
+declare const OPAQUE_ARTIFACT_REVISION_STATUS: unique symbol;
+export type ArtifactRevisionStatus = {
+  readonly [OPAQUE_ARTIFACT_REVISION_STATUS]: "ArtifactRevisionStatus";
+};
+
+export interface ArtifactRevisionCandidate {
+  candidate_id: string;
+  status: ArtifactRevisionStatus;
+  created_at: string;
+  diagnostic: string | null;
+  can_accept: boolean;
+  can_reject: boolean;
 }
 
 export type ArtifactSelection =

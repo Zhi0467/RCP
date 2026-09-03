@@ -103,6 +103,28 @@ def test_project_display_boundary_completes_all_public_snapshots(manifest, tmp_p
     assert "experiment_control" not in raw_after_settings
 
 
+def test_cached_project_migrates_retired_campaign_report_default(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    client = TestClient(app)
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+
+    cache_path = app.state.catalog._cached_snapshot_path(project_id)
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    envelope["snapshot"]["skill_defaults"]["skill_ids"] = [
+        "campaign-report",
+        "graph-audit",
+    ]
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    saved = client.get(f"/api/projects/{project_id}/cached")
+
+    assert saved.status_code == 200
+    assert saved.json()["skill_defaults"]["skill_ids"] == ["episode-report", "graph-audit"]
+    assert "campaign-report" in cache_path.read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize(
     "corruption",
     ["attention", "attention_count", "asserted_count", "accepted_count", "contested_count"],

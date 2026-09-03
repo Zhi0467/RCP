@@ -102,11 +102,18 @@ caches never become canonical input or graph authority.
 
 ## Project index and identity
 
-The project index keeps project cards first and one distinct cross-project
-**Experiments** board below. The board includes only Experiments with loop
-history, orders actionable/active work before folded finished work, preserves
-last-known rows for unavailable projects, and navigates to the owning project's
-exact Runs detail. It grants no control outside that project.
+The project index keeps project cards first and one distinct space-level
+**Runs** ledger below. It aggregates the current Experiment-loop parent selected
+by each Experiment's backend control with Auto-research parents across visible
+projects. **Needs Action** stays unfolded and mixes both modes in reverse
+chronological order; **Completed** folds by Experiment loop then Auto-research.
+The backend owns membership, lifecycle placement, health, project identity, and
+the exact Experiment route. The space ledger keeps completed parents for seven
+days, without deleting episode records or changing project Runs or History.
+Auto-research rows carry their exact episode identity into project Runs, so a
+completed or non-leading row opens that parent rather than the default card.
+That exact parent is read independently when it falls outside the project's
+bounded episode list.
 
 The index header contains the compact current-human identity control. An unnamed
 personal owner sees **Sign in** as naming the durable local identity, not creating
@@ -279,8 +286,17 @@ filesystem inspection, or catalog mutation. The separately validated
 provisioning finalizer is the only team-project entrance into the existing
 setup/registration owners.
 
-The backend health projection carries one `project_creation` control with all
-three intent identities, per-intent eligibility and preselection, primary action
+The backend health projection preserves its existing identity and runtime
+fields. `version` remains the full package `__version__` verbatim, and
+`running_commit` keeps its existing meaning as the commit recorded for the
+running installed process. It additionally publishes `build` as the integer
+package build number or null for a source checkout, `commit` as the package
+build's 7-to-40-character hexadecimal commit or null, and
+`schema_ledger_head` as the newest applied storage-migration number read from
+the data directory's ledger.
+
+The health projection also carries one `project_creation` control with all three
+intent identities, per-intent eligibility and preselection, primary action
 label, required fields, pinned source identity when one exists, and an explicit
 unavailable reason. The durable provisioning response similarly publishes the
 status and check labels, exact next action, `can_run_setup`, `can_review`,
@@ -440,12 +456,23 @@ limit**, shows watcher/session/host continuity, and omits semantic attempt
 history from the node drawer. Stop, recovery, wrap-up, and report presentation
 follow the episode specification.
 
+An explicit main-target Experiment route binds only when both its `episode_id`
+and graph target still match the loaded backend control. If the control advanced,
+the route shows a History handoff without exposing the newer episode's transcript
+or controls.
+
 An Auto-research detail shows compact graph-branch identity, base/head, merge
 state, and **Merge to main** only for an eligible changed head. Main graph views
 never switch to branch truth. An exact branch Experiment route may show branch
 history and its transcript, but its chat/composer and repair controls are
 read-only until a deliberate branch conversation authority is designed. Generic
 main NodeChat cannot reuse the branch-bound conversation or native session.
+
+The space project index reuses these same backend lifecycle projections in a
+summary ledger. It does not derive a second status machine from task or episode
+fields. Its seven-day completed window is presentation-only; active and
+actionable parents remain visible regardless of age, and project-scoped Runs and
+History retain their existing complete records.
 
 ### Chats
 

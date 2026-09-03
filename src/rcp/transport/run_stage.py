@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.artifacts import validate_result_view_id
 from rcp.limits import (
     PROJECT_TRANSFER_MANIFEST_MAX_BYTES,
@@ -23,7 +24,7 @@ from rcp.limits import (
 )
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
-from rcp.transport.state import StateUnavailable, _remote_script
+from rcp.transport.state import StateUnavailable, _remote_lock_holder_script, _remote_script
 
 _REMOTE_TREE_HELPERS = """\
 import os,shutil
@@ -1061,7 +1062,7 @@ finally:
         if PurePosixPath(name).name != name or name in {"", ".", ".."}:
             raise ValueError("artifact name must be a plain base name")
         script = """
-import os,stat,sys
+import errno,os,stat,sys
 root,scope,name,limit=sys.argv[1],sys.argv[2],sys.argv[3],int(sys.argv[4])
 flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
 fds=[]
@@ -1078,8 +1079,13 @@ try:
         if not chunk: break
         sys.stdout.buffer.write(chunk); remaining-=len(chunk)
     if remaining==0: raise SystemExit(45)
-except (FileNotFoundError,NotADirectoryError,OSError) as exc:
+except FileNotFoundError as exc:
     print(str(exc),file=sys.stderr); raise SystemExit(44)
+except NotADirectoryError as exc:
+    print(str(exc),file=sys.stderr); raise SystemExit(45)
+except OSError as exc:
+    print(str(exc),file=sys.stderr)
+    raise SystemExit(45 if exc.errno in (errno.ELOOP,errno.ENOTDIR) else 46)
 finally:
     for item in reversed(fds): os.close(item)
 """
@@ -1095,8 +1101,15 @@ finally:
             raise StateUnavailable(detail or "could not read remote artifact")
         return result.stdout
 
-    def replace_artifact_bytes(self, scope_id: str, name: str, data: bytes) -> None:
-        """Atomically replace one remote task artifact without a digest precondition."""
+    def replace_artifact_bytes(
+        self,
+        scope_id: str,
+        name: str,
+        data: bytes,
+        *,
+        expected_sha256: str | None = None,
+    ) -> bool:
+        """Atomically replace one remote task artifact if its digest is still expected."""
 
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
@@ -1104,43 +1117,32 @@ finally:
             raise ValueError("artifact scope contains unsupported characters")
         if PurePosixPath(name).name != name or name in {"", ".", ".."}:
             raise ValueError("artifact name must be a plain base name")
-        script = """
-import os,secrets,stat,sys
-root,scope,name=sys.argv[1:4]
-flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
-fds=[]; temporary='.'+name+'.rcp-'+secrets.token_hex(8)
-try:
-    fd=os.open(root,flags); fds.append(fd)
-    for part in ('workspace','turns',scope,'artifacts'):
-        fd=os.open(part,flags,dir_fd=fd); fds.append(fd)
-    info=os.stat(name,dir_fd=fd,follow_symlinks=False)
-    if not stat.S_ISREG(info.st_mode): raise ValueError('artifact is not a regular file')
-    target=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0),0o600,dir_fd=fd)
-    fds.append(target)
-    while True:
-        chunk=sys.stdin.buffer.read(1024*1024)
-        if not chunk: break
-        remaining=memoryview(chunk)
-        while remaining:
-            written=os.write(target,remaining)
-            if written<=0: raise OSError('short artifact replacement write')
-            remaining=remaining[written:]
-    os.fsync(target); os.close(fds.pop())
-    os.replace(temporary,name,src_dir_fd=fd,dst_dir_fd=fd); os.fsync(fd)
-except (FileNotFoundError,NotADirectoryError,OSError,ValueError) as exc:
-    try: os.unlink(temporary,dir_fd=fd)
-    except Exception: pass
-    print(str(exc),file=sys.stderr); raise SystemExit(44)
-finally:
-    for item in reversed(fds): os.close(item)
-"""
+        if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise ValueError("expected artifact digest is invalid")
         result = self._ssh_bytes(
-            ["python3", "-c", script, str(self.root), scope_id, name],
+            [
+                "python3",
+                "-c",
+                _remote_lock_holder_script(),
+                "replace-run-artifact",
+                str(self.root),
+                scope_id,
+                name,
+                expected_sha256 or "",
+            ],
             input_data=data,
         )
+        if result.returncode == 46:
+            return False
+        if result.returncode == 47:
+            raise ArtifactReplacementConflict(
+                result.stderr.decode("utf-8", errors="replace").strip()
+                or "remote artifact source is missing or unsafe"
+            )
         if result.returncode:
             detail = result.stderr.decode("utf-8", errors="replace").strip()
             raise StateUnavailable(detail or "could not replace remote artifact")
+        return True
 
     def touch(self) -> None:
         """Refresh this conversation stage's rolling retention timestamp."""

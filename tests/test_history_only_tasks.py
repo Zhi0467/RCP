@@ -334,6 +334,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         "can_open": True,
         "can_download": True,
         "can_keep": False,
+        "can_discuss": False,
         "can_revise": False,
     }
     assert artifacts["temporary.html"] == {
@@ -343,6 +344,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         "can_open": False,
         "can_download": False,
         "can_keep": False,
+        "can_discuss": False,
         "can_revise": False,
     }
     base = f"/api/projects/{project_id}/tasks/{chat_operation_id}/artifacts"

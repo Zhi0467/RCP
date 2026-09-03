@@ -136,6 +136,7 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
         "attachment_store",
         "watcher_poller",
         "result_view_keep_locks",
+        "artifact_mutation_locks",
         "project_display_cache",
         "watcher_delivery",
         "experiment_operation_lock",
@@ -153,6 +154,7 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
     assert services.attachment_store is not None
     assert services.watcher_poller is app.state.watcher_poller
     assert services.result_view_keep_locks is not None
+    assert services.artifact_mutation_locks is not None
     assert services.project_display_cache is not None
     assert services.watcher_delivery is not None
     assert services.experiment_operation_lock is not None
@@ -247,7 +249,7 @@ def _register_legacy_project(path: Path, locator: str, project_id: str) -> None:
 
     connection = sqlite3.connect(path)
     connection.execute("DROP TABLE IF EXISTS project_members")
-    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 5")
+    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)")
     connection.execute(
         """
         INSERT INTO projects (

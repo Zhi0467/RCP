@@ -11,8 +11,9 @@ RCP shares Margin Dev's visual grammar without copying its catalog literally: a
 restrained paper, sheet, walnut, and oxblood system, warm rules and shadows,
 compatible typography, and tactile book materials. Project covers share one
 oxblood base and differ by texture only; decorative color is never assigned per
-card. Semantic accents are reserved for meaningful type or state. RCP keeps its
-own information architecture and behavior.
+card. Their textures are restrained bookcloth and paper grain, never loud dye,
+mosaic, or simulated wood. Semantic accents are reserved for meaningful type or
+state. RCP keeps its own information architecture and behavior.
 
 The RCP mark is one unified logo. An initial tile beside the full acronym reads
 as a duplicated letter, so the visible logo contains **RCP** exactly once.
@@ -112,6 +113,12 @@ Discuss and Work are switchable on every node and project conversation. Discuss
 is plum, Work is dark forest, `Shift+Tab` toggles while the composer is focused,
 and every sent turn keeps an immutable visible mode label. A resumed task keeps
 its original mode regardless of the current composer setting.
+
+Chat uses one wide readable column. A human request is a quiet paper card;
+assistant prose is unboxed. Current task activity folds behind a muted Activity
+row when its underlying status can already be inspected, while failures and
+recovery controls stay explicit. The composer is a calm contained writing
+surface rather than a full-width control bar.
 
 Selecting packages is `/` or `$` in the composer, and it is keyboard-first:
 arrows highlight, Enter selects the highlight instead of sending, and Escape

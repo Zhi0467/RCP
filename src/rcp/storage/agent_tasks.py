@@ -930,6 +930,24 @@ class AgentTaskStoreMixin:
                 "Only terminal tasks can become history-only: " + ", ".join(nonterminal)
             )
 
+        unresolved_revision = connection.execute(
+            """
+            SELECT candidate_id
+            FROM artifact_revision_candidates
+            WHERE status IN ('pending', 'accepting', 'conflicted')
+              AND (
+                source_operation_id IN (SELECT value FROM json_each(?))
+                OR revision_operation_id IN (SELECT value FROM json_each(?))
+              )
+            LIMIT 1
+            """,
+            (selected_json, selected_json),
+        ).fetchone()
+        if unresolved_revision is not None:
+            raise ValueError(
+                "A task with an unresolved artifact revision cannot become history-only."
+            )
+
         shared = connection.execute(
             """
             SELECT operation_id
@@ -2956,6 +2974,25 @@ class AgentTaskStoreMixin:
                 WHERE run.stage_root IS NOT NULL AND run.stage_root != ''
                 """
             ).fetchall()
+            artifact_revision_rows = connection.execute(
+                """
+                SELECT candidate.candidate_id,
+                       candidate.stage_host, candidate.stage_root, candidate.status,
+                       COALESCE(source.stage_host, '') AS source_stage_host,
+                       source.stage_root AS source_stage_root,
+                       NOT EXISTS (
+                           SELECT 1
+                           FROM json_each(source.result_json, '$.artifacts') AS artifact
+                           WHERE json_extract(artifact.value, '$.artifact_id') =
+                                 candidate.source_artifact_id
+                             AND json_extract(artifact.value, '$.kept_filename') IS NOT NULL
+                       ) AS source_stage_required
+                FROM artifact_revision_candidates AS candidate
+                JOIN graph_runs AS source
+                  ON source.operation_id = candidate.source_operation_id
+                WHERE candidate.stage_root != '' OR source.stage_root != ''
+                """
+            ).fetchall()
 
         for row in task_rows:
             live = bool(row["live"])
@@ -3001,6 +3038,23 @@ class AgentTaskStoreMixin:
                 must_exist=False,
                 protect_from_cleanup=True,
             )
+        for row in artifact_revision_rows:
+            unresolved = row["status"] in {"pending", "accepting", "conflicted"}
+            add(
+                stage_host=row["stage_host"],
+                stage_root=row["stage_root"],
+                owner_ref=f"artifact_revision_candidates:{row['candidate_id']}",
+                must_exist=unresolved,
+                protect_from_cleanup=unresolved,
+            )
+            source_required = unresolved and bool(row["source_stage_required"])
+            add(
+                stage_host=row["source_stage_host"],
+                stage_root=row["source_stage_root"],
+                owner_ref=f"artifact_revision_sources:{row['candidate_id']}",
+                must_exist=source_required,
+                protect_from_cleanup=source_required,
+            )
 
         return tuple(
             RunStageLifecycleRecord(
@@ -3042,6 +3096,22 @@ class AgentTaskStoreMixin:
                 ),
                 parameters=(now, now),
             )
+            if requested_by == "human":
+                episode = connection.execute(
+                    """
+                    SELECT episode.stop_requested_at, episode.ending
+                    FROM graph_runs AS run
+                    JOIN episodes AS episode ON episode.episode_id = run.episode_id
+                    WHERE run.operation_id = ?
+                    """,
+                    (operation_id,),
+                ).fetchone()
+                if episode is not None and (
+                    episode["stop_requested_at"] is not None or episode["ending"] is not None
+                ):
+                    raise ValueError(
+                        "This task's parent episode is stopping or ended and cannot be paused."
+                    )
             self._require_agent_task_transition(operation_id, transition)
             if transition.outcome == "refused":
                 raise ValueError("Only a queued or running operation can be paused.")

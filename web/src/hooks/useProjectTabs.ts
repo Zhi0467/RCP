@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, loadExperimentEpisodes } from "../api";
+import { api, loadExperimentEpisodes, loadSpaceRuns } from "../api";
 import { experimentBoardHref } from "../experimentBoard";
 import {
   adjacentProjectTabId,
@@ -7,7 +7,12 @@ import {
   openProjectTab,
   type ProjectTab,
 } from "../projectTabs";
-import type { ExperimentLoopIndexEntry, ProjectCard, ProjectSnapshot } from "../types";
+import type {
+  ExperimentLoopIndexEntry,
+  ProjectCard,
+  ProjectSnapshot,
+  SpaceRunIndexEntry,
+} from "../types";
 
 const PROJECT_HEADER_COLLAPSED_KEY = "rcp:project-header-collapsed";
 export const EXPERIMENT_BOARD_POLL_DELAY_MS = 5_000;
@@ -124,6 +129,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const [projects, setProjects] = useState<ProjectCard[]>([]);
   const [openProjectTabs, setOpenProjectTabs] = useState<ProjectTab[]>([]);
   const [experimentLoops, setExperimentLoops] = useState<ExperimentLoopIndexEntry[]>([]);
+  const [spaceRuns, setSpaceRuns] = useState<SpaceRunIndexEntry[]>([]);
   const [projectHeaderCollapsed, setProjectHeaderCollapsed] = useState(() =>
     readProjectHeaderCollapsed(initialProjectId),
   );
@@ -178,10 +184,11 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       id,
       name:
         projects.find((item) => item.id === id)?.name ??
+        spaceRuns.find((item) => item.project_id === id)?.project_name ??
         experimentLoops.find((item) => item.project_id === id)?.project_name ??
         (project?.id === id ? project.name : id),
     }),
-    [experimentLoops, project, projects],
+    [experimentLoops, project, projects, spaceRuns],
   );
   const commitProjectOpen = useCallback(
     (id: string, experimentRoute: string | null = null) => {
@@ -223,6 +230,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     (id: string) => {
       setProjects((current) => current.filter((item) => item.id !== id));
       setExperimentLoops((current) => current.filter((item) => item.project_id !== id));
+      setSpaceRuns((current) => current.filter((item) => item.project_id !== id));
       projectTabStatesRef.current.delete(id);
       setTabs(closeProjectTab(openProjectTabsRef.current, activeProjectId.current, id).tabs);
     },
@@ -311,12 +319,12 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
         return;
       }
       try {
-        const nextEntries = await loadExperimentEpisodes();
-        if (!stopped) setExperimentLoops(nextEntries);
+        const nextSpaceRuns = await loadSpaceRuns();
+        if (!stopped) setSpaceRuns(nextSpaceRuns);
       } catch (error) {
         if (!stopped) {
           reportError(
-            `Experiment board could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+            `Runs could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
           );
         }
       }
@@ -335,6 +343,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     projects,
     openProjectTabs,
     experimentLoops,
+    spaceRuns,
     projectHeaderCollapsed,
     isActiveProject,
     getActiveProjectId,

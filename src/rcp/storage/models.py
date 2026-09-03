@@ -1969,6 +1969,68 @@ class RunStageLifecycleRecord(BaseModel):
     protect_from_cleanup: bool
 
 
+ArtifactRevisionCandidateStatus = Literal[
+    "pending",
+    "accepting",
+    "accepted",
+    "rejected",
+    "conflicted",
+    "abandoned",
+]
+
+
+class ArtifactRevisionConflict(ValueError):
+    """One artifact already has an unresolved candidate or changed underneath it."""
+
+
+class ArtifactRevisionCandidateRecord(BaseModel):
+    """Durable candidate bytes awaiting one explicit human disposition."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    candidate_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    project_id: str = Field(min_length=1)
+    source_operation_id: str = Field(min_length=1)
+    source_artifact_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    revision_operation_id: str = Field(min_length=1)
+    stage_host: str
+    stage_root: str = Field(min_length=1)
+    artifact_scope_id: str = Field(min_length=1)
+    source_name: str = Field(min_length=1, max_length=255)
+    media_type: str = Field(min_length=1, max_length=64)
+    base_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_size_bytes: int = Field(gt=0, le=CHAT_ARTIFACT_MAX_FILE_BYTES)
+    status: ArtifactRevisionCandidateStatus
+    created_at: str
+    updated_at: str
+    decided_at: str | None = None
+    decided_by: AuthorizedHuman | None = None
+    diagnostic: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("created_at", "updated_at", "decided_at")
+    @classmethod
+    def timestamps_are_parseable(cls, value: str | None) -> str | None:
+        if value is not None:
+            _required_timestamp(value)
+        return value
+
+    @model_validator(mode="after")
+    def lifecycle_is_coherent(self) -> ArtifactRevisionCandidateRecord:
+        created = _required_timestamp(self.created_at)
+        updated = _required_timestamp(self.updated_at)
+        if updated < created:
+            raise ValueError("artifact revision updated_at precedes created_at")
+        terminal = self.status in {"accepted", "rejected", "abandoned"}
+        if terminal != (self.decided_at is not None):
+            raise ValueError("settled artifact revision requires exactly one decision timestamp")
+        if self.decided_at is not None and _required_timestamp(self.decided_at) < created:
+            raise ValueError("artifact revision decision precedes creation")
+        if self.status in {"conflicted", "abandoned"} and not self.diagnostic:
+            raise ValueError(f"{self.status} artifact revision requires a diagnostic")
+        return self
+
+
 class AgentTaskRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2223,6 +2285,57 @@ class EpisodeRecord(BaseModel):
     @property
     def invocations_remaining(self) -> int:
         return max(0, self.invocation_ceiling - self.invocations_used)
+
+
+class AutoResearchSpaceRunEpisodeState(BaseModel):
+    """Only the parent fields needed by the five-second space projection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    episode_id: str
+    project_id: str
+    mode: Literal["auto_research"]
+    graph_target: GraphTargetRef
+    root_operation_id: str | None
+    status: EpisodeStatus
+    stop_requested_at: str | None
+    ending: EpisodeEnding | None
+    wrapup_state: EpisodeWrapupState
+    created_at: str
+    updated_at: str
+    ended_at: str | None
+
+
+class AutoResearchSpaceRunTaskState(BaseModel):
+    """Compact task facts used by the canonical episode projection policy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: str
+    status: AgentTaskStatus
+    created_at: str
+    last_activity_at: str | None
+    attempt: int = Field(ge=1)
+    parent_operation_id: str | None
+    row_order: int = Field(ge=1)
+    actor_operation_id: str | None
+    role: AutoResearchRole | None
+    can_pause: bool
+    can_resume: bool
+    can_retry: bool
+    recovery_operation_id: str | None
+    recovery_status: AutoResearchRecoveryStatus | None
+
+
+class AutoResearchSpaceRunProjectionSnapshot(BaseModel):
+    """One parent plus its batched lifecycle inputs for the space Runs ledger."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    episode: AutoResearchSpaceRunEpisodeState
+    tasks: list[AutoResearchSpaceRunTaskState]
+    current_orchestrator_task_id: str | None
+    has_report: bool
 
 
 class EpisodeBudgetMeter(BaseModel):
@@ -3236,6 +3349,7 @@ _PROJECT_ID_TABLES = (
     "writing_sessions",
     "chat_session_contexts",
     "result_views",
+    "artifact_revision_candidates",
     "graph_runs",
     "episodes",
     "agent_usage",
@@ -3309,6 +3423,9 @@ def _result_view_html_bytes(record: ResultViewRecord, html: object) -> bytes:
 
 
 __all__ = [
+    "ArtifactRevisionCandidateRecord",
+    "ArtifactRevisionCandidateStatus",
+    "ArtifactRevisionConflict",
     "AgentTaskAdmissionConflict",
     "ACTIVE_AGENT_TASK_STATUSES",
     "AGENT_TASK_TRANSITIONS",
@@ -3353,6 +3470,9 @@ __all__ = [
     "AutoResearchRecoveryStatus",
     "AutoResearchRole",
     "AutoResearchStateRecord",
+    "AutoResearchSpaceRunEpisodeState",
+    "AutoResearchSpaceRunProjectionSnapshot",
+    "AutoResearchSpaceRunTaskState",
     "ChatSessionContextRecord",
     "ExperimentEpisodeRecord",
     "ExperimentEpisodeProjectionSnapshot",

@@ -295,7 +295,7 @@ async def stream_discuss_run(
                 artifact_path=str(artifact_directory),
             )
             if artifact_context_pointer is not None:
-                attachment_pointers.append(artifact_context_pointer)
+                attachment_pointers.append(artifact_context_pointer.pointer)
             read_dirs = _chat_read_dirs(
                 context,
                 local_stage,

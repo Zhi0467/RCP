@@ -5,12 +5,20 @@ tier: hermetic
 driver: desktop
 covered_by:
   - web/tests/agentTasks.test.mjs
+  - web/src-tauri/src/commands.rs resource target regression
+  - web/src-tauri/src/team_session.rs read-only authenticated resource regression
+  - web/src-tauri/src/windows.rs exact-origin preview regression
   - browser 2026-08-08 — durable transcript reload retained the HTML artifact card
 invariants: [10e]
-last_checked: 2026-08-27 — a rebuilt RCP Dev restart and exact episode Open
-  report click enter the unified shell, while the restarted backend maps the
-  retained `/preview` URL to that shell. The artifact download, isolation, and
-  remote execution drive remains pending.
+last_checked: 2026-09-02 — a source-built desktop opened and downloaded the
+  retained TIDMAD HTML artifact from the live WTH UCSD team space through its
+  authenticated SSH-tunneled HTTPS origin. The native preview rendered the
+  opaque `about:srcdoc` body; a Safari WebKit adversarial drive confirmed that
+  inline script remained useful while parent access/navigation, popups, forms,
+  downloads, and ordinary network requests remained blocked. Closing the native
+  preview preserved the established team project and chat instead of recovering
+  the main window to the personal origin. Expiry and the complete retained-client
+  drive remain pending.
 ---
 
 # A preview opens and a download lands, and the isolation is stronger than the browser's

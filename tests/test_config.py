@@ -91,6 +91,21 @@ def test_legacy_manifest_decodes_campaign_ceiling_without_writing(manifest) -> N
     assert manifest.path.read_text(encoding="utf-8") == legacy
 
 
+def test_legacy_manifest_decodes_campaign_report_skill_without_writing(manifest) -> None:
+    original = manifest.path.read_text(encoding="utf-8")
+    legacy = original.replace(
+        'default_run_truth_scope = ["repo-a"]\n',
+        'default_run_truth_scope = ["repo-a"]\n\n[agent.skill_defaults]\n'
+        'workflow_ids = []\nskill_ids = ["campaign-report", "graph-audit"]\n',
+    )
+    manifest.path.write_text(legacy, encoding="utf-8")
+
+    migrated = load_manifest(manifest.path)
+
+    assert migrated.agent.skill_defaults.skill_ids == ["episode-report", "graph-audit"]
+    assert manifest.path.read_text(encoding="utf-8") == legacy
+
+
 def test_manifest_rejects_conflicting_auto_research_ceiling_keys(manifest) -> None:
     payload = manifest.model_dump(mode="python")
     payload["agent"]["default_campaign_invocation_ceiling"] = 8

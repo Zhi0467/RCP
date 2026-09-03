@@ -970,6 +970,7 @@ def create_app(
     # different worker threads, so this must remain a primitive Lock, not RLock.
     experiment_operation_lock = KeyedLocks()
     result_view_keep_lock = KeyedLocks()
+    artifact_mutation_locks = KeyedLocks()
     experiment_admission = ExperimentAdmission(
         experiment_operation_lock,
         _experiment_control_node_id,
@@ -1534,6 +1535,7 @@ def create_app(
         attachment_store=attachment_store,
         watcher_poller=watcher_poller,
         result_view_keep_locks=result_view_keep_lock,
+        artifact_mutation_locks=artifact_mutation_locks,
         project_display_cache=project_display_cache,
         watcher_delivery=watcher_delivery,
         experiment_operation_lock=experiment_operation_lock,

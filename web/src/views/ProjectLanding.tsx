@@ -1,17 +1,17 @@
 import { LogOut, Mail, MoreHorizontal, Server, Trash2, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
-import { ExperimentBoard } from "../components/ExperimentBoard";
+import { SpaceRuns } from "../components/SpaceRuns";
 import { LandingIdentityMenu } from "../components/LandingIdentityMenu";
 import { ProjectDock } from "../components/ProjectDock";
 import { TeamSpaceGroups } from "../components/TeamSpaceGroups";
 import { isDesktopRuntime } from "../desktopRuntime";
 import type { ProjectTab } from "../projectTabs";
 import type {
-  ExperimentLoopIndexEntry,
   IdentityResponse,
   ProjectCard,
   ProjectCreationControl,
   ProjectInvitation,
+  SpaceRunIndexEntry,
 } from "../types";
 import { projectCreationPrimaryLabel } from "../projectSetup";
 
@@ -19,9 +19,9 @@ interface Props {
   projects: ProjectCard[];
   invitations: ProjectInvitation[];
   onAnswerInvitation: (invitationId: string, response: "accept" | "decline") => Promise<void>;
-  experimentLoops: ExperimentLoopIndexEntry[];
+  spaceRuns: SpaceRunIndexEntry[];
   onOpen: (projectId: string) => void;
-  onOpenExperiment: (projectId: string, experimentRoute: string) => void;
+  onOpenExperiment: (projectId: string, experimentRoute?: string) => void;
   onCreate: () => void;
   projectCreation: ProjectCreationControl;
   onMovePersonalProjectToTeam?: (projectId: string) => void;
@@ -38,24 +38,13 @@ interface Props {
 const COVER_STYLES = ["plain", "dye", "mosaic", "wood", "marble", "diffusion"] as const;
 type CoverStyle = (typeof COVER_STYLES)[number];
 
-const COVER_TONES = [
-  "oxblood",
-  "teal",
-  "mustard",
-  "coral",
-  "indigo",
-  "plum",
-  "moss",
-  "slate",
-] as const;
-
 const COVER_LABELS: Record<CoverStyle, string> = {
-  plain: "Plain",
-  dye: "Tie-dye",
-  mosaic: "Mosaic",
-  wood: "Wood",
-  marble: "Marble",
-  diffusion: "Diffusion",
+  plain: "Smooth",
+  dye: "Linen",
+  mosaic: "Crosshatch",
+  wood: "Buckram",
+  marble: "Laid paper",
+  diffusion: "Pulp",
 };
 
 interface ProjectActionsMenuProps {
@@ -128,7 +117,7 @@ export function ProjectLanding({
   projects,
   invitations,
   onAnswerInvitation,
-  experimentLoops,
+  spaceRuns,
   onOpen,
   onOpenExperiment,
   onCreate,
@@ -257,12 +246,11 @@ export function ProjectLanding({
               onAnswer={onAnswerInvitation}
             />
           ))}
-          {projects.map((project, index) => {
+          {projects.map((project) => {
             const unavailable = project.reachable === false;
             const cover = covers[project.id] || "wood";
-            const tone = COVER_TONES[index % COVER_TONES.length];
             return (
-              <div className={`project-cover-shell project-cover-tone-${tone}`} key={project.id}>
+              <div className="project-cover-shell" key={project.id}>
                 <button
                   className={`project-cover project-material-${cover}`}
                   onClick={() => onOpen(project.id)}
@@ -343,7 +331,7 @@ export function ProjectLanding({
           />
         )}
 
-        <ExperimentBoard entries={experimentLoops} onOpen={onOpenExperiment} />
+        <SpaceRuns entries={spaceRuns} onOpen={onOpenExperiment} />
       </main>
 
       {deleteProject && (

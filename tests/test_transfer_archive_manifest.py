@@ -66,6 +66,7 @@ PROJECT_LINKED_TABLES = {
     "_legacy_campaign_reports_archive",
     "_legacy_campaigns_archive",
     "agent_usage",
+    "artifact_revision_candidates",
     "auto_research_apply_results",
     "auto_research_child_admissions",
     "auto_research_child_experiments",

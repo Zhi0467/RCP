@@ -11,7 +11,7 @@ import {
   Square,
   Telescope,
 } from "lucide-react";
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState, type Ref } from "react";
 import { taskStatusLabel } from "../agentTasks";
 import {
   episodeEndingLabel,
@@ -29,6 +29,8 @@ export function AutoResearchEpisodeCard({
   episode,
   messages,
   initiallyExpanded,
+  selected = false,
+  detailRef,
   busyAction,
   taskActionId,
   onInspectTask,
@@ -42,6 +44,8 @@ export function AutoResearchEpisodeCard({
   episode: Episode;
   messages: EpisodeMessage[];
   initiallyExpanded: boolean;
+  selected?: boolean;
+  detailRef?: Ref<HTMLDivElement>;
   busyAction: string | null;
   taskActionId: string | null;
   onInspectTask: (operationId: string) => void;
@@ -87,6 +91,10 @@ export function AutoResearchEpisodeCard({
       setLocalError(error instanceof Error ? error.message : String(error));
     });
   }, [episode.episode_id, expanded, onLoadMessages]);
+
+  useEffect(() => {
+    if (initiallyExpanded) setExpanded(true);
+  }, [initiallyExpanded]);
 
   useEffect(() => {
     if (episode.can_reauthorize) setExpanded(true);
@@ -136,7 +144,11 @@ export function AutoResearchEpisodeCard({
   };
 
   return (
-    <article className={`campaign-run ${projection.health}`}>
+    <article
+      className={`campaign-run ${projection.health}`}
+      data-episode-id={episode.episode_id}
+      data-selected={selected || undefined}
+    >
       <span className="campaign-state-rail" aria-hidden="true" />
       <div className="campaign-run-heading">
         <button
@@ -163,7 +175,7 @@ export function AutoResearchEpisodeCard({
         </span>
       </div>
       {expanded && (
-        <div className="campaign-run-detail" id={detailId}>
+        <div className="campaign-run-detail" id={detailId} tabIndex={-1} ref={detailRef}>
           <div className="campaign-run-actions">
             <div
               className={`campaign-run-health ${projection.health}`}

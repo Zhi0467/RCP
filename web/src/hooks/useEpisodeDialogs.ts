@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { loadEpisodeMessages, loadEpisodes } from "../api";
 import { isLiveEpisode, mergeEpisode } from "../campaigns";
 import type { Episode, EpisodeMessage } from "../types";
@@ -46,7 +46,7 @@ export function episodePollingTarget(episodes: Episode[]): Episode | null {
   );
 }
 
-interface EpisodeState {
+export interface EpisodeState {
   projectId: string | null;
   episodes: Episode[];
   messages: Record<string, EpisodeMessage[]>;
@@ -55,12 +55,33 @@ interface EpisodeState {
 interface UseEpisodeDialogsOptions {
   projectId: string | null;
   apiBase: string;
+  selectedAutoResearchEpisodeId: string | null;
   isActiveProject: (projectId: string) => boolean;
+}
+
+export function mergeExactEpisode(episodes: Episode[], exact: Episode[]): Episode[] {
+  return exact.reduce((current, episode) => mergeEpisode(current, episode), episodes);
+}
+
+export function applyEpisodeRefreshResponse(
+  current: EpisodeState,
+  requestedProjectId: string,
+  responseGeneration: number,
+  latestGeneration: number,
+  nextEpisodes: Episode[],
+): EpisodeState {
+  if (responseGeneration !== latestGeneration) return current;
+  return {
+    projectId: requestedProjectId,
+    episodes: nextEpisodes,
+    messages: current.projectId === requestedProjectId ? current.messages : {},
+  };
 }
 
 export function useEpisodeDialogs({
   projectId,
   apiBase,
+  selectedAutoResearchEpisodeId,
   isActiveProject,
 }: UseEpisodeDialogsOptions) {
   const [runDialogOpen, setRunDialogOpen] = useState(false);
@@ -73,6 +94,7 @@ export function useEpisodeDialogs({
     episodes: [],
     messages: {},
   });
+  const episodeRefreshGeneration = useRef(0);
 
   const episodes = episodeState.projectId === projectId ? episodeState.episodes : [];
   const episodeMessages = episodeState.projectId === projectId ? episodeState.messages : {};
@@ -84,16 +106,43 @@ export function useEpisodeDialogs({
   );
 
   const refreshEpisodes = useCallback(async () => {
-    if (!projectId || !apiBase) return;
+    if (!projectId || !apiBase) return false;
     const requestedProjectId = projectId;
-    const nextEpisodes = await loadEpisodes(apiBase);
-    if (!isActiveProject(requestedProjectId)) return;
-    setEpisodeState((current) => ({
-      projectId: requestedProjectId,
-      episodes: nextEpisodes,
-      messages: current.projectId === requestedProjectId ? current.messages : {},
-    }));
-  }, [apiBase, projectId]);
+    const requestGeneration = ++episodeRefreshGeneration.current;
+    let nextEpisodes: Episode[];
+    try {
+      nextEpisodes = await loadEpisodes(apiBase);
+      if (
+        selectedAutoResearchEpisodeId &&
+        !nextEpisodes.some((episode) => episode.episode_id === selectedAutoResearchEpisodeId)
+      ) {
+        const exact = await loadEpisodes(apiBase, "auto_research", selectedAutoResearchEpisodeId);
+        nextEpisodes = mergeExactEpisode(nextEpisodes, exact);
+      }
+    } catch (error) {
+      if (
+        !isActiveProject(requestedProjectId) ||
+        requestGeneration !== episodeRefreshGeneration.current
+      )
+        return false;
+      throw error;
+    }
+    if (
+      !isActiveProject(requestedProjectId) ||
+      requestGeneration !== episodeRefreshGeneration.current
+    )
+      return false;
+    setEpisodeState((current) =>
+      applyEpisodeRefreshResponse(
+        current,
+        requestedProjectId,
+        requestGeneration,
+        episodeRefreshGeneration.current,
+        nextEpisodes,
+      ),
+    );
+    return true;
+  }, [apiBase, projectId, selectedAutoResearchEpisodeId]);
 
   const refreshEpisodeMessages = useCallback(
     async (episodeId: string) => {
@@ -115,6 +164,7 @@ export function useEpisodeDialogs({
 
   useEffect(() => {
     if (!projectId || !apiBase) {
+      episodeRefreshGeneration.current += 1;
       setEpisodeRefreshError(null);
       setEpisodeState({ projectId: null, episodes: [], messages: {} });
       return;
@@ -127,8 +177,8 @@ export function useEpisodeDialogs({
         : { projectId: requestedProjectId, episodes: [], messages: {} },
     );
     void refreshEpisodes()
-      .then(() => {
-        if (isActiveProject(requestedProjectId)) setEpisodeRefreshError(null);
+      .then((applied) => {
+        if (applied && isActiveProject(requestedProjectId)) setEpisodeRefreshError(null);
       })
       .catch((error) => {
         if (!isActiveProject(requestedProjectId)) return;

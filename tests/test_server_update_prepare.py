@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import rcp.server_ops.install as server_install
 import rcp.server_ops.update_checkpoint as update_checkpoint_module
 from rcp.__main__ import build_parser
 from rcp.server_ops.backup import backup_run_coordination_lock
@@ -22,8 +23,15 @@ from rcp.server_ops.cli import (
     CallerIdentity,
     run_server_command,
 )
+from rcp.server_ops.config import (
+    ServerPathsConfig,
+    ServerSourceConfig,
+    create_installed_server_config,
+)
+from rcp.server_ops.doctor import MANAGED_SOURCE_ORIGIN_MISMATCH
+from rcp.server_ops.install import SourceTransition
 from rcp.server_ops.layout import ServerLayout
-from rcp.server_ops.models import ServerCommandRequest
+from rcp.server_ops.models import SERVER_CLI_MAX_FIELDS, ServerCommandRequest
 from rcp.server_ops.rehearsal import (
     CandidateProjectVerification,
     CandidateRehearsalResult,
@@ -51,6 +59,9 @@ BASE = "a" * 40
 TARGET = "b" * 40
 NEWER = "c" * 40
 WEB_BUILD_ID = "sha256:" + ("d" * 64)
+HTTPS_ORIGIN = "https://github.com/openai/rcp.git"
+SSH_ORIGIN = "git@github.com:openai/rcp.git"
+DEPLOY_KEYS_URL = "https://github.com/openai/rcp/settings/keys"
 ROOT = CallerIdentity(uid=0, username="root", host="lab.example")
 
 
@@ -62,7 +73,7 @@ class _Paths:
         return self.layout.recorded_paths()
 
 
-def _config(layout: ServerLayout, *, origin: str = "https://github.com/openai/rcp.git"):
+def _config(layout: ServerLayout, *, origin: str = HTTPS_ORIGIN):
     return SimpleNamespace(
         installation_id=INSTALLATION_ID,
         source=SimpleNamespace(
@@ -90,6 +101,151 @@ def _inspection(
         running_commit=running,
         instance_id=INSTANCE_ID,
         process_pid=421,
+    )
+
+
+def _source_transition_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    authentication: str,
+    public_probe: str,
+    checkout_origin: str | None = None,
+    doctor_reports_origin_mismatch: bool = False,
+    doctor_reports_missing_source_key: bool = False,
+    doctor_problems: tuple[str, ...] = (),
+):
+    layout = _layout(tmp_path)
+    _prepare_owned_roots(layout)
+    layout.credentials_root.mkdir(parents=True)
+    layout.source_checkout.mkdir(parents=True)
+    (layout.source_checkout / ".git").mkdir()
+    source = (
+        ServerSourceConfig(
+            origin=SSH_ORIGIN,
+            authentication="deploy_key",
+            public_key_fingerprint="SHA256:" + ("A" * 43),
+        )
+        if authentication == "deploy_key"
+        else ServerSourceConfig(origin=HTTPS_ORIGIN, authentication="public")
+    )
+    config = create_installed_server_config(
+        source=source,
+        installation_id=INSTALLATION_ID,
+    ).model_copy(update={"paths": ServerPathsConfig.model_construct(**layout.recorded_paths())})
+    current_config = [config]
+    layout.config_path.write_bytes(f"{authentication}-config\n".encode())
+    private = layout.credentials_root / "source_ed25519"
+    public = layout.credentials_root / "source_ed25519.pub"
+    if authentication == "deploy_key":
+        private.write_bytes(b"private-key\n")
+        public.write_bytes(b"public-key\n")
+    remote_origin = [checkout_origin or source.origin]
+    probe_calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
+    git_text_calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
+    git_calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
+
+    def config_loader(_path: Path):
+        return current_config[0]
+
+    def write_config(updated, path: Path) -> None:
+        assert public.exists()
+        assert private.exists() == (not doctor_reports_missing_source_key)
+        current_config[0] = updated
+        path.write_bytes(b"public-config\n")
+
+    def doctor_inspect():
+        installed = current_config[0]
+        source_key_problem = (
+            ("source private key is missing or unreadable",)
+            if doctor_reports_missing_source_key and installed.source.authentication == "deploy_key"
+            else ()
+        )
+        return SimpleNamespace(
+            problems=(
+                doctor_problems
+                or source_key_problem
+                or (
+                    (MANAGED_SOURCE_ORIGIN_MISMATCH,)
+                    if doctor_reports_origin_mismatch
+                    and remote_origin[0] != installed.source.origin
+                    else ()
+                )
+            ),
+            managed_main_head=BASE,
+            current_commit=BASE,
+            running_commit=BASE,
+            instance_id=INSTANCE_ID,
+            process_pid=421,
+            release_state="aligned",
+            installation_id=installed.installation_id,
+            configured_origin=installed.source.origin,
+            configured_branch=installed.source.branch,
+        )
+
+    def runner(argv, *, cwd, environment, timeout, capture_output):
+        del cwd, timeout, capture_output
+        assert environment is not None
+        anonymous_home = Path(environment["HOME"])
+        assert argv[0:3] == ("git", "-C", str(anonymous_home))
+        assert argv[3:5] == ("ls-remote", "--exit-code")
+        assert anonymous_home != layout.service_home
+        assert environment["XDG_CONFIG_HOME"] == str(anonymous_home)
+        assert environment["GIT_CEILING_DIRECTORIES"] == str(anonymous_home.parent)
+        assert list(anonymous_home.iterdir()) == []
+        probe_calls.append((argv, environment))
+        if public_probe == "ready":
+            return subprocess.CompletedProcess(argv, 0, BASE, "")
+        diagnostic = (
+            "repository not found" if public_probe == "grant_needed" else "could not resolve host"
+        )
+        return subprocess.CompletedProcess(argv, 128, "", diagnostic)
+
+    machine = LinuxUpdateMachine(
+        layout,
+        config_loader=config_loader,
+        doctor=SimpleNamespace(inspect=doctor_inspect),
+        service_runner=runner,
+        service_identity=(os.getuid(), os.getgid()),
+        root_identity=(os.getuid(), os.getgid()),
+    )
+
+    def git_text(_root: Path, argv: tuple[str, ...], **kwargs) -> str:
+        git_text_calls.append((argv, kwargs["environment"]))
+        if argv == ("remote", "get-url", "origin"):
+            return remote_origin[0]
+        if argv == ("symbolic-ref", "--short", "HEAD"):
+            return "main"
+        if argv == ("status", "--porcelain", "--untracked-files=all"):
+            return ""
+        if argv == ("rev-parse", "--verify", "HEAD^{commit}"):
+            return BASE
+        if argv == ("rev-parse", "--verify", "refs/remotes/origin/main^{commit}"):
+            return BASE
+        raise AssertionError(argv)
+
+    def run_git(_root: Path, argv: tuple[str, ...], **kwargs) -> None:
+        environment = kwargs["environment"]
+        git_calls.append((argv, environment))
+        if argv[:3] == ("remote", "set-url", "origin"):
+            assert not private.exists() and not public.exists()
+            remote_origin[0] = argv[3]
+        elif argv != ("fetch", "--prune", "origin", "main"):
+            raise AssertionError(argv)
+
+    monkeypatch.setattr(server_install, "write_installed_server_config", write_config)
+    monkeypatch.setattr(machine, "_git_text", git_text)
+    monkeypatch.setattr(machine, "_run_git", run_git)
+    return SimpleNamespace(
+        layout=layout,
+        machine=machine,
+        current_config=current_config,
+        private=private,
+        public=public,
+        remote_origin=remote_origin,
+        probe_calls=probe_calls,
+        git_text_calls=git_text_calls,
+        git_calls=git_calls,
     )
 
 
@@ -778,6 +934,344 @@ def test_failure_status_can_report_identities_even_when_doctor_blocks_update(
         machine.inspect()
 
 
+def test_update_transitions_deploy_key_source_before_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="deploy_key",
+        public_probe="ready",
+    )
+    (fixture.layout.service_home / ".netrc").write_text(
+        "machine github.com login service-account password secret\n",
+        encoding="utf-8",
+    )
+
+    inspection = fixture.machine.inspect()
+    fetched = fixture.machine.fetch_target(inspection)
+
+    assert inspection.config.installation_id == INSTALLATION_ID
+    assert inspection.config.source == ServerSourceConfig(
+        origin=HTTPS_ORIGIN,
+        authentication="public",
+    )
+    assert inspection.source_transition == SourceTransition(
+        retired_deploy_key_label=f"rcp-source:{INSTALLATION_ID}",
+        deploy_keys_url=DEPLOY_KEYS_URL,
+        source_origin=HTTPS_ORIGIN,
+    )
+    assert not fixture.private.exists()
+    assert not fixture.public.exists()
+    assert fixture.remote_origin == [HTTPS_ORIGIN]
+    assert fetched.target_commit == BASE
+    assert [argv for argv, _environment in fixture.git_calls] == [
+        ("remote", "set-url", "origin", HTTPS_ORIGIN),
+        ("fetch", "--prune", "origin", "main"),
+    ]
+    assert len(fixture.probe_calls) == 1
+    probe_environment = fixture.probe_calls[0][1]
+    assert probe_environment["HOME"] != str(fixture.layout.service_home)
+    assert not Path(probe_environment["HOME"]).exists()
+    assert all(
+        "GIT_SSH_COMMAND" not in environment
+        for _argv, environment in (*fixture.probe_calls, *fixture.git_calls)
+    )
+
+
+def test_update_transitions_before_missing_source_key_blocks_doctor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="deploy_key",
+        public_probe="ready",
+        doctor_reports_missing_source_key=True,
+    )
+    fixture.private.unlink()
+
+    inspection = fixture.machine.inspect()
+
+    assert inspection.config.installation_id == INSTALLATION_ID
+    assert inspection.config.source.authentication == "public"
+    assert inspection.source_transition is not None
+    assert not fixture.private.exists() and not fixture.public.exists()
+    assert fixture.remote_origin == [HTTPS_ORIGIN]
+
+    wizard_machine = FakeUpdateMachine(fixture.layout, target_commit=BASE)
+    wizard_machine.observed = inspection
+    exit_code, events = _run_update(fixture.layout, wizard_machine)
+    succeeded = next(
+        event["step"]
+        for event in events
+        if event.get("step", {}).get("number") == 1 and event["step"]["state"] == "succeeded"
+    )
+    assert exit_code == 0
+    assert succeeded["message"] == (
+        f"The source is now the public HTTPS origin {HTTPS_ORIGIN}. "
+        "The local deploy key pair was retired. The operator should revoke deploy key "
+        f"rcp-source:{INSTALLATION_ID} at {DEPLOY_KEYS_URL} after this update completes and "
+        "server doctor shows the public origin."
+    )
+
+
+def test_update_refuses_unrelated_doctor_problem_before_public_source_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    problem = "managed source has tracked or untracked changes"
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="deploy_key",
+        public_probe="ready",
+        doctor_problems=(problem,),
+    )
+    before = {
+        path: path.read_bytes()
+        for path in (fixture.layout.config_path, fixture.private, fixture.public)
+    }
+
+    with pytest.raises(UpdateRefused) as refused:
+        fixture.machine.inspect()
+
+    assert str(refused.value) == f"Server doctor blocks update: {problem}. Repair it and rerun."
+    assert {path: path.read_bytes() for path in before} == before
+    assert fixture.current_config[0].source.authentication == "deploy_key"
+    assert fixture.remote_origin == [SSH_ORIGIN]
+    assert fixture.probe_calls == []
+    assert fixture.git_text_calls == []
+    assert fixture.git_calls == []
+
+
+@pytest.mark.parametrize("public_probe", ["grant_needed", "unavailable"])
+def test_update_keeps_deploy_key_source_byte_identical_when_public_probe_is_not_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    public_probe: str,
+) -> None:
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="deploy_key",
+        public_probe=public_probe,
+    )
+    before = {
+        path: path.read_bytes()
+        for path in (fixture.layout.config_path, fixture.private, fixture.public)
+    }
+
+    inspection = fixture.machine.inspect()
+
+    assert inspection.config.source.authentication == "deploy_key"
+    assert inspection.source_transition is None
+    assert {path: path.read_bytes() for path in before} == before
+    assert fixture.remote_origin == [SSH_ORIGIN]
+    assert fixture.git_calls == []
+    assert len(fixture.probe_calls) == 1
+
+
+def test_update_refuses_deploy_key_transition_from_a_third_origin_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    third_origin = "https://github.com/openai/not-rcp.git"
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="deploy_key",
+        public_probe="ready",
+        checkout_origin=third_origin,
+    )
+    before = {
+        path: path.read_bytes()
+        for path in (fixture.layout.config_path, fixture.private, fixture.public)
+    }
+
+    with pytest.raises(UpdateRefused) as refused:
+        fixture.machine.inspect()
+
+    assert str(refused.value) == (
+        f"The managed checkout origin {third_origin!r} is not the matching SSH or HTTPS origin. "
+        "The deploy-key source was left unchanged, and the checkout must be inspected by hand "
+        "before rerunning."
+    )
+    assert {path: path.read_bytes() for path in before} == before
+    assert fixture.current_config[0].source.authentication == "deploy_key"
+    assert fixture.remote_origin == [third_origin]
+    assert fixture.git_calls == []
+    assert fixture.git_text_calls == [
+        (
+            ("remote", "get-url", "origin"),
+            server_install.source_git_environment(None, fixture.layout),
+        )
+    ]
+
+
+def test_update_public_source_never_probes_or_uses_ssh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="public",
+        public_probe="ready",
+    )
+    before = fixture.layout.config_path.read_bytes()
+
+    inspection = fixture.machine.inspect()
+
+    assert inspection.config.source.authentication == "public"
+    assert inspection.source_transition is None
+    assert fixture.layout.config_path.read_bytes() == before
+    assert fixture.probe_calls == []
+    assert fixture.git_calls == []
+
+
+def test_update_public_source_removes_retired_keys_before_https_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="public",
+        public_probe="ready",
+    )
+    fixture.private.write_bytes(b"retired-private\n")
+    fixture.public.write_bytes(b"retired-public\n")
+
+    inspection = fixture.machine.inspect()
+    fetched = fixture.machine.fetch_target(inspection)
+
+    assert inspection.source_transition == SourceTransition(
+        retired_deploy_key_label=f"rcp-source:{INSTALLATION_ID}",
+        deploy_keys_url=DEPLOY_KEYS_URL,
+        source_origin=HTTPS_ORIGIN,
+    )
+    assert not fixture.private.exists() and not fixture.public.exists()
+    assert fetched.target_commit == BASE
+    assert [argv for argv, _environment in fixture.git_calls] == [
+        ("fetch", "--prune", "origin", "main")
+    ]
+    assert all("GIT_SSH_COMMAND" not in environment for _argv, environment in fixture.git_calls)
+
+
+def test_update_public_source_finishes_interrupted_checkout_rewrite_before_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="public",
+        public_probe="ready",
+        checkout_origin=SSH_ORIGIN,
+        doctor_reports_origin_mismatch=True,
+    )
+
+    inspection = fixture.machine.inspect()
+    fetched = fixture.machine.fetch_target(inspection)
+
+    assert inspection.source_transition == SourceTransition(
+        retired_deploy_key_label=f"rcp-source:{INSTALLATION_ID}",
+        deploy_keys_url=DEPLOY_KEYS_URL,
+        source_origin=HTTPS_ORIGIN,
+    )
+    assert fetched.target_commit == BASE
+    assert fixture.remote_origin == [HTTPS_ORIGIN]
+    assert fixture.probe_calls == []
+    assert [argv for argv, _environment in fixture.git_calls] == [
+        ("remote", "set-url", "origin", HTTPS_ORIGIN),
+        ("fetch", "--prune", "origin", "main"),
+    ]
+    assert all("GIT_SSH_COMMAND" not in environment for _argv, environment in fixture.git_calls)
+
+
+def test_update_public_source_still_refuses_a_third_party_origin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    third_origin = "https://github.com/other/rcp.git"
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="public",
+        public_probe="ready",
+        checkout_origin=third_origin,
+    )
+
+    inspection = fixture.machine.inspect()
+    with pytest.raises(UpdateRefused, match="origin differs"):
+        fixture.machine.fetch_target(inspection)
+
+    assert fixture.remote_origin == [third_origin]
+    assert fixture.probe_calls == []
+    assert fixture.git_calls == []
+
+
+def test_update_transition_uses_shared_operator_paragraph_and_inspection_fields(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    transition = SourceTransition(
+        retired_deploy_key_label=f"rcp-source:{INSTALLATION_ID}",
+        deploy_keys_url=DEPLOY_KEYS_URL,
+        source_origin=HTTPS_ORIGIN,
+    )
+    paragraph = (
+        f"The source is now the public HTTPS origin {HTTPS_ORIGIN}. "
+        "The local deploy key pair was retired. The operator should revoke deploy key "
+        f"rcp-source:{INSTALLATION_ID} at {DEPLOY_KEYS_URL} after this update completes and "
+        "server doctor shows the public origin."
+    )
+    machine = FakeUpdateMachine(layout, target_commit=BASE)
+    machine.observed = replace(machine.observed, source_transition=transition)
+
+    exit_code, events = _run_update(layout, machine)
+    succeeded = next(
+        event["step"]
+        for event in events
+        if event.get("step", {}).get("number") == 1 and event["step"]["state"] == "succeeded"
+    )
+
+    assert exit_code == 0
+    assert succeeded["message"] == paragraph
+    assert {field["name"]: field["value"] for field in succeeded["fields"]} == {
+        "managed_main_head": BASE,
+        "current_commit": BASE,
+        "running_commit": BASE,
+        "source_authentication": "public",
+        "source_origin": HTTPS_ORIGIN,
+        "retired_deploy_key_label": f"rcp-source:{INSTALLATION_ID}",
+        "deploy_keys_url": DEPLOY_KEYS_URL,
+    }
+    assert len(succeeded["fields"]) == 7 < SERVER_CLI_MAX_FIELDS
+
+    interactive_machine = FakeUpdateMachine(layout, target_commit=BASE)
+    interactive_machine.observed = replace(
+        interactive_machine.observed,
+        source_transition=transition,
+    )
+    output = StringIO()
+    arguments = build_parser().parse_args(("server", "update"))
+
+    def handler(request: ServerCommandRequest, identity: CallerIdentity):
+        return prepare_update_command(
+            request,
+            identity,
+            machine=interactive_machine,
+            resume_executable=layout.cli_wrapper,
+        )
+
+    assert run_server_command(arguments, identity=ROOT, handler=handler, stream=output) == 0
+    assert paragraph in " ".join(output.getvalue().split())
+
+
 def test_real_local_origin_fetch_fast_forward_and_detached_release(tmp_path: Path) -> None:
     remote = tmp_path / "origin.git"
     seed = tmp_path / "seed"
@@ -1043,6 +1537,30 @@ def test_candidate_receipt_is_private_validated_and_never_overwritten(tmp_path: 
     os.chmod(path, 0o644)
     with pytest.raises(UpdateRefused, match="unsafe or invalid"):
         machine._read_receipt(path)
+
+
+def test_candidate_receipt_accepts_only_the_same_repository_retired_ssh_origin(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    machine = LinuxUpdateMachine(
+        layout,
+        config_loader=lambda _path: _config(layout),
+        doctor=SimpleNamespace(inspect=lambda: None),
+        service_runner=lambda *args, **kwargs: pytest.fail("no subprocess expected"),
+        service_identity=(os.getuid(), os.getgid()),
+        root_identity=(os.getuid(), os.getgid()),
+    )
+    target = UpdateTarget(inspection=_inspection(layout), target_commit=TARGET)
+    retired_origin_receipt = _receipt(layout).model_copy(update={"source_origin": SSH_ORIGIN})
+
+    machine._validate_receipt_for_target(retired_origin_receipt, target)
+
+    different_repository = retired_origin_receipt.model_copy(
+        update={"source_origin": "git@github.com:openai/not-rcp.git"}
+    )
+    with pytest.raises(UpdateRefused, match="different source or live base state"):
+        machine._validate_receipt_for_target(different_repository, target)
 
 
 def test_candidate_receipt_cannot_name_different_web_bytes(

@@ -353,6 +353,155 @@ def test_clean_root_retry_needs_the_same_stage_but_not_a_dead_session(tmp_path) 
     assert store.episode_budget_meter(episode.episode_id).invocations_used == 1
 
 
+@pytest.mark.parametrize("status", ["paused", "interrupted", "failed"])
+def test_stopping_episode_admits_only_exact_same_allocation_recovery(
+    tmp_path,
+    status: str,
+) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _episode(store, root_status="queued")
+    store.checkpoint_agent_task(
+        root.operation_id,
+        native_session_id="orchestrator-session",
+        stage_root="/tmp/orchestrator-stage",
+    )
+    if status == "paused":
+        store.request_agent_task_pause(root.operation_id)
+        store.pause_agent_task(root.operation_id)
+    elif status == "interrupted":
+        store.interrupt_active_agent_tasks()
+    else:
+        store.fail_agent_task(root.operation_id, "fixture failure")
+    parent = store.agent_task(root.operation_id)
+    assert parent is not None and parent.status == status
+    stopping = store.request_auto_research_stop_and_settle_watchers(episode.episode_id)
+
+    recovery = store.create_auto_research_recovery_task(
+        _task(
+            store,
+            episode,
+            operation_id=f"{status}-exact-recovery",
+            role="orchestrator",
+            parent_operation_id=parent.operation_id,
+            actor_operation_id=root.operation_id,
+            status="queued",
+            attempt=2,
+            session_id="orchestrator-session",
+            stage_root="/tmp/orchestrator-stage",
+        )
+    )
+
+    assert stopping.status == "stopping"
+    assert recovery.parent_operation_id == parent.operation_id
+    assert recovery.native_session_id == parent.native_session_id
+    allocation = store.auto_research_invocation(recovery.operation_id)
+    assert allocation is not None
+    assert allocation.allocation_operation_id == root.operation_id
+    assert store.episode_budget_meter(episode.episode_id).invocations_used == 1
+
+
+def test_stopping_episode_rejects_a_clean_session_retry(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _episode(
+        store,
+        root_status="failed",
+        root_stage="/tmp/orchestrator-stage",
+    )
+    store.request_auto_research_stop_and_settle_watchers(episode.episode_id)
+
+    with pytest.raises(EpisodeNotRunning, match="exact saved session and stage"):
+        store.create_auto_research_recovery_task(
+            _task(
+                store,
+                episode,
+                operation_id="stopping-clean-retry",
+                role="orchestrator",
+                parent_operation_id=root.operation_id,
+                actor_operation_id=root.operation_id,
+                status="queued",
+                attempt=2,
+                stage_root=root.stage_root,
+            )
+        )
+
+    assert store.auto_research_task_recovery_child(root.operation_id) is None
+
+
+def test_unusable_stopping_recovery_is_abandoned_and_settled_atomically(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _episode(store, root_status="failed")
+    store.request_auto_research_stop_and_settle_watchers(episode.episode_id)
+
+    settled = store.abandon_auto_research_recovery_and_settle_if_stopping(
+        root.operation_id,
+        diagnostic="the saved provider workspace is unavailable",
+    )
+
+    assert settled is not None
+    assert settled.status == "stopped"
+    assert settled.ending == "stopped"
+    assert settled.stop_settled_at is not None
+    assert "auto_research_recovery_abandoned" in {
+        receipt.category for receipt in store.agent_task_receipts(root.operation_id)
+    }
+
+
+def test_stop_and_human_pause_have_one_atomic_ordering(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    stopped_episode, stopped_root = _episode(
+        store,
+        episode_id="stop-before-pause",
+        root_status="queued",
+    )
+    store.request_auto_research_stop_and_settle_watchers(stopped_episode.episode_id)
+
+    with pytest.raises(ValueError, match="parent episode is stopping or ended"):
+        store.request_agent_task_pause(stopped_root.operation_id)
+    unchanged = store.agent_task(stopped_root.operation_id)
+    assert unchanged is not None and unchanged.status == "queued"
+
+    _project(store, "project-b")
+    paused_episode, paused_root = _episode(
+        store,
+        episode_id="pause-before-stop",
+        project_id="project-b",
+        root_status="queued",
+    )
+    pausing = store.request_agent_task_pause(paused_root.operation_id)
+    stopping = store.request_auto_research_stop_and_settle_watchers(paused_episode.episode_id)
+
+    assert pausing.status == "pausing"
+    assert stopping.status == "stopping"
+    assert stopping.stop_requested_at is not None
+
+    _project(store, "project-c")
+    ended_episode, ended_root = _episode(
+        store,
+        episode_id="ending-before-pause",
+        project_id="project-c",
+        root_status="queued",
+    )
+    store.fence_episode_ending(ended_episode.episode_id, "failed")
+    with pytest.raises(ValueError, match="parent episode is stopping or ended"):
+        store.request_agent_task_pause(ended_root.operation_id)
+
+
+@pytest.mark.parametrize("requested_by", ["shutdown", "member_removal"])
+def test_stop_does_not_block_system_pause_paths(tmp_path, requested_by: str) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _episode(store, root_status="queued")
+    store.request_auto_research_stop_and_settle_watchers(episode.episode_id)
+
+    pausing = store.request_agent_task_pause(root.operation_id, requested_by=requested_by)
+
+    assert pausing.status == "pausing"
+
+
 def test_paid_wake_cannot_overtake_a_recoverable_actor_leaf(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
@@ -688,7 +837,7 @@ def test_legacy_campaign_tables_migrate_once_then_move_to_private_archives(tmp_p
             """
         )
         connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 2, 5)"
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 2, 5, 6)"
         )
         connection.execute(
             """

@@ -26,6 +26,14 @@ class RestoreDetachmentStoreMixin:
         _required_timestamp(now)
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self.abandon_artifact_revisions_for_restore(
+                connection,
+                diagnostic=(
+                    "Pending artifact revision candidate bytes are not part of an offline "
+                    "backup; the unchanged source was preserved."
+                ),
+                now=now,
+            )
             self.detach_agent_tasks_for_restore(connection, diagnostic=recorded_detail, now=now)
             self.detach_episode_reports_for_restore(connection, diagnostic=recorded_detail, now=now)
             self.detach_experiment_episodes_for_restore(
