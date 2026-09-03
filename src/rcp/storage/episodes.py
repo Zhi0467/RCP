@@ -193,70 +193,101 @@ class EpisodeStoreMixin:
         ordered_project_ids = sorted(project_ids)
         placeholders = ", ".join("?" for _ in ordered_project_ids)
         with self.connection() as connection:
+            connection.execute("BEGIN")
             episode_rows = connection.execute(
                 f"""
-                SELECT episode_id, project_id, mode, graph_target_json,
-                       root_operation_id, status, ending, wrapup_state,
-                       created_at, updated_at, ended_at
-                FROM episodes
-                WHERE mode = 'auto_research'
-                  AND project_id IN ({placeholders})
-                  AND (
-                    status NOT IN ('completed', 'stopped')
-                    OR wrapup_state IN ('pending', 'running')
-                    OR julianday(COALESCE(ended_at, updated_at)) >= julianday(?)
-                  )
+                SELECT * FROM (
+                    SELECT episode_id, project_id, mode, graph_target_json,
+                           root_operation_id, status, stop_requested_at, ending,
+                           wrapup_state, created_at, updated_at, ended_at
+                    FROM episodes
+                    WHERE project_id IN ({placeholders})
+                      AND mode = 'auto_research'
+                      AND status NOT IN ('completed', 'stopped')
+                    UNION ALL
+                    SELECT episode_id, project_id, mode, graph_target_json,
+                           root_operation_id, status, stop_requested_at, ending,
+                           wrapup_state, created_at, updated_at, ended_at
+                    FROM episodes
+                    WHERE project_id IN ({placeholders})
+                      AND mode = 'auto_research'
+                      AND status IN ('completed', 'stopped')
+                      AND wrapup_state IN ('pending', 'running')
+                    UNION ALL
+                    SELECT episode_id, project_id, mode, graph_target_json,
+                           root_operation_id, status, stop_requested_at, ending,
+                           wrapup_state, created_at, updated_at, ended_at
+                    FROM episodes
+                    WHERE project_id IN ({placeholders})
+                      AND mode = 'auto_research'
+                      AND status IN ('completed', 'stopped')
+                      AND wrapup_state NOT IN ('pending', 'running')
+                      AND julianday(COALESCE(ended_at, updated_at)) >= julianday(?)
+                )
                 ORDER BY created_at DESC, episode_id DESC
                 """,
-                (*ordered_project_ids, completed_since),
+                (
+                    *ordered_project_ids,
+                    *ordered_project_ids,
+                    *ordered_project_ids,
+                    completed_since,
+                ),
             ).fetchall()
             if not episode_rows:
                 return []
-            episode_ids = [str(row["episode_id"]) for row in episode_rows]
-            episode_placeholders = ", ".join("?" for _ in episode_ids)
-            task_rows = connection.execute(
-                f"""
-                SELECT run.operation_id, run.episode_id, run.kind, run.status,
-                       run.created_at, run.last_activity_at, run.attempt,
-                       run.parent_operation_id, run.native_session_id,
-                       run.history_only, run.stage_host, run.stage_root, run.visible,
-                       run.rowid AS row_order,
-                       invocation.actor_operation_id, invocation.role,
-                       EXISTS (
-                           SELECT 1 FROM graph_run_receipts AS receipt
-                           WHERE receipt.operation_id = run.operation_id
-                             AND receipt.category IN (
-                                 'experiment_recovery_abandoned',
-                                 'auto_research_recovery_abandoned'
-                             )
-                       ) AS recovery_abandoned
-                FROM graph_runs AS run
-                LEFT JOIN auto_research_invocations AS invocation
-                  ON invocation.operation_id = run.operation_id
-                WHERE run.episode_id IN ({episode_placeholders})
-                  AND run.visible = 1
-                  AND run.kind != 'episode_report'
-                ORDER BY run.created_at, run.operation_id
-                """,
-                episode_ids,
-            ).fetchall()
-            recovery_rows = connection.execute(
-                f"""
-                SELECT episode_id, operation_id, admitted_operation_id, status,
-                       updated_at, recovery_id
-                FROM auto_research_recoveries
-                WHERE episode_id IN ({episode_placeholders})
-                ORDER BY updated_at DESC, recovery_id DESC
-                """,
-                episode_ids,
-            ).fetchall()
-            report_rows = connection.execute(
-                f"""
-                SELECT episode_id FROM episode_reports
-                WHERE episode_id IN ({episode_placeholders})
-                """,
-                episode_ids,
-            ).fetchall()
+            lifecycle_episode_ids = [
+                str(row["episode_id"])
+                for row in episode_rows
+                if row["status"] not in {"completed", "failed", "stopped"}
+            ]
+            task_rows: list[sqlite3.Row] = []
+            recovery_rows: list[sqlite3.Row] = []
+            report_rows: list[sqlite3.Row] = []
+            if lifecycle_episode_ids:
+                episode_placeholders = ", ".join("?" for _ in lifecycle_episode_ids)
+                task_rows = connection.execute(
+                    f"""
+                    SELECT run.operation_id, run.episode_id, run.kind, run.status,
+                           run.created_at, run.last_activity_at, run.attempt,
+                           run.parent_operation_id, run.native_session_id,
+                           run.history_only, run.stage_host, run.stage_root, run.visible,
+                           run.rowid AS row_order,
+                           invocation.actor_operation_id, invocation.role,
+                           EXISTS (
+                               SELECT 1 FROM graph_run_receipts AS receipt
+                               WHERE receipt.operation_id = run.operation_id
+                                 AND receipt.category IN (
+                                     'experiment_recovery_abandoned',
+                                     'auto_research_recovery_abandoned'
+                                 )
+                           ) AS recovery_abandoned
+                    FROM graph_runs AS run
+                    LEFT JOIN auto_research_invocations AS invocation
+                      ON invocation.operation_id = run.operation_id
+                    WHERE run.episode_id IN ({episode_placeholders})
+                      AND run.visible = 1
+                      AND run.kind != 'episode_report'
+                    ORDER BY run.created_at, run.operation_id
+                    """,
+                    lifecycle_episode_ids,
+                ).fetchall()
+                recovery_rows = connection.execute(
+                    f"""
+                    SELECT episode_id, operation_id, admitted_operation_id, status,
+                           updated_at, recovery_id
+                    FROM auto_research_recoveries
+                    WHERE episode_id IN ({episode_placeholders})
+                    ORDER BY updated_at DESC, recovery_id DESC
+                    """,
+                    lifecycle_episode_ids,
+                ).fetchall()
+                report_rows = connection.execute(
+                    f"""
+                    SELECT episode_id FROM episode_reports
+                    WHERE episode_id IN ({episode_placeholders})
+                    """,
+                    lifecycle_episode_ids,
+                ).fetchall()
 
         recoveries: dict[tuple[str, str], tuple[str, str]] = {}
         for row in recovery_rows:
@@ -267,7 +298,7 @@ class EpisodeStoreMixin:
                     recoveries.setdefault((episode_id, str(operation_id)), recovery)
 
         tasks_by_episode: dict[str, list[AutoResearchSpaceRunTaskState]] = {
-            episode_id: [] for episode_id in episode_ids
+            str(row["episode_id"]): [] for row in episode_rows
         }
         for row in task_rows:
             data = dict(row)

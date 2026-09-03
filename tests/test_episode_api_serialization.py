@@ -13,6 +13,7 @@ from rcp.api.episodes import (
     episode_for_project,
     serialize_episode,
     serialize_episodes,
+    space_auto_research_episode_projection,
 )
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman, GraphBranchSummary
@@ -243,6 +244,82 @@ def test_auto_episode_projection_includes_mode_state_and_exact_recovery(tmp_path
     }
     assert response.budget.invocations_used == 1
     assert response.can_stop
+
+
+@pytest.mark.parametrize("paused_role", ["orchestrator", "worker"])
+def test_space_projection_matches_stopping_parent_control_mask(tmp_path, paused_role: str) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(
+        store,
+        f"stopping-{paused_role}",
+        root_status="queued" if paused_role == "orchestrator" else "succeeded",
+    )
+    paused_task = root
+    if paused_role == "worker":
+        operation_id = f"{episode.episode_id}-worker"
+        paused_task = store.create_auto_research_agent_task(
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id=episode.project_id,
+                episode_id=episode.episode_id,
+                graph_target=episode.graph_target,
+                kind="auto_research",
+                status="queued",
+                request={
+                    "episode_id": episode.episode_id,
+                    "role": "worker",
+                    "actor_operation_id": operation_id,
+                    "run_truth_scope": ["repo"],
+                    "control_node_id": "exp/worker",
+                },
+                created_at=store.now(),
+                updated_at=store.now(),
+                status_message="queued",
+                parent_operation_id=root.operation_id,
+                authorized_by=episode.authorized_by,
+                dispatch_authority=AgentDispatchAuthority(
+                    profile="ordinary",
+                    task_contract="work_auto",
+                    scope=AgentDispatchScope(
+                        run_truth_scope=["repo"],
+                        episode_id=episode.episode_id,
+                        patch_kind="work",
+                    ),
+                ),
+            ),
+            role="worker",
+        )
+    now = store.now()
+    with store.connection() as connection:
+        connection.execute(
+            """
+            UPDATE graph_runs
+            SET status = 'paused', native_session_id = 'native-session',
+                phase = 'paused', updated_at = ?, last_activity_at = ?
+            WHERE operation_id = ?
+            """,
+            (now, now, paused_task.operation_id),
+        )
+    stopping = store.request_episode_stop(episode.episode_id)
+
+    full = serialize_episode(store, "project", stopping, branch_summary=_branch_summary)
+    snapshots = store.auto_research_space_run_projection_snapshots({"project"}, completed_since=now)
+    compact = next(item for item in snapshots if item.episode.episode_id == episode.episode_id)
+    compact_task = next(
+        task for task in compact.tasks if task.operation_id == paused_task.operation_id
+    )
+    compact_health, compact_section, _last_activity_at = space_auto_research_episode_projection(
+        compact
+    )
+
+    assert compact_task.can_resume
+    assert compact_task.can_retry
+    assert all(
+        not task.can_pause and not task.can_resume and not task.can_retry for task in full.tasks
+    )
+    assert (compact_health, compact_section) == (full.health, full.run_section)
+    assert (compact_health, compact_section) == ("stopping", "needs_action")
 
 
 def test_experiment_wake_role_comes_from_its_durable_continuation_cause(tmp_path) -> None:

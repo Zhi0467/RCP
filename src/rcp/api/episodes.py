@@ -51,6 +51,8 @@ _EPISODE_TEXT_MAX_LENGTH = 16_000
 
 class _EpisodeProjectionParent(Protocol):
     status: EpisodeStatus
+    stop_requested_at: str | None
+    ending: EpisodeEnding | None
     wrapup_state: EpisodeWrapupState
 
 
@@ -77,6 +79,12 @@ class _RecoveryProjection(Protocol):
 class _SpaceRunRecoveryProjection:
     operation_id: str
     status: AutoResearchRecoveryStatus
+
+
+def _episode_allows_task_controls(episode: _EpisodeProjectionParent) -> bool:
+    """Mask task controls once the parent has fenced or requested its ending."""
+
+    return episode.ending is None and episode.stop_requested_at is None
 
 
 class StartEpisodeBody(BaseModel):
@@ -316,7 +324,7 @@ def serialize_episode(
         if projection_snapshot is not None
         else _operational_tasks(store, episode)
     )
-    recovery_controls_allowed = episode.ending is None and episode.stop_requested_at is None
+    recovery_controls_allowed = _episode_allows_task_controls(episode)
     task_metadata = _episode_task_metadata(store, episode, task_records)
     tasks = [
         _serialize_task(
@@ -758,7 +766,15 @@ def space_auto_research_episode_projection(
     """Reuse the canonical lifecycle policy on one compact space-run snapshot."""
 
     episode = snapshot.episode
-    tasks_by_id = {task.operation_id: task for task in snapshot.tasks}
+    tasks = (
+        snapshot.tasks
+        if _episode_allows_task_controls(episode)
+        else [
+            task.model_copy(update={"can_pause": False, "can_resume": False, "can_retry": False})
+            for task in snapshot.tasks
+        ]
+    )
+    tasks_by_id = {task.operation_id: task for task in tasks}
 
     def recovery_for(operation_id: str) -> _SpaceRunRecoveryProjection | None:
         task = tasks_by_id.get(operation_id)
@@ -771,7 +787,7 @@ def space_auto_research_episode_projection(
 
     current_control_task_id = _auto_research_control_task_id(
         episode,
-        snapshot.tasks,
+        tasks,
         tasks_by_id,
         snapshot.current_orchestrator_task_id,
         actor_operation_id_for=lambda task: (
@@ -794,7 +810,7 @@ def space_auto_research_episode_projection(
     )
     health, _recommendation, _task_control = _episode_projection(
         episode,
-        snapshot.tasks,
+        tasks,
         control_task_id=current_control_task_id,
         recovery=recovery,
         has_report=snapshot.has_report,

@@ -2231,6 +2231,7 @@ class AutoResearchSpaceRunEpisodeState(BaseModel):
     graph_target: GraphTargetRef
     root_operation_id: str | None
     status: EpisodeStatus
+    stop_requested_at: str | None
     ending: EpisodeEnding | None
     wrapup_state: EpisodeWrapupState
     created_at: str

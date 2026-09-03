@@ -924,64 +924,65 @@ export function ExecutionView({
 
   return (
     <section className="view-panel runs-view" aria-label="Runs">
-      {exactProjection.staleMainRoute && (
+      {exactProjection.staleMainRoute ? (
         <div className="run-route-history" role="status">
           <strong>The requested Experiment episode is now in History.</strong>
           <button className="button secondary compact" type="button" onClick={onOpenHistory}>
             Open History
           </button>
         </div>
+      ) : (
+        <div className="operating-sections episode-ledger-sections">
+          <section className="operating-section episode-ledger-section needs-action">
+            <header>
+              <h2>Needs Action</h2>
+              <span>{needsAction.length}</span>
+            </header>
+            <div className="campaign-run-list">
+              {needsAction.map((episode, index) =>
+                renderEpisodeCard(
+                  episode,
+                  selectedAutoResearchEpisodeId
+                    ? episode.episode_id === selectedAutoResearchEpisodeId
+                    : index === 0,
+                ),
+              )}
+            </div>
+          </section>
+          <section className="operating-section episode-ledger-section completed">
+            <header>
+              <h2>Completed</h2>
+              <span>{completed.length}</span>
+            </header>
+            <div className="episode-type-groups">
+              {completedGroups.map((group) => (
+                <details
+                  className="episode-type-group"
+                  open={
+                    group.episodes.some(
+                      (episode) => episode.episode_id === selectedAutoResearchEpisodeId,
+                    ) || undefined
+                  }
+                  key={`${group.mode}:${selectedAutoResearchEpisodeId ?? ""}`}
+                >
+                  <summary>
+                    <strong>{group.title}</strong>
+                    <span>{group.episodes.length}</span>
+                  </summary>
+                  <div className="campaign-run-list">
+                    {group.episodes.map((episode) =>
+                      renderEpisodeCard(
+                        episode,
+                        episode.episode_id === selectedAutoResearchEpisodeId,
+                      ),
+                    )}
+                  </div>
+                </details>
+              ))}
+            </div>
+          </section>
+        </div>
       )}
-      <div className="operating-sections episode-ledger-sections">
-        <section className="operating-section episode-ledger-section needs-action">
-          <header>
-            <h2>Needs Action</h2>
-            <span>{needsAction.length}</span>
-          </header>
-          <div className="campaign-run-list">
-            {needsAction.map((episode, index) =>
-              renderEpisodeCard(
-                episode,
-                selectedAutoResearchEpisodeId
-                  ? episode.episode_id === selectedAutoResearchEpisodeId
-                  : index === 0,
-              ),
-            )}
-          </div>
-        </section>
-        <section className="operating-section episode-ledger-section completed">
-          <header>
-            <h2>Completed</h2>
-            <span>{completed.length}</span>
-          </header>
-          <div className="episode-type-groups">
-            {completedGroups.map((group) => (
-              <details
-                className="episode-type-group"
-                open={
-                  group.episodes.some(
-                    (episode) => episode.episode_id === selectedAutoResearchEpisodeId,
-                  ) || undefined
-                }
-                key={`${group.mode}:${selectedAutoResearchEpisodeId ?? ""}`}
-              >
-                <summary>
-                  <strong>{group.title}</strong>
-                  <span>{group.episodes.length}</span>
-                </summary>
-                <div className="campaign-run-list">
-                  {group.episodes.map((episode) =>
-                    renderEpisodeCard(
-                      episode,
-                      episode.episode_id === selectedAutoResearchEpisodeId,
-                    ),
-                  )}
-                </div>
-              </details>
-            ))}
-          </div>
-        </section>
-      </div>
     </section>
   );
 

@@ -439,7 +439,10 @@ test("an explicit main route becomes history when the Experiment advances concur
 
   assert.match(html, /The requested Experiment episode is now in History\./);
   assert.match(html, />Open History</);
-  assert.doesNotMatch(html, /campaign-run-detail|Start episode|Stop loop/);
+  assert.doesNotMatch(
+    html,
+    /campaign-run-detail|Expand Experiment loop episode|Start episode|Stop loop|episode-current/,
+  );
 });
 
 test("an exact Auto-research route focuses and scrolls its accessible detail", () => {

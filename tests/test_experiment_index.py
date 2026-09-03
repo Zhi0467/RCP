@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
@@ -505,20 +506,83 @@ def test_space_runs_batches_recent_auto_research_without_full_parent_loads(
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, _current_episode = _seed_indexed_project(app)
     store = app.state.background_tasks.store
-    episode_id = str(uuid.uuid4())
+    terminal_episode_id = str(uuid.uuid4())
+    other_terminal_episode_id = str(uuid.uuid4())
+    expired_terminal_episode_id = str(uuid.uuid4())
+    active_episode_id = str(uuid.uuid4())
+    active_operation_id = str(uuid.uuid4())
     now = store.now()
+    expired_at = (datetime.fromisoformat(now) - timedelta(days=8)).isoformat()
     with store.connection() as connection:
         connection.executemany(
             """
             INSERT INTO episodes (
-                episode_id, project_id, mode, status, invocation_ceiling,
+                episode_id, project_id, mode, root_operation_id, status, invocation_ceiling,
                 created_at, updated_at, ended_at
-            ) VALUES (?, ?, 'auto_research', 'completed', 1, ?, ?, ?)
+            ) VALUES (?, ?, 'auto_research', ?, ?, 1, ?, ?, ?)
             """,
             [
-                (episode_id, project_id, now, now, now),
-                (str(uuid.uuid4()), project_id, now, now, now),
+                (terminal_episode_id, project_id, None, "completed", now, now, now),
+                (other_terminal_episode_id, project_id, None, "completed", now, now, now),
+                (
+                    expired_terminal_episode_id,
+                    project_id,
+                    None,
+                    "completed",
+                    expired_at,
+                    expired_at,
+                    expired_at,
+                ),
+                (active_episode_id, project_id, active_operation_id, "running", now, now, None),
             ],
+        )
+        connection.executemany(
+            """
+            INSERT INTO graph_runs (
+                operation_id, project_id, episode_id, kind, status, request_json,
+                created_at, updated_at, status_message, native_session_id,
+                last_activity_at
+            ) VALUES (?, ?, ?, 'auto_research', ?, '{}', ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "terminal-task",
+                    project_id,
+                    terminal_episode_id,
+                    "succeeded",
+                    now,
+                    now,
+                    "Completed",
+                    None,
+                    now,
+                ),
+                (
+                    active_operation_id,
+                    project_id,
+                    active_episode_id,
+                    "running",
+                    now,
+                    now,
+                    "Running",
+                    "native-session",
+                    now,
+                ),
+            ],
+        )
+        connection.execute(
+            """
+            INSERT INTO auto_research_invocations (
+                episode_id, operation_id, allocation_operation_id, role,
+                actor_operation_id, control_node_id, created_at
+            ) VALUES (?, ?, ?, 'orchestrator', ?, NULL, ?)
+            """,
+            (
+                active_episode_id,
+                active_operation_id,
+                active_operation_id,
+                active_operation_id,
+                now,
+            ),
         )
 
     batch_calls = 0
@@ -543,8 +607,65 @@ def test_space_runs_batches_recent_auto_research_without_full_parent_loads(
         {project_id},
         completed_since=(datetime.now(UTC) - timedelta(days=7)).isoformat(),
     )
-    assert len(snapshots) == 2
+    assert len(snapshots) == 3
     assert len(projection_selects) == 4
+    snapshots_by_id = {snapshot.episode.episode_id: snapshot for snapshot in snapshots}
+    assert expired_terminal_episode_id not in snapshots_by_id
+    assert snapshots_by_id[terminal_episode_id].tasks == []
+    assert [task.operation_id for task in snapshots_by_id[active_episode_id].tasks] == [
+        active_operation_id
+    ]
+
+    with original_connection() as connection:
+        plans = {
+            "current": connection.execute(
+                """
+                EXPLAIN QUERY PLAN SELECT episode_id FROM episodes
+                WHERE project_id = ? AND mode = 'auto_research'
+                  AND status NOT IN ('completed', 'stopped')
+                """,
+                (project_id,),
+            ).fetchall(),
+            "wrapping": connection.execute(
+                """
+                EXPLAIN QUERY PLAN SELECT episode_id FROM episodes
+                WHERE project_id = ? AND mode = 'auto_research'
+                  AND status IN ('completed', 'stopped')
+                  AND wrapup_state IN ('pending', 'running')
+                """,
+                (project_id,),
+            ).fetchall(),
+            "recent": connection.execute(
+                """
+                EXPLAIN QUERY PLAN SELECT episode_id FROM episodes
+                WHERE project_id = ? AND mode = 'auto_research'
+                  AND status IN ('completed', 'stopped')
+                  AND wrapup_state NOT IN ('pending', 'running')
+                  AND julianday(COALESCE(ended_at, updated_at)) >= julianday(?)
+                """,
+                (project_id, now),
+            ).fetchall(),
+            "tasks": connection.execute(
+                "EXPLAIN QUERY PLAN SELECT operation_id FROM graph_runs WHERE episode_id = ?",
+                (active_episode_id,),
+            ).fetchall(),
+            "recoveries": connection.execute(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT operation_id FROM auto_research_recoveries
+                WHERE episode_id = ? ORDER BY updated_at DESC, recovery_id DESC
+                """,
+                (active_episode_id,),
+            ).fetchall(),
+        }
+    plan_details = {
+        name: " ".join(str(row["detail"]) for row in rows) for name, rows in plans.items()
+    }
+    assert "episodes_space_runs_current" in plan_details["current"]
+    assert "episodes_space_runs_wrapping" in plan_details["wrapping"]
+    assert "episodes_space_runs_recent" in plan_details["recent"]
+    assert "graph_runs_episode" in plan_details["tasks"]
+    assert "auto_research_recoveries_episode" in plan_details["recoveries"]
 
     def capture_batch(project_ids, *, completed_since):
         nonlocal batch_calls
@@ -563,8 +684,106 @@ def test_space_runs_batches_recent_auto_research_without_full_parent_loads(
     response = TestClient(app).get("/api/space/runs")
 
     assert response.status_code == 200, response.text
-    assert episode_id in {entry["episode_id"] for entry in response.json()}
+    assert terminal_episode_id in {entry["episode_id"] for entry in response.json()}
     assert batch_calls == 1
+
+
+def test_space_run_projection_keeps_one_sqlite_snapshot_during_concurrent_lifecycle_change(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, _current_episode = _seed_indexed_project(app)
+    store = app.state.background_tasks.store
+    episode_id = str(uuid.uuid4())
+    operation_id = str(uuid.uuid4())
+    now = store.now()
+    with store.connection() as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute(
+            """
+            INSERT INTO episodes (
+                episode_id, project_id, mode, root_operation_id, status,
+                invocation_ceiling, created_at, updated_at
+            ) VALUES (?, ?, 'auto_research', ?, 'running', 1, ?, ?)
+            """,
+            (episode_id, project_id, operation_id, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO graph_runs (
+                operation_id, project_id, episode_id, kind, status, request_json,
+                created_at, updated_at, status_message, last_activity_at
+            ) VALUES (?, ?, ?, 'auto_research', 'queued', '{}', ?, ?, 'Queued', ?)
+            """,
+            (operation_id, project_id, episode_id, now, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO auto_research_invocations (
+                episode_id, operation_id, allocation_operation_id, role,
+                actor_operation_id, control_node_id, created_at
+            ) VALUES (?, ?, ?, 'orchestrator', ?, NULL, ?)
+            """,
+            (episode_id, operation_id, operation_id, operation_id, now),
+        )
+
+    original_connection = store.connection
+    lifecycle_advanced: list[bool] = []
+    mutation_errors: list[Exception] = []
+
+    @contextmanager
+    def advancing_connection():
+        with original_connection() as connection:
+
+            def advance_before_task_read(statement: str) -> None:
+                if lifecycle_advanced or "FROM graph_runs AS run" not in statement:
+                    return
+                try:
+                    with sqlite3.connect(store.path, timeout=5) as writer:
+                        writer.execute(
+                            """
+                            UPDATE episodes
+                            SET status = 'stopping', stop_requested_at = ?, updated_at = ?
+                            WHERE episode_id = ?
+                            """,
+                            (now, now, episode_id),
+                        )
+                        writer.execute(
+                            """
+                            UPDATE graph_runs
+                            SET status = 'paused', native_session_id = 'native-session',
+                                updated_at = ?, last_activity_at = ?
+                            WHERE operation_id = ?
+                            """,
+                            (now, now, operation_id),
+                        )
+                    lifecycle_advanced.append(True)
+                except Exception as exc:  # pragma: no cover - asserted below
+                    mutation_errors.append(exc)
+
+            connection.set_trace_callback(advance_before_task_read)
+            yield connection
+
+    monkeypatch.setattr(store, "connection", advancing_connection)
+    snapshots = store.auto_research_space_run_projection_snapshots(
+        {project_id},
+        completed_since=(datetime.now(UTC) - timedelta(days=7)).isoformat(),
+    )
+
+    assert mutation_errors == []
+    assert lifecycle_advanced == [True]
+    snapshot = next(item for item in snapshots if item.episode.episode_id == episode_id)
+    assert snapshot.episode.status == "running"
+    assert [task.status for task in snapshot.tasks] == ["queued"]
+    with original_connection() as connection:
+        durable_episode = connection.execute(
+            "SELECT status FROM episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        durable_task = connection.execute(
+            "SELECT status FROM graph_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone()
+    assert durable_episode is not None and durable_episode["status"] == "stopping"
+    assert durable_task is not None and durable_task["status"] == "paused"
 
 
 def test_experiment_index_skips_an_orphan_main_runtime(manifest, tmp_path: Path) -> None:
