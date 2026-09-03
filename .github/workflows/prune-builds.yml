@@ -11,6 +11,9 @@ on:
         default: true
         type: boolean
 
+permissions:
+  contents: read
+
 jobs:
   prune:
     name: prune builds
@@ -22,6 +25,10 @@ jobs:
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
 
       - name: Select stale build releases
         run: |
@@ -30,7 +37,7 @@ jobs:
             exit 1
           fi
           NOW="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          python packaging/release_build.py select-stale-builds \
+          uv run --no-project python packaging/release_build.py select-stale-builds \
             --releases releases.json \
             --now "$NOW" \
             --days 30 > stale-builds.txt

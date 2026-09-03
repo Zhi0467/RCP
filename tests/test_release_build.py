@@ -59,6 +59,38 @@ def test_manifest_round_trip_detects_tampered_asset(tmp_path: Path) -> None:
         release_build.verify_manifest(tmp_path, Path("manifest.sha256"))
 
 
+def test_verify_manifest_accepts_manifest_outside_asset_directory(tmp_path: Path) -> None:
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "a.whl").write_bytes(b"wheel")
+    manifest = release_build.write_manifest(assets, tmp_path / "manifest.sha256")
+
+    release_build.verify_manifest(assets, manifest)
+
+
+def test_verify_manifest_reports_missing_listed_asset(tmp_path: Path) -> None:
+    asset = tmp_path / "a.whl"
+    asset.write_bytes(b"wheel")
+    release_build.write_manifest(tmp_path, Path("manifest.sha256"))
+    asset.unlink()
+
+    with pytest.raises(release_build.ReleaseBuildError) as error:
+        release_build.verify_manifest(tmp_path, Path("manifest.sha256"))
+
+    assert str(error.value) == "asset a.whl is missing"
+
+
+def test_verify_manifest_reports_extra_unlisted_asset(tmp_path: Path) -> None:
+    (tmp_path / "a.whl").write_bytes(b"wheel")
+    release_build.write_manifest(tmp_path, Path("manifest.sha256"))
+    (tmp_path / "extra.whl").write_bytes(b"extra")
+
+    with pytest.raises(release_build.ReleaseBuildError) as error:
+        release_build.verify_manifest(tmp_path, Path("manifest.sha256"))
+
+    assert str(error.value) == "asset extra.whl is not listed in manifest"
+
+
 def test_promotion_accepts_matching_base_version() -> None:
     release_build.check_promotion(Path("rcp-0.3.2+build.412.gfe06636-py3-none-any.whl"), "v0.3.2")
 

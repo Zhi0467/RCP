@@ -38,8 +38,20 @@ Find a build under the repository's Releases page, filtered to prereleases, or
 with:
 
 ```bash
-gh release list --repo Zhi0467/RCP --exclude-drafts | grep '^build/'
+gh release list --repo Zhi0467/RCP --limit 1000 --json tagName,isPrerelease --jq '.[] | select(.tagName | startswith("build/")) | .tagName'
 ```
+
+### If a build's publish step fails
+
+If publishing creates `build/<N>` but fails before every asset uploads, delete
+the partial release and tag, then re-run the failed job:
+
+```bash
+gh release delete build/<N> --cleanup-tag --yes
+```
+
+The workflow refuses to overwrite an existing release so a partial or changed
+asset set cannot silently replace the build's original byte identity.
 
 ## Bump the version before you release
 

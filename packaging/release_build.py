@@ -66,6 +66,7 @@ def stamp_version(run_number: str, sha: str, *, version_file: Path | None = None
 
 
 def _resolved_file(directory: Path, value: Path) -> Path:
+    """Resolve relative values against the asset directory, not the working directory."""
     return value if value.is_absolute() else directory / value
 
 

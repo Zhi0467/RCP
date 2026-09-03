@@ -12,6 +12,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   promote:
     name: promote build
@@ -24,6 +27,10 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
 
       - name: Refuse an existing release
         run: |
@@ -45,10 +52,10 @@ jobs:
           fi
 
       - name: Verify the build manifest
-        run: python packaging/release_build.py verify-manifest build-assets --manifest manifest.sha256
+        run: uv run --no-project python packaging/release_build.py verify-manifest build-assets --manifest manifest.sha256
 
       - name: Check the promotion version
-        run: python packaging/release_build.py check-promotion --wheel build-assets/rcp-*.whl --tag "$RELEASE_TAG"
+        run: uv run --no-project python packaging/release_build.py check-promotion --wheel build-assets/rcp-*.whl --tag "$RELEASE_TAG"
 
       - name: Read the build commit
         run: |
@@ -84,4 +91,6 @@ jobs:
             echo "promoted manifest.sha256 differs from build $BUILD_NUMBER"
             exit 1
           fi
-          python packaging/release_build.py verify-manifest promoted-assets --manifest build-assets/manifest.sha256
+          uv run --no-project python packaging/release_build.py verify-manifest \
+            promoted-assets \
+            --manifest "$PWD/build-assets/manifest.sha256"
