@@ -84,6 +84,11 @@ import {
   CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD,
 } from "../uiConstants";
 import { profileRunConfig } from "./AgentConfigControls";
+import {
+  handleAutoResearchDialogKeyDown,
+  makeAutoResearchDialogBackgroundInert,
+  restoreAutoResearchDialogFocus,
+} from "./AutoResearchDialog";
 import { SkillPicker, useSkillPicker } from "./SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
 
@@ -407,6 +412,8 @@ export function NodeChat({
   const chatLinesRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const revisionDialogRef = useRef<HTMLElement | null>(null);
+  const revisionCloseRef = useRef<HTMLButtonElement | null>(null);
   const attachmentSetIdRef = useRef<string | null>(null);
   const attachmentUploadBusyRef = useRef(false);
   const cancelledAttachmentIdsRef = useRef<Set<string>>(new Set());
@@ -455,6 +462,37 @@ export function NodeChat({
     (artifact) => artifact.artifact_id === revisionReview?.artifactId,
   );
   const revisionReviewCandidate = revisionReviewArtifact?.revision_candidate ?? null;
+
+  useEffect(() => {
+    if (!revisionReview || !revisionReviewCandidate) return;
+    const returnFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const restoreBackground = revisionDialogRef.current
+      ? makeAutoResearchDialogBackgroundInert(revisionDialogRef.current)
+      : () => undefined;
+    const frame = window.requestAnimationFrame(() => revisionCloseRef.current?.focus());
+    return () => {
+      window.cancelAnimationFrame(frame);
+      restoreBackground();
+      restoreAutoResearchDialogFocus(returnFocus);
+    };
+  }, [revisionReview, revisionReviewCandidate?.candidate_id]);
+
+  useEffect(() => {
+    if (!revisionReview || !revisionReviewCandidate) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!revisionDialogRef.current) return;
+      handleAutoResearchDialogKeyDown(
+        event,
+        revisionDialogRef.current,
+        document.activeElement,
+        Boolean(revisionDecision),
+        () => setRevisionReview(null),
+      );
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [revisionDecision, revisionReview, revisionReviewCandidate?.candidate_id]);
 
   useEffect(() => {
     const accept = (raw: unknown) => {
@@ -1586,10 +1624,12 @@ export function NodeChat({
             }}
           >
             <section
+              ref={revisionDialogRef}
               className="artifact-revision-dialog"
               role="dialog"
               aria-modal="true"
               aria-labelledby="artifact-revision-title"
+              tabIndex={-1}
             >
               <header>
                 <div>
@@ -1597,6 +1637,7 @@ export function NodeChat({
                   <h2 id="artifact-revision-title">{revisionReviewArtifact.name}</h2>
                 </div>
                 <button
+                  ref={revisionCloseRef}
                   type="button"
                   className="icon-button"
                   aria-label="Close revision review"

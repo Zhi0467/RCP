@@ -11,6 +11,7 @@ Protocol. ``argv`` is ``(repository, name, max_bytes)`` for legacy views or
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import stat
@@ -20,6 +21,11 @@ from pathlib import Path
 MISSING = 44
 TOO_LARGE = 45
 UNSAFE = 46
+UNAVAILABLE = 47
+
+
+def _open_error_status(exc: OSError) -> int:
+    return UNSAFE if exc.errno in {errno.ELOOP, errno.ENOTDIR} else UNAVAILABLE
 
 
 def main() -> None:
@@ -46,22 +52,22 @@ def main() -> None:
         repository_fd = os.open(repository, directory_flags)
     except FileNotFoundError:
         raise SystemExit(MISSING) from None
-    except OSError:
-        raise SystemExit(UNSAFE) from None
+    except OSError as exc:
+        raise SystemExit(_open_error_status(exc)) from None
     try:
         try:
             views_fd = os.open(directory, directory_flags, dir_fd=repository_fd)
         except FileNotFoundError:
             raise SystemExit(MISSING) from None
-        except OSError:
-            raise SystemExit(UNSAFE) from None
+        except OSError as exc:
+            raise SystemExit(_open_error_status(exc)) from None
         try:
             try:
                 file_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=views_fd)
             except FileNotFoundError:
                 raise SystemExit(MISSING) from None
-            except OSError:
-                raise SystemExit(UNSAFE) from None
+            except OSError as exc:
+                raise SystemExit(_open_error_status(exc)) from None
             try:
                 info = os.fstat(file_fd)
                 if not stat.S_ISREG(info.st_mode):

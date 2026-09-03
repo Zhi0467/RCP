@@ -798,22 +798,22 @@ def finalize_artifact_revision(
                 break
     if source is None:
         raise ValueError("The artifact revision origin is unavailable.")
-    replacement = next((item for item in artifacts if item.name == source.name), None)
-    if replacement is None:
+    try:
+        data = (
+            remote_stage.read_artifact_bytes(
+                artifact_scope_id,
+                source.name,
+                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+            )
+            if remote_stage is not None
+            else read_local_regular_file(
+                artifact_directory,
+                source.name,
+                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+            )
+        )
+    except FileNotFoundError:
         return []
-    data = (
-        remote_stage.read_artifact_bytes(
-            artifact_scope_id,
-            replacement.name,
-            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-        )
-        if remote_stage is not None
-        else read_local_regular_file(
-            artifact_directory,
-            replacement.name,
-            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-        )
-    )
     if validate_artifact_bytes(source.name, data) != source.media_type:
         raise ValueError("The artifact revision changed its file type.")
     base_receipt = next(

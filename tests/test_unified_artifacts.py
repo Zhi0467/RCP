@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import subprocess
 from datetime import date
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,10 +14,12 @@ from fastapi.testclient import TestClient
 import rcp.artifact_replace as artifact_replace_module
 from rcp.agents import AgentProcessControl
 from rcp.agents.prompts import _chat_attachment_section
+from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.artifacts import (
     AgentArtifactDescriptor,
     artifact_viewer_document,
     descriptor_for,
+    read_local_regular_file,
     replace_local_regular_file,
     validate_artifact_bytes,
 )
@@ -26,6 +30,7 @@ from rcp.runs.chat import (
     finalize_artifact_revision,
     stage_artifact_context,
 )
+from rcp.server_ops.update_checkpoint import _settle_accepting_artifact_replacements
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, ArtifactRevisionCandidateRecord
 from rcp.transport import LocalStateWorkspace, RemoteRunStage, StateUnavailable
@@ -411,6 +416,26 @@ def test_keep_reuses_human_artifacts_directory_and_reads_external_edits(tmp_path
 
     workspace.replace_kept_artifact(kept, b"<p>agent revision</p>")
     assert workspace.read_kept_artifact(kept) == b"<p>agent revision</p>"
+
+
+def test_local_artifact_read_preserves_transient_operational_errors(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    target = artifacts / "result.html"
+    target.write_bytes(b"<p>result</p>")
+    real_open = os.open
+
+    def fail_target_open(path, flags, *args, **kwargs):
+        if path == target.name and kwargs.get("dir_fd") is not None:
+            raise OSError(errno.EIO, "simulated read failure")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", fail_target_open)
+    with pytest.raises(OSError, match="simulated read failure"):
+        read_local_regular_file(artifacts, target.name, max_bytes=1024)
 
 
 def test_temporary_artifact_revision_checks_digest_after_staging(
@@ -807,6 +832,52 @@ def test_temporary_artifact_revision_recovers_a_pending_exchange_after_remount(
     assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
 
 
+def test_temporary_artifact_recovery_does_not_resurrect_a_deleted_live_source(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    target = artifacts / "result.html"
+    original = b"<p>original</p>"
+    candidate = b"<p>candidate</p>"
+    external = b"<p>displaced external edit</p>"
+    recovery = tmp_path / "recovery" / "turn-1"
+    target.write_bytes(original)
+    exchange = artifact_replace_module.exchange_regular_files
+
+    def exchange_then_crash(*args) -> None:
+        target.write_bytes(external)
+        exchange(*args)
+        raise OSError("simulated interruption after publication")
+
+    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange_then_crash)
+    with pytest.raises(OSError, match="simulated interruption"):
+        replace_local_regular_file(
+            artifacts,
+            target.name,
+            candidate,
+            expected_sha256=hashlib.sha256(original).hexdigest(),
+            recovery_directory=recovery,
+        )
+    target.unlink()
+    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange)
+
+    with pytest.raises(ArtifactReplacementConflict, match="source is missing"):
+        replace_local_regular_file(
+            artifacts,
+            target.name,
+            candidate,
+            expected_sha256=hashlib.sha256(original).hexdigest(),
+            recovery_directory=recovery,
+        )
+
+    assert not target.exists()
+    quarantined = list(recovery.glob(".rcp-artifact-quarantine-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == external
+
+
 def test_kept_artifact_revision_checks_digest_after_staging(
     tmp_path: Path,
     monkeypatch,
@@ -961,6 +1032,61 @@ def test_remote_kept_revision_checks_digest_after_copy_staging(
     assert result["conflict"] is True
     assert target.read_bytes() == external
     assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
+
+
+def test_remote_kept_revision_reports_missing_source_as_conflict(tmp_path: Path) -> None:
+    root = tmp_path / "repository" / ".research"
+    stage = root / ".publish" / "artifact-1-1"
+    artifacts = root.parent / "artifacts"
+    stage.mkdir(parents=True)
+    artifacts.mkdir()
+    (stage / "content.bin").write_bytes(b"<p>candidate</p>")
+
+    result = replace_staged_artifact(
+        {
+            "root": str(root),
+            "stage": str(stage),
+            "name": "result.html",
+            "expected_sha256": hashlib.sha256(b"<p>original</p>").hexdigest(),
+        },
+        str(root / ".refresh.lock"),
+    )
+
+    assert result["ok"] is False
+    assert result["conflict"] is True
+    assert not (artifacts / "result.html").exists()
+
+
+def test_remote_kept_revision_does_not_turn_operational_error_into_conflict(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "repository" / ".research"
+    stage = root / ".publish" / "artifact-1-1"
+    artifacts = root.parent / "artifacts"
+    stage.mkdir(parents=True)
+    artifacts.mkdir()
+    candidate = b"<p>candidate</p>"
+    original = b"<p>original</p>"
+    (stage / "content.bin").write_bytes(candidate)
+    (artifacts / "result.html").write_bytes(original)
+
+    def unavailable_exchange(*_args) -> None:
+        raise OSError(errno.EIO, "simulated storage failure")
+
+    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", unavailable_exchange)
+    with pytest.raises(OSError, match="simulated storage failure"):
+        replace_staged_artifact(
+            {
+                "root": str(root),
+                "stage": str(stage),
+                "name": "result.html",
+                "expected_sha256": hashlib.sha256(original).hexdigest(),
+            },
+            str(root / ".refresh.lock"),
+        )
+
+    assert (artifacts / "result.html").read_bytes() == original
 
 
 def test_remote_kept_revision_preserves_an_edit_at_atomic_publication(
@@ -1188,13 +1314,12 @@ def test_work_revision_waits_for_human_accept_without_a_second_card(
     artifact_directory = _local_chat_artifact_directory(store, revision, revision_id)
     artifact_directory.mkdir(parents=True)
     (artifact_directory / name).write_bytes(second)
-    (artifact_directory / "extra.html").write_bytes(b"<!doctype html><p>extra</p>")
-    replacement = descriptor_for(revision_id, name, size_bytes=len(second))
-    extra = descriptor_for(
-        revision_id,
-        "extra.html",
-        size_bytes=len(b"<!doctype html><p>extra</p>"),
-    )
+    extras = []
+    for index in range(9):
+        extra_name = f"a-extra-{index}.html"
+        extra_data = f"<!doctype html><p>extra {index}</p>".encode()
+        (artifact_directory / extra_name).write_bytes(extra_data)
+        extras.append(descriptor_for(revision_id, extra_name, size_bytes=len(extra_data)))
     store.record_agent_task_receipt(
         revision_id,
         "artifact_revision_base",
@@ -1205,24 +1330,13 @@ def test_work_revision_waits_for_human_accept_without_a_second_card(
         },
     )
 
-    wrong_name_only = finalize_artifact_revision(
-        revision_request,
-        execution,
-        artifact_scope_id=revision_id,
-        artifact_directory=artifact_directory,
-        remote_stage=None,
-        artifacts=[extra],
-    )
-    assert wrong_name_only == []
-    assert store.unresolved_artifact_revision_candidate(origin_id, source.artifact_id) is None
-
     remaining = finalize_artifact_revision(
         revision_request,
         execution,
         artifact_scope_id=revision_id,
         artifact_directory=artifact_directory,
         remote_stage=None,
-        artifacts=[replacement, extra],
+        artifacts=extras,
     )
 
     assert remaining == []
@@ -1439,6 +1553,51 @@ def test_revision_accept_keeps_transiently_unavailable_source_pending(
     assert original_read(kept_filename) == first
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [OSError("post-exchange fsync failed"), StateUnavailable("remote reply disconnected")],
+    ids=("local-post-exchange", "remote-commit-then-disconnect"),
+)
+def test_revision_accept_retries_ambiguous_publication_without_allowing_reject(
+    manifest,
+    tmp_path: Path,
+    monkeypatch,
+    failure: Exception,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    _, candidate, kept_filename, _, second = _seed_pending_local_candidate(
+        app,
+        tmp_path,
+        kept=True,
+    )
+    assert kept_filename is not None
+    workspace = app.state.service.history.workspace
+    original_replace = workspace.replace_kept_artifact
+
+    def publish_then_fail(*args, **kwargs) -> bool:
+        assert original_replace(*args, **kwargs) is True
+        raise failure
+
+    monkeypatch.setattr(workspace, "replace_kept_artifact", publish_then_fail)
+    client = TestClient(app)
+    base = (
+        f"/api/projects/{app.state.default_project_id}/artifact-revisions/{candidate.candidate_id}"
+    )
+
+    response = client.post(f"{base}/accept")
+
+    assert response.status_code == 503, response.text
+    accepting = app.state.background_tasks.store.artifact_revision_candidate(candidate.candidate_id)
+    assert accepting is not None and accepting.status == "accepting"
+    assert workspace.read_kept_artifact(kept_filename) == second
+    assert client.post(f"{base}/reject").status_code == 409
+
+    monkeypatch.setattr(workspace, "replace_kept_artifact", original_replace)
+    retry = client.post(f"{base}/accept")
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["status"] == "accepted"
+
+
 def test_revision_accept_detects_an_edit_during_publication(
     manifest,
     tmp_path: Path,
@@ -1598,6 +1757,94 @@ def test_interrupted_accept_recovers_from_the_already_published_digest(
 
     assert recovered.status_code == 200, recovered.text
     assert recovered.json()["status"] == "accepted"
+
+
+@pytest.mark.parametrize("kept", [False, True], ids=("temporary", "kept"))
+def test_update_checkpoint_settles_accepting_artifact_journal_before_copy(
+    manifest,
+    tmp_path: Path,
+    monkeypatch,
+    kept: bool,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    source, candidate, kept_filename, first, second = _seed_pending_local_candidate(
+        app,
+        tmp_path,
+        kept=kept,
+    )
+    store = app.state.background_tasks.store
+    source_task = store.agent_task(candidate.source_operation_id)
+    assert source_task is not None and source_task.stage_root
+    target = (
+        app.state.service.history.workspace.root.parent / "artifacts" / str(kept_filename)
+        if kept
+        else _local_chat_artifact_directory(store, source_task, source_task.operation_id)
+        / source.name
+    )
+    external = b"<!doctype html><p>edit displaced before checkpoint</p>"
+    exchange = artifact_replace_module.exchange_regular_files
+    injected = False
+
+    def exchange_then_crash(*args) -> None:
+        nonlocal injected
+        if not injected:
+            injected = True
+            target.write_bytes(external)
+            exchange(*args)
+            raise OSError("simulated crash after exchange")
+        exchange(*args)
+
+    store.begin_artifact_revision_acceptance(
+        candidate.candidate_id,
+        decided_by=authorized_human(app),
+    )
+    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange_then_crash)
+    with pytest.raises(OSError, match="crash after exchange"):
+        if kept:
+            assert kept_filename is not None
+            app.state.service.history.workspace.replace_kept_artifact(
+                kept_filename,
+                second,
+                expected_sha256=hashlib.sha256(first).hexdigest(),
+            )
+        else:
+            source_scope_id = source_task.operation_id
+            recovery_key = hashlib.sha256(
+                f"{source_task.stage_root}\0{source_scope_id}".encode()
+            ).hexdigest()[:32]
+            replace_local_regular_file(
+                target.parent,
+                target.name,
+                second,
+                expected_sha256=hashlib.sha256(first).hexdigest(),
+                recovery_directory=(
+                    Path(source_task.stage_root)
+                    / "inputs"
+                    / ".artifact-replacements"
+                    / recovery_key
+                ),
+            )
+    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange)
+    project_receipt = SimpleNamespace(
+        projects=(
+            SimpleNamespace(
+                project_id=candidate.project_id,
+                status="captured",
+                locator=str(manifest.path),
+            ),
+        )
+    )
+
+    _settle_accepting_artifact_replacements(store, data_dir, project_receipt)
+
+    assert target.read_bytes() == external
+    response = TestClient(app).post(
+        f"/api/projects/{app.state.default_project_id}"
+        f"/artifact-revisions/{candidate.candidate_id}/accept"
+    )
+    assert response.status_code == 409, response.text
+    assert target.read_bytes() == external
 
 
 def test_offline_restore_abandons_pending_candidate_and_preserves_source(

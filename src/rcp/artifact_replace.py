@@ -14,6 +14,32 @@ from contextlib import suppress
 _ROLLBACK_EXCHANGE_ATTEMPTS = 8
 
 
+class ArtifactReplacementConflict(ValueError):
+    """The live source is proven missing or structurally unsafe."""
+
+
+class _ArtifactNotRegular(ValueError):
+    pass
+
+
+def recover_regular_file_replacement_in_open_directory(
+    directory_fd: int,
+    recovery_directory_fd: int,
+    name: str,
+) -> None:
+    """Settle a conditional replacement journal without starting a new write."""
+
+    _require_separate_owned_recovery_directory(directory_fd, recovery_directory_fd)
+    _recover_regular_file_replacements(directory_fd, recovery_directory_fd, name)
+    name_hash = hashlib.sha256(name.encode("utf-8")).hexdigest()[:24]
+    if any(
+        item.startswith(f".rcp-artifact-{name_hash}-")
+        or item.startswith(f".rcp-artifact-quarantine-{name_hash}-")
+        for item in os.listdir(recovery_directory_fd)
+    ):
+        raise ArtifactReplacementConflict("artifact replacement journal remains unresolved")
+
+
 def replace_regular_file_in_open_directory(
     directory_fd: int,
     recovery_directory_fd: int,
@@ -85,7 +111,17 @@ def replace_regular_file_in_open_directory(
         replacement_name = pending_name
         os.fsync(recovery_directory_fd)
         replacement_holds_candidate = False
-        exchange_regular_files(recovery_directory_fd, replacement_name, directory_fd, name)
+        try:
+            exchange_regular_files(recovery_directory_fd, replacement_name, directory_fd, name)
+        except FileNotFoundError:
+            try:
+                _source_regular_file_state(directory_fd, name)
+            except ArtifactReplacementConflict:
+                _quarantine_regular_file_replacement(
+                    recovery_directory_fd, replacement_name, name_hash=name_hash
+                )
+                raise
+            raise
         os.fsync(directory_fd)
         os.fsync(recovery_directory_fd)
         displaced_sha256, displaced_fingerprint, displaced_stable = _regular_file_state(
@@ -105,16 +141,22 @@ def replace_regular_file_in_open_directory(
             desired_fingerprint=displaced_fingerprint,
             token=replacement_token,
         )
-        _complete_regular_file_rollback(
-            directory_fd,
-            recovery_directory_fd,
-            name,
-            replacement_name,
-            name_hash=name_hash,
-            expected_live_fingerprint=candidate_fingerprint,
-            desired_fingerprint=displaced_fingerprint,
-            token=replacement_token,
-        )
+        try:
+            _complete_regular_file_rollback(
+                directory_fd,
+                recovery_directory_fd,
+                name,
+                replacement_name,
+                name_hash=name_hash,
+                expected_live_fingerprint=candidate_fingerprint,
+                desired_fingerprint=displaced_fingerprint,
+                token=replacement_token,
+            )
+        except ArtifactReplacementConflict:
+            _quarantine_regular_file_replacement(
+                recovery_directory_fd, replacement_name, name_hash=name_hash
+            )
+            raise
         return False
     except BaseException:
         if replacement_holds_candidate:
@@ -156,16 +198,22 @@ def _recover_regular_file_replacements(
         rollback = rollback_pattern.fullmatch(replacement_name)
         if rollback is not None:
             expected_live_fingerprint, desired_fingerprint, token = rollback.groups()
-            _complete_regular_file_rollback(
-                directory_fd,
-                recovery_directory_fd,
-                name,
-                replacement_name,
-                name_hash=name_hash,
-                expected_live_fingerprint=expected_live_fingerprint,
-                desired_fingerprint=desired_fingerprint,
-                token=token,
-            )
+            try:
+                _complete_regular_file_rollback(
+                    directory_fd,
+                    recovery_directory_fd,
+                    name,
+                    replacement_name,
+                    name_hash=name_hash,
+                    expected_live_fingerprint=expected_live_fingerprint,
+                    desired_fingerprint=desired_fingerprint,
+                    token=token,
+                )
+            except ArtifactReplacementConflict:
+                _quarantine_regular_file_replacement(
+                    recovery_directory_fd, replacement_name, name_hash=name_hash
+                )
+                raise
             continue
         matched = pending_pattern.fullmatch(replacement_name)
         if matched is not None:
@@ -180,22 +228,14 @@ def _recover_regular_file_replacements(
             recovery_directory_fd, replacement_name
         )
         try:
-            current_sha256, current_fingerprint, current_stable = _regular_file_state(
+            current_sha256, current_fingerprint, current_stable = _source_regular_file_state(
                 directory_fd, name
             )
-        except FileNotFoundError:
-            if replacement_sha256 == candidate_sha256:
-                os.unlink(replacement_name, dir_fd=recovery_directory_fd)
-            else:
-                os.replace(
-                    replacement_name,
-                    name,
-                    src_dir_fd=recovery_directory_fd,
-                    dst_dir_fd=directory_fd,
-                )
-                os.fsync(directory_fd)
-            os.fsync(recovery_directory_fd)
-            continue
+        except ArtifactReplacementConflict:
+            _quarantine_regular_file_replacement(
+                recovery_directory_fd, replacement_name, name_hash=name_hash
+            )
+            raise
         if not replacement_stable or not current_stable:
             raise ValueError("artifact replacement recovery found changing source bytes")
         if (
@@ -210,16 +250,22 @@ def _recover_regular_file_replacements(
                 desired_fingerprint=replacement_fingerprint,
                 token=token,
             )
-            _complete_regular_file_rollback(
-                directory_fd,
-                recovery_directory_fd,
-                name,
-                replacement_name,
-                name_hash=name_hash,
-                expected_live_fingerprint=current_fingerprint,
-                desired_fingerprint=replacement_fingerprint,
-                token=token,
-            )
+            try:
+                _complete_regular_file_rollback(
+                    directory_fd,
+                    recovery_directory_fd,
+                    name,
+                    replacement_name,
+                    name_hash=name_hash,
+                    expected_live_fingerprint=current_fingerprint,
+                    desired_fingerprint=replacement_fingerprint,
+                    token=token,
+                )
+            except ArtifactReplacementConflict:
+                _quarantine_regular_file_replacement(
+                    recovery_directory_fd, replacement_name, name_hash=name_hash
+                )
+                raise
             continue
         if replacement_sha256 not in {
             expected_sha256,
@@ -237,8 +283,28 @@ def _discard_staged_regular_file(recovery_directory_fd: int, replacement_name: s
 
     metadata = os.stat(replacement_name, dir_fd=recovery_directory_fd, follow_symlinks=False)
     if not stat.S_ISREG(metadata.st_mode):
-        raise ValueError("artifact replacement staging marker is not a regular file")
+        raise ArtifactReplacementConflict(
+            "artifact replacement staging marker is not a regular file"
+        )
     os.unlink(replacement_name, dir_fd=recovery_directory_fd)
+    os.fsync(recovery_directory_fd)
+
+
+def _quarantine_regular_file_replacement(
+    recovery_directory_fd: int,
+    replacement_name: str,
+    *,
+    name_hash: str,
+) -> None:
+    """Preserve ambiguous displaced bytes under a name recovery will ignore."""
+
+    quarantine_name = f".rcp-artifact-quarantine-{name_hash}-{secrets.token_hex(8)}"
+    os.rename(
+        replacement_name,
+        quarantine_name,
+        src_dir_fd=recovery_directory_fd,
+        dst_dir_fd=recovery_directory_fd,
+    )
     os.fsync(recovery_directory_fd)
 
 
@@ -283,7 +349,7 @@ def _complete_regular_file_rollback(
         _, replacement_fingerprint, replacement_stable = _regular_file_state(
             recovery_directory_fd, replacement_name
         )
-        _, current_fingerprint, current_stable = _regular_file_state(directory_fd, name)
+        _, current_fingerprint, current_stable = _source_regular_file_state(directory_fd, name)
         if not replacement_stable or not current_stable:
             raise ValueError("artifact replacement rollback found changing source bytes")
         if replacement_fingerprint == expected_live_fingerprint:
@@ -330,7 +396,7 @@ def _regular_file_state(directory_fd: int, name: str) -> tuple[str, str, bool]:
     try:
         initial = os.fstat(descriptor)
         if not stat.S_ISREG(initial.st_mode):
-            raise ValueError("artifact is not a regular file")
+            raise _ArtifactNotRegular("artifact is not a regular file")
         digest = hashlib.sha256()
         while chunk := os.read(descriptor, 1024 * 1024):
             digest.update(chunk)
@@ -372,6 +438,25 @@ def _regular_file_state(directory_fd: int, name: str) -> tuple[str, str, bool]:
         return digest_sha256, fingerprint, initial_identity == final_identity == path_identity
     finally:
         os.close(descriptor)
+
+
+def _source_regular_file_state(directory_fd: int, name: str) -> tuple[str, str, bool]:
+    try:
+        return _regular_file_state(directory_fd, name)
+    except FileNotFoundError as exc:
+        raise ArtifactReplacementConflict("artifact source is missing") from exc
+    except _ArtifactNotRegular as exc:
+        raise ArtifactReplacementConflict("artifact source is not a regular file") from exc
+    except OSError as exc:
+        try:
+            metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError as missing:
+            raise ArtifactReplacementConflict("artifact source is missing") from missing
+        except OSError:
+            raise exc from None
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ArtifactReplacementConflict("artifact source is not a regular file") from exc
+        raise
 
 
 def exchange_regular_files(

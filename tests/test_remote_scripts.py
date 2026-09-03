@@ -8,6 +8,7 @@ with the same argv — and its guards can be driven directly.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import subprocess
@@ -16,7 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from rcp.transport.remote_read_kept_view import MISSING, TOO_LARGE, UNSAFE
+from rcp.transport.remote_read_kept_view import (
+    MISSING,
+    TOO_LARGE,
+    UNAVAILABLE,
+    UNSAFE,
+    _open_error_status,
+)
 from rcp.transport.state import _remote_lock_holder_script, _remote_script
 
 
@@ -49,6 +56,11 @@ def test_every_shipped_script_is_the_module_source() -> None:
 
 
 class TestReadKeptView:
+    def test_operational_open_errors_are_not_reported_as_unsafe_content(self) -> None:
+        assert _open_error_status(OSError(errno.EIO, "I/O failure")) == UNAVAILABLE
+        assert _open_error_status(PermissionError(errno.EACCES, "permission denied")) == UNAVAILABLE
+        assert _open_error_status(OSError(errno.ELOOP, "symlink loop")) == UNSAFE
+
     def test_reads_a_kept_view(self, tmp_path: Path) -> None:
         views = tmp_path / "views"
         views.mkdir()

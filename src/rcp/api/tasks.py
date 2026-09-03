@@ -28,6 +28,7 @@ from rcp.api.dependencies import (
 )
 from rcp.api.identity import IdentityAccess
 from rcp.api.task_requests import _resolved_auto_research_request, _resolved_graph_request
+from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
     AgentArtifactDescriptor,
@@ -738,8 +739,14 @@ def accept_artifact_revision_candidate(
                 candidate_data,
                 expected_sha256=current_sha256,
             )
+        except ArtifactReplacementConflict as exc:
+            conflicted = store.conflict_artifact_revision_candidate(
+                candidate_id,
+                "The current artifact disappeared or became unsafe while this candidate was "
+                "being accepted.",
+            )
+            raise HTTPException(status_code=409, detail=conflicted.diagnostic) from exc
         except (FileNotFoundError, OSError, StateUnavailable, ValueError) as exc:
-            store.reset_artifact_revision_acceptance(candidate_id)
             raise HTTPException(
                 status_code=503,
                 detail="Artifact revision publication failed; retry Accept.",

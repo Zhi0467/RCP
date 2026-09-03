@@ -24,7 +24,10 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rcp.artifact_replace import replace_regular_file_in_open_directory
+from rcp.artifact_replace import (
+    recover_regular_file_replacement_in_open_directory,
+    replace_regular_file_in_open_directory,
+)
 from rcp.config import Manifest, load_manifest
 from rcp.core.models import GraphBranchMetadata
 from rcp.limits import (
@@ -1432,7 +1435,29 @@ class StateWorkspace:
 
 
 class LocalStateWorkspace(StateWorkspace):
-    pass
+    def recover_kept_artifact_replacement(self, name: str) -> None:
+        """Settle an interrupted kept-artifact publication before local checkpointing."""
+
+        safe_name = _validated_kept_artifact_name(name)
+        recovery_path = self.root / ".publish" / "artifact-replacements"
+        if not recovery_path.exists():
+            return
+        with self.transaction():
+            repository_fd = _repository_directory_fd(self.root.parent)
+            try:
+                artifacts_fd = _open_artifacts_directory(repository_fd, create=False)
+                try:
+                    recovery_fd = _open_artifact_recovery_directory(self.root)
+                    try:
+                        recover_regular_file_replacement_in_open_directory(
+                            artifacts_fd, recovery_fd, safe_name
+                        )
+                    finally:
+                        os.close(recovery_fd)
+                finally:
+                    os.close(artifacts_fd)
+            finally:
+                os.close(repository_fd)
 
 
 def _advisory_lock_holder_arguments(

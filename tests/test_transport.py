@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import shlex
 import shutil
@@ -15,6 +16,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.config import MachineConfig, RepositoryConfig, load_manifest
 from rcp.core.models import Patch
 from rcp.history import HistoryManager, PatchRejected
@@ -2376,8 +2378,34 @@ def test_remote_stage_artifact_operations_are_exact_and_binary(monkeypatch) -> N
 
         assert stage.list_artifact_files("logical-turn") == [("plot.png", len(payload))]
         assert stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024) == payload
+        with pytest.raises(ValueError, match="bounded regular file"):
+            stage.read_artifact_bytes("logical-turn", "linked.png", max_bytes=1024)
+        with pytest.raises(FileNotFoundError):
+            stage.read_artifact_bytes("logical-turn", "missing.png", max_bytes=1024)
         with pytest.raises(ValueError, match="plain base name"):
             stage.read_artifact_bytes("logical-turn", "../plot.png", max_bytes=1024)
+
+        monkeypatch.setattr(
+            stage,
+            "_ssh_bytes",
+            lambda _arguments, **_kwargs: subprocess.CompletedProcess([], 46, b"", b"EIO"),
+        )
+        with pytest.raises(StateUnavailable, match="EIO"):
+            stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024)
+        monkeypatch.setattr(
+            stage,
+            "_ssh_bytes",
+            lambda _arguments, **_kwargs: subprocess.CompletedProcess(
+                [], 47, b"", b"artifact source is missing"
+            ),
+        )
+        with pytest.raises(ArtifactReplacementConflict, match="source is missing"):
+            stage.replace_artifact_bytes(
+                "logical-turn",
+                "plot.png",
+                payload,
+                expected_sha256=hashlib.sha256(payload).hexdigest(),
+            )
     finally:
         shutil.rmtree(root)
 

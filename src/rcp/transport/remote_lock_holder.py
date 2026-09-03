@@ -25,7 +25,10 @@ import uuid
 from pathlib import Path
 
 if "replace_regular_file_in_open_directory" not in globals():
-    from rcp.artifact_replace import replace_regular_file_in_open_directory
+    from rcp.artifact_replace import (
+        ArtifactReplacementConflict,
+        replace_regular_file_in_open_directory,
+    )
 
 
 def relative_path(value: str) -> Path:
@@ -501,14 +504,17 @@ def replace_staged_artifact(command: dict, lock_path: str) -> dict:
                                 publish_fd, "artifact-replacements"
                             )
                             try:
-                                replaced = replace_regular_file_in_open_directory(
-                                    artifacts_fd,
-                                    recovery_fd,
-                                    name,
-                                    data,
-                                    expected_sha256=expected_sha256,
-                                    mode=0o644,
-                                )
+                                try:
+                                    replaced = replace_regular_file_in_open_directory(
+                                        artifacts_fd,
+                                        recovery_fd,
+                                        name,
+                                        data,
+                                        expected_sha256=expected_sha256,
+                                        mode=0o644,
+                                    )
+                                except ArtifactReplacementConflict as exc:
+                                    return {"ok": False, "conflict": True, "error": str(exc)}
                             finally:
                                 os.close(recovery_fd)
                         finally:
@@ -579,6 +585,9 @@ def replace_run_artifact() -> None:
             raise SystemExit(46)
     except SystemExit:
         raise
+    except ArtifactReplacementConflict as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(47) from exc
     except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(44) from exc

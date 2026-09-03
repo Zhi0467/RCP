@@ -114,6 +114,19 @@ class ArtifactRevisionStoreMixin:
             ).fetchall()
         return tuple(self._artifact_revision_candidate_record(row) for row in rows)
 
+    def accepting_artifact_revision_candidates(
+        self,
+    ) -> tuple[ArtifactRevisionCandidateRecord, ...]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM artifact_revision_candidates
+                WHERE status = 'accepting'
+                ORDER BY candidate_id
+                """
+            ).fetchall()
+        return tuple(self._artifact_revision_candidate_record(row) for row in rows)
+
     def begin_artifact_revision_acceptance(
         self,
         candidate_id: str,

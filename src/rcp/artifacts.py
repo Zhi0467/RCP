@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import html
 import json
@@ -15,7 +16,10 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from rcp.artifact_replace import replace_regular_file_in_open_directory
+from rcp.artifact_replace import (
+    recover_regular_file_replacement_in_open_directory,
+    replace_regular_file_in_open_directory,
+)
 
 ArtifactMediaType = Literal[
     "text/html",
@@ -146,7 +150,15 @@ def read_local_regular_file(directory: Path, name: str, *, max_bytes: int) -> by
         except FileNotFoundError:
             raise
         except OSError as exc:
-            raise ValueError("artifact is not a readable regular file") from exc
+            try:
+                metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                raise
+            except OSError:
+                raise exc from None
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("artifact is not a readable regular file") from exc
+            raise
         try:
             metadata = os.fstat(file_fd)
             if not stat.S_ISREG(metadata.st_mode):
@@ -224,6 +236,29 @@ def replace_local_regular_file(
                 recovery_directory.parent.rmdir()
 
 
+def recover_local_regular_file_replacement(
+    directory: Path,
+    name: str,
+    *,
+    recovery_directory: Path,
+) -> None:
+    """Settle any RCP-owned conditional replacement journal for one local artifact."""
+
+    if Path(name).name != name or name in {"", ".", ".."}:
+        raise ValueError("artifact name must be a plain base name")
+    if not recovery_directory.exists():
+        return
+    directory_fd = _open_local_directory(directory)
+    recovery_directory_fd = _open_local_directory(recovery_directory)
+    try:
+        recover_regular_file_replacement_in_open_directory(
+            directory_fd, recovery_directory_fd, name
+        )
+    finally:
+        os.close(recovery_directory_fd)
+        os.close(directory_fd)
+
+
 def _open_local_directory(directory: Path) -> int:
     if not directory.is_absolute():
         raise ValueError("artifact directory must be absolute")
@@ -240,7 +275,9 @@ def _open_local_directory(directory: Path) -> int:
         raise
     except OSError as exc:
         os.close(current)
-        raise ValueError("artifact directory is not a regular directory") from exc
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ValueError("artifact directory is not a regular directory") from exc
+        raise
 
 
 class _ArtifactHTMLSanitizer(HTMLParser):

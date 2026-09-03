@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.artifacts import validate_result_view_id
 from rcp.limits import (
     PROJECT_TRANSFER_MANIFEST_MAX_BYTES,
@@ -1061,7 +1062,7 @@ finally:
         if PurePosixPath(name).name != name or name in {"", ".", ".."}:
             raise ValueError("artifact name must be a plain base name")
         script = """
-import os,stat,sys
+import errno,os,stat,sys
 root,scope,name,limit=sys.argv[1],sys.argv[2],sys.argv[3],int(sys.argv[4])
 flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
 fds=[]
@@ -1078,8 +1079,13 @@ try:
         if not chunk: break
         sys.stdout.buffer.write(chunk); remaining-=len(chunk)
     if remaining==0: raise SystemExit(45)
-except (FileNotFoundError,NotADirectoryError,OSError) as exc:
+except FileNotFoundError as exc:
     print(str(exc),file=sys.stderr); raise SystemExit(44)
+except NotADirectoryError as exc:
+    print(str(exc),file=sys.stderr); raise SystemExit(45)
+except OSError as exc:
+    print(str(exc),file=sys.stderr)
+    raise SystemExit(45 if exc.errno in (errno.ELOOP,errno.ENOTDIR) else 46)
 finally:
     for item in reversed(fds): os.close(item)
 """
@@ -1128,6 +1134,11 @@ finally:
         )
         if result.returncode == 46:
             return False
+        if result.returncode == 47:
+            raise ArtifactReplacementConflict(
+                result.stderr.decode("utf-8", errors="replace").strip()
+                or "remote artifact source is missing or unsafe"
+            )
         if result.returncode:
             detail = result.stderr.decode("utf-8", errors="replace").strip()
             raise StateUnavailable(detail or "could not replace remote artifact")

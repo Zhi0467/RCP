@@ -13,6 +13,11 @@ const server = await createServer({
 const { artifactContextDraft, parseArtifactContextPayload } = await server.ssrLoadModule(
   "/src/components/NodeChat.tsx",
 );
+const {
+  handleAutoResearchDialogKeyDown,
+  makeAutoResearchDialogBackgroundInert,
+  restoreAutoResearchDialogFocus,
+} = await server.ssrLoadModule("/src/components/AutoResearchDialog.tsx");
 const nodeChatSource = await readFile(
   new URL("../src/components/NodeChat.tsx", import.meta.url),
   "utf8",
@@ -149,3 +154,104 @@ test("artifact revision review remains available when its preview is unavailable
   assert.match(artifactCard, /!unavailable && artifact\.can_open/);
   assert.match(artifactCard, /revisionCandidate && \([\s\S]*Review revision/);
 });
+
+test("artifact revision review wires the proven keyboard modal lifecycle", () => {
+  assert.match(nodeChatSource, /ref=\{revisionDialogRef\}/);
+  assert.match(nodeChatSource, /ref=\{revisionCloseRef\}/);
+  assert.match(nodeChatSource, /makeAutoResearchDialogBackgroundInert/);
+  assert.match(nodeChatSource, /handleAutoResearchDialogKeyDown/);
+  assert.match(nodeChatSource, /restoreAutoResearchDialogFocus/);
+  assert.match(nodeChatSource, /tabIndex=\{-1\}/);
+
+  const focused = [];
+  const first = focusTarget("first", focused);
+  const last = focusTarget("last", focused);
+  const dialog = {
+    focus() {
+      focused.push("dialog");
+    },
+    contains(element) {
+      return element === first || element === last;
+    },
+    querySelectorAll() {
+      return [first, last];
+    },
+  };
+  const tab = keyEvent("Tab", false);
+  assert.equal(
+    handleAutoResearchDialogKeyDown(tab, dialog, last, false, () => {}),
+    true,
+  );
+  assert.equal(tab.prevented, true);
+  assert.deepEqual(focused, ["first"]);
+
+  let closed = false;
+  const busyEscape = keyEvent("Escape", false);
+  assert.equal(
+    handleAutoResearchDialogKeyDown(busyEscape, dialog, first, true, () => {
+      closed = true;
+    }),
+    false,
+  );
+  assert.equal(closed, false);
+  const escape = keyEvent("Escape", false);
+  assert.equal(
+    handleAutoResearchDialogKeyDown(escape, dialog, first, false, () => {
+      closed = true;
+    }),
+    true,
+  );
+  assert.equal(closed, true);
+});
+
+test("artifact revision modal inerts background and restores its trigger", () => {
+  const background = treeElement(false);
+  const dialog = treeElement(false);
+  const body = treeElement(false, [background, dialog]);
+  dialog.parentElement = body;
+  const restore = makeAutoResearchDialogBackgroundInert(dialog);
+  assert.equal(background.inert, true);
+  restore();
+  assert.equal(background.inert, false);
+
+  let restored = false;
+  restoreAutoResearchDialogFocus({
+    isConnected: true,
+    focus() {
+      restored = true;
+    },
+  });
+  assert.equal(restored, true);
+});
+
+function keyEvent(key, shiftKey) {
+  return {
+    key,
+    shiftKey,
+    prevented: false,
+    preventDefault() {
+      this.prevented = true;
+    },
+  };
+}
+
+function focusTarget(name, focused) {
+  return {
+    tabIndex: 0,
+    focus() {
+      focused.push(name);
+    },
+    getAttribute() {
+      return null;
+    },
+    hasAttribute() {
+      return false;
+    },
+  };
+}
+
+function treeElement(inert, children = []) {
+  const element = { inert, children, parentElement: null };
+  for (const child of children) child.parentElement = element;
+  return element;
+}
