@@ -306,6 +306,23 @@ def converge_public_source(
     if public_probe != "ready":
         return None
 
+    source = layout.source_checkout
+    if source.exists() or source.is_symlink():
+        observed_origin = git_text(
+            source,
+            ("remote", "get-url", "origin"),
+            environment=source_git_environment(None, layout),
+        )
+        if not (
+            _is_repository_ssh_origin(observed_origin, repository=repository)
+            or observed_origin == repository.https_origin
+        ):
+            raise refusal(
+                f"The managed checkout origin {observed_origin!r} is not the matching SSH or "
+                "HTTPS origin. The deploy-key source was left unchanged, and the checkout "
+                "must be inspected by hand before rerunning."
+            )
+
     transition = SourceTransition(
         retired_deploy_key_label=f"rcp-source:{config.installation_id}",
         deploy_keys_url=repository.deploy_keys_url,

@@ -140,6 +140,7 @@ def _source_transition_fixture(
         public.write_bytes(b"public-key\n")
     remote_origin = [checkout_origin or source.origin]
     probe_calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
+    git_text_calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
     git_calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
 
     def config_loader(_path: Path):
@@ -190,7 +191,8 @@ def _source_transition_fixture(
         root_identity=(os.getuid(), os.getgid()),
     )
 
-    def git_text(_root: Path, argv: tuple[str, ...], **_kwargs) -> str:
+    def git_text(_root: Path, argv: tuple[str, ...], **kwargs) -> str:
+        git_text_calls.append((argv, kwargs["environment"]))
         if argv == ("remote", "get-url", "origin"):
             return remote_origin[0]
         if argv == ("symbolic-ref", "--short", "HEAD"):
@@ -223,6 +225,7 @@ def _source_transition_fixture(
         public=public,
         remote_origin=remote_origin,
         probe_calls=probe_calls,
+        git_text_calls=git_text_calls,
         git_calls=git_calls,
     )
 
@@ -976,6 +979,43 @@ def test_update_keeps_deploy_key_source_byte_identical_when_public_probe_is_not_
     assert fixture.remote_origin == [SSH_ORIGIN]
     assert fixture.git_calls == []
     assert len(fixture.probe_calls) == 1
+
+
+def test_update_refuses_deploy_key_transition_from_a_third_origin_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    third_origin = "https://github.com/openai/not-rcp.git"
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="deploy_key",
+        public_probe="ready",
+        checkout_origin=third_origin,
+    )
+    before = {
+        path: path.read_bytes()
+        for path in (fixture.layout.config_path, fixture.private, fixture.public)
+    }
+
+    with pytest.raises(UpdateRefused) as refused:
+        fixture.machine.inspect()
+
+    assert str(refused.value) == (
+        f"The managed checkout origin {third_origin!r} is not the matching SSH or HTTPS origin. "
+        "The deploy-key source was left unchanged, and the checkout must be inspected by hand "
+        "before rerunning."
+    )
+    assert {path: path.read_bytes() for path in before} == before
+    assert fixture.current_config[0].source.authentication == "deploy_key"
+    assert fixture.remote_origin == [third_origin]
+    assert fixture.git_calls == []
+    assert fixture.git_text_calls == [
+        (
+            ("remote", "get-url", "origin"),
+            server_install.source_git_environment(None, fixture.layout),
+        )
+    ]
 
 
 def test_update_public_source_never_probes_or_uses_ssh(

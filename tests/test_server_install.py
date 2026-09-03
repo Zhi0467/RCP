@@ -861,6 +861,57 @@ def test_public_source_with_retired_key_files_is_refused_with_manual_recovery(
         machine.prepare_source_access(REPOSITORY)
 
 
+def test_deploy_key_transition_refuses_a_third_checkout_origin_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    layout, machine, config, private, public = _configured_source_install(
+        tmp_path,
+        authentication="deploy_key",
+    )
+    layout.source_checkout.mkdir(parents=True)
+    (layout.source_checkout / ".git").mkdir()
+    third_origin = "https://github.com/openai/not-rcp.git"
+    observed_origin = [third_origin]
+    before = {path: path.read_bytes() for path in (layout.config_path, private, public)}
+
+    def run_as_service(argv: tuple[str, ...], **kwargs):
+        assert argv[0:3] == ("git", "ls-remote", "--exit-code")
+        assert kwargs["environment"] == server_install.source_git_environment(None, layout)
+        return subprocess.CompletedProcess(argv, 0, COMMIT, "")
+
+    def git_text(_root: Path, argv: tuple[str, ...], **kwargs) -> str:
+        assert argv == ("remote", "get-url", "origin")
+        assert kwargs["environment"] == server_install.source_git_environment(None, layout)
+        return observed_origin[0]
+
+    monkeypatch.setattr(server_install, "load_installed_server_config", lambda _path: config)
+    monkeypatch.setattr(
+        server_install,
+        "write_installed_server_config",
+        lambda *_args: pytest.fail("an unrecognized checkout origin must not rewrite config"),
+    )
+    monkeypatch.setattr(machine, "_validate_source_key_pair", lambda *_args: "public-key")
+    monkeypatch.setattr(machine, "_run_as_service", run_as_service)
+    monkeypatch.setattr(machine, "_git_text", git_text)
+    monkeypatch.setattr(
+        machine,
+        "_run_git",
+        lambda *_args, **_kwargs: pytest.fail("an unrecognized origin must not be rewritten"),
+    )
+
+    with pytest.raises(InstallRefused) as refused:
+        machine.prepare_source_access(REPOSITORY)
+
+    assert str(refused.value) == (
+        f"The managed checkout origin {third_origin!r} is not the matching SSH or HTTPS origin. "
+        "The deploy-key source was left unchanged, and the checkout must be inspected by hand "
+        "before rerunning."
+    )
+    assert {path: path.read_bytes() for path in before} == before
+    assert observed_origin == [third_origin]
+
+
 def test_public_source_refuses_a_third_checkout_origin_without_mutation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -480,10 +480,12 @@ after that write succeeds does it remove the local `source_ed25519` pair. It the
 changes the managed checkout's `origin` from the matching SSH URL to that HTTPS
 URL as `rcp`, without `GIT_SSH_COMMAND`, before comparing the configured origin
 and fetching. A rerun of either command finishes an interrupted checkout rewrite
-on its own. A credential-free probe that still needs a grant or is unavailable
-leaves the configuration, key pair, and SSH checkout unchanged; any other checkout
-origin still refuses. A public configuration never returns to deploy-key mode and
-is never probed over SSH.
+on its own. After a ready probe and before any mutation, the transition requires
+an existing managed checkout to use either the matching SSH origin or the HTTPS
+origin it will record; otherwise it refuses without changing the configuration,
+key pair, or checkout. A credential-free probe that still needs a grant or is
+unavailable leaves the configuration, key pair, and SSH checkout unchanged. A
+public configuration never returns to deploy-key mode and is never probed over SSH.
 
 The transition does not wait for GitHub-side revocation. Its wizard event reports
 the public authentication and origin, the retired label, and the repository's
