@@ -2495,7 +2495,11 @@ def _run(
 
 
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
-    with contextlib.suppress(ProcessLookupError):
+    # `_run` always starts a new session, so this group only ever holds that
+    # child and its descendants. Once the last of them exits, macOS reports the
+    # empty group as EPERM rather than ESRCH, so both mean the same thing here:
+    # nothing is left to signal, and `wait` reaps the child either way.
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(process.pid, signal.SIGKILL)
     process.wait(timeout=5)
 

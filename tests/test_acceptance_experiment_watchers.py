@@ -102,7 +102,7 @@ def _wait_for_watcher_status(
     chat_id: str,
     status: str,
     *,
-    timeout: float = 8.0,
+    timeout: float = TASK_SETTLE_TIMEOUT,
 ) -> list[WatcherRecord]:
     """Wait for the lifespan-owned periodic poller to persist one status."""
 
@@ -120,6 +120,39 @@ def _wait_for_watcher_status(
         timeout=timeout,
         interval=0.02,
         detail=lambda: f"periodic watcher poller did not persist {status}: {latest}",
+    )
+
+
+def _wait_for_ready_experiment_control(
+    client: TestClient,
+    project_id: str,
+    *,
+    timeout: float = TASK_SETTLE_TIMEOUT,
+) -> dict[str, object]:
+    """Wait on the projection these assertions read, not on a correlated proxy.
+
+    The poller persists each watcher check as its own future returns, so the
+    control projection passes through a split state: one watcher completed while
+    the other is still active. That state reports ``detached_work_active``, whose
+    reason clears ``ready`` while leaving ``paused`` false. Waiting on the
+    watcher rows and then reading the projection in a separate request are two
+    reads of different things, and a loaded runner can land between them.
+    """
+
+    latest: dict[str, object] = {}
+
+    def ready_control() -> dict[str, object] | None:
+        nonlocal latest
+        response = client.get(f"/api/projects/{project_id}")
+        assert response.status_code == 200, response.text
+        latest = response.json()["experiment_control"][_EXPERIMENT_ID]
+        return latest if latest["ready"] else None
+
+    return wait_until(
+        ready_control,
+        timeout=timeout,
+        interval=0.02,
+        detail=lambda: f"Experiment control did not settle ready at the ceiling: {latest}",
     )
 
 
@@ -325,18 +358,17 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
             "completed",
         )
         _assert_completed_job_artifacts(pending)
-        assert {
-            task.operation_id for task in reopened_store.agent_tasks(project_id)
-        } == before_ceiling_ids
-
         assert all(not record.notified for record in pending)
-        control = reopened_client.get(f"/api/projects/{project_id}").json()["experiment_control"][
-            _EXPERIMENT_ID
-        ]
+        control = _wait_for_ready_experiment_control(reopened_client, project_id)
         assert control["paused"] is False
         assert control["ready"] is True
         assert control["invocations_used"] == 1
         assert control["invocations_remaining"] == 0
+        # Checked once readiness has settled, so the ceiling genuinely delivered
+        # no wake rather than merely not having delivered one yet.
+        assert {
+            task.operation_id for task in reopened_store.agent_tasks(project_id)
+        } == before_ceiling_ids
         assert reopened.state.service.history.load_patches() == baseline_patches
 
         reauthorized = reopened_client.post(

@@ -717,7 +717,12 @@ def test_human_sync_boundary_claims_a_graph_wake_and_spends_experiment_budget(
         assert response.status_code == 200, response.text
         stored = store.watcher("sync-graph")
         assert isinstance(stored, GraphWatcherRecord)
-        assert stored.status == "completed"
+        # The claim is durable; `status` is not. A watcher row reads "stopped"
+        # whenever its origin episode has an ending, and the wake this Sync just
+        # dispatched spends the last invocation and gives the episode one. So
+        # asserting "completed" here races the very task being asserted about.
+        # The claimed notification id is the race-free proof: a watcher stopped
+        # without ever being claimed never carries one.
         assert stored.notified is True
         assert stored.notification_operation_id is not None
         wake = _wait_for_terminal_task(store, stored.notification_operation_id)

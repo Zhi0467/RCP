@@ -31,6 +31,8 @@ from rcp.storage import (
     WatcherRecord,
 )
 
+from .helpers import NON_UUID4
+
 
 def _project(project_id: str) -> ProjectRecord:
     return ProjectRecord(
@@ -707,7 +709,7 @@ def test_team_invitation_record_cannot_be_consumed_and_revoked() -> None:
         )
 
 
-@pytest.mark.parametrize("persisted", [None, "not-a-uuid", str(uuid.uuid1())])
+@pytest.mark.parametrize("persisted", [None, "not-a-uuid", NON_UUID4])
 def test_existing_space_identity_is_never_silently_replaced(tmp_path, persisted) -> None:
     path = tmp_path / "rcp.sqlite3"
     with sqlite3.connect(path) as connection:

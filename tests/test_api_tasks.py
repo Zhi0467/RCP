@@ -12,7 +12,13 @@ from rcp.agents import AgentEvent
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES
 
-from .helpers import append_fixture_patch, create_named_app, seed_patch, wait_until
+from .helpers import (
+    TASK_SETTLE_TIMEOUT,
+    append_fixture_patch,
+    create_named_app,
+    seed_patch,
+    wait_until,
+)
 
 
 def _event_frame(event: AgentEvent) -> str:
@@ -51,7 +57,7 @@ def test_remote_artifact_read_does_not_stall_health(
 
     def blocked_load(*_args):
         entered.set()
-        assert release.wait(timeout=3)
+        assert release.wait(timeout=TASK_SETTLE_TIMEOUT)
         return descriptor, data
 
     monkeypatch.setattr("rcp.api.tasks._load_agent_artifact", blocked_load)
@@ -63,8 +69,15 @@ def test_remote_artifact_read_does_not_stall_health(
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             artifact = asyncio.create_task(client.get(url))
             try:
-                assert await asyncio.to_thread(entered.wait, 1)
-                health = await asyncio.wait_for(client.get("/api/health"), timeout=1)
+                assert await asyncio.to_thread(entered.wait, TASK_SETTLE_TIMEOUT)
+                health = await asyncio.wait_for(
+                    client.get("/api/health"), timeout=TASK_SETTLE_TIMEOUT
+                )
+                # The promise is ordering, not latency: health answered while the
+                # artifact read was still parked in the patched loader. An absolute
+                # bound instead measures how loaded the runner is, and a real stall
+                # still fails here because the loader holds until this block exits.
+                assert not artifact.done()
             finally:
                 release.set()
             return health, await artifact

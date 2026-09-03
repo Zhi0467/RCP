@@ -19,7 +19,15 @@ from rcp.history import HistoryManager
 from rcp.providers import ProviderUsage
 from rcp.storage import AgentTaskRecord
 
-from .helpers import append_fixture_patch, create_named_app, gated_patch, seed_patch
+from .helpers import (
+    TASK_SETTLE_TIMEOUT,
+    append_fixture_patch,
+    async_wait_until,
+    create_named_app,
+    gated_patch,
+    seed_patch,
+    wait_for_entry,
+)
 
 
 def _experiment_fixture_patch(
@@ -253,7 +261,7 @@ def test_cached_revision_file_read_does_not_block_the_event_loop(
 
     def blocked_snapshot(requested_project_id: str):
         entered.set()
-        assert release.wait(timeout=3)
+        assert release.wait(TASK_SETTLE_TIMEOUT)
         return original(requested_project_id)
 
     monkeypatch.setattr(display_cache, "cached_project_snapshot", blocked_snapshot)
@@ -264,13 +272,17 @@ def test_cached_revision_file_read_does_not_block_the_event_loop(
             revision_task = asyncio.create_task(
                 client.get(f"/api/projects/{project_id}/cached/revision")
             )
-            assert await asyncio.to_thread(entered.wait, 1)
-            health = await asyncio.wait_for(client.get("/api/health"), timeout=1)
+            await asyncio.to_thread(wait_for_entry, entered)
+            health = await asyncio.wait_for(client.get("/api/health"), timeout=TASK_SETTLE_TIMEOUT)
+            # Ordering, not latency: health answered while the cached snapshot
+            # read was still parked in the patched call.
+            still_reading = not revision_task.done()
             release.set()
-            return await revision_task, health
+            return await revision_task, health, still_reading
 
-    revision, health = asyncio.run(drive())
+    revision, health, still_reading = asyncio.run(drive())
 
+    assert still_reading
     assert revision.status_code == 200
     assert health.status_code == 200
 
@@ -347,7 +359,7 @@ def test_moved_head_refreshes_in_background_singleflight(manifest, tmp_path, mon
         nonlocal refresh_calls
         refresh_calls += 1
         entered.set()
-        assert release.wait(timeout=3)
+        assert release.wait(TASK_SETTLE_TIMEOUT)
         return reconcile_snapshot(requested_project_id)
 
     monkeypatch.setattr(app.state.catalog, "probe_remote_patch_log_head", moved_head)
@@ -357,20 +369,20 @@ def test_moved_head_refreshes_in_background_singleflight(manifest, tmp_path, mon
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             first = await client.get(f"/api/projects/{project_id}/cached/revision")
-            assert await asyncio.to_thread(entered.wait, 1)
+            await asyncio.to_thread(wait_for_entry, entered)
             second = await asyncio.wait_for(
                 client.get(f"/api/projects/{project_id}/cached/revision"),
-                timeout=1,
+                timeout=TASK_SETTLE_TIMEOUT,
             )
             project = await asyncio.wait_for(
                 client.get(f"/api/projects/{project_id}"),
-                timeout=1,
+                timeout=TASK_SETTLE_TIMEOUT,
             )
             release.set()
-            for _ in range(100):
-                if project_id not in app.state.project_reconciliation_tasks:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(
+                lambda: project_id not in app.state.project_reconciliation_tasks,
+                detail="background reconciliation never drained",
+            )
             return first, second, project
 
     first, second, project = asyncio.run(drive())
