@@ -28,6 +28,7 @@ from rcp.server_ops.config import (
     ServerSourceConfig,
     create_installed_server_config,
 )
+from rcp.server_ops.doctor import MANAGED_SOURCE_ORIGIN_MISMATCH
 from rcp.server_ops.install import SourceTransition
 from rcp.server_ops.layout import ServerLayout
 from rcp.server_ops.models import SERVER_CLI_MAX_FIELDS, ServerCommandRequest
@@ -110,6 +111,7 @@ def _source_transition_fixture(
     authentication: str,
     public_probe: str,
     checkout_origin: str | None = None,
+    doctor_reports_origin_mismatch: bool = False,
 ):
     layout = _layout(tmp_path)
     _prepare_owned_roots(layout)
@@ -151,7 +153,11 @@ def _source_transition_fixture(
     def doctor_inspect():
         installed = current_config[0]
         return SimpleNamespace(
-            problems=(),
+            problems=(
+                (MANAGED_SOURCE_ORIGIN_MISMATCH,)
+                if doctor_reports_origin_mismatch and remote_origin[0] != installed.source.origin
+                else ()
+            ),
             managed_main_head=BASE,
             current_commit=BASE,
             running_commit=BASE,
@@ -1003,6 +1009,7 @@ def test_update_public_source_finishes_interrupted_checkout_rewrite_before_fetch
         authentication="public",
         public_probe="ready",
         checkout_origin=SSH_ORIGIN,
+        doctor_reports_origin_mismatch=True,
     )
 
     inspection = fixture.machine.inspect()

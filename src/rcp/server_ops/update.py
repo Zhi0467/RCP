@@ -34,6 +34,7 @@ from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEven
 from rcp.server_ops.config import InstalledServerConfig, load_installed_server_config
 from rcp.server_ops.control import ServerControlClient, ServerControlError
 from rcp.server_ops.doctor import (
+    MANAGED_SOURCE_ORIGIN_MISMATCH,
     LinuxServerDoctorMachine,
     ServerDoctorMachine,
     ServerDoctorReport,
@@ -1226,6 +1227,16 @@ class LinuxUpdateMachine:
 
     def inspect(self) -> UpdateInspection:
         inspection, report = self._read_status()
+        if (
+            inspection.config.source.authentication == "public"
+            and MANAGED_SOURCE_ORIGIN_MISMATCH in report.problems
+        ):
+            self._validate_source_checkout(
+                inspection.config,
+                expected_head=inspection.managed_head,
+                environment=self._update_git_environment(inspection.config),
+            )
+            inspection, report = self._read_status()
         self._validate_inspection(inspection, report)
         if inspection.config.source.authentication == "deploy_key":
             repository = normalize_github_repository(inspection.config.source.origin)

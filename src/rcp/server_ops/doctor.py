@@ -44,6 +44,7 @@ from rcp.server_runtime import (
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _SAFE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_-]{0,79}")
 _NO_VALUE = "none"
+MANAGED_SOURCE_ORIGIN_MISMATCH = "managed source origin differs from installed configuration"
 
 DoctorOverallState = Literal[
     "healthy",
@@ -860,7 +861,7 @@ class LinuxServerDoctorMachine:
         managed = self._git_commit(source, "HEAD")
         upstream = self._git_commit(source, "origin/main")
         if origin is None or origin != config.source.origin:
-            add_problem("managed source origin differs from installed configuration")
+            add_problem(MANAGED_SOURCE_ORIGIN_MISMATCH)
         if branch is None or branch != config.source.branch:
             add_problem("managed source is not checked out on configured main")
         if dirty is None:
@@ -1474,6 +1475,7 @@ def _problem_text(problems: tuple[str, ...]) -> str:
 
 __all__ = [
     "LinuxServerDoctorMachine",
+    "MANAGED_SOURCE_ORIGIN_MISMATCH",
     "ServerDoctorReport",
     "prepare_doctor_command",
     "release_relationship",
