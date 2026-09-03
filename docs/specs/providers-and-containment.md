@@ -262,12 +262,16 @@ failure. An authentication or host-key action names the exact agent machine on
 which the operator must repair ordinary SSH state. RCP has no key or password field
 and never imports, stores, stages, or transmits those credentials.
 Only explicit readiness refresh runs these SSH probes. Normal readiness polling
-returns the last authoritative matrix without network work, and any connection
-or execution-binding change invalidates that matrix. Probe diagnostics cross one
-redacting, single-line boundary before projection, and the backend exports the
-status label and tone consumed by every UI surface. A changed connection never
-inherits the old target's status; if the post-save refresh fails, Settings keeps
-the saved metadata, leaves status empty, and reports that the refresh failed.
+returns the last authoritative matrix without network work and without waiting
+behind an explicit refresh of a slow target, and any connection or
+execution-binding change invalidates that matrix. Provider readiness and compute
+status invalidate independently: resolving one provider path leaves an in-flight
+compute probe free to apply, and a compute change leaves recorded provider
+readiness in place. Probe diagnostics cross one redacting, single-line boundary
+before projection, and the backend exports the status label and tone consumed by
+every UI surface. A changed connection never inherits the old target's status;
+if the post-save refresh fails, Settings keeps the saved metadata, leaves status
+empty, and reports that the refresh failed.
 
 Projects configure at most 32 compute connections and a turn selects at most 32
 ids. These shared schema limits apply before manifest persistence, probing, chat

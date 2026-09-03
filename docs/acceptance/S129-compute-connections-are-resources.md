@@ -27,8 +27,10 @@ last_checked: >-
   regressions cover initial Discuss/Work context, resumed add/remove/update/no-op
   deltas, immutable admission and watcher snapshots, delayed-launch manifest
   changes, redacted diagnostics, bounded schemas, stale-status masking, and
-  in-flight readiness invalidation. Live authentication/host-key targets remain
-  pending.
+  slice-scoped readiness invalidation. A disposable-server browser run confirmed
+  that resolving a provider path during a compute probe keeps the probe's own
+  matrix, where the prior build showed the previous target's status instead.
+  Live authentication/host-key targets remain pending.
 ---
 
 # Attach compute without moving the agent

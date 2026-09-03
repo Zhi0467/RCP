@@ -37,11 +37,33 @@ export function settingsFingerprint(state: unknown): string {
   return JSON.stringify(withSortedKeys(state));
 }
 
-export function computeConnectionsChanged(
-  saved: readonly ComputeConnection[],
-  current: readonly ComputeConnection[],
+/** The inputs of the backend compute probe cache key that Settings can edit. */
+export interface ComputeProbeConfiguration {
+  connections: readonly ComputeConnection[];
+  executionMachines: readonly string[];
+}
+
+/**
+ * Whether a save changes the backend compute probe cache key.
+ *
+ * `compute_probe_cache_key` covers the connection rows and the set of machines
+ * currently selected by an agent execution profile, so pointing one profile at
+ * a machine no other profile uses invalidates the matrix as surely as editing
+ * an SSH target does.
+ */
+export function computeProbeConfigurationChanged(
+  saved: ComputeProbeConfiguration,
+  current: ComputeProbeConfiguration,
 ): boolean {
-  return settingsFingerprint(saved) !== settingsFingerprint(current);
+  return (
+    settingsFingerprint(saved.connections) !== settingsFingerprint(current.connections) ||
+    settingsFingerprint(executionMachineSet(saved.executionMachines)) !==
+      settingsFingerprint(executionMachineSet(current.executionMachines))
+  );
+}
+
+function executionMachineSet(machines: readonly string[]): string[] {
+  return [...new Set(machines)].sort();
 }
 
 export function computeConnectionNeedsSave(

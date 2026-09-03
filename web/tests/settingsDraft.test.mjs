@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   computeConnectionNeedsSave,
-  computeConnectionsChanged,
+  computeProbeConfigurationChanged,
   deserializeSettingsDraft,
   machineProviderPathUpdates,
   machineProviderPathsFrom,
@@ -247,15 +247,50 @@ test("compute changes compare complete non-secret connection metadata", () => {
     },
   ];
 
-  assert.equal(computeConnectionsChanged(saved, structuredClone(saved)), false);
+  const machines = ["laptop"];
+
+  assert.equal(
+    computeProbeConfigurationChanged(
+      { connections: saved, executionMachines: machines },
+      { connections: structuredClone(saved), executionMachines: ["laptop", "laptop"] },
+    ),
+    false,
+  );
   assert.equal(computeConnectionNeedsSave(saved, structuredClone(saved[0])), false);
   assert.equal(
-    computeConnectionsChanged(saved, [{ ...saved[0], ssh_target: "alice@gpu-2.example" }]),
+    computeProbeConfigurationChanged(
+      { connections: saved, executionMachines: machines },
+      {
+        connections: [{ ...saved[0], ssh_target: "alice@gpu-2.example" }],
+        executionMachines: machines,
+      },
+    ),
     true,
   );
   assert.equal(
     computeConnectionNeedsSave(saved, { ...saved[0], ssh_target: "alice@gpu-2.example" }),
     true,
+  );
+});
+
+test("moving one profile to an unused machine changes the compute probe cache key", () => {
+  const connections = [
+    { id: "gpu", name: "GPU", kind: "ssh", ssh_target: "alice@gpu.example", access_hint: "" },
+  ];
+
+  assert.equal(
+    computeProbeConfigurationChanged(
+      { connections, executionMachines: ["laptop", "laptop", "laptop"] },
+      { connections, executionMachines: ["laptop", "laptop", "cluster"] },
+    ),
+    true,
+  );
+  assert.equal(
+    computeProbeConfigurationChanged(
+      { connections, executionMachines: ["laptop", "cluster"] },
+      { connections, executionMachines: ["cluster", "laptop"] },
+    ),
+    false,
   );
 });
 

@@ -29,6 +29,25 @@ export type BrowserTransitionProjection = ProjectTransitionProjection<
   Record<string, ExperimentControlState>
 >;
 
+/**
+ * Which readiness slice of the rendered project survives a settings response.
+ *
+ * Provider readiness and compute status are invalidated by different edits, so
+ * one save or resolve keeps the slice it did not touch. A provider path resolve
+ * carries fresh provider readiness while a compute probe may still be in
+ * flight; a compute connection or execution-binding change invalidates the
+ * matrix while provider readiness stands.
+ */
+export interface ProjectReadinessRetention {
+  provider: boolean;
+  compute: boolean;
+}
+
+export const RETAIN_ALL_PROJECT_READINESS: ProjectReadinessRetention = {
+  provider: true,
+  compute: true,
+};
+
 export type ProjectSessionManifestState =
   | {
       status: "loading";
@@ -395,10 +414,9 @@ export function trustedProjectTransitionManifest(
 export function projectSettingsSavedProject(
   saved: ProjectSnapshot,
   current: ProjectSnapshot | null,
-  preserveReadiness: boolean,
+  retention: ProjectReadinessRetention,
 ): ProjectSnapshot {
-  const decoded = decodeProjectSnapshot(saved);
-  return preserveReadiness ? preserveProjectReadiness(decoded, current) : decoded;
+  return preserveProjectReadiness(decodeProjectSnapshot(saved), current, retention);
 }
 
 export function latestSnapshotRequestCanApply(
@@ -655,13 +673,18 @@ function cloneProjectSessionTabState(state: ProjectSessionTabState): ProjectSess
 function preserveProjectReadiness(
   next: ProjectSnapshot,
   current: ProjectSnapshot | null,
+  retention: ProjectReadinessRetention = RETAIN_ALL_PROJECT_READINESS,
 ): ProjectSnapshot {
   if (!current || current.id !== next.id) return next;
   return {
     ...next,
-    compute_status: current.compute_status,
-    provider_readiness: current.provider_readiness,
-    providers: current.providers,
-    provider_skill_inventories: current.provider_skill_inventories,
+    ...(retention.compute ? { compute_status: current.compute_status } : {}),
+    ...(retention.provider
+      ? {
+          provider_readiness: current.provider_readiness,
+          providers: current.providers,
+          provider_skill_inventories: current.provider_skill_inventories,
+        }
+      : {}),
   };
 }

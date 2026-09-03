@@ -29,6 +29,7 @@ from .helpers import (
     gated_patch,
     seed_patch,
     wait_for_entry,
+    wait_until,
 )
 
 
@@ -872,6 +873,80 @@ def test_stale_compute_refresh_does_not_overwrite_fresher_status(
 
     assert probe_order == ["alice@new-gpu.example", "alice@old-gpu.example"]
     assert cached == statuses["alice@new-gpu.example"]
+
+
+def test_cached_compute_readiness_does_not_wait_behind_a_slow_refresh(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    catalog = app.state.catalog
+    project_id = app.state.default_project_id
+    before = client.get(f"/api/projects/{project_id}").json()
+    body = {
+        "default_run_truth_scope": before["default_run_truth_scope"],
+        "agent_profiles": {
+            surface: {
+                key: profile[key] for key in ("provider", "runtime", "model", "reasoning", "run_on")
+            }
+            for surface, profile in before["agent_profiles"].items()
+        },
+        "compute_connections": [
+            {
+                "id": "gpu",
+                "name": "GPU VM",
+                "kind": "ssh",
+                "ssh_target": "alice@gpu.example",
+                "access_hint": "",
+            }
+        ],
+    }
+    saved = client.put(f"/api/projects/{project_id}/settings", json=body)
+    assert saved.status_code == 200
+    current_manifest = app.state.service.manifest
+
+    last_matrix = {"laptop": {"gpu": {"status_label": "Reachable"}}}
+    slow_matrix = {"laptop": {"gpu": {"status_label": "Unreachable"}}}
+    monkeypatch.setattr("rcp.projects.probe_compute_connections", lambda _manifest: last_matrix)
+    seeded = client.get(f"/api/projects/{project_id}/readiness?refresh=true")
+    assert seeded.json()["compute_status"] == last_matrix
+
+    probing = threading.Event()
+    unblock_probe = threading.Barrier(2)
+
+    def slow_probe(_manifest):
+        probing.set()
+        unblock_probe.wait(timeout=10)
+        return slow_matrix
+
+    monkeypatch.setattr("rcp.projects.probe_compute_connections", slow_probe)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        slow_refresh = pool.submit(
+            catalog._compute_status_snapshot,
+            project_id,
+            current_manifest,
+            refresh=True,
+        )
+        wait_until(
+            probing.is_set,
+            detail="the explicit refresh never reached the compute probe",
+        )
+        cached_read = pool.submit(
+            catalog._compute_status_snapshot,
+            project_id,
+            current_manifest,
+            refresh=False,
+        )
+
+        # The cached read returns the last matrix while the refresh still holds
+        # the probe lock; blocking here would fail as a timeout.
+        assert cached_read.result(timeout=5) == last_matrix
+        unblock_probe.wait(timeout=5)
+        assert slow_refresh.result(timeout=5) == slow_matrix
+
+    assert catalog._compute_status_snapshot(project_id, current_manifest, refresh=False) == (
+        slow_matrix
+    )
 
 
 def test_project_settings_reject_too_many_compute_connections_before_persistence(
