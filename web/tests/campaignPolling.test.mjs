@@ -9,12 +9,18 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { LIVE_EPISODE_POLL_INTERVAL_MS, startLiveEpisodePolling } = await server.ssrLoadModule(
-  "/src/hooks/useEpisodeDialogs.ts",
-);
-const { episodePollingTarget } = await server.ssrLoadModule("/src/hooks/useEpisodeDialogs.ts");
+const {
+  LIVE_EPISODE_POLL_INTERVAL_MS,
+  startLiveEpisodePolling,
+  episodePollingTarget,
+  mergeExactEpisode,
+} = await server.ssrLoadModule("/src/hooks/useEpisodeDialogs.ts");
 
 after(() => server.close());
+
+function episode(episodeId, createdAt = "2026-09-02T12:00:00Z") {
+  return { episode_id: episodeId, created_at: createdAt };
+}
 
 test("episode polling follows active work and an ended episode's running branch merge", () => {
   const live = { episode_id: "live", status: "running", live: true, graph_branch: null };
@@ -32,6 +38,16 @@ test("episode polling follows active work and an ended episode's running branch 
   assert.equal(episodePollingTarget([merging])?.episode_id, "merging");
   assert.equal(episodePollingTarget([merging, live])?.episode_id, "live");
   assert.equal(episodePollingTarget([merged]), null);
+});
+
+test("an exact routed episode merges beyond the bounded project list", () => {
+  const bounded = Array.from({ length: 50 }, (_, index) => episode(`bounded-${index}`));
+  const exact = episode("exact-older");
+
+  const merged = mergeExactEpisode(bounded, [exact]);
+
+  assert.equal(merged.length, 51);
+  assert.equal(merged.filter((item) => item.episode_id === exact.episode_id).length, 1);
 });
 
 test("live episode polling is single-flight and keeps failures visible until recovery", async () => {

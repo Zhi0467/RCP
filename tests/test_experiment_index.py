@@ -5,6 +5,7 @@ import hashlib
 import json
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -496,6 +497,74 @@ def test_space_runs_filters_old_completed_auto_research_before_hydration(
     assert response.status_code == 200, response.text
     assert parent.episode_id not in {entry["episode_id"] for entry in response.json()}
     assert hydrated_auto_research_ids == []
+
+
+def test_space_runs_batches_recent_auto_research_without_full_parent_loads(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, _current_episode = _seed_indexed_project(app)
+    store = app.state.background_tasks.store
+    episode_id = str(uuid.uuid4())
+    now = store.now()
+    with store.connection() as connection:
+        connection.executemany(
+            """
+            INSERT INTO episodes (
+                episode_id, project_id, mode, status, invocation_ceiling,
+                created_at, updated_at, ended_at
+            ) VALUES (?, ?, 'auto_research', 'completed', 1, ?, ?, ?)
+            """,
+            [
+                (episode_id, project_id, now, now, now),
+                (str(uuid.uuid4()), project_id, now, now, now),
+            ],
+        )
+
+    batch_calls = 0
+    projection_selects: list[str] = []
+    original_batch = store.auto_research_space_run_projection_snapshots
+    original_connection = store.connection
+
+    @contextmanager
+    def traced_connection():
+        with original_connection() as connection:
+            connection.set_trace_callback(
+                lambda statement: (
+                    projection_selects.append(statement)
+                    if statement.lstrip().upper().startswith("SELECT")
+                    else None
+                )
+            )
+            yield connection
+
+    monkeypatch.setattr(store, "connection", traced_connection)
+    snapshots = original_batch(
+        {project_id},
+        completed_since=(datetime.now(UTC) - timedelta(days=7)).isoformat(),
+    )
+    assert len(snapshots) == 2
+    assert len(projection_selects) == 4
+
+    def capture_batch(project_ids, *, completed_since):
+        nonlocal batch_calls
+        batch_calls += 1
+        return original_batch(project_ids, completed_since=completed_since)
+
+    def reject_legacy_load(*_args, **_kwargs):
+        raise AssertionError("space Runs must not hydrate full Auto-research parents")
+
+    monkeypatch.setattr(store, "auto_research_space_run_projection_snapshots", capture_batch)
+    monkeypatch.setattr(store, "episode_tasks", reject_legacy_load)
+    monkeypatch.setattr(store, "auto_research_state", reject_legacy_load)
+    monkeypatch.setattr(store, "episode_report", reject_legacy_load)
+    monkeypatch.setattr(store, "episode_budget_meter", reject_legacy_load)
+
+    response = TestClient(app).get("/api/space/runs")
+
+    assert response.status_code == 200, response.text
+    assert episode_id in {entry["episode_id"] for entry in response.json()}
+    assert batch_calls == 1
 
 
 def test_experiment_index_skips_an_orphan_main_runtime(manifest, tmp_path: Path) -> None:

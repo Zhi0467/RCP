@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from rcp.core.authority import (
@@ -46,6 +47,41 @@ def _agent_task_status_label(status: str, applied_revision: object) -> str:
         "paused": "Paused at checkpoint",
         "interrupted": "Interrupted",
     }.get(status, "Failed")
+
+
+def _agent_task_control_flags(
+    row: Mapping[str, object],
+    *,
+    recovery_abandoned: bool,
+) -> tuple[bool, bool, bool]:
+    """Compute task controls from the durable fields that actually govern them."""
+
+    status = str(row["status"])
+    visible = bool(row.get("visible", True))
+    history_only = bool(row.get("history_only", False))
+    stage_ready = not row.get("stage_host") or bool(row.get("stage_root"))
+    can_pause = visible and not history_only and status in AGENT_TASK_TRANSITIONS["pausing"]
+    can_resume = (
+        visible
+        and not history_only
+        and status in {"paused", "interrupted"}
+        and bool(row.get("native_session_id"))
+        and stage_ready
+        and not recovery_abandoned
+    )
+    can_retry = (
+        visible
+        and not history_only
+        and status in {"paused", "interrupted", "failed"}
+        and status not in ACTIVE_AGENT_TASK_STATUSES
+        and not recovery_abandoned
+    )
+    if row.get("kind") == "branch_merge":
+        # A merge retry is a new human dispatch against the then-current main
+        # head, never recovery of an old native session or stage.
+        can_resume = False
+        can_retry = False
+    return can_pause, can_resume, can_retry
 
 
 class RowMappingMixin:
@@ -158,28 +194,12 @@ class RowMappingMixin:
         data["elapsed_seconds"] = round(elapsed, 1)
         data["progress"] = round(min(0.99, max(0.0, progress)), 4) if status != "succeeded" else 1.0
         active = status in ACTIVE_AGENT_TASK_STATUSES
-        stage_ready = not data.get("stage_host") or bool(data.get("stage_root"))
         visible = bool(data.get("visible", True))
         history_only = bool(data.get("history_only", False))
         data["visible"] = visible
         data["history_only"] = history_only
-        data["can_pause"] = (
-            visible and not history_only and status in AGENT_TASK_TRANSITIONS["pausing"]
-        )
-        data["can_resume"] = (
-            visible
-            and not history_only
-            and status in {"paused", "interrupted"}
-            and bool(data.get("native_session_id"))
-            and stage_ready
-            and not recovery_abandoned
-        )
-        data["can_retry"] = (
-            visible
-            and not history_only
-            and status in {"paused", "interrupted", "failed"}
-            and not active
-            and not recovery_abandoned
+        data["can_pause"], data["can_resume"], data["can_retry"] = _agent_task_control_flags(
+            data, recovery_abandoned=recovery_abandoned
         )
         data["active"] = active
         data["awaiting_human"] = not history_only and status in AWAITING_HUMAN_AGENT_TASK_STATUSES
@@ -192,11 +212,6 @@ class RowMappingMixin:
         data["status_label"] = _agent_task_status_label(status, data.get("applied_revision"))
         if history_only:
             data["native_session_id"] = None
-        if data.get("kind") == "branch_merge":
-            # A merge retry is a new human dispatch against the then-current
-            # main head, never recovery of an old native session or stage.
-            data["can_resume"] = False
-            data["can_retry"] = False
         return AgentTaskRecord.model_validate(data)
 
     @staticmethod

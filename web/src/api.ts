@@ -255,9 +255,16 @@ export function removeChatAttachment(
   );
 }
 
-export function loadEpisodes(apiBase: string, mode?: EpisodeMode): Promise<Episode[]> {
-  const query = mode ? `?mode=${encodeURIComponent(mode)}` : "";
-  return api<Episode[]>(`${apiBase}/episodes${query}`);
+export function loadEpisodes(
+  apiBase: string,
+  mode?: EpisodeMode,
+  episodeId?: string,
+): Promise<Episode[]> {
+  const query = new URLSearchParams();
+  if (mode) query.set("mode", mode);
+  if (episodeId) query.set("episode_id", episodeId);
+  const suffix = query.size ? `?${query}` : "";
+  return api<Episode[]>(`${apiBase}/episodes${suffix}`);
 }
 
 export function loadExperimentEpisodes(): Promise<ExperimentLoopIndexEntry[]> {

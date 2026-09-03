@@ -1,5 +1,5 @@
 import { ChevronRight, FlaskConical, Telescope, WifiOff } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, type CSSProperties } from "react";
 import { spaceRunRouteToken } from "../experimentBoard";
 import type { SpaceRunIndexEntry, SpaceRunMode } from "../types";
 
@@ -7,6 +7,19 @@ interface Props {
   entries: SpaceRunIndexEntry[];
   onOpen: (projectId: string, experimentRoute?: string) => void;
 }
+
+export const SPACE_RUN_BADGE_PALETTE: Record<
+  SpaceRunIndexEntry["health_tone"],
+  { background: string; foreground: string }
+> = {
+  running: { background: "#dce9e5", foreground: "#245759" },
+  waiting: { background: "#f4e7c1", foreground: "#604600" },
+  degraded: { background: "#f5e5df", foreground: "#7d2e24" },
+  stopping: { background: "#f4e7c1", foreground: "#604600" },
+  stopped: { background: "#eee3d3", foreground: "#4d443c" },
+  actionable: { background: "#f5e5df", foreground: "#7d2e24" },
+  completed: { background: "#dce9e5", foreground: "#245759" },
+};
 
 export function SpaceRuns({ entries, onOpen }: Props) {
   const groups = useMemo(() => {
@@ -37,24 +50,22 @@ export function SpaceRuns({ entries, onOpen }: Props) {
         <span>{groups.needsAction.length} needs action</span>
       </header>
 
-      {entries.length === 0 ? (
-        <div className="space-runs-empty">No runs yet</div>
-      ) : (
-        <div className="space-runs-sections">
-          <RunSection title="Needs Action" entries={groups.needsAction} onOpen={onOpen} />
-          {groups.completed.length > 0 && (
-            <section className="space-runs-completed" aria-label="Completed runs">
-              <header>
-                <h3>Completed</h3>
-                <span>{groups.completed.length}</span>
-              </header>
-              {groups.completedByMode.map((group) => (
-                <CompletedGroup {...group} onOpen={onOpen} key={group.mode} />
-              ))}
-            </section>
+      <div className="space-runs-sections">
+        <RunSection title="Needs Action" entries={groups.needsAction} onOpen={onOpen} />
+        <section className="space-runs-completed" aria-label="Completed runs">
+          <header>
+            <h3>Completed</h3>
+            <span>{groups.completed.length}</span>
+          </header>
+          {groups.completed.length === 0 ? (
+            <p className="space-runs-empty">No completed runs in the last 7 days.</p>
+          ) : (
+            groups.completedByMode.map((group) => (
+              <CompletedGroup {...group} onOpen={onOpen} key={group.mode} />
+            ))
           )}
-        </div>
-      )}
+        </section>
+      </div>
     </section>
   );
 }
@@ -68,14 +79,17 @@ function RunSection({
   entries: SpaceRunIndexEntry[];
   onOpen: Props["onOpen"];
 }) {
-  if (entries.length === 0) return null;
   return (
     <section className="space-runs-section" aria-label={title}>
       <header>
         <h3>{title}</h3>
         <span>{entries.length}</span>
       </header>
-      <RunRows entries={entries} onOpen={onOpen} />
+      {entries.length === 0 ? (
+        <p className="space-runs-empty">Nothing needs action.</p>
+      ) : (
+        <RunRows entries={entries} onOpen={onOpen} />
+      )}
     </section>
   );
 }
@@ -124,6 +138,7 @@ export function SpaceRunRow({
   entry: SpaceRunIndexEntry;
   onOpen: Props["onOpen"];
 }) {
+  const badge = SPACE_RUN_BADGE_PALETTE[entry.health_tone];
   return (
     <li className={`space-run-row ${entry.health_tone}`}>
       <button
@@ -138,7 +153,17 @@ export function SpaceRunRow({
           <span>{entry.project_name}</span>
         </span>
         <span className="space-run-meta">
-          <span className={`status-pill ${entry.health_tone}`}>{entry.health_label}</span>
+          <span
+            className={`status-pill ${entry.health_tone}`}
+            style={
+              {
+                backgroundColor: badge.background,
+                color: badge.foreground,
+              } as CSSProperties
+            }
+          >
+            {entry.health_label}
+          </span>
           {entry.project_reachable === false && (
             <span className="space-run-unavailable">
               <WifiOff size={11} aria-hidden="true" /> Unavailable

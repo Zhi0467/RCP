@@ -62,6 +62,7 @@ import {
   branchExperimentPollingKey,
   experimentIndexEntryForRoute,
   experimentStopPath,
+  mainExperimentRouteMatchesControl,
   parseProjectHash,
   projectExperimentExecution,
   type ProjectHashRoute,
@@ -838,8 +839,15 @@ export default function App() {
     restoreProjectTasks,
   } = useAgentTasks({ projectId, reportError: reportErrorNotice });
   const { retryTask, tasks, taskInspectorId, inspectedTask } = agentTasksSnapshot;
+  const selectedMainExperimentRouteIsCurrent =
+    !selectedExperimentRoute ||
+    selectedExperimentUsesBranch ||
+    mainExperimentRouteMatchesControl(
+      selectedExperimentRoute,
+      selectedExperimentRunId ? project?.experiment_control[selectedExperimentRunId] : undefined,
+    );
   const selectedExperimentChatId =
-    view === "execution" && selectedExperimentRunId
+    view === "execution" && selectedExperimentRunId && selectedMainExperimentRouteIsCurrent
       ? selectedExperimentUsesBranch
         ? (selectedBranchExperiment?.control.operational.chat_id ?? null)
         : (project?.experiment_control[selectedExperimentRunId]?.operational?.chat_id ?? null)
@@ -904,6 +912,7 @@ export default function App() {
   } = useEpisodeDialogs({
     projectId,
     apiBase,
+    selectedAutoResearchEpisodeId,
     isActiveProject,
   });
   const {
@@ -3091,16 +3100,6 @@ export default function App() {
   const showTrustFilter = view === "scientific" || view === "dag";
   const runKind = project.last_refresh_at ? "refresh" : "seed";
   const replayWarning = projectGraphMutationFailureLabel(project);
-  const selectedExperimentNode = selectedExperimentRunId
-    ? selectedExperimentUsesBranch
-      ? (selectedBranchExperiment?.node ?? null)
-      : (presentedGraph.nodes[selectedExperimentRunId] ?? null)
-    : null;
-  const selectedExperimentControl = selectedExperimentRunId
-    ? selectedExperimentUsesBranch
-      ? (selectedBranchExperiment?.control ?? null)
-      : (presentedExperimentControl[selectedExperimentRunId] ?? null)
-    : null;
   const selectedExperimentExecution = projectExperimentExecution(
     Object.values(presentedGraph.nodes),
     tasks,
@@ -3109,6 +3108,21 @@ export default function App() {
     selectedExperimentRoute,
     selectedBranchExperiment,
   );
+  const selectedMainRouteIsStale = selectedExperimentExecution.staleMainRoute !== null;
+  const selectedExperimentNode = selectedExperimentRunId
+    ? selectedExperimentUsesBranch
+      ? (selectedBranchExperiment?.node ?? null)
+      : selectedMainRouteIsStale
+        ? null
+        : (presentedGraph.nodes[selectedExperimentRunId] ?? null)
+    : null;
+  const selectedExperimentControl = selectedExperimentRunId
+    ? selectedExperimentUsesBranch
+      ? (selectedBranchExperiment?.control ?? null)
+      : selectedMainRouteIsStale
+        ? null
+        : (presentedExperimentControl[selectedExperimentRunId] ?? null)
+    : null;
   const selectedExperimentNodes = Object.fromEntries(
     selectedExperimentExecution.nodes.map((node) => [node.id, node]),
   );
@@ -3630,6 +3644,7 @@ export default function App() {
                 onOperateEpisodeTask={operateEpisodeOrchestratorTask}
                 onSelectExperiment={selectExperiment}
                 onDetailFocused={clearExperimentFocus}
+                onOpenHistory={openProjectHistory}
                 onRunExperiment={(node) => void runExperiment(node)}
                 onStopExperiment={(nodeId, episodeId) =>
                   void stopExperimentLoop(nodeId, episodeId ?? null)

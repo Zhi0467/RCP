@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -256,6 +257,62 @@ def test_episode_list_start_and_stop_use_only_the_canonical_surface(manifest, tm
             task.kind != "episode_report"
             for task in store.episode_tasks(episode_id, include_hidden=True)
         )
+
+
+def test_exact_episode_query_reaches_a_parent_beyond_the_interleaved_list_bound(
+    manifest, tmp_path
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    as_of = datetime.now(UTC)
+    target_id = str(uuid.uuid4())
+    rows = [
+        (
+            target_id,
+            project_id,
+            "auto_research",
+            None,
+            "completed",
+            (as_of - timedelta(hours=2)).isoformat(),
+        )
+    ]
+    for index in range(60):
+        mode = "auto_research" if index % 2 == 0 else "experiment_loop"
+        rows.append(
+            (
+                str(uuid.uuid4()),
+                project_id,
+                mode,
+                f"experiment/{index}" if mode == "experiment_loop" else None,
+                "completed",
+                (as_of - timedelta(minutes=index)).isoformat(),
+            )
+        )
+    with store.connection() as connection:
+        connection.executemany(
+            """
+            INSERT INTO episodes (
+                episode_id, project_id, mode, control_node_id, status,
+                invocation_ceiling, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            """,
+            [(*row, row[-1]) for row in rows],
+        )
+
+    client = TestClient(app)
+    bounded = client.get(f"/api/projects/{project_id}/episodes")
+    exact = client.get(
+        f"/api/projects/{project_id}/episodes",
+        params={"mode": "auto_research", "episode_id": target_id},
+    )
+
+    assert bounded.status_code == 200, bounded.text
+    assert len(bounded.json()) == 50
+    assert target_id not in {episode["episode_id"] for episode in bounded.json()}
+    assert exact.status_code == 200, exact.text
+    assert [episode["episode_id"] for episode in exact.json()] == [target_id]
 
 
 def test_episode_mail_is_durable_when_immediate_delivery_fails(

@@ -11,7 +11,7 @@ import {
   Square,
   Telescope,
 } from "lucide-react";
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState, type Ref } from "react";
 import { taskStatusLabel } from "../agentTasks";
 import {
   episodeEndingLabel,
@@ -30,6 +30,7 @@ export function AutoResearchEpisodeCard({
   messages,
   initiallyExpanded,
   selected = false,
+  detailRef,
   busyAction,
   taskActionId,
   onInspectTask,
@@ -44,6 +45,7 @@ export function AutoResearchEpisodeCard({
   messages: EpisodeMessage[];
   initiallyExpanded: boolean;
   selected?: boolean;
+  detailRef?: Ref<HTMLDivElement>;
   busyAction: string | null;
   taskActionId: string | null;
   onInspectTask: (operationId: string) => void;
@@ -173,7 +175,7 @@ export function AutoResearchEpisodeCard({
         </span>
       </div>
       {expanded && (
-        <div className="campaign-run-detail" id={detailId}>
+        <div className="campaign-run-detail" id={detailId} tabIndex={-1} ref={detailRef}>
           <div className="campaign-run-actions">
             <div
               className={`campaign-run-health ${projection.health}`}

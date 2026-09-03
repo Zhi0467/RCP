@@ -112,6 +112,8 @@ the exact Experiment route. The space ledger keeps completed parents for seven
 days, without deleting episode records or changing project Runs or History.
 Auto-research rows carry their exact episode identity into project Runs, so a
 completed or non-leading row opens that parent rather than the default card.
+That exact parent is read independently when it falls outside the project's
+bounded episode list.
 
 The index header contains the compact current-human identity control. An unnamed
 personal owner sees **Sign in** as naming the durable local identity, not creating
@@ -443,6 +445,11 @@ chat. The detail separates historical episode budgets from **Next episode
 limit**, shows watcher/session/host continuity, and omits semantic attempt
 history from the node drawer. Stop, recovery, wrap-up, and report presentation
 follow the episode specification.
+
+An explicit main-target Experiment route binds only when both its `episode_id`
+and graph target still match the loaded backend control. If the control advanced,
+the route shows a History handoff without exposing the newer episode's transcript
+or controls.
 
 An Auto-research detail shows compact graph-branch identity, base/head, merge
 state, and **Merge to main** only for an eligible changed head. Main graph views

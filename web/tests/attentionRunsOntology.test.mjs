@@ -520,7 +520,7 @@ test("Runs is episode-first while Experiment placement and status stay control-a
   assert.match(html, /<details class="episode-type-group" open=""><summary><strong>Auto-research/);
   assert.match(
     html,
-    /<article class="campaign-run completed" data-episode-id="auto-complete" data-selected="true">[\s\S]*campaign-run-detail/,
+    /<article class="campaign-run completed" data-episode-id="auto-complete" data-selected="true">[\s\S]*campaign-run-detail"[^>]*tabindex="-1"/,
   );
   assert.ok(
     html.indexOf("<strong>Experiment loop</strong>") <

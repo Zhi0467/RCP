@@ -133,7 +133,10 @@ but task surfaces do not show an estimated progress bar, percentage, or ETA.
   parents under the same Needs Action and folded Completed grammar, carries the
   owning project and exact Experiment route, and uses backend lifecycle answers.
   Each Auto-research row likewise opens its exact durable episode, including a
-  completed or non-leading parent.
+  completed or non-leading parent, even when it is outside the project's bounded
+  episode list.
+  An exact main-target Experiment route whose backend control has advanced shows
+  a History handoff and never exposes the newer episode's transcript or controls.
   Completed parents leave this space-only surface after seven days; episode
   records, project Runs, and project History remain unchanged.
 - Active, failed, succeeded, interrupted, and paused tasks show no progress bar,

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Literal
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import Literal, Protocol
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -16,6 +17,8 @@ from rcp.storage import (
     AppStore,
     AutoResearchRecoveryMode,
     AutoResearchRecoveryStatus,
+    AutoResearchSpaceRunProjectionSnapshot,
+    AutoResearchSpaceRunTaskState,
     EpisodeBudgetMeter,
     EpisodeEnding,
     EpisodeMode,
@@ -44,6 +47,36 @@ _TERMINAL_WRAPUP_STATES: frozenset[EpisodeWrapupState] = frozenset(
     {"ready", "failed", "legacy_unavailable"}
 )
 _EPISODE_TEXT_MAX_LENGTH = 16_000
+
+
+class _EpisodeProjectionParent(Protocol):
+    status: EpisodeStatus
+    wrapup_state: EpisodeWrapupState
+
+
+class _EpisodeProjectionTask(Protocol):
+    operation_id: str
+    status: AgentTaskStatus
+    can_pause: bool
+    can_resume: bool
+    can_retry: bool
+
+
+class _AutoResearchControlTask(_EpisodeProjectionTask, Protocol):
+    parent_operation_id: str | None
+    attempt: int
+    created_at: str
+
+
+class _RecoveryProjection(Protocol):
+    operation_id: str | None
+    status: AutoResearchRecoveryStatus
+
+
+@dataclass(frozen=True)
+class _SpaceRunRecoveryProjection:
+    operation_id: str
+    status: AutoResearchRecoveryStatus
 
 
 class StartEpisodeBody(BaseModel):
@@ -449,7 +482,7 @@ def _operational_tasks(store: AppStore, episode: EpisodeRecord) -> list[AgentTas
 
 
 def _episode_recovery_control(
-    task: EpisodeTaskResponse | None,
+    task: _EpisodeProjectionTask | None,
 ) -> EpisodeTaskControlKind | None:
     """Name the one recovery this turn actually offers, in its own preference order."""
 
@@ -469,11 +502,11 @@ def _episode_recovery_control(
 
 
 def _episode_projection(
-    episode: EpisodeRecord,
-    tasks: list[EpisodeTaskResponse],
+    episode: _EpisodeProjectionParent,
+    tasks: Sequence[_EpisodeProjectionTask],
     *,
     control_task_id: str | None,
-    recovery: AutoResearchRecoverySummary | None,
+    recovery: _RecoveryProjection | None,
     has_report: bool,
     can_reauthorize: bool,
 ) -> tuple[EpisodeHealth, EpisodeRecommendationKind, EpisodeTaskControlKind | None]:
@@ -618,11 +651,18 @@ def _auto_research_projection(
 
     tasks_by_id = {task.operation_id: task for task in tasks}
     current_control_task_id = _auto_research_control_task_id(
-        store,
         episode,
         tasks,
         tasks_by_id,
         current_orchestrator_task_id,
+        actor_operation_id_for=lambda task: str(
+            task.request.get("actor_operation_id") or task.operation_id
+        ),
+        recovery_for=lambda operation_id: store.auto_research_control_recovery(
+            episode.episode_id,
+            operation_id,
+        ),
+        role_for=store.auto_research_invocation_role,
     )
     control_recovery = (
         store.auto_research_control_recovery(episode.episode_id, current_control_task_id)
@@ -650,11 +690,14 @@ def _auto_research_projection(
 
 
 def _auto_research_control_task_id(
-    store: AppStore,
-    episode: EpisodeRecord,
-    tasks: list[AgentTaskRecord],
-    tasks_by_id: dict[str, AgentTaskRecord],
+    episode: _EpisodeProjectionParent,
+    tasks: Sequence[_AutoResearchControlTask],
+    tasks_by_id: dict[str, _AutoResearchControlTask],
     current_orchestrator_task_id: str | None,
+    *,
+    actor_operation_id_for: Callable[[_AutoResearchControlTask], str],
+    recovery_for: Callable[[str], _RecoveryProjection | None],
+    role_for: Callable[[str], str | None],
 ) -> str | None:
     if episode.status not in {"stopping", "wrapping_up"}:
         return current_orchestrator_task_id
@@ -665,15 +708,11 @@ def _auto_research_control_task_id(
         if task.parent_operation_id is not None
         and (parent := tasks_by_id.get(task.parent_operation_id)) is not None
         and task.attempt == parent.attempt + 1
-        and (task.request.get("actor_operation_id") or task.operation_id)
-        == (parent.request.get("actor_operation_id") or parent.operation_id)
+        and actor_operation_id_for(task) == actor_operation_id_for(parent)
     }
     current_orchestrator = tasks_by_id.get(current_orchestrator_task_id or "")
     orchestrator_recovery = (
-        store.auto_research_control_recovery(
-            episode.episode_id,
-            current_orchestrator.operation_id,
-        )
+        recovery_for(current_orchestrator.operation_id)
         if current_orchestrator is not None
         and current_orchestrator.status in {"failed", "interrupted"}
         else None
@@ -693,7 +732,7 @@ def _auto_research_control_task_id(
                 and orchestrator_recovery.status != "admitted"
             )
         )
-        and store.auto_research_invocation_role(current_orchestrator.operation_id) == "orchestrator"
+        and role_for(current_orchestrator.operation_id) == "orchestrator"
     ):
         return current_orchestrator.operation_id
 
@@ -703,7 +742,7 @@ def _auto_research_control_task_id(
         if task.status == "paused"
         and task.operation_id not in recovered_parent_ids
         and (task.can_resume or task.can_retry)
-        and store.auto_research_invocation_role(task.operation_id) == "worker"
+        and role_for(task.operation_id) == "worker"
     ]
     if paused_workers:
         return max(
@@ -711,3 +750,61 @@ def _auto_research_control_task_id(
             key=lambda task: (task.created_at, task.operation_id),
         ).operation_id
     return current_orchestrator_task_id
+
+
+def space_auto_research_episode_projection(
+    snapshot: AutoResearchSpaceRunProjectionSnapshot,
+) -> tuple[EpisodeHealth, EpisodeRunSection, str]:
+    """Reuse the canonical lifecycle policy on one compact space-run snapshot."""
+
+    episode = snapshot.episode
+    tasks_by_id = {task.operation_id: task for task in snapshot.tasks}
+
+    def recovery_for(operation_id: str) -> _SpaceRunRecoveryProjection | None:
+        task = tasks_by_id.get(operation_id)
+        if task is None or task.recovery_operation_id is None or task.recovery_status is None:
+            return None
+        return _SpaceRunRecoveryProjection(
+            operation_id=task.recovery_operation_id,
+            status=task.recovery_status,
+        )
+
+    current_control_task_id = _auto_research_control_task_id(
+        episode,
+        snapshot.tasks,
+        tasks_by_id,
+        snapshot.current_orchestrator_task_id,
+        actor_operation_id_for=lambda task: (
+            task.actor_operation_id
+            if isinstance(task, AutoResearchSpaceRunTaskState) and task.actor_operation_id
+            else task.operation_id
+        ),
+        recovery_for=recovery_for,
+        role_for=lambda operation_id: (
+            tasks_by_id[operation_id].role if operation_id in tasks_by_id else None
+        ),
+    )
+    recovery = (
+        recovery_for(current_control_task_id) if current_control_task_id is not None else None
+    )
+    can_reauthorize = (
+        episode.status == "needs_action"
+        and episode.ending == "exhausted"
+        and episode.wrapup_state in _TERMINAL_WRAPUP_STATES
+    )
+    health, _recommendation, _task_control = _episode_projection(
+        episode,
+        snapshot.tasks,
+        control_task_id=current_control_task_id,
+        recovery=recovery,
+        has_report=snapshot.has_report,
+        can_reauthorize=can_reauthorize,
+    )
+    run_section = _episode_run_section(health)
+    last_activity_at = next(
+        (task.last_activity_at for task in reversed(snapshot.tasks) if task.last_activity_at),
+        episode.updated_at,
+    )
+    if run_section == "completed":
+        last_activity_at = episode.ended_at or episode.updated_at
+    return health, run_section, last_activity_at

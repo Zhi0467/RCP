@@ -31,6 +31,7 @@ export interface ExperimentExecutionProjection {
   watchers: WatcherRecord[];
   experimentControl: Record<string, ExperimentControlState>;
   exactBranchEntry: ExperimentLoopIndexEntry | null;
+  staleMainRoute: ExperimentRouteIdentity | null;
 }
 
 const INDEX_ROUTE_PREFIX = "rcp-index:";
@@ -202,6 +203,10 @@ export function projectExperimentExecution(
       watchers,
       experimentControl,
       exactBranchEntry: null,
+      staleMainRoute:
+        route && !mainExperimentRouteMatchesControl(route, experimentControl[route.experiment_id])
+          ? route
+          : null,
     };
   }
 
@@ -239,6 +244,7 @@ export function projectExperimentExecution(
       watchers: projectedWatchers,
       experimentControl: projectedControl,
       exactBranchEntry: null,
+      staleMainRoute: null,
     };
   }
 
@@ -251,7 +257,20 @@ export function projectExperimentExecution(
     watchers: projectedWatchers,
     experimentControl: projectedControl,
     exactBranchEntry: exactEntry,
+    staleMainRoute: null,
   };
+}
+
+export function mainExperimentRouteMatchesControl(
+  route: ExperimentRouteIdentity,
+  control: ExperimentControlState | undefined,
+): boolean {
+  return Boolean(
+    route.graph_target.kind === "main" &&
+    control?.episode_id === route.episode_id &&
+    control.episode?.episode_id === route.episode_id &&
+    graphTargetsEqual(control.episode.graph_target, route.graph_target),
+  );
 }
 
 export function experimentStopPath(

@@ -20,7 +20,11 @@ from rcp.api.dependencies import (
     require_project_membership,
 )
 from rcp.api.episode_branches import graph_branch_summary
-from rcp.api.episodes import EpisodeResponse, serialize_episode
+from rcp.api.episodes import (
+    EpisodeResponse,
+    serialize_episode,
+    space_auto_research_episode_projection,
+)
 from rcp.api.experiment_controls import ExperimentControlResponse, _experiment_control_response
 from rcp.api.identity import IdentityAccess
 from rcp.api.team_shell_protocol import acknowledge_team_shell_protocol
@@ -41,6 +45,7 @@ from rcp.sources import (
 )
 from rcp.storage import (
     AppStore,
+    AutoResearchSpaceRunProjectionSnapshot,
     ExperimentControlProjectionSnapshot,
     ExperimentEpisodeProjectionSnapshot,
     ExperimentLoopRuntime,
@@ -397,19 +402,14 @@ def space_runs(
             visible=visible,
         )
     ]
-    for episode in store.auto_research_episodes_for_run_window(
+    for snapshot in store.auto_research_space_run_projection_snapshots(
         set(records),
         completed_since=completed_since,
     ):
+        episode = snapshot.episode
         record = records[episode.project_id]
-        serialized = serialize_episode(
-            store,
-            episode.project_id,
-            episode,
-            include_graph_branch=False,
-        )
         entry = _space_auto_research_run(
-            serialized,
+            snapshot,
             project_name=record.name,
             project_reachable=record.reachable,
         )
@@ -474,11 +474,13 @@ def _space_experiment_run(
 
 
 def _space_auto_research_run(
-    episode: EpisodeResponse,
+    snapshot: AutoResearchSpaceRunProjectionSnapshot,
     *,
     project_name: str,
     project_reachable: bool | None,
 ) -> SpaceRunIndexEntryResponse:
+    episode = snapshot.episode
+    health, run_section, last_activity_at = space_auto_research_episode_projection(snapshot)
     health_labels = {
         "starting": "Starting",
         "active": "Active",
@@ -501,14 +503,6 @@ def _space_auto_research_run(
         "stopped": "stopped",
         "failed": "degraded",
     }
-    last_activity_at = (
-        episode.ended_at or episode.updated_at
-        if episode.run_section == "completed"
-        else next(
-            (task.last_activity_at for task in reversed(episode.tasks) if task.last_activity_at),
-            episode.updated_at,
-        )
-    )
     return SpaceRunIndexEntryResponse(
         episode_id=episode.episode_id,
         project_id=episode.project_id,
@@ -521,9 +515,9 @@ def _space_auto_research_run(
         experiment_id=None,
         started_at=episode.created_at,
         last_activity_at=last_activity_at,
-        health_label=health_labels[episode.health],
-        health_tone=health_tones[episode.health],
-        run_section=episode.run_section,
+        health_label=health_labels[health],
+        health_tone=health_tones[health],
+        run_section=run_section,
     )
 
 

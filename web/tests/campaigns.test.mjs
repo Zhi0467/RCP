@@ -568,6 +568,7 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
   };
   try {
     await loadEpisodes("/api/projects/demo", "auto_research");
+    await loadEpisodes("/api/projects/demo", "auto_research", "episode/older");
     await startEpisode("/api/projects/demo", {
       mode: "auto_research",
       invocation_ceiling: 8,
@@ -587,6 +588,11 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
   assert.deepEqual(requests, [
     {
       path: "/api/projects/demo/episodes?mode=auto_research",
+      method: "GET",
+      body: null,
+    },
+    {
+      path: "/api/projects/demo/episodes?mode=auto_research&episode_id=episode%2Folder",
       method: "GET",
       body: null,
     },

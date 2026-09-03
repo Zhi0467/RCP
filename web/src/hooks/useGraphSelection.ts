@@ -410,12 +410,7 @@ export function useGraphSelection({
 
   const selectExperiment = useCallback(
     (nodeId: string | null) => {
-      if (
-        nodeId &&
-        selectedExperimentRoute &&
-        nodeId !== selectedExperimentRoute.experiment_id &&
-        projectId
-      ) {
+      if (nodeId && selectedExperimentRoute && projectId) {
         window.history.replaceState(null, "", experimentBoardHref(projectId, nodeId));
       }
       dispatchExperimentSelection({ kind: "select", experimentId: nodeId });

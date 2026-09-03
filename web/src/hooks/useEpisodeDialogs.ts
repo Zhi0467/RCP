@@ -55,12 +55,18 @@ interface EpisodeState {
 interface UseEpisodeDialogsOptions {
   projectId: string | null;
   apiBase: string;
+  selectedAutoResearchEpisodeId: string | null;
   isActiveProject: (projectId: string) => boolean;
+}
+
+export function mergeExactEpisode(episodes: Episode[], exact: Episode[]): Episode[] {
+  return exact.reduce((current, episode) => mergeEpisode(current, episode), episodes);
 }
 
 export function useEpisodeDialogs({
   projectId,
   apiBase,
+  selectedAutoResearchEpisodeId,
   isActiveProject,
 }: UseEpisodeDialogsOptions) {
   const [runDialogOpen, setRunDialogOpen] = useState(false);
@@ -86,14 +92,21 @@ export function useEpisodeDialogs({
   const refreshEpisodes = useCallback(async () => {
     if (!projectId || !apiBase) return;
     const requestedProjectId = projectId;
-    const nextEpisodes = await loadEpisodes(apiBase);
+    let nextEpisodes = await loadEpisodes(apiBase);
+    if (
+      selectedAutoResearchEpisodeId &&
+      !nextEpisodes.some((episode) => episode.episode_id === selectedAutoResearchEpisodeId)
+    ) {
+      const exact = await loadEpisodes(apiBase, "auto_research", selectedAutoResearchEpisodeId);
+      nextEpisodes = mergeExactEpisode(nextEpisodes, exact);
+    }
     if (!isActiveProject(requestedProjectId)) return;
     setEpisodeState((current) => ({
       projectId: requestedProjectId,
       episodes: nextEpisodes,
       messages: current.projectId === requestedProjectId ? current.messages : {},
     }));
-  }, [apiBase, projectId]);
+  }, [apiBase, projectId, selectedAutoResearchEpisodeId]);
 
   const refreshEpisodeMessages = useCallback(
     async (episodeId: string) => {

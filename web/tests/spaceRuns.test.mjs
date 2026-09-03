@@ -11,7 +11,9 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { SpaceRunRow, SpaceRuns } = await server.ssrLoadModule("/src/components/SpaceRuns.tsx");
+const { SPACE_RUN_BADGE_PALETTE, SpaceRunRow, SpaceRuns } = await server.ssrLoadModule(
+  "/src/components/SpaceRuns.tsx",
+);
 const { experimentBoardHref, parseProjectHash, spaceRunRouteToken } =
   await server.ssrLoadModule("/src/experimentBoard.ts");
 
@@ -75,6 +77,33 @@ test("space Runs mixes active modes and folds completed groups", () => {
   assert.doesNotMatch(html, /current_summary|Recommended next step/);
 });
 
+test("space Runs always names both sections and their empty counts", () => {
+  const html = renderToStaticMarkup(React.createElement(SpaceRuns, { entries: [], onOpen() {} }));
+
+  assert.match(html, /<h3>Needs Action<\/h3><span>0<\/span>/);
+  assert.match(html, /Nothing needs action\./);
+  assert.match(html, /<h3>Completed<\/h3><span>0<\/span>/);
+  assert.match(html, /No completed runs in the last 7 days\./);
+});
+
+test("every space lifecycle badge color pair meets WCAG AA contrast", () => {
+  assert.deepEqual(Object.keys(SPACE_RUN_BADGE_PALETTE).sort(), [
+    "actionable",
+    "completed",
+    "degraded",
+    "running",
+    "stopped",
+    "stopping",
+    "waiting",
+  ]);
+  for (const [tone, colors] of Object.entries(SPACE_RUN_BADGE_PALETTE)) {
+    assert.ok(
+      contrastRatio(colors.foreground, colors.background) >= 4.5,
+      `${tone} badge contrast is below 4.5:1`,
+    );
+  }
+});
+
 test("an Experiment space run keeps its exact Runs route", () => {
   const entry = run({
     graph_target: { kind: "branch", branch_id: "episode-parent" },
@@ -123,3 +152,18 @@ test("a completed non-first Auto-research row opens its exact episode", () => {
   assert.match(html, /dateTime="2026-09-01T09:00:00Z"/);
   assert.doesNotMatch(html, /dateTime="2026-09-02T12:10:00Z"/);
 });
+
+function contrastRatio(foreground, background) {
+  const lighter = Math.max(relativeLuminance(foreground), relativeLuminance(background));
+  const darker = Math.min(relativeLuminance(foreground), relativeLuminance(background));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function relativeLuminance(hex) {
+  const channels = hex
+    .slice(1)
+    .match(/.{2}/g)
+    .map((value) => Number.parseInt(value, 16) / 255)
+    .map((value) => (value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4)));
+  return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+}

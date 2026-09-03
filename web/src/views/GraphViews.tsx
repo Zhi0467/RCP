@@ -73,6 +73,11 @@ import type {
 } from "../types";
 import { nodeTypeLabel } from "../nodePresentation";
 
+export function focusRunDetail(detail: Pick<HTMLDivElement, "focus" | "scrollIntoView">): void {
+  detail.focus({ preventScroll: true });
+  detail.scrollIntoView({ block: "center" });
+}
+
 interface Props {
   graph: GraphState;
   trustView: TrustView;
@@ -789,6 +794,7 @@ interface ExecutionProps {
   onOperateEpisodeTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
   onSelectExperiment: (nodeId: string | null) => void;
   onDetailFocused: () => void;
+  onOpenHistory: () => void;
   onRunExperiment: (node: GraphNode) => void;
   onStopExperiment: (nodeId: string, episodeId?: string) => void;
   onCheckExperimentWatcher: (watcherId: string) => void;
@@ -827,6 +833,7 @@ export function ExecutionView({
   onOperateEpisodeTask,
   onSelectExperiment,
   onDetailFocused,
+  onOpenHistory,
   onRunExperiment,
   onStopExperiment,
   onCheckExperimentWatcher,
@@ -835,6 +842,8 @@ export function ExecutionView({
   episodeReportHref,
 }: ExecutionProps) {
   const selectedDetailRef = useRef<HTMLDivElement>(null);
+  const selectedAutoResearchDetailRef = useRef<HTMLDivElement>(null);
+  const focusedAutoResearchEpisodeId = useRef<string | null>(null);
   const exactProjection = projectExperimentExecution(
     Object.values(graph.nodes),
     tasks,
@@ -864,6 +873,9 @@ export function ExecutionView({
     );
   });
   const orderedEpisodes = runsEpisodeCards(episodes, new Set(experimentRuns.keys()));
+  const selectedAutoResearchLoaded = orderedEpisodes.some(
+    (episode) => episode.episode_id === selectedAutoResearchEpisodeId,
+  );
   const needsAction = orderedEpisodes.filter(
     (episode) => episodeRunSection(episode) === "needs_action",
   );
@@ -882,13 +894,44 @@ export function ExecutionView({
   ];
 
   useEffect(() => {
-    if (!focusExperimentId || focusExperimentId !== selectedExperimentId) return;
+    if (
+      exactProjection.staleMainRoute ||
+      !focusExperimentId ||
+      focusExperimentId !== selectedExperimentId
+    ) {
+      return;
+    }
     selectedDetailRef.current?.focus();
     onDetailFocused();
-  }, [focusExperimentId, onDetailFocused, selectedExperimentId]);
+  }, [exactProjection.staleMainRoute, focusExperimentId, onDetailFocused, selectedExperimentId]);
+
+  useEffect(() => {
+    if (!selectedAutoResearchEpisodeId) {
+      focusedAutoResearchEpisodeId.current = null;
+      return;
+    }
+    if (
+      !selectedAutoResearchLoaded ||
+      focusedAutoResearchEpisodeId.current === selectedAutoResearchEpisodeId
+    ) {
+      return;
+    }
+    const detail = selectedAutoResearchDetailRef.current;
+    if (!detail) return;
+    focusRunDetail(detail);
+    focusedAutoResearchEpisodeId.current = selectedAutoResearchEpisodeId;
+  }, [selectedAutoResearchEpisodeId, selectedAutoResearchLoaded]);
 
   return (
     <section className="view-panel runs-view" aria-label="Runs">
+      {exactProjection.staleMainRoute && (
+        <div className="run-route-history" role="status">
+          <strong>The requested Experiment episode is now in History.</strong>
+          <button className="button secondary compact" type="button" onClick={onOpenHistory}>
+            Open History
+          </button>
+        </div>
+      )}
       <div className="operating-sections episode-ledger-sections">
         <section className="operating-section episode-ledger-section needs-action">
           <header>
@@ -950,6 +993,11 @@ export function ExecutionView({
           messages={episodeMessages[episode.episode_id] ?? []}
           initiallyExpanded={initiallyExpanded}
           selected={episode.episode_id === selectedAutoResearchEpisodeId}
+          detailRef={
+            episode.episode_id === selectedAutoResearchEpisodeId
+              ? selectedAutoResearchDetailRef
+              : undefined
+          }
           busyAction={episodeAction}
           taskActionId={taskActionId}
           onInspectTask={onInspectTask}
@@ -973,9 +1021,16 @@ export function ExecutionView({
       <ExperimentEpisodeCard
         episode={episode}
         run={run}
-        initiallyExpanded={initiallyExpanded || selectedExperimentId === run.node.id}
-        selected={selectedExperimentId === run.node.id}
-        detailRef={selectedExperimentId === run.node.id ? selectedDetailRef : undefined}
+        initiallyExpanded={
+          !exactProjection.staleMainRoute &&
+          (initiallyExpanded || selectedExperimentId === run.node.id)
+        }
+        selected={!exactProjection.staleMainRoute && selectedExperimentId === run.node.id}
+        detailRef={
+          !exactProjection.staleMainRoute && selectedExperimentId === run.node.id
+            ? selectedDetailRef
+            : undefined
+        }
         runBusy={runBusy}
         stopBusy={stopBusyId === run.node.id}
         watcherCheckBusyId={watcherCheckBusyId}
