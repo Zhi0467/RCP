@@ -249,6 +249,58 @@ def test_an_open_episode_gates_readiness_and_publishes_the_graph_reasons_apart()
     ]
 
 
+def test_a_half_completed_watcher_group_reads_unready_while_the_episode_is_closed() -> None:
+    """Pin the transient a poll pass exposes between its own two watcher writes.
+
+    The poller persists each watcher check as its own future returns, so a group
+    at the ceiling passes through one watcher completed and one still active.
+    `detached_work_active` is true for that instant while the episode has already
+    exited, which clears `ready` and leaves `paused` alone. A test that waits for
+    the rows to agree and then reads this projection in a second request can land
+    here, so the shape is worth naming rather than rediscovering.
+    """
+
+    state = _state(ceiling=1)
+    mid_poll = ExperimentOperationalState(
+        detached_work_active=True,
+        watcher_completion_pending=True,
+        episode_exited=True,
+        episode_live=False,
+    )
+
+    split = derive_experiment_control_state(
+        state,
+        EXPERIMENT_ID,
+        episode_id="4f1e0f8a-6c8e-4d9f-9a4b-2c7d3e5f8a91",
+        invocations_used=1,
+        invocation_ceiling=1,
+        detached_work_active=True,
+        episode_decision_bundle=[PIN],
+        operational=mid_poll,
+    )
+
+    assert split.ready is False
+    assert split.paused is False
+    assert split.reasons == ["Detached Experiment work is still running."]
+    assert split.graph_reasons == []
+
+    # The same group one write later, with both watchers completed, is ready.
+    settled = derive_experiment_control_state(
+        state,
+        EXPERIMENT_ID,
+        episode_id="4f1e0f8a-6c8e-4d9f-9a4b-2c7d3e5f8a91",
+        invocations_used=1,
+        invocation_ceiling=1,
+        detached_work_active=False,
+        episode_decision_bundle=[PIN],
+        operational=mid_poll.model_copy(update={"detached_work_active": False}),
+    )
+
+    assert settled.ready is True
+    assert settled.paused is False
+    assert settled.reasons == []
+
+
 def _belief_patch_ops(
     *,
     relation: str = "weakens",

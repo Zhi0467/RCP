@@ -85,13 +85,16 @@ from rcp.transport import RunLockCancelled, RunLockLease, SSHStateWorkspace, Sta
 from rcp.watchers import WatcherBinding, WatcherCheckResult, WatchSpec
 
 from .helpers import (
+    TASK_SETTLE_TIMEOUT,
     agent_patch_json,
     append_fixture_patch,
+    async_wait_until,
     create_named_app,
     gated_patch,
     refresh_patch,
     seed_patch,
     shape_invalid_patch,
+    wait_for_entry,
     wait_until,
 )
 from .helpers import wait_for_task_response as _wait_for_run
@@ -265,7 +268,7 @@ def test_provider_warmup_starts_after_health_is_available(manifest, tmp_path, mo
     def readiness(provider: str, *, host: str = "", binary: str | None = None):
         calls.append((provider, host, binary))
         entered.set()
-        assert release.wait(timeout=3)
+        assert release.wait(TASK_SETTLE_TIMEOUT)
         return ProviderReadiness(
             provider=provider,
             installed=True,
@@ -277,7 +280,7 @@ def test_provider_warmup_starts_after_health_is_available(manifest, tmp_path, mo
     monkeypatch.setattr(app.state.catalog.launcher, "readiness", readiness)
     with TestClient(app) as client:
         try:
-            assert entered.wait(timeout=1)
+            wait_for_entry(entered)
             assert client.get("/api/health").status_code == 200
             assert calls == [("codex", "", "/opt/agents/codex")]
         finally:
@@ -413,7 +416,7 @@ def test_remote_stage_sweep_starts_after_health_is_available(
 
     def blocked_sweep(_stage, **_kwargs) -> None:
         entered.set()
-        assert release.wait(timeout=3)
+        assert release.wait(TASK_SETTLE_TIMEOUT)
 
     monkeypatch.setattr("rcp.api.app.RemoteRunStage.sweep", blocked_sweep)
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -422,7 +425,7 @@ def test_remote_stage_sweep_starts_after_health_is_available(
     assert not entered.is_set()
     with TestClient(app) as client:
         try:
-            assert entered.wait(timeout=1)
+            wait_for_entry(entered)
             assert client.get("/api/health").status_code == 200
         finally:
             release.set()
@@ -896,12 +899,12 @@ def test_normal_launch_exposes_health_and_cache_without_opening_canonical_state(
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             project = await asyncio.wait_for(
                 client.get(f"/api/projects/{project_id}"),
-                timeout=1,
+                timeout=TASK_SETTLE_TIMEOUT,
             )
-            health = await asyncio.wait_for(client.get("/api/health"), timeout=1)
+            health = await asyncio.wait_for(client.get("/api/health"), timeout=TASK_SETTLE_TIMEOUT)
             cached = await asyncio.wait_for(
                 client.get(f"/api/projects/{project_id}/cached"),
-                timeout=1,
+                timeout=TASK_SETTLE_TIMEOUT,
             )
             return health, cached, project
 
@@ -930,7 +933,7 @@ def test_slow_project_open_does_not_block_concurrent_task_history(
         nonlocal open_calls
         open_calls += 1
         entered.set()
-        release.wait(timeout=3)
+        release.wait(TASK_SETTLE_TIMEOUT)
         return original_open_service(requested_project_id)
 
     monkeypatch.setattr(app.state.catalog, "_open_service", slow_open_service)
@@ -938,23 +941,25 @@ def test_slow_project_open_does_not_block_concurrent_task_history(
     async def drive_concurrently():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            started_at = time.perf_counter()
             authoritative = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
             task_response = None
             try:
-                assert await asyncio.to_thread(entered.wait, 1)
-                entered_after = time.perf_counter() - started_at
+                await asyncio.to_thread(wait_for_entry, entered)
                 task_response = await asyncio.wait_for(
                     client.get(f"/api/projects/{project_id}/tasks"),
-                    timeout=1,
+                    timeout=TASK_SETTLE_TIMEOUT,
                 )
+                # The promise is ordering, not latency: task history answered
+                # while the project open was still parked. Timing how fast the
+                # open was entered only measures how loaded the runner is.
+                still_opening = not authoritative.done()
             finally:
                 release.set()
-            return entered_after, task_response, await authoritative
+            return still_opening, task_response, await authoritative
 
-    entered_after, task_response, authoritative = asyncio.run(drive_concurrently())
+    still_opening, task_response, authoritative = asyncio.run(drive_concurrently())
 
-    assert entered_after < 1
+    assert still_opening
     assert task_response is not None
     assert task_response.status_code == 200
     assert authoritative.status_code == 200
@@ -972,7 +977,7 @@ def test_blocking_project_source_read_does_not_stall_health(
 
     def slow_index_snapshot(*args, **kwargs):
         entered.set()
-        assert release.wait(timeout=3)
+        assert release.wait(TASK_SETTLE_TIMEOUT)
         return original_index_snapshot(*args, **kwargs)
 
     monkeypatch.setattr(app.state.service, "index_snapshot", slow_index_snapshot)
@@ -982,14 +987,20 @@ def test_blocking_project_source_read_does_not_stall_health(
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             sources = asyncio.create_task(client.get(f"/api/projects/{project_id}/sources"))
             try:
-                assert await asyncio.to_thread(entered.wait, 1)
-                health = await asyncio.wait_for(client.get("/api/health"), timeout=1)
+                await asyncio.to_thread(wait_for_entry, entered)
+                health = await asyncio.wait_for(
+                    client.get("/api/health"), timeout=TASK_SETTLE_TIMEOUT
+                )
+                # Ordering, not latency: health answered while the source read
+                # was still parked in the patched snapshot call.
+                still_reading = not sources.done()
             finally:
                 release.set()
-            return health, await sources
+            return still_reading, health, await sources
 
-    health, sources = asyncio.run(drive_concurrently())
+    still_reading, health, sources = asyncio.run(drive_concurrently())
 
+    assert still_reading
     assert health.status_code == 200
     assert sources.status_code == 200
 
@@ -1009,7 +1020,7 @@ def test_concurrent_project_calls_share_first_open_without_blocking_health(
         nonlocal open_calls
         open_calls += 1
         entered.set()
-        assert release.wait(timeout=3)
+        assert release.wait(TASK_SETTLE_TIMEOUT)
         return original_open_service(requested_project_id)
 
     monkeypatch.setattr(app.state.catalog, "_open_service", slow_open_service)
@@ -1019,15 +1030,21 @@ def test_concurrent_project_calls_share_first_open_without_blocking_health(
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             chats = asyncio.create_task(client.get(f"/api/projects/{project_id}/chats"))
             try:
-                assert await asyncio.to_thread(entered.wait, 1)
+                await asyncio.to_thread(wait_for_entry, entered)
                 project = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
-                health = await asyncio.wait_for(client.get("/api/health"), timeout=1)
+                health = await asyncio.wait_for(
+                    client.get("/api/health"), timeout=TASK_SETTLE_TIMEOUT
+                )
+                # Ordering, not latency: health answered while the shared first
+                # open was still parked.
+                still_opening = not chats.done()
             finally:
                 release.set()
-            return health, await chats, await project
+            return still_opening, health, await chats, await project
 
-    health, chats, project = asyncio.run(drive_concurrently())
+    still_opening, health, chats, project = asyncio.run(drive_concurrently())
 
+    assert still_opening
     assert health.status_code == 200
     assert chats.status_code == 200
     assert project.status_code == 200
@@ -1072,7 +1089,7 @@ def test_delete_tombstones_an_inflight_first_open(manifest, tmp_path, monkeypatc
 
     def slow_open_service(requested_project_id):
         entered.set()
-        assert release.wait(timeout=3)
+        assert release.wait(TASK_SETTLE_TIMEOUT)
         return original_open_service(requested_project_id)
 
     monkeypatch.setattr(catalog, "_open_service", slow_open_service)
@@ -1081,13 +1098,12 @@ def test_delete_tombstones_an_inflight_first_open(manifest, tmp_path, monkeypatc
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             opening = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
-            assert await asyncio.to_thread(entered.wait, 1)
+            await asyncio.to_thread(wait_for_entry, entered)
             deleting = asyncio.create_task(client.delete(f"/api/projects/{project_id}"))
-            for _ in range(100):
-                if project_id in catalog._deleting:
-                    break
-                await asyncio.sleep(0.01)
-            assert project_id in catalog._deleting
+            await async_wait_until(
+                lambda: project_id in catalog._deleting,
+                detail="delete never claimed the in-flight project open",
+            )
             cached = await client.get(f"/api/projects/{project_id}/cached")
             release.set()
             return await opening, await deleting, cached
@@ -1119,7 +1135,7 @@ def test_delete_serializes_against_display_snapshot_replacement(
     def blocked_replace(source, destination):
         if Path(destination) == cache_path:
             entered.set()
-            assert release.wait(timeout=3)
+            assert release.wait(TASK_SETTLE_TIMEOUT)
         return original_replace(source, destination)
 
     monkeypatch.setattr(projects_module.os, "replace", blocked_replace)
@@ -1128,15 +1144,14 @@ def test_delete_serializes_against_display_snapshot_replacement(
         writer = asyncio.create_task(
             asyncio.to_thread(catalog.write_cached_snapshot, project_id, snapshot)
         )
-        assert await asyncio.to_thread(entered.wait, 1)
+        await asyncio.to_thread(wait_for_entry, entered)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             deleting = asyncio.create_task(client.delete(f"/api/projects/{project_id}"))
-            for _ in range(100):
-                if project_id in catalog._deleting:
-                    break
-                await asyncio.sleep(0.01)
-            assert project_id in catalog._deleting
+            await async_wait_until(
+                lambda: project_id in catalog._deleting,
+                detail="delete never claimed the snapshot replacement",
+            )
             release.set()
             await writer
             return await deleting
@@ -6594,7 +6609,7 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
     assert stored is not None
     assert app.state.watcher_poller.on_completed is not None
     app.state.watcher_poller.on_completed([stored])
-    assert entered.wait(timeout=1)
+    wait_for_entry(entered)
 
     request = captured["request"]
     assert isinstance(request, RunRequest)
@@ -6722,7 +6737,7 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
     )
     try:
         assert response.status_code == 202, response.text
-        assert entered.wait(timeout=1)
+        wait_for_entry(entered)
         task = response.json()
         assert task["request"]["control_decision_bundle"] == []
         assert service.history.state().nodes["exp/bounded-loop"].attempts == []

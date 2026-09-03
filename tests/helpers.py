@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -20,6 +22,12 @@ from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, AppStore
 # failures whenever the full suite is competing for the CPU.
 TASK_SETTLE_TIMEOUT = 60.0
 _TASK_POLL_INTERVAL = 0.01
+
+# A syntactically valid UUID that is deliberately not version 4, for the cases
+# that assert canonical-UUIDv4 rejection. Generating one with `uuid.uuid1()`
+# inside a `parametrize` decorator gives every xdist worker a different test id,
+# which fails collection, so the non-canonical value is a constant.
+NON_UUID4 = "1d2e3f40-a73f-11f1-83be-717957a9b5d0"
 
 _GRAPH_OPERATION_ADAPTER = TypeAdapter(GraphOperation)
 _PROPOSAL_OPERATION_ADAPTER = TypeAdapter(ProposalOperation)
@@ -123,6 +131,52 @@ def wait_until(
         if remaining <= 0:
             raise AssertionError(detail() if callable(detail) else detail)
         time.sleep(min(interval, remaining))
+
+
+async def async_wait_until(
+    probe: Callable[[], _T | None],
+    *,
+    timeout: float = TASK_SETTLE_TIMEOUT,
+    interval: float = _TASK_POLL_INTERVAL,
+    detail: str | Callable[[], str] = "condition was not met",
+    allow_falsy: bool = False,
+) -> _T:
+    """`wait_until` for a probe that must not block the running event loop.
+
+    A concurrency test drives the work it is waiting on through that same loop,
+    so polling it with the synchronous helper would deadlock. Awaiting here
+    yields between probes instead. The settle rule is `wait_until`'s, so the two
+    agree on what a falsy result means.
+    """
+
+    deadline = time.monotonic() + timeout
+    while True:
+        result = probe()
+        if result is not None and (allow_falsy or bool(result)):
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(detail() if callable(detail) else detail)
+        await asyncio.sleep(min(interval, remaining))
+
+
+def wait_for_entry(
+    entered: threading.Event,
+    *,
+    detail: str = "the blocked call was never entered",
+) -> None:
+    """Block until a patched call reports that it was entered.
+
+    Entry is setup, never the promise: the assertions that follow measure what
+    happens *while* that call is parked. A tight bound here measures only how
+    loaded the runner is, so this uses the shared settle bound. Give the paired
+    release event the same bound, or the hold can expire mid-assertion.
+
+    Call it through ``asyncio.to_thread`` from a coroutine, so the loop stays
+    free to run the request that is expected to enter the patched call.
+    """
+
+    assert entered.wait(TASK_SETTLE_TIMEOUT), detail
 
 
 def wait_for_task(
