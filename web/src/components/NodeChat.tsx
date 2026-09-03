@@ -1890,15 +1890,8 @@ export function NodeChat({
                     className="chat-annotation-source"
                     ref={annotationSelectionRef}
                     aria-label="Select answer text"
-                    aria-readonly="true"
+                    readOnly
                     defaultValue={annotationComposer.answerText}
-                    onBeforeInput={(event) => event.preventDefault()}
-                    onCut={(event) => event.preventDefault()}
-                    onDrop={(event) => event.preventDefault()}
-                    onPaste={(event) => event.preventDefault()}
-                    onChange={(event) => {
-                      event.currentTarget.value = annotationComposer.answerText;
-                    }}
                     onSelect={(event) => updateKeyboardAnnotationSelection(event.currentTarget)}
                   />
                   {annotationComposer.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH && (

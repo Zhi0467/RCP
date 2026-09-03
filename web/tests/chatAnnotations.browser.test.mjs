@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { chromium } from "playwright-core";
+import { chromium } from "playwright";
 import { createServer } from "vite";
 
 test("a wide annotation composer stays interactive inside a keyboard-shrunken visual viewport", async () => {
@@ -15,7 +15,7 @@ test("a wide annotation composer stays interactive inside a keyboard-shrunken vi
     await server.listen();
     const address = server.httpServer?.address();
     assert.ok(address && typeof address === "object");
-    browser = await chromium.launch({ channel: "chrome", headless: true });
+    browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({ viewport: { width: 844, height: 520 } });
     await page.addInitScript(() => {
       class TestVisualViewport extends EventTarget {
@@ -70,8 +70,26 @@ test("a wide annotation composer stays interactive inside a keyboard-shrunken vi
     assert.equal(layout.overflowY, "auto");
     assert.ok(layout.scrollHeight > layout.clientHeight, "constrained composer should scroll");
 
-    await page.getByRole("button", { name: "Cancel annotation" }).click();
-    await composer.waitFor({ state: "detached" });
+    const source = page.getByRole("textbox", { name: "Select answer text" });
+    const originalValue = await source.inputValue();
+    await source.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
+    const selection = await source.evaluate((element) => ({
+      readOnly: element.readOnly,
+      selectionStart: element.selectionStart,
+      selectionEnd: element.selectionEnd,
+      value: element.value,
+    }));
+    assert.deepEqual(selection, {
+      readOnly: true,
+      selectionStart: 0,
+      selectionEnd: originalValue.length,
+      value: originalValue,
+    });
+
+    await page.getByRole("button", { name: "Comment on selection" }).click();
+    await page.getByRole("textbox", { name: "Comment" }).fill("Show the comparison.");
+    await page.getByRole("button", { name: "Add comment" }).click();
+    await page.getByRole("button", { name: "1 annotation" }).waitFor({ state: "visible" });
   } finally {
     await browser?.close();
     await server.close();

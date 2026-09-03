@@ -93,4 +93,5 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm --prefix web ci
       - run: npm --prefix web run build
+      - run: npm --prefix web exec playwright -- install --with-deps chromium
       - run: npm --prefix web test

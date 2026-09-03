@@ -25,9 +25,16 @@ test("assistant answers expose pointer selection and a real keyboard selection c
   assert.match(nodeChatSource, /aria-label="Comment on this answer"/);
   assert.match(nodeChatSource, /aria-label="Select answer text"/);
   assert.match(nodeChatSource, /className="chat-annotation-source"/);
-  assert.match(nodeChatSource, /aria-readonly="true"/);
-  assert.match(nodeChatSource, /onBeforeInput=\{\(event\) => event\.preventDefault\(\)\}/);
-  assert.match(nodeChatSource, /onSelect=/);
+  const selectionControl = nodeChatSource.slice(
+    nodeChatSource.indexOf('className="chat-annotation-source"'),
+    nodeChatSource.indexOf("/>", nodeChatSource.indexOf('className="chat-annotation-source"')),
+  );
+  assert.match(selectionControl, /\breadOnly\b/);
+  assert.match(selectionControl, /onSelect=/);
+  assert.doesNotMatch(
+    selectionControl,
+    /aria-readonly|onBeforeInput=|onCut=|onDrop=|onPaste=|onChange=/,
+  );
   assert.match(nodeChatSource, /createPortal\(/);
   assert.match(nodeChatSource, /event\.key === "Escape"/);
   assert.match(nodeChatSource, /event\.metaKey \|\| event\.ctrlKey/);

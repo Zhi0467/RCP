@@ -40,11 +40,14 @@ Clone and build in this order:
 git clone https://github.com/Zhi0467/RCP.git
 cd RCP
 npm --prefix web ci
+npm --prefix web exec playwright -- install chromium
 npm --prefix web run build
 uv sync
 ```
 
-The order matters because the Python build includes `web/dist`.
+The Playwright command installs the managed Chromium binary used by the web
+interaction tests and is needed once after `npm ci`. The build order matters
+because the Python build includes `web/dist`.
 
 ## Run the local Web app
 
@@ -133,6 +136,7 @@ Maintainers release through the build, tag, and promote process in
 ```bash
 uv run pytest
 uv run ruff check src tests packaging web/src-tauri/scripts
+npm --prefix web exec playwright -- install chromium
 npm --prefix web test
 npm --prefix web run build
 uv run pre-commit run --all-files
