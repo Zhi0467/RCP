@@ -18,12 +18,15 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from rcp.artifacts import AgentArtifactDescriptor, recover_local_regular_file_replacement
 from rcp.attachments import checkpoint_attachment_sets
+from rcp.config import load_manifest
 from rcp.limits import (
     BACKUP_COPY_BUFFER_BYTES,
     BACKUP_INVENTORY_MAX_ENTRIES,
     BACKUP_RECEIPT_MAX_BYTES,
 )
+from rcp.runs.chat import _local_chat_artifact_directory, _logical_chat_turn_operation_id
 from rcp.runs.shared import checkpoint_local_recovery_stages
 from rcp.server_ops._local_primitives import (
     PrivateFileReadError,
@@ -64,6 +67,7 @@ from rcp.sources.imported import (
 from rcp.storage import AppStore
 from rcp.storage.models import ProjectTransferUploadRecord
 from rcp.transfer.target import target_transfer_archive_path
+from rcp.transport.state import LocalStateWorkspace, state_workspace_for_probe
 
 if TYPE_CHECKING:
     from rcp.server_ops.rehearsal import VerifiedCandidateReceipt
@@ -83,6 +87,62 @@ _MAX_JSON_BYTES = BACKUP_RECEIPT_MAX_BYTES
 
 class UpdateCheckpointRefused(RuntimeError):
     """The final local rollback boundary was incomplete or unsafe."""
+
+
+def _settle_accepting_artifact_replacements(
+    store: AppStore,
+    data_dir: Path,
+    projects: BackupProjectFileCaptureReceipt,
+) -> None:
+    """Resolve local acceptance journals before paths are copied into a checkpoint."""
+
+    captured_projects = {project.project_id: project for project in projects.projects}
+    try:
+        for candidate in store.accepting_artifact_revision_candidates():
+            source = store.agent_task(candidate.source_operation_id)
+            if source is None or not source.result:
+                raise ValueError("an accepting artifact revision lost its source task")
+            raw_artifacts = source.result.get("artifacts")
+            if not isinstance(raw_artifacts, list):
+                raise ValueError("an accepting artifact revision lost its source artifact")
+            descriptor = next(
+                (
+                    item
+                    for raw in raw_artifacts
+                    if (item := AgentArtifactDescriptor.model_validate(raw)).artifact_id
+                    == candidate.source_artifact_id
+                ),
+                None,
+            )
+            if descriptor is None:
+                raise ValueError("an accepting artifact revision lost its source artifact")
+            if descriptor.kept_filename is not None:
+                captured = captured_projects.get(candidate.project_id)
+                if captured is None or captured.status != "captured" or captured.locator is None:
+                    raise ValueError("an accepting kept artifact lacks a local checkpoint route")
+                workspace = state_workspace_for_probe(load_manifest(captured.locator), data_dir)
+                if isinstance(workspace, LocalStateWorkspace):
+                    workspace.recover_kept_artifact_replacement(descriptor.kept_filename)
+                continue
+            if candidate.stage_host:
+                continue
+            if not source.stage_root:
+                raise ValueError("an accepting artifact revision lost its local stage")
+            source_scope_id = _logical_chat_turn_operation_id(store, source.operation_id)
+            recovery_key = hashlib.sha256(
+                f"{source.stage_root}\0{source_scope_id}".encode()
+            ).hexdigest()[:32]
+            recover_local_regular_file_replacement(
+                _local_chat_artifact_directory(store, source, source_scope_id),
+                descriptor.name,
+                recovery_directory=(
+                    Path(source.stage_root) / "inputs" / ".artifact-replacements" / recovery_key
+                ),
+            )
+    except (OSError, ValueError) as exc:
+        raise UpdateCheckpointRefused(
+            "An accepting artifact replacement could not be settled before checkpointing."
+        ) from exc
 
 
 class _StrictModel(BaseModel):
@@ -550,6 +610,7 @@ class UpdateCheckpointCoordinator:
                 raise UpdateCheckpointRefused(
                     "The final SQLite snapshot does not belong to the captured team space."
                 )
+            _settle_accepting_artifact_replacements(snapshot_store, self.data_dir, project_receipt)
             stages = checkpoint_local_recovery_stages(snapshot_store, self.data_dir)
             self._require_empty_transfer_exports()
             app_root_path = operation_root / "payload" / "app-data"

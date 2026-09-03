@@ -24,7 +24,6 @@ from rcp.artifacts import (
     descriptor_for,
     list_local_regular_files,
     read_local_regular_file,
-    replace_local_regular_file,
     validate_artifact_bytes,
 )
 from rcp.background import AgentTaskExecution
@@ -44,7 +43,13 @@ from rcp.runs.shared import (
     _touch_local_stage,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
-from rcp.storage import AgentTaskKind, AgentTaskReceiptRecord, AgentTaskRecord, AppStore
+from rcp.storage import (
+    AgentTaskKind,
+    AgentTaskReceiptRecord,
+    AgentTaskRecord,
+    AppStore,
+    ArtifactRevisionCandidateRecord,
+)
 from rcp.transport import (
     RemoteRunStage,
     RunStageMailbox,
@@ -80,6 +85,12 @@ class _ChatPatchInputs:
     validator_command: str
     validator_mailbox_id: str
     validator_staged: StagedCommandMailbox
+
+
+@dataclass(frozen=True)
+class StagedArtifactContext:
+    pointer: dict[str, object]
+    protected_write_paths: tuple[str, ...] = ()
 
 
 def _stage_chat_patch_inputs(
@@ -615,7 +626,7 @@ def stage_artifact_context(
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
     artifact_path: str,
-) -> dict[str, object] | None:
+) -> StagedArtifactContext | None:
     """Stage the artifact's current bytes and bounded human selection context."""
 
     context = request.artifact_context
@@ -678,6 +689,34 @@ def stage_artifact_context(
         raise ValueError("The artifact's source stage is unavailable.")
     if validate_artifact_bytes(descriptor.name, data) != descriptor.media_type:
         raise ValueError("The current artifact no longer matches its declared type.")
+    base_sha256 = hashlib.sha256(data).hexdigest()
+    protected_write_paths: tuple[str, ...] = ()
+    if context.source == "task" and request.mode == "work":
+        execution.store.record_agent_task_receipt(
+            execution.operation_id,
+            "artifact_revision_base",
+            {
+                "source_operation_id": origin.operation_id,
+                "source_artifact_id": descriptor.artifact_id,
+                "sha256": base_sha256,
+            },
+            tier="summary",
+        )
+        if descriptor.kept_filename is not None:
+            state_repository = service.manifest.repository_map[service.manifest.state.repository]
+            if state_repository.machine == request.run_on:
+                protected_write_paths = (str(PurePosixPath(state_repository.path) / "artifacts"),)
+        elif (origin.stage_host or "") == (current.stage_host or ""):
+            if origin.stage_host:
+                source_workspace = PurePosixPath(origin.stage_root or "") / "workspace"
+                source_directory = source_workspace / "turns" / scope_id / "artifacts"
+            else:
+                source_directory = _local_chat_artifact_directory(
+                    execution.store,
+                    origin,
+                    scope_id,
+                )
+            protected_write_paths = (str(source_directory),)
 
     label = f"artifact-context-v1-{execution.operation_id}-{descriptor.artifact_id}"
     if remote_stage is not None:
@@ -717,6 +756,7 @@ def stage_artifact_context(
         "name": descriptor.name,
         "media_type": descriptor.media_type,
         "size": len(data),
+        "sha256": base_sha256,
         "source_operation_id": origin.operation_id,
         "source_artifact_id": descriptor.artifact_id,
         "selections": [item.model_dump(mode="json") for item in context.selections],
@@ -725,11 +765,13 @@ def stage_artifact_context(
         pointer["revision_output_path"] = str(Path(artifact_path) / descriptor.name)
     else:
         pointer["immutable"] = True
-    return pointer
+    return StagedArtifactContext(
+        pointer=pointer,
+        protected_write_paths=protected_write_paths,
+    )
 
 
 def finalize_artifact_revision(
-    service: ProjectService,
     request: RunRequest,
     execution: AgentTaskExecution | None,
     *,
@@ -738,7 +780,7 @@ def finalize_artifact_revision(
     remote_stage: RemoteRunStage | None,
     artifacts: list[AgentArtifactDescriptor],
 ) -> list[AgentArtifactDescriptor]:
-    """Publish an explicit Work replacement onto the source artifact identity."""
+    """Retain an explicit Work replacement as a candidate for human disposition."""
 
     context = request.artifact_context
     if context is None or context.source != "task" or request.mode != "work" or execution is None:
@@ -756,56 +798,84 @@ def finalize_artifact_revision(
                 break
     if source is None:
         raise ValueError("The artifact revision origin is unavailable.")
-    replacement = next((item for item in artifacts if item.name == source.name), None)
-    if replacement is None:
-        return artifacts
-    data = (
-        remote_stage.read_artifact_bytes(
-            artifact_scope_id,
-            replacement.name,
-            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+    try:
+        data = (
+            remote_stage.read_artifact_bytes(
+                artifact_scope_id,
+                source.name,
+                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+            )
+            if remote_stage is not None
+            else read_local_regular_file(
+                artifact_directory,
+                source.name,
+                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+            )
         )
-        if remote_stage is not None
-        else read_local_regular_file(
-            artifact_directory,
-            replacement.name,
-            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-        )
-    )
+    except FileNotFoundError:
+        return []
     if validate_artifact_bytes(source.name, data) != source.media_type:
         raise ValueError("The artifact revision changed its file type.")
-    source_scope_id = _logical_chat_turn_operation_id(execution.store, origin.operation_id)
-    if source.kept_filename is not None:
-        service.history.workspace.replace_kept_artifact(source.kept_filename, data)
-    elif origin.stage_host:
-        source_stage = RemoteRunStage(origin.stage_host).attach_artifact_source(
-            origin.stage_root or ""
-        )
-        source_stage.replace_artifact_bytes(source_scope_id, source.name, data)
-    elif origin.stage_root:
-        replace_local_regular_file(
-            _local_chat_artifact_directory(execution.store, origin, source_scope_id),
-            source.name,
-            data,
-        )
-    else:
-        raise ValueError("The artifact revision source stage is unavailable.")
-    execution.store.update_agent_artifact_descriptor(
-        origin.operation_id,
-        source.model_copy(update={"size_bytes": len(data)}),
+    base_receipt = next(
+        (
+            receipt
+            for receipt in reversed(execution.store.agent_task_receipts(execution.operation_id))
+            if receipt.category == "artifact_revision_base"
+            and receipt.payload.get("source_operation_id") == origin.operation_id
+            and receipt.payload.get("source_artifact_id") == source.artifact_id
+        ),
+        None,
     )
+    base_sha256 = base_receipt.payload.get("sha256") if base_receipt is not None else None
+    if not isinstance(base_sha256, str) or len(base_sha256) != 64:
+        raise ValueError("The artifact revision base could not be verified.")
+    candidate_sha256 = hashlib.sha256(data).hexdigest()
+    if candidate_sha256 == base_sha256:
+        execution.store.record_agent_task_receipt(
+            execution.operation_id,
+            "artifact_revision_unchanged",
+            {
+                "source_operation_id": origin.operation_id,
+                "source_artifact_id": source.artifact_id,
+            },
+            tier="summary",
+        )
+        return []
+    current = execution.store.agent_task(execution.operation_id)
+    if current is None or not current.stage_root:
+        raise ValueError("The artifact revision candidate stage is unavailable.")
+    now = execution.store.now()
+    candidate = ArtifactRevisionCandidateRecord(
+        candidate_id=uuid.uuid4().hex[:24],
+        project_id=current.project_id,
+        source_operation_id=origin.operation_id,
+        source_artifact_id=source.artifact_id,
+        revision_operation_id=current.operation_id,
+        stage_host=current.stage_host or "",
+        stage_root=current.stage_root,
+        artifact_scope_id=artifact_scope_id,
+        source_name=source.name,
+        media_type=source.media_type,
+        base_sha256=base_sha256,
+        candidate_sha256=candidate_sha256,
+        candidate_size_bytes=len(data),
+        status="pending",
+        created_at=now,
+        updated_at=now,
+    )
+    execution.store.create_artifact_revision_candidate(candidate)
     execution.store.record_agent_task_receipt(
         execution.operation_id,
-        "artifact_revised",
+        "artifact_revision_staged",
         {
+            "candidate_id": candidate.candidate_id,
             "source_operation_id": origin.operation_id,
             "source_artifact_id": source.artifact_id,
-            "kept": source.kept_filename is not None,
             "size_bytes": len(data),
         },
         tier="summary",
     )
-    return [item for item in artifacts if item.artifact_id != replacement.artifact_id]
+    return []
 
 
 def _record_artifact_discovery_receipt(
@@ -1079,6 +1149,7 @@ def _project_write_scope(
     capability: AgentCapability,
     stage_only: bool = False,
     local_stage: Path | None = None,
+    additional_protected_write_paths: list[str] | None = None,
 ) -> ProjectWriteScope:
     """Resolve one durable provider-neutral scope from project-owned authority."""
 
@@ -1120,11 +1191,14 @@ def _project_write_scope(
         remote_stage=remote_stage,
         app_data_dir=data_dir,
         repository_inventory=service.repository_ownership_inventory(project_id=project_id),
-        additional_protected_write_paths=(
-            [str(local_stage / "inputs")]
-            if remote_stage is None and local_stage is not None and workspace == local_stage
-            else None
-        ),
+        additional_protected_write_paths=[
+            *(
+                [str(local_stage / "inputs")]
+                if remote_stage is None and local_stage is not None and workspace == local_stage
+                else []
+            ),
+            *(additional_protected_write_paths or []),
+        ],
     )
 
 

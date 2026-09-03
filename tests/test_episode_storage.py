@@ -78,7 +78,9 @@ def _create_legacy_campaign_tables(connection: sqlite3.Connection) -> None:
         );
         """
     )
-    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 2, 5)")
+    connection.execute(
+        "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 2, 5, 6)"
+    )
 
 
 def _create_legacy_experiment_episode_table(connection: sqlite3.Connection) -> None:
@@ -108,7 +110,9 @@ def _create_legacy_experiment_episode_table(connection: sqlite3.Connection) -> N
         );
         """
     )
-    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 3, 5)")
+    connection.execute(
+        "DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 3, 5, 6)"
+    )
 
 
 def _episode(
@@ -1315,7 +1319,7 @@ def test_experiment_migration_removes_its_impossible_modern_wrapup(tmp_path) -> 
     )
     with store.connection() as connection:
         connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 5)"
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 5, 6)"
         )
     assert stopping.status == "stopping"
     assert stopping.ending is None
@@ -1552,7 +1556,7 @@ def _downgrade_wrapups_to_not_null(path, *, episode_id: str) -> None:
         """,
         (episode_id,),
     )
-    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 5")
+    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)")
     connection.commit()
     connection.close()
 

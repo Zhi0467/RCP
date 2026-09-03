@@ -28,8 +28,9 @@ back by that graph workflow.
 
 The paper introduction is human-authored and non-authoritative. Agent-created
 artifacts and reports help a researcher read work; they do not become graph
-truth. A chat artifact may be viewed, selected, questioned, kept, and revised
-through one shell, but those interactions grant no graph authority. The backend
+truth. A chat artifact may be viewed, selected, questioned, and kept through one
+shell. A Work revision remains a candidate until a human accepts or rejects it;
+those interactions grant no graph authority. The backend
 owns the viewer entrance, so ordinary server-served UI changes do not require a
 matching native rebuild. The thinner native team entrance is a separate
 boundary: before enrollment, token exchange, project-card read, or browser-cookie
@@ -127,6 +128,8 @@ number here.
 - An **artifact** is a supported file produced by a task and owned by its
   conversation. It may remain temporary or be kept as a live file at the state
   repository root; it is never a graph object or a second answer channel.
+- An **artifact revision candidate** is a validated Work output held beside its
+  unchanged source until one human Accept or Reject disposition.
 - An **episode** is the persisted parent for bounded Experiment control or
   Auto-research, with one operational budget, one native-session binding, and
   one graceful Stop boundary.

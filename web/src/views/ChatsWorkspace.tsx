@@ -42,6 +42,7 @@ interface Props {
   onStartTask: StartAgentTask;
   onResumeTask: (task: AgentTask) => void;
   onRetryTask: (task: AgentTask) => void;
+  onRefreshTask: (taskId: string) => Promise<AgentTask>;
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
   onOpenNode?: (nodeId: string) => void;
@@ -98,6 +99,7 @@ export function ChatsWorkspace({
   onStartTask,
   onResumeTask,
   onRetryTask,
+  onRefreshTask,
   onInspectTask,
   onOpenInbox,
   onOpenNode,
@@ -338,6 +340,7 @@ export function ChatsWorkspace({
             onStartTask={onStartTask}
             onResumeTask={onResumeTask}
             onRetryTask={onRetryTask}
+            onRefreshTask={onRefreshTask}
             onInspectTask={onInspectTask}
             onOpenInbox={onOpenInbox}
             onRepairGraphUpdate={onRepairGraphUpdate}

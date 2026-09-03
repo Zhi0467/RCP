@@ -1105,6 +1105,18 @@ source repositories, other materialized outputs, temporary input attachments,
 run/transfer staging, scratch, and caches. Backup does not pause dispatch or
 Apply and never marks an unreachable project protected.
 
+Pending artifact revision candidates are task-stage state and are likewise not
+copied into an offline backup. Restore atomically marks them Abandoned before
+task-session detachment; it never publishes candidate bytes, and the original
+temporary or kept artifact remains unchanged. Server update checkpoints use the
+separate recovery-stage inventory and preserve unresolved local candidates. Before
+copying that inventory, checkpoint creation settles every accepting local temporary
+or kept-artifact replacement journal and refuses if replacement state remains
+unresolved.
+When the SQLite snapshot contains an unresolved kept-artifact revision, its
+kept-file inventory is bound to the candidate's base digest. A later mismatch
+makes that project uncaptured instead of archiving unaccepted candidate bytes.
+
 The app-data inventory is closed rather than an implicit recursive copy.
 `rcp.sqlite3` enters only through SQLite's online snapshot, and transferred
 `project-sources/` enters through its typed project-history owner. Raw SQLite

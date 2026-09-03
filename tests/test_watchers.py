@@ -615,7 +615,7 @@ def test_watcher_episode_owner_migrates_and_backfills_before_indexing(tmp_path) 
         connection.execute("DROP INDEX watchers_episode")
         connection.execute("ALTER TABLE watchers RENAME COLUMN episode_id TO experiment_episode_id")
         connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5)"
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5, 6)"
         )
 
     reopened = AppStore(path)
@@ -638,7 +638,9 @@ def test_graph_condition_column_migrates_before_its_index_is_created(tmp_path) -
         connection.execute("DROP INDEX watchers_graph_conditions")
         connection.execute("ALTER TABLE watchers DROP COLUMN graph_condition_json")
         connection.execute("ALTER TABLE watchers DROP COLUMN armed_revision")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 5")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)"
+        )
 
     reopened = AppStore(path)
     with reopened.connection() as connection:
