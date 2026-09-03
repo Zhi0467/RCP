@@ -489,7 +489,9 @@ changing the configuration, key pair, or checkout. A credential-free probe that
 still needs a grant or is unavailable leaves the configuration, key pair, and SSH
 checkout unchanged. A public configuration never returns to deploy-key mode and
 is never probed over SSH. A candidate receipt recorded under the retired SSH
-origin remains valid for the same repository after the transition.
+origin remains valid for the same repository after the transition. The probe
+runs with an empty home, so no netrc or per-user configuration can authenticate
+it and `ready` therefore means anonymous read access.
 
 The transition does not wait for GitHub-side revocation. Its wizard event reports
 the public authentication and origin, the retired label, and the repository's

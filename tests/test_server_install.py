@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import uuid
 from contextlib import nullcontext
@@ -511,22 +512,45 @@ def test_service_account_commands_clear_invoking_credentials_and_use_fixed_home(
 )
 def test_source_probe_separates_grant_work_from_network_failure(
     monkeypatch,
+    tmp_path: Path,
     returncode,
     diagnostic,
     expected,
 ) -> None:
-    machine = server_install.LinuxInstallMachine()
+    layout = _temporary_layout(tmp_path)
+    layout.service_home.mkdir(parents=True)
+    (layout.service_home / ".netrc").write_text(
+        "machine github.com login service-account password secret\n",
+        encoding="utf-8",
+    )
+    machine = server_install.LinuxInstallMachine(layout)
+    machine._service_uid = os.getuid()
+    machine._service_gid = os.getgid()
+    anonymous_homes: list[Path] = []
 
-    def fake_run(*_args, **_kwargs):
+    def fake_run(*_args, **kwargs):
+        environment = kwargs["environment"]
+        anonymous_home = Path(environment["HOME"])
+        assert anonymous_home != layout.service_home
+        assert environment["XDG_CONFIG_HOME"] == str(anonymous_home)
+        assert list(anonymous_home.iterdir()) == []
+        anonymous_homes.append(anonymous_home)
         return subprocess.CompletedProcess(("git",), returncode, "", diagnostic)
 
     monkeypatch.setattr(machine, "_run_as_service", fake_run)
 
     assert machine._probe_source(REPOSITORY.https_origin, source=None) == expected
+    assert len(anonymous_homes) == 1
+    assert not anonymous_homes[0].exists()
 
 
-def test_source_probe_refuses_missing_main_and_unrecognized_failure(monkeypatch) -> None:
-    machine = server_install.LinuxInstallMachine()
+def test_source_probe_refuses_missing_main_and_unrecognized_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    machine = server_install.LinuxInstallMachine(_temporary_layout(tmp_path))
+    machine._service_uid = os.getuid()
+    machine._service_gid = os.getgid()
 
     monkeypatch.setattr(
         machine,
@@ -569,6 +593,44 @@ def test_private_source_environment_uses_only_fixed_key_and_strict_host_checking
         "-o UserKnownHostsFile=/home/rcp/.ssh/known_hosts"
     )
     assert "SSH_AUTH_SOCK" not in environment
+
+
+def test_source_probe_environment_isolates_only_anonymous_probe(tmp_path: Path) -> None:
+    layout = _temporary_layout(tmp_path)
+    layout.service_home.mkdir(parents=True)
+    (layout.service_home / ".netrc").write_text(
+        "machine github.com login service-account password secret\n",
+        encoding="utf-8",
+    )
+    source = ServerSourceConfig(
+        origin=REPOSITORY.ssh_origin,
+        authentication="deploy_key",
+        public_key_fingerprint="SHA256:" + ("A" * 43),
+    )
+
+    with server_install.source_probe_environment(
+        None,
+        layout,
+        service_uid=os.getuid(),
+        service_gid=os.getgid(),
+    ) as environment:
+        anonymous_home = Path(environment["HOME"])
+        assert anonymous_home != layout.service_home
+        assert environment["XDG_CONFIG_HOME"] == str(anonymous_home)
+        info = anonymous_home.stat()
+        assert (info.st_uid, info.st_gid) == (os.getuid(), os.getgid())
+        assert stat.S_IMODE(info.st_mode) == 0o700
+        assert list(anonymous_home.iterdir()) == []
+
+    assert not anonymous_home.exists()
+    expected = server_install.source_git_environment(source, layout)
+    with server_install.source_probe_environment(
+        source,
+        layout,
+        service_uid=os.getuid(),
+        service_gid=os.getgid(),
+    ) as environment:
+        assert environment == expected
 
 
 def _configured_source_install(
@@ -1037,7 +1099,13 @@ def test_deploy_key_transition_refuses_a_third_checkout_origin_before_mutation(
 
     def run_as_service(argv: tuple[str, ...], **kwargs):
         assert argv[0:3] == ("git", "ls-remote", "--exit-code")
-        assert kwargs["environment"] == server_install.source_git_environment(None, layout)
+        environment = kwargs["environment"]
+        anonymous_home = environment["HOME"]
+        assert environment == {
+            **server_install.source_git_environment(None, layout),
+            "HOME": anonymous_home,
+            "XDG_CONFIG_HOME": anonymous_home,
+        }
         return subprocess.CompletedProcess(argv, 0, COMMIT, "")
 
     def git_text(_root: Path, argv: tuple[str, ...], **kwargs) -> str:

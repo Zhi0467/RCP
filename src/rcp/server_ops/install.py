@@ -18,8 +18,8 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -339,6 +339,8 @@ def converge_public_source(
         repository.https_origin,
         source=None,
         layout=layout,
+        service_uid=service_uid,
+        service_gid=service_gid,
         run_as_service=run_as_service,
         refusal=refusal,
     )
@@ -396,20 +398,57 @@ def converge_public_source(
     return transition
 
 
+@contextmanager
+def source_probe_environment(
+    source: ServerSourceConfig | None,
+    layout: ServerLayout,
+    *,
+    service_uid: int,
+    service_gid: int,
+) -> Iterator[dict[str, str]]:
+    """Yield the Git environment for one source probe."""
+
+    if source is not None:
+        yield source_git_environment(source, layout)
+        return
+
+    empty_home = Path(tempfile.mkdtemp(prefix="rcp-anonymous-source-probe-"))
+    try:
+        info = empty_home.stat()
+        if (info.st_uid, info.st_gid) != (service_uid, service_gid):
+            os.chown(empty_home, service_uid, service_gid)
+        os.chmod(empty_home, _SERVICE_DIRECTORY_MODE)
+        yield {
+            **source_git_environment(None, layout),
+            "HOME": str(empty_home),
+            "XDG_CONFIG_HOME": str(empty_home),
+        }
+    finally:
+        shutil.rmtree(empty_home)
+
+
 def _probe_source_with_runner(
     origin: str,
     *,
     source: ServerSourceConfig | None,
     layout: ServerLayout,
+    service_uid: int,
+    service_gid: int,
     run_as_service: Callable[..., subprocess.CompletedProcess[str]],
     refusal: type[RuntimeError],
 ) -> Literal["ready", "grant_needed", "unavailable"]:
-    result = run_as_service(
-        ("git", "ls-remote", "--exit-code", origin, "refs/heads/main"),
-        environment=source_git_environment(source, layout),
-        timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
-        capture_output=True,
-    )
+    with source_probe_environment(
+        source,
+        layout,
+        service_uid=service_uid,
+        service_gid=service_gid,
+    ) as environment:
+        result = run_as_service(
+            ("git", "ls-remote", "--exit-code", origin, "refs/heads/main"),
+            environment=environment,
+            timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
+            capture_output=True,
+        )
     if result.returncode == 0:
         return "ready"
     diagnostic = f"{result.stdout}\n{result.stderr}".lower()
@@ -1773,6 +1812,8 @@ class LinuxInstallMachine:
             origin,
             source=source,
             layout=self.layout,
+            service_uid=self._service_uid_value,
+            service_gid=self._service_gid_value,
             run_as_service=lambda argv, **kwargs: self._run_as_service(
                 argv,
                 check=False,
@@ -2780,5 +2821,6 @@ __all__ = [
     "reload_and_disable_backup_timer",
     "run_backup_service_once",
     "source_git_environment",
+    "source_probe_environment",
     "source_transition_message",
 ]

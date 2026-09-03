@@ -185,6 +185,10 @@ def _source_transition_fixture(
         del cwd, timeout, capture_output
         assert argv[0:3] == ("git", "ls-remote", "--exit-code")
         assert environment is not None
+        anonymous_home = Path(environment["HOME"])
+        assert anonymous_home != layout.service_home
+        assert environment["XDG_CONFIG_HOME"] == str(anonymous_home)
+        assert list(anonymous_home.iterdir()) == []
         probe_calls.append((argv, environment))
         if public_probe == "ready":
             return subprocess.CompletedProcess(argv, 0, BASE, "")
@@ -936,6 +940,10 @@ def test_update_transitions_deploy_key_source_before_fetch(
         authentication="deploy_key",
         public_probe="ready",
     )
+    (fixture.layout.service_home / ".netrc").write_text(
+        "machine github.com login service-account password secret\n",
+        encoding="utf-8",
+    )
 
     inspection = fixture.machine.inspect()
     fetched = fixture.machine.fetch_target(inspection)
@@ -959,6 +967,9 @@ def test_update_transitions_deploy_key_source_before_fetch(
         ("fetch", "--prune", "origin", "main"),
     ]
     assert len(fixture.probe_calls) == 1
+    probe_environment = fixture.probe_calls[0][1]
+    assert probe_environment["HOME"] != str(fixture.layout.service_home)
+    assert not Path(probe_environment["HOME"]).exists()
     assert all(
         "GIT_SSH_COMMAND" not in environment
         for _argv, environment in (*fixture.probe_calls, *fixture.git_calls)
