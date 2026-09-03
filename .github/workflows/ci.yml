@@ -100,6 +100,12 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm --prefix web ci
       - run: npm --prefix web run build
+      # The browser test needs a Chromium binary that npm ci does not fetch. Cache
+      # it by lockfile so a run only downloads when the playwright version moves.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
       - run: npm --prefix web exec playwright -- install --with-deps chromium
       - run: npm --prefix web test
 
