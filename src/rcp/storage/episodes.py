@@ -176,6 +176,35 @@ class EpisodeStoreMixin:
                 ).fetchall()
         return [str(row["episode_id"]) for row in rows]
 
+    def auto_research_episodes_for_run_window(
+        self,
+        project_ids: set[str],
+        *,
+        completed_since: str,
+    ) -> list[EpisodeRecord]:
+        """Return visible actionable or recently terminal parents before hydration."""
+
+        if not project_ids:
+            return []
+        ordered_project_ids = sorted(project_ids)
+        placeholders = ", ".join("?" for _ in ordered_project_ids)
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM episodes
+                WHERE mode = 'auto_research'
+                  AND project_id IN ({placeholders})
+                  AND (
+                    status NOT IN ('completed', 'stopped')
+                    OR wrapup_state IN ('pending', 'running')
+                    OR julianday(COALESCE(ended_at, updated_at)) >= julianday(?)
+                  )
+                ORDER BY created_at DESC, episode_id DESC
+                """,
+                (*ordered_project_ids, completed_since),
+            ).fetchall()
+        return [self._episode_record(row) for row in rows]
+
     def episodes_awaiting_report(self) -> list[EpisodeRecord]:
         """Return durable hidden wrap-ups that startup must reconcile."""
 

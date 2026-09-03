@@ -111,34 +111,44 @@ function RunRows({ entries, onOpen }: { entries: SpaceRunIndexEntry[]; onOpen: P
   return (
     <ul className="space-runs-rows">
       {entries.map((entry) => (
-        <li className={`space-run-row ${entry.health_tone}`} key={entry.episode_id}>
-          <button
-            type="button"
-            onClick={() => {
-              onOpen(entry.project_id, spaceRunRouteToken(entry));
-            }}
-          >
-            <span className="space-run-rail" aria-hidden="true" />
-            <span className="space-run-copy">
-              <strong>{entry.title}</strong>
-              <span>{entry.project_name}</span>
-            </span>
-            <span className="space-run-meta">
-              <span className={`status-pill ${entry.health_tone}`}>{entry.health_label}</span>
-              {entry.project_reachable === false && (
-                <span className="space-run-unavailable">
-                  <WifiOff size={11} aria-hidden="true" /> Unavailable
-                </span>
-              )}
-              <time dateTime={entry.last_activity_at}>
-                {formatActivity(entry.last_activity_at)}
-              </time>
-            </span>
-            <ChevronRight className="space-run-arrow" size={15} aria-hidden="true" />
-          </button>
-        </li>
+        <SpaceRunRow entry={entry} onOpen={onOpen} key={entry.episode_id} />
       ))}
     </ul>
+  );
+}
+
+export function SpaceRunRow({
+  entry,
+  onOpen,
+}: {
+  entry: SpaceRunIndexEntry;
+  onOpen: Props["onOpen"];
+}) {
+  return (
+    <li className={`space-run-row ${entry.health_tone}`}>
+      <button
+        type="button"
+        onClick={() => {
+          onOpen(entry.project_id, spaceRunRouteToken(entry));
+        }}
+      >
+        <span className="space-run-rail" aria-hidden="true" />
+        <span className="space-run-copy">
+          <strong>{entry.title}</strong>
+          <span>{entry.project_name}</span>
+        </span>
+        <span className="space-run-meta">
+          <span className={`status-pill ${entry.health_tone}`}>{entry.health_label}</span>
+          {entry.project_reachable === false && (
+            <span className="space-run-unavailable">
+              <WifiOff size={11} aria-hidden="true" /> Unavailable
+            </span>
+          )}
+          <time dateTime={entry.started_at}>{formatActivity(entry.started_at)}</time>
+        </span>
+        <ChevronRight className="space-run-arrow" size={15} aria-hidden="true" />
+      </button>
+    </li>
   );
 }
 

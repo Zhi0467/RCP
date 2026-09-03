@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import rcp.api.app as api_app_module
+import rcp.api.index as api_index_module
 from rcp.agents import AgentEvent
 from rcp.api.app import create_app as create_raw_app
 from rcp.api.index import SpaceRunIndexEntryResponse, _space_run_is_visible
@@ -458,6 +459,43 @@ def test_space_runs_keeps_completed_parents_for_seven_days() -> None:
         _space_run_is_visible(entry(cutoff - timedelta(days=30), "needs_action"), as_of=as_of)
         is True
     )
+
+
+def test_space_runs_filters_old_completed_auto_research_before_hydration(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, _current_episode = _seed_indexed_project(app)
+    parent, _child = _record_branch_target_child_experiment(app, node_id="exp/never-run")
+    store = app.state.background_tasks.store
+    old_timestamp = "2026-08-01T00:00:00+00:00"
+    with store.connection() as connection:
+        connection.execute(
+            """
+            UPDATE episodes
+            SET status = 'completed', updated_at = ?, ended_at = ?
+            WHERE episode_id = ?
+            """,
+            (old_timestamp, old_timestamp, parent.episode_id),
+        )
+
+    hydrated_auto_research_ids: list[str] = []
+    original_serialize_episode = api_index_module.serialize_episode
+
+    def capture_hydration(store, requested_project_id, episode, **kwargs):
+        if episode.mode == "auto_research":
+            hydrated_auto_research_ids.append(episode.episode_id)
+        return original_serialize_episode(store, requested_project_id, episode, **kwargs)
+
+    monkeypatch.setattr(api_index_module, "serialize_episode", capture_hydration)
+    client = TestClient(app)
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+
+    response = client.get("/api/space/runs")
+
+    assert response.status_code == 200, response.text
+    assert parent.episode_id not in {entry["episode_id"] for entry in response.json()}
+    assert hydrated_auto_research_ids == []
 
 
 def test_experiment_index_skips_an_orphan_main_runtime(manifest, tmp_path: Path) -> None:

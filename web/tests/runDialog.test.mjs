@@ -856,6 +856,11 @@ test("active chat task detail starts folded behind a quiet Activity row", () => 
   assert.match(html, /<details class="chat-task-activity">/);
   assert.match(html, /<summary>[\s\S]*Activity<\/span><\/summary>/);
   assert.match(html, /Reading the project graph\./);
+  assert.match(
+    html,
+    /<span class="chat-task-live" role="status" aria-live="polite" aria-atomic="true">Reading the project graph\.<\/span>/,
+  );
+  assert.ok(html.indexOf("chat-task-live") < html.indexOf('<details class="chat-task-activity">'));
   assert.doesNotMatch(html, /<details class="chat-task-activity" open=/);
   assert.doesNotMatch(html, /role="progressbar"/);
 });

@@ -8,6 +8,7 @@ import {
   loadEpisodeMessages,
   loadEpisodes,
   loadExperimentEpisodes,
+  loadSpaceRuns,
   mergeEpisodeToMain,
   reauthorizeEpisode,
   sendEpisodeMessage,
@@ -578,6 +579,7 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
     await loadEpisodeMessages("/api/projects/demo", "episode/alpha");
     await sendEpisodeMessage("/api/projects/demo", "episode/alpha", "Check the blocker");
     await loadExperimentEpisodes();
+    await loadSpaceRuns();
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -623,6 +625,7 @@ test("episode API calls use only the generic endpoints and new-parent reauthoriz
       body: JSON.stringify({ body: "Check the blocker" }),
     },
     { path: "/api/episodes?mode=experiment_loop", method: "GET", body: null },
+    { path: "/api/space/runs", method: "GET", body: null },
   ]);
   assert.equal(
     requests.some(({ path }) => path.includes("campaign")),

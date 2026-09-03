@@ -386,6 +386,7 @@ def space_runs(
         record.project_id: record for record in store.projects() if record.project_id in visible
     }
     as_of = datetime.fromisoformat(store.now()).astimezone(UTC)
+    completed_since = (as_of - SPACE_RUNS_COMPLETED_TTL).isoformat()
     entries = [
         _space_experiment_run(entry)
         for entry in _experiment_episode_entries(
@@ -396,11 +397,11 @@ def space_runs(
             visible=visible,
         )
     ]
-    for episode_id in store.auto_research_episode_ids():
-        episode = store.episode(episode_id)
-        record = records.get(episode.project_id) if episode is not None else None
-        if episode is None or record is None:
-            continue
+    for episode in store.auto_research_episodes_for_run_window(
+        set(records),
+        completed_since=completed_since,
+    ):
+        record = records[episode.project_id]
         serialized = serialize_episode(
             store,
             episode.project_id,

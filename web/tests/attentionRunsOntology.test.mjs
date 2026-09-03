@@ -481,6 +481,7 @@ test("Runs is episode-first while Experiment placement and status stay control-a
       },
       selectedExperimentId: null,
       focusExperimentId: null,
+      selectedAutoResearchEpisodeId: completedAutoResearch.episode_id,
       runBusy: false,
       stopBusyId: null,
       watcherCheckBusyId: null,
@@ -516,7 +517,11 @@ test("Runs is episode-first while Experiment placement and status stay control-a
   assert.doesNotMatch(html, /Episode ·|campaign-run-summary|No action needed|Project episode/);
   assert.equal(html.match(/>Experiment loop<\/strong>/g)?.length, 1);
   assert.match(html, /<details class="episode-type-group"><summary><strong>Experiment loop/);
-  assert.match(html, /<details class="episode-type-group"><summary><strong>Auto-research/);
+  assert.match(html, /<details class="episode-type-group" open=""><summary><strong>Auto-research/);
+  assert.match(
+    html,
+    /<article class="campaign-run completed" data-episode-id="auto-complete" data-selected="true">[\s\S]*campaign-run-detail/,
+  );
   assert.ok(
     html.indexOf("<strong>Experiment loop</strong>") <
       html.lastIndexOf("<strong>Auto-research</strong>"),

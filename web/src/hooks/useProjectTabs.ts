@@ -184,10 +184,11 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       id,
       name:
         projects.find((item) => item.id === id)?.name ??
+        spaceRuns.find((item) => item.project_id === id)?.project_name ??
         experimentLoops.find((item) => item.project_id === id)?.project_name ??
         (project?.id === id ? project.name : id),
     }),
-    [experimentLoops, project, projects],
+    [experimentLoops, project, projects, spaceRuns],
   );
   const commitProjectOpen = useCallback(
     (id: string, experimentRoute: string | null = null) => {
@@ -318,14 +319,8 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
         return;
       }
       try {
-        const [nextEntries, nextSpaceRuns] = await Promise.all([
-          loadExperimentEpisodes(),
-          loadSpaceRuns(),
-        ]);
-        if (!stopped) {
-          setExperimentLoops(nextEntries);
-          setSpaceRuns(nextSpaceRuns);
-        }
+        const nextSpaceRuns = await loadSpaceRuns();
+        if (!stopped) setSpaceRuns(nextSpaceRuns);
       } catch (error) {
         if (!stopped) {
           reportError(

@@ -1898,6 +1898,24 @@ button:disabled {
 .space-run-row.completed {
   --space-run-tone: color-mix(in srgb, var(--teal) 62%, var(--landing-rule));
 }
+.space-run-row .status-pill.waiting,
+.space-run-row .status-pill.stopping {
+  background: var(--amber-soft);
+  color: color-mix(in srgb, var(--mustard) 65%, var(--walnut));
+}
+.space-run-row .status-pill.degraded,
+.space-run-row .status-pill.actionable {
+  background: var(--rose-paper);
+  color: var(--coral);
+}
+.space-run-row .status-pill.stopped {
+  background: var(--paper-deep);
+  color: var(--ink-soft);
+}
+.space-run-row .status-pill.completed {
+  background: var(--green-soft);
+  color: var(--teal);
+}
 .space-run-row > button {
   align-items: center;
   background: transparent;
@@ -6710,6 +6728,13 @@ button.relation-map-node:hover {
 .chat-task-activity {
   color: var(--muted);
   margin-top: 9px;
+}
+.chat-task-live {
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  width: 1px;
+  clip-path: inset(50%);
 }
 .chat-task-activity > summary {
   align-items: center;

@@ -11,7 +11,7 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { SpaceRuns } = await server.ssrLoadModule("/src/components/SpaceRuns.tsx");
+const { SpaceRunRow, SpaceRuns } = await server.ssrLoadModule("/src/components/SpaceRuns.tsx");
 const { experimentBoardHref, parseProjectHash, spaceRunRouteToken } =
   await server.ssrLoadModule("/src/experimentBoard.ts");
 
@@ -89,14 +89,37 @@ test("an Experiment space run keeps its exact Runs route", () => {
   });
 });
 
-test("an Auto-research space run opens the project Runs panel", () => {
+test("a completed non-first Auto-research row opens its exact episode", () => {
   const entry = run({
+    episode_id: "episode-completed-older",
     project_id: "project-b",
     mode: "auto_research",
     title: "Auto-research",
     experiment_id: null,
+    started_at: "2026-09-01T09:00:00Z",
+    last_activity_at: "2026-09-02T12:10:00Z",
+    health_label: "Completed",
+    health_tone: "completed",
+    run_section: "completed",
   });
   const route = spaceRunRouteToken(entry);
+  const href = experimentBoardHref(entry.project_id, route);
+  const opened = [];
+  const row = SpaceRunRow({
+    entry,
+    onOpen(projectId, selection) {
+      opened.push([projectId, selection]);
+    },
+  });
+  React.Children.only(row.props.children).props.onClick();
 
-  assert.equal(experimentBoardHref(entry.project_id, route), "#/projects/project-b?view=runs");
+  assert.equal(
+    href,
+    "#/projects/project-b?view=runs&mode=auto_research&episode=episode-completed-older",
+  );
+  assert.equal(parseProjectHash(href).autoResearchEpisodeId, "episode-completed-older");
+  assert.deepEqual(opened, [["project-b", route]]);
+  const html = renderToStaticMarkup(row);
+  assert.match(html, /dateTime="2026-09-01T09:00:00Z"/);
+  assert.doesNotMatch(html, /dateTime="2026-09-02T12:10:00Z"/);
 });

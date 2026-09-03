@@ -771,6 +771,7 @@ interface ExecutionProps {
   exactExperimentEntry?: ExperimentLoopIndexEntry | null;
   selectedExperimentId: string | null;
   focusExperimentId: string | null;
+  selectedAutoResearchEpisodeId?: string | null;
   runBusy: boolean;
   stopBusyId: string | null;
   watcherCheckBusyId: string | null;
@@ -808,6 +809,7 @@ export function ExecutionView({
   exactExperimentEntry = null,
   selectedExperimentId,
   focusExperimentId,
+  selectedAutoResearchEpisodeId = null,
   runBusy,
   stopBusyId,
   watcherCheckBusyId,
@@ -894,7 +896,14 @@ export function ExecutionView({
             <span>{needsAction.length}</span>
           </header>
           <div className="campaign-run-list">
-            {needsAction.map((episode, index) => renderEpisodeCard(episode, index === 0))}
+            {needsAction.map((episode, index) =>
+              renderEpisodeCard(
+                episode,
+                selectedAutoResearchEpisodeId
+                  ? episode.episode_id === selectedAutoResearchEpisodeId
+                  : index === 0,
+              ),
+            )}
           </div>
         </section>
         <section className="operating-section episode-ledger-section completed">
@@ -904,13 +913,26 @@ export function ExecutionView({
           </header>
           <div className="episode-type-groups">
             {completedGroups.map((group) => (
-              <details className="episode-type-group" key={group.mode}>
+              <details
+                className="episode-type-group"
+                open={
+                  group.episodes.some(
+                    (episode) => episode.episode_id === selectedAutoResearchEpisodeId,
+                  ) || undefined
+                }
+                key={`${group.mode}:${selectedAutoResearchEpisodeId ?? ""}`}
+              >
                 <summary>
                   <strong>{group.title}</strong>
                   <span>{group.episodes.length}</span>
                 </summary>
                 <div className="campaign-run-list">
-                  {group.episodes.map((episode) => renderEpisodeCard(episode, false))}
+                  {group.episodes.map((episode) =>
+                    renderEpisodeCard(
+                      episode,
+                      episode.episode_id === selectedAutoResearchEpisodeId,
+                    ),
+                  )}
                 </div>
               </details>
             ))}
@@ -927,6 +949,7 @@ export function ExecutionView({
           episode={episode}
           messages={episodeMessages[episode.episode_id] ?? []}
           initiallyExpanded={initiallyExpanded}
+          selected={episode.episode_id === selectedAutoResearchEpisodeId}
           busyAction={episodeAction}
           taskActionId={taskActionId}
           onInspectTask={onInspectTask}

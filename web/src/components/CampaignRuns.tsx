@@ -29,6 +29,7 @@ export function AutoResearchEpisodeCard({
   episode,
   messages,
   initiallyExpanded,
+  selected = false,
   busyAction,
   taskActionId,
   onInspectTask,
@@ -42,6 +43,7 @@ export function AutoResearchEpisodeCard({
   episode: Episode;
   messages: EpisodeMessage[];
   initiallyExpanded: boolean;
+  selected?: boolean;
   busyAction: string | null;
   taskActionId: string | null;
   onInspectTask: (operationId: string) => void;
@@ -87,6 +89,10 @@ export function AutoResearchEpisodeCard({
       setLocalError(error instanceof Error ? error.message : String(error));
     });
   }, [episode.episode_id, expanded, onLoadMessages]);
+
+  useEffect(() => {
+    if (initiallyExpanded) setExpanded(true);
+  }, [initiallyExpanded]);
 
   useEffect(() => {
     if (episode.can_reauthorize) setExpanded(true);
@@ -136,7 +142,11 @@ export function AutoResearchEpisodeCard({
   };
 
   return (
-    <article className={`campaign-run ${projection.health}`}>
+    <article
+      className={`campaign-run ${projection.health}`}
+      data-episode-id={episode.episode_id}
+      data-selected={selected || undefined}
+    >
       <span className="campaign-state-rail" aria-hidden="true" />
       <div className="campaign-run-heading">
         <button

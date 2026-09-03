@@ -15,6 +15,7 @@ export interface ProjectHashRoute {
   projectViewSpecified: boolean;
   experimentId: string | null;
   experimentRoute: ExperimentRouteIdentity | null;
+  autoResearchEpisodeId: string | null;
 }
 
 export interface ExperimentRouteIdentity {
@@ -33,7 +34,7 @@ export interface ExperimentExecutionProjection {
 }
 
 const INDEX_ROUTE_PREFIX = "rcp-index:";
-const RUNS_ROUTE_TOKEN = "rcp-runs";
+const AUTO_RESEARCH_ROUTE_PREFIX = "rcp-auto-research:";
 
 export function experimentTerminalLabel(status: unknown): string {
   if (status === "completed") return "Succeeded";
@@ -47,7 +48,10 @@ export function experimentBoardRouteToken(entry: ExperimentLoopIndexEntry): stri
 }
 
 export function spaceRunRouteToken(entry: SpaceRunIndexEntry): string {
-  if (!entry.experiment_id) return RUNS_ROUTE_TOKEN;
+  if (entry.mode === "auto_research") {
+    return `${AUTO_RESEARCH_ROUTE_PREFIX}${entry.episode_id}`;
+  }
+  if (!entry.experiment_id) return "";
   return `${INDEX_ROUTE_PREFIX}${JSON.stringify({
     experiment_id: entry.experiment_id,
     episode_id: entry.episode_id,
@@ -57,8 +61,11 @@ export function spaceRunRouteToken(entry: SpaceRunIndexEntry): string {
 }
 
 export function experimentBoardHref(projectId: string, experimentSelection: string): string {
-  if (experimentSelection === RUNS_ROUTE_TOKEN) {
-    return `#/projects/${encodeURIComponent(projectId)}?view=runs`;
+  if (experimentSelection.startsWith(AUTO_RESEARCH_ROUTE_PREFIX)) {
+    const episodeId = experimentSelection.slice(AUTO_RESEARCH_ROUTE_PREFIX.length);
+    return episodeId
+      ? `#/projects/${encodeURIComponent(projectId)}?view=runs&mode=auto_research&episode=${encodeURIComponent(episodeId)}`
+      : `#/projects/${encodeURIComponent(projectId)}?view=runs`;
   }
   const route = experimentRouteFromToken(experimentSelection);
   if (experimentSelection.startsWith(INDEX_ROUTE_PREFIX) && !route) {
@@ -95,6 +102,7 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
       projectViewSpecified: false,
       experimentId: null,
       experimentRoute: null,
+      autoResearchEpisodeId: null,
     };
   }
   let projectId: string;
@@ -107,6 +115,7 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
       projectViewSpecified: false,
       experimentId: null,
       experimentRoute: null,
+      autoResearchEpisodeId: null,
     };
   }
   const params = new URLSearchParams(queryStart === -1 ? "" : hash.slice(queryStart + 1));
@@ -117,16 +126,19 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
       projectViewSpecified: params.has("view"),
       experimentId: null,
       experimentRoute: null,
+      autoResearchEpisodeId: null,
     };
   }
   const encodedExperiment = params.get("experiment");
   if (!encodedExperiment) {
+    const autoResearchEpisodeId = autoResearchEpisodeFromParams(params);
     return {
       projectId,
       view: "execution",
       projectViewSpecified: true,
       experimentId: null,
       experimentRoute: null,
+      autoResearchEpisodeId,
     };
   }
   const experimentRoute = experimentRouteFromParams(encodedExperiment, params);
@@ -137,6 +149,7 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
       projectViewSpecified: true,
       experimentId: null,
       experimentRoute: null,
+      autoResearchEpisodeId: null,
     };
   }
   return {
@@ -145,6 +158,7 @@ export function parseProjectHash(hash: string): ProjectHashRoute {
     projectViewSpecified: true,
     experimentId: encodedExperiment,
     experimentRoute,
+    autoResearchEpisodeId: null,
   };
 }
 
@@ -311,6 +325,21 @@ function experimentRouteFromParams(
     };
   }
   return null;
+}
+
+function autoResearchEpisodeFromParams(params: URLSearchParams): string | null {
+  if (params.get("mode") !== "auto_research") return null;
+  const episodeId = params.get("episode");
+  if (
+    !episodeId ||
+    params.has("experiment") ||
+    params.has("target") ||
+    params.has("branch") ||
+    params.has("parent")
+  ) {
+    return null;
+  }
+  return episodeId;
 }
 
 function parseExperimentRouteIdentity(candidate: unknown): ExperimentRouteIdentity | null {

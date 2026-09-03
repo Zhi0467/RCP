@@ -210,6 +210,7 @@ test("experiment links round-trip through the project hash parser", () => {
     projectViewSpecified: true,
     experimentId: "experiment/alpha beta",
     experimentRoute: null,
+    autoResearchEpisodeId: null,
   });
   assert.deepEqual(parseProjectHash("#/projects/remote%20project%2Fone"), {
     projectId: "remote project/one",
@@ -217,6 +218,7 @@ test("experiment links round-trip through the project hash parser", () => {
     projectViewSpecified: false,
     experimentId: null,
     experimentRoute: null,
+    autoResearchEpisodeId: null,
   });
   assert.deepEqual(parseProjectHash("#/projects/new"), {
     projectId: null,
@@ -224,6 +226,7 @@ test("experiment links round-trip through the project hash parser", () => {
     projectViewSpecified: false,
     experimentId: null,
     experimentRoute: null,
+    autoResearchEpisodeId: null,
   });
   assert.equal(projectHashAfterViewChange(href, "overview"), "#/projects/remote%20project%2Fone");
   assert.equal(projectHashAfterViewChange(href, "execution"), null);
@@ -661,6 +664,7 @@ test("partial branch identity fails closed instead of selecting the same id on m
       projectViewSpecified: true,
       experimentId: null,
       experimentRoute: null,
+      autoResearchEpisodeId: null,
     },
   );
 });

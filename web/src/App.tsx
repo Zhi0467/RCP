@@ -718,6 +718,7 @@ export default function App() {
     selectedExperimentRunId,
     focusExperimentRunId,
     selectedExperimentRoute,
+    selectedAutoResearchEpisodeId,
     experimentStopId,
     watcherCheckId,
     dockedNodeIds,
@@ -750,6 +751,7 @@ export default function App() {
     initialView: initialRoute.project.view,
     initialExperimentId: initialRoute.project.experimentId,
     initialExperimentRoute: initialRoute.project.experimentRoute,
+    initialAutoResearchEpisodeId: initialRoute.project.autoResearchEpisodeId,
     projectId,
     loadedProjectId: project?.id ?? null,
     loading,
@@ -939,6 +941,7 @@ export default function App() {
         selectedExperimentRunId,
         focusExperimentRunId,
         selectedExperimentRoute,
+        selectedAutoResearchEpisodeId,
         dockedNodeIds,
         ...chatStateSnapshot,
         dagRelationFocusId,
@@ -1506,7 +1509,12 @@ export default function App() {
         rememberProjectState(activeId);
       }
       applyHashRoute(route.projectId, isSetupRoute());
-      applyRouteSelection(route.view, route.experimentId, route.experimentRoute);
+      applyRouteSelection(
+        route.view,
+        route.experimentId,
+        route.experimentRoute,
+        route.autoResearchEpisodeId,
+      );
     };
     window.addEventListener("hashchange", handleHashChange);
     return () => window.removeEventListener("hashchange", handleHashChange);
@@ -1547,6 +1555,7 @@ export default function App() {
         routeMatchesProject ? requestedRoute.view : "overview",
         routeMatchesProject ? requestedRoute.experimentId : null,
         routeMatchesProject ? requestedRoute.experimentRoute : null,
+        routeMatchesProject ? requestedRoute.autoResearchEpisodeId : null,
       );
       resetProjectChats();
       resetProjectTasks();
@@ -3598,6 +3607,7 @@ export default function App() {
                 exactExperimentEntry={selectedBranchExperiment}
                 selectedExperimentId={selectedExperimentRunId}
                 focusExperimentId={focusExperimentRunId}
+                selectedAutoResearchEpisodeId={selectedAutoResearchEpisodeId}
                 runBusy={taskStarting}
                 stopBusyId={experimentStopId}
                 watcherCheckBusyId={watcherCheckId}

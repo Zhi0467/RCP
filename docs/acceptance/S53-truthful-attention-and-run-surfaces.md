@@ -132,6 +132,8 @@ but task surfaces do not show an estimated progress bar, percentage, or ETA.
 - The space index Runs ledger mixes current Experiment-loop and Auto-research
   parents under the same Needs Action and folded Completed grammar, carries the
   owning project and exact Experiment route, and uses backend lifecycle answers.
+  Each Auto-research row likewise opens its exact durable episode, including a
+  completed or non-leading parent.
   Completed parents leave this space-only surface after seven days; episode
   records, project Runs, and project History remain unchanged.
 - Active, failed, succeeded, interrupted, and paused tasks show no progress bar,

@@ -110,6 +110,8 @@ chronological order; **Completed** folds by Experiment loop then Auto-research.
 The backend owns membership, lifecycle placement, health, project identity, and
 the exact Experiment route. The space ledger keeps completed parents for seven
 days, without deleting episode records or changing project Runs or History.
+Auto-research rows carry their exact episode identity into project Runs, so a
+completed or non-leading row opens that parent rather than the default card.
 
 The index header contains the compact current-human identity control. An unnamed
 personal owner sees **Sign in** as naming the durable local identity, not creating
