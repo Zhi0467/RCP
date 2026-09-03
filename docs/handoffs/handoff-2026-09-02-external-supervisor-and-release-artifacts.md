@@ -3,10 +3,12 @@
 Date: 2026-09-02
 Status: active, human-confirmed on 2026-09-02. Phase 0 is implemented: health
 reports build, commit, and the storage ledger head, and `rcp --version` and
-`rcp migrate --check` exist. Phase 1 is implemented pending its GitHub proof.
-The Phase 2 code half is implemented; the lab update from the public origin,
-source deploy-key revocation, the later removal pull request, and the
-fresh-install and old-archive proofs remain. The decisions are settled in
+`rcp migrate --check` exist. Phase 1 is implemented and its GitHub exit proof was
+observed on 2026-09-03 (receipts below). Phase 2 is implemented and the lab
+server completed the deploy-key-to-public transition on 2026-09-03, with the
+deploy key revoked and one key-free update proven (receipts below); the later
+removal pull request and the fresh-install and old-archive proofs remain. The
+decisions are settled in
 [the supervisor decision](../decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md)
 and repeated in the next section so this file stands alone. Phases 3 through 6
 wait for
@@ -127,13 +129,21 @@ Must not change: the wheel contents beyond the version string; the existing
 lint, pytest, old-data, and web jobs; `__version__` semantics for a source
 checkout.
 
-Pending GitHub exit proof after merge, requiring human action: land two merges
-within one minute and observe two downloadable builds with neither run
-cancelled; promote one build and observe a `stable` release whose downloaded
-assets verify byte-for-byte against the build manifest; dispatch the prune
-workflow in dry-run mode and observe that it lists only builds past the window.
-The base-version mismatch refusal is implemented and covered locally with its
-plain error message; none of the GitHub observations above is claimed yet.
+GitHub exit proof, observed 2026-09-03 (UTC):
+
+- Two merges landed twelve seconds apart (PR #17 at `3e8a98b`, 04:57:51; PR #16
+  at `974084f`, 04:58:03). Both `main` runs completed and published `build/290`
+  and `build/291`; neither run was cancelled.
+- `build/259` (`77e4c99`) was verified locally end to end: manifest hashes,
+  `check-promotion` accepting `v0.3.2` and refusing `v0.4.0`, the hashed lock
+  installed into a clean virtual environment, and the wheel served on a spare
+  port.
+- The human promoted `build/291` to `v0.3.2` (run 33717746929, 05:10). The
+  release targets the build commit, the `v0.3.2` tag resolves to `974084f`, and
+  the three downloaded assets are byte-identical to the `build/291` assets and
+  verify against the manifest. `v0.3.2` is the first `stable`.
+- The prune workflow dispatched in dry-run mode (run 33719387541, 05:34) listed
+  no stale builds, all being younger than thirty days, and deleted nothing.
 
 ### Phase 2 — public repository and protected `main`
 
@@ -153,14 +163,32 @@ and proven with one `rcp server update` from the public origin. Only then are th
 revoked. Until Phase 4, servers keep building from source; they simply fetch it
 from the public origin.
 
-Remaining human steps, in order:
+Lab receipts, 2026-09-03 (UTC), host `wth-gpu-01`, installation
+`624ec8e1-3e29-4024-9ddf-06176671aa2e`:
 
-1. The persistent lab server is migrated and proven with one `rcp server update`
-   from the public origin.
-2. The lab server's deploy key revoked.
-3. The `grant_needed` install pause, the `source_ed25519` key material, and the
+1. 05:20 `rcp server update` over the still-valid deploy key moved the server
+   from `accb589` to `9db6b41`; health showed `build: null`,
+   `schema_ledger_head: 5`.
+2. 05:24 the next `rcp server update` converged the source: config rewritten to
+   the public HTTPS origin with the same installation id, both `source_ed25519`
+   files removed, the checkout's `origin` rewritten, and the wizard named deploy
+   key `rcp-source:624ec8e1-…` for revocation. The same run fetched over HTTPS
+   and updated to `8dc68e1`. `server doctor` then reported `configured_origin`
+   `https://github.com/zhi0467/rcp.git`, `configured_authentication: public`,
+   `source_public_key_fingerprint: none`, release and source aligned, no problems.
+3. 05:29 the human deleted the GitHub deploy key; the repository has none.
+4. 05:30 `rcp server update` fetched over HTTPS with no key and no grant prompt
+   (`FETCH_HEAD` 05:30:22) and reported already current.
+
+Enforcement record: `main` protection requires the five CI jobs, includes
+administrators, and forbids force pushes and deletion; PR #14 stayed `BLOCKED`
+while its pytest jobs were pending. A refused direct push has not been recorded.
+
+Remaining steps, in order:
+
+1. The `grant_needed` install pause, the `source_ed25519` key material, and the
    `rcp-source:<id>` backup label removed together in the later pull request.
-4. A fresh install on a disposable host with no deploy-key step; an old archive
+2. A fresh install on a disposable host with no deploy-key step; an old archive
    with the label still restores.
 
 Owner files: `src/rcp/server_ops/install.py`, `src/rcp/server_ops/config.py`,
