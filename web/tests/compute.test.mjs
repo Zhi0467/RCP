@@ -76,6 +76,17 @@ test("Settings masks stale compute status and requires Save before Probe", () =>
   assert.match(source, /readinessRequest\?\.pending\s*\|\|\s*computeConfigurationIsDirty/);
 });
 
+test("resolving a provider path preserves the current compute status", () => {
+  const source = readFileSync(new URL("../src/views/ProjectSettings.tsx", import.meta.url), "utf8");
+  const resolveProviderPath = source.slice(
+    source.indexOf("const resolveProviderPath"),
+    source.indexOf("const clearCaches"),
+  );
+
+  assert.match(resolveProviderPath, /compute_status:\s*project\.compute_status/);
+  assert.match(resolveProviderPath, /onSaved\(resolvedProject, false\)/);
+});
+
 test("compute controls introduce no sub-10px primary or status text", () => {
   const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
   const composer = styles.slice(

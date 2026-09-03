@@ -4,6 +4,7 @@ import asyncio
 import json
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -753,6 +754,90 @@ def test_loaded_project_compute_readiness_probes_only_on_refresh_and_invalidates
     assert still_empty.status_code == 200
     assert still_empty.json()["compute_status"] == {}
     assert failed_refreshes == ["alice@gpu-2.example"]
+
+
+def test_stale_compute_refresh_does_not_overwrite_fresher_status(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    catalog = app.state.catalog
+    project_id = app.state.default_project_id
+    before = client.get(f"/api/projects/{project_id}").json()
+    body = {
+        "default_run_truth_scope": before["default_run_truth_scope"],
+        "agent_profiles": {
+            surface: {
+                key: profile[key] for key in ("provider", "runtime", "model", "reasoning", "run_on")
+            }
+            for surface, profile in before["agent_profiles"].items()
+        },
+    }
+    old_connection = {
+        "id": "gpu",
+        "name": "GPU VM",
+        "kind": "ssh",
+        "ssh_target": "alice@old-gpu.example",
+        "access_hint": "",
+    }
+    saved = client.put(
+        f"/api/projects/{project_id}/settings",
+        json={**body, "compute_connections": [old_connection]},
+    )
+    assert saved.status_code == 200
+    stale_manifest = app.state.service.manifest
+
+    stale_waiting = threading.Barrier(2)
+    fresh_stored = threading.Barrier(2)
+    refresh_kind = threading.local()
+
+    class OrderedProbeLock:
+        def __enter__(self):
+            if getattr(refresh_kind, "value", None) == "stale":
+                stale_waiting.wait(timeout=5)
+                fresh_stored.wait(timeout=5)
+            return self
+
+        def __exit__(self, *_args):
+            if getattr(refresh_kind, "value", None) == "fresh":
+                fresh_stored.wait(timeout=5)
+
+    catalog._compute_probe_locks[project_id] = OrderedProbeLock()
+    statuses = {
+        "alice@old-gpu.example": {"laptop": {"gpu": {"status_label": "Old"}}},
+        "alice@new-gpu.example": {"laptop": {"gpu": {"status_label": "Fresh"}}},
+    }
+    probe_order: list[str] = []
+
+    def probe(probed_manifest):
+        target = probed_manifest.compute_connections[0].ssh_target
+        probe_order.append(target)
+        return statuses[target]
+
+    def refresh(probed_manifest, kind):
+        refresh_kind.value = kind
+        return catalog._compute_status_snapshot(project_id, probed_manifest, refresh=True)
+
+    monkeypatch.setattr("rcp.projects.probe_compute_connections", probe)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        stale = pool.submit(refresh, stale_manifest, "stale")
+        stale_waiting.wait(timeout=5)
+        new_connection = {**old_connection, "ssh_target": "alice@new-gpu.example"}
+        changed = client.put(
+            f"/api/projects/{project_id}/settings",
+            json={**body, "compute_connections": [new_connection]},
+        )
+        assert changed.status_code == 200
+        current_manifest = app.state.service.manifest
+        fresh = pool.submit(refresh, current_manifest, "fresh")
+
+        assert fresh.result(timeout=5) == statuses["alice@new-gpu.example"]
+        assert stale.result(timeout=5) == statuses["alice@old-gpu.example"]
+
+    cached = catalog._compute_status_snapshot(project_id, current_manifest, refresh=False)
+
+    assert probe_order == ["alice@new-gpu.example", "alice@old-gpu.example"]
+    assert cached == statuses["alice@new-gpu.example"]
 
 
 def test_project_settings_reject_too_many_compute_connections_before_persistence(

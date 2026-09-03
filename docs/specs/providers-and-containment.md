@@ -255,10 +255,12 @@ selected by an agent execution profile. Readiness is therefore keyed by
 `(agent execution machine, compute connection)`, not stored as one global fact.
 SSH probes use the ordinary OpenSSH credentials already configured for the
 execution account, batch mode, a bounded connection timeout, and strict host-key
-checking. Results distinguish reachable, unreachable, authentication failure,
-and host-key failure. An authentication or host-key action names the exact agent
-machine on which the operator must repair ordinary SSH state. RCP has no key or
-password field and never imports, stores, stages, or transmits those credentials.
+checking. Strict host-key probes use a direct OpenSSH transport with connection
+sharing disabled, so an existing multiplexed master cannot bypass the check.
+Results distinguish reachable, unreachable, authentication failure, and host-key
+failure. An authentication or host-key action names the exact agent machine on
+which the operator must repair ordinary SSH state. RCP has no key or password field
+and never imports, stores, stages, or transmits those credentials.
 Only explicit readiness refresh runs these SSH probes. Normal readiness polling
 returns the last authoritative matrix without network work, and any connection
 or execution-binding change invalidates that matrix. Probe diagnostics cross one

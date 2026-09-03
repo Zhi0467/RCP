@@ -749,6 +749,7 @@ class ProjectCatalog:
         self._compute_status_cache: dict[
             str, tuple[ComputeProbeCacheKey, dict[str, dict[str, dict[str, object]]]]
         ] = {}
+        self._compute_probe_generations: dict[str, int] = {}
         self._compute_probe_locks: dict[str, threading.Lock] = {}
         self._registration_lock = threading.Lock()
         self._project_aliases = self.store.project_aliases()
@@ -1352,6 +1353,7 @@ class ProjectCatalog:
                 self._cached_snapshot_patch_heads,
                 self._candidate_snapshot_patch_heads,
                 self._compute_status_cache,
+                self._compute_probe_generations,
             ):
                 if old_project_id not in mapping:
                     continue
@@ -1634,8 +1636,9 @@ class ProjectCatalog:
     ) -> dict[str, object]:
         """Run compute probes only for an explicit refresh; otherwise reuse the last matrix."""
 
-        key = compute_probe_cache_key(manifest)
         with self._services_lock:
+            key = compute_probe_cache_key(manifest)
+            generation = self._compute_probe_generations.get(project_id, 0)
             lock = self._compute_probe_locks.setdefault(project_id, threading.Lock())
         with lock:
             with self._services_lock:
@@ -1644,7 +1647,8 @@ class ProjectCatalog:
             if refresh:
                 status = probe_compute_connections(manifest)
                 with self._services_lock:
-                    self._compute_status_cache[project_id] = (key, status)
+                    if self._compute_probe_generations.get(project_id, 0) == generation:
+                        self._compute_status_cache[project_id] = (key, status)
             elif cached is not None and cached[0] != key:
                 with self._services_lock:
                     self._compute_status_cache.pop(project_id, None)
@@ -1724,6 +1728,7 @@ class ProjectCatalog:
                 self._cached_snapshot_patch_heads.pop(project_id, None)
                 self._candidate_snapshot_patch_heads.pop(project_id, None)
                 self._compute_status_cache.pop(project_id, None)
+                self._compute_probe_generations.pop(project_id, None)
                 self._compute_probe_locks.pop(project_id, None)
                 database_records = self.store.delete_project_records(project_id)
             return ProjectDeletionResult(
@@ -2221,6 +2226,9 @@ class ProjectCatalog:
         if compute_probe_cache_key(service.manifest) != prior_compute_key:
             with self._services_lock:
                 self._compute_status_cache.pop(project_id, None)
+                self._compute_probe_generations[project_id] = (
+                    self._compute_probe_generations.get(project_id, 0) + 1
+                )
         self._persist_bootstrap_locator(project_id, service)
         snapshot = _snapshot_payload(service.project_snapshot())
         self._stamp_snapshot_identity(snapshot, project_id)

@@ -437,6 +437,7 @@ export function ProjectSettings({
       const coachMachine = project.agent_profiles.paper_coach.run_on;
       const resolvedProject: ProjectSnapshot = {
         ...result.project,
+        compute_status: project.compute_status,
         provider_readiness: {
           ...project.provider_readiness,
           [result.machine]: {

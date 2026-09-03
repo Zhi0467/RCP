@@ -64,6 +64,9 @@ def probe_connection(
             "ConnectionAttempts=1",
             "-o",
             "StrictHostKeyChecking=yes",
+            # OpenSSH documents ``-S none`` as disabling connection sharing.
+            "-S",
+            "none",
             ssh_target,
             "true",
         ],
