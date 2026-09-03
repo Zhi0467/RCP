@@ -133,6 +133,17 @@ export function exactRunExperimentSelectionHref(
   return selectedExperimentHref(projectId, experimentId, exactExperimentRoute);
 }
 
+// A started or reauthorized episode replaces an exact Auto-research selection; a Runs view that
+// was not opened by exact episode keeps whatever it was already showing.
+export function exactAutoResearchEpisodeHref(
+  projectId: string | null,
+  episodeId: string | null,
+  exactAutoResearchEpisodeId: string | null,
+): string | null {
+  if (!projectId || !episodeId || !exactAutoResearchEpisodeId) return null;
+  return experimentBoardHref(projectId, `${AUTO_RESEARCH_ROUTE_PREFIX}${episodeId}`);
+}
+
 export function parseProjectHash(hash: string): ProjectHashRoute {
   const queryStart = hash.indexOf("?");
   const pathname = queryStart === -1 ? hash : hash.slice(0, queryStart);

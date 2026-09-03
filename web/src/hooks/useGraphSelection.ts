@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import {
+  exactAutoResearchEpisodeHref,
   exactRunExperimentSelectionHref,
   projectHashAfterViewChange,
   type ExperimentRouteIdentity,
@@ -421,6 +422,24 @@ export function useGraphSelection({
     },
     [projectId, selectedAutoResearchEpisodeId, selectedExperimentRoute],
   );
+  const replaceExactAutoResearchSelection = useCallback(
+    (episodeId: string) => {
+      const replacementHref = exactAutoResearchEpisodeHref(
+        projectId,
+        episodeId,
+        selectedAutoResearchEpisodeId,
+      );
+      if (!replacementHref) return;
+      window.history.replaceState(null, "", replacementHref);
+      dispatchExperimentSelection({
+        kind: "route",
+        experimentId: null,
+        experimentRoute: null,
+        autoResearchEpisodeId: episodeId,
+      });
+    },
+    [projectId, selectedAutoResearchEpisodeId],
+  );
   const selectExperiment = useCallback(
     (nodeId: string | null) => {
       replaceExactRunExperimentSelection(nodeId, "select");
@@ -503,6 +522,7 @@ export function useGraphSelection({
     clearNodeSelections,
     dockNode,
     restoreDockedNode,
+    replaceExactAutoResearchSelection,
     selectExperiment,
     clearExperimentFocus,
     showExperiment,
