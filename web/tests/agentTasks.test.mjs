@@ -50,6 +50,7 @@ function artifact(overrides = {}) {
     can_open: true,
     can_download: true,
     can_keep: true,
+    can_discuss: true,
     can_revise: true,
     ...overrides,
   };

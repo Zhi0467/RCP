@@ -106,6 +106,7 @@ class AgentArtifactResponse(AgentArtifactDescriptor):
     can_open: bool
     can_download: bool
     can_keep: bool
+    can_discuss: bool
     can_revise: bool
     revision_candidate: ArtifactRevisionCandidateResponse | None
 
@@ -142,6 +143,12 @@ def _agent_artifact_response(
         record.operation_id,
         descriptor.artifact_id,
     )
+    can_discuss = (
+        available
+        and not record.history_only
+        and bool(record.native_session_id)
+        and bool(record.stage_root)
+    )
     return AgentArtifactResponse(
         **descriptor.model_dump(mode="python"),
         available=available,
@@ -149,13 +156,8 @@ def _agent_artifact_response(
         can_open=available,
         can_download=available,
         can_keep=available and not kept and not record.history_only,
-        can_revise=(
-            available
-            and not record.history_only
-            and bool(record.native_session_id)
-            and bool(record.stage_root)
-            and revision_candidate is None
-        ),
+        can_discuss=can_discuss,
+        can_revise=can_discuss and revision_candidate is None,
         revision_candidate=(
             _artifact_revision_candidate_response(revision_candidate)
             if revision_candidate is not None
@@ -541,7 +543,7 @@ async def _artifact_viewer_response(
         preview_url=content_url,
         keep_url=keep_url,
         project_id=project_id,
-        chat_id=chat_id if descriptor.can_revise else None,
+        chat_id=chat_id if descriptor.can_discuss else None,
         operation_id=operation_id,
         descriptor=descriptor,
     )
@@ -718,34 +720,33 @@ def accept_artifact_revision_candidate(
             )
             raise HTTPException(status_code=409, detail=conflicted.diagnostic) from exc
         current_sha256 = hashlib.sha256(current_data).hexdigest()
-        if current_sha256 != candidate.candidate_sha256:
-            if current_sha256 != candidate.base_sha256:
-                conflicted = store.conflict_artifact_revision_candidate(
-                    candidate_id,
-                    "The current artifact changed after this candidate was produced.",
-                )
-                raise HTTPException(status_code=409, detail=conflicted.diagnostic)
-            try:
-                replaced = _replace_agent_artifact_bytes(
-                    store,
-                    service.history.workspace,
-                    candidate.source_operation_id,
-                    source,
-                    candidate_data,
-                    expected_sha256=candidate.base_sha256,
-                )
-            except (FileNotFoundError, OSError, StateUnavailable, ValueError) as exc:
-                store.reset_artifact_revision_acceptance(candidate_id)
-                raise HTTPException(
-                    status_code=503,
-                    detail="Artifact revision publication failed; retry Accept.",
-                ) from exc
-            if not replaced:
-                conflicted = store.conflict_artifact_revision_candidate(
-                    candidate_id,
-                    "The current artifact changed while this candidate was being accepted.",
-                )
-                raise HTTPException(status_code=409, detail=conflicted.diagnostic)
+        if current_sha256 not in {candidate.base_sha256, candidate.candidate_sha256}:
+            conflicted = store.conflict_artifact_revision_candidate(
+                candidate_id,
+                "The current artifact changed after this candidate was produced.",
+            )
+            raise HTTPException(status_code=409, detail=conflicted.diagnostic)
+        try:
+            replaced = _replace_agent_artifact_bytes(
+                store,
+                service.history.workspace,
+                candidate.source_operation_id,
+                source,
+                candidate_data,
+                expected_sha256=current_sha256,
+            )
+        except (FileNotFoundError, OSError, StateUnavailable, ValueError) as exc:
+            store.reset_artifact_revision_acceptance(candidate_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Artifact revision publication failed; retry Accept.",
+            ) from exc
+        if not replaced:
+            conflicted = store.conflict_artifact_revision_candidate(
+                candidate_id,
+                "The current artifact changed while this candidate was being accepted.",
+            )
+            raise HTTPException(status_code=409, detail=conflicted.diagnostic)
         try:
             accepted = store.complete_artifact_revision_acceptance(candidate_id)
         except ArtifactRevisionConflict as exc:
@@ -1096,11 +1097,15 @@ def _replace_agent_artifact_bytes(
             expected_sha256=expected_sha256,
         )
     elif record.stage_root:
+        recovery_key = hashlib.sha256(f"{record.stage_root}\0{scope_id}".encode()).hexdigest()[:32]
         return replace_local_regular_file(
             _local_chat_artifact_directory(store, record, scope_id),
             descriptor.name,
             data,
             expected_sha256=expected_sha256,
+            recovery_directory=(
+                Path(record.stage_root) / "inputs" / ".artifact-replacements" / recovery_key
+            ),
         )
     else:
         raise FileNotFoundError(descriptor.name)

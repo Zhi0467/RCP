@@ -1,18 +1,16 @@
-"""Advisory-lock holder for the canonical state repository.
+"""Remote canonical lock holder and task-artifact replacement entry point.
 
-RCP ships this module's *own source* to the execution machine and runs it with
-``python -c``; nothing in RCP imports it. Keeping it a real module instead of a
-string literal is what lets ruff, the formatter, and ``tests/test_remote_scripts.py``
-see it — a hand-transcribed copy is the copy that rots.
+RCP ships this module with the shared artifact-replacement helper prepended and
+runs the result with ``python -c``. Keeping the executable source in real modules
+lets ruff, the formatter, and ``tests/test_remote_scripts.py`` see it.
 
-Protocol. ``argv[1]`` is the lock path. The holder prints one status word on
+Lock protocol. ``argv[1]`` is the lock path. The holder prints one status word on
 stdout — ``legacy-directory``, ``unsafe-entry``, or ``error`` and exits, or
 ``contended`` followed by ``acquired`` once the wait finishes. It then reads one
 JSON command per line from stdin and prints one JSON response per line, holding
-the lock for as long as stdin stays open.
+the lock for as long as stdin stays open. ``replace-run-artifact`` is instead a
+one-shot command for task scratch, which has its own per-artifact mutation owner.
 """
-
-from __future__ import annotations
 
 import contextlib
 import fcntl
@@ -25,6 +23,9 @@ import stat
 import sys
 import uuid
 from pathlib import Path
+
+if "replace_regular_file_in_open_directory" not in globals():
+    from rcp.artifact_replace import replace_regular_file_in_open_directory
 
 
 def relative_path(value: str) -> Path:
@@ -163,6 +164,16 @@ def _fd_digest(descriptor: int) -> tuple[str, int]:
         size += len(chunk)
     os.lseek(descriptor, 0, os.SEEK_SET)
     return digest.hexdigest(), size
+
+
+def _open_owned_recovery_directory(parent_fd: int, name: str) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    except FileExistsError:
+        pass
+    return os.open(name, flags, dir_fd=parent_fd)
 
 
 def restore_exact(command: dict, lock_path: str) -> dict:
@@ -467,99 +478,51 @@ def replace_staged_artifact(command: dict, lock_path: str) -> dict:
             source_info = os.fstat(source_fd)
             if not stat.S_ISREG(source_info.st_mode) or source_info.st_size > 16 * 1024 * 1024:
                 raise ValueError("staged artifact is invalid or too large")
+            chunks: list[bytes] = []
+            remaining = 16 * 1024 * 1024 + 1
+            while remaining > 0:
+                chunk = os.read(source_fd, min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            if len(data) != source_info.st_size:
+                raise ValueError("staged artifact changed while being read")
             repository_fd = os.open(root.parent, directory_flags)
             try:
                 artifacts_fd = os.open("artifacts", directory_flags, dir_fd=repository_fd)
                 try:
-                    temporary = f".{name}.{stage.name}"
-                    target_fd = os.open(
-                        temporary,
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                        0o644,
-                        dir_fd=artifacts_fd,
-                    )
+                    research_fd = os.open(root, directory_flags)
                     try:
-                        bytes_left = 16 * 1024 * 1024
-                        while True:
-                            chunk = os.read(source_fd, min(1024 * 1024, bytes_left + 1))
-                            if not chunk:
-                                break
-                            if len(chunk) > bytes_left:
-                                raise ValueError("staged artifact exceeds the per-file limit")
-                            bytes_left -= len(chunk)
-                            remaining = memoryview(chunk)
-                            while remaining:
-                                written = os.write(target_fd, remaining)
-                                if written <= 0:
-                                    raise OSError("short artifact replacement write")
-                                remaining = remaining[written:]
-                        os.fsync(target_fd)
+                        publish_fd = os.open(".publish", directory_flags, dir_fd=research_fd)
+                        try:
+                            recovery_fd = _open_owned_recovery_directory(
+                                publish_fd, "artifact-replacements"
+                            )
+                            try:
+                                replaced = replace_regular_file_in_open_directory(
+                                    artifacts_fd,
+                                    recovery_fd,
+                                    name,
+                                    data,
+                                    expected_sha256=expected_sha256,
+                                    mode=0o644,
+                                )
+                            finally:
+                                os.close(recovery_fd)
+                        finally:
+                            os.close(publish_fd)
                     finally:
-                        os.close(target_fd)
-                    current_fd = os.open(
-                        name,
-                        os.O_RDONLY | os.O_NOFOLLOW,
-                        dir_fd=artifacts_fd,
-                    )
-                    try:
-                        target_info = os.fstat(current_fd)
-                        if not stat.S_ISREG(target_info.st_mode):
-                            raise ValueError("kept artifact is not a regular file")
-                        if expected_sha256 is not None:
-                            digest = hashlib.sha256()
-                            while True:
-                                chunk = os.read(current_fd, 1024 * 1024)
-                                if not chunk:
-                                    break
-                                digest.update(chunk)
-                            final_info = os.fstat(current_fd)
-                            path_info = os.stat(
-                                name,
-                                dir_fd=artifacts_fd,
-                                follow_symlinks=False,
-                            )
-                            opened_identity = (
-                                target_info.st_dev,
-                                target_info.st_ino,
-                                target_info.st_size,
-                                target_info.st_mtime_ns,
-                                target_info.st_ctime_ns,
-                            )
-                            final_identity = (
-                                final_info.st_dev,
-                                final_info.st_ino,
-                                final_info.st_size,
-                                final_info.st_mtime_ns,
-                                final_info.st_ctime_ns,
-                            )
-                            path_identity = (
-                                path_info.st_dev,
-                                path_info.st_ino,
-                                path_info.st_size,
-                                path_info.st_mtime_ns,
-                                path_info.st_ctime_ns,
-                            )
-                            if (
-                                digest.hexdigest() != expected_sha256
-                                or opened_identity != final_identity
-                                or final_identity != path_identity
-                            ):
-                                os.unlink(temporary, dir_fd=artifacts_fd)
-                                return {
-                                    "ok": False,
-                                    "conflict": True,
-                                    "error": "kept artifact digest changed",
-                                }
-                    finally:
-                        os.close(current_fd)
-                    os.replace(temporary, name, src_dir_fd=artifacts_fd, dst_dir_fd=artifacts_fd)
-                    os.fsync(artifacts_fd)
+                        os.close(research_fd)
+                    if not replaced:
+                        return {
+                            "ok": False,
+                            "conflict": True,
+                            "error": "kept artifact digest changed",
+                        }
                     os.fsync(repository_fd)
                     return {"ok": True, "name": name}
-                except BaseException:
-                    with contextlib.suppress(FileNotFoundError):
-                        os.unlink(temporary, dir_fd=artifacts_fd)
-                    raise
                 finally:
                     os.close(artifacts_fd)
             finally:
@@ -574,7 +537,64 @@ def replace_staged_artifact(command: dict, lock_path: str) -> dict:
             os.rmdir(stage)
 
 
+def replace_run_artifact() -> None:
+    if len(sys.argv) != 6:
+        raise ValueError("invalid run artifact replacement arguments")
+    root = Path(sys.argv[2])
+    scope, name, expected_sha256 = sys.argv[3:6]
+    expected = expected_sha256 or None
+    if (
+        not root.is_absolute()
+        or re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?", scope) is None
+        or Path(name).name != name
+        or name in {"", ".", ".."}
+        or (expected is not None and re.fullmatch(r"[0-9a-f]{64}", expected) is None)
+    ):
+        raise ValueError("invalid run artifact replacement path or digest")
+    data = sys.stdin.buffer.read(16 * 1024 * 1024 + 1)
+    if not 1 <= len(data) <= 16 * 1024 * 1024:
+        raise ValueError("run artifact replacement bytes are invalid or too large")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors: list[int] = []
+    try:
+        descriptor = os.open(root, flags)
+        descriptors.append(descriptor)
+        inputs_fd = os.open("inputs", flags, dir_fd=descriptor)
+        descriptors.append(inputs_fd)
+        recovery_root_fd = _open_owned_recovery_directory(inputs_fd, ".artifact-replacements")
+        descriptors.append(recovery_root_fd)
+        recovery_fd = _open_owned_recovery_directory(recovery_root_fd, scope)
+        descriptors.append(recovery_fd)
+        for part in ("workspace", "turns", scope, "artifacts"):
+            descriptor = os.open(part, flags, dir_fd=descriptor)
+            descriptors.append(descriptor)
+        if not replace_regular_file_in_open_directory(
+            descriptor,
+            recovery_fd,
+            name,
+            data,
+            expected_sha256=expected,
+            mode=0o600,
+        ):
+            raise SystemExit(46)
+    except SystemExit:
+        raise
+    except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(44) from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
 def main() -> None:
+    if sys.argv[1:2] == ["replace-run-artifact"]:
+        try:
+            replace_run_artifact()
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(44) from exc
+        return
     lock_path = sys.argv[1]
     try:
         mode = os.lstat(lock_path).st_mode

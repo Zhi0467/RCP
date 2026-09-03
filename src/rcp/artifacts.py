@@ -5,7 +5,6 @@ import html
 import json
 import os
 import re
-import secrets
 import stat
 import xml.etree.ElementTree as ET
 from contextlib import suppress
@@ -15,6 +14,8 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from rcp.artifact_replace import replace_regular_file_in_open_directory
 
 ArtifactMediaType = Literal[
     "text/html",
@@ -190,6 +191,7 @@ def replace_local_regular_file(
     data: bytes,
     *,
     expected_sha256: str | None = None,
+    recovery_directory: Path | None = None,
 ) -> bool:
     """Atomically replace one direct regular child if its digest is still expected."""
 
@@ -197,79 +199,29 @@ def replace_local_regular_file(
         raise ValueError("artifact name must be a plain base name")
     if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise ValueError("expected artifact digest is invalid")
+    if expected_sha256 is not None and recovery_directory is None:
+        raise ValueError("conditional artifact replacement requires an RCP recovery directory")
+    recovery_directory = recovery_directory or directory
+    recovery_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     directory_fd = _open_local_directory(directory)
-    temporary_name = f".{name}.rcp-{secrets.token_hex(8)}"
+    recovery_directory_fd = _open_local_directory(recovery_directory)
     try:
-        descriptor = os.open(
-            temporary_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-            dir_fd=directory_fd,
-        )
-        try:
-            remaining = memoryview(data)
-            while remaining:
-                written = os.write(descriptor, remaining)
-                if written <= 0:
-                    raise OSError("short artifact replacement write")
-                remaining = remaining[written:]
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        current_fd = os.open(
+        return replace_regular_file_in_open_directory(
+            directory_fd,
+            recovery_directory_fd,
             name,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-            dir_fd=directory_fd,
+            data,
+            expected_sha256=expected_sha256,
+            mode=0o600,
         )
-        try:
-            metadata = os.fstat(current_fd)
-            if not stat.S_ISREG(metadata.st_mode):
-                raise ValueError("artifact is not a regular file")
-            if expected_sha256 is not None:
-                digest = hashlib.sha256()
-                while chunk := os.read(current_fd, 1024 * 1024):
-                    digest.update(chunk)
-                final_metadata = os.fstat(current_fd)
-                path_metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                opened_identity = (
-                    metadata.st_dev,
-                    metadata.st_ino,
-                    metadata.st_size,
-                    metadata.st_mtime_ns,
-                    metadata.st_ctime_ns,
-                )
-                final_identity = (
-                    final_metadata.st_dev,
-                    final_metadata.st_ino,
-                    final_metadata.st_size,
-                    final_metadata.st_mtime_ns,
-                    final_metadata.st_ctime_ns,
-                )
-                path_identity = (
-                    path_metadata.st_dev,
-                    path_metadata.st_ino,
-                    path_metadata.st_size,
-                    path_metadata.st_mtime_ns,
-                    path_metadata.st_ctime_ns,
-                )
-                if (
-                    digest.hexdigest() != expected_sha256
-                    or opened_identity != final_identity
-                    or final_identity != path_identity
-                ):
-                    os.unlink(temporary_name, dir_fd=directory_fd)
-                    return False
-        finally:
-            os.close(current_fd)
-        os.replace(temporary_name, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
-        os.fsync(directory_fd)
-        return True
-    except BaseException:
-        with suppress(FileNotFoundError):
-            os.unlink(temporary_name, dir_fd=directory_fd)
-        raise
     finally:
+        os.close(recovery_directory_fd)
         os.close(directory_fd)
+        if recovery_directory != directory:
+            with suppress(OSError):
+                recovery_directory.rmdir()
+            with suppress(OSError):
+                recovery_directory.parent.rmdir()
 
 
 def _open_local_directory(directory: Path) -> int:

@@ -465,7 +465,7 @@ export function NodeChat({
       const sourceArtifact = source?.result?.artifacts?.find(
         (artifact) => artifact.artifact_id === payload.artifact_id,
       );
-      if (!source || (sourceKind === "task" && (!sourceArtifact || !sourceArtifact.can_revise)))
+      if (!source || (sourceKind === "task" && (!sourceArtifact || !sourceArtifact.can_discuss)))
         return;
       const signature = JSON.stringify(payload);
       if (lastArtifactContextRef.current === signature) return;

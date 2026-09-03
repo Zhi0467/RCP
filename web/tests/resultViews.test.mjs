@@ -121,7 +121,7 @@ test("artifact cards consume backend decisions and do not preflight disabled rou
   assert.match(nodeChatSource, /!artifact\.available && artifact\.unavailable_reason/);
   assert.match(nodeChatSource, /artifact\.can_open &&/);
   assert.match(nodeChatSource, /artifact\.can_download &&/);
-  assert.match(nodeChatSource, /!sourceArtifact\.can_revise/);
+  assert.match(nodeChatSource, /!sourceArtifact\.can_discuss/);
 });
 
 test("artifact revision disposition refreshes the backend-owned source task", () => {

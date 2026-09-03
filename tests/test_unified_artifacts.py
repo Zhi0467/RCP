@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 from fastapi.testclient import TestClient
 
+import rcp.artifact_replace as artifact_replace_module
 from rcp.agents import AgentProcessControl
 from rcp.agents.prompts import _chat_attachment_section
 from rcp.artifacts import (
@@ -391,6 +392,7 @@ def test_temporary_artifact_revision_checks_digest_after_staging(
     target = artifacts / "result.html"
     original = b"<p>original</p>"
     external = b"<p>external edit while staging</p>"
+    recovery = tmp_path / "recovery" / "turn-1"
     target.write_bytes(original)
     real_fsync = os.fsync
     staged = False
@@ -409,6 +411,156 @@ def test_temporary_artifact_revision_checks_digest_after_staging(
         target.name,
         b"<p>candidate</p>",
         expected_sha256=hashlib.sha256(original).hexdigest(),
+        recovery_directory=recovery,
+    )
+
+    assert replaced is False
+    assert target.read_bytes() == external
+    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
+
+
+def test_temporary_artifact_revision_preserves_an_edit_at_atomic_publication(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    target = artifacts / "result.html"
+    original = b"<p>original</p>"
+    external = b"<p>external edit in the former check-replace gap</p>"
+    recovery = tmp_path / "recovery" / "turn-1"
+    target.write_bytes(original)
+    exchange = artifact_replace_module.exchange_regular_files
+    injected = False
+
+    def save_then_exchange(
+        first_directory_fd: int,
+        first: str,
+        second_directory_fd: int,
+        second: str,
+    ) -> None:
+        nonlocal injected
+        if not injected:
+            injected = True
+            target.write_bytes(external)
+        exchange(first_directory_fd, first, second_directory_fd, second)
+
+    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", save_then_exchange)
+
+    replaced = replace_local_regular_file(
+        artifacts,
+        target.name,
+        b"<p>candidate</p>",
+        expected_sha256=hashlib.sha256(original).hexdigest(),
+        recovery_directory=recovery,
+    )
+
+    assert replaced is False
+    assert target.read_bytes() == external
+    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
+
+
+def test_temporary_artifact_revision_ignores_an_agent_planted_recovery_marker(
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    target = artifacts / "result.html"
+    original = b"<p>original</p>"
+    candidate = b"<p>accepted candidate</p>"
+    hostile = b"<p>unaccepted planted payload</p>"
+    target.write_bytes(original)
+    name_hash = hashlib.sha256(target.name.encode("utf-8")).hexdigest()[:24]
+    hostile_name = (
+        f".rcp-artifact-{name_hash}-{'a' * 64}-{hashlib.sha256(original).hexdigest()}-{'b' * 16}"
+    )
+    (artifacts / hostile_name).write_bytes(hostile)
+
+    replaced = replace_local_regular_file(
+        artifacts,
+        target.name,
+        candidate,
+        expected_sha256=hashlib.sha256(original).hexdigest(),
+        recovery_directory=tmp_path / "recovery" / "turn-1",
+    )
+
+    assert replaced is True
+    assert target.read_bytes() == candidate
+    assert (artifacts / hostile_name).read_bytes() == hostile
+
+
+def test_conditional_artifact_revision_refuses_agent_writable_recovery_state(
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    target = artifacts / "result.html"
+    original = b"<p>original</p>"
+    target.write_bytes(original)
+
+    with pytest.raises(ValueError, match="outside agent-writable output"):
+        replace_local_regular_file(
+            artifacts,
+            target.name,
+            b"<p>candidate</p>",
+            expected_sha256=hashlib.sha256(original).hexdigest(),
+            recovery_directory=artifacts,
+        )
+
+    assert target.read_bytes() == original
+
+
+def test_temporary_artifact_revision_recovers_a_crash_after_displacing_an_edit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    target = artifacts / "result.html"
+    original = b"<p>original</p>"
+    candidate = b"<p>candidate</p>"
+    external = b"<p>external edit preserved across retry</p>"
+    recovery = tmp_path / "recovery" / "turn-1"
+    target.write_bytes(original)
+    exchange = artifact_replace_module.exchange_regular_files
+    injected = False
+
+    def save_exchange_then_crash(
+        first_directory_fd: int,
+        first: str,
+        second_directory_fd: int,
+        second: str,
+    ) -> None:
+        nonlocal injected
+        if not injected:
+            injected = True
+            target.write_bytes(external)
+            exchange(first_directory_fd, first, second_directory_fd, second)
+            raise OSError("simulated interruption after publication")
+        exchange(first_directory_fd, first, second_directory_fd, second)
+
+    monkeypatch.setattr(
+        artifact_replace_module,
+        "exchange_regular_files",
+        save_exchange_then_crash,
+    )
+
+    with pytest.raises(OSError, match="simulated interruption"):
+        replace_local_regular_file(
+            artifacts,
+            target.name,
+            candidate,
+            expected_sha256=hashlib.sha256(original).hexdigest(),
+            recovery_directory=recovery,
+        )
+
+    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange)
+    replaced = replace_local_regular_file(
+        artifacts,
+        target.name,
+        candidate,
+        expected_sha256=hashlib.sha256(candidate).hexdigest(),
+        recovery_directory=recovery,
     )
 
     assert replaced is False
@@ -458,6 +610,7 @@ def test_remote_temporary_revision_checks_digest_after_stream_staging(
     scope_id = "turn-1"
     artifacts = root / "workspace" / "turns" / scope_id / "artifacts"
     artifacts.mkdir(parents=True)
+    (root / "inputs").mkdir()
     target = artifacts / "result.html"
     original = b"<p>original</p>"
     external = b"<p>external edit while staging</p>"
@@ -530,6 +683,57 @@ def test_remote_kept_revision_checks_digest_after_copy_staging(
             target.write_bytes(external)
 
     monkeypatch.setattr(os, "fsync", mutate_after_staging)
+
+    result = replace_staged_artifact(
+        {
+            "root": str(root),
+            "stage": str(stage),
+            "name": target.name,
+            "expected_sha256": hashlib.sha256(original).hexdigest(),
+        },
+        str(root / ".refresh.lock"),
+    )
+
+    assert result["ok"] is False
+    assert result["conflict"] is True
+    assert target.read_bytes() == external
+    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
+
+
+def test_remote_kept_revision_preserves_an_edit_at_atomic_publication(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "repository" / ".research"
+    stage = root / ".publish" / "artifact-1-1"
+    artifacts = root.parent / "artifacts"
+    stage.mkdir(parents=True)
+    artifacts.mkdir()
+    (stage / "content.bin").write_bytes(b"<p>candidate</p>")
+    target = artifacts / "result.html"
+    original = b"<p>original</p>"
+    external = b"<p>remote external edit in the former gap</p>"
+    target.write_bytes(original)
+    exchange = artifact_replace_module.exchange_regular_files
+    injected = False
+
+    def save_then_exchange(
+        first_directory_fd: int,
+        first: str,
+        second_directory_fd: int,
+        second: str,
+    ) -> None:
+        nonlocal injected
+        if not injected:
+            injected = True
+            target.write_bytes(external)
+        exchange(first_directory_fd, first, second_directory_fd, second)
+
+    monkeypatch.setattr(
+        artifact_replace_module,
+        "exchange_regular_files",
+        save_then_exchange,
+    )
 
     result = replace_staged_artifact(
         {
@@ -786,9 +990,17 @@ def test_work_revision_waits_for_human_accept_without_a_second_card(
 
     client = TestClient(app)
     detail = client.get(f"/api/projects/{project_id}/tasks/{origin_id}")
-    candidate = detail.json()["result"]["artifacts"][0]["revision_candidate"]
+    projected_artifact = detail.json()["result"]["artifacts"][0]
+    candidate = projected_artifact["revision_candidate"]
     assert candidate["candidate_id"] == pending.candidate_id
     assert candidate["can_accept"] is True
+    assert projected_artifact["can_discuss"] is True
+    assert projected_artifact["can_revise"] is False
+    viewer = client.get(
+        f"/api/projects/{project_id}/tasks/{origin_id}/artifacts/{source.artifact_id}/viewer"
+    )
+    assert viewer.status_code == 200
+    assert '"chatAvailable": true' in viewer.text
     preview = client.get(
         f"/api/projects/{project_id}/artifact-revisions/{pending.candidate_id}/content"
     )

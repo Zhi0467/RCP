@@ -23,7 +23,7 @@ from rcp.limits import (
 )
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
-from rcp.transport.state import StateUnavailable, _remote_script
+from rcp.transport.state import StateUnavailable, _remote_lock_holder_script, _remote_script
 
 _REMOTE_TREE_HELPERS = """\
 import os,shutil
@@ -1113,56 +1113,12 @@ finally:
             raise ValueError("artifact name must be a plain base name")
         if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
             raise ValueError("expected artifact digest is invalid")
-        script = """
-import hashlib,os,secrets,stat,sys
-root,scope,name,expected=sys.argv[1:5]
-flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
-fds=[]; temporary='.'+name+'.rcp-'+secrets.token_hex(8)
-try:
-    fd=os.open(root,flags); fds.append(fd)
-    for part in ('workspace','turns',scope,'artifacts'):
-        fd=os.open(part,flags,dir_fd=fd); fds.append(fd)
-    target=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0),0o600,dir_fd=fd)
-    fds.append(target)
-    while True:
-        chunk=sys.stdin.buffer.read(1024*1024)
-        if not chunk: break
-        remaining=memoryview(chunk)
-        while remaining:
-            written=os.write(target,remaining)
-            if written<=0: raise OSError('short artifact replacement write')
-            remaining=remaining[written:]
-    os.fsync(target); os.close(fds.pop())
-    current=os.open(name,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0),dir_fd=fd); fds.append(current)
-    info=os.fstat(current)
-    if not stat.S_ISREG(info.st_mode): raise ValueError('artifact is not a regular file')
-    if expected:
-        digest=hashlib.sha256()
-        while True:
-            chunk=os.read(current,1024*1024)
-            if not chunk: break
-            digest.update(chunk)
-        final_info=os.fstat(current)
-        path_info=os.stat(name,dir_fd=fd,follow_symlinks=False)
-        opened_identity=(info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
-        final_identity=(final_info.st_dev,final_info.st_ino,final_info.st_size,final_info.st_mtime_ns,final_info.st_ctime_ns)
-        path_identity=(path_info.st_dev,path_info.st_ino,path_info.st_size,path_info.st_mtime_ns,path_info.st_ctime_ns)
-        if digest.hexdigest()!=expected or opened_identity!=final_identity or final_identity!=path_identity:
-            os.unlink(temporary,dir_fd=fd); raise SystemExit(46)
-    os.close(fds.pop())
-    os.replace(temporary,name,src_dir_fd=fd,dst_dir_fd=fd); os.fsync(fd)
-except (FileNotFoundError,NotADirectoryError,OSError,ValueError) as exc:
-    try: os.unlink(temporary,dir_fd=fd)
-    except Exception: pass
-    print(str(exc),file=sys.stderr); raise SystemExit(44)
-finally:
-    for item in reversed(fds): os.close(item)
-"""
         result = self._ssh_bytes(
             [
                 "python3",
                 "-c",
-                script,
+                _remote_lock_holder_script(),
+                "replace-run-artifact",
                 str(self.root),
                 scope_id,
                 name,

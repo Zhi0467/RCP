@@ -1775,6 +1775,7 @@ export interface AgentArtifactDescriptor {
   can_open: boolean;
   can_download: boolean;
   can_keep: boolean;
+  can_discuss: boolean;
   can_revise: boolean;
   revision_candidate?: ArtifactRevisionCandidate | null;
 }

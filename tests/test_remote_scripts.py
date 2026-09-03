@@ -17,14 +17,17 @@ from pathlib import Path
 import pytest
 
 from rcp.transport.remote_read_kept_view import MISSING, TOO_LARGE, UNSAFE
-from rcp.transport.state import _remote_script
+from rcp.transport.state import _remote_lock_holder_script, _remote_script
 
 
 def run_script(name: str, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
     """Run a shipped script the way the execution machine runs it."""
 
+    source = (
+        _remote_lock_holder_script() if name == "remote_lock_holder.py" else _remote_script(name)
+    )
     return subprocess.run(
-        [sys.executable, "-c", _remote_script(name), *args],
+        [sys.executable, "-c", source, *args],
         input=stdin,
         capture_output=True,
         text=True,
@@ -42,6 +45,7 @@ def test_every_shipped_script_is_the_module_source() -> None:
         on_disk = (Path(__file__).parent.parent / "src" / "rcp" / "transport" / name).read_text()
         assert source == on_disk
         compile(source, name, "exec")
+    compile(_remote_lock_holder_script(), "remote_lock_holder.py", "exec")
 
 
 class TestReadKeptView:

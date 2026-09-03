@@ -3370,6 +3370,7 @@ def test_failed_chat_task_retains_artifacts_emitted_before_the_error(manifest, t
                 "can_open": False,
                 "can_download": False,
                 "can_keep": False,
+                "can_discuss": False,
                 "can_revise": False,
             }
         ],

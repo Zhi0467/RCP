@@ -24,6 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from rcp.artifact_replace import replace_regular_file_in_open_directory
 from rcp.config import Manifest, load_manifest
 from rcp.core.models import GraphBranchMetadata
 from rcp.limits import (
@@ -86,6 +87,16 @@ def _remote_script(name: str) -> str:
     """
 
     return importlib.resources.files("rcp.transport").joinpath(name).read_text(encoding="utf-8")
+
+
+@lru_cache(maxsize=1)
+def _remote_lock_holder_script() -> str:
+    """Compose the shared replacement protocol into the shipped lock-holder source."""
+
+    helper = (
+        importlib.resources.files("rcp").joinpath("artifact_replace.py").read_text(encoding="utf-8")
+    )
+    return f"{helper}\n{_remote_script('remote_lock_holder.py')}"
 
 
 _REMOTE_PATCH_LOG_HEAD_SCRIPT = """\
@@ -216,6 +227,29 @@ def _open_artifacts_directory(repository_fd: int, *, create: bool) -> int:
         raise
     except OSError as exc:
         raise ValueError("repository artifacts path is not a regular directory") from exc
+
+
+def _open_artifact_recovery_directory(research_root: Path) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    research_fd = _repository_directory_fd(research_root)
+    try:
+        try:
+            os.mkdir(".publish", 0o700, dir_fd=research_fd)
+            os.fsync(research_fd)
+        except FileExistsError:
+            pass
+        publish_fd = os.open(".publish", flags, dir_fd=research_fd)
+        try:
+            try:
+                os.mkdir("artifact-replacements", 0o700, dir_fd=publish_fd)
+                os.fsync(publish_fd)
+            except FileExistsError:
+                pass
+            return os.open("artifact-replacements", flags, dir_fd=publish_fd)
+        finally:
+            os.close(publish_fd)
+    finally:
+        os.close(research_fd)
 
 
 def _collision_view_name(base_name: str, index: int) -> str:
@@ -1244,89 +1278,23 @@ class StateWorkspace:
             raise ValueError("artifact bytes are outside the supported size range")
         if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
             raise ValueError("expected artifact digest is invalid")
-        temporary_name = f".{safe_name}.rcp-{uuid.uuid4().hex}"
         with self.transaction():
             repository_fd = _repository_directory_fd(self.root.parent)
             try:
                 artifacts_fd = _open_artifacts_directory(repository_fd, create=False)
                 try:
-                    descriptor = os.open(
-                        temporary_name,
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                        0o644,
-                        dir_fd=artifacts_fd,
-                    )
+                    recovery_fd = _open_artifact_recovery_directory(self.root)
                     try:
-                        remaining = memoryview(data)
-                        while remaining:
-                            written = os.write(descriptor, remaining)
-                            if written <= 0:
-                                raise OSError("short artifact replacement write")
-                            remaining = remaining[written:]
-                        os.fsync(descriptor)
+                        return replace_regular_file_in_open_directory(
+                            artifacts_fd,
+                            recovery_fd,
+                            safe_name,
+                            data,
+                            expected_sha256=expected_sha256,
+                            mode=0o644,
+                        )
                     finally:
-                        os.close(descriptor)
-                    current_fd = os.open(
-                        safe_name,
-                        os.O_RDONLY | os.O_NOFOLLOW,
-                        dir_fd=artifacts_fd,
-                    )
-                    try:
-                        metadata = os.fstat(current_fd)
-                        if not stat.S_ISREG(metadata.st_mode):
-                            raise ValueError("kept artifact is not a regular file")
-                        if expected_sha256 is not None:
-                            digest = hashlib.sha256()
-                            while chunk := os.read(current_fd, 1024 * 1024):
-                                digest.update(chunk)
-                            final_metadata = os.fstat(current_fd)
-                            path_metadata = os.stat(
-                                safe_name,
-                                dir_fd=artifacts_fd,
-                                follow_symlinks=False,
-                            )
-                            opened_identity = (
-                                metadata.st_dev,
-                                metadata.st_ino,
-                                metadata.st_size,
-                                metadata.st_mtime_ns,
-                                metadata.st_ctime_ns,
-                            )
-                            final_identity = (
-                                final_metadata.st_dev,
-                                final_metadata.st_ino,
-                                final_metadata.st_size,
-                                final_metadata.st_mtime_ns,
-                                final_metadata.st_ctime_ns,
-                            )
-                            path_identity = (
-                                path_metadata.st_dev,
-                                path_metadata.st_ino,
-                                path_metadata.st_size,
-                                path_metadata.st_mtime_ns,
-                                path_metadata.st_ctime_ns,
-                            )
-                            if (
-                                digest.hexdigest() != expected_sha256
-                                or opened_identity != final_identity
-                                or final_identity != path_identity
-                            ):
-                                os.unlink(temporary_name, dir_fd=artifacts_fd)
-                                return False
-                    finally:
-                        os.close(current_fd)
-                    os.replace(
-                        temporary_name,
-                        safe_name,
-                        src_dir_fd=artifacts_fd,
-                        dst_dir_fd=artifacts_fd,
-                    )
-                    os.fsync(artifacts_fd)
-                    return True
-                except BaseException:
-                    with suppress(FileNotFoundError):
-                        os.unlink(temporary_name, dir_fd=artifacts_fd)
-                    raise
+                        os.close(recovery_fd)
                 finally:
                     os.close(artifacts_fd)
             finally:
@@ -1475,7 +1443,7 @@ def _advisory_lock_holder_arguments(
     return [
         python_executable,
         "-c",
-        _remote_script("remote_lock_holder.py"),
+        _remote_lock_holder_script(),
         os.fspath(lock_path),
     ]
 

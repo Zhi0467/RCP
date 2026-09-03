@@ -367,6 +367,7 @@ function taskArtifacts(task: AgentTask): AgentArtifactDescriptor[] {
       typeof item.can_open === "boolean" &&
       typeof item.can_download === "boolean" &&
       typeof item.can_keep === "boolean" &&
+      typeof item.can_discuss === "boolean" &&
       typeof item.can_revise === "boolean",
   );
 }
