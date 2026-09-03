@@ -120,9 +120,11 @@ import {
   projectHeartbeatSnapshotDisposition,
   projectSettingsSavedProject,
   reconcileInactiveProjectSession,
+  RETAIN_ALL_PROJECT_READINESS,
   serializeProjectSessionTabState,
   trustedProjectTransitionManifest,
   type BrowserTransitionProjection,
+  type ProjectReadinessRetention,
   type ProjectSessionTabState,
 } from "./hooks/projectSession";
 import { useProjectSession } from "./hooks/useProjectSession";
@@ -215,25 +217,75 @@ type ProjectReadinessSnapshot = Awaited<ReturnType<typeof loadProjectReadiness>>
 
 interface ProviderReadinessInFlight {
   refresh: boolean;
-  generation: number;
+  generation: ProjectReadinessGeneration;
   request: Promise<ProjectReadinessSnapshot | null>;
 }
 
-export function advanceProjectReadinessGeneration(
-  generations: Map<string, number>,
+/** Separate request generations for the provider and compute readiness slices. */
+export interface ProjectReadinessGeneration {
+  provider: number;
+  compute: number;
+}
+
+const INITIAL_PROJECT_READINESS_GENERATION: ProjectReadinessGeneration = {
+  provider: 0,
+  compute: 0,
+};
+
+export function currentProjectReadinessGeneration(
+  generations: ReadonlyMap<string, ProjectReadinessGeneration>,
   projectId: string,
-): number {
-  const next = (generations.get(projectId) ?? 0) + 1;
+): ProjectReadinessGeneration {
+  return generations.get(projectId) ?? INITIAL_PROJECT_READINESS_GENERATION;
+}
+
+/** Advance the request generation of every readiness slice this retention drops. */
+export function invalidateProjectReadinessGenerations(
+  generations: Map<string, ProjectReadinessGeneration>,
+  projectId: string,
+  retention: ProjectReadinessRetention,
+): ProjectReadinessGeneration {
+  const current = currentProjectReadinessGeneration(generations, projectId);
+  const next = {
+    provider: current.provider + (retention.provider ? 0 : 1),
+    compute: current.compute + (retention.compute ? 0 : 1),
+  };
   generations.set(projectId, next);
   return next;
 }
 
-export function projectReadinessRequestCanApply(
-  generations: ReadonlyMap<string, number>,
+/**
+ * Which slices of one readiness response are still current.
+ *
+ * A resolve invalidates provider readiness alone, so an in-flight compute probe
+ * that answers afterwards still carries the live matrix.
+ */
+export function projectReadinessResponseApplies(
+  generations: ReadonlyMap<string, ProjectReadinessGeneration>,
   projectId: string,
-  requestGeneration: number,
-): boolean {
-  return (generations.get(projectId) ?? 0) === requestGeneration;
+  requestGeneration: ProjectReadinessGeneration,
+): ProjectReadinessRetention {
+  const current = currentProjectReadinessGeneration(generations, projectId);
+  return {
+    provider: current.provider === requestGeneration.provider,
+    compute: current.compute === requestGeneration.compute,
+  };
+}
+
+export function projectReadinessUpdate(
+  readiness: ProjectReadinessSnapshot,
+  applies: ProjectReadinessRetention,
+): Partial<ProjectReadinessSnapshot> {
+  return {
+    ...(applies.compute ? { compute_status: readiness.compute_status } : {}),
+    ...(applies.provider
+      ? {
+          provider_readiness: readiness.provider_readiness,
+          providers: readiness.providers,
+          provider_skill_inventories: readiness.provider_skill_inventories,
+        }
+      : {}),
+  };
 }
 
 export function shouldPollProviderSkillReadiness(
@@ -822,7 +874,7 @@ export default function App() {
   } | null>(null);
   const initialShowHandshake = useRef(false);
   const providerReadinessRequestsInFlight = useRef(new Map<string, ProviderReadinessInFlight>());
-  const providerReadinessGenerations = useRef(new Map<string, number>());
+  const projectReadinessGenerations = useRef(new Map<string, ProjectReadinessGeneration>());
   const providerSkillReadinessPoll = useRef<{ projectId: string; timeoutId: number } | null>(null);
   const currentProjectStateRef = useRef<Omit<CachedProjectTabState, "viewState"> | null>(null);
   const updateProject = useCallback(
@@ -1407,9 +1459,16 @@ export default function App() {
     (refresh: boolean): Promise<ProjectReadinessSnapshot | null> => {
       if (!apiBase || !projectId) return Promise.resolve(null);
       const requestedProjectId = projectId;
-      const requestGeneration = providerReadinessGenerations.current.get(requestedProjectId) ?? 0;
+      const requestGeneration = currentProjectReadinessGeneration(
+        projectReadinessGenerations.current,
+        requestedProjectId,
+      );
       const existing = providerReadinessRequestsInFlight.current.get(requestedProjectId);
-      if (existing?.generation === requestGeneration) {
+      if (
+        existing !== undefined &&
+        existing.generation.provider === requestGeneration.provider &&
+        existing.generation.compute === requestGeneration.compute
+      ) {
         if (!refresh || existing.refresh) return existing.request;
         return existing.request.then(() => requestProjectReadiness(true));
       }
@@ -1421,30 +1480,30 @@ export default function App() {
       let request: Promise<ProjectReadinessSnapshot | null>;
       request = loadProjectReadiness(apiBase, refresh)
         .then((readiness) => {
-          if (
-            !projectReadinessRequestCanApply(
-              providerReadinessGenerations.current,
-              requestedProjectId,
-              requestGeneration,
-            )
-          )
-            return null;
+          const applies = projectReadinessResponseApplies(
+            projectReadinessGenerations.current,
+            requestedProjectId,
+            requestGeneration,
+          );
+          if (!applies.provider && !applies.compute) return null;
           if (isActiveProject(requestedProjectId)) {
             updateProject((current) =>
-              current?.id === requestedProjectId ? { ...current, ...readiness } : current,
+              current?.id === requestedProjectId
+                ? { ...current, ...projectReadinessUpdate(readiness, applies) }
+                : current,
             );
           }
-          return readiness;
+          // The caller polls provider skill inventories, so a superseded
+          // provider slice has no follow-up left to decide.
+          return applies.provider ? readiness : null;
         })
         .catch((error) => {
-          if (
-            !projectReadinessRequestCanApply(
-              providerReadinessGenerations.current,
-              requestedProjectId,
-              requestGeneration,
-            )
-          )
-            return null;
+          const applies = projectReadinessResponseApplies(
+            projectReadinessGenerations.current,
+            requestedProjectId,
+            requestGeneration,
+          );
+          if (!applies.provider && !applies.compute) return null;
           const message = error instanceof Error ? error.message : String(error);
           setProviderReadinessRequests((current) => ({
             ...current,
@@ -3748,14 +3807,14 @@ export default function App() {
                   current ? { ...current, cache_metrics: cacheMetrics } : current,
                 );
               }}
-              onSaved={(saved, preserveReadiness = true) => {
-                if (!preserveReadiness) {
-                  advanceProjectReadinessGeneration(providerReadinessGenerations.current, saved.id);
-                }
-                beginProjectSnapshotRequest(saved.id);
-                updateProject((current) =>
-                  projectSettingsSavedProject(saved, current, preserveReadiness),
+              onSaved={(saved, retention = RETAIN_ALL_PROJECT_READINESS) => {
+                invalidateProjectReadinessGenerations(
+                  projectReadinessGenerations.current,
+                  saved.id,
+                  retention,
                 );
+                beginProjectSnapshotRequest(saved.id);
+                updateProject((current) => projectSettingsSavedProject(saved, current, retention));
                 const applied = getProjectSessionState().project;
                 if (applied) replaceRunScope(applied.default_run_truth_scope);
                 setNotice({ kind: "info", text: "Project defaults synced." });

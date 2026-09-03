@@ -1636,22 +1636,24 @@ class ProjectCatalog:
     ) -> dict[str, object]:
         """Run compute probes only for an explicit refresh; otherwise reuse the last matrix."""
 
+        key = compute_probe_cache_key(manifest)
+        if not refresh:
+            # A cached read does network work for nobody, so it must never queue
+            # behind an explicit refresh of a slow or unreachable SSH target.
+            with self._services_lock:
+                cached = self._compute_status_cache.get(project_id)
+                if cached is not None and cached[0] != key:
+                    self._compute_status_cache.pop(project_id, None)
+                    cached = None
+                return deepcopy(cached[1] if cached is not None else {})
         with self._services_lock:
-            key = compute_probe_cache_key(manifest)
             generation = self._compute_probe_generations.get(project_id, 0)
             lock = self._compute_probe_locks.setdefault(project_id, threading.Lock())
         with lock:
+            status = probe_compute_connections(manifest)
             with self._services_lock:
-                cached = self._compute_status_cache.get(project_id)
-            status = cached[1] if cached is not None and cached[0] == key else {}
-            if refresh:
-                status = probe_compute_connections(manifest)
-                with self._services_lock:
-                    if self._compute_probe_generations.get(project_id, 0) == generation:
-                        self._compute_status_cache[project_id] = (key, status)
-            elif cached is not None and cached[0] != key:
-                with self._services_lock:
-                    self._compute_status_cache.pop(project_id, None)
+                if self._compute_probe_generations.get(project_id, 0) == generation:
+                    self._compute_status_cache[project_id] = (key, status)
             return deepcopy(status)
 
     def provider_targets(self) -> list[tuple[ProviderId, str, str | None]]:

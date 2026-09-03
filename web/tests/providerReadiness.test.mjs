@@ -12,8 +12,10 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const {
-  advanceProjectReadinessGeneration,
-  projectReadinessRequestCanApply,
+  invalidateProjectReadinessGenerations,
+  currentProjectReadinessGeneration,
+  projectReadinessResponseApplies,
+  projectReadinessUpdate,
   shouldRequestProviderReadiness,
 } = await server.ssrLoadModule("/src/App.tsx");
 const { AgentConfigControls, settleReadinessRefresh } = await server.ssrLoadModule(
@@ -66,27 +68,75 @@ test("missing readiness is called checking only while a request is actually pend
   assert.doesNotMatch(failed, /Checking codex on this machine/);
 });
 
-test("a compute-settings save invalidates an older deferred readiness response", async () => {
-  const generations = new Map();
-  const requestGeneration = generations.get("project") ?? 0;
+/** Consume one deferred readiness response the way the App-owned request does. */
+function deferredReadiness(generations, projectId) {
+  const requestGeneration = currentProjectReadinessGeneration(generations, projectId);
   let complete;
-  const deferred = new Promise((resolve) => {
+  const response = new Promise((resolve) => {
     complete = resolve;
   });
-  let applied = { compute_status: {} };
-  const consume = deferred.then((readiness) => {
-    if (projectReadinessRequestCanApply(generations, "project", requestGeneration)) {
-      applied = readiness;
-    }
+  return {
+    complete,
+    applied: response.then((readiness) => {
+      const applies = projectReadinessResponseApplies(generations, projectId, requestGeneration);
+      if (!applies.provider && !applies.compute) return null;
+      return projectReadinessUpdate(readiness, applies);
+    }),
+  };
+}
+
+const probedCompute = { local: { gpu: { status_label: "Reachable" } } };
+const probedProviders = { local: { codex: { provider: "codex", installed: true } } };
+const readinessResponse = {
+  compute_status: probedCompute,
+  provider_readiness: probedProviders,
+  providers: probedProviders.local,
+  provider_skill_inventories: {},
+};
+
+test("a compute-settings save invalidates an older deferred readiness response", async () => {
+  const generations = new Map();
+  const probe = deferredReadiness(generations, "project");
+
+  // The save response clears the old target's status.
+  invalidateProjectReadinessGenerations(generations, "project", {
+    provider: false,
+    compute: false,
   });
+  probe.complete(readinessResponse);
 
-  advanceProjectReadinessGeneration(generations, "project");
-  applied = { compute_status: {} }; // The save response clears the old target's status.
-  await assert.rejects(Promise.reject(new Error("new probe failed")), /new probe failed/);
-  complete({ compute_status: { local: { gpu: { status_label: "stale green" } } } });
-  await consume;
+  assert.equal(await probe.applied, null);
+});
 
-  assert.deepEqual(applied, { compute_status: {} });
+test("a provider resolve keeps a compute probe that answers afterwards", async () => {
+  const generations = new Map();
+  const probe = deferredReadiness(generations, "project");
+
+  // Resolve invalidates the provider slice only; the probe is still in flight.
+  invalidateProjectReadinessGenerations(generations, "project", {
+    provider: false,
+    compute: true,
+  });
+  probe.complete(readinessResponse);
+
+  assert.deepEqual(await probe.applied, { compute_status: probedCompute });
+});
+
+test("a compute-settings save drops the matrix without dropping provider readiness", async () => {
+  const generations = new Map();
+  const probe = deferredReadiness(generations, "project");
+
+  invalidateProjectReadinessGenerations(generations, "project", {
+    provider: true,
+    compute: false,
+  });
+  probe.complete(readinessResponse);
+
+  assert.deepEqual(await probe.applied, {
+    provider_readiness: probedProviders,
+    providers: probedProviders.local,
+    provider_skill_inventories: {},
+  });
 });
 
 test("the provider re-check consumes the visible App-owned rejection", async () => {

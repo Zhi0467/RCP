@@ -27,7 +27,7 @@ import { AgentUsageWidgets } from "../components/AgentUsageWidgets";
 import { SkillPackageInspector } from "../components/SkillPackageInspector";
 import {
   computeConnectionNeedsSave,
-  computeConnectionsChanged,
+  computeProbeConfigurationChanged,
   deserializeSettingsDraft,
   machineProviderPathUpdates,
   machineProviderPathsFrom,
@@ -39,6 +39,7 @@ import {
   type MachineProviderPaths,
 } from "../settingsDraft";
 import { TEXT_SCALE_MAX, TEXT_SCALE_MIN } from "../textScale";
+import type { ProjectReadinessRetention } from "../hooks/projectSession";
 import type {
   AgentExecutionProfile,
   AgentProfileSettings,
@@ -64,7 +65,7 @@ interface Props {
   onRefreshUsage: () => Promise<void>;
   cacheClearDisabled: boolean;
   writesDisabled?: boolean;
-  onSaved: (project: ProjectSnapshot, preserveReadiness?: boolean) => void;
+  onSaved: (project: ProjectSnapshot, retention?: ProjectReadinessRetention) => void;
   onCacheMetricsChange: (metrics: ProjectCacheMetrics) => void;
   onRefreshReadiness: () => Promise<void>;
   readinessRequest?: { pending: boolean; error: string | null };
@@ -289,9 +290,12 @@ export function ProjectSettings({
       connection.name.trim().length > 0 &&
       (connection.kind === "local" || connection.ssh_target.trim().length > 0),
   );
-  const computeConfigurationIsDirty = computeConnectionsChanged(
-    project.compute_connections ?? [],
-    computeConnections,
+  const computeConfigurationIsDirty = computeProbeConfigurationChanged(
+    {
+      connections: project.compute_connections ?? [],
+      executionMachines: Object.values(profilesFrom(project)).map((profile) => profile.run_on),
+    },
+    { connections: computeConnections, executionMachines },
   );
 
   const toggleRepository = (alias: string) => {
@@ -398,9 +402,12 @@ export function ProjectSettings({
       });
       setProviderPaths(machineProviderPathsFrom(saved.machines));
       setComputeConnections(saved.compute_connections);
-      // The save response intentionally carries no live probe. Preserve prior
-      // readiness only when its compute cache key did not change.
-      onSaved(saved, !computeConfigurationIsDirty);
+      // The save response intentionally carries no live probe. Preserve each
+      // readiness slice whose own inputs this save left alone.
+      onSaved(saved, {
+        provider: pathUpdates === undefined,
+        compute: !computeConfigurationIsDirty,
+      });
       try {
         await onRefreshReadiness();
         setStatus({ kind: "saved", text: "Saved." });
@@ -437,7 +444,6 @@ export function ProjectSettings({
       const coachMachine = project.agent_profiles.paper_coach.run_on;
       const resolvedProject: ProjectSnapshot = {
         ...result.project,
-        compute_status: project.compute_status,
         provider_readiness: {
           ...project.provider_readiness,
           [result.machine]: {
@@ -450,7 +456,9 @@ export function ProjectSettings({
             ? { ...project.providers, [result.provider]: result.readiness }
             : project.providers,
       };
-      onSaved(resolvedProject, false);
+      // A resolve invalidates provider readiness alone. Retaining the rendered
+      // compute status keeps a compute probe that answers mid-resolve.
+      onSaved(resolvedProject, { provider: false, compute: true });
       setStatus({
         kind: "saved",
         text: `${result.readiness.label || result.provider} resolved on ${result.machine}.`,

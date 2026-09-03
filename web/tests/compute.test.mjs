@@ -76,15 +76,32 @@ test("Settings masks stale compute status and requires Save before Probe", () =>
   assert.match(source, /readinessRequest\?\.pending\s*\|\|\s*computeConfigurationIsDirty/);
 });
 
-test("resolving a provider path preserves the current compute status", () => {
+test("resolving a provider path invalidates provider readiness alone", () => {
   const source = readFileSync(new URL("../src/views/ProjectSettings.tsx", import.meta.url), "utf8");
   const resolveProviderPath = source.slice(
     source.indexOf("const resolveProviderPath"),
     source.indexOf("const clearCaches"),
   );
 
-  assert.match(resolveProviderPath, /compute_status:\s*project\.compute_status/);
-  assert.match(resolveProviderPath, /onSaved\(resolvedProject, false\)/);
+  // Copying the rendered matrix here would pin the pre-probe statuses, so the
+  // resolve retains whatever compute status the project holds when it applies.
+  assert.doesNotMatch(resolveProviderPath, /compute_status:/);
+  assert.match(
+    resolveProviderPath,
+    /onSaved\(resolvedProject, \{ provider: false, compute: true \}\)/,
+  );
+});
+
+test("a compute-settings save weighs the execution machines the backend key covers", () => {
+  const source = readFileSync(new URL("../src/views/ProjectSettings.tsx", import.meta.url), "utf8");
+  const dirty = source.slice(
+    source.indexOf("const computeConfigurationIsDirty"),
+    source.indexOf("const toggleRepository"),
+  );
+
+  assert.match(dirty, /computeProbeConfigurationChanged/);
+  assert.match(dirty, /executionMachines/);
+  assert.match(source, /compute: !computeConfigurationIsDirty/);
 });
 
 test("compute controls introduce no sub-10px primary or status text", () => {

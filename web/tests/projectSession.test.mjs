@@ -318,11 +318,10 @@ test("a settings save replaces project metadata without reconciling session stat
   const previousDraft = state.humanDraft;
   const previousProjection = state.draftTransitionProjection;
 
-  const saved = projectSettingsSavedProject(
-    snapshot(1, { name: "Renamed Alpha" }),
-    state.project,
-    true,
-  );
+  const saved = projectSettingsSavedProject(snapshot(1, { name: "Renamed Alpha" }), state.project, {
+    provider: true,
+    compute: true,
+  });
   const updated = projectSessionReducer(state, { kind: "project_replaced", project: saved });
 
   assert.equal(updated.project.name, "Renamed Alpha");
@@ -363,11 +362,49 @@ test("a changed compute configuration does not preserve stale readiness", () => 
     compute_status: {},
   });
 
-  assert.deepEqual(projectSettingsSavedProject(saved, current, false).compute_status, {});
   assert.deepEqual(
-    projectSettingsSavedProject(saved, current, true).compute_status,
+    projectSettingsSavedProject(saved, current, { provider: true, compute: false }).compute_status,
+    {},
+  );
+  assert.deepEqual(
+    projectSettingsSavedProject(saved, current, { provider: true, compute: true }).compute_status,
     current.compute_status,
   );
+});
+
+test("a provider resolve keeps the rendered compute matrix and takes fresh provider readiness", () => {
+  const readiness = { provider: "codex", installed: true, authenticated: true, version: "1" };
+  const probed = {
+    laptop: {
+      gpu: {
+        compute_id: "gpu",
+        execution_machine: "laptop",
+        state: "opaque",
+        reachable: true,
+        diagnostic: "Probed after the resolve started.",
+        required_action: null,
+        status_label: "Reachable",
+        status_tone: "ready",
+      },
+    },
+  };
+  // The in-flight compute probe already applied to the rendered project.
+  const current = snapshot(1, {
+    compute_status: probed,
+    provider_readiness: { laptop: { codex: { ...readiness, installed: false, version: "0" } } },
+  });
+  const resolved = snapshot(1, {
+    compute_status: {},
+    provider_readiness: { laptop: { codex: readiness } },
+  });
+
+  const applied = projectSettingsSavedProject(resolved, current, {
+    provider: false,
+    compute: true,
+  });
+
+  assert.deepEqual(applied.compute_status, probed);
+  assert.deepEqual(applied.provider_readiness.laptop.codex, readiness);
 });
 
 test("a populated project session survives tab serialization and restoration", () => {
