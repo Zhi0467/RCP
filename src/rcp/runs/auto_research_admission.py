@@ -35,7 +35,7 @@ from rcp.runs.auto_research import (
 )
 from rcp.runs.experiment_admission import experiment_start_message
 from rcp.runs.task_policy import AgentTaskContinuation, resolved_dispatch_authority, skill_update
-from rcp.service import RunRequest
+from rcp.service import ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import (
     AgentTaskRecord,
@@ -1361,6 +1361,7 @@ def retry_auto_research_task(
     reasoning: str | None,
     run_on: str | None,
     skills: SkillSelection | None,
+    service: ProjectService | None = None,
 ) -> AgentTaskRecord:
     """Recover one paid Auto-research allocation without changing its binding."""
 
@@ -1457,6 +1458,8 @@ def retry_auto_research_task(
             **skill_update(skills, mode="json"),
         }
     )
+    if service is not None:
+        _require_auto_research_retry_target_ready(service, request)
     retried = tasks._create_and_spawn(
         previous.project_id,
         previous.kind,
@@ -1487,6 +1490,37 @@ def retry_auto_research_task(
             level="warning",
         )
     return retried
+
+
+def _require_auto_research_retry_target_ready(
+    service: ProjectService,
+    request: AutoResearchRunRequest,
+) -> None:
+    """Recheck the pinned provider target immediately before Retry allocation."""
+
+    if request.provider is None or request.run_on is None:
+        raise ValueError("Auto-research Retry requires its pinned provider and execution machine.")
+    machine = service.manifest.machine_map.get(request.run_on)
+    if machine is None:
+        raise ValueError(f"unknown execution machine: {request.run_on}")
+    binary = machine.provider_paths.get(request.provider)
+    readiness = service.launcher.readiness(
+        request.provider,
+        host=machine.host,
+        binary=binary,
+        refresh=True,
+    )
+    if readiness.installed and readiness.authenticated:
+        return
+    diagnostic = (
+        readiness.reason or f"{request.provider} is not ready on {request.run_on}"
+    ).strip()
+    if diagnostic.endswith("."):
+        diagnostic = diagnostic[:-1]
+    detail = f"Auto-research Retry cannot start: {diagnostic}. The current task was left unchanged."
+    if readiness.path_state == "unreachable":
+        raise OSError(detail)
+    raise ValueError(detail)
 
 
 def preflight_auto_research_task_resume(

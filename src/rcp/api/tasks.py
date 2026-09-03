@@ -742,10 +742,12 @@ def retry_agent_task(
             candidate_payload,
         )
         if previous.kind == "auto_research":
-            _require_auto_research_retry_target_ready(
-                service,
-                AutoResearchRunRequest.model_validate(candidate),
-            )
+            return background_tasks.retry_auto_research(
+                operation_id,
+                service=service,
+                skills=skills,
+                **overrides,
+            ).model_dump(mode="json")
         return background_tasks.retry(
             operation_id,
             skills=skills,
@@ -1069,37 +1071,6 @@ def _validate_stored_task_request(
         service.history.require_writable()
     resolved_run = _resolved_graph_request(service, kind, request)
     return service.resolve_skill_selection(resolved_run)
-
-
-def _require_auto_research_retry_target_ready(
-    service: ProjectService,
-    request: AutoResearchRunRequest,
-) -> None:
-    """Recheck the pinned provider target before Retry can allocate a child task."""
-
-    if request.provider is None or request.run_on is None:
-        raise ValueError("Auto-research Retry requires its pinned provider and execution machine.")
-    machine = service.manifest.machine_map.get(request.run_on)
-    if machine is None:
-        raise ValueError(f"unknown execution machine: {request.run_on}")
-    binary = machine.provider_paths.get(request.provider)
-    readiness = service.launcher.readiness(
-        request.provider,
-        host=machine.host,
-        binary=binary,
-        refresh=True,
-    )
-    if readiness.installed and readiness.authenticated:
-        return
-    diagnostic = (
-        readiness.reason or f"{request.provider} is not ready on {request.run_on}"
-    ).strip()
-    if diagnostic.endswith("."):
-        diagnostic = diagnostic[:-1]
-    detail = f"Auto-research Retry cannot start: {diagnostic}. The current task was left unchanged."
-    if readiness.path_state == "unreachable":
-        raise OSError(detail)
-    raise ValueError(detail)
 
 
 __all__ = [

@@ -205,6 +205,10 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
         )
 
     monkeypatch.setattr(service.launcher, "readiness", unreachable_readiness)
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
+        lambda _stage, _root: True,
+    )
     blocked = client.post(
         f"/api/projects/{project_id}/tasks/{operation_id}/retry",
         json={},
@@ -258,7 +262,17 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
         json={"provider": "claude"},
     )
     assert switched.status_code == 409
-    assert readiness_calls == [("claude", host, claude_binary, True)]
+    assert readiness_calls == []
+    assert [
+        task.operation_id for task in store.episode_tasks(episode_id, include_hidden=True)
+    ] == before
+
+    unauthenticated = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/retry",
+        json={},
+    )
+    assert unauthenticated.status_code == 409
+    assert readiness_calls == [("codex", host, binary, True)]
     assert [
         task.operation_id for task in store.episode_tasks(episode_id, include_hidden=True)
     ] == before
@@ -286,10 +300,6 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
         )
 
     monkeypatch.setattr(service.launcher, "readiness", ready)
-    monkeypatch.setattr(
-        "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
-        lambda _stage, _root: True,
-    )
     readiness_calls.clear()
     accepted = client.post(
         f"/api/projects/{project_id}/tasks/{operation_id}/retry",

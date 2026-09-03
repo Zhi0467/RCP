@@ -504,7 +504,6 @@ def test_stopping_episode_remote_outage_preserves_recovery(
         "missing_stage",
         "missing_remote_stage",
         "clean_session",
-        "session_limit_remote_outage",
     ],
 )
 def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
@@ -518,21 +517,12 @@ def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
     assert project_id is not None
     store = app.state.background_tasks.store
     stage = tmp_path / f"{unusable}-stage"
-    if unusable in {"clean_session", "session_limit_remote_outage"}:
+    if unusable == "clean_session":
         stage.mkdir()
     if unusable == "missing_remote_stage":
         monkeypatch.setattr(
             "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
             lambda _stage, _root: False,
-        )
-    elif unusable == "session_limit_remote_outage":
-
-        def unreachable_remote_stage(_stage, _root):
-            raise OSError("host unreachable")
-
-        monkeypatch.setattr(
-            "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
-            unreachable_remote_stage,
         )
 
     with TestClient(app) as client:
@@ -543,13 +533,9 @@ def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
             episode_id=unusable,
             status="failed",
             stage=stage,
-            stage_host=(
-                "worker.example"
-                if unusable in {"missing_remote_stage", "session_limit_remote_outage"}
-                else None
-            ),
+            stage_host="worker.example" if unusable == "missing_remote_stage" else None,
         )
-        if unusable in {"clean_session", "session_limit_remote_outage"}:
+        if unusable == "clean_session":
             store.record_agent_task_receipt(
                 root.operation_id,
                 "provider_terminal_error",
@@ -569,6 +555,73 @@ def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
     assert settled.ending == "stopped"
     assert settled.stop_settled_at is not None
     assert store.auto_research_task_recovery_child(root.operation_id) is None
+    assert "auto_research_recovery_abandoned" in {
+        receipt.category for receipt in store.agent_task_receipts(root.operation_id)
+    }
+
+
+def test_stopping_episode_known_failure_precedes_remote_retry_probes(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    service = app.state.catalog.open(project_id)
+    host = "worker.example"
+    service.manifest.machine_map["laptop"].host = host
+    monkeypatch.setattr(service.history, "_reload_manifest", lambda: None)
+    store = app.state.background_tasks.store
+    stage = tmp_path / "remote-session-limit-stage"
+    stage.mkdir()
+
+    with TestClient(app) as client:
+        episode, root = create_recoverable_auto_episode(
+            store,
+            service.history,
+            project_id,
+            episode_id="session-limit-remote-outage",
+            status="failed",
+            stage=stage,
+            stage_host=host,
+        )
+        store.record_agent_task_receipt(
+            root.operation_id,
+            "provider_terminal_error",
+            {"classification": "session_limit"},
+        )
+        request = AutoResearchRunRequest.model_validate(root.request)
+        assert request.run_on == "laptop"
+        assert root.stage_host == service.manifest.machine_map[request.run_on].host == host
+        stage_probes: list[str] = []
+        readiness_probes: list[str] = []
+
+        def unreachable_remote_stage(_stage, _root):
+            stage_probes.append(host)
+            raise OSError("host unreachable")
+
+        def unreachable_readiness(*_args, **_kwargs):
+            readiness_probes.append(host)
+            raise OSError("host unreachable")
+
+        monkeypatch.setattr(
+            "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
+            unreachable_remote_stage,
+        )
+        monkeypatch.setattr(service.launcher, "readiness", unreachable_readiness)
+        stopped = client.post(f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop")
+        assert stopped.status_code == 200, stopped.text
+
+        refused = client.post(f"/api/projects/{project_id}/tasks/{root.operation_id}/retry")
+
+    assert refused.status_code == 409, refused.text
+    assert "native provider session reached its limit" in refused.json()["detail"]
+    assert stage_probes == []
+    assert readiness_probes == []
+    settled = store.episode(episode.episode_id)
+    assert settled is not None and settled.status == "stopped"
+    assert settled.stop_settled_at is not None
     assert "auto_research_recovery_abandoned" in {
         receipt.category for receipt in store.agent_task_receipts(root.operation_id)
     }
