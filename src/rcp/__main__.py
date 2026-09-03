@@ -33,6 +33,7 @@ from rcp.limits import (
     SERVER_LOCK_POLL_INTERVAL_SECONDS,
     SERVER_SHUTDOWN_TIMEOUT_SECONDS,
 )
+from rcp.migrate_cli import _print_version, _run_migrate
 from rcp.server_ops.cli import add_server_parser, run_server_command
 from rcp.server_runtime import (
     ServerMetadata,
@@ -86,7 +87,20 @@ class LaunchRefused(ExistingServerUnavailable):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rcp")
-    subcommands = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument(
+        "--version",
+        dest="show_version",
+        action="store_true",
+        help="Show the RCP version and build identity, then exit",
+    )
+    # Version has no subparser, so its machine-readable option must live here.
+    parser.add_argument(
+        "--machine-readable",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,
+    )
+    subcommands = parser.add_subparsers(dest="command")
     for name in ("serve", "open"):
         command = subcommands.add_parser(name)
         command.add_argument(
@@ -144,6 +158,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Initialize an explicitly named team space",
     )
     init.add_argument("--name", required=True, help="Human-readable team space name")
+    migrate = subcommands.add_parser(
+        "migrate",
+        help="Inspect or apply storage migrations without serving",
+    )
+    migrate.add_argument(
+        "--data-dir",
+        type=Path,
+        help="RCP app data directory (defaults to RCP_DATA_DIR or the platform default)",
+    )
+    migrate.add_argument(
+        "--check",
+        action="store_true",
+        help="Inspect migration compatibility without changing the database",
+    )
+    # Repeat the flag so argparse accepts the conventional post-subcommand form.
+    migrate.add_argument(
+        "--machine-readable",
+        action="store_true",
+        default=False,
+        help="Emit the result as one JSON event record",
+    )
     add_server_parser(subcommands)
     return parser
 
@@ -160,13 +195,34 @@ def reload_app() -> FastAPI:
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.show_version:
+        _print_version(machine_readable=args.machine_readable)
+        return
+    if args.command is None:
+        parser.error("a command is required")
     if args.command == "server":
         exit_code = run_server_command(args)
         if exit_code:
             raise SystemExit(exit_code)
         return
-    data_dir = default_data_dir().expanduser().resolve()
+    selected_data_dir = (
+        args.data_dir
+        if args.command == "migrate" and args.data_dir is not None
+        else default_data_dir()
+    )
+    data_dir = selected_data_dir.expanduser().resolve()
+    if args.command == "migrate":
+        exit_code = _run_migrate(
+            args,
+            data_dir,
+            instance_lock=instance_lock,
+            lock_held_error=InstanceLockHeld,
+        )
+        if exit_code:
+            raise SystemExit(exit_code)
+        return
     if args.command == "space":
         _run_space_command(args, data_dir)
         return

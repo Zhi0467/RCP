@@ -14,6 +14,7 @@ from rcp.api.dependencies import (
 )
 from rcp.api.project_provisioning import project_creation_control
 from rcp.api.team_shell_protocol import team_shell_protocol_range
+from rcp.build_identity import build_identity
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore
 
@@ -30,7 +31,7 @@ StoreDependency = Annotated[AppStore, Depends(get_store)]
 def _health_store_snapshot(
     store: AppStore,
     catalog: ProjectCatalog,
-) -> tuple[int, str | None, int]:
+) -> tuple[int, str | None, int, int]:
     """Read the SQLite-backed health fields away from the event loop."""
 
     with store.connection() as connection:
@@ -42,7 +43,12 @@ def _health_store_snapshot(
                 """
             ).fetchone()[0]
         )
-    return active_agent_tasks, store.space_name, len(catalog.cards())
+    return (
+        active_agent_tasks,
+        store.space_name,
+        len(catalog.cards()),
+        store.storage_schema_ledger_head(),
+    )
 
 
 @router.get("/api/health")
@@ -52,14 +58,18 @@ async def health(
     composition: HealthCompositionDependency,
     store: StoreDependency,
 ) -> dict[str, object]:
-    active_agent_tasks, space_name, project_count = await asyncio.to_thread(
+    active_agent_tasks, space_name, project_count, schema_ledger_head = await asyncio.to_thread(
         _health_store_snapshot,
         store,
         catalog,
     )
+    identity = build_identity()
     payload: dict[str, object] = {
         "status": "ok",
         "version": __version__,
+        "build": identity.build,
+        "commit": identity.commit,
+        "schema_ledger_head": schema_ledger_head,
         "space_id": composition.space_id,
         "space_kind": composition.space_kind,
         "space_name": space_name,
