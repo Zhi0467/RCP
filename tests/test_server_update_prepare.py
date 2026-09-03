@@ -1039,6 +1039,35 @@ def test_update_public_source_never_probes_or_uses_ssh(
     assert fixture.git_calls == []
 
 
+def test_update_public_source_removes_retired_keys_before_https_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="public",
+        public_probe="ready",
+    )
+    fixture.private.write_bytes(b"retired-private\n")
+    fixture.public.write_bytes(b"retired-public\n")
+
+    inspection = fixture.machine.inspect()
+    fetched = fixture.machine.fetch_target(inspection)
+
+    assert inspection.source_transition == SourceTransition(
+        retired_deploy_key_label=f"rcp-source:{INSTALLATION_ID}",
+        deploy_keys_url=DEPLOY_KEYS_URL,
+        source_origin=HTTPS_ORIGIN,
+    )
+    assert not fixture.private.exists() and not fixture.public.exists()
+    assert fetched.target_commit == BASE
+    assert [argv for argv, _environment in fixture.git_calls] == [
+        ("fetch", "--prune", "origin", "main")
+    ]
+    assert all("GIT_SSH_COMMAND" not in environment for _argv, environment in fixture.git_calls)
+
+
 def test_update_public_source_finishes_interrupted_checkout_rewrite_before_fetch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1055,6 +1084,11 @@ def test_update_public_source_finishes_interrupted_checkout_rewrite_before_fetch
     inspection = fixture.machine.inspect()
     fetched = fixture.machine.fetch_target(inspection)
 
+    assert inspection.source_transition == SourceTransition(
+        retired_deploy_key_label=f"rcp-source:{INSTALLATION_ID}",
+        deploy_keys_url=DEPLOY_KEYS_URL,
+        source_origin=HTTPS_ORIGIN,
+    )
     assert fetched.target_commit == BASE
     assert fixture.remote_origin == [HTTPS_ORIGIN]
     assert fixture.probe_calls == []

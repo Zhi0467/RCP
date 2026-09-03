@@ -45,7 +45,7 @@ from rcp.server_ops.install import (
     SourceTransition,
     _run_as_account,
     converge_public_source,
-    finish_public_checkout_origin,
+    finish_public_source_transition,
     normalize_github_repository,
     source_git_environment,
     source_transition_message,
@@ -1227,6 +1227,28 @@ class LinuxUpdateMachine:
 
     def inspect(self) -> UpdateInspection:
         inspection, report = self._read_status()
+        transition = None
+        if inspection.config.source.authentication == "public":
+            try:
+                repository = normalize_github_repository(inspection.config.source.origin)
+            except ValueError:
+                repository = None
+            if repository is not None:
+                try:
+                    transition = finish_public_source_transition(
+                        self.layout,
+                        inspection.config,
+                        repository,
+                        run_git=self._run_git,
+                        git_text=self._git_text,
+                    )
+                except OSError as exc:
+                    raise UpdateRefused(
+                        "The public source transition could not remove its retired deploy-key "
+                        "pair. Inspect the two source-key paths and rerun server update."
+                    ) from exc
+                if transition is not None:
+                    inspection, report = self._read_status()
         if (
             inspection.config.source.authentication == "public"
             and MANAGED_SOURCE_ORIGIN_MISMATCH in report.problems
@@ -1252,7 +1274,8 @@ class LinuxUpdateMachine:
             if transition is not None:
                 inspection, report = self._read_status()
                 self._validate_inspection(inspection, report)
-                inspection = replace(inspection, source_transition=transition)
+        if transition is not None:
+            inspection = replace(inspection, source_transition=transition)
         return inspection
 
     @staticmethod
@@ -2248,7 +2271,7 @@ class LinuxUpdateMachine:
         except ValueError:
             repository = None
         if repository is not None:
-            finish_public_checkout_origin(
+            finish_public_source_transition(
                 self.layout,
                 config,
                 repository,

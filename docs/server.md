@@ -190,9 +190,10 @@ deploy key for the operator to revoke after the command completes and
 
 If the transition fires unexpectedly, its probe ran with credential helpers,
 askpass, and global Git configuration disabled, so `ready` means the repository
-was readable anonymously. A rerun of either command finishes an interrupted
-checkout rewrite on its own. If the repository is later made private again,
-follow the teardown and reinstall procedure and run
+was readable anonymously. The next install or update finishes an interrupted
+transition by removing leftover source-key files, rewriting a matching SSH
+checkout, and repeating the deploy-key revocation instruction. If the repository
+is later made private again, follow the teardown and reinstall procedure and run
 `sudo rcp server install ...` to create a fresh deploy-key identity; the new
 `installation_id` will differ.
 

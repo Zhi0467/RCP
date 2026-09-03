@@ -246,40 +246,56 @@ def source_transition_message(transition: SourceTransition) -> str:
     )
 
 
-def finish_public_checkout_origin(
+def finish_public_source_transition(
     layout: ServerLayout,
     config: InstalledServerConfig,
     repository: GitHubRepository,
     *,
     run_git: Callable[..., None],
     git_text: Callable[..., str],
-) -> bool:
-    """Finish the checkout rewrite for one public-source transition."""
+) -> SourceTransition | None:
+    """Finish any key or checkout work promised by a public source config."""
 
     if config.source.authentication != "public":
-        return False
+        return None
+
+    private_path = layout.credentials_root / _SOURCE_PRIVATE_KEY
+    public_path = layout.credentials_root / _SOURCE_PUBLIC_KEY
+    removed_keys = any(path.exists() or path.is_symlink() for path in (private_path, public_path))
+    if removed_keys:
+        private_path.unlink(missing_ok=True)
+        public_path.unlink(missing_ok=True)
+        _fsync_directory(layout.credentials_root)
+
+    rewrote_origin = False
     source = layout.source_checkout
-    if not source.exists():
-        return False
-    environment = source_git_environment(config.source, layout)
-    origin = git_text(
-        source,
-        ("remote", "get-url", "origin"),
-        environment=environment,
+    if source.exists():
+        environment = source_git_environment(config.source, layout)
+        origin = git_text(
+            source,
+            ("remote", "get-url", "origin"),
+            environment=environment,
+        )
+        if _is_repository_ssh_origin(origin, repository=repository):
+            run_git(
+                source,
+                ("remote", "set-url", "origin", config.source.origin),
+                environment=environment,
+                timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
+                error=(
+                    "The managed checkout origin could not be changed from the retired "
+                    "deploy-key SSH origin to the public HTTPS origin."
+                ),
+            )
+            rewrote_origin = True
+
+    if not removed_keys and not rewrote_origin:
+        return None
+    return SourceTransition(
+        retired_deploy_key_label=f"rcp-source:{config.installation_id}",
+        deploy_keys_url=repository.deploy_keys_url,
+        source_origin=config.source.origin,
     )
-    if not _is_repository_ssh_origin(origin, repository=repository):
-        return False
-    run_git(
-        source,
-        ("remote", "set-url", "origin", config.source.origin),
-        environment=environment,
-        timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
-        error=(
-            "The managed checkout origin could not be changed from the retired "
-            "deploy-key SSH origin to the public HTTPS origin."
-        ),
-    )
-    return True
 
 
 def converge_public_source(
@@ -338,26 +354,20 @@ def converge_public_source(
     )
     write_installed_server_config(transitioned_config, layout.config_path)
 
-    private_path = layout.credentials_root / _SOURCE_PRIVATE_KEY
-    public_path = layout.credentials_root / _SOURCE_PUBLIC_KEY
     try:
-        private_path.unlink()
-        public_path.unlink()
-        _fsync_directory(layout.credentials_root)
+        finish_public_source_transition(
+            layout,
+            transitioned_config,
+            repository,
+            run_git=run_git,
+            git_text=git_text,
+        )
     except OSError as exc:
         raise refusal(
             "The installed source configuration now records the public HTTPS origin, but the "
-            "retired deploy-key pair could not be fully removed. Check server doctor, inspect "
-            "the two source-key paths, and remove any remainder by hand."
+            "retired deploy-key pair could not be fully removed. Inspect the two source-key "
+            "paths and rerun server install or server update."
         ) from exc
-
-    finish_public_checkout_origin(
-        layout,
-        transitioned_config,
-        repository,
-        run_git=run_git,
-        git_text=git_text,
-    )
     return transition
 
 
@@ -1081,25 +1091,34 @@ class LinuxInstallMachine:
                     "repository. Use the matching checkout or restore the recorded source."
                 )
             if config.source.authentication == "public":
-                if (
-                    private_path.exists()
-                    or private_path.is_symlink()
-                    or public_path.exists()
-                    or public_path.is_symlink()
-                ):
-                    raise InstallRefused(
-                        "A public source configuration has an unexpected source-key file. The "
-                        "keys are the retired deploy-key pair from a completed public transition "
-                        "and may be removed by hand after checking server doctor; RCP will not "
-                        "remove them automatically on re-entry."
+                try:
+                    transition = finish_public_source_transition(
+                        self.layout,
+                        config,
+                        repository,
+                        run_git=self._run_git,
+                        git_text=self._git_text,
                     )
+                except OSError as exc:
+                    raise InstallRefused(
+                        "The public source transition could not remove its retired deploy-key "
+                        "pair. Inspect the two source-key paths and rerun server install."
+                    ) from exc
                 probe = self._probe_source(repository.https_origin, source=None)
                 if probe != "ready":
                     raise InstallRefused(
                         "The recorded public source is not readable from this host. Restore "
                         "network access or repository visibility, then rerun."
                     )
-                return SourceAccess(config=config, repository=repository, grant_needed=False)
+                return SourceAccess(
+                    config=config,
+                    repository=repository,
+                    grant_needed=False,
+                    source_transitioned=transition is not None,
+                    retired_deploy_key_label=(
+                        transition.retired_deploy_key_label if transition is not None else None
+                    ),
+                )
             public_key = self._validate_source_key_pair(config, private_path, public_path)
             transition = converge_public_source(
                 self.layout,
@@ -1261,7 +1280,7 @@ class LinuxInstallMachine:
                 "The managed source path is not the RCP-owned Git checkout; install will not "
                 "replace or adopt it."
             )
-        finish_public_checkout_origin(
+        finish_public_source_transition(
             self.layout,
             access.config,
             access.repository,
@@ -2702,7 +2721,7 @@ __all__ = [
     "discover_bootstrap_repository",
     "enable_backup_timer",
     "fence_backup_timer_before_unit_change",
-    "finish_public_checkout_origin",
+    "finish_public_source_transition",
     "install_backup_unit_files",
     "normalize_github_repository",
     "prepare_install_command",

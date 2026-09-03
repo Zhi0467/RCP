@@ -793,6 +793,8 @@ def test_public_source_finishes_interrupted_checkout_rewrite_once(
     (layout.source_checkout / ".git").mkdir()
     layout.restore_operations_root.mkdir(parents=True, mode=0o700)
     layout.update_checkpoints_root.mkdir(parents=True, mode=0o700)
+    private.write_bytes(b"retired-private\n")
+    public.write_bytes(b"retired-public\n")
     origin = [REPOSITORY.ssh_origin]
     git_commands: list[tuple[tuple[str, ...], dict[str, str]]] = []
 
@@ -810,6 +812,7 @@ def test_public_source_finishes_interrupted_checkout_rewrite_once(
         assert "GIT_SSH_COMMAND" not in environment
         git_commands.append((argv, environment))
         if argv[:3] == ("remote", "set-url", "origin"):
+            assert not private.exists() and not public.exists()
             origin[0] = argv[3]
         elif argv[0] == "fetch":
             assert origin[0] == REPOSITORY.https_origin
@@ -820,8 +823,10 @@ def test_public_source_finishes_interrupted_checkout_rewrite_once(
     monkeypatch.setattr(machine, "_run_git", run_git)
     monkeypatch.setattr(machine, "_current_release_commit", lambda: None)
 
+    accesses = []
     for _run in range(2):
         access = machine.prepare_source_access(REPOSITORY)
+        accesses.append(access)
         assert machine.converge_source_checkout(access) == ManagedCheckout(
             commit=COMMIT,
             is_current_release=False,
@@ -829,36 +834,58 @@ def test_public_source_finishes_interrupted_checkout_rewrite_once(
 
     assert not private.exists() and not public.exists()
     assert origin == [REPOSITORY.https_origin]
+    assert accesses[0].source_transitioned is True
+    assert accesses[0].retired_deploy_key_label == f"rcp-source:{INSTALLATION_ID}"
+    assert accesses[1].source_transitioned is False
     assert [
         argv for argv, _environment in git_commands if argv[:3] == ("remote", "set-url", "origin")
     ] == [("remote", "set-url", "origin", REPOSITORY.https_origin)]
 
+    first_wizard = FakeInstallMachine(
+        access=accesses[0],
+        service_state=ServiceInstallState(data_state="initialized", service_state="active"),
+    )
+    second_wizard = FakeInstallMachine(
+        access=accesses[1],
+        service_state=ServiceInstallState(data_state="initialized", service_state="active"),
+    )
+    first_code, first_output = _run_install(first_wizard, machine_readable=False)
+    second_code, second_output = _run_install(second_wizard, machine_readable=False)
+    paragraph = server_install.source_transition_message(
+        server_install.SourceTransition(
+            retired_deploy_key_label=f"rcp-source:{INSTALLATION_ID}",
+            deploy_keys_url=REPOSITORY.deploy_keys_url,
+            source_origin=REPOSITORY.https_origin,
+        )
+    )
+    assert first_code == second_code == 0
+    assert paragraph in " ".join(first_output.split())
+    assert paragraph not in " ".join(second_output.split())
 
-def test_public_source_with_retired_key_files_is_refused_with_manual_recovery(
+
+@pytest.mark.parametrize("remaining", ["private", "public"])
+def test_public_source_removes_one_remaining_key_and_reports_transition(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    remaining: str,
 ) -> None:
-    _layout, machine, config, private, public = _configured_source_install(
+    layout, machine, config, private, public = _configured_source_install(
         tmp_path,
         authentication="public",
     )
-    private.write_bytes(b"retired-private\n")
-    public.write_bytes(b"retired-public\n")
+    remaining_path = private if remaining == "private" else public
+    remaining_path.write_bytes(b"retired-key\n")
+    fsync_calls: list[Path] = []
     monkeypatch.setattr(server_install, "load_installed_server_config", lambda _path: config)
-    monkeypatch.setattr(
-        machine,
-        "_probe_source",
-        lambda *_args, **_kwargs: pytest.fail("stale public keys must refuse before probing"),
-    )
+    monkeypatch.setattr(server_install, "_fsync_directory", fsync_calls.append)
+    monkeypatch.setattr(machine, "_probe_source", lambda *_args, **_kwargs: "ready")
 
-    with pytest.raises(
-        InstallRefused,
-        match=(
-            "retired deploy-key pair from a completed public transition and may be removed by "
-            "hand after checking server doctor"
-        ),
-    ):
-        machine.prepare_source_access(REPOSITORY)
+    access = machine.prepare_source_access(REPOSITORY)
+
+    assert not private.exists() and not public.exists()
+    assert fsync_calls == [layout.credentials_root]
+    assert access.source_transitioned is True
+    assert access.retired_deploy_key_label == f"rcp-source:{INSTALLATION_ID}"
 
 
 def test_deploy_key_transition_refuses_a_third_checkout_origin_before_mutation(
@@ -1031,7 +1058,8 @@ def test_source_transition_set_url_failure_converges_on_next_run(
         commit=COMMIT,
         is_current_release=False,
     )
-    assert access.source_transitioned is False
+    assert access.source_transitioned is True
+    assert access.retired_deploy_key_label == f"rcp-source:{INSTALLATION_ID}"
     assert origin == [REPOSITORY.https_origin]
     assert set_url_attempts == 2
 
