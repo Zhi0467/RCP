@@ -292,6 +292,19 @@ export function artifactUrl(
   return `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}/${action}`;
 }
 
+export function versionedArtifactContentUrl(
+  projectId: string,
+  taskId: string,
+  artifactId: string,
+  taskUpdatedAt: string,
+): string {
+  return `${artifactUrl(projectId, taskId, artifactId, "content")}?task_updated_at=${encodeURIComponent(taskUpdatedAt)}`;
+}
+
+export function artifactRevisionContentUrl(projectId: string, candidateId: string): string {
+  return `/api/projects/${encodeURIComponent(projectId)}/artifact-revisions/${encodeURIComponent(candidateId)}/content`;
+}
+
 export function latestNativeSessionId(tasks: AgentTask[]): string | null {
   return (
     [...tasks]

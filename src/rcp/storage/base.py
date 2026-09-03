@@ -39,6 +39,7 @@ class AppStoreBase:
         (3, "experiment_episode_state_v1"),
         (4, "agent_usage_counted_dedupe_v1"),
         (5, "legacy_startup_schema_v1"),
+        (6, "artifact_revision_candidates_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -303,6 +304,12 @@ class AppStoreBase:
             version=5,
             name="legacy_startup_schema_v1",
             migration=migrate_legacy_startup_schema,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=6,
+            name="artifact_revision_candidates_v1",
+            migration=self._migrate_artifact_revision_candidates,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -1723,6 +1730,11 @@ class AppStoreBase:
         )
         connection.execute("DROP INDEX IF EXISTS graph_runs_active_project")
         connection.execute("DROP INDEX IF EXISTS agent_tasks_active_project")
+        # Version 5 owns baseline normalization and therefore must materialize
+        # tables introduced by later additive migrations before comparing the
+        # live database with that baseline. Version 6 records the one-way
+        # upgrade for stores whose version-5 migration already completed.
+        self._migrate_artifact_revision_candidates(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -1772,6 +1784,48 @@ class AppStoreBase:
             ) VALUES (?, ?, ?)
             """,
             (version, name, self.now()),
+        )
+
+    @staticmethod
+    def _migrate_artifact_revision_candidates(connection: sqlite3.Connection) -> None:
+        AppStoreBase._execute_sql_script(
+            connection,
+            """
+            CREATE TABLE IF NOT EXISTS artifact_revision_candidates (
+                candidate_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                source_operation_id TEXT NOT NULL,
+                source_artifact_id TEXT NOT NULL,
+                revision_operation_id TEXT NOT NULL UNIQUE,
+                stage_host TEXT NOT NULL,
+                stage_root TEXT NOT NULL,
+                artifact_scope_id TEXT NOT NULL,
+                source_name TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                base_sha256 TEXT NOT NULL,
+                candidate_sha256 TEXT NOT NULL,
+                candidate_size_bytes INTEGER NOT NULL CHECK(candidate_size_bytes > 0),
+                status TEXT NOT NULL CHECK(status IN (
+                    'pending', 'accepting', 'accepted', 'rejected', 'conflicted', 'abandoned'
+                )),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                decided_at TEXT,
+                decided_by_json TEXT,
+                diagnostic TEXT,
+                FOREIGN KEY(source_operation_id) REFERENCES graph_runs(operation_id),
+                FOREIGN KEY(revision_operation_id) REFERENCES graph_runs(operation_id),
+                CHECK((status IN ('accepted', 'rejected', 'abandoned')) = (decided_at IS NOT NULL)),
+                CHECK(status NOT IN ('conflicted', 'abandoned') OR diagnostic IS NOT NULL)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS artifact_revision_one_unresolved_source
+                ON artifact_revision_candidates(source_operation_id, source_artifact_id)
+                WHERE status IN ('pending', 'accepting', 'conflicted');
+            CREATE INDEX IF NOT EXISTS artifact_revision_project
+                ON artifact_revision_candidates(project_id, created_at DESC, candidate_id);
+            CREATE INDEX IF NOT EXISTS artifact_revision_stage
+                ON artifact_revision_candidates(stage_host, stage_root);
+            """,
         )
 
     @staticmethod

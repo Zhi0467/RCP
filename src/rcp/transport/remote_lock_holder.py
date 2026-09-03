@@ -436,6 +436,7 @@ def replace_staged_artifact(command: dict, lock_path: str) -> dict:
     root = Path(command["root"])
     stage = Path(command["stage"])
     name = command["name"]
+    expected_sha256 = command.get("expected_sha256")
     if (
         Path(lock_path).name != ".refresh.lock"
         or root != Path(lock_path).parent
@@ -444,6 +445,13 @@ def replace_staged_artifact(command: dict, lock_path: str) -> dict:
         or stage.parent != root / ".publish"
         or not re.fullmatch(r"artifact-[0-9]+-[0-9]+", stage.name)
         or not isinstance(name, str)
+        or (
+            expected_sha256 is not None
+            and (
+                not isinstance(expected_sha256, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
+            )
+        )
         or not re.fullmatch(
             r"[a-z0-9](?:[a-z0-9-]{0,220})[.](?:html?|png|jpe?g|gif|webp|svg)", name
         )
@@ -464,9 +472,6 @@ def replace_staged_artifact(command: dict, lock_path: str) -> dict:
                 artifacts_fd = os.open("artifacts", directory_flags, dir_fd=repository_fd)
                 try:
                     temporary = f".{name}.{stage.name}"
-                    target_info = os.stat(name, dir_fd=artifacts_fd, follow_symlinks=False)
-                    if not stat.S_ISREG(target_info.st_mode):
-                        raise ValueError("kept artifact is not a regular file")
                     target_fd = os.open(
                         temporary,
                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -491,6 +496,62 @@ def replace_staged_artifact(command: dict, lock_path: str) -> dict:
                         os.fsync(target_fd)
                     finally:
                         os.close(target_fd)
+                    current_fd = os.open(
+                        name,
+                        os.O_RDONLY | os.O_NOFOLLOW,
+                        dir_fd=artifacts_fd,
+                    )
+                    try:
+                        target_info = os.fstat(current_fd)
+                        if not stat.S_ISREG(target_info.st_mode):
+                            raise ValueError("kept artifact is not a regular file")
+                        if expected_sha256 is not None:
+                            digest = hashlib.sha256()
+                            while True:
+                                chunk = os.read(current_fd, 1024 * 1024)
+                                if not chunk:
+                                    break
+                                digest.update(chunk)
+                            final_info = os.fstat(current_fd)
+                            path_info = os.stat(
+                                name,
+                                dir_fd=artifacts_fd,
+                                follow_symlinks=False,
+                            )
+                            opened_identity = (
+                                target_info.st_dev,
+                                target_info.st_ino,
+                                target_info.st_size,
+                                target_info.st_mtime_ns,
+                                target_info.st_ctime_ns,
+                            )
+                            final_identity = (
+                                final_info.st_dev,
+                                final_info.st_ino,
+                                final_info.st_size,
+                                final_info.st_mtime_ns,
+                                final_info.st_ctime_ns,
+                            )
+                            path_identity = (
+                                path_info.st_dev,
+                                path_info.st_ino,
+                                path_info.st_size,
+                                path_info.st_mtime_ns,
+                                path_info.st_ctime_ns,
+                            )
+                            if (
+                                digest.hexdigest() != expected_sha256
+                                or opened_identity != final_identity
+                                or final_identity != path_identity
+                            ):
+                                os.unlink(temporary, dir_fd=artifacts_fd)
+                                return {
+                                    "ok": False,
+                                    "conflict": True,
+                                    "error": "kept artifact digest changed",
+                                }
+                    finally:
+                        os.close(current_fd)
                     os.replace(temporary, name, src_dir_fd=artifacts_fd, dst_dir_fd=artifacts_fd)
                     os.fsync(artifacts_fd)
                     os.fsync(repository_fd)

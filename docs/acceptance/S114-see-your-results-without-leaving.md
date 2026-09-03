@@ -8,8 +8,8 @@ covered_by:
   - tests/test_api.py::test_chat_artifacts_are_bounded_sandboxed_and_independent
   - tests/test_result_view_artifacts.py
   - web/tests/resultViews.test.mjs
-invariants: [1, 2, 4, 6, 10e]
-last_checked: 2026-08-27 — backend and web regressions pass; the browser drive
+invariants: [1, 2, 4, 6, 9, 10e]
+last_checked: 2026-09-02 — candidate-disposition regressions pass; the browser drive
   covers Box, comment, Add to chat, Keep, and live external reread. A rebuilt
   RCP Dev restart and exact Open report click show the shell with `/content`
   nested, and the legacy `/preview` URL returns that shell. SSH remains pending.
@@ -49,14 +49,16 @@ canonical state.
    bounded selections, comments, final question, and a read-only current copy
    of the artifact. Confirm it answers without editing the file.
 5. Make another selection whose comment explicitly asks for a visual change,
-   choose Work, and send. Confirm the same session updates the original file and
-   card in place, with no second artifact.
+   choose Work, and send. Confirm the same session produces one pending candidate,
+   leaves the original unchanged, and adds no second artifact card. Compare
+   Current and Candidate, Reject once, and confirm the original remains unchanged.
 6. Keep the artifact. Confirm it lands under repository-root `artifacts/`
    without changing or overwriting the existing human files.
 7. Edit the kept file outside RCP. Reopen it and ask a question; confirm the
-   viewer and resumed session see the external edit without a digest conflict.
-8. Explicitly request another Work edit. Confirm the same kept file changes in
-   place and remains revisable.
+   viewer and resumed session see the external edit normally.
+8. Explicitly request another Work edit. Confirm the original remains current
+   until Accept, then Accept and confirm the same kept file changes in place and
+   remains revisable. Retry Accept and confirm it is idempotent.
 9. Repeat the selection flow for the PNG, SVG, and episode report. Confirm each
    uses the same viewer shell and the report remains immutable.
 10. With a retained desktop client that still opens the former `/preview` URL,
@@ -66,7 +68,22 @@ canonical state.
 11. Open the Project chat and confirm only that chat's artifacts appear there.
 12. Make the source native session unavailable. Confirm the send fails visibly
     and offers an explicit fresh-session path without silently taking it.
-13. Repeat Keep and live reread with a remote state repository.
+13. Produce a candidate, edit the source externally, then Accept. Confirm RCP
+    reports Conflict without overwriting either version; Reject the candidate.
+14. Interrupt Accept after candidate publication but before its decision row is
+    finalized. Retry and confirm recovery recognizes the already-published digest.
+15. Keep a temporary source while its candidate is pending, then Accept. Confirm
+    the kept location is resolved at disposition time. Repeat temporary, kept,
+    candidate, Accept, Reject, and interrupted-Accept paths with remote stages.
+16. Confirm unresolved candidates protect their exact stages from cleanup and
+    block project transfer; disposition releases both constraints.
+17. Carry a pending local candidate through a server update checkpoint. Then
+    restore an offline backup containing another pending candidate and confirm
+    it becomes Abandoned while its original remains unchanged.
+18. Force one Work graph-correction turn after it first writes the replacement.
+    Confirm only the final corrected bytes become the candidate and no extra or
+    wrong-name artifact card appears. Inspect the provider launch receipt and
+    confirm the source directory is in its protected-write set.
 
 ## Assert
 
@@ -86,13 +103,22 @@ canonical state.
 - `editing_requires_an_explicit_human_request_and_work_mode`
 - `the_exact_originating_native_session_receives_the_turn`
 - `unavailable_session_fails_visibly_and_never_silently_falls_back`
-- `a_revision_updates_the_same_file_identity_and_card`
+- `work_creates_one_pending_candidate_without_mutating_the_source`
+- `current_and_candidate_are_compared_before_explicit_human_disposition`
+- `accept_updates_the_same_file_identity_and_card`
+- `reject_keeps_the_original_unchanged`
+- `an_intervening_edit_conflicts_instead_of_being_overwritten`
+- `interrupted_accept_recovers_from_the_candidate_digest`
+- `only_one_unresolved_candidate_exists_per_source_artifact`
+- `unresolved_candidates_protect_their_stage_and_block_transfer`
+- `update_checkpoint_preserves_but_offline_restore_abandons_pending_candidates`
+- `candidate_capture_happens_after_corrections_with_source_write_denied`
 - `keep_uses_repository_root_artifacts_outside_dot_research`
 - `an_existing_real_artifacts_directory_and_its_files_are_preserved`
 - `an_unsafe_artifacts_entry_makes_keep_fail_visibly`
 - `initial_keep_never_overwrites_a_name_collision`
 - `kept_artifacts_remain_live_and_revisable`
-- `external_edits_are_read_normally_without_a_digest_precondition`
+- `external_edits_are_read_normally_until_an_accept_digest_precondition`
 - `keeping_or_revising_an_artifact_grants_no_graph_authority`
 - `remote_keep_and_live_reread_follow_the_same_contract`
 
@@ -100,5 +126,7 @@ canonical state.
 
 RCP still has a special result-view selector, record, or Experiment-only UI;
 selection sends immediately, silently forces Work, or always asks the agent to
-edit; revision creates a second artifact; Keep freezes bytes, writes under
-`.research/`, overwrites an existing file, or rejects ordinary external edits.
+edit; Work overwrites before Accept, revision creates a second artifact card,
+Reject changes the source, a conflict overwrites an external edit, an unresolved
+candidate is cleaned or transferred, or Keep freezes bytes, writes under
+`.research/`, or overwrites an existing file.

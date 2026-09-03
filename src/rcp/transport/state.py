@@ -1230,21 +1230,26 @@ class StateWorkspace:
             finally:
                 os.close(repository_fd)
 
-    def replace_kept_artifact(self, name: str, data: bytes) -> None:
-        """Atomically update one live kept artifact, accepting intervening external edits."""
+    def replace_kept_artifact(
+        self,
+        name: str,
+        data: bytes,
+        *,
+        expected_sha256: str | None = None,
+    ) -> bool:
+        """Atomically update one live kept artifact if its digest is still expected."""
 
         safe_name = _validated_kept_artifact_name(name)
         if not isinstance(data, bytes) or not 1 <= len(data) <= CHAT_ARTIFACT_MAX_FILE_BYTES:
             raise ValueError("artifact bytes are outside the supported size range")
+        if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise ValueError("expected artifact digest is invalid")
         temporary_name = f".{safe_name}.rcp-{uuid.uuid4().hex}"
         with self.transaction():
             repository_fd = _repository_directory_fd(self.root.parent)
             try:
                 artifacts_fd = _open_artifacts_directory(repository_fd, create=False)
                 try:
-                    metadata = os.stat(safe_name, dir_fd=artifacts_fd, follow_symlinks=False)
-                    if not stat.S_ISREG(metadata.st_mode):
-                        raise ValueError("kept artifact is not a regular file")
                     descriptor = os.open(
                         temporary_name,
                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -1261,6 +1266,55 @@ class StateWorkspace:
                         os.fsync(descriptor)
                     finally:
                         os.close(descriptor)
+                    current_fd = os.open(
+                        safe_name,
+                        os.O_RDONLY | os.O_NOFOLLOW,
+                        dir_fd=artifacts_fd,
+                    )
+                    try:
+                        metadata = os.fstat(current_fd)
+                        if not stat.S_ISREG(metadata.st_mode):
+                            raise ValueError("kept artifact is not a regular file")
+                        if expected_sha256 is not None:
+                            digest = hashlib.sha256()
+                            while chunk := os.read(current_fd, 1024 * 1024):
+                                digest.update(chunk)
+                            final_metadata = os.fstat(current_fd)
+                            path_metadata = os.stat(
+                                safe_name,
+                                dir_fd=artifacts_fd,
+                                follow_symlinks=False,
+                            )
+                            opened_identity = (
+                                metadata.st_dev,
+                                metadata.st_ino,
+                                metadata.st_size,
+                                metadata.st_mtime_ns,
+                                metadata.st_ctime_ns,
+                            )
+                            final_identity = (
+                                final_metadata.st_dev,
+                                final_metadata.st_ino,
+                                final_metadata.st_size,
+                                final_metadata.st_mtime_ns,
+                                final_metadata.st_ctime_ns,
+                            )
+                            path_identity = (
+                                path_metadata.st_dev,
+                                path_metadata.st_ino,
+                                path_metadata.st_size,
+                                path_metadata.st_mtime_ns,
+                                path_metadata.st_ctime_ns,
+                            )
+                            if (
+                                digest.hexdigest() != expected_sha256
+                                or opened_identity != final_identity
+                                or final_identity != path_identity
+                            ):
+                                os.unlink(temporary_name, dir_fd=artifacts_fd)
+                                return False
+                    finally:
+                        os.close(current_fd)
                     os.replace(
                         temporary_name,
                         safe_name,
@@ -1268,6 +1322,7 @@ class StateWorkspace:
                         dst_dir_fd=artifacts_fd,
                     )
                     os.fsync(artifacts_fd)
+                    return True
                 except BaseException:
                     with suppress(FileNotFoundError):
                         os.unlink(temporary_name, dir_fd=artifacts_fd)
@@ -2482,10 +2537,18 @@ class SSHStateWorkspace(StateWorkspace):
         self._mark_unreachable(detail or "canonical state is unreachable")
         raise StateUnavailable(self.error or "canonical state is unreachable")
 
-    def replace_kept_artifact(self, name: str, data: bytes) -> None:
+    def replace_kept_artifact(
+        self,
+        name: str,
+        data: bytes,
+        *,
+        expected_sha256: str | None = None,
+    ) -> bool:
         safe_name = _validated_kept_artifact_name(name)
         if not isinstance(data, bytes) or not 1 <= len(data) <= CHAT_ARTIFACT_MAX_FILE_BYTES:
             raise ValueError("artifact bytes are outside the supported size range")
+        if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise ValueError("expected artifact digest is invalid")
         stage = self.remote_root / ".publish" / f"artifact-{os.getpid()}-{time.time_ns()}"
         with self.snapshot_lock, self._publication_lock() as lease:
             prepared = self._ssh(["mkdir", "-p", str(stage)])
@@ -2518,12 +2581,16 @@ class SSHStateWorkspace(StateWorkspace):
                     "root": str(self.remote_root),
                     "stage": str(stage),
                     "name": safe_name,
+                    "expected_sha256": expected_sha256,
                 }
             )
             if not response["ok"]:
                 self._mark_reachable()
+                if response.get("conflict") is True:
+                    return False
                 raise StateUnavailable(str(response.get("error") or "artifact update failed"))
             self._mark_reachable(synced=True)
+            return True
 
     def _publish(self, relative_paths: list[Path | str], lease: RunLockLease) -> None:
         sources: list[str] = []

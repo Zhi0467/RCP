@@ -2724,6 +2724,15 @@ export default function App() {
     }
   };
 
+  const refreshAgentTask = useCallback(
+    async (operationId: string): Promise<AgentTask> => {
+      const next = await api<AgentTask>(`${apiBase}/tasks/${encodeURIComponent(operationId)}`);
+      upsertTask(next);
+      return next;
+    },
+    [apiBase, upsertTask],
+  );
+
   const requestRetry = (task: AgentTask) => {
     if (task.kind === "seed" || task.kind === "refresh") {
       chooseRetryTask(task);
@@ -3129,6 +3138,7 @@ export default function App() {
           onStartTask={startAgentTask}
           onResumeTask={(task) => void operateTask(task, "resume")}
           onRetryTask={requestRetry}
+          onRefreshTask={refreshAgentTask}
           onInspectTask={selectTaskInspector}
           onOpenInbox={() => changeView("attention")}
           onRepairGraphUpdate={repairGraphUpdate}
@@ -3700,6 +3710,7 @@ export default function App() {
               onStartTask={startAgentTask}
               onResumeTask={(task) => void operateTask(task, "resume")}
               onRetryTask={requestRetry}
+              onRefreshTask={refreshAgentTask}
               onInspectTask={selectTaskInspector}
               onOpenInbox={() => changeView("attention")}
               onRepairGraphUpdate={repairGraphUpdate}
@@ -3821,6 +3832,7 @@ export default function App() {
               onStartTask={startAgentTask}
               onResumeTask={(task) => void operateTask(task, "resume")}
               onRetryTask={requestRetry}
+              onRefreshTask={refreshAgentTask}
               onInspectTask={selectTaskInspector}
               onOpenInbox={() => {
                 setFloatingChat(null);

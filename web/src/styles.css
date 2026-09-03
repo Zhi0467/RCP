@@ -6305,6 +6305,120 @@ button.relation-map-node:hover {
   border-color: var(--cobalt);
   color: var(--cobalt-dark);
 }
+.chat-artifact-actions .review-revision {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+.chat-artifact-actions .review-revision:hover {
+  background: var(--cobalt-dark);
+  border-color: var(--cobalt-dark);
+  color: white;
+}
+.artifact-revision-backdrop {
+  align-items: center;
+  background: color-mix(in srgb, var(--ink) 46%, transparent);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 120;
+}
+.artifact-revision-dialog {
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 24px 80px color-mix(in srgb, var(--ink) 25%, transparent);
+  display: flex;
+  flex-direction: column;
+  max-height: min(860px, calc(100vh - 48px));
+  overflow: hidden;
+  width: min(1120px, 100%);
+}
+.artifact-revision-dialog > header,
+.artifact-revision-dialog > footer {
+  align-items: center;
+  display: flex;
+  padding: 14px 16px;
+}
+.artifact-revision-dialog > header {
+  border-bottom: 1px solid var(--line);
+  justify-content: space-between;
+}
+.artifact-revision-dialog > header span,
+.artifact-revision-compare figcaption {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.artifact-revision-dialog > header h2 {
+  font-family: var(--mono);
+  font-size: 13px;
+  margin: 2px 0 0;
+}
+.artifact-revision-compare {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-height: min(620px, 68vh);
+}
+.artifact-revision-compare figure {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  margin: 0;
+  min-width: 0;
+  padding: 12px;
+}
+.artifact-revision-compare figure + figure {
+  border-left: 1px solid var(--line);
+}
+.artifact-revision-compare figcaption {
+  padding: 0 0 8px;
+}
+.artifact-revision-compare iframe {
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  height: 100%;
+  width: 100%;
+}
+.artifact-revision-dialog > footer {
+  border-top: 1px solid var(--line);
+  gap: 8px;
+  justify-content: flex-end;
+}
+.artifact-revision-error {
+  background: color-mix(in srgb, var(--red) 8%, var(--paper));
+  border-top: 1px solid color-mix(in srgb, var(--red) 20%, var(--line));
+  color: var(--red);
+  font-size: 10px;
+  padding: 9px 16px;
+}
+@media (max-width: 720px) {
+  .artifact-revision-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .artifact-revision-dialog {
+    border-radius: 12px 12px 0 0;
+    max-height: 92vh;
+  }
+  .artifact-revision-compare {
+    grid-template-columns: 1fr;
+    min-height: 0;
+    overflow: auto;
+  }
+  .artifact-revision-compare figure {
+    min-height: 42vh;
+  }
+  .artifact-revision-compare figure + figure {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+}
 .chat-artifact.unavailable {
   color: var(--muted);
 }

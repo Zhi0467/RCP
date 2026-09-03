@@ -138,15 +138,49 @@ agent to address every comment and question, not to edit the artifact. An
 artifact edit is allowed only when the human explicitly requests one and sends
 the turn as Work.
 
-### In-place revision
+### Candidate revision and explicit disposition
 
-An accepted revision replaces the same artifact's bytes and updates the same
-card and identity. It does not create a second artifact file or descriptor. For
-an unkept artifact, the task-stage file is the working file. For a kept artifact,
-the repository file is the working file. RCP validates a proposed replacement
-before atomic publication, but does not compare it with a previous digest or
-guard against external edits. Humans and tools may edit kept files normally;
-the viewer and each prompt read the current bytes.
+A Work turn never overwrites its source artifact. RCP validates the changed file
+in the Work task's exact artifact scope, records the digest of the bytes supplied
+to that turn, and exposes one pending candidate on the original artifact card.
+The source artifact directory is part of the provider-enforced write deny set
+for that launch, whether the source is temporary or kept. RCP discovers the
+candidate only after all patch and watcher correction turns have settled, so the
+candidate digest describes the final bytes left by the native session. Other or
+misnamed outputs from an artifact-revision turn do not create artifact cards.
+The human compares **Current** and **Candidate**, then explicitly chooses
+**Accept revision** or **Reject**. There can be only one unresolved candidate for
+one source artifact; another Work revision is refused until that disposition,
+while Discuss remains available.
+
+Accept preserves the same artifact identity and card. Under one per-artifact
+mutation lock, RCP reads the current source again and publishes only when its
+digest still matches the Work turn's base. If the source already matches the
+candidate, Accept completes the durable decision as recovery from an interrupted
+post-publication write. Any other current digest changes the candidate to
+**Conflict**; the source remains untouched and the human may Reject and request
+a fresh revision. Reject never changes the source. Repeated Accept or Reject of
+the same completed disposition is idempotent.
+
+The rule is identical for temporary or kept artifacts and local or remote
+stages. Keep and disposition share the same mutation lock, so Keep may move a
+source while a candidate is pending without making Accept target stale storage.
+An unresolved candidate protects its producing task stage and any temporary
+source stage from cleanup, prevents either task from becoming history-only, and
+prevents project transfer. Once accepted or rejected, normal stage retention may
+remove those bytes. Candidate creation, comparison, and disposition append no
+Patch and grant no graph authority.
+
+Candidate rows are local operational state rather than portable project history.
+An unresolved row blocks project transfer; settled disposition rows are excluded
+from the transfer archive, while the accepted source artifact follows its normal
+temporary-or-kept transfer policy.
+
+A server update checkpoint carries recovery-critical local candidate stages and
+remote candidates remain on their named host, so an interrupted update can
+resume disposition. Offline backups intentionally exclude task staging. Restore
+therefore marks every unresolved candidate **Abandoned** before detaching native
+sessions and preserves the unchanged source; a new Work turn is required.
 
 ### Shape boundary
 
@@ -166,9 +200,10 @@ symlink at that path makes Keep fail visibly. Initial Keep chooses a safe,
 collision-free filename and never overwrites an existing entry.
 
 Keep records the artifact's stable repository filename. It does not freeze the
-file: later human, tool, or explicit Work revisions update that same file in
-place. No digest precondition rejects an update merely because another editor
-changed it first.
+file: humans and tools may still edit it normally. A later Work revision is
+published only after explicit human Accept and only if the current bytes still
+match the bytes that Work received; an intervening external edit produces a
+visible candidate conflict instead of being overwritten.
 
 A kept artifact appends no Patch, spends no revision, creates no Proposal,
 changes no attention count, and grants no graph authority. It is a live

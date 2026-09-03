@@ -18,8 +18,9 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { removeChatAttachment, uploadChatAttachment } from "../api";
+import { decideArtifactRevision, removeChatAttachment, uploadChatAttachment } from "../api";
 import {
+  artifactRevisionContentUrl,
   artifactUrl,
   chatTasksMissingFromHistory,
   isActiveTask,
@@ -30,6 +31,7 @@ import {
   relatedChatTasks,
   resumablePausedChatTask,
   taskKindLabel,
+  versionedArtifactContentUrl,
 } from "../agentTasks";
 import {
   chatDraftStorageKey,
@@ -111,6 +113,7 @@ interface Props {
   onClose: () => void;
   onResumeTask: (task: AgentTask) => void;
   onRetryTask: (task: AgentTask) => void;
+  onRefreshTask: (taskId: string) => Promise<AgentTask>;
 }
 
 interface PendingChatTurn {
@@ -135,6 +138,11 @@ interface DictationSpan {
   sessionId: string;
   start: number;
   end: number;
+}
+
+interface ArtifactRevisionReview {
+  taskId: string;
+  artifactId: string;
 }
 
 const ARTIFACT_ID_PATTERN = /^[0-9a-f]{24}$/;
@@ -322,6 +330,7 @@ export function NodeChat({
   onClose,
   onResumeTask,
   onRetryTask,
+  onRefreshTask,
 }: Props) {
   const surface = node ? "node_chat" : "project_chat";
   const skillCatalog = project.skill_catalog ?? [];
@@ -412,6 +421,9 @@ export function NodeChat({
   const [artifactShellErrors, setArtifactShellErrors] = useState<Map<string, string>>(
     () => new Map(),
   );
+  const [revisionReview, setRevisionReview] = useState<ArtifactRevisionReview | null>(null);
+  const [revisionDecision, setRevisionDecision] = useState<"accept" | "reject" | null>(null);
+  const [revisionDecisionError, setRevisionDecisionError] = useState<string | null>(null);
   const [repositoryFileErrors, setRepositoryFileErrors] = useState<Map<string, string>>(
     () => new Map(),
   );
@@ -436,6 +448,13 @@ export function NodeChat({
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
+  const revisionReviewTask = revisionReview
+    ? (relatedTasks.find((task) => task.operation_id === revisionReview.taskId) ?? null)
+    : null;
+  const revisionReviewArtifact = revisionReviewTask?.result?.artifacts?.find(
+    (artifact) => artifact.artifact_id === revisionReview?.artifactId,
+  );
+  const revisionReviewCandidate = revisionReviewArtifact?.revision_candidate ?? null;
 
   useEffect(() => {
     const accept = (raw: unknown) => {
@@ -974,6 +993,41 @@ export function NodeChat({
     }
   };
 
+  const decideRevision = async (decision: "accept" | "reject") => {
+    const review = revisionReview;
+    const candidate = revisionReviewCandidate;
+    if (!review || !candidate || revisionDecision) return;
+    setRevisionDecision(decision);
+    setRevisionDecisionError(null);
+    let decisionError: string | null = null;
+    try {
+      await decideArtifactRevision(project.id, candidate.candidate_id, decision);
+    } catch (error) {
+      decisionError = error instanceof Error ? error.message : String(error);
+    }
+    try {
+      const refreshed = await onRefreshTask(review.taskId);
+      const refreshedArtifact = refreshed.result?.artifacts?.find(
+        (artifact) => artifact.artifact_id === review.artifactId,
+      );
+      if (!refreshedArtifact?.revision_candidate) {
+        setRevisionReview(null);
+      } else if (refreshedArtifact.revision_candidate.diagnostic) {
+        decisionError = null;
+      }
+      setRevisionDecisionError(decisionError);
+    } catch (error) {
+      const refreshError = error instanceof Error ? error.message : String(error);
+      setRevisionDecisionError(
+        decisionError
+          ? `${decisionError} Refresh also failed: ${refreshError}`
+          : `The decision was saved, but the artifact could not refresh: ${refreshError}`,
+      );
+    } finally {
+      setRevisionDecision(null);
+    }
+  };
+
   const openRepositoryFile = async (messageId: string, href: string) => {
     const resolution = resolveRepositoryFileHref(href, project.repositories);
     if (resolution.kind === "error") {
@@ -1215,6 +1269,9 @@ export function NodeChat({
                 <span className="node-chat-text">{line.text}</span>
               )}
               {line.artifacts?.map((artifact) => {
+                const revisionCandidate = artifact.revision_candidate ?? null;
+                const taskUpdatedAt =
+                  relatedTasks.find((task) => task.operation_id === line.taskId)?.updated_at ?? "";
                 const runtimeUnavailable = unavailableArtifacts.has(
                   `${line.taskId}:${artifact.artifact_id}`,
                 );
@@ -1242,11 +1299,11 @@ export function NodeChat({
                           onClick={() => void openArtifact(line.taskId, artifact)}
                         >
                           <img
-                            src={artifactUrl(
+                            src={versionedArtifactContentUrl(
                               project.id,
                               line.taskId,
                               artifact.artifact_id,
-                              "content",
+                              taskUpdatedAt,
                             )}
                             alt={artifact.name}
                             onError={() =>
@@ -1293,6 +1350,21 @@ export function NodeChat({
                               <Download size={12} /> Download
                             </a>
                           ))}
+                        {revisionCandidate && (
+                          <button
+                            type="button"
+                            className="review-revision"
+                            onClick={() => {
+                              setRevisionDecisionError(null);
+                              setRevisionReview({
+                                taskId: line.taskId,
+                                artifactId: artifact.artifact_id,
+                              });
+                            }}
+                          >
+                            Review revision
+                          </button>
+                        )}
                       </div>
                     )}
                     {shellError && (
@@ -1500,6 +1572,97 @@ export function NodeChat({
           </div>
         </div>
       )}
+      {revisionReview &&
+        revisionReviewTask &&
+        revisionReviewArtifact &&
+        revisionReviewCandidate && (
+          <div
+            className="artifact-revision-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget && !revisionDecision) {
+                setRevisionReview(null);
+              }
+            }}
+          >
+            <section
+              className="artifact-revision-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="artifact-revision-title"
+            >
+              <header>
+                <div>
+                  <span>Pending revision</span>
+                  <h2 id="artifact-revision-title">{revisionReviewArtifact.name}</h2>
+                </div>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Close revision review"
+                  disabled={Boolean(revisionDecision)}
+                  onClick={() => setRevisionReview(null)}
+                >
+                  <X size={16} />
+                </button>
+              </header>
+              <div className="artifact-revision-compare">
+                <figure>
+                  <figcaption>Current</figcaption>
+                  <iframe
+                    title={`Current ${revisionReviewArtifact.name}`}
+                    src={versionedArtifactContentUrl(
+                      project.id,
+                      revisionReview.taskId,
+                      revisionReviewArtifact.artifact_id,
+                      revisionReviewTask.updated_at,
+                    )}
+                    sandbox=""
+                  />
+                </figure>
+                <figure>
+                  <figcaption>Candidate</figcaption>
+                  <iframe
+                    title={`Candidate ${revisionReviewArtifact.name}`}
+                    src={artifactRevisionContentUrl(
+                      project.id,
+                      revisionReviewCandidate.candidate_id,
+                    )}
+                    sandbox=""
+                  />
+                </figure>
+              </div>
+              {revisionReviewCandidate.diagnostic && (
+                <strong className="artifact-revision-error" role="alert">
+                  {revisionReviewCandidate.diagnostic}
+                </strong>
+              )}
+              {revisionDecisionError && (
+                <strong className="artifact-revision-error" role="alert">
+                  {revisionDecisionError}
+                </strong>
+              )}
+              <footer>
+                <button
+                  type="button"
+                  className="button secondary"
+                  disabled={Boolean(revisionDecision) || !revisionReviewCandidate.can_reject}
+                  onClick={() => void decideRevision("reject")}
+                >
+                  {revisionDecision === "reject" ? "Rejecting…" : "Reject"}
+                </button>
+                <button
+                  type="button"
+                  className="button primary"
+                  disabled={Boolean(revisionDecision) || !revisionReviewCandidate.can_accept}
+                  onClick={() => void decideRevision("accept")}
+                >
+                  {revisionDecision === "accept" ? "Accepting…" : "Accept revision"}
+                </button>
+              </footer>
+            </section>
+          </div>
+        )}
     </div>
   );
 }

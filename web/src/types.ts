@@ -1776,6 +1776,25 @@ export interface AgentArtifactDescriptor {
   can_download: boolean;
   can_keep: boolean;
   can_revise: boolean;
+  revision_candidate?: ArtifactRevisionCandidate | null;
+}
+
+/**
+ * Opaque because the backend publishes the diagnostic and both disposition
+ * decisions; browser code must not derive either from lifecycle spelling.
+ */
+declare const OPAQUE_ARTIFACT_REVISION_STATUS: unique symbol;
+export type ArtifactRevisionStatus = {
+  readonly [OPAQUE_ARTIFACT_REVISION_STATUS]: "ArtifactRevisionStatus";
+};
+
+export interface ArtifactRevisionCandidate {
+  candidate_id: string;
+  status: ArtifactRevisionStatus;
+  created_at: string;
+  diagnostic: string | null;
+  can_accept: boolean;
+  can_reject: boolean;
 }
 
 export type ArtifactSelection =

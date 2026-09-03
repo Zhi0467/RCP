@@ -5627,8 +5627,13 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
             if self.calls == 0:
                 self.operational_effects += 1
                 self.message = "The experiment was submitted once."
+                artifact = b"<!doctype html><p>before correction</p>"
             else:
                 self.message = "The patch was corrected."
+                artifact = b"<!doctype html><p>after correction</p>"
+            workspace = Path(kwargs["cwd"])
+            artifact_directory = next((workspace / "turns").glob("*/artifacts"))
+            artifact_directory.joinpath("correction.html").write_bytes(artifact)
             async for event in super().stream(provider, prompt, **kwargs):
                 yield event
 
@@ -5682,6 +5687,10 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
     assert "Do not repeat a submission, experiment, message" in correction_contract
     answers = [event.text for event in _events(frames) if event.event == "answer"]
     assert answers == ["The experiment was submitted once."]
+    artifacts = [event.artifact for event in _events(frames) if event.event == "artifact"]
+    assert [(item.name, item.size_bytes) for item in artifacts] == [
+        ("correction.html", len(b"<!doctype html><p>after correction</p>"))
+    ]
 
 
 @pytest.mark.asyncio

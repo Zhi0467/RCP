@@ -184,17 +184,22 @@ def list_local_regular_files(directory: Path) -> list[tuple[str, int]]:
         os.close(directory_fd)
 
 
-def replace_local_regular_file(directory: Path, name: str, data: bytes) -> None:
-    """Atomically replace one direct regular child without a digest precondition."""
+def replace_local_regular_file(
+    directory: Path,
+    name: str,
+    data: bytes,
+    *,
+    expected_sha256: str | None = None,
+) -> bool:
+    """Atomically replace one direct regular child if its digest is still expected."""
 
     if Path(name).name != name or name in {"", ".", ".."}:
         raise ValueError("artifact name must be a plain base name")
+    if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("expected artifact digest is invalid")
     directory_fd = _open_local_directory(directory)
     temporary_name = f".{name}.rcp-{secrets.token_hex(8)}"
     try:
-        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("artifact is not a regular file")
         descriptor = os.open(
             temporary_name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
@@ -211,8 +216,54 @@ def replace_local_regular_file(directory: Path, name: str, data: bytes) -> None:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        current_fd = os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_fd,
+        )
+        try:
+            metadata = os.fstat(current_fd)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("artifact is not a regular file")
+            if expected_sha256 is not None:
+                digest = hashlib.sha256()
+                while chunk := os.read(current_fd, 1024 * 1024):
+                    digest.update(chunk)
+                final_metadata = os.fstat(current_fd)
+                path_metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                opened_identity = (
+                    metadata.st_dev,
+                    metadata.st_ino,
+                    metadata.st_size,
+                    metadata.st_mtime_ns,
+                    metadata.st_ctime_ns,
+                )
+                final_identity = (
+                    final_metadata.st_dev,
+                    final_metadata.st_ino,
+                    final_metadata.st_size,
+                    final_metadata.st_mtime_ns,
+                    final_metadata.st_ctime_ns,
+                )
+                path_identity = (
+                    path_metadata.st_dev,
+                    path_metadata.st_ino,
+                    path_metadata.st_size,
+                    path_metadata.st_mtime_ns,
+                    path_metadata.st_ctime_ns,
+                )
+                if (
+                    digest.hexdigest() != expected_sha256
+                    or opened_identity != final_identity
+                    or final_identity != path_identity
+                ):
+                    os.unlink(temporary_name, dir_fd=directory_fd)
+                    return False
+        finally:
+            os.close(current_fd)
         os.replace(temporary_name, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
         os.fsync(directory_fd)
+        return True
     except BaseException:
         with suppress(FileNotFoundError):
             os.unlink(temporary_name, dir_fd=directory_fd)

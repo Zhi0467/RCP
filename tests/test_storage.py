@@ -61,6 +61,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (3, "experiment_episode_state_v1"),
         (4, "agent_usage_counted_dedupe_v1"),
         (5, "legacy_startup_schema_v1"),
+        (6, "artifact_revision_candidates_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -192,7 +193,9 @@ def test_legacy_project_transfer_uploads_schema_converges(tmp_path) -> None:
                 "2026-08-31T00:00:00+00:00",
             ),
         )
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 5")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)"
+        )
         assert connection.execute(
             "SELECT migration_version FROM storage_schema_migrations ORDER BY migration_version"
         ).fetchall() == [(1,), (2,), (3,), (4,)]
@@ -237,7 +240,7 @@ def test_failed_storage_migration_rolls_back_without_marker_and_retries(
             (now, now),
         )
         connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5)"
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5, 6)"
         )
 
     original = AppStore._migrate_episode_lineage
@@ -1944,6 +1947,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "graph_watcher_reconciliation": 0,
         "experiment_episode_state": 0,
         "result_views": 0,
+        "artifact_revision_candidates": 0,
         "auto_research_recoveries": 0,
         "auto_research_messages": 0,
         "auto_research_invocations": 0,
@@ -2371,7 +2375,7 @@ def test_agent_usage_dedupe_migration_repairs_historical_counted_duplicates_once
     with store.connection() as connection:
         connection.execute("DROP INDEX agent_usage_counted_dedupe")
         connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_version IN (4, 5)"
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (4, 5, 6)"
         )
         row = dict(
             connection.execute(

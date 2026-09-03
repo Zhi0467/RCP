@@ -446,6 +446,10 @@ class ProjectStoreMixin:
                     "result_views": connection.execute(
                         "DELETE FROM result_views WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "artifact_revision_candidates": connection.execute(
+                        "DELETE FROM artifact_revision_candidates WHERE project_id = ?",
+                        (project_id,),
+                    ).rowcount,
                     "watchers": connection.execute(
                         "DELETE FROM watchers WHERE project_id = ?", (project_id,)
                     ).rowcount,
@@ -852,6 +856,10 @@ class ProjectStoreMixin:
             )
             connection.execute(
                 "UPDATE result_views SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "UPDATE artifact_revision_candidates SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
             connection.execute(

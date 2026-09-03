@@ -123,3 +123,18 @@ test("artifact cards consume backend decisions and do not preflight disabled rou
   assert.match(nodeChatSource, /artifact\.can_download &&/);
   assert.match(nodeChatSource, /!sourceArtifact\.can_revise/);
 });
+
+test("artifact revision disposition refreshes the backend-owned source task", () => {
+  const decision = nodeChatSource.slice(
+    nodeChatSource.indexOf("const decideRevision = async"),
+    nodeChatSource.indexOf("const openRepositoryFile = async"),
+  );
+  assert.match(decision, /await decideArtifactRevision/);
+  assert.match(decision, /await onRefreshTask\(review\.taskId\)/);
+  assert.match(decision, /refreshedArtifact\.revision_candidate\.diagnostic/);
+  assert.doesNotMatch(nodeChatSource, /settledRevisionIds/);
+  assert.match(nodeChatSource, /revisionReviewCandidate\.can_accept/);
+  assert.match(nodeChatSource, /revisionReviewCandidate\.can_reject/);
+  assert.match(nodeChatSource, /versionedArtifactContentUrl/);
+  assert.match(appSource, /upsertTask\(next\)/);
+});

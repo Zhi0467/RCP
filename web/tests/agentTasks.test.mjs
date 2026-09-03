@@ -14,6 +14,7 @@ import {
   relatedChatTasks,
   resumablePausedChatTask,
   taskKindLabel,
+  versionedArtifactContentUrl,
 } from "../src/agentTasks.ts";
 
 function task(overrides) {
@@ -538,6 +539,19 @@ test("artifact URLs contain only RCP identifiers and the explicit action", () =>
   assert.equal(
     artifactUrl("project/id", "task id", "artifact#id", "download"),
     "/api/projects/project%2Fid/tasks/task%20id/artifacts/artifact%23id/download",
+  );
+  assert.equal(
+    versionedArtifactContentUrl(
+      "project/id",
+      "task id",
+      "artifact#id",
+      "2026-09-02T20:01:02+00:00",
+    ),
+    "/api/projects/project%2Fid/tasks/task%20id/artifacts/artifact%23id/content?task_updated_at=2026-09-02T20%3A01%3A02%2B00%3A00",
+  );
+  assert.notEqual(
+    versionedArtifactContentUrl("project", "task", "artifact", "before-conflict"),
+    versionedArtifactContentUrl("project", "task", "artifact", "after-conflict"),
   );
 });
 
