@@ -32,6 +32,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rcp"]
+exclude = [
+  "src/rcp/skills/graph-audit",
+  "src/rcp/skills/evidence-triage",
+  "src/rcp/skills/experiment-causality",
+  "src/rcp/skills/episode-report",
+  "src/rcp/skills/workflows",
+]
 
 [tool.hatch.build.targets.wheel.force-include]
 "web/dist" = "rcp/web_dist"
