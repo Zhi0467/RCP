@@ -29,7 +29,6 @@ from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_reposito
 from rcp.attachments import ChatAttachmentStore
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
-    DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
     Manifest,
     load_manifest,
 )
@@ -48,8 +47,9 @@ from rcp.limits import (
     REMOTE_STATE_HEAD_PROBE_INTERVAL_SECONDS,
 )
 from rcp.paper import PaperService, PaperSnapshot
+from rcp.project_snapshot_compat import migrate_display_snapshot_settings
 from rcp.provider_skills import ProviderSkillInventoryManager
-from rcp.providers import PROVIDER_IDS, ProviderId, configured_runtime
+from rcp.providers import PROVIDER_IDS, ProviderId
 from rcp.runs.task_policy import task_graph_capable
 from rcp.server_ops.backup_models import (
     BackupCheckoutRecoveryDescriptor,
@@ -1980,7 +1980,7 @@ class ProjectCatalog:
         snapshot = envelope["snapshot"]
         if not isinstance(snapshot, dict):
             return "invalid", None
-        if not _migrate_legacy_display_snapshot_settings(snapshot):
+        if not migrate_display_snapshot_settings(snapshot):
             return "invalid", None
         # Pre-identity display caches did not carry the catalog's home-space field.
         allow_pre_identity = False
@@ -2321,7 +2321,8 @@ class ProjectDisplayCache:
 
         payload = dict(snapshot)
         state = GraphState.model_validate(payload["graph"])
-        cached_controls = payload.get("experiment_control")
+        # Durable display snapshots deliberately omit operational control state.
+        cached_controls = payload.get("experiment_control", {})
         if not isinstance(cached_controls, dict):
             raise ValueError("Cached project snapshot has no completed Experiment control map.")
         controls = dict(cached_controls)
@@ -2812,51 +2813,6 @@ def _valid_display_snapshot(
         return False
     graph_revision = graph_payload.get("revision")
     return type(graph_revision) is int and graph_revision == revision
-
-
-def _migrate_legacy_display_snapshot_settings(snapshot: dict[str, object]) -> bool:
-    if not _migrate_legacy_display_snapshot_runtimes(snapshot):
-        return False
-    legacy_key = "default_campaign_invocation_ceiling"
-    current_key = "default_auto_research_invocation_ceiling"
-    if legacy_key not in snapshot:
-        snapshot.setdefault(current_key, DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING)
-        return True
-    if current_key in snapshot and snapshot[current_key] != snapshot[legacy_key]:
-        return False
-    snapshot.setdefault(current_key, snapshot[legacy_key])
-    del snapshot[legacy_key]
-    return True
-
-
-def _migrate_legacy_display_snapshot_runtimes(snapshot: dict[str, object]) -> bool:
-    """Name the runtime on profiles cached before runtime selection existed.
-
-    `agent_profiles` is part of the cached payload, so the first read after this
-    upgrade would otherwise hand the settings form a profile with no runtime at
-    all. The manifest resolves an omitted value to the provider default; this
-    resolves it the same way rather than leaving the field absent.
-    """
-
-    profiles = snapshot.get("agent_profiles")
-    if not isinstance(profiles, dict):
-        return True
-    for profile in profiles.values():
-        if not isinstance(profile, dict):
-            return False
-        provider = profile.get("provider")
-        if not isinstance(provider, str):
-            return False
-        runtime = profile.get("runtime")
-        if runtime is not None and not isinstance(runtime, str):
-            return False
-        try:
-            profile["runtime"] = configured_runtime(provider, runtime)
-        except ValueError:
-            # A retired provider or runtime cannot be named. Re-deriving the
-            # snapshot from the manifest is cheaper than guessing.
-            return False
-    return True
 
 
 def _ensure_snapshot_freshness(

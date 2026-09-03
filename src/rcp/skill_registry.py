@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
@@ -10,6 +10,12 @@ SkillKind = Literal["skill", "workflow"]
 
 _ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+
+# Persisted project defaults may outlive an official package rename. Keep this
+# map closed and exact so unknown package IDs still fail during resolution.
+_RETIRED_SKILL_IDS: Final[dict[str, str]] = {
+    "campaign-report": "episode-report",
+}
 
 _OFFICIAL_PACKAGE_SPECS: tuple[tuple[SkillKind, str, str], ...] = (
     ("skill", "graph-audit", "graph-audit/SKILL.md"),
@@ -45,6 +51,25 @@ class SkillDefaults(BaseModel):
 
     workflow_ids: list[str] = Field(default_factory=list)
     skill_ids: list[str] = Field(default_factory=_default_skill_ids)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_retired_ids(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        skill_ids = value.get("skill_ids")
+        if not isinstance(skill_ids, list) or not any(
+            item in _RETIRED_SKILL_IDS for item in skill_ids if isinstance(item, str)
+        ):
+            return value
+        migrated = dict(value)
+        migrated["skill_ids"] = list(
+            dict.fromkeys(
+                _RETIRED_SKILL_IDS.get(item, item) if isinstance(item, str) else item
+                for item in skill_ids
+            )
+        )
+        return migrated
 
 
 class SkillSelection(BaseModel):
