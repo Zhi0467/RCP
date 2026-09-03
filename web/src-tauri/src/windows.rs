@@ -19,6 +19,7 @@ use crate::{
     local_https::{self, LocalHttpsIdentity},
     navigation,
     team_connections::TeamConnectionState,
+    team_session::TeamSessionState,
 };
 
 static PREVIEW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
@@ -182,9 +183,15 @@ pub fn recover_then_prepare_show(
     let current = window
         .url()
         .map_err(|error| format!("could not inspect the RCP window: {error}"))?;
-    if let Some(target) =
-        reopen_navigation_target(&current, &status.base_url, uses_vite_dev_server())?
-    {
+    let team_status = app
+        .state::<TeamSessionState>()
+        .status_for_origin(&current)?;
+    if let Some(target) = reopen_navigation_target(
+        &current,
+        &status.base_url,
+        team_status.as_ref().map(|team| team.base_url.as_str()),
+        uses_vite_dev_server(),
+    )? {
         eprintln!("[rcp] recovering the main window from {current} to {target}");
         let generation = arm_handshake_fallback(app);
         stage_pending_recovery(PendingRecovery {
@@ -202,7 +209,7 @@ pub fn recover_then_prepare_show(
         return Ok(());
     }
 
-    let result = prepare_show(app, status, reason);
+    let result = prepare_show(app, team_status.as_ref().unwrap_or(status), reason);
     show_when_handshake_does_not_arrive(app);
     result
 }
@@ -304,7 +311,7 @@ pub fn cancel_pending_show() {
 }
 
 pub fn open_preview(app: &AppHandle, url: Url, base_url: String) -> Result<(), String> {
-    if !navigation::is_loopback_rcp_url(&url, &base_url, false) {
+    if !is_preview_entry_url(&url, &base_url) {
         return Err("artifact preview URL is outside the RCP backend".into());
     }
     let label = format!(
@@ -318,7 +325,7 @@ pub fn open_preview(app: &AppHandle, url: Url, base_url: String) -> Result<(), S
         .inner_size(1040.0, 760.0)
         .min_inner_size(520.0, 400.0)
         .on_navigation(move |candidate| {
-            if navigation::is_loopback_rcp_url(candidate, &base_url, false) {
+            if is_preview_navigation(candidate, &base_url) {
                 true
             } else {
                 if navigation::is_external_reference(candidate) {
@@ -339,7 +346,21 @@ pub fn open_preview(app: &AppHandle, url: Url, base_url: String) -> Result<(), S
         })
         .build()
         .map_err(|error| format!("could not open artifact preview: {error}"))?;
+    // Main-window creation installs the certificate pin on Wry's shared
+    // navigation-delegate class before any preview can open. Reinstalling it
+    // here is both unnecessary and racy: `with_webview` schedules its callback
+    // when this function runs from an async command, so the command can observe
+    // the untouched sentinel and report failure after the window already opens.
     Ok(())
+}
+
+fn is_preview_entry_url(url: &Url, base_url: &str) -> bool {
+    url.scheme() != "about"
+        && Url::parse(base_url).is_ok_and(|base| navigation::same_origin(url, &base))
+}
+
+fn is_preview_navigation(url: &Url, base_url: &str) -> bool {
+    matches!(url.as_str(), "about:srcdoc" | "about:blank") || is_preview_entry_url(url, base_url)
 }
 
 pub fn uses_vite_dev_server() -> bool {
@@ -348,14 +369,19 @@ pub fn uses_vite_dev_server() -> bool {
 
 fn reopen_navigation_target(
     current: &Url,
-    base_url: &str,
+    personal_base_url: &str,
+    established_team_base_url: Option<&str>,
     allow_dev: bool,
 ) -> Result<Option<Url>, String> {
-    if navigation::is_rcp_app_document_url(current, base_url, allow_dev) {
+    if navigation::is_rcp_app_document_url(current, personal_base_url, allow_dev)
+        || established_team_base_url.is_some_and(|base_url| {
+            navigation::is_rcp_app_document_url(current, base_url, allow_dev)
+        })
+    {
         return Ok(None);
     }
-    let mut target =
-        Url::parse(base_url).map_err(|error| format!("invalid verified backend URL: {error}"))?;
+    let mut target = Url::parse(personal_base_url)
+        .map_err(|error| format!("invalid verified backend URL: {error}"))?;
     target.set_path("/");
     target.set_query(None);
     target.set_fragment(None);
@@ -490,24 +516,93 @@ mod tests {
     }
 
     #[test]
+    fn preview_accepts_only_the_exact_personal_or_team_origin() {
+        for base in [
+            "http://127.0.0.1:18421",
+            "https://rcp-11111111111141118111111111111111.rcp.localhost:18421",
+        ] {
+            assert!(is_preview_entry_url(
+                &url(&format!("{base}/api/projects/preview")),
+                base,
+            ));
+        }
+        assert!(!is_preview_entry_url(
+            &url("https://rcp-11111111111141118111111111111111.rcp.localhost:19421/api/preview"),
+            "https://rcp-11111111111141118111111111111111.rcp.localhost:18421",
+        ));
+        assert!(!is_preview_entry_url(
+            &url("https://example.com/api/preview"),
+            "http://127.0.0.1:18421",
+        ));
+        assert!(!is_preview_entry_url(
+            &url("about:srcdoc"),
+            "http://127.0.0.1:18421",
+        ));
+        assert!(is_preview_navigation(
+            &url("about:srcdoc"),
+            "http://127.0.0.1:18421",
+        ));
+        assert!(is_preview_navigation(
+            &url("about:blank"),
+            "http://127.0.0.1:18421",
+        ));
+        assert!(!is_preview_navigation(
+            &url("about:config"),
+            "http://127.0.0.1:18421",
+        ));
+    }
+
+    #[test]
     fn reopen_keeps_app_root_and_repairs_same_origin_error_documents() {
         let base = "http://127.0.0.1:18421";
         assert_eq!(
-            reopen_navigation_target(&url("http://127.0.0.1:18421/#/projects/a"), base, false)
-                .unwrap(),
+            reopen_navigation_target(
+                &url("http://127.0.0.1:18421/#/projects/a"),
+                base,
+                None,
+                false,
+            )
+            .unwrap(),
             None,
         );
         assert_eq!(
             reopen_navigation_target(
                 &url("http://127.0.0.1:18421/api/projects/missing"),
                 base,
+                None,
                 false,
             )
             .unwrap(),
             Some(url("http://127.0.0.1:18421/")),
         );
         assert_eq!(
-            reopen_navigation_target(&url("about:blank"), base, false).unwrap(),
+            reopen_navigation_target(&url("about:blank"), base, None, false).unwrap(),
+            Some(url("http://127.0.0.1:18421/")),
+        );
+    }
+
+    #[test]
+    fn reopen_keeps_an_established_team_app_document() {
+        let personal = "http://127.0.0.1:18421";
+        let team = "https://rcp-11111111111141118111111111111111.rcp.localhost:19421";
+        assert_eq!(
+            reopen_navigation_target(
+                &url(&format!("{team}/#/projects/a/chats")),
+                personal,
+                Some(team),
+                false,
+            )
+            .unwrap(),
+            None,
+        );
+        assert_eq!(
+            reopen_navigation_target(
+                &url(&format!("{team}/api/projects/missing")),
+                personal,
+                Some(team),
+                false,
+            )
+            .unwrap(),
             Some(url("http://127.0.0.1:18421/")),
         );
     }

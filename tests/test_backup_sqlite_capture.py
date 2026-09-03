@@ -31,6 +31,7 @@ from rcp.setup import render_prepared_team_manifest
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    ArtifactRevisionCandidateRecord,
     ProjectProvisioningGitCheckRecord,
     ProjectProvisioningMachineRecord,
     ProjectProvisioningProviderCheckRecord,
@@ -227,6 +228,62 @@ def _create_kept_view(
     )
 
 
+def _create_unresolved_kept_artifact_revision(
+    store: AppStore,
+    project_id: str,
+    source_operation_id: str,
+    *,
+    status: str,
+) -> str:
+    revision_operation_id = str(uuid.uuid4())
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=revision_operation_id,
+            project_id=project_id,
+            kind="refresh",
+            status="succeeded",
+            request={},
+            result={"messages": ["Revised."]},
+            created_at=now,
+            updated_at=now,
+            finished_at=now,
+            status_message="Completed.",
+        )
+    )
+    base_sha256 = hashlib.sha256(b"original kept bytes").hexdigest()
+    candidate = store.create_artifact_revision_candidate(
+        ArtifactRevisionCandidateRecord(
+            candidate_id=uuid.uuid4().hex[:24],
+            project_id=project_id,
+            source_operation_id=source_operation_id,
+            source_artifact_id="d" * 24,
+            revision_operation_id=revision_operation_id,
+            stage_host="",
+            stage_root="/tmp/candidate-stage",
+            artifact_scope_id=revision_operation_id,
+            source_name="figure.png",
+            media_type="image/png",
+            base_sha256=base_sha256,
+            candidate_sha256=hashlib.sha256(b"candidate kept bytes").hexdigest(),
+            candidate_size_bytes=len(b"candidate kept bytes"),
+            status="pending",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    if status == "accepting":
+        store.begin_artifact_revision_acceptance(
+            candidate.candidate_id,
+            decided_by=AuthorizedHuman(
+                space_id=store.space_id,
+                user_id=str(uuid.uuid4()),
+                display_name="Backup test",
+            ),
+        )
+    return base_sha256
+
+
 def test_online_sqlite_snapshot_stays_consistent_while_writers_continue(
     tmp_path: Path,
 ) -> None:
@@ -297,6 +354,31 @@ def test_online_sqlite_snapshot_stays_consistent_while_writers_continue(
         live_count = connection.execute("SELECT COUNT(*) FROM backup_writer_probe").fetchone()[0]
     assert 10 <= snapshot_count <= live_count
     assert stat.S_IMODE(snapshot_path.stat().st_mode) == 0o400
+
+
+@pytest.mark.parametrize("candidate_status", ["pending", "accepting"])
+def test_unresolved_kept_artifact_inventory_is_bound_to_its_base_digest(
+    tmp_path: Path,
+    candidate_status: str,
+) -> None:
+    data_dir = tmp_path / "data"
+    store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Capture lab")
+    project = _register_completed_project(store, data_dir, name="Revision project")
+    operation_id = _create_task_with_kept_artifact(store, project.project_id)
+    base_sha256 = _create_unresolved_kept_artifact_revision(
+        store,
+        project.project_id,
+        operation_id,
+        status=candidate_status,
+    )
+
+    receipt = (
+        BackupCaptureCoordinator(store, data_dir, _metadata(data_dir)).capture_sqlite().receipt
+    )
+
+    reference = receipt.projects[0].kept_artifacts[0]
+    assert reference.operation_id == operation_id
+    assert reference.expected_sha256 == base_sha256
 
 
 def test_capture_inventory_is_bound_to_the_copied_database(

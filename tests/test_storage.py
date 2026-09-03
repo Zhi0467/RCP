@@ -61,7 +61,8 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (3, "experiment_episode_state_v1"),
         (4, "agent_usage_counted_dedupe_v1"),
         (5, "legacy_startup_schema_v1"),
-        (6, "space_run_projection_indexes_v1"),
+        (6, "artifact_revision_candidates_v1"),
+        (7, "space_run_projection_indexes_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -123,6 +124,19 @@ def test_current_storage_startup_is_read_only_and_preserves_database_bytes(tmp_p
         if statement.lstrip().upper().startswith(write_prefixes)
     ]
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("opener", ["open_read_only", "open_read_only_snapshot"])
+def test_read_only_storage_openers_refuse_writes(tmp_path, opener: str) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path)
+    store = getattr(AppStore, opener)(path)
+
+    with (
+        store.connection() as connection,
+        pytest.raises(sqlite3.OperationalError, match="readonly"),
+    ):
+        connection.execute("DELETE FROM storage_schema_migrations")
 
 
 def test_current_storage_schema_validator_rejects_corruption(tmp_path) -> None:
@@ -198,10 +212,12 @@ def test_legacy_project_transfer_uploads_schema_converges(tmp_path) -> None:
                 "2026-08-31T00:00:00+00:00",
             ),
         )
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 5")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)"
+        )
         assert connection.execute(
             "SELECT migration_version FROM storage_schema_migrations ORDER BY migration_version"
-        ).fetchall() == [(1,), (2,), (3,), (4,), (6,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,), (7,)]
 
     reopened = AppStore(path)
 
@@ -243,7 +259,7 @@ def test_failed_storage_migration_rolls_back_without_marker_and_retries(
             (now, now),
         )
         connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5)"
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5, 6)"
         )
 
     original = AppStore._migrate_episode_lineage
@@ -301,7 +317,7 @@ def test_space_run_projection_indexes_upgrade_an_existing_current_store(tmp_path
         "auto_research_recoveries_episode",
     )
     with sqlite3.connect(path) as connection:
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 6")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 7")
         for index_name in index_names:
             connection.execute(f'DROP INDEX "{index_name}"')
 
@@ -310,7 +326,7 @@ def test_space_run_projection_indexes_upgrade_an_existing_current_store(tmp_path
     with reopened.connection() as connection:
         assert (
             connection.execute(
-                "SELECT migration_name FROM storage_schema_migrations WHERE migration_version = 6"
+                "SELECT migration_name FROM storage_schema_migrations WHERE migration_version = 7"
             ).fetchone()[0]
             == "space_run_projection_indexes_v1"
         )
@@ -1982,6 +1998,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "graph_watcher_reconciliation": 0,
         "experiment_episode_state": 0,
         "result_views": 0,
+        "artifact_revision_candidates": 0,
         "auto_research_recoveries": 0,
         "auto_research_messages": 0,
         "auto_research_invocations": 0,
@@ -2409,7 +2426,7 @@ def test_agent_usage_dedupe_migration_repairs_historical_counted_duplicates_once
     with store.connection() as connection:
         connection.execute("DROP INDEX agent_usage_counted_dedupe")
         connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_version IN (4, 5)"
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (4, 5, 6)"
         )
         row = dict(
             connection.execute(

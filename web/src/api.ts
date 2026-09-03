@@ -1,5 +1,6 @@
 import type {
   ChatAttachmentDescriptor,
+  ArtifactRevisionCandidate,
   Episode,
   EpisodeMessage,
   EpisodeMode,
@@ -139,6 +140,17 @@ export function createTeamProjectProvisioning(
 
 export function loadServerStatus(): Promise<ServerStatus> {
   return api<ServerStatus>("/api/server-status");
+}
+
+export function decideArtifactRevision(
+  projectId: string,
+  candidateId: string,
+  decision: "accept" | "reject",
+): Promise<ArtifactRevisionCandidate> {
+  return api<ArtifactRevisionCandidate>(
+    `/api/projects/${encodeURIComponent(projectId)}/artifact-revisions/${encodeURIComponent(candidateId)}/${decision}`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
 }
 
 export function loadProjectProvisioningRequests(): Promise<ProjectProvisioningResponse[]> {

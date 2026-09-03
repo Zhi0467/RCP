@@ -13,6 +13,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from rcp.api.dependencies import (
+    get_artifact_mutation_locks,
     get_attachment_store,
     get_background_tasks,
     get_catalog,
@@ -27,6 +28,7 @@ from rcp.api.dependencies import (
 )
 from rcp.api.identity import IdentityAccess
 from rcp.api.task_requests import _resolved_auto_research_request, _resolved_graph_request
+from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
     AgentArtifactDescriptor,
@@ -34,6 +36,7 @@ from rcp.artifacts import (
     descriptor_for,
     html_preview_document,
     read_local_regular_file,
+    replace_local_regular_file,
     validate_artifact_bytes,
 )
 from rcp.attachments import ChatAttachmentStore
@@ -48,7 +51,14 @@ from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _resolved_coach_request
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
-from rcp.storage import AgentTaskAdmissionConflict, AgentTaskKind, AgentTaskRecord, AppStore
+from rcp.storage import (
+    AgentTaskAdmissionConflict,
+    AgentTaskKind,
+    AgentTaskRecord,
+    AppStore,
+    ArtifactRevisionCandidateRecord,
+    ArtifactRevisionConflict,
+)
 from rcp.transport import RemoteRunStage, StateUnavailable
 from rcp.transport.state import StateWorkspace
 
@@ -67,6 +77,19 @@ ResultViewKeepLocksDependency = Annotated[
     KeyedLocks,
     Depends(get_result_view_keep_locks),
 ]
+ArtifactMutationLocksDependency = Annotated[
+    KeyedLocks,
+    Depends(get_artifact_mutation_locks),
+]
+
+
+class ArtifactRevisionCandidateResponse(BaseModel):
+    candidate_id: str
+    status: Literal["pending", "accepting", "accepted", "rejected", "conflicted", "abandoned"]
+    created_at: str
+    diagnostic: str | None
+    can_accept: bool
+    can_reject: bool
 
 
 class RetryAgentTaskRequest(BaseModel):
@@ -84,10 +107,26 @@ class AgentArtifactResponse(AgentArtifactDescriptor):
     can_open: bool
     can_download: bool
     can_keep: bool
+    can_discuss: bool
     can_revise: bool
+    revision_candidate: ArtifactRevisionCandidateResponse | None
+
+
+def _artifact_revision_candidate_response(
+    candidate: ArtifactRevisionCandidateRecord,
+) -> ArtifactRevisionCandidateResponse:
+    return ArtifactRevisionCandidateResponse(
+        candidate_id=candidate.candidate_id,
+        status=candidate.status,
+        created_at=candidate.created_at,
+        diagnostic=candidate.diagnostic,
+        can_accept=candidate.status in {"pending", "accepting"},
+        can_reject=candidate.status in {"pending", "conflicted"},
+    )
 
 
 def _agent_artifact_response(
+    store: AppStore,
     record: AgentTaskRecord,
     descriptor: AgentArtifactDescriptor,
 ) -> AgentArtifactResponse:
@@ -101,6 +140,16 @@ def _agent_artifact_response(
         if record.history_only
         else "Artifact bytes are no longer available."
     )
+    revision_candidate = store.unresolved_artifact_revision_candidate(
+        record.operation_id,
+        descriptor.artifact_id,
+    )
+    can_discuss = (
+        available
+        and not record.history_only
+        and bool(record.native_session_id)
+        and bool(record.stage_root)
+    )
     return AgentArtifactResponse(
         **descriptor.model_dump(mode="python"),
         available=available,
@@ -108,16 +157,24 @@ def _agent_artifact_response(
         can_open=available,
         can_download=available,
         can_keep=available and not kept and not record.history_only,
-        can_revise=(
-            available
-            and not record.history_only
-            and bool(record.native_session_id)
-            and bool(record.stage_root)
+        can_discuss=can_discuss,
+        can_revise=can_discuss and revision_candidate is None,
+        revision_candidate=(
+            _artifact_revision_candidate_response(revision_candidate)
+            if revision_candidate is not None
+            else None
         ),
     )
 
 
-def _agent_task_response(record: AgentTaskRecord) -> dict[str, object]:
+def _agent_artifact_response_json(response: AgentArtifactResponse) -> dict[str, object]:
+    projected = response.model_dump(mode="json")
+    if response.revision_candidate is None:
+        projected.pop("revision_candidate")
+    return projected
+
+
+def _agent_task_response(store: AppStore, record: AgentTaskRecord) -> dict[str, object]:
     response = record.model_dump(mode="json")
     result = response.get("result")
     stored_artifacts = record.result.get("artifacts") if record.result else None
@@ -141,7 +198,9 @@ def _agent_task_response(record: AgentTaskRecord) -> dict[str, object]:
         except (TypeError, ValueError):
             projected.append(raw)
             continue
-        projected.append(_agent_artifact_response(record, descriptor).model_dump(mode="json"))
+        projected.append(
+            _agent_artifact_response_json(_agent_artifact_response(store, record, descriptor))
+        )
     result["artifacts"] = projected
     return response
 
@@ -282,7 +341,7 @@ def agent_tasks(
     store: StoreDependency,
 ) -> list[dict[str, object]]:
     require_registered_project(catalog, project_id)
-    return [_agent_task_response(record) for record in store.agent_tasks(project_id)]
+    return [_agent_task_response(store, record) for record in store.agent_tasks(project_id)]
 
 
 @router.get("/api/projects/{project_id}/tasks/{operation_id}")
@@ -297,7 +356,7 @@ def agent_task(
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
-    detail = _agent_task_response(record)
+    detail = _agent_task_response(store, record)
     detail["events"] = [
         event.model_dump(mode="json") for event in store.agent_task_events(operation_id)
     ]
@@ -485,7 +544,7 @@ async def _artifact_viewer_response(
         preview_url=content_url,
         keep_url=keep_url,
         project_id=project_id,
-        chat_id=chat_id if descriptor.can_revise else None,
+        chat_id=chat_id if descriptor.can_discuss else None,
         operation_id=operation_id,
         descriptor=descriptor,
     )
@@ -504,47 +563,237 @@ async def _artifact_viewer_response(
     "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/keep",
     dependencies=[Depends(require_project_write_admission)],
 )
-async def keep_agent_artifact(
+def keep_agent_artifact(
     project_id: str,
     operation_id: str,
     artifact_id: str,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
+    artifact_mutation_locks: ArtifactMutationLocksDependency,
 ) -> dict[str, object]:
     service = get_project_service(catalog, project_id)
-    descriptor, data = await asyncio.to_thread(
-        _load_agent_artifact,
-        store,
-        service.history.workspace,
-        project_id,
-        operation_id,
-        artifact_id,
-        "keep",
-    )
-    project_name = catalog.card(project_id)["name"]
-    if not isinstance(project_name, str):
-        raise HTTPException(status_code=503, detail="Artifact Keep unavailable")
-    try:
-        kept_filename = await asyncio.to_thread(
-            service.history.workspace.keep_artifact,
-            source_name=descriptor.name,
-            project_name=project_name,
-            data=data,
-        )
-        kept = store.mark_agent_artifact_kept(
+    with artifact_mutation_locks(_artifact_mutation_key(project_id, operation_id, artifact_id)):
+        descriptor, data = _load_agent_artifact(
+            store,
+            service.history.workspace,
+            project_id,
             operation_id,
             artifact_id,
-            kept_filename=kept_filename,
-            kept_at=store.now(),
+            "keep",
         )
-    except (FileNotFoundError, OSError, StateUnavailable, ValueError) as exc:
-        raise HTTPException(status_code=503, detail="Artifact Keep unavailable") from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Artifact not found") from exc
+        project_name = catalog.card(project_id)["name"]
+        if not isinstance(project_name, str):
+            raise HTTPException(status_code=503, detail="Artifact Keep unavailable")
+        try:
+            kept_filename = service.history.workspace.keep_artifact(
+                source_name=descriptor.name,
+                project_name=project_name,
+                data=data,
+            )
+            kept = store.mark_agent_artifact_kept(
+                operation_id,
+                artifact_id,
+                kept_filename=kept_filename,
+                kept_at=store.now(),
+            )
+        except (FileNotFoundError, OSError, StateUnavailable, ValueError) as exc:
+            raise HTTPException(status_code=503, detail="Artifact Keep unavailable") from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Artifact not found") from exc
     updated = store.agent_task(operation_id)
     assert updated is not None
-    return _agent_artifact_response(updated, kept).model_dump(mode="json")
+    return _agent_artifact_response_json(_agent_artifact_response(store, updated, kept))
+
+
+@router.get("/api/projects/{project_id}/artifact-revisions/{candidate_id}/content")
+@router.head("/api/projects/{project_id}/artifact-revisions/{candidate_id}/content")
+def content_artifact_revision_candidate(
+    project_id: str,
+    candidate_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> Response:
+    get_project_service(catalog, project_id)
+    candidate = _artifact_revision_candidate(store, project_id, candidate_id)
+    if candidate.status not in {"pending", "accepting", "conflicted"}:
+        raise HTTPException(status_code=410, detail="Artifact revision is no longer pending")
+    try:
+        data = _artifact_revision_candidate_bytes(store, candidate)
+    except (FileNotFoundError, OSError, StateUnavailable) as exc:
+        raise HTTPException(
+            status_code=503, detail="Artifact revision preview unavailable"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=410, detail="Artifact revision preview unavailable"
+        ) from exc
+    headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+    if candidate.media_type == "text/html":
+        try:
+            document, csp = html_preview_document(data)
+        except Exception as exc:
+            raise HTTPException(status_code=410, detail="Preview unavailable") from exc
+        headers["Content-Security-Policy"] = csp
+        return Response(
+            b"" if request.method == "HEAD" else document,
+            media_type="text/html",
+            headers=headers,
+        )
+    headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    return Response(
+        b"" if request.method == "HEAD" else data,
+        media_type=candidate.media_type,
+        headers=headers,
+    )
+
+
+@router.post(
+    "/api/projects/{project_id}/artifact-revisions/{candidate_id}/accept",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def accept_artifact_revision_candidate(
+    project_id: str,
+    candidate_id: str,
+    http_request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    artifact_mutation_locks: ArtifactMutationLocksDependency,
+) -> dict[str, object]:
+    service = get_project_service(catalog, project_id)
+    candidate = _artifact_revision_candidate(store, project_id, candidate_id)
+    lock_key = _artifact_mutation_key(
+        project_id,
+        candidate.source_operation_id,
+        candidate.source_artifact_id,
+    )
+    with artifact_mutation_locks(lock_key):
+        candidate = _artifact_revision_candidate(store, project_id, candidate_id)
+        if candidate.status == "accepted":
+            return _artifact_revision_candidate_response(candidate).model_dump(mode="json")
+        try:
+            candidate = store.begin_artifact_revision_acceptance(
+                candidate_id,
+                decided_by=identity_access.require_patch_capable_identity(http_request),
+            )
+        except ArtifactRevisionConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        try:
+            candidate_data = _artifact_revision_candidate_bytes(store, candidate)
+        except (FileNotFoundError, OSError, StateUnavailable) as exc:
+            store.reset_artifact_revision_acceptance(candidate_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Artifact revision candidate unavailable; retry Accept.",
+            ) from exc
+        except ValueError as exc:
+            conflicted = store.conflict_artifact_revision_candidate(
+                candidate_id,
+                "The saved candidate bytes no longer match their recorded digest.",
+            )
+            raise HTTPException(status_code=409, detail=conflicted.diagnostic) from exc
+        try:
+            source, current_data = _read_agent_artifact_bytes(
+                store,
+                service.history.workspace,
+                project_id,
+                candidate.source_operation_id,
+                candidate.source_artifact_id,
+                "open",
+            )
+        except HTTPException:
+            store.reset_artifact_revision_acceptance(candidate_id)
+            raise
+        except FileNotFoundError as exc:
+            conflicted = store.conflict_artifact_revision_candidate(
+                candidate_id,
+                "The current artifact is no longer available.",
+            )
+            raise HTTPException(status_code=409, detail=conflicted.diagnostic) from exc
+        except (OSError, StateUnavailable) as exc:
+            store.reset_artifact_revision_acceptance(candidate_id)
+            raise HTTPException(status_code=503, detail="Preview unavailable") from exc
+        except ValueError as exc:
+            conflicted = store.conflict_artifact_revision_candidate(
+                candidate_id,
+                "The current artifact is no longer a readable supported artifact.",
+            )
+            raise HTTPException(status_code=409, detail=conflicted.diagnostic) from exc
+        current_sha256 = hashlib.sha256(current_data).hexdigest()
+        if current_sha256 not in {candidate.base_sha256, candidate.candidate_sha256}:
+            conflicted = store.conflict_artifact_revision_candidate(
+                candidate_id,
+                "The current artifact changed after this candidate was produced.",
+            )
+            raise HTTPException(status_code=409, detail=conflicted.diagnostic)
+        try:
+            replaced = _replace_agent_artifact_bytes(
+                store,
+                service.history.workspace,
+                candidate.source_operation_id,
+                source,
+                candidate_data,
+                expected_sha256=current_sha256,
+            )
+        except ArtifactReplacementConflict as exc:
+            conflicted = store.conflict_artifact_revision_candidate(
+                candidate_id,
+                "The current artifact disappeared or became unsafe while this candidate was "
+                "being accepted.",
+            )
+            raise HTTPException(status_code=409, detail=conflicted.diagnostic) from exc
+        except (FileNotFoundError, OSError, StateUnavailable, ValueError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Artifact revision publication failed; retry Accept.",
+            ) from exc
+        if not replaced:
+            conflicted = store.conflict_artifact_revision_candidate(
+                candidate_id,
+                "The current artifact changed while this candidate was being accepted.",
+            )
+            raise HTTPException(status_code=409, detail=conflicted.diagnostic)
+        try:
+            accepted = store.complete_artifact_revision_acceptance(candidate_id)
+        except ArtifactRevisionConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _artifact_revision_candidate_response(accepted).model_dump(mode="json")
+
+
+@router.post(
+    "/api/projects/{project_id}/artifact-revisions/{candidate_id}/reject",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def reject_artifact_revision_candidate(
+    project_id: str,
+    candidate_id: str,
+    http_request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    artifact_mutation_locks: ArtifactMutationLocksDependency,
+) -> dict[str, object]:
+    get_project_service(catalog, project_id)
+    candidate = _artifact_revision_candidate(store, project_id, candidate_id)
+    lock_key = _artifact_mutation_key(
+        project_id,
+        candidate.source_operation_id,
+        candidate.source_artifact_id,
+    )
+    with artifact_mutation_locks(lock_key):
+        try:
+            rejected = store.reject_artifact_revision_candidate(
+                candidate_id,
+                decided_by=identity_access.require_patch_capable_identity(http_request),
+            )
+        except ArtifactRevisionConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _artifact_revision_candidate_response(rejected).model_dump(mode="json")
 
 
 @router.post("/api/projects/{project_id}/tasks/{operation_id}/pause", status_code=202)
@@ -734,6 +983,23 @@ def retry_agent_task(
                 previous.kind,
                 candidate,
             )
+        if isinstance(candidate, RunRequest):
+            candidate = _admit_artifact_context_request(
+                store,
+                service,
+                project_id,
+                previous.kind,
+                candidate,
+            )
+            if candidate.artifact_context is not None:
+                overrides.update(
+                    {
+                        "provider": candidate.provider,
+                        "model": candidate.model,
+                        "reasoning": candidate.reasoning,
+                        "run_on": candidate.run_on,
+                    }
+                )
         candidate_payload = candidate.model_dump(mode="json")
         experiment_admission.require_current(service, candidate_payload)
         skills = _validate_stored_task_request(
@@ -763,6 +1029,104 @@ def retry_agent_task(
             result_view_retry_lock.release()
 
 
+def _artifact_mutation_key(project_id: str, operation_id: str, artifact_id: str) -> str:
+    return f"artifact:{project_id}:{operation_id}:{artifact_id}"
+
+
+def _artifact_revision_candidate(
+    store: AppStore,
+    project_id: str,
+    candidate_id: str,
+) -> ArtifactRevisionCandidateRecord:
+    candidate = store.artifact_revision_candidate(candidate_id)
+    if candidate is None or candidate.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Artifact revision not found")
+    return candidate
+
+
+def _artifact_revision_candidate_bytes(
+    store: AppStore,
+    candidate: ArtifactRevisionCandidateRecord,
+) -> bytes:
+    revision = store.agent_task(candidate.revision_operation_id)
+    if (
+        revision is None
+        or revision.project_id != candidate.project_id
+        or (revision.stage_host or "") != candidate.stage_host
+        or revision.stage_root != candidate.stage_root
+    ):
+        raise FileNotFoundError(candidate.source_name)
+    expected = descriptor_for(candidate.artifact_scope_id, candidate.source_name)
+    if expected.media_type != candidate.media_type:
+        raise ValueError("artifact revision candidate descriptor changed")
+    if candidate.stage_host:
+        stage = RemoteRunStage(candidate.stage_host).attach_artifact_source(candidate.stage_root)
+        data = stage.read_artifact_bytes(
+            candidate.artifact_scope_id,
+            candidate.source_name,
+            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+        )
+    else:
+        data = read_local_regular_file(
+            _local_chat_artifact_directory(
+                store,
+                revision,
+                candidate.artifact_scope_id,
+            ),
+            candidate.source_name,
+            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+        )
+    if (
+        len(data) != candidate.candidate_size_bytes
+        or validate_artifact_bytes(candidate.source_name, data) != candidate.media_type
+        or hashlib.sha256(data).hexdigest() != candidate.candidate_sha256
+    ):
+        raise ValueError("artifact revision candidate bytes changed")
+    return data
+
+
+def _replace_agent_artifact_bytes(
+    store: AppStore,
+    workspace: StateWorkspace,
+    operation_id: str,
+    descriptor: AgentArtifactResponse,
+    data: bytes,
+    *,
+    expected_sha256: str,
+) -> bool:
+    record = store.agent_task(operation_id)
+    if record is None:
+        raise FileNotFoundError(descriptor.name)
+    scope_id = _logical_chat_turn_operation_id(store, operation_id)
+    if descriptor.kept_filename is not None:
+        return workspace.replace_kept_artifact(
+            descriptor.kept_filename,
+            data,
+            expected_sha256=expected_sha256,
+        )
+    elif record.stage_host:
+        stage = RemoteRunStage(record.stage_host).attach_artifact_source(record.stage_root or "")
+        return stage.replace_artifact_bytes(
+            scope_id,
+            descriptor.name,
+            data,
+            expected_sha256=expected_sha256,
+        )
+    elif record.stage_root:
+        recovery_key = hashlib.sha256(f"{record.stage_root}\0{scope_id}".encode()).hexdigest()[:32]
+        return replace_local_regular_file(
+            _local_chat_artifact_directory(store, record, scope_id),
+            descriptor.name,
+            data,
+            expected_sha256=expected_sha256,
+            recovery_directory=(
+                Path(record.stage_root) / "inputs" / ".artifact-replacements" / recovery_key
+            ),
+        )
+    else:
+        raise FileNotFoundError(descriptor.name)
+
+
 def _load_agent_artifact(
     store: AppStore,
     workspace: StateWorkspace,
@@ -772,6 +1136,36 @@ def _load_agent_artifact(
     action: Literal["open", "download", "keep"],
 ) -> tuple[AgentArtifactResponse, bytes]:
     """Resolve an attachment only through its persisted task descriptor and stage."""
+    try:
+        projected, data = _read_agent_artifact_bytes(
+            store,
+            workspace,
+            project_id,
+            operation_id,
+            artifact_id,
+            action,
+        )
+        media_type = validate_artifact_bytes(projected.name, data)
+        if media_type != projected.media_type:
+            raise ValueError("artifact media type changed")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=410, detail="Preview unavailable") from exc
+    except StateUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Preview unavailable") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=410, detail="Preview unavailable") from exc
+    return projected, data
+
+
+def _read_agent_artifact_bytes(
+    store: AppStore,
+    workspace: StateWorkspace,
+    project_id: str,
+    operation_id: str,
+    artifact_id: str,
+    action: Literal["open", "download", "keep"],
+) -> tuple[AgentArtifactResponse, bytes]:
+    """Read bounded source bytes without applying viewer-specific media validation."""
     record = store.agent_task(operation_id)
     if (
         record is None
@@ -780,7 +1174,7 @@ def _load_agent_artifact(
     ):
         raise HTTPException(status_code=404, detail="Agent task not found")
     descriptor = _agent_artifact_descriptor(record, artifact_id)
-    projected = _agent_artifact_response(record, descriptor)
+    projected = _agent_artifact_response(store, record, descriptor)
     allowed = {
         "open": projected.can_open,
         "download": projected.can_download,
@@ -791,44 +1185,34 @@ def _load_agent_artifact(
             status_code=410 if action in {"open", "download"} else 409,
             detail=projected.unavailable_reason or f"Artifact {action} unavailable",
         )
-    try:
-        scope_id = _logical_chat_turn_operation_id(store, record.operation_id)
-        expected_descriptor = descriptor_for(scope_id, descriptor.name)
-        if (
-            expected_descriptor.artifact_id != descriptor.artifact_id
-            or expected_descriptor.name != descriptor.name
-            or expected_descriptor.media_type != descriptor.media_type
-        ):
-            raise ValueError("artifact descriptor does not match its task scope")
-        if descriptor.kept_filename is not None:
-            data = workspace.read_kept_artifact(
-                descriptor.kept_filename,
-                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-            )
-        elif not record.stage_root:
-            raise FileNotFoundError(descriptor.name)
-        elif record.stage_host:
-            stage = RemoteRunStage(record.stage_host).attach_artifact_source(record.stage_root)
-            data = stage.read_artifact_bytes(
-                scope_id,
-                descriptor.name,
-                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-            )
-        else:
-            data = read_local_regular_file(
-                _local_chat_artifact_directory(store, record, scope_id),
-                descriptor.name,
-                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-            )
-        media_type = validate_artifact_bytes(descriptor.name, data)
-        if media_type != descriptor.media_type:
-            raise ValueError("artifact media type changed")
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=410, detail="Preview unavailable") from exc
-    except StateUnavailable as exc:
-        raise HTTPException(status_code=503, detail="Preview unavailable") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=410, detail="Preview unavailable") from exc
+    scope_id = _logical_chat_turn_operation_id(store, record.operation_id)
+    expected_descriptor = descriptor_for(scope_id, descriptor.name)
+    if (
+        expected_descriptor.artifact_id != descriptor.artifact_id
+        or expected_descriptor.name != descriptor.name
+        or expected_descriptor.media_type != descriptor.media_type
+    ):
+        raise ValueError("artifact descriptor does not match its task scope")
+    if descriptor.kept_filename is not None:
+        data = workspace.read_kept_artifact(
+            descriptor.kept_filename,
+            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+        )
+    elif not record.stage_root:
+        raise FileNotFoundError(descriptor.name)
+    elif record.stage_host:
+        stage = RemoteRunStage(record.stage_host).attach_artifact_source(record.stage_root)
+        data = stage.read_artifact_bytes(
+            scope_id,
+            descriptor.name,
+            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+        )
+    else:
+        data = read_local_regular_file(
+            _local_chat_artifact_directory(store, record, scope_id),
+            descriptor.name,
+            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+        )
     return projected, data
 
 
@@ -953,8 +1337,21 @@ def _admit_artifact_context_request(
         raise ValueError("The artifact is unavailable.")
     if context.source == "task":
         assert descriptor is not None
-        artifact = _agent_artifact_response(origin, descriptor)
-        if not artifact.can_revise:
+        unresolved_revision = store.unresolved_artifact_revision_candidate(
+            origin.operation_id,
+            descriptor.artifact_id,
+        )
+        if request.mode == "work" and unresolved_revision is not None:
+            raise ValueError(
+                "Accept or reject the pending artifact revision before requesting another one."
+            )
+        artifact = _agent_artifact_response(store, origin, descriptor)
+        if not (
+            artifact.available
+            and not origin.history_only
+            and bool(origin.native_session_id)
+            and bool(origin.stage_root)
+        ):
             raise ValueError(
                 artifact.unavailable_reason
                 or "The artifact's native session is unavailable. Start a fresh session "

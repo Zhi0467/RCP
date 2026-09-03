@@ -25,6 +25,7 @@ from rcp.agents.prompts import (
     invoked_package_pointers,
 )
 from rcp.agents.write_scope import ProjectWriteScope
+from rcp.artifacts import AgentArtifactDescriptor
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
@@ -351,6 +352,14 @@ async def _stage_work_turn(
                 artifact_scope_id,
                 reuse=resuming,
             )
+        artifact_context = stage_artifact_context(
+            service,
+            request,
+            execution,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            artifact_path=str(artifact_directory),
+        )
         read_dirs = _chat_read_dirs(
             context,
             local_stage,
@@ -368,6 +377,11 @@ async def _stage_work_turn(
             data_dir=data_dir,
             execution=execution,
             capability="work_auto",
+            additional_protected_write_paths=(
+                list(artifact_context.protected_write_paths)
+                if artifact_context is not None
+                else None
+            ),
         )
         write_dirs = [Path(item) for item in write_scope.repository_roots]
         experiment_resources = await stage_chat_experiment_watcher_resources(
@@ -400,16 +414,8 @@ async def _stage_work_turn(
             if request.attachment_batch_id
             else []
         )
-        artifact_context_pointer = stage_artifact_context(
-            service,
-            request,
-            execution,
-            local_stage=local_stage,
-            remote_stage=remote_stage,
-            artifact_path=str(artifact_directory),
-        )
-        if artifact_context_pointer is not None:
-            attachment_pointers.append(artifact_context_pointer)
+        if artifact_context is not None:
+            attachment_pointers.append(artifact_context.pointer)
         read_dirs.extend(
             path
             for path in dict.fromkeys(
@@ -1579,32 +1585,6 @@ async def _launch_and_stream_work_turn(
         if turn.uses_master_protocol:
             _commit_chat_prompt_state(turn.execution, turn.request, turn.outcome.session_id)
 
-        try:
-            artifacts = _discover_chat_artifacts(
-                turn.execution,
-                staged.artifact_scope_id,
-                Path(str(staged.artifact_directory)),
-                turn.remote_stage,
-            )
-        except Exception as exc:
-            with suppress(Exception):
-                _record_artifact_discovery_receipt(
-                    turn.execution,
-                    attached=0,
-                    candidates=0,
-                    ignored={"unexpected_error": 1},
-                    detail=str(exc),
-                )
-            artifacts = []
-        artifacts = finalize_artifact_revision(
-            turn.service,
-            turn.request,
-            turn.execution,
-            artifact_scope_id=staged.artifact_scope_id,
-            artifact_directory=Path(str(staged.artifact_directory)),
-            remote_stage=turn.remote_stage,
-            artifacts=artifacts,
-        )
         _finalize_result_view_turn(
             turn.request,
             turn.execution,
@@ -1619,8 +1599,39 @@ async def _launch_and_stream_work_turn(
         raise
     turn.answer = answer
     yield _sse(AgentEvent(event="answer", text=answer))
-    for artifact in artifacts:
-        yield _sse(AgentEvent(event="artifact", artifact=artifact))
+
+
+def _finalize_work_artifacts(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+) -> list[AgentArtifactDescriptor]:
+    """Discover outputs only after every provider correction turn has settled."""
+
+    try:
+        artifacts = _discover_chat_artifacts(
+            turn.execution,
+            staged.artifact_scope_id,
+            Path(str(staged.artifact_directory)),
+            turn.remote_stage,
+        )
+    except Exception as exc:
+        with suppress(Exception):
+            _record_artifact_discovery_receipt(
+                turn.execution,
+                attached=0,
+                candidates=0,
+                ignored={"unexpected_error": 1},
+                detail=str(exc),
+            )
+        artifacts = []
+    return finalize_artifact_revision(
+        turn.request,
+        turn.execution,
+        artifact_scope_id=staged.artifact_scope_id,
+        artifact_directory=Path(str(staged.artifact_directory)),
+        remote_stage=turn.remote_stage,
+        artifacts=artifacts,
+    )
 
 
 async def stream_work_run(
@@ -1771,6 +1782,9 @@ async def stream_work_run(
     if applied.stop:
         return
     graph_update = applied.graph_update
+
+    for artifact in _finalize_work_artifacts(turn, staged):
+        yield _sse(AgentEvent(event="artifact", artifact=artifact))
 
     for frame in _finalize_work_turn(turn, answer, graph_update):
         yield frame

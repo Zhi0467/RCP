@@ -47,7 +47,7 @@ pub fn is_external_reference(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https")
 }
 
-fn same_origin(left: &Url, right: &Url) -> bool {
+pub fn same_origin(left: &Url, right: &Url) -> bool {
     left.scheme() == right.scheme()
         && left.host_str() == right.host_str()
         && left.port_or_known_default() == right.port_or_known_default()

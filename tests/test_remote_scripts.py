@@ -8,6 +8,7 @@ with the same argv — and its guards can be driven directly.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import subprocess
@@ -16,15 +17,24 @@ from pathlib import Path
 
 import pytest
 
-from rcp.transport.remote_read_kept_view import MISSING, TOO_LARGE, UNSAFE
-from rcp.transport.state import _remote_script
+from rcp.transport.remote_read_kept_view import (
+    MISSING,
+    TOO_LARGE,
+    UNAVAILABLE,
+    UNSAFE,
+    _open_error_status,
+)
+from rcp.transport.state import _remote_lock_holder_script, _remote_script
 
 
 def run_script(name: str, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
     """Run a shipped script the way the execution machine runs it."""
 
+    source = (
+        _remote_lock_holder_script() if name == "remote_lock_holder.py" else _remote_script(name)
+    )
     return subprocess.run(
-        [sys.executable, "-c", _remote_script(name), *args],
+        [sys.executable, "-c", source, *args],
         input=stdin,
         capture_output=True,
         text=True,
@@ -42,9 +52,15 @@ def test_every_shipped_script_is_the_module_source() -> None:
         on_disk = (Path(__file__).parent.parent / "src" / "rcp" / "transport" / name).read_text()
         assert source == on_disk
         compile(source, name, "exec")
+    compile(_remote_lock_holder_script(), "remote_lock_holder.py", "exec")
 
 
 class TestReadKeptView:
+    def test_operational_open_errors_are_not_reported_as_unsafe_content(self) -> None:
+        assert _open_error_status(OSError(errno.EIO, "I/O failure")) == UNAVAILABLE
+        assert _open_error_status(PermissionError(errno.EACCES, "permission denied")) == UNAVAILABLE
+        assert _open_error_status(OSError(errno.ELOOP, "symlink loop")) == UNSAFE
+
     def test_reads_a_kept_view(self, tmp_path: Path) -> None:
         views = tmp_path / "views"
         views.mkdir()
@@ -272,6 +288,43 @@ class TestLockHolder:
         assert json.loads(lines[1]) == {"ok": True, "commit_status": None}
         assert (root / "graph.json").read_text() == '{"revision": 4}'
         assert not stage.exists()
+
+    def test_replacement_discards_a_partial_prepublication_write(self, tmp_path: Path) -> None:
+        root = tmp_path / "repository" / ".research"
+        stage = root / ".publish" / "artifact-1-1"
+        recovery = root / ".publish" / "artifact-replacements"
+        artifacts = root.parent / "artifacts"
+        stage.mkdir(parents=True)
+        recovery.mkdir(mode=0o700)
+        artifacts.mkdir()
+        name = "result.html"
+        original = b"<p>original</p>"
+        candidate = b"<p>candidate</p>"
+        (stage / "content.bin").write_bytes(candidate)
+        (artifacts / name).write_bytes(original)
+        name_hash = hashlib.sha256(name.encode()).hexdigest()[:24]
+        marker = recovery / (
+            f".rcp-artifact-{name_hash}-{hashlib.sha256(original).hexdigest()}-"
+            f"{hashlib.sha256(candidate).hexdigest()}-{'a' * 16}"
+        )
+        marker.write_bytes(candidate[:4])
+        lock_path = root / ".refresh.lock"
+        command = {
+            "op": "replace-artifact",
+            "root": str(root),
+            "stage": str(stage),
+            "name": name,
+            "expected_sha256": hashlib.sha256(original).hexdigest(),
+        }
+
+        result = run_script(
+            "remote_lock_holder.py", str(lock_path), stdin=json.dumps(command) + "\n"
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout.splitlines()[1]) == {"ok": True, "name": name}
+        assert (artifacts / name).read_bytes() == candidate
+        assert not marker.exists()
 
     def test_refuses_a_stage_outside_the_publish_directory(self, tmp_path: Path) -> None:
         root = tmp_path / ".research"

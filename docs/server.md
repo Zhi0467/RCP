@@ -181,6 +181,22 @@ does not stop for a source deploy key.
 
 ## 7. Private source only: grant read access in the running wizard
 
+The RCP repository has been public since 2026-09-02, so new installations never
+see this step. An installation that still records a deploy-key source converges
+to the public HTTPS origin on its next `rcp server update`, or if
+`rcp server install` is rerun; the wizard then identifies the retired GitHub
+deploy key for the operator to revoke after the command completes and
+`server doctor` shows the public origin.
+
+If the transition fires unexpectedly, its probe ran with credential helpers,
+askpass, and global Git configuration disabled, so `ready` means the repository
+was readable anonymously. The next install or update finishes an interrupted
+transition by removing leftover source-key files, rewriting a matching SSH
+checkout, and repeating the deploy-key revocation instruction. If the repository
+is later made private again, follow the teardown and reinstall procedure and run
+`sudo rcp server install ...` to create a fresh deploy-key identity; the new
+`installation_id` will differ.
+
 While the RCP source repository is private, the running wizard pauses and shows:
 
 - the exact GitHub deploy-key settings page;
@@ -208,8 +224,9 @@ after the wizard continues is a separate clean checkout under
 `/usr/local/bin/rcp`, and a fresh service that is still stopped and disabled.
 
 This read-only source key is unrelated to the write-enabled deploy key each team
-project receives. When RCP becomes public, the source-key pause, key material,
-and this entire step are removed together.
+project receives. After every existing installation has migrated and its retired
+source key has been revoked, a later pull request removes the source-key pause,
+key handling, and this entire step together.
 
 For structured output, place `--machine-readable` after `install`:
 
@@ -515,6 +532,12 @@ Run one command and leave it open:
 ```bash
 sudo /usr/local/bin/rcp server update
 ```
+
+If the installed configuration still names the retired deploy-key SSH source,
+this command first converges it to the public HTTPS origin; rerunning
+`rcp server install` performs the same transition. The wizard names the retired
+GitHub deploy key to revoke after this update and a public-origin `server doctor`
+readback.
 
 RCP fetches `origin/main` with the installed source identity, shows the exact
 current and target commits, and waits for review. Press Enter to bind that exact

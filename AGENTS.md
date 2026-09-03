@@ -46,9 +46,13 @@ Fresh-clone order matters because the Python wheel includes `web/dist`:
 
 ```bash
 npm --prefix web ci
+npm --prefix web exec playwright -- install chromium
 npm --prefix web run build
 uv sync
 ```
+
+The Playwright command installs the managed Chromium binary required by the web
+interaction tests and is needed once after `npm ci`.
 
 Backend and documentation:
 
@@ -61,6 +65,7 @@ uv run pre-commit run --all-files
 Web:
 
 ```bash
+npm --prefix web exec playwright -- install chromium
 npm --prefix web run build
 npm --prefix web test
 ```

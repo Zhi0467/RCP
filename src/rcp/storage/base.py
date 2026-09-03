@@ -39,7 +39,8 @@ class AppStoreBase:
         (3, "experiment_episode_state_v1"),
         (4, "agent_usage_counted_dedupe_v1"),
         (5, "legacy_startup_schema_v1"),
-        (6, "space_run_projection_indexes_v1"),
+        (6, "artifact_revision_candidates_v1"),
+        (7, "space_run_projection_indexes_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -66,6 +67,12 @@ class AppStoreBase:
             "writing_sessions",
         }
     )
+    _RETIRED_STORAGE_COLUMNS: ClassVar[frozenset[tuple[str, str]]] = frozenset(
+        {
+            # Retired after the team-server-v1 through pre-member-removal-v11 fixture eras.
+            ("graph_runs", "campaign_worker_handoffs_cleared_at"),
+        }
+    )
     _baseline_storage_schema_cache: ClassVar[tuple[tuple[str, str, str, str], ...] | None] = None
 
     def __init__(self, path: Path, *, space_kind: SpaceKind | None = None) -> None:
@@ -73,6 +80,7 @@ class AppStoreBase:
             raise ValueError("space kind must be 'personal' or 'team'")
         self.path = path
         self._read_only_snapshot = False
+        self._immutable_read_only = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize(space_kind)
 
@@ -82,6 +90,7 @@ class AppStoreBase:
         store = cls.__new__(cls)
         store.path = path
         store._read_only_snapshot = False
+        store._immutable_read_only = False
         store.path.parent.mkdir(parents=True, exist_ok=True)
         initial_space_id = str(uuid.uuid4())
         try:
@@ -107,30 +116,170 @@ class AppStoreBase:
     def open_read_only_snapshot(cls, path: Path) -> AppStore:
         """Open one completed SQLite snapshot without migrations or write authority."""
 
+        return cls._open_read_only(path, immutable=True)
+
+    @classmethod
+    def open_read_only(cls, path: Path) -> AppStore:
+        """Open a live SQLite database and its WAL without migrations or write authority."""
+
+        return cls._open_read_only(path, immutable=False)
+
+    @classmethod
+    def _open_read_only(cls, path: Path, *, immutable: bool) -> AppStore:
+        description = "snapshot" if immutable else "database"
+
         if not isinstance(path, Path) or not path.is_absolute() or ".." in path.parts:
-            raise ValueError("the SQLite snapshot path must be absolute and normalized")
+            raise ValueError(f"the SQLite {description} path must be absolute and normalized")
         try:
             mode = path.lstat().st_mode
         except OSError as exc:
-            raise ValueError("the SQLite snapshot is unavailable") from exc
+            raise ValueError(f"the SQLite {description} is unavailable") from exc
         if not stat.S_ISREG(mode):
-            raise ValueError("the SQLite snapshot must be a safe regular file")
+            raise ValueError(f"the SQLite {description} must be a safe regular file")
         store = cls.__new__(cls)
         store.path = path
         store._read_only_snapshot = True
+        store._immutable_read_only = immutable
         try:
             with store.connection() as connection:
                 result = [row[0] for row in connection.execute("PRAGMA quick_check").fetchall()]
         except sqlite3.Error as exc:
-            raise ValueError("the SQLite snapshot could not be validated") from exc
+            raise ValueError(f"the SQLite {description} could not be validated") from exc
         if result != ["ok"]:
-            raise ValueError("the SQLite snapshot failed its integrity check")
+            raise ValueError(f"the SQLite {description} failed its integrity check")
         return store
+
+    def storage_schema_ledger_head(self) -> int:
+        """Return the newest migration recorded in this store's ledger."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT MAX(migration_version) FROM storage_schema_migrations"
+            ).fetchone()
+        return int(row[0] or 0)
+
+    @classmethod
+    def storage_schema_registry_head(cls) -> int:
+        """Return the newest migration this RCP build knows how to apply."""
+
+        return cls._STORAGE_SCHEMA_MIGRATIONS[-1][0]
+
+    def check_storage_schema_migrations(self) -> tuple[int, int, tuple[str, ...]]:
+        """Validate a read-only database and report its known pending migrations."""
+
+        if not getattr(self, "_read_only_snapshot", False):
+            raise ValueError("storage migration checks require a read-only SQLite snapshot")
+        registry = self._STORAGE_SCHEMA_MIGRATIONS
+        registry_head = registry[-1][0]
+        with self.connection() as connection:
+            tables = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+            }
+            ledger_exists = "storage_schema_migrations" in tables
+            if ledger_exists:
+                rows = connection.execute(
+                    """
+                    SELECT migration_version, migration_name
+                    FROM storage_schema_migrations
+                    ORDER BY migration_version
+                    """
+                ).fetchall()
+                applied = tuple((int(row[0]), str(row[1])) for row in rows)
+                if not self._storage_schema_has_rcp_core(tables):
+                    raise RuntimeError(
+                        "RCP storage schema validation failed: RCP tables are missing"
+                    )
+            else:
+                applied = ()
+                if tables and not self._storage_schema_is_known_pre_ledger(connection, tables):
+                    raise RuntimeError(
+                        "RCP storage schema validation failed: migration ledger is missing"
+                    )
+
+            if applied != registry[: len(applied)]:
+                raise RuntimeError(
+                    "RCP storage schema validation failed: migration ledger is unknown"
+                )
+            if any(name.startswith("_storage_migration_old_") for name in tables):
+                raise RuntimeError(
+                    "RCP storage schema validation failed: migration scratch table remains"
+                )
+
+            foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if foreign_keys:
+                raise RuntimeError("RCP storage schema validation failed: foreign keys are invalid")
+            quick_check = [
+                str(row[0]) for row in connection.execute("PRAGMA quick_check").fetchall()
+            ]
+            if quick_check != ["ok"]:
+                raise RuntimeError(
+                    "RCP storage schema validation failed: SQLite quick check failed"
+                )
+
+            pending = tuple(name for _, name in registry[len(applied) :])
+            if pending:
+                self._rehearse_storage_schema_migrations(connection)
+            else:
+                self._validate_storage_schema(connection)
+        ledger_head = applied[-1][0] if applied else 0
+        return ledger_head, registry_head, pending
+
+    def _storage_schema_is_known_pre_ledger(
+        self,
+        connection: sqlite3.Connection,
+        tables: set[str],
+    ) -> bool:
+        """Recognize only pre-ledger databases accepted by the real apply path."""
+
+        if not self._storage_schema_has_rcp_core(tables):
+            return False
+        current_without_ledger = {
+            (row[0], row[1]): row
+            for row in self._baseline_storage_schema()
+            if row[1] != "storage_schema_migrations"
+        }
+        actual = {(row[0], row[1]): row for row in self._storage_schema(connection)}
+        return actual != current_without_ledger
+
+    def _rehearse_storage_schema_migrations(self, connection: sqlite3.Connection) -> None:
+        """Prove every pending migration and final validator against an in-memory copy."""
+
+        probe = sqlite3.connect(":memory:", timeout=30.0)
+        probe.row_factory = sqlite3.Row
+        try:
+            connection.backup(probe)
+            probe.execute("PRAGMA foreign_keys = OFF")
+            probe.execute("PRAGMA legacy_alter_table = ON")
+            probe.execute("BEGIN IMMEDIATE")
+            self._run_storage_schema_migrations(
+                probe,
+                None,
+                initial_space_id=None,
+                initial_space_name=None,
+                issue_bootstrap=False,
+                require_new=False,
+                schema_template=False,
+                schema_capture=None,
+            )
+            self._validate_storage_schema(probe)
+        finally:
+            probe.close()
+
+    @staticmethod
+    def _storage_schema_has_rcp_core(tables: set[str]) -> bool:
+        required = {"graph_run_events", "graph_runs", "projects", "space_identity"}
+        return required <= tables
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
         if getattr(self, "_read_only_snapshot", False):
-            uri = f"{self.path.resolve(strict=True).as_uri()}?mode=ro&immutable=1"
+            uri = f"{self.path.resolve(strict=True).as_uri()}?mode=ro"
+            if getattr(self, "_immutable_read_only", False):
+                uri += "&immutable=1"
             connection = sqlite3.connect(uri, timeout=30.0, uri=True)
         else:
             connection = sqlite3.connect(self.path, timeout=30.0)
@@ -308,6 +457,12 @@ class AppStoreBase:
         self._run_storage_schema_migration(
             connection,
             version=6,
+            name="artifact_revision_candidates_v1",
+            migration=self._migrate_artifact_revision_candidates,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=7,
             name="space_run_projection_indexes_v1",
             migration=self._migrate_space_run_projection_indexes,
         )
@@ -1730,6 +1885,11 @@ class AppStoreBase:
         )
         connection.execute("DROP INDEX IF EXISTS graph_runs_active_project")
         connection.execute("DROP INDEX IF EXISTS agent_tasks_active_project")
+        # Version 5 owns baseline normalization and therefore must materialize
+        # tables introduced by later additive migrations before comparing the
+        # live database with that baseline. Version 6 records the one-way
+        # upgrade for stores whose version-5 migration already completed.
+        self._migrate_artifact_revision_candidates(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -1808,6 +1968,48 @@ class AppStoreBase:
             ) VALUES (?, ?, ?)
             """,
             (version, name, self.now()),
+        )
+
+    @staticmethod
+    def _migrate_artifact_revision_candidates(connection: sqlite3.Connection) -> None:
+        AppStoreBase._execute_sql_script(
+            connection,
+            """
+            CREATE TABLE IF NOT EXISTS artifact_revision_candidates (
+                candidate_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                source_operation_id TEXT NOT NULL,
+                source_artifact_id TEXT NOT NULL,
+                revision_operation_id TEXT NOT NULL UNIQUE,
+                stage_host TEXT NOT NULL,
+                stage_root TEXT NOT NULL,
+                artifact_scope_id TEXT NOT NULL,
+                source_name TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                base_sha256 TEXT NOT NULL,
+                candidate_sha256 TEXT NOT NULL,
+                candidate_size_bytes INTEGER NOT NULL CHECK(candidate_size_bytes > 0),
+                status TEXT NOT NULL CHECK(status IN (
+                    'pending', 'accepting', 'accepted', 'rejected', 'conflicted', 'abandoned'
+                )),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                decided_at TEXT,
+                decided_by_json TEXT,
+                diagnostic TEXT,
+                FOREIGN KEY(source_operation_id) REFERENCES graph_runs(operation_id),
+                FOREIGN KEY(revision_operation_id) REFERENCES graph_runs(operation_id),
+                CHECK((status IN ('accepted', 'rejected', 'abandoned')) = (decided_at IS NOT NULL)),
+                CHECK(status NOT IN ('conflicted', 'abandoned') OR diagnostic IS NOT NULL)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS artifact_revision_one_unresolved_source
+                ON artifact_revision_candidates(source_operation_id, source_artifact_id)
+                WHERE status IN ('pending', 'accepting', 'conflicted');
+            CREATE INDEX IF NOT EXISTS artifact_revision_project
+                ON artifact_revision_candidates(project_id, created_at DESC, candidate_id);
+            CREATE INDEX IF NOT EXISTS artifact_revision_stage
+                ON artifact_revision_candidates(stage_host, stage_root);
+            """,
         )
 
     @staticmethod
@@ -1925,6 +2127,7 @@ class AppStoreBase:
         template = self.__class__.__new__(self.__class__)
         template.path = Path(":memory:")
         template._read_only_snapshot = False
+        template._immutable_read_only = False
         captured: list[tuple[str, str, str, str]] = []
         template._initialize(None, _schema_template=True, _schema_capture=captured)
         result = tuple(captured)
@@ -1934,18 +2137,7 @@ class AppStoreBase:
     def _normalize_legacy_startup_schema(self, connection: sqlite3.Connection) -> None:
         """Converge every supported pre-ledger table shape on the baseline schema."""
 
-        expected = {(row[0], row[1]): row for row in self._baseline_storage_schema()}
-        actual = {(row[0], row[1]): row for row in self._storage_schema(connection)}
-        changed_tables = [
-            name
-            for (object_type, name), row in expected.items()
-            if object_type == "table" and actual.get((object_type, name)) != row
-        ]
-        unexpected = sorted(set(changed_tables) - self._SCHEMA_NORMALIZED_TABLES)
-        if unexpected:
-            raise RuntimeError(
-                "RCP storage migration found an unowned table shape: " + ", ".join(unexpected)
-            )
+        expected, changed_tables = self._legacy_startup_schema_normalization_plan(connection)
         for table in changed_tables:
             self._rebuild_storage_table(connection, table, expected[("table", table)][3])
 
@@ -1956,6 +2148,48 @@ class AppStoreBase:
             if (object_type, name) in actual:
                 connection.execute(f'DROP {object_type.upper()} "{name}"')
             connection.execute(row[3])
+
+    def _legacy_startup_schema_normalization_plan(
+        self,
+        connection: sqlite3.Connection,
+    ) -> tuple[dict[tuple[str, str], tuple[str, str, str, str]], tuple[str, ...]]:
+        """Return the table changes owned by migration 5 or refuse an unowned shape."""
+
+        expected = {(row[0], row[1]): row for row in self._baseline_storage_schema()}
+        actual = {(row[0], row[1]): row for row in self._storage_schema(connection)}
+        changed_tables = tuple(
+            name
+            for (object_type, name), row in expected.items()
+            if object_type == "table" and actual.get((object_type, name)) != row
+        )
+        baseline = sqlite3.connect(":memory:")
+        try:
+            for table in changed_tables:
+                baseline.execute(expected[("table", table)][3])
+                baseline_columns = {
+                    str(row[1]) for row in baseline.execute(f'PRAGMA table_info("{table}")')
+                }
+                actual_columns = {
+                    str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')
+                }
+                unowned_columns = sorted(
+                    column
+                    for column in actual_columns - baseline_columns
+                    if (table, column) not in self._RETIRED_STORAGE_COLUMNS
+                )
+                if unowned_columns:
+                    raise RuntimeError(
+                        "RCP storage migration found an unowned column: "
+                        f"{table}.{unowned_columns[0]}"
+                    )
+        finally:
+            baseline.close()
+        unexpected = sorted(set(changed_tables) - self._SCHEMA_NORMALIZED_TABLES)
+        if unexpected:
+            raise RuntimeError(
+                "RCP storage migration found an unowned table shape: " + ", ".join(unexpected)
+            )
+        return expected, changed_tables
 
     @staticmethod
     def _rebuild_storage_table(

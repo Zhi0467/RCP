@@ -127,6 +127,7 @@ class BackupKeptArtifactReference(_StrictCaptureModel):
     source_name: str
     media_type: ArtifactMediaType
     expected_size_bytes: int | None = Field(default=None, ge=1)
+    expected_sha256: str | None = None
     kept_filename: str
     kept_at: str
 
@@ -146,6 +147,13 @@ class BackupKeptArtifactReference(_StrictCaptureModel):
     @classmethod
     def validate_filename(cls, value: str, info) -> str:
         return _plain_filename(value, label=info.field_name.replace("_", " "))
+
+    @field_validator("expected_sha256")
+    @classmethod
+    def validate_sha256(cls, value: str | None) -> str | None:
+        if value is not None and _SHA256.fullmatch(value) is None:
+            raise ValueError("expected kept artifact digest must be lowercase SHA-256")
+        return value
 
     @field_validator("kept_at")
     @classmethod
@@ -570,7 +578,13 @@ class BackupCaptureCoordinator:
                 raise BackupProjectInventoryUnavailable(
                     "The project task set repeats an operation identity."
                 )
-            artifacts = _kept_artifact_references(tasks)
+            unresolved_revisions = {
+                (candidate.source_operation_id, candidate.source_artifact_id): candidate
+                for candidate in snapshot_store.unresolved_project_artifact_revision_candidates(
+                    record.project_id
+                )
+            }
+            artifacts = _kept_artifact_references(tasks, unresolved_revisions)
             views = tuple(
                 _kept_result_view_reference(view)
                 for view in snapshot_store.kept_result_views(record.project_id)
@@ -605,7 +619,10 @@ class BackupCaptureCoordinator:
         )
 
 
-def _kept_artifact_references(tasks) -> tuple[BackupKeptArtifactReference, ...]:
+def _kept_artifact_references(
+    tasks,
+    unresolved_revisions,
+) -> tuple[BackupKeptArtifactReference, ...]:
     references: list[BackupKeptArtifactReference] = []
     for task in tasks:
         result = task.result
@@ -627,6 +644,7 @@ def _kept_artifact_references(tasks) -> tuple[BackupKeptArtifactReference, ...]:
                 )
             if descriptor.kept_filename is None or descriptor.kept_at is None:
                 continue
+            revision = unresolved_revisions.get((task.operation_id, descriptor.artifact_id))
             references.append(
                 BackupKeptArtifactReference(
                     operation_id=task.operation_id,
@@ -634,6 +652,7 @@ def _kept_artifact_references(tasks) -> tuple[BackupKeptArtifactReference, ...]:
                     source_name=descriptor.name,
                     media_type=descriptor.media_type,
                     expected_size_bytes=descriptor.size_bytes,
+                    expected_sha256=(revision.base_sha256 if revision is not None else None),
                     kept_filename=descriptor.kept_filename,
                     kept_at=descriptor.kept_at,
                 )

@@ -5,9 +5,16 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+# Pull-request runs share one group per branch and cancel each other. Push runs
+# on main each get their own group: GitHub keeps at most one pending run per
+# group, so a shared group would drop the middle merge's build even with
+# cancel-in-progress off.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
@@ -93,4 +100,56 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm --prefix web ci
       - run: npm --prefix web run build
+      # The browser test needs a Chromium binary that npm ci does not fetch. Cache
+      # it by lockfile so a run only downloads when the playwright version moves.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+      - run: npm --prefix web exec playwright -- install --with-deps chromium
       - run: npm --prefix web test
+
+  build:
+    name: build
+    needs: [lint, python, old-data-upgrade, web]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Install and build the web application
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+      - name: Export locked dependencies
+        run: |
+          mkdir -p dist
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file dist/requirements.lock.txt
+      - name: Stamp the build version
+        run: uv run --no-project python packaging/release_build.py stamp-version --run-number "${{ github.run_number }}" --sha "${{ github.sha }}"
+      - name: Build the wheel
+        run: uv build --wheel --out-dir dist
+      - name: Remove the uv output marker
+        run: rm -f dist/.gitignore
+      - name: Write the asset manifest
+        run: uv run --no-project python packaging/release_build.py write-manifest dist --output manifest.sha256
+      - name: Publish the build prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          gh release create "build/${GITHUB_RUN_NUMBER}" dist/* \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "build ${GITHUB_RUN_NUMBER} (${SHORT_SHA})" \
+            --notes "Commit: ${GITHUB_SHA}. CI run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"

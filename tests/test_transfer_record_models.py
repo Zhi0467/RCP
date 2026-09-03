@@ -150,7 +150,7 @@ def test_current_project_tables_have_one_explicit_transfer_disposition(tmp_path:
 
     assert TRANSFER_RECORD_TABLES.isdisjoint(TRANSFER_EXCLUDED_PROJECT_TABLES)
     assert len(TRANSFER_RECORD_TABLES) == 28
-    assert len(TRANSFER_EXCLUDED_PROJECT_TABLES) == 22
+    assert len(TRANSFER_EXCLUDED_PROJECT_TABLES) == 23
     with pytest.raises(ValueError, match="future_project_history"):
         validate_transfer_table_policy(changed.project_linked_tables)
 
@@ -170,6 +170,7 @@ def test_transfer_table_policy_names_history_and_exclusions_deliberately() -> No
         "_legacy_campaign_recoveries_archive",
         "_legacy_campaign_reports_archive",
         "_legacy_campaigns_archive",
+        "artifact_revision_candidates",
         "writing_sessions",
         "chat_session_contexts",
         "result_views",

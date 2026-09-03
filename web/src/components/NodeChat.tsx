@@ -17,9 +17,20 @@ import {
   Send,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { removeChatAttachment, uploadChatAttachment } from "../api";
 import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
+import { createPortal } from "react-dom";
+import { decideArtifactRevision, removeChatAttachment, uploadChatAttachment } from "../api";
+import {
+  artifactRevisionContentUrl,
   artifactUrl,
   chatTasksMissingFromHistory,
   isActiveTask,
@@ -30,6 +41,7 @@ import {
   relatedChatTasks,
   resumablePausedChatTask,
   taskKindLabel,
+  versionedArtifactContentUrl,
 } from "../agentTasks";
 import {
   chatDraftStorageKey,
@@ -41,7 +53,22 @@ import {
   toggleConversationMode,
 } from "../chatWorkspace";
 import { MarkdownAnswer } from "../chatMarkdown";
-import { replaceTextSpan } from "../chatInput";
+import {
+  assembleChatTurn,
+  chatAnnotationComposerPosition,
+  chatAnnotationTextControlSelection,
+  chatAnnotationViewportMetrics,
+  MAX_CHAT_ANNOTATIONS,
+  MAX_CHAT_ANNOTATION_COMMENT_LENGTH,
+  MAX_CHAT_ANNOTATION_TEXT_LENGTH,
+  parseStagedChatAnnotations,
+  replaceTextSpan,
+  stagedChatAnnotationsAreComplete,
+  type ChatAnnotationAnchor,
+  type ChatAnnotationComposerPosition,
+  type ChatAnnotationViewportMetrics,
+  type StagedChatAnnotation,
+} from "../chatInput";
 import type { GlossaryIndex } from "../glossary";
 import { skillInvocationFields } from "../skillPicker";
 import {
@@ -82,6 +109,11 @@ import {
   CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD,
 } from "../uiConstants";
 import { profileRunConfig } from "./AgentConfigControls";
+import {
+  handleAutoResearchDialogKeyDown,
+  makeAutoResearchDialogBackgroundInert,
+  restoreAutoResearchDialogFocus,
+} from "./AutoResearchDialog";
 import { SkillPicker, useSkillPicker } from "./SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
 
@@ -111,6 +143,7 @@ interface Props {
   onClose: () => void;
   onResumeTask: (task: AgentTask) => void;
   onRetryTask: (task: AgentTask) => void;
+  onRefreshTask: (taskId: string) => Promise<AgentTask>;
 }
 
 interface PendingChatTurn {
@@ -136,6 +169,28 @@ interface DictationSpan {
   start: number;
   end: number;
 }
+
+interface ArtifactRevisionReview {
+  taskId: string;
+  artifactId: string;
+}
+
+interface SelectedChatAnnotationComposer {
+  step: "comment";
+  selectedText: string;
+  anchor: ChatAnnotationAnchor;
+  position: ChatAnnotationComposerPosition | null;
+}
+
+interface KeyboardChatAnnotationComposer {
+  step: "select";
+  answerText: string;
+  selectedText: string;
+  anchor: ChatAnnotationAnchor;
+  position: ChatAnnotationComposerPosition | null;
+}
+
+type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
 
 const ARTIFACT_ID_PATTERN = /^[0-9a-f]{24}$/;
 const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
@@ -322,6 +377,7 @@ export function NodeChat({
   onClose,
   onResumeTask,
   onRetryTask,
+  onRefreshTask,
 }: Props) {
   const surface = node ? "node_chat" : "project_chat";
   const skillCatalog = project.skill_catalog ?? [];
@@ -371,12 +427,22 @@ export function NodeChat({
   const draftKey = chatDraftStorageKey(project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
   const artifactContextKey = artifactContextStorageKey(project.id, chatId);
+  const annotationsKey = chatAnnotationsStorageKey(project.id, chatId);
+  const annotationPanelId = useId();
   const derivedMode = useMemo(
     () => latestPersistedConversationMode(historyMessages, relatedTasks),
     [historyMessages, relatedTasks],
   );
   const [message, setMessage] = useState(() => readStorage(draftKey) ?? "");
   const [artifactContext, setArtifactContext] = useState<ArtifactContextRequest | null>(null);
+  const [annotations, setAnnotations] = useState<StagedChatAnnotation[]>(() =>
+    readStagedChatAnnotations(annotationsKey),
+  );
+  const [annotationComposer, setAnnotationComposer] = useState<ChatAnnotationComposer | null>(null);
+  const [annotationComment, setAnnotationComment] = useState("");
+  const [annotationViewport, setAnnotationViewport] =
+    useState<ChatAnnotationViewportMetrics | null>(null);
+  const [annotationsOpen, setAnnotationsOpen] = useState(false);
   const lastArtifactContextRef = useRef<string | null>(null);
   const [modeState, setModeState] = useState<{ value: ConversationMode; pinned: boolean }>(() => {
     const storedMode = parseConversationMode(readStorage(modeKey));
@@ -397,7 +463,13 @@ export function NodeChat({
   );
   const chatLinesRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const annotationCommentRef = useRef<HTMLTextAreaElement | null>(null);
+  const annotationSelectionRef = useRef<HTMLTextAreaElement | null>(null);
+  const annotationComposerRef = useRef<HTMLFormElement | null>(null);
+  const annotationOriginRef = useRef<HTMLElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const revisionDialogRef = useRef<HTMLElement | null>(null);
+  const revisionCloseRef = useRef<HTMLButtonElement | null>(null);
   const attachmentSetIdRef = useRef<string | null>(null);
   const attachmentUploadBusyRef = useRef(false);
   const cancelledAttachmentIdsRef = useRef<Set<string>>(new Set());
@@ -412,6 +484,9 @@ export function NodeChat({
   const [artifactShellErrors, setArtifactShellErrors] = useState<Map<string, string>>(
     () => new Map(),
   );
+  const [revisionReview, setRevisionReview] = useState<ArtifactRevisionReview | null>(null);
+  const [revisionDecision, setRevisionDecision] = useState<"accept" | "reject" | null>(null);
+  const [revisionDecisionError, setRevisionDecisionError] = useState<string | null>(null);
   const [repositoryFileErrors, setRepositoryFileErrors] = useState<Map<string, string>>(
     () => new Map(),
   );
@@ -436,6 +511,44 @@ export function NodeChat({
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
+  const revisionReviewTask = revisionReview
+    ? (relatedTasks.find((task) => task.operation_id === revisionReview.taskId) ?? null)
+    : null;
+  const revisionReviewArtifact = revisionReviewTask?.result?.artifacts?.find(
+    (artifact) => artifact.artifact_id === revisionReview?.artifactId,
+  );
+  const revisionReviewCandidate = revisionReviewArtifact?.revision_candidate ?? null;
+
+  useEffect(() => {
+    if (!revisionReview || !revisionReviewCandidate) return;
+    const returnFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const restoreBackground = revisionDialogRef.current
+      ? makeAutoResearchDialogBackgroundInert(revisionDialogRef.current)
+      : () => undefined;
+    const frame = window.requestAnimationFrame(() => revisionCloseRef.current?.focus());
+    return () => {
+      window.cancelAnimationFrame(frame);
+      restoreBackground();
+      restoreAutoResearchDialogFocus(returnFocus);
+    };
+  }, [revisionReview, revisionReviewCandidate?.candidate_id]);
+
+  useEffect(() => {
+    if (!revisionReview || !revisionReviewCandidate) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!revisionDialogRef.current) return;
+      handleAutoResearchDialogKeyDown(
+        event,
+        revisionDialogRef.current,
+        document.activeElement,
+        Boolean(revisionDecision),
+        () => setRevisionReview(null),
+      );
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [revisionDecision, revisionReview, revisionReviewCandidate?.candidate_id]);
 
   useEffect(() => {
     const accept = (raw: unknown) => {
@@ -446,7 +559,7 @@ export function NodeChat({
       const sourceArtifact = source?.result?.artifacts?.find(
         (artifact) => artifact.artifact_id === payload.artifact_id,
       );
-      if (!source || (sourceKind === "task" && (!sourceArtifact || !sourceArtifact.can_revise)))
+      if (!source || (sourceKind === "task" && (!sourceArtifact || !sourceArtifact.can_discuss)))
         return;
       const signature = JSON.stringify(payload);
       if (lastArtifactContextRef.current === signature) return;
@@ -529,6 +642,8 @@ export function NodeChat({
   );
   const attachmentsPreparing = attachments.some((item) => item.status === "preparing");
   const attachmentsUnready = attachments.some((item) => item.status !== "ready");
+  const annotationComposerOpen = annotationComposer !== null;
+  const annotationsComplete = stagedChatAnnotationsAreComplete(annotations);
   const dictating = dictationState !== "idle" && dictationState !== "error";
   useEffect(() => {
     const identity = `${project.id}\0${chatId}`;
@@ -557,6 +672,63 @@ export function NodeChat({
     if (message) writeStorage(draftKey, message);
     else removeStorage(draftKey);
   }, [draftKey, message]);
+
+  useEffect(() => {
+    if (annotations.length) writeSessionStorage(annotationsKey, JSON.stringify(annotations));
+    else removeSessionStorage(annotationsKey);
+  }, [annotations, annotationsKey]);
+
+  useEffect(() => {
+    if (!annotationComposerOpen) {
+      setAnnotationViewport(null);
+      return;
+    }
+    const viewport = window.visualViewport;
+    const update = () => {
+      setAnnotationViewport(
+        chatAnnotationViewportMetrics(
+          { width: window.innerWidth, height: window.innerHeight },
+          viewport,
+        ),
+      );
+    };
+    update();
+    viewport?.addEventListener("resize", update);
+    viewport?.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    return () => {
+      viewport?.removeEventListener("resize", update);
+      viewport?.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [annotationComposerOpen]);
+
+  useLayoutEffect(() => {
+    const composer = annotationComposerRef.current;
+    if (!composer || !annotationComposer || !annotationViewport) return;
+    const update = () => {
+      const rect = composer.getBoundingClientRect();
+      const position = chatAnnotationComposerPosition(
+        annotationComposer.anchor,
+        annotationViewport,
+        rect,
+      );
+      setAnnotationComposer((current) => {
+        if (
+          !current ||
+          current.anchor !== annotationComposer.anchor ||
+          (current.position?.left === position.left && current.position.top === position.top)
+        )
+          return current;
+        return { ...current, position };
+      });
+    };
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(update);
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, [annotationComposer, annotationViewport]);
 
   useEffect(() => {
     if (lastChatIdRef.current !== chatId) {
@@ -831,9 +1003,147 @@ export function NodeChat({
       CHAT_SCROLL_BOTTOM_TOLERANCE_PX;
   };
 
+  const openAnnotationComposer = (answer: HTMLElement) => {
+    if (submitting) return;
+    const selection = window.getSelection();
+    if (
+      !selection ||
+      selection.isCollapsed ||
+      selection.rangeCount !== 1 ||
+      !selection.anchorNode ||
+      !selection.focusNode ||
+      !answer.contains(selection.anchorNode) ||
+      !answer.contains(selection.focusNode)
+    )
+      return;
+    const selectedText = selection.toString().trim();
+    if (!selectedText) return;
+    if (selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH) {
+      setSubmitError(
+        `Select at most ${MAX_CHAT_ANNOTATION_TEXT_LENGTH.toLocaleString()} characters for one comment.`,
+      );
+      return;
+    }
+    if (annotations.length >= MAX_CHAT_ANNOTATIONS) {
+      setSubmitError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    const rects = range.getClientRects();
+    const rect = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
+    annotationOriginRef.current = null;
+    setAnnotationComment("");
+    setSubmitError(null);
+    setAnnotationComposer({
+      step: "comment",
+      selectedText,
+      anchor: { left: rect.left, right: rect.right, top: rect.top },
+      position: null,
+    });
+    window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
+  };
+
+  const openKeyboardAnnotationComposer = (answer: HTMLElement, origin: HTMLElement) => {
+    if (submitting) return;
+    if (annotations.length >= MAX_CHAT_ANNOTATIONS) {
+      setSubmitError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
+      return;
+    }
+    const answerText = answer.innerText.trim();
+    if (!answerText) return;
+    const rect = origin.getBoundingClientRect();
+    annotationOriginRef.current = origin;
+    setAnnotationComment("");
+    setSubmitError(null);
+    setAnnotationComposer({
+      step: "select",
+      answerText,
+      selectedText: "",
+      anchor: { left: rect.left, right: rect.right, top: rect.top },
+      position: null,
+    });
+    window.requestAnimationFrame(() => {
+      annotationSelectionRef.current?.focus();
+      annotationSelectionRef.current?.setSelectionRange(0, 0);
+    });
+  };
+
+  const updateKeyboardAnnotationSelection = (control: HTMLTextAreaElement) => {
+    const selectedText = chatAnnotationTextControlSelection(control);
+    setAnnotationComposer((current) =>
+      current?.step === "select" ? { ...current, selectedText } : current,
+    );
+  };
+
+  const continueKeyboardAnnotation = () => {
+    if (submitting) return;
+    if (annotationComposer?.step !== "select") return;
+    const selectedText = annotationComposer.selectedText;
+    if (!selectedText || selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH) return;
+    setAnnotationComposer({
+      step: "comment",
+      selectedText,
+      anchor: annotationComposer.anchor,
+      position: null,
+    });
+    window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
+  };
+
+  const dismissAnnotationComposer = (returnFocus: boolean) => {
+    const origin = annotationOriginRef.current;
+    annotationOriginRef.current = null;
+    setAnnotationComposer(null);
+    setAnnotationComment("");
+    if (returnFocus) {
+      window.requestAnimationFrame(() => (origin ?? textareaRef.current)?.focus());
+    }
+  };
+
+  const stageAnnotation = () => {
+    if (submitting) return;
+    if (!annotationComposer) return;
+    if (annotationComposer.step !== "comment") return;
+    const comment = annotationComment.trim();
+    if (!comment) return;
+    setAnnotations((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        selectedText: annotationComposer.selectedText,
+        comment,
+      },
+    ]);
+    setAnnotationsOpen(false);
+    dismissAnnotationComposer(false);
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const updateAnnotation = (id: string, comment: string) => {
+    if (submitting) return;
+    setAnnotations((current) =>
+      current.map((annotation) => (annotation.id === id ? { ...annotation, comment } : annotation)),
+    );
+    setSubmitError(null);
+  };
+
+  const removeAnnotation = (id: string) => {
+    if (submitting) return;
+    setAnnotations((current) => {
+      const next = current.filter((annotation) => annotation.id !== id);
+      if (next.length === 0) setAnnotationsOpen(false);
+      return next;
+    });
+  };
+
   const send = async () => {
     if (readOnly) return;
-    const text = message.trim();
+    const draftMessage = message;
+    const text = assembleChatTurn(message, annotations);
+    if (!annotationsComplete) {
+      setAnnotationsOpen(true);
+      setSubmitError("Each staged annotation needs a comment.");
+      return;
+    }
     if (
       !text ||
       attachmentsUnready ||
@@ -880,13 +1190,16 @@ export function NodeChat({
       skills.reset();
       setAttachments([]);
       setArtifactContext(null);
+      setAnnotations([]);
+      setAnnotationsOpen(false);
+      removeSessionStorage(annotationsKey);
       lastArtifactContextRef.current = null;
       setAttachmentSetId(null);
       attachmentSetIdRef.current = null;
       selectMode(mode);
     } catch (error) {
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
-      setMessage((current) => (current ? current : text));
+      setMessage((current) => (current ? current : draftMessage));
       setSubmitError(error instanceof Error ? error.message : String(error));
     } finally {
       setSubmitting(false);
@@ -971,6 +1284,41 @@ export function NodeChat({
           `Download failed: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
+    }
+  };
+
+  const decideRevision = async (decision: "accept" | "reject") => {
+    const review = revisionReview;
+    const candidate = revisionReviewCandidate;
+    if (!review || !candidate || revisionDecision) return;
+    setRevisionDecision(decision);
+    setRevisionDecisionError(null);
+    let decisionError: string | null = null;
+    try {
+      await decideArtifactRevision(project.id, candidate.candidate_id, decision);
+    } catch (error) {
+      decisionError = error instanceof Error ? error.message : String(error);
+    }
+    try {
+      const refreshed = await onRefreshTask(review.taskId);
+      const refreshedArtifact = refreshed.result?.artifacts?.find(
+        (artifact) => artifact.artifact_id === review.artifactId,
+      );
+      if (!refreshedArtifact?.revision_candidate) {
+        setRevisionReview(null);
+      } else if (refreshedArtifact.revision_candidate.diagnostic) {
+        decisionError = null;
+      }
+      setRevisionDecisionError(decisionError);
+    } catch (error) {
+      const refreshError = error instanceof Error ? error.message : String(error);
+      setRevisionDecisionError(
+        decisionError
+          ? `${decisionError} Refresh also failed: ${refreshError}`
+          : `The decision was saved, but the artifact could not refresh: ${refreshError}`,
+      );
+    } finally {
+      setRevisionDecision(null);
     }
   };
 
@@ -1148,20 +1496,46 @@ export function NodeChat({
               )}
               {line.role === "agent" ? (
                 line.text && (
-                  <div className="chat-markdown">
-                    <MarkdownAnswer
-                      text={line.text}
-                      nodes={nodes}
-                      glossaryIndex={glossaryIndex}
-                      onOpenNode={onOpenNode}
-                      onOpenRepositoryFileLink={(href) => void openRepositoryFile(messageId, href)}
-                    />
-                    {repositoryFileErrors.get(messageId) && (
-                      <strong className="chat-repository-file-error" role="alert">
-                        {repositoryFileErrors.get(messageId)}
-                      </strong>
+                  <>
+                    <div
+                      className="chat-markdown chat-annotatable-answer"
+                      onPointerUp={(event) => {
+                        if (!readOnly && !submitting) openAnnotationComposer(event.currentTarget);
+                      }}
+                    >
+                      <MarkdownAnswer
+                        text={line.text}
+                        nodes={nodes}
+                        glossaryIndex={glossaryIndex}
+                        onOpenNode={onOpenNode}
+                        onOpenRepositoryFileLink={(href) =>
+                          void openRepositoryFile(messageId, href)
+                        }
+                      />
+                      {repositoryFileErrors.get(messageId) && (
+                        <strong className="chat-repository-file-error" role="alert">
+                          {repositoryFileErrors.get(messageId)}
+                        </strong>
+                      )}
+                    </div>
+                    {!readOnly && (
+                      <button
+                        className="chat-answer-annotation-button"
+                        type="button"
+                        aria-label="Comment on this answer"
+                        disabled={submitting}
+                        onClick={(event) => {
+                          const answer =
+                            event.currentTarget.parentElement?.querySelector<HTMLElement>(
+                              ".chat-annotatable-answer",
+                            );
+                          if (answer) openKeyboardAnnotationComposer(answer, event.currentTarget);
+                        }}
+                      >
+                        <MessageCirclePlus size={12} /> Comment
+                      </button>
                     )}
-                  </div>
+                  </>
                 )
               ) : line.role === "human" ? (
                 <>
@@ -1215,6 +1589,9 @@ export function NodeChat({
                 <span className="node-chat-text">{line.text}</span>
               )}
               {line.artifacts?.map((artifact) => {
+                const revisionCandidate = artifact.revision_candidate ?? null;
+                const taskUpdatedAt =
+                  relatedTasks.find((task) => task.operation_id === line.taskId)?.updated_at ?? "";
                 const runtimeUnavailable = unavailableArtifacts.has(
                   `${line.taskId}:${artifact.artifact_id}`,
                 );
@@ -1242,11 +1619,11 @@ export function NodeChat({
                           onClick={() => void openArtifact(line.taskId, artifact)}
                         >
                           <img
-                            src={artifactUrl(
+                            src={versionedArtifactContentUrl(
                               project.id,
                               line.taskId,
                               artifact.artifact_id,
-                              "content",
+                              taskUpdatedAt,
                             )}
                             alt={artifact.name}
                             onError={() =>
@@ -1260,11 +1637,10 @@ export function NodeChat({
                       {artifact.name}
                       {artifact.kept_filename && <em>Kept</em>}
                     </span>
-                    {unavailable ? (
-                      <strong>{unavailableReason ?? "Preview unavailable"}</strong>
-                    ) : (
+                    {unavailable && <strong>{unavailableReason ?? "Preview unavailable"}</strong>}
+                    {(!unavailable || revisionCandidate) && (
                       <div className="chat-artifact-actions">
-                        {artifact.can_open && (
+                        {!unavailable && artifact.can_open && (
                           <button
                             type="button"
                             onClick={() => void openArtifact(line.taskId, artifact)}
@@ -1272,7 +1648,8 @@ export function NodeChat({
                             <ExternalLink size={12} /> Open
                           </button>
                         )}
-                        {artifact.can_download &&
+                        {!unavailable &&
+                          artifact.can_download &&
                           (desktop ? (
                             <button
                               type="button"
@@ -1293,6 +1670,21 @@ export function NodeChat({
                               <Download size={12} /> Download
                             </a>
                           ))}
+                        {revisionCandidate && (
+                          <button
+                            type="button"
+                            className="review-revision"
+                            onClick={() => {
+                              setRevisionDecisionError(null);
+                              setRevisionReview({
+                                taskId: line.taskId,
+                                artifactId: artifact.artifact_id,
+                              });
+                            }}
+                          >
+                            Review revision
+                          </button>
+                        )}
                       </div>
                     )}
                     {shellError && (
@@ -1347,6 +1739,61 @@ export function NodeChat({
           }}
         >
           <SkillPicker {...skills.props} />
+          {annotations.length > 0 && (
+            <div className="chat-annotation-summary">
+              <button
+                className={`chat-annotation-count${annotationsOpen ? " is-open" : ""}`}
+                type="button"
+                aria-expanded={annotationsOpen}
+                aria-controls={annotationPanelId}
+                onClick={() => setAnnotationsOpen((open) => !open)}
+              >
+                <MessageCircle size={12} /> {annotations.length} annotation
+                {annotations.length === 1 ? "" : "s"}
+              </button>
+            </div>
+          )}
+          {annotationsOpen && annotations.length > 0 && (
+            <section
+              className="chat-annotation-review"
+              id={annotationPanelId}
+              aria-label="Staged annotations"
+            >
+              <header>
+                <strong>Annotations</strong>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Close annotations"
+                  onClick={() => setAnnotationsOpen(false)}
+                >
+                  <X size={13} />
+                </button>
+              </header>
+              <div className="chat-annotation-review-list">
+                {annotations.map((annotation, index) => (
+                  <article key={annotation.id}>
+                    <blockquote>{annotation.selectedText}</blockquote>
+                    <textarea
+                      aria-label={`Comment for annotation ${index + 1}`}
+                      disabled={submitting}
+                      maxLength={MAX_CHAT_ANNOTATION_COMMENT_LENGTH}
+                      value={annotation.comment}
+                      onChange={(event) => updateAnnotation(annotation.id, event.target.value)}
+                    />
+                    <button
+                      type="button"
+                      aria-label={`Remove annotation ${index + 1}`}
+                      disabled={submitting}
+                      onClick={() => removeAnnotation(annotation.id)}
+                    >
+                      <X size={12} /> Remove
+                    </button>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
           {artifactContext && (
             <div className="artifact-context-chip">
               <span>Artifact selections · {artifactContext.selections.length}</span>
@@ -1476,7 +1923,8 @@ export function NodeChat({
               <button
                 className="icon-button primary chat-send-button"
                 disabled={
-                  !message.trim() ||
+                  !assembleChatTurn(message, annotations) ||
+                  !annotationsComplete ||
                   attachmentsUnready ||
                   relatedActive ||
                   Boolean(pausedAttempt) ||
@@ -1500,6 +1948,209 @@ export function NodeChat({
           </div>
         </div>
       )}
+      {revisionReview &&
+        revisionReviewTask &&
+        revisionReviewArtifact &&
+        revisionReviewCandidate && (
+          <div
+            className="artifact-revision-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget && !revisionDecision) {
+                setRevisionReview(null);
+              }
+            }}
+          >
+            <section
+              ref={revisionDialogRef}
+              className="artifact-revision-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="artifact-revision-title"
+              tabIndex={-1}
+            >
+              <header>
+                <div>
+                  <span>Pending revision</span>
+                  <h2 id="artifact-revision-title">{revisionReviewArtifact.name}</h2>
+                </div>
+                <button
+                  ref={revisionCloseRef}
+                  type="button"
+                  className="icon-button"
+                  aria-label="Close revision review"
+                  disabled={Boolean(revisionDecision)}
+                  onClick={() => setRevisionReview(null)}
+                >
+                  <X size={16} />
+                </button>
+              </header>
+              <div className="artifact-revision-compare">
+                <figure>
+                  <figcaption>Current</figcaption>
+                  <iframe
+                    title={`Current ${revisionReviewArtifact.name}`}
+                    src={versionedArtifactContentUrl(
+                      project.id,
+                      revisionReview.taskId,
+                      revisionReviewArtifact.artifact_id,
+                      revisionReviewTask.updated_at,
+                    )}
+                    sandbox="allow-scripts"
+                  />
+                </figure>
+                <figure>
+                  <figcaption>Candidate</figcaption>
+                  <iframe
+                    title={`Candidate ${revisionReviewArtifact.name}`}
+                    src={artifactRevisionContentUrl(
+                      project.id,
+                      revisionReviewCandidate.candidate_id,
+                    )}
+                    sandbox="allow-scripts"
+                  />
+                </figure>
+              </div>
+              {revisionReviewCandidate.diagnostic && (
+                <strong className="artifact-revision-error" role="alert">
+                  {revisionReviewCandidate.diagnostic}
+                </strong>
+              )}
+              {revisionDecisionError && (
+                <strong className="artifact-revision-error" role="alert">
+                  {revisionDecisionError}
+                </strong>
+              )}
+              <footer>
+                <button
+                  type="button"
+                  className="button secondary"
+                  disabled={Boolean(revisionDecision) || !revisionReviewCandidate.can_reject}
+                  onClick={() => void decideRevision("reject")}
+                >
+                  {revisionDecision === "reject" ? "Rejecting…" : "Reject"}
+                </button>
+                <button
+                  type="button"
+                  className="button primary"
+                  disabled={Boolean(revisionDecision) || !revisionReviewCandidate.can_accept}
+                  onClick={() => void decideRevision("accept")}
+                >
+                  {revisionDecision === "accept" ? "Accepting…" : "Accept revision"}
+                </button>
+              </footer>
+            </section>
+          </div>
+        )}
+      {annotationComposer && typeof document !== "undefined"
+        ? createPortal(
+            <form
+              ref={annotationComposerRef}
+              className="chat-annotation-composer"
+              aria-label={
+                annotationComposer.step === "select" ? "Select answer text" : "Add annotation"
+              }
+              style={
+                {
+                  left: annotationComposer.position?.left,
+                  top: annotationComposer.position?.top,
+                  visibility: annotationComposer.position ? undefined : "hidden",
+                  ...(annotationViewport
+                    ? {
+                        "--chat-annotation-viewport-left": `${annotationViewport.left}px`,
+                        "--chat-annotation-viewport-top": `${annotationViewport.top}px`,
+                        "--chat-annotation-viewport-width": `${annotationViewport.width}px`,
+                        "--chat-annotation-viewport-height": `${annotationViewport.height}px`,
+                        "--chat-annotation-viewport-right": `${annotationViewport.right}px`,
+                        "--chat-annotation-viewport-bottom": `${annotationViewport.bottom}px`,
+                      }
+                    : {}),
+                } as CSSProperties
+              }
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (submitting) return;
+                if (annotationComposer.step === "select") continueKeyboardAnnotation();
+                else stageAnnotation();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  dismissAnnotationComposer(true);
+                }
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault();
+                  if (annotationComposer.step === "select") continueKeyboardAnnotation();
+                  else stageAnnotation();
+                }
+              }}
+            >
+              <header>
+                <strong>
+                  {annotationComposer.step === "select" ? "Select text" : "Add annotation"}
+                </strong>
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label="Cancel annotation"
+                  disabled={submitting}
+                  onClick={() => dismissAnnotationComposer(true)}
+                >
+                  <X size={14} />
+                </button>
+              </header>
+              {annotationComposer.step === "select" ? (
+                <>
+                  <textarea
+                    className="chat-annotation-source"
+                    ref={annotationSelectionRef}
+                    aria-label="Select answer text"
+                    disabled={submitting}
+                    readOnly
+                    defaultValue={annotationComposer.answerText}
+                    onSelect={(event) => updateKeyboardAnnotationSelection(event.currentTarget)}
+                  />
+                  {annotationComposer.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH && (
+                    <strong className="chat-annotation-error" role="alert">
+                      Select at most {MAX_CHAT_ANNOTATION_TEXT_LENGTH.toLocaleString()} characters.
+                    </strong>
+                  )}
+                  <button
+                    className="button compact primary"
+                    type="submit"
+                    disabled={
+                      submitting ||
+                      !annotationComposer.selectedText ||
+                      annotationComposer.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH
+                    }
+                  >
+                    Comment on selection
+                  </button>
+                </>
+              ) : (
+                <>
+                  <blockquote>{annotationComposer.selectedText}</blockquote>
+                  <textarea
+                    ref={annotationCommentRef}
+                    aria-label="Comment"
+                    disabled={submitting}
+                    maxLength={MAX_CHAT_ANNOTATION_COMMENT_LENGTH}
+                    value={annotationComment}
+                    onChange={(event) => setAnnotationComment(event.target.value)}
+                  />
+                  <button
+                    className="button compact primary"
+                    type="submit"
+                    disabled={submitting || !annotationComment.trim()}
+                  >
+                    Add comment
+                  </button>
+                </>
+              )}
+            </form>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
@@ -1764,6 +2415,30 @@ function writeStorage(key: string, value: string): void {
 function removeStorage(key: string): void {
   try {
     localStorage.removeItem(key);
+  } catch {}
+}
+
+function chatAnnotationsStorageKey(projectId: string, chatId: string): string {
+  return `rcp:chat-annotations:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`;
+}
+
+function readStagedChatAnnotations(key: string): StagedChatAnnotation[] {
+  try {
+    return parseStagedChatAnnotations(sessionStorage.getItem(key));
+  } catch {
+    return [];
+  }
+}
+
+function writeSessionStorage(key: string, value: string): void {
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {}
+}
+
+function removeSessionStorage(key: string): void {
+  try {
+    sessionStorage.removeItem(key);
   } catch {}
 }
 

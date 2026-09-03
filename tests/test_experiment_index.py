@@ -1676,6 +1676,23 @@ def test_experiment_index_reads_pre_identity_display_cache(manifest, tmp_path: P
     assert "home_space_id" not in json.loads(cache_path.read_text(encoding="utf-8"))["snapshot"]
 
 
+def test_experiment_index_completes_cache_without_control_map(manifest, tmp_path: Path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, current_episode = _seed_indexed_project(app)
+    client = TestClient(app)
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+
+    cache_path = app.state.catalog._cached_snapshot_path(project_id)
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    del envelope["snapshot"]["experiment_control"]
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    response = client.get("/api/episodes?mode=experiment_loop")
+
+    assert response.status_code == 200
+    assert response.json()[0]["control"]["episode_id"] == current_episode
+
+
 def test_experiment_index_fails_when_revisioned_project_cache_is_missing(
     manifest, tmp_path: Path
 ) -> None:

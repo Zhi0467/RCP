@@ -144,6 +144,10 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download"),
     (("GET",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/viewer"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/keep"),
+    (("HEAD",), "/api/projects/{project_id}/artifact-revisions/{candidate_id}/content"),
+    (("GET",), "/api/projects/{project_id}/artifact-revisions/{candidate_id}/content"),
+    (("POST",), "/api/projects/{project_id}/artifact-revisions/{candidate_id}/accept"),
+    (("POST",), "/api/projects/{project_id}/artifact-revisions/{candidate_id}/reject"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/pause"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/resume"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/repair-graph-update"),
@@ -159,7 +163,9 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
 # only this map as Phase 5 extracts handlers into their owning API modules.
 _HANDLER_MODULE_MAP: dict[str, str] = {
     "agent_task": "src/rcp/api/tasks.py",
+    "accept_artifact_revision_candidate": "src/rcp/api/tasks.py",
     "content_agent_artifact": "src/rcp/api/tasks.py",
+    "content_artifact_revision_candidate": "src/rcp/api/tasks.py",
     "content_episode_report": "src/rcp/api/episode_routes.py",
     "agent_tasks": "src/rcp/api/tasks.py",
     "agent_usage": "src/rcp/api/project_state.py",
@@ -242,6 +248,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "verify_target_activation_proof": "src/rcp/api/project_provisioning.py",
     "remove_chat_attachment": "src/rcp/api/chats.py",
     "repair_agent_task_graph_update": "src/rcp/api/tasks.py",
+    "reject_artifact_revision_candidate": "src/rcp/api/tasks.py",
     "resolve_project_provider_path": "src/rcp/api/project_state.py",
     "result_views": "src/rcp/api/result_views.py",
     "resume_agent_task": "src/rcp/api/tasks.py",
@@ -295,15 +302,15 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 120
-    assert len(_FROZEN_ROUTE_INVENTORY) == 120
+    assert len(entries) == 124
+    assert len(_FROZEN_ROUTE_INVENTORY) == 124
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 116
+    assert sum(isinstance(route, APIRoute) for route in routes) == 120
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4
 
 
@@ -318,5 +325,5 @@ def test_handler_module_map_is_separate_and_current(route_app: FastAPI) -> None:
         assert source is not None
         observed[endpoint.__name__] = str(Path(source).resolve().relative_to(repository_root))
 
-    assert len(observed) == 109
+    assert len(observed) == 112
     assert observed == _HANDLER_MODULE_MAP
