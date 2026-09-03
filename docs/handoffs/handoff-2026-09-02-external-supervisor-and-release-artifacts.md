@@ -1,12 +1,15 @@
 # External supervisor and release artifacts handoff
 
 Date: 2026-09-02
-Status: active, human-confirmed on 2026-09-02. Phase 1 is implemented pending
-its GitHub proof. Phases 0 and 2 through 6 remain; a parallel pull request is
-implementing Phase 0. The decisions are settled in
+Status: active, human-confirmed on 2026-09-02. Phase 0 is implemented: health
+reports build, commit, and the storage ledger head, and `rcp --version` and
+`rcp migrate --check` exist. Phase 1 is implemented pending its GitHub proof.
+The Phase 2 code half is implemented; the lab update from the public origin,
+source deploy-key revocation, the later removal pull request, and the
+fresh-install and old-archive proofs remain. The decisions are settled in
 [the supervisor decision](../decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md)
-and repeated in the next section so this file stands alone. Phases 0 and 2 may
-start now. Phases 3 through 6 wait for
+and repeated in the next section so this file stands alone. Phases 3 through 6
+wait for
 [the dev-team-space-and-server handoff](handoff-2026-08-27-dev-team-space-and-server.md)
 to meet its closure condition and be archived, because the human has frozen new
 team and server lifecycle surface until that first lab deployment is closed.
@@ -77,12 +80,19 @@ baseline checks in `AGENTS.md` plus the phase's own checks.
 
 ### Phase 0 — contract the supervisor will rely on
 
+Status: implemented on branch `deploy/phase0-contract`. The exit proof is met:
+fresh, current, every frozen server-upgrade boundary, unknown-ledger,
+ledger-ahead-of-registry, uncheckpointed-WAL, unowned pre-ledger shape, apply,
+and held-instance-lock migration cases are covered; the database and any
+pre-existing WAL bytes remain unchanged under `--check`; and health and both
+version renderings assert the new identity fields.
+
 Lands: `GET /api/health` adds `build`, `commit`, and `schema_ledger_head`
 beside `version`; `rcp --version` prints the same three facts; `rcp migrate
 --check` and `rcp migrate` run the storage ledger without serving and exit
 nonzero on any unknown state; both emit the machine-readable event stream.
 
-Owner files: `src/rcp/__init__.py`, `src/rcp/__main__.py`,
+Owner files: `src/rcp/__init__.py`, `src/rcp/__main__.py`, `src/rcp/migrate_cli.py`,
 `src/rcp/api/health.py`, `src/rcp/storage/base.py` (read-only use of the
 ledger), `docs/specs/server-and-machine-operations.md`,
 `docs/specs/api-web-and-desktop-projections.md`.

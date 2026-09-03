@@ -278,8 +278,17 @@ filesystem inspection, or catalog mutation. The separately validated
 provisioning finalizer is the only team-project entrance into the existing
 setup/registration owners.
 
-The backend health projection carries one `project_creation` control with all
-three intent identities, per-intent eligibility and preselection, primary action
+The backend health projection preserves its existing identity and runtime
+fields. `version` remains the full package `__version__` verbatim, and
+`running_commit` keeps its existing meaning as the commit recorded for the
+running installed process. It additionally publishes `build` as the integer
+package build number or null for a source checkout, `commit` as the package
+build's 7-to-40-character hexadecimal commit or null, and
+`schema_ledger_head` as the newest applied storage-migration number read from
+the data directory's ledger.
+
+The health projection also carries one `project_creation` control with all three
+intent identities, per-intent eligibility and preselection, primary action
 label, required fields, pinned source identity when one exists, and an explicit
 unavailable reason. The durable provisioning response similarly publishes the
 status and check labels, exact next action, `can_run_setup`, `can_review`,

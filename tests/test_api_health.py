@@ -73,6 +73,9 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
     assert response.json() == {
         "status": "ok",
         "version": __version__,
+        "build": None,
+        "commit": None,
+        "schema_ledger_head": AppStore._STORAGE_SCHEMA_MIGRATIONS[-1][0],
         "space_id": app.state.space_id,
         "space_kind": "personal",
         "space_name": None,

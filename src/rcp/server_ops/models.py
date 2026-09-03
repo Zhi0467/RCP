@@ -33,6 +33,9 @@ SERVER_CLI_MAX_ARG_CHARS = 4096
 SERVER_CLI_MAX_EXECUTION_BYTES = 1024 * 1024
 
 ServerCommandName = Literal[
+    "version",
+    "migrate",
+    "migrate --check",
     "server install",
     "server doctor",
     "server provider check",
