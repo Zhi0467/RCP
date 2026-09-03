@@ -68,7 +68,11 @@ interface Props {
   onSaved: (project: ProjectSnapshot, retention?: ProjectReadinessRetention) => void;
   onCacheMetricsChange: (metrics: ProjectCacheMetrics) => void;
   onRefreshReadiness: () => Promise<void>;
-  readinessRequest?: { pending: boolean; error: string | null };
+  readinessRequest?: {
+    pending: boolean;
+    providerError: string | null;
+    computeError: string | null;
+  };
   showDisplaySettings: boolean;
   spaceKind: "personal" | "team";
   onMovePersonalProjectToTeam?: (sourceProjectId: string) => void;
@@ -869,8 +873,8 @@ export function ProjectSettings({
             <div className="settings-empty">No compute connections configured.</div>
           ) : null}
         </div>
-        {readinessRequest?.error ? (
-          <div className="settings-error">{readinessRequest.error}</div>
+        {readinessRequest?.computeError ? (
+          <div className="settings-error">{readinessRequest.computeError}</div>
         ) : null}
       </section>
 
@@ -920,7 +924,7 @@ export function ProjectSettings({
                 runOnLocked={id !== "paper_coach"}
                 onRefreshReadiness={onRefreshReadiness}
                 readinessPending={readinessRequest?.pending ?? false}
-                readinessError={readinessRequest?.error ?? null}
+                readinessError={readinessRequest?.providerError ?? null}
                 runtime={{
                   value: profiles[id].runtime,
                   onChange: (runtime) => {

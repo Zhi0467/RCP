@@ -13,6 +13,7 @@ const server = await createServer({
 });
 const {
   invalidateProjectReadinessGenerations,
+  projectReadinessFailureState,
   currentProjectReadinessGeneration,
   projectReadinessResponseApplies,
   projectReadinessUpdate,
@@ -137,6 +138,44 @@ test("a compute-settings save drops the matrix without dropping provider readine
     providers: probedProviders.local,
     provider_skill_inventories: {},
   });
+});
+
+test("a failed readiness response reports only for the slices it still owns", () => {
+  const generations = new Map();
+  const requestGeneration = currentProjectReadinessGeneration(generations, "project");
+  // A provider resolve landed while the compute probe was in flight.
+  invalidateProjectReadinessGenerations(generations, "project", {
+    provider: false,
+    compute: true,
+  });
+  const applies = projectReadinessResponseApplies(generations, "project", requestGeneration);
+
+  assert.deepEqual(projectReadinessFailureState(undefined, applies, "probe failed"), {
+    pending: true,
+    providerError: null,
+    computeError: "probe failed",
+  });
+  assert.deepEqual(
+    projectReadinessFailureState(
+      { pending: true, providerError: "resolve failed", computeError: null },
+      applies,
+      "probe failed",
+    ),
+    { pending: true, providerError: "resolve failed", computeError: "probe failed" },
+  );
+  // The mirror: a compute-configuration save superseded the compute slice.
+  const afterSave = new Map();
+  const saveRequest = currentProjectReadinessGeneration(afterSave, "project");
+  invalidateProjectReadinessGenerations(afterSave, "project", { provider: true, compute: false });
+
+  assert.deepEqual(
+    projectReadinessFailureState(
+      undefined,
+      projectReadinessResponseApplies(afterSave, "project", saveRequest),
+      "readiness failed",
+    ),
+    { pending: true, providerError: "readiness failed", computeError: null },
+  );
 });
 
 test("the provider re-check consumes the visible App-owned rejection", async () => {

@@ -210,7 +210,8 @@ const PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS = 20;
 
 interface ProviderReadinessRequestState {
   pending: boolean;
-  error: string | null;
+  providerError: string | null;
+  computeError: string | null;
 }
 
 type ProjectReadinessSnapshot = Awaited<ReturnType<typeof loadProjectReadiness>>;
@@ -285,6 +286,25 @@ export function projectReadinessUpdate(
           provider_skill_inventories: readiness.provider_skill_inventories,
         }
       : {}),
+  };
+}
+
+/**
+ * The request state after one failed readiness response.
+ *
+ * A failure carries no data, so it reports only for the slices this request
+ * still owns. A slice another edit superseded keeps whatever its own newer
+ * decision left behind.
+ */
+export function projectReadinessFailureState(
+  previous: ProviderReadinessRequestState | undefined,
+  applies: ProjectReadinessRetention,
+  message: string,
+): ProviderReadinessRequestState {
+  return {
+    pending: true,
+    providerError: applies.provider ? message : (previous?.providerError ?? null),
+    computeError: applies.compute ? message : (previous?.computeError ?? null),
   };
 }
 
@@ -1475,7 +1495,7 @@ export default function App() {
 
       setProviderReadinessRequests((current) => ({
         ...current,
-        [requestedProjectId]: { pending: true, error: null },
+        [requestedProjectId]: { pending: true, providerError: null, computeError: null },
       }));
       let request: Promise<ProjectReadinessSnapshot | null>;
       request = loadProjectReadiness(apiBase, refresh)
@@ -1507,7 +1527,11 @@ export default function App() {
           const message = error instanceof Error ? error.message : String(error);
           setProviderReadinessRequests((current) => ({
             ...current,
-            [requestedProjectId]: { pending: true, error: message },
+            [requestedProjectId]: projectReadinessFailureState(
+              current[requestedProjectId],
+              applies,
+              message,
+            ),
           }));
           if (isActiveProject(requestedProjectId)) {
             setNotice({ kind: "error", text: message });
@@ -1524,7 +1548,8 @@ export default function App() {
               ...current,
               [requestedProjectId]: {
                 pending: false,
-                error: current[requestedProjectId]?.error ?? null,
+                providerError: current[requestedProjectId]?.providerError ?? null,
+                computeError: current[requestedProjectId]?.computeError ?? null,
               },
             }));
           }
