@@ -1300,12 +1300,22 @@ class ServerControlClient:
                     "wrong_server_identity",
                     "The control socket is not owned by the expected RCP service process.",
                 )
-            _send_model(
-                connection,
-                request,
-                maximum=SERVER_CONTROL_MAX_REQUEST_BYTES,
-            )
-            response = _receive_response(connection)
+            try:
+                _send_model(
+                    connection,
+                    request,
+                    maximum=SERVER_CONTROL_MAX_REQUEST_BYTES,
+                )
+            except OSError as exc:
+                # The server answers an unauthorized peer before it ever reads a
+                # request, then closes, so this write can lose a race with that
+                # close. A Unix socket keeps an already-queued frame readable
+                # through it, so a refused write is not proof that nothing came
+                # back. Reading first is what keeps a refusal from being
+                # reported as an outage.
+                response = _queued_response(connection, exc)
+            else:
+                response = _receive_response(connection)
         except ServerControlError:
             raise
         except (OSError, TimeoutError) as exc:
@@ -1854,6 +1864,22 @@ def _receive_body(connection: socket.socket, *, maximum: int) -> bytes:
     if size > maximum:
         raise ServerControlError("oversized_frame", "The control frame is too large.")
     return _receive_exact(connection, size)
+
+
+def _queued_response(
+    connection: socket.socket,
+    send_failure: OSError,
+) -> ServerControlResponse:
+    """Return a reply the server queued before it refused this connection's write.
+
+    Raises the original write failure when nothing complete is waiting, so a
+    genuinely broken socket still reports itself as one.
+    """
+
+    try:
+        return _receive_response(connection)
+    except (OSError, TimeoutError, ServerControlError) as exc:
+        raise send_failure from exc
 
 
 def _receive_response(connection: socket.socket) -> ServerControlResponse:
