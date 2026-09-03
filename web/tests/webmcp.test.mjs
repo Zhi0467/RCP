@@ -1258,12 +1258,68 @@ test("Experiment inspection compacts backend decisions and scopes work and watch
       last_error: null,
     },
   ]);
-  assert.ok(JSON.stringify(inspected).length <= 4_000);
+  assert.ok(JSON.stringify(inspected).length <= 12_000);
   assert.equal(
     inspectProjectExperiment(project, [experimentTask], [], { experiment_id: "exp-1" }, true)
       .page_start_refusal,
     "Another task start is already being submitted.",
   );
+});
+
+test("Experiment inspection stays available with several bounded tasks and watchers", async () => {
+  const project = projectFixture();
+  const { task } = conversationFixtures();
+  const tasks = Array.from({ length: 3 }, (_, index) => ({
+    ...task,
+    operation_id: `experiment-task-${index}`,
+    created_at: `2026-08-31T10:0${index}:00Z`,
+    status_message: "s".repeat(600),
+    request: {
+      control_node_id: "exp-1",
+      control_episode_id: `episode-${index}`,
+      control_invocation: index + 1,
+      patch_kind: "experiment_loop",
+    },
+    episode_id: `episode-${index}`,
+  }));
+  const watchers = Array.from({ length: 4 }, (_, index) => ({
+    watcher_id: `watcher-${index}`,
+    continuation: { control_node_id: "exp-1" },
+    episode_id: `episode-${index}`,
+    status: "active",
+    created_at: `2026-08-31T11:0${index}:00Z`,
+    completed_at: null,
+    stop_reason: "r".repeat(600),
+    check_command: "true",
+    last_error: "e".repeat(600),
+  }));
+  project.graph.nodes["exp-1"] = {
+    ...project.graph.nodes["exp-1"],
+    current_summary: "c".repeat(800),
+    next_action: "n".repeat(800),
+    completion_criteria: Array.from({ length: 8 }, () => "criterion".repeat(80)),
+  };
+  project.experiment_control["exp-1"] = {
+    ...project.experiment_control["exp-1"],
+    reasons: Array.from({ length: 8 }, () => "reason".repeat(80)),
+    graph_reasons: Array.from({ length: 8 }, () => "graph reason".repeat(60)),
+  };
+  const inspectTool = projectExperimentToolDefinitions(
+    project,
+    tasks,
+    watchers,
+    false,
+    false,
+    false,
+    false,
+    async () => ({ operation_id: "task-unused" }),
+  )[0];
+  const result = await inspectTool.execute({ experiment_id: "exp-1" });
+  const text = result.content[0].text;
+  assert.ok(text.length > 4_000);
+  assert.ok(text.length <= 12_000);
+  assert.equal(JSON.parse(text).tasks.length, 3);
+  assert.equal(JSON.parse(text).watchers.length, 4);
 });
 
 test("Experiment Start revalidates the exact node and returns durable task identity", async () => {

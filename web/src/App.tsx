@@ -2644,7 +2644,14 @@ export default function App() {
       const finishExperimentStop = beginExperimentStop(nodeId);
       try {
         await api<unknown>(experimentStopPath(apiBase, nodeId, episodeId), { method: "POST" });
-        await Promise.all([reload(), episodeId ? refreshExperimentLoops() : Promise.resolve()]);
+        try {
+          await Promise.all([reload(), episodeId ? refreshExperimentLoops() : Promise.resolve()]);
+        } catch (error) {
+          setNotice({
+            kind: "error",
+            text: `Stop was requested, but Runs could not refresh: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
       } finally {
         finishExperimentStop();
       }

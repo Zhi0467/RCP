@@ -39,6 +39,12 @@ overlap in one inclusive integer protocol range. No overlap or a missing or
 mismatched handshake answer refuses the connection and names both source commits
 so the stale side can be updated from `origin/main`.
 
+A compatible browser host may expose a page-scoped WebMCP tool surface for
+reading projects, opening existing views, sending ordinary conversation turns,
+and operating bounded Experiment controls. Those tools compose the same browser
+and API owners as visible controls; they add no backend shortcut, graph-change
+channel, provider capability, or human-judgment authority.
+
 The confirmed first team deployment is one lab using one source-built RCP server
 and desktop member clients. A dedicated Linux `rcp` account owns the control
 plane and every server-local team checkout; an explicitly configured remote
