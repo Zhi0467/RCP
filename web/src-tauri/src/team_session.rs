@@ -9,7 +9,7 @@ use reqwest::{
     header::{
         HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, SET_COOKIE,
     },
-    Client, Method, Response,
+    Client, Method, RequestBuilder, Response,
 };
 use semver::Version;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -543,6 +543,7 @@ impl TeamSessionState {
         connection_id: &str,
         method: Method,
         url: Url,
+        timeout: Duration,
     ) -> Result<Response, String> {
         let session = self.established(connection_id)?;
         validate_resource_request(&method, &session.connection.local_origin, &url)?;
@@ -550,9 +551,7 @@ impl TeamSessionState {
             .authenticated_request_context(connections, connection_id)
             .await?;
         debug_assert_eq!(connection.connection_id, session.connection.connection_id);
-        client
-            .request(method, url)
-            .header(COOKIE, cookie)
+        authenticated_resource_request_builder(&client, method, url, cookie, timeout)
             .send()
             .await
             .map_err(|error| format!("could not reach the team resource: {error}"))
@@ -943,6 +942,19 @@ impl TeamSessionState {
             .lock()
             .map_err(|_| "the established team session state is unavailable".to_string())
     }
+}
+
+fn authenticated_resource_request_builder(
+    client: &Client,
+    method: Method,
+    url: Url,
+    cookie: HeaderValue,
+    timeout: Duration,
+) -> RequestBuilder {
+    client
+        .request(method, url)
+        .header(COOKIE, cookie)
+        .timeout(timeout)
 }
 
 fn validate_resource_request(method: &Method, origin: &str, url: &Url) -> Result<(), String> {
@@ -1546,6 +1558,22 @@ mod tests {
             .unwrap(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn team_resource_request_uses_the_callers_timeout() {
+        let timeout = Duration::from_millis(125);
+        let request = authenticated_resource_request_builder(
+            &Client::new(),
+            Method::GET,
+            Url::parse("https://example.com/resource").unwrap(),
+            HeaderValue::from_static("session=cookie"),
+            timeout,
+        )
+        .build()
+        .unwrap();
+
+        assert_eq!(request.timeout(), Some(&timeout));
     }
 
     #[test]

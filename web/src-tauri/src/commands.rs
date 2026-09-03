@@ -135,6 +135,7 @@ impl<'a> ResourceAccess<'a> {
                     &session.connection.connection_id,
                     method,
                     url,
+                    timeout,
                 )
                 .await
                 .map_err(|error| format!("{description} is unavailable: {error}")),

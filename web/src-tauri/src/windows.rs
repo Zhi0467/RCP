@@ -360,7 +360,7 @@ fn is_preview_entry_url(url: &Url, base_url: &str) -> bool {
 }
 
 fn is_preview_navigation(url: &Url, base_url: &str) -> bool {
-    url.scheme() == "about" || is_preview_entry_url(url, base_url)
+    matches!(url.as_str(), "about:srcdoc" | "about:blank") || is_preview_entry_url(url, base_url)
 }
 
 pub fn uses_vite_dev_server() -> bool {
@@ -540,6 +540,14 @@ mod tests {
         ));
         assert!(is_preview_navigation(
             &url("about:srcdoc"),
+            "http://127.0.0.1:18421",
+        ));
+        assert!(is_preview_navigation(
+            &url("about:blank"),
+            "http://127.0.0.1:18421",
+        ));
+        assert!(!is_preview_navigation(
+            &url("about:config"),
             "http://127.0.0.1:18421",
         ));
     }
