@@ -290,11 +290,26 @@ export function projectReadinessUpdate(
 }
 
 /**
+ * Whether one failed readiness response may still write shared request state.
+ *
+ * A failure carries no slice data, so it speaks for the project only while it
+ * is the registered request. A replaced request must stay silent: the `finally`
+ * that clears `pending` runs only for the registered request, so a late failure
+ * would otherwise leave readiness controls disabled until reload.
+ */
+export function projectReadinessFailureApplies(
+  registered: boolean,
+  applies: ProjectReadinessRetention,
+): boolean {
+  return registered && (applies.provider || applies.compute);
+}
+
+/**
  * The request state after one failed readiness response.
  *
- * A failure carries no data, so it reports only for the slices this request
- * still owns. A slice another edit superseded keeps whatever its own newer
- * decision left behind.
+ * The failure reports only for the slices this request still owns. A slice a
+ * later edit superseded keeps whatever its own newer decision left behind.
+ * `pending` stays true because only a registered request reaches here.
  */
 export function projectReadinessFailureState(
   previous: ProviderReadinessRequestState | undefined,
@@ -1525,16 +1540,20 @@ export default function App() {
           );
           if (!applies.provider && !applies.compute) return null;
           const message = error instanceof Error ? error.message : String(error);
-          setProviderReadinessRequests((current) => ({
-            ...current,
-            [requestedProjectId]: projectReadinessFailureState(
-              current[requestedProjectId],
-              applies,
-              message,
-            ),
-          }));
-          if (isActiveProject(requestedProjectId)) {
-            setNotice({ kind: "error", text: message });
+          const registered =
+            providerReadinessRequestsInFlight.current.get(requestedProjectId)?.request === request;
+          if (projectReadinessFailureApplies(registered, applies)) {
+            setProviderReadinessRequests((current) => ({
+              ...current,
+              [requestedProjectId]: projectReadinessFailureState(
+                current[requestedProjectId],
+                applies,
+                message,
+              ),
+            }));
+            if (isActiveProject(requestedProjectId)) {
+              setNotice({ kind: "error", text: message });
+            }
           }
           if (refresh) throw error instanceof Error ? error : new Error(message);
           return null;

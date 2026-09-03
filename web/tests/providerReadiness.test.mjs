@@ -13,6 +13,7 @@ const server = await createServer({
 });
 const {
   invalidateProjectReadinessGenerations,
+  projectReadinessFailureApplies,
   projectReadinessFailureState,
   currentProjectReadinessGeneration,
   projectReadinessResponseApplies,
@@ -138,6 +139,20 @@ test("a compute-settings save drops the matrix without dropping provider readine
     providers: probedProviders.local,
     provider_skill_inventories: {},
   });
+});
+
+test("a replaced readiness request stays silent when it fails", () => {
+  const current = { provider: true, compute: true };
+  const superseded = { provider: false, compute: false };
+  const partial = { provider: false, compute: true };
+
+  // A replaced request cannot write pending, because the finally that clears
+  // pending runs only for the registered request.
+  assert.equal(projectReadinessFailureApplies(false, current), false);
+  assert.equal(projectReadinessFailureApplies(false, partial), false);
+  assert.equal(projectReadinessFailureApplies(true, superseded), false);
+  assert.equal(projectReadinessFailureApplies(true, partial), true);
+  assert.equal(projectReadinessFailureApplies(true, current), true);
 });
 
 test("a failed readiness response reports only for the slices it still owns", () => {
