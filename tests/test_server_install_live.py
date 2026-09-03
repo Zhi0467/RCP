@@ -2507,7 +2507,8 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     Reaping the child tells the two apart, because only a live member still
     answers afterwards. A group that answers signal 0 without complaint is not
     escalated: this pid is free once the child is reaped, so a signalable group
-    at that number is somebody else's.
+    at that number is somebody else's. A leader that has not exited at all is
+    the privileged case outright; waiting on it would only time out.
     """
 
     try:
@@ -2515,7 +2516,11 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     except ProcessLookupError:
         pass
     except PermissionError:
-        process.wait(timeout=5)
+        if process.poll() is None:
+            # The leader itself is alive and refuses us: a root-owned `sudo`
+            # still running. Waiting on it would only time out, so escalate now.
+            _kill_privileged_process_group(process)
+            return
         try:
             os.killpg(process.pid, 0)
         except ProcessLookupError:
@@ -2588,12 +2593,18 @@ def test_group_kill_escalates_only_for_a_member_it_cannot_signal(
     )
 
     class Process:
-        def __init__(self) -> None:
+        def __init__(self, *, exited: bool = True) -> None:
             self.pid = 4321
             self.waits: list[float] = []
+            self.exited = exited
+
+        def poll(self) -> int | None:
+            return -signal.SIGKILL if self.exited else None
 
         def wait(self, timeout: float) -> int:
             self.waits.append(timeout)
+            if not self.exited:
+                raise subprocess.TimeoutExpired(cmd="scripted", timeout=timeout)
             return -signal.SIGKILL
 
     def killpg_script(*results: type[BaseException] | None):
@@ -2612,7 +2623,7 @@ def test_group_kill_escalates_only_for_a_member_it_cannot_signal(
     reaped = Process()
     _kill_process_group(reaped)  # type: ignore[arg-type]
     assert escalated == []
-    assert reaped.waits == [5]
+    assert reaped.waits == []
 
     # A group that still refuses signal 0 holds something we must not abandon.
     monkeypatch.setattr(os, "killpg", killpg_script(PermissionError, PermissionError))
@@ -2620,11 +2631,19 @@ def test_group_kill_escalates_only_for_a_member_it_cannot_signal(
     _kill_process_group(privileged)  # type: ignore[arg-type]
     assert escalated == [4321]
 
+    # A leader still running as root is escalated without a wait that would only
+    # time out and leak the group.
+    monkeypatch.setattr(os, "killpg", killpg_script(PermissionError))
+    live_leader = Process(exited=False)
+    _kill_process_group(live_leader)  # type: ignore[arg-type]
+    assert escalated == [4321, 4321]
+    assert live_leader.waits == []
+
     # ESRCH on the kill itself is the ordinary already-gone case.
     monkeypatch.setattr(os, "killpg", killpg_script(ProcessLookupError))
     gone = Process()
     _kill_process_group(gone)  # type: ignore[arg-type]
-    assert escalated == [4321]
+    assert escalated == [4321, 4321]
     assert gone.waits == [5]
 
 
