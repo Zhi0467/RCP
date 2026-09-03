@@ -20,7 +20,7 @@ const {
   projectTabShortcut,
   projectViewportRef,
 } = await server.ssrLoadModule("/src/projectTabs.ts");
-const { branchExperimentPollingKey, experimentBoardHref, parseProjectHash } =
+const { branchExperimentPollingKey, parseProjectHash, selectedExperimentHref } =
   await server.ssrLoadModule("/src/experimentBoard.ts");
 const { reduceExperimentSelection } = await server.ssrLoadModule("/src/hooks/useGraphSelection.ts");
 const { ProjectDock } = await server.ssrLoadModule("/src/components/ProjectDock.tsx");
@@ -106,10 +106,34 @@ test("collapsing and re-expanding keeps an exact branch Experiment URL", () => {
 
   assert.deepEqual(reexpanded.selectedExperimentRoute, route);
   assert.deepEqual(
-    parseProjectHash(experimentBoardHref("project-one", reexpanded.selectedExperimentRoute))
-      .experimentRoute,
+    parseProjectHash(
+      selectedExperimentHref(
+        "project-one",
+        reexpanded.selectedExperimentRunId,
+        reexpanded.selectedExperimentRoute,
+      ),
+    ).experimentRoute,
     route,
   );
+});
+
+test("selecting another card replaces an old exact branch Experiment URL", () => {
+  const oldRoute = {
+    experiment_id: "experiment/old",
+    episode_id: "child-episode",
+    graph_target: { kind: "branch", branch_id: "parent-episode" },
+    parent_episode_id: "parent-episode",
+  };
+  const href = selectedExperimentHref("project-one", "experiment/new", oldRoute);
+
+  assert.deepEqual(parseProjectHash(href), {
+    projectId: "project-one",
+    view: "execution",
+    projectViewSpecified: true,
+    experimentId: "experiment/new",
+    experimentRoute: null,
+    autoResearchEpisodeId: null,
+  });
 });
 
 test("tab restoration retains the branch target instead of resolving the node id on main", () => {

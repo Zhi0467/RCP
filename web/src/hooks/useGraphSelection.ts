@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import {
-  experimentBoardHref,
   projectHashAfterViewChange,
+  selectedExperimentHref,
   type ExperimentRouteIdentity,
   type ProjectHashRoute,
 } from "../experimentBoard";
@@ -414,7 +414,7 @@ export function useGraphSelection({
         window.history.replaceState(
           null,
           "",
-          experimentBoardHref(projectId, selectedExperimentRoute),
+          selectedExperimentHref(projectId, nodeId, selectedExperimentRoute),
         );
       }
       dispatchExperimentSelection({ kind: "select", experimentId: nodeId });

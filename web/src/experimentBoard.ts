@@ -108,6 +108,17 @@ export function experimentBoardHref(
   return `#/projects/${encodeURIComponent(projectId)}?${fields.join("&")}`;
 }
 
+export function selectedExperimentHref(
+  projectId: string,
+  experimentId: string,
+  exactRoute: ExperimentRouteIdentity | null,
+): string {
+  return experimentBoardHref(
+    projectId,
+    exactRoute?.experiment_id === experimentId ? exactRoute : experimentId,
+  );
+}
+
 export function parseProjectHash(hash: string): ProjectHashRoute {
   const queryStart = hash.indexOf("?");
   const pathname = queryStart === -1 ? hash : hash.slice(0, queryStart);
