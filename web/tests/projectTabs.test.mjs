@@ -335,6 +335,7 @@ test("starting Auto-research from an exact episode URL follows the started episo
   const startedEpisodeId = "episode/started";
   const href = exactAutoResearchEpisodeHref(
     route.projectId,
+    route.projectId,
     startedEpisodeId,
     selected.selectedAutoResearchEpisodeId,
   );
@@ -359,7 +360,10 @@ test("starting Auto-research from an exact episode URL follows the started episo
     selectedExperimentRoute: null,
     selectedAutoResearchEpisodeId: startedEpisodeId,
   });
-  assert.equal(exactAutoResearchEpisodeHref("project-one", startedEpisodeId, null), null);
+  assert.equal(
+    exactAutoResearchEpisodeHref("project-one", "project-one", startedEpisodeId, null),
+    null,
+  );
 });
 
 test("reauthorizing from an exact episode URL follows the fresh episode", () => {
@@ -383,6 +387,7 @@ test("reauthorizing from an exact episode URL follows the fresh episode", () => 
   const freshEpisodeId = "episode/reauthorized";
   const href = exactAutoResearchEpisodeHref(
     route.projectId,
+    route.projectId,
     freshEpisodeId,
     selected.selectedAutoResearchEpisodeId,
   );
@@ -405,6 +410,45 @@ test("reauthorizing from an exact episode URL follows the fresh episode", () => 
     selectedExperimentRoute: null,
     selectedAutoResearchEpisodeId: freshEpisodeId,
   });
+});
+
+test("an episode that settles after a project tab switch routes nothing", () => {
+  const route = parseProjectHash(
+    "#/projects/project-one?view=runs&mode=auto_research&episode=exhausted-episode",
+  );
+  const selected = reduceExperimentSelection(
+    {
+      selectedExperimentRunId: null,
+      focusExperimentRunId: null,
+      selectedExperimentRoute: null,
+      selectedAutoResearchEpisodeId: null,
+    },
+    {
+      kind: "route",
+      experimentId: route.experimentId,
+      experimentRoute: route.experimentRoute,
+      autoResearchEpisodeId: route.autoResearchEpisodeId,
+    },
+  );
+
+  assert.equal(
+    exactAutoResearchEpisodeHref(
+      "project-two",
+      route.projectId,
+      "episode/started",
+      selected.selectedAutoResearchEpisodeId,
+    ),
+    null,
+  );
+  assert.equal(
+    exactAutoResearchEpisodeHref(
+      null,
+      route.projectId,
+      "episode/started",
+      selected.selectedAutoResearchEpisodeId,
+    ),
+    null,
+  );
 });
 
 test("an explicit malformed Runs route clears a cached exact branch selection", () => {

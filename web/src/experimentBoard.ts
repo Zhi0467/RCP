@@ -133,15 +133,18 @@ export function exactRunExperimentSelectionHref(
   return selectedExperimentHref(projectId, experimentId, exactExperimentRoute);
 }
 
-// A started or reauthorized episode replaces an exact Auto-research selection; a Runs view that
-// was not opened by exact episode keeps whatever it was already showing.
+// A started or reauthorized episode replaces an exact Auto-research selection. A Runs view that
+// was not opened by exact episode keeps what it was showing, and an episode whose project is no
+// longer the active tab routes nothing: its response must not address the project now on screen.
 export function exactAutoResearchEpisodeHref(
-  projectId: string | null,
-  episodeId: string | null,
+  activeProjectId: string | null,
+  episodeProjectId: string,
+  episodeId: string,
   exactAutoResearchEpisodeId: string | null,
 ): string | null {
-  if (!projectId || !episodeId || !exactAutoResearchEpisodeId) return null;
-  return experimentBoardHref(projectId, `${AUTO_RESEARCH_ROUTE_PREFIX}${episodeId}`);
+  if (!activeProjectId || activeProjectId !== episodeProjectId) return null;
+  if (!episodeId || !exactAutoResearchEpisodeId) return null;
+  return experimentBoardHref(episodeProjectId, `${AUTO_RESEARCH_ROUTE_PREFIX}${episodeId}`);
 }
 
 export function parseProjectHash(hash: string): ProjectHashRoute {
