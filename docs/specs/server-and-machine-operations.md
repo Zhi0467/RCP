@@ -395,7 +395,9 @@ boundary, but it must not invent an enrolled member requirement. In that state
 the health read succeeds, an unauthenticated project read remains forbidden,
 and the empty project inventory verifies normally. Path inventory and escape
 validation happen after candidate migration, so a new unclassified durable path
-column fails before startup.
+column fails before startup. The running release records its startup-recovery
+expectation on the copy before the candidate migrates it, because its store
+refuses a migration ledger longer than its own.
 
 The copied database and captured files live in a private typed overlay. Local
 project locators, task/result/episode stages, watcher cwd/log paths, and transfer
