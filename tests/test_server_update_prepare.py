@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import rcp.server_ops.install as server_install
 import rcp.server_ops.update_checkpoint as update_checkpoint_module
 from rcp.__main__ import build_parser
 from rcp.server_ops.backup import backup_run_coordination_lock
@@ -22,8 +23,14 @@ from rcp.server_ops.cli import (
     CallerIdentity,
     run_server_command,
 )
+from rcp.server_ops.config import (
+    ServerPathsConfig,
+    ServerSourceConfig,
+    create_installed_server_config,
+)
+from rcp.server_ops.install import SourceTransition
 from rcp.server_ops.layout import ServerLayout
-from rcp.server_ops.models import ServerCommandRequest
+from rcp.server_ops.models import SERVER_CLI_MAX_FIELDS, ServerCommandRequest
 from rcp.server_ops.rehearsal import (
     CandidateProjectVerification,
     CandidateRehearsalResult,
@@ -51,6 +58,9 @@ BASE = "a" * 40
 TARGET = "b" * 40
 NEWER = "c" * 40
 WEB_BUILD_ID = "sha256:" + ("d" * 64)
+HTTPS_ORIGIN = "https://github.com/openai/rcp.git"
+SSH_ORIGIN = "git@github.com:openai/rcp.git"
+DEPLOY_KEYS_URL = "https://github.com/openai/rcp/settings/keys"
 ROOT = CallerIdentity(uid=0, username="root", host="lab.example")
 
 
@@ -62,7 +72,7 @@ class _Paths:
         return self.layout.recorded_paths()
 
 
-def _config(layout: ServerLayout, *, origin: str = "https://github.com/openai/rcp.git"):
+def _config(layout: ServerLayout, *, origin: str = HTTPS_ORIGIN):
     return SimpleNamespace(
         installation_id=INSTALLATION_ID,
         source=SimpleNamespace(
@@ -90,6 +100,123 @@ def _inspection(
         running_commit=running,
         instance_id=INSTANCE_ID,
         process_pid=421,
+    )
+
+
+def _source_transition_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    authentication: str,
+    public_probe: str,
+):
+    layout = _layout(tmp_path)
+    _prepare_owned_roots(layout)
+    layout.credentials_root.mkdir(parents=True)
+    layout.source_checkout.mkdir(parents=True)
+    (layout.source_checkout / ".git").mkdir()
+    source = (
+        ServerSourceConfig(
+            origin=SSH_ORIGIN,
+            authentication="deploy_key",
+            public_key_fingerprint="SHA256:" + ("A" * 43),
+        )
+        if authentication == "deploy_key"
+        else ServerSourceConfig(origin=HTTPS_ORIGIN, authentication="public")
+    )
+    config = create_installed_server_config(
+        source=source,
+        installation_id=INSTALLATION_ID,
+    ).model_copy(update={"paths": ServerPathsConfig.model_construct(**layout.recorded_paths())})
+    current_config = [config]
+    layout.config_path.write_bytes(f"{authentication}-config\n".encode())
+    private = layout.credentials_root / "source_ed25519"
+    public = layout.credentials_root / "source_ed25519.pub"
+    if authentication == "deploy_key":
+        private.write_bytes(b"private-key\n")
+        public.write_bytes(b"public-key\n")
+    remote_origin = [source.origin]
+    probe_calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
+    git_calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
+
+    def config_loader(_path: Path):
+        return current_config[0]
+
+    def write_config(updated, path: Path) -> None:
+        assert private.exists() and public.exists()
+        current_config[0] = updated
+        path.write_bytes(b"public-config\n")
+
+    def doctor_inspect():
+        installed = current_config[0]
+        return SimpleNamespace(
+            problems=(),
+            managed_main_head=BASE,
+            current_commit=BASE,
+            running_commit=BASE,
+            instance_id=INSTANCE_ID,
+            process_pid=421,
+            release_state="aligned",
+            installation_id=installed.installation_id,
+            configured_origin=installed.source.origin,
+            configured_branch=installed.source.branch,
+        )
+
+    def runner(argv, *, cwd, environment, timeout, capture_output):
+        del cwd, timeout, capture_output
+        assert argv[0:3] == ("git", "ls-remote", "--exit-code")
+        assert environment is not None
+        probe_calls.append((argv, environment))
+        if public_probe == "ready":
+            return subprocess.CompletedProcess(argv, 0, BASE, "")
+        diagnostic = (
+            "repository not found" if public_probe == "grant_needed" else "could not resolve host"
+        )
+        return subprocess.CompletedProcess(argv, 128, "", diagnostic)
+
+    machine = LinuxUpdateMachine(
+        layout,
+        config_loader=config_loader,
+        doctor=SimpleNamespace(inspect=doctor_inspect),
+        service_runner=runner,
+        service_identity=(os.getuid(), os.getgid()),
+        root_identity=(os.getuid(), os.getgid()),
+    )
+
+    def git_text(_root: Path, argv: tuple[str, ...], **_kwargs) -> str:
+        if argv == ("remote", "get-url", "origin"):
+            return remote_origin[0]
+        if argv == ("symbolic-ref", "--short", "HEAD"):
+            return "main"
+        if argv == ("status", "--porcelain", "--untracked-files=all"):
+            return ""
+        if argv == ("rev-parse", "--verify", "HEAD^{commit}"):
+            return BASE
+        if argv == ("rev-parse", "--verify", "refs/remotes/origin/main^{commit}"):
+            return BASE
+        raise AssertionError(argv)
+
+    def run_git(_root: Path, argv: tuple[str, ...], **kwargs) -> None:
+        environment = kwargs["environment"]
+        git_calls.append((argv, environment))
+        if argv[:3] == ("remote", "set-url", "origin"):
+            assert not private.exists() and not public.exists()
+            remote_origin[0] = argv[3]
+        elif argv != ("fetch", "--prune", "origin", "main"):
+            raise AssertionError(argv)
+
+    monkeypatch.setattr(server_install, "write_installed_server_config", write_config)
+    monkeypatch.setattr(machine, "_git_text", git_text)
+    monkeypatch.setattr(machine, "_run_git", run_git)
+    return SimpleNamespace(
+        layout=layout,
+        machine=machine,
+        current_config=current_config,
+        private=private,
+        public=public,
+        remote_origin=remote_origin,
+        probe_calls=probe_calls,
+        git_calls=git_calls,
     )
 
 
@@ -776,6 +903,151 @@ def test_failure_status_can_report_identities_even_when_doctor_blocks_update(
     assert machine.status().managed_head == TARGET
     with pytest.raises(UpdateRefused, match="Server doctor blocks update"):
         machine.inspect()
+
+
+def test_update_transitions_deploy_key_source_before_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="deploy_key",
+        public_probe="ready",
+    )
+
+    inspection = fixture.machine.inspect()
+    fetched = fixture.machine.fetch_target(inspection)
+
+    assert inspection.config.installation_id == INSTALLATION_ID
+    assert inspection.config.source == ServerSourceConfig(
+        origin=HTTPS_ORIGIN,
+        authentication="public",
+    )
+    assert inspection.source_transition == SourceTransition(
+        retired_deploy_key_label=f"rcp-source:{INSTALLATION_ID}",
+        deploy_keys_url=DEPLOY_KEYS_URL,
+        source_origin=HTTPS_ORIGIN,
+    )
+    assert not fixture.private.exists()
+    assert not fixture.public.exists()
+    assert fixture.remote_origin == [HTTPS_ORIGIN]
+    assert fetched.target_commit == BASE
+    assert [argv for argv, _environment in fixture.git_calls] == [
+        ("remote", "set-url", "origin", HTTPS_ORIGIN),
+        ("fetch", "--prune", "origin", "main"),
+    ]
+    assert len(fixture.probe_calls) == 1
+    assert all(
+        "GIT_SSH_COMMAND" not in environment
+        for _argv, environment in (*fixture.probe_calls, *fixture.git_calls)
+    )
+
+
+@pytest.mark.parametrize("public_probe", ["grant_needed", "unavailable"])
+def test_update_keeps_deploy_key_source_byte_identical_when_public_probe_is_not_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    public_probe: str,
+) -> None:
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="deploy_key",
+        public_probe=public_probe,
+    )
+    before = {
+        path: path.read_bytes()
+        for path in (fixture.layout.config_path, fixture.private, fixture.public)
+    }
+
+    inspection = fixture.machine.inspect()
+
+    assert inspection.config.source.authentication == "deploy_key"
+    assert inspection.source_transition is None
+    assert {path: path.read_bytes() for path in before} == before
+    assert fixture.remote_origin == [SSH_ORIGIN]
+    assert fixture.git_calls == []
+    assert len(fixture.probe_calls) == 1
+
+
+def test_update_public_source_never_probes_or_uses_ssh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="public",
+        public_probe="ready",
+    )
+    before = fixture.layout.config_path.read_bytes()
+
+    inspection = fixture.machine.inspect()
+
+    assert inspection.config.source.authentication == "public"
+    assert inspection.source_transition is None
+    assert fixture.layout.config_path.read_bytes() == before
+    assert fixture.probe_calls == []
+    assert fixture.git_calls == []
+
+
+def test_update_transition_uses_shared_operator_paragraph_and_inspection_fields(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    transition = SourceTransition(
+        retired_deploy_key_label=f"rcp-source:{INSTALLATION_ID}",
+        deploy_keys_url=DEPLOY_KEYS_URL,
+        source_origin=HTTPS_ORIGIN,
+    )
+    paragraph = (
+        f"The source is now the public HTTPS origin {HTTPS_ORIGIN}. "
+        "The local deploy key pair was retired. The operator should revoke deploy key "
+        f"rcp-source:{INSTALLATION_ID} at {DEPLOY_KEYS_URL} after this update completes and "
+        "server doctor shows the public origin."
+    )
+    machine = FakeUpdateMachine(layout, target_commit=BASE)
+    machine.observed = replace(machine.observed, source_transition=transition)
+
+    exit_code, events = _run_update(layout, machine)
+    succeeded = next(
+        event["step"]
+        for event in events
+        if event.get("step", {}).get("number") == 1 and event["step"]["state"] == "succeeded"
+    )
+
+    assert exit_code == 0
+    assert succeeded["message"] == paragraph
+    assert {field["name"]: field["value"] for field in succeeded["fields"]} == {
+        "managed_main_head": BASE,
+        "current_commit": BASE,
+        "running_commit": BASE,
+        "source_authentication": "public",
+        "source_origin": HTTPS_ORIGIN,
+        "retired_deploy_key_label": f"rcp-source:{INSTALLATION_ID}",
+        "deploy_keys_url": DEPLOY_KEYS_URL,
+    }
+    assert len(succeeded["fields"]) == 7 < SERVER_CLI_MAX_FIELDS
+
+    interactive_machine = FakeUpdateMachine(layout, target_commit=BASE)
+    interactive_machine.observed = replace(
+        interactive_machine.observed,
+        source_transition=transition,
+    )
+    output = StringIO()
+    arguments = build_parser().parse_args(("server", "update"))
+
+    def handler(request: ServerCommandRequest, identity: CallerIdentity):
+        return prepare_update_command(
+            request,
+            identity,
+            machine=interactive_machine,
+            resume_executable=layout.cli_wrapper,
+        )
+
+    assert run_server_command(arguments, identity=ROOT, handler=handler, stream=output) == 0
+    assert paragraph in " ".join(output.getvalue().split())
 
 
 def test_real_local_origin_fetch_fast_forward_and_detached_release(tmp_path: Path) -> None:

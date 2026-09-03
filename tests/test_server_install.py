@@ -619,20 +619,56 @@ def test_existing_deploy_key_source_transitions_config_keys_and_checkout(
         tmp_path,
         authentication="deploy_key",
     )
+    layout.source_checkout.mkdir(parents=True)
+    (layout.source_checkout / ".git").mkdir()
+    layout.restore_operations_root.mkdir(parents=True, mode=0o700)
+    layout.update_checkpoints_root.mkdir(parents=True, mode=0o700)
     probes: list[tuple[str, ServerSourceConfig | None]] = []
-
-    def probe(origin: str, *, source: ServerSourceConfig | None):
-        probes.append((origin, source))
-        return "ready"
+    loaded_config = [config]
+    origin = [REPOSITORY.ssh_origin]
+    git_commands: list[tuple[tuple[str, ...], dict[str, str]]] = []
 
     def write_config(updated, path: Path) -> None:
         assert private.exists() and public.exists()
         path.write_text(render_installed_server_config(updated), encoding="utf-8")
+        loaded_config[0] = updated
 
-    monkeypatch.setattr(server_install, "load_installed_server_config", lambda _path: config)
+    def run_as_service(argv: tuple[str, ...], **kwargs):
+        assert argv[0:3] == ("git", "ls-remote", "--exit-code")
+        assert "GIT_SSH_COMMAND" not in kwargs["environment"]
+        probes.append((argv[3], None))
+        return subprocess.CompletedProcess(argv, 0, COMMIT, "")
+
+    def git_text(_root: Path, argv: tuple[str, ...], **_kwargs) -> str:
+        if argv == ("remote", "get-url", "origin"):
+            return origin[0]
+        if argv[0] == "status":
+            return ""
+        if argv == ("rev-parse", "origin/main"):
+            return COMMIT
+        raise AssertionError(argv)
+
+    def run_git(_root: Path, argv: tuple[str, ...], **kwargs) -> None:
+        environment = kwargs["environment"]
+        assert "GIT_SSH_COMMAND" not in environment
+        git_commands.append((argv, environment))
+        if argv[:3] == ("remote", "set-url", "origin"):
+            assert not private.exists() and not public.exists()
+            origin[0] = argv[3]
+        elif argv[0] == "fetch":
+            assert origin[0] == REPOSITORY.https_origin
+
+    monkeypatch.setattr(
+        server_install,
+        "load_installed_server_config",
+        lambda _path: loaded_config[0],
+    )
     monkeypatch.setattr(server_install, "write_installed_server_config", write_config)
     monkeypatch.setattr(machine, "_validate_source_key_pair", lambda *_args: "public-key")
-    monkeypatch.setattr(machine, "_probe_source", probe)
+    monkeypatch.setattr(machine, "_run_as_service", run_as_service)
+    monkeypatch.setattr(machine, "_git_text", git_text)
+    monkeypatch.setattr(machine, "_run_git", run_git)
+    monkeypatch.setattr(machine, "_current_release_commit", lambda: None)
 
     access = machine.prepare_source_access(REPOSITORY)
 
@@ -650,35 +686,6 @@ def test_existing_deploy_key_source_transitions_config_keys_and_checkout(
     assert access.source_transitioned is True
     assert access.retired_deploy_key_label == f"rcp-source:{INSTALLATION_ID}"
     assert probes == [(REPOSITORY.https_origin, None)]
-
-    layout.source_checkout.mkdir(parents=True)
-    (layout.source_checkout / ".git").mkdir()
-    layout.restore_operations_root.mkdir(parents=True, mode=0o700)
-    layout.update_checkpoints_root.mkdir(parents=True, mode=0o700)
-    origin = [REPOSITORY.ssh_origin]
-    git_commands: list[tuple[tuple[str, ...], dict[str, str]]] = []
-
-    def git_text(_root: Path, argv: tuple[str, ...], **_kwargs) -> str:
-        if argv == ("remote", "get-url", "origin"):
-            return origin[0]
-        if argv[0] == "status":
-            return ""
-        if argv == ("rev-parse", "origin/main"):
-            return COMMIT
-        raise AssertionError(argv)
-
-    def run_git(_root: Path, argv: tuple[str, ...], **kwargs) -> None:
-        environment = kwargs["environment"]
-        assert "GIT_SSH_COMMAND" not in environment
-        git_commands.append((argv, environment))
-        if argv[:3] == ("remote", "set-url", "origin"):
-            origin[0] = argv[3]
-        elif argv[0] == "fetch":
-            assert origin[0] == REPOSITORY.https_origin
-
-    monkeypatch.setattr(machine, "_git_text", git_text)
-    monkeypatch.setattr(machine, "_run_git", run_git)
-    monkeypatch.setattr(machine, "_current_release_commit", lambda: None)
 
     checkout = machine.converge_source_checkout(access)
 
@@ -714,7 +721,17 @@ def test_existing_deploy_key_source_does_not_transition_without_a_ready_public_p
 
     def probe(origin: str, *, source: ServerSourceConfig | None):
         probes.append((origin, source))
-        return public_probe if origin == REPOSITORY.https_origin else ssh_probe
+        assert origin == REPOSITORY.ssh_origin
+        return ssh_probe
+
+    def run_as_service(argv: tuple[str, ...], **kwargs):
+        assert argv[0:3] == ("git", "ls-remote", "--exit-code")
+        assert "GIT_SSH_COMMAND" not in kwargs["environment"]
+        probes.append((argv[3], None))
+        diagnostic = (
+            "could not resolve host" if public_probe == "unavailable" else "repository not found"
+        )
+        return subprocess.CompletedProcess(argv, 128, "", diagnostic)
 
     monkeypatch.setattr(server_install, "load_installed_server_config", lambda _path: config)
     monkeypatch.setattr(
@@ -724,6 +741,7 @@ def test_existing_deploy_key_source_does_not_transition_without_a_ready_public_p
     )
     monkeypatch.setattr(machine, "_validate_source_key_pair", lambda *_args: "public-key")
     monkeypatch.setattr(machine, "_probe_source", probe)
+    monkeypatch.setattr(machine, "_run_as_service", run_as_service)
 
     access = machine.prepare_source_access(REPOSITORY)
 

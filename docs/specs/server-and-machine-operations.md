@@ -470,18 +470,19 @@ source deploy key installed for `rcp`. Update never pushes RCP source, copies an
 operator's personal SSH key, or borrows a project's write deploy key.
 
 An installation that still records the RCP source as deploy-key SSH performs one
-one-way convergence when credential-free probing proves the corresponding HTTPS
-origin is public. It first atomically rewrites installed configuration to the
-public HTTPS origin and `authentication = "public"`, preserving the immutable
-`installation_id` so protected archives carrying
-`rcp-source:<installation-id>` remain valid. Only after that write succeeds does
-it remove the local `source_ed25519` pair. It then changes the managed checkout's
-`origin` from the matching SSH URL to that HTTPS URL as `rcp`, without
-`GIT_SSH_COMMAND`, before comparing the configured origin and fetching. A
-credential-free probe that still needs a grant or is unavailable leaves the
-configuration, key pair, and SSH checkout unchanged; any other checkout origin
-still refuses. A public configuration never returns to deploy-key mode and is
-never probed over SSH.
+one-way convergence during `rcp server update`, or when `rcp server install` is
+rerun, when credential-free probing proves the corresponding HTTPS origin is
+public. Both commands call the same transition function. It first atomically
+rewrites installed configuration to the public HTTPS origin and
+`authentication = "public"`, preserving the immutable `installation_id` so
+protected archives carrying `rcp-source:<installation-id>` remain valid. Only
+after that write succeeds does it remove the local `source_ed25519` pair. It then
+changes the managed checkout's `origin` from the matching SSH URL to that HTTPS
+URL as `rcp`, without `GIT_SSH_COMMAND`, before comparing the configured origin
+and fetching. A credential-free probe that still needs a grant or is unavailable
+leaves the configuration, key pair, and SSH checkout unchanged; any other
+checkout origin still refuses. A public configuration never returns to
+deploy-key mode and is never probed over SSH.
 
 The transition does not wait for GitHub-side revocation. Its wizard event reports
 the public authentication and origin, the retired label, and the repository's

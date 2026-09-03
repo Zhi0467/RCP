@@ -114,6 +114,13 @@ class GitHubRepository:
 
 
 @dataclass(frozen=True)
+class SourceTransition:
+    retired_deploy_key_label: str
+    deploy_keys_url: str
+    source_origin: str
+
+
+@dataclass(frozen=True)
 class HostFacts:
     ubuntu_release: Literal["22.04", "24.04"]
     architecture: Literal["x86_64"] = "x86_64"
@@ -228,6 +235,121 @@ def _is_repository_ssh_origin(origin: str, *, repository: GitHubRepository) -> b
         return normalize_github_repository(origin).slug == repository.slug
     except ValueError:
         return False
+
+
+def source_transition_message(transition: SourceTransition) -> str:
+    return (
+        f"The source is now the public HTTPS origin {transition.source_origin}. "
+        "The local deploy key pair was retired. The operator should revoke deploy key "
+        f"{transition.retired_deploy_key_label} at {transition.deploy_keys_url} after this "
+        "update completes and server doctor shows the public origin."
+    )
+
+
+def converge_public_source(
+    layout: ServerLayout,
+    config: InstalledServerConfig,
+    repository: GitHubRepository,
+    *,
+    run_as_service: Callable[..., subprocess.CompletedProcess[str]],
+    run_git: Callable[..., None],
+    git_text: Callable[..., str],
+    refusal: type[RuntimeError],
+) -> SourceTransition | None:
+    """Converge one deploy-key source to its credential-free public origin."""
+
+    if config.source.authentication != "deploy_key":
+        return None
+    public_probe = _probe_source_with_runner(
+        repository.https_origin,
+        source=None,
+        layout=layout,
+        run_as_service=run_as_service,
+        refusal=refusal,
+    )
+    if public_probe != "ready":
+        return None
+
+    transition = SourceTransition(
+        retired_deploy_key_label=f"rcp-source:{config.installation_id}",
+        deploy_keys_url=repository.deploy_keys_url,
+        source_origin=repository.https_origin,
+    )
+    transitioned_config = config.model_copy(
+        update={
+            "source": ServerSourceConfig(
+                origin=transition.source_origin,
+                authentication="public",
+            )
+        }
+    )
+    write_installed_server_config(transitioned_config, layout.config_path)
+
+    private_path = layout.credentials_root / _SOURCE_PRIVATE_KEY
+    public_path = layout.credentials_root / _SOURCE_PUBLIC_KEY
+    try:
+        private_path.unlink()
+        public_path.unlink()
+        _fsync_directory(layout.credentials_root)
+    except OSError as exc:
+        raise refusal(
+            "The installed source configuration now records the public HTTPS origin, but the "
+            "retired deploy-key pair could not be fully removed. Check server doctor, inspect "
+            "the two source-key paths, and remove any remainder by hand."
+        ) from exc
+
+    source = layout.source_checkout
+    if source.exists():
+        environment = source_git_environment(transitioned_config.source, layout)
+        origin = git_text(
+            source,
+            ("remote", "get-url", "origin"),
+            environment=environment,
+        )
+        if _is_repository_ssh_origin(origin, repository=repository):
+            run_git(
+                source,
+                ("remote", "set-url", "origin", transition.source_origin),
+                environment=environment,
+                timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
+                error=(
+                    "The managed checkout origin could not be changed from the retired "
+                    "deploy-key SSH origin to the public HTTPS origin."
+                ),
+            )
+    return transition
+
+
+def _probe_source_with_runner(
+    origin: str,
+    *,
+    source: ServerSourceConfig | None,
+    layout: ServerLayout,
+    run_as_service: Callable[..., subprocess.CompletedProcess[str]],
+    refusal: type[RuntimeError],
+) -> Literal["ready", "grant_needed", "unavailable"]:
+    result = run_as_service(
+        ("git", "ls-remote", "--exit-code", origin, "refs/heads/main"),
+        environment=source_git_environment(source, layout),
+        timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        return "ready"
+    diagnostic = f"{result.stdout}\n{result.stderr}".lower()
+    if any(marker in diagnostic for marker in _NETWORK_FAILURE_MARKERS):
+        return "unavailable"
+    if result.returncode == 2:
+        raise refusal(
+            "The configured GitHub repository has no readable main branch. Create or restore "
+            "origin/main, then rerun install."
+        )
+    if any(marker in diagnostic for marker in _AUTH_FAILURE_MARKERS):
+        return "grant_needed"
+    raise refusal(
+        "The GitHub source probe failed without a recognized authentication or network "
+        "diagnostic. Run the same git ls-remote as rcp, correct the host issue, and rerun."
+    )
 
 
 def discover_bootstrap_repository(bootstrap_root: Path | None = None) -> GitHubRepository:
@@ -584,11 +706,12 @@ def _source_access_succeeded(access: SourceAccess) -> str:
         return "The installed-server source identity and access mode are recorded."
     if access.retired_deploy_key_label is None:
         raise RuntimeError("a public source transition did not retain its deploy-key label")
-    return (
-        f"The source is now the public HTTPS origin {access.config.source.origin}. "
-        "The local deploy key pair was retired. The operator should revoke deploy key "
-        f"{access.retired_deploy_key_label} at {access.repository.deploy_keys_url} after this "
-        "update completes and server doctor shows the public origin."
+    return source_transition_message(
+        SourceTransition(
+            retired_deploy_key_label=access.retired_deploy_key_label,
+            deploy_keys_url=access.repository.deploy_keys_url,
+            source_origin=access.config.source.origin,
+        )
     )
 
 
@@ -937,34 +1060,27 @@ class LinuxInstallMachine:
                     )
                 return SourceAccess(config=config, repository=repository, grant_needed=False)
             public_key = self._validate_source_key_pair(config, private_path, public_path)
-            public_probe = self._probe_source(repository.https_origin, source=None)
-            if public_probe == "ready":
-                retired_label = f"rcp-source:{config.installation_id}"
-                transitioned_config = config.model_copy(
-                    update={
-                        "source": ServerSourceConfig(
-                            origin=repository.https_origin,
-                            authentication="public",
-                        )
-                    }
-                )
-                write_installed_server_config(transitioned_config, self.layout.config_path)
-                try:
-                    private_path.unlink()
-                    public_path.unlink()
-                    _fsync_directory(self.layout.credentials_root)
-                except OSError as exc:
-                    raise InstallRefused(
-                        "The installed source configuration now records the public HTTPS origin, "
-                        "but the retired deploy-key pair could not be fully removed. Check server "
-                        "doctor, inspect the two source-key paths, and remove any remainder by hand."
-                    ) from exc
+            transition = converge_public_source(
+                self.layout,
+                config,
+                repository,
+                run_as_service=lambda argv, **kwargs: self._run_as_service(
+                    argv,
+                    check=False,
+                    **kwargs,
+                ),
+                run_git=self._run_git,
+                git_text=self._git_text,
+                refusal=InstallRefused,
+            )
+            if transition is not None:
+                transitioned_config = load_installed_server_config(self.layout.config_path)
                 return SourceAccess(
                     config=transitioned_config,
                     repository=repository,
                     grant_needed=False,
                     source_transitioned=True,
-                    retired_deploy_key_label=retired_label,
+                    retired_deploy_key_label=transition.retired_deploy_key_label,
                 )
             probe = self._probe_source(repository.ssh_origin, source=config.source)
             if probe == "unavailable":
@@ -1105,24 +1221,6 @@ class LinuxInstallMachine:
                 "replace or adopt it."
             )
         origin = self._git_text(source, ("remote", "get-url", "origin"), environment=environment)
-        if access.source_transitioned and _is_repository_ssh_origin(
-            origin,
-            repository=access.repository,
-        ):
-            self._run_git(
-                source,
-                ("remote", "set-url", "origin", access.repository.https_origin),
-                environment=environment,
-                error=(
-                    "The managed checkout origin could not be changed from the retired "
-                    "deploy-key SSH origin to the public HTTPS origin."
-                ),
-            )
-            origin = self._git_text(
-                source,
-                ("remote", "get-url", "origin"),
-                environment=environment,
-            )
         if origin != access.config.source.origin:
             raise InstallRefused(
                 "The managed checkout origin differs from the installed source configuration; "
@@ -1572,27 +1670,16 @@ class LinuxInstallMachine:
         *,
         source: ServerSourceConfig | None,
     ) -> Literal["ready", "grant_needed", "unavailable"]:
-        result = self._run_as_service(
-            ("git", "ls-remote", "--exit-code", origin, "refs/heads/main"),
-            environment=self._source_environment(source),
-            timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
-            check=False,
-        )
-        if result.returncode == 0:
-            return "ready"
-        diagnostic = f"{result.stdout}\n{result.stderr}".lower()
-        if any(marker in diagnostic for marker in _NETWORK_FAILURE_MARKERS):
-            return "unavailable"
-        if result.returncode == 2:
-            raise InstallRefused(
-                "The configured GitHub repository has no readable main branch. Create or restore "
-                "origin/main, then rerun install."
-            )
-        if any(marker in diagnostic for marker in _AUTH_FAILURE_MARKERS):
-            return "grant_needed"
-        raise InstallRefused(
-            "The GitHub source probe failed without a recognized authentication or network "
-            "diagnostic. Run the same git ls-remote as rcp, correct the host issue, and rerun."
+        return _probe_source_with_runner(
+            origin,
+            source=source,
+            layout=self.layout,
+            run_as_service=lambda argv, **kwargs: self._run_as_service(
+                argv,
+                check=False,
+                **kwargs,
+            ),
+            refusal=InstallRefused,
         )
 
     def _create_source_key_pair(self, private: Path, public: Path, *, label: str) -> None:
@@ -2562,6 +2649,8 @@ __all__ = [
     "ServiceHealth",
     "ServiceInstallState",
     "SourceAccess",
+    "SourceTransition",
+    "converge_public_source",
     "discover_bootstrap_repository",
     "enable_backup_timer",
     "fence_backup_timer_before_unit_change",
@@ -2572,4 +2661,5 @@ __all__ = [
     "reload_and_disable_backup_timer",
     "run_backup_service_once",
     "source_git_environment",
+    "source_transition_message",
 ]

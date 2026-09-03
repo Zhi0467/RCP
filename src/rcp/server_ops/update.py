@@ -13,7 +13,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, BinaryIO, Literal, Protocol, TypeVar
@@ -41,8 +41,12 @@ from rcp.server_ops.doctor import (
 from rcp.server_ops.install import (
     InstalledServiceControlRefused,
     InstalledSystemServiceController,
+    SourceTransition,
     _run_as_account,
+    converge_public_source,
+    normalize_github_repository,
     source_git_environment,
+    source_transition_message,
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import (
@@ -177,6 +181,7 @@ class UpdateInspection:
     running_commit: str
     instance_id: str
     process_pid: int
+    source_transition: SourceTransition | None = None
 
 
 @dataclass(frozen=True)
@@ -519,10 +524,11 @@ def _execute_update(
                 steps[0].model_copy(
                     update={
                         "state": "succeeded",
-                        "message": "The installed service and update-maintenance boundary are coherent.",
+                        "message": _inspection_succeeded(inspection),
                         "fields": _inspection_fields(inspection),
                     }
-                )
+                ),
+                announce_success=inspection.source_transition is not None,
             )
             _execute_admitted_update(
                 request,
@@ -1005,6 +1011,25 @@ def _require_confirmed_target(confirmed: str | None, target: UpdateTarget) -> No
 
 
 def _inspection_fields(inspection: UpdateInspection) -> tuple[NonsecretField, ...]:
+    fields = _base_inspection_fields(inspection)
+    if inspection.source_transition is None:
+        return fields
+    return (
+        *fields,
+        NonsecretField(
+            name="source_authentication",
+            value=inspection.config.source.authentication,
+        ),
+        NonsecretField(name="source_origin", value=inspection.config.source.origin),
+        NonsecretField(
+            name="retired_deploy_key_label",
+            value=inspection.source_transition.retired_deploy_key_label,
+        ),
+        NonsecretField(name="deploy_keys_url", value=inspection.source_transition.deploy_keys_url),
+    )
+
+
+def _base_inspection_fields(inspection: UpdateInspection) -> tuple[NonsecretField, ...]:
     return (
         NonsecretField(name="managed_main_head", value=inspection.managed_head),
         NonsecretField(name="current_commit", value=inspection.current_commit),
@@ -1012,16 +1037,22 @@ def _inspection_fields(inspection: UpdateInspection) -> tuple[NonsecretField, ..
     )
 
 
+def _inspection_succeeded(inspection: UpdateInspection) -> str:
+    if inspection.source_transition is None:
+        return "The installed service and update-maintenance boundary are coherent."
+    return source_transition_message(inspection.source_transition)
+
+
 def _target_fields(target: UpdateTarget) -> tuple[NonsecretField, ...]:
     return (
-        *_inspection_fields(target.inspection),
+        *_base_inspection_fields(target.inspection),
         NonsecretField(name="target_commit", value=target.target_commit),
     )
 
 
 def _fetch_failure_fields(inspection: UpdateInspection) -> tuple[NonsecretField, ...]:
     return (
-        *_inspection_fields(inspection),
+        *_base_inspection_fields(inspection),
         NonsecretField(name="candidate_commit", value="unavailable"),
     )
 
@@ -1194,6 +1225,29 @@ class LinuxUpdateMachine:
 
     def inspect(self) -> UpdateInspection:
         inspection, report = self._read_status()
+        self._validate_inspection(inspection, report)
+        if inspection.config.source.authentication == "deploy_key":
+            repository = normalize_github_repository(inspection.config.source.origin)
+            transition = converge_public_source(
+                self.layout,
+                inspection.config,
+                repository,
+                run_as_service=self._run_service,
+                run_git=self._run_git,
+                git_text=self._git_text,
+                refusal=UpdateRefused,
+            )
+            if transition is not None:
+                inspection, report = self._read_status()
+                self._validate_inspection(inspection, report)
+                inspection = replace(inspection, source_transition=transition)
+        return inspection
+
+    @staticmethod
+    def _validate_inspection(
+        inspection: UpdateInspection,
+        report: ServerDoctorReport,
+    ) -> None:
         if report.problems:
             raise UpdateRefused(
                 f"Server doctor blocks update: {report.problems[0]}. Repair it and rerun."
@@ -1213,7 +1267,6 @@ class LinuxUpdateMachine:
             or report.configured_branch != inspection.config.source.branch
         ):
             raise UpdateRefused("Doctor and installed configuration disagree on source identity.")
-        return inspection
 
     def status(self) -> UpdateInspection:
         inspection, _report = self._read_status()
