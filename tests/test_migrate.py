@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import gzip
-import json
 import shutil
 import sqlite3
 import subprocess
@@ -13,6 +12,7 @@ import pytest
 
 from rcp.__main__ import main
 from rcp.migrate_cli import EXIT_MIGRATION_UNKNOWN
+from rcp.server_ops.models import ServerStepEvent
 from rcp.storage import AppStore
 
 from .server_upgrade_harness import immutable_fixture_directories, verify_fixture_integrity
@@ -65,7 +65,7 @@ def _assert_database_bytes_unchanged(
 def _event_fields(output: str) -> tuple[dict[str, object], dict[str, object]]:
     records = output.splitlines()
     assert len(records) == 1
-    event = json.loads(records[0])
+    event = ServerStepEvent.model_validate_json(records[0]).model_dump(mode="json")
     fields = {item["name"]: item["value"] for item in event["step"]["fields"]}
     return event, fields
 
@@ -255,6 +255,79 @@ def test_migrate_refuses_unknown_state_before_applying(
     _assert_database_bytes_unchanged(database, before)
 
 
+def test_migrate_check_and_apply_reject_an_unowned_column_after_a_ledger_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture = next(
+        path
+        for path in immutable_fixture_directories()
+        if path.name == "storage-ledger-v13-371b807"
+    )
+    database = _copy_fixture_database(fixture, tmp_path)
+    with closing(sqlite3.connect(database)) as connection, connection:
+        assert (
+            connection.execute(
+                "SELECT MAX(migration_version) FROM storage_schema_migrations"
+            ).fetchone()[0]
+            == 4
+        )
+        connection.execute("ALTER TABLE team_sessions ADD COLUMN review_data TEXT")
+    before = _database_bytes(database)
+
+    for argv in (("migrate", "--check"), ("migrate",)):
+        code, output, errors = _run_cli(
+            monkeypatch,
+            capsys,
+            *argv,
+            "--data-dir",
+            str(database.parent),
+        )
+
+        assert code == EXIT_MIGRATION_UNKNOWN
+        assert output == ""
+        assert "unowned column: team_sessions.review_data" in errors
+        _assert_database_bytes_unchanged(database, before)
+
+
+def test_migrate_check_and_apply_reject_an_unowned_pre_ledger_column(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture = next(
+        path
+        for path in immutable_fixture_directories()
+        if path.name == "pre-storage-migration-ledger-v12-c3191bf"
+    )
+    database = _copy_fixture_database(fixture, tmp_path)
+    with closing(sqlite3.connect(database)) as connection, connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'storage_schema_migrations'"
+            ).fetchone()
+            is None
+        )
+        connection.execute("ALTER TABLE projects ADD COLUMN review_data TEXT")
+    before = _database_bytes(database)
+
+    for argv in (("migrate", "--check"), ("migrate",)):
+        code, output, errors = _run_cli(
+            monkeypatch,
+            capsys,
+            *argv,
+            "--data-dir",
+            str(database.parent),
+        )
+
+        assert code == EXIT_MIGRATION_UNKNOWN
+        assert output == ""
+        assert "unowned column: projects.review_data" in errors
+        _assert_database_bytes_unchanged(database, before)
+
+
 def test_migrate_check_and_apply_reject_unowned_pre_ledger_table_shapes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -281,7 +354,7 @@ def test_migrate_check_and_apply_reject_unowned_pre_ledger_table_shapes(
         assert code == EXIT_MIGRATION_UNKNOWN
         assert output == ""
         assert "unknown storage state" in errors
-        assert "unowned table shape" in errors
+        assert "unowned column: graph_run_events.bogus" in errors
         _assert_database_bytes_unchanged(database, before)
 
 

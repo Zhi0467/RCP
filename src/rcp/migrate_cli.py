@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import pwd
 import socket
@@ -17,10 +16,11 @@ from pathlib import Path
 
 from rcp.build_identity import build_identity
 from rcp.server_ops.models import (
-    SERVER_CLI_PROTOCOL_VERSION,
     MachineTarget,
     NonsecretField,
+    ServerCommandName,
     ServerStep,
+    ServerStepEvent,
 )
 from rcp.storage import AppStore
 
@@ -190,7 +190,7 @@ def _render_migration_result(
 def _render_command_result(
     *,
     machine_readable: bool,
-    command: str,
+    command: ServerCommandName,
     title: str,
     purpose: str,
     phase: str,
@@ -217,12 +217,9 @@ def _render_command_result(
         message=message,
         fields=tuple(NonsecretField(name=name, value=value) for name, value in fields),
     )
-    # These top-level commands reuse the envelope without widening the shipped server command.
-    event = {
-        "version": SERVER_CLI_PROTOCOL_VERSION,
-        "event": "step",
-        "command": command,
-        "timestamp": datetime.now(UTC).isoformat(),
-        "step": step.model_dump(mode="json"),
-    }
-    print(json.dumps(event, separators=(",", ":")), flush=True)
+    event = ServerStepEvent(
+        command=command,
+        timestamp=datetime.now(UTC),
+        step=step,
+    )
+    print(event.model_dump_json(), flush=True)

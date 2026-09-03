@@ -110,7 +110,7 @@ def test_version_machine_readable_uses_the_server_event_shape(monkeypatch, capsy
 
     main()
 
-    event = json.loads(capsys.readouterr().out)
+    event = ServerStepEvent.model_validate_json(capsys.readouterr().out).model_dump(mode="json")
     fields = {item["name"]: item["value"] for item in event["step"]["fields"]}
     assert set(event) == set(ServerStepEvent.model_fields)
     assert event["version"] == 1

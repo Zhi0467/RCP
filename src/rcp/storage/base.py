@@ -65,6 +65,12 @@ class AppStoreBase:
             "writing_sessions",
         }
     )
+    _RETIRED_STORAGE_COLUMNS: ClassVar[frozenset[tuple[str, str]]] = frozenset(
+        {
+            # Retired after the team-server-v1 through pre-member-removal-v11 fixture eras.
+            ("graph_runs", "campaign_worker_handoffs_cleared_at"),
+        }
+    )
     _baseline_storage_schema_cache: ClassVar[tuple[tuple[str, str, str, str], ...] | None] = None
 
     def __init__(self, path: Path, *, space_kind: SpaceKind | None = None) -> None:
@@ -213,7 +219,9 @@ class AppStoreBase:
                 )
 
             pending = tuple(name for _, name in registry[len(applied) :])
-            if not pending:
+            if pending:
+                self._rehearse_storage_schema_migrations(connection)
+            else:
                 self._validate_storage_schema(connection)
         ledger_head = applied[-1][0] if applied else 0
         return ledger_head, registry_head, pending
@@ -233,8 +241,10 @@ class AppStoreBase:
             if row[1] != "storage_schema_migrations"
         }
         actual = {(row[0], row[1]): row for row in self._storage_schema(connection)}
-        if actual == current_without_ledger:
-            return False
+        return actual != current_without_ledger
+
+    def _rehearse_storage_schema_migrations(self, connection: sqlite3.Connection) -> None:
+        """Prove every pending migration and final validator against an in-memory copy."""
 
         probe = sqlite3.connect(":memory:", timeout=30.0)
         probe.row_factory = sqlite3.Row
@@ -253,9 +263,9 @@ class AppStoreBase:
                 schema_template=False,
                 schema_capture=None,
             )
+            self._validate_storage_schema(probe)
         finally:
             probe.close()
-        return True
 
     @staticmethod
     def _storage_schema_has_rcp_core(tables: set[str]) -> bool:
@@ -2062,6 +2072,28 @@ class AppStoreBase:
             for (object_type, name), row in expected.items()
             if object_type == "table" and actual.get((object_type, name)) != row
         )
+        baseline = sqlite3.connect(":memory:")
+        try:
+            for table in changed_tables:
+                baseline.execute(expected[("table", table)][3])
+                baseline_columns = {
+                    str(row[1]) for row in baseline.execute(f'PRAGMA table_info("{table}")')
+                }
+                actual_columns = {
+                    str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')
+                }
+                unowned_columns = sorted(
+                    column
+                    for column in actual_columns - baseline_columns
+                    if (table, column) not in self._RETIRED_STORAGE_COLUMNS
+                )
+                if unowned_columns:
+                    raise RuntimeError(
+                        "RCP storage migration found an unowned column: "
+                        f"{table}.{unowned_columns[0]}"
+                    )
+        finally:
+            baseline.close()
         unexpected = sorted(set(changed_tables) - self._SCHEMA_NORMALIZED_TABLES)
         if unexpected:
             raise RuntimeError(
