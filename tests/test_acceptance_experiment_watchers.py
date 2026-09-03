@@ -5,6 +5,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents.acceptance import ACCEPTANCE_GENERIC_WATCHER_MARKER
@@ -243,6 +244,72 @@ def _assert_completed_job_artifacts(watchers: list[WatcherRecord]) -> None:
         assert log_path.with_suffix(".done").read_text(encoding="utf-8") == "done\n"
 
 
+def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
+    manifest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the arming outcome that makes the armed status unassertable in S42.
+
+    `arm_watchers` validates every spec, so one whose check already passes is
+    persisted completed rather than active. The fixture jobs finish after
+    `ACCEPTANCE_AGENT_JOB_SECONDS`, and a loaded runner can spend longer than
+    that inside the correction turn, which is how S42 read completed on a
+    docs-only pull request. Shortening the job reproduces that side of the race
+    on any machine, instead of waiting for a runner slow enough to find it.
+
+    The complementary case, arming while the jobs still run, is S42's own
+    opening; only this one needs forcing.
+    """
+
+    monkeypatch.setattr("rcp.agents.acceptance.ACCEPTANCE_AGENT_JOB_SECONDS", 0.01)
+    app = create_app(
+        str(manifest.path),
+        data_dir=tmp_path / "acceptance-data",
+        acceptance_agent=True,
+    )
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    service = app.state.service
+    append_fixture_patch(service, _experiment_fixture_patch())
+    baseline_patches = service.history.load_patches()
+    chat_id = str(uuid.uuid4())
+
+    try:
+        started = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json={
+                "chat_id": chat_id,
+                "message": f"Launch the local fixture. {ACCEPTANCE_GENERIC_WATCHER_MARKER}",
+                "mode": "work",
+                "run_truth_scope": ["repo-a"],
+            },
+        )
+        assert started.status_code == 202, started.text
+        origin = wait_for_task_response(client, project_id, started.json()["operation_id"])
+        assert origin["status"] == "succeeded", origin
+        assert {"watcher_correction_requested", "watchers_armed"} <= _receipt_categories(origin)
+
+        armed = app.state.background_tasks.store.watchers(project_id, chat_id=chat_id)
+        assert len(armed) == 2
+        # This app never starts a poller, and only a poll writes a shell
+        # watcher's status afterwards, so arming alone completed these.
+        assert not app.state.watcher_poller.is_running()
+        assert {record.status for record in armed} == {"completed"}
+        # Completed at arming is still undelivered, which is what the rest of
+        # the journey depends on.
+        assert all(not record.notified for record in armed)
+        assert all(record.notification_operation_id is None for record in armed)
+        assert len({_watcher_spec(record) for record in armed}) == 2
+        assert all(record.continuation.patch_kind == "work" for record in armed)
+        assert all(record.continuation.control_node_id is None for record in armed)
+        assert service.history.load_patches() == baseline_patches
+    finally:
+        client.close()
+        app.state.background_tasks.shutdown()
+
+
 def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
     manifest, tmp_path: Path
 ) -> None:
@@ -278,7 +345,13 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
 
         armed = app.state.background_tasks.store.watchers(project_id, chat_id=chat_id)
         assert len(armed) == 2
-        assert {record.status for record in armed} == {"active"}
+        # `arm_watchers` validates every spec it is handed, so a watcher whose
+        # check already passes is persisted completed rather than active. The
+        # fixture jobs finish after `ACCEPTANCE_AGENT_JOB_SECONDS`, and a loaded
+        # runner can spend longer than that inside the correction turn, so the
+        # status here belongs to the race, not to arming's promise. What arming
+        # owes is two distinct watchers that nothing has delivered yet.
+        assert all(not record.notified for record in armed)
         assert len({_watcher_spec(record) for record in armed}) == 2
         assert all(record.continuation.patch_kind == "work" for record in armed)
         assert all(record.continuation.control_node_id is None for record in armed)
