@@ -6591,16 +6591,16 @@ button.relation-map-node:hover {
   bottom: 34px;
   box-shadow: var(--shadow);
   left: 0;
+  margin: 0;
   max-height: 230px;
   min-width: min(340px, calc(100vw - 38px));
   overflow: auto;
+  padding: 0;
   position: absolute;
   z-index: 16;
 }
-.chat-compute-menu > button {
+.chat-compute-menu > label {
   align-items: center;
-  background: transparent;
-  border: 0;
   border-bottom: 1px solid var(--line);
   color: var(--ink);
   display: grid;
@@ -6610,20 +6610,18 @@ button.relation-map-node:hover {
   text-align: left;
   width: 100%;
 }
-.chat-compute-menu > button:last-child {
+.chat-compute-menu > label:last-child {
   border-bottom: 0;
 }
-.chat-compute-menu > button:hover,
-.chat-compute-menu > button:focus-visible {
+.chat-compute-menu > label:hover,
+.chat-compute-menu > label:focus-within {
   background: var(--cobalt-soft);
   outline: 0;
 }
-.chat-compute-check {
-  align-items: center;
-  border: 1px solid var(--line-strong);
-  display: inline-flex;
+.chat-compute-menu input {
+  accent-color: var(--cobalt);
   height: 15px;
-  justify-content: center;
+  margin: 0;
   width: 15px;
 }
 .chat-compute-menu strong {

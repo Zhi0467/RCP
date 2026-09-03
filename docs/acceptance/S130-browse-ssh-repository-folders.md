@@ -9,9 +9,10 @@ covered_by:
   - tests/test_route_inventory.py
   - web/tests/projectSetup.test.mjs
 last_checked: >-
-  2026-09-02 — focused API and Web tests passed; a disposable RCP server using
-  a real fake-ssh subprocess returned an authenticated-home listing and an
-  exact-machine authentication repair action without accepting credentials.
+  2026-09-03 — full backend and Web suites passed, including option-shaped host
+  rejection and deferred-response invalidation; a disposable RCP server using a
+  real fake-ssh subprocess returned an authenticated-home listing and an exact-
+  machine authentication repair action without accepting credentials.
 ---
 
 # Browse a remote repository path without giving RCP credentials

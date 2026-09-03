@@ -16,6 +16,7 @@ from rcp.agents import ProviderReadiness
 from rcp.config import load_manifest, permissions_for
 from rcp.core.models import Patch
 from rcp.history import HistoryManager
+from rcp.limits import COMPUTE_CONNECTION_MAX_COUNT
 from rcp.providers import ProviderUsage
 from rcp.storage import AgentTaskRecord
 
@@ -705,6 +706,8 @@ def test_loaded_project_compute_readiness_probes_only_on_refresh_and_invalidates
                 "reachable": True,
                 "diagnostic": "SSH connection succeeded.",
                 "required_action": None,
+                "status_label": "Reachable",
+                "status_tone": "ready",
             }
         }
     }
@@ -724,14 +727,59 @@ def test_loaded_project_compute_readiness_probes_only_on_refresh_and_invalidates
     assert refreshed.json()["compute_status"] == cached.json()["compute_status"] == status
     assert compute_calls == [["gpu"]]
 
-    removed = client.put(
+    changed_connection = {**connection, "ssh_target": "alice@gpu-2.example"}
+    changed = client.put(
         f"/api/projects/{project_id}/settings",
-        json={**body, "compute_connections": []},
+        json={**body, "compute_connections": [changed_connection]},
     )
     after_change = client.get(f"/api/projects/{project_id}/readiness")
-    assert removed.status_code == after_change.status_code == 200
+    assert changed.status_code == after_change.status_code == 200
+    assert changed.json()["compute_status"] == {}
     assert after_change.json()["compute_status"] == {}
     assert compute_calls == [["gpu"]]
+
+    failed_refreshes: list[str] = []
+
+    def failed_probe(probed_manifest):
+        failed_refreshes.append(probed_manifest.compute_connections[0].ssh_target)
+        raise RuntimeError("compute probe refresh failed")
+
+    monkeypatch.setattr("rcp.projects.probe_compute_connections", failed_probe)
+    failed = client.get(f"/api/projects/{project_id}/readiness?refresh=true")
+    still_empty = client.get(f"/api/projects/{project_id}/readiness")
+
+    assert failed.status_code == 503
+    assert failed.json()["detail"] == "compute probe refresh failed"
+    assert still_empty.status_code == 200
+    assert still_empty.json()["compute_status"] == {}
+    assert failed_refreshes == ["alice@gpu-2.example"]
+
+
+def test_project_settings_reject_too_many_compute_connections_before_persistence(
+    manifest, tmp_path
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    before = client.get(f"/api/projects/{project_id}").json()
+    body = {
+        "default_run_truth_scope": before["default_run_truth_scope"],
+        "agent_profiles": {
+            surface: {
+                key: profile[key] for key in ("provider", "runtime", "model", "reasoning", "run_on")
+            }
+            for surface, profile in before["agent_profiles"].items()
+        },
+        "compute_connections": [
+            {"id": f"compute-{index}", "name": f"Compute {index}", "kind": "local"}
+            for index in range(COMPUTE_CONNECTION_MAX_COUNT + 1)
+        ],
+    }
+
+    rejected = client.put(f"/api/projects/{project_id}/settings", json=body)
+
+    assert rejected.status_code == 422
+    assert client.get(f"/api/projects/{project_id}").json()["compute_connections"] == []
 
 
 def test_unopened_compute_readiness_cache_survives_project_open(

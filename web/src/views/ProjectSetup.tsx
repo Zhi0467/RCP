@@ -16,7 +16,7 @@ import {
   TriangleAlert,
   XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api";
 import { chooseDesktopRepositoryFolder, isDesktopRuntime } from "../desktopRuntime";
@@ -31,8 +31,10 @@ import {
 } from "../providers";
 import {
   assertSupportedProjectCreationIntent,
+  latestSshBrowseRequestCanApply,
   repositoryPickerPresentation,
   selectedProjectCreationIntent,
+  sshBrowseTargetIdentity,
   stateRepositoryAfterRemoval,
   type ProjectSetupRoute,
 } from "../projectSetup";
@@ -1096,13 +1098,46 @@ export function RepositoryEditor({
   const [pickerBusy, setPickerBusy] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
   const [sshListing, setSshListing] = useState<SshRepositoryBrowseResponse["listing"]>(null);
+  const sshBrowseGeneration = useRef(0);
+  const sshBrowseAbort = useRef<AbortController | null>(null);
+  const sshBrowseTarget = sshBrowseTargetIdentity(
+    repository.location,
+    repository.host,
+    repository.path,
+  );
+  const latestSshBrowseTarget = useRef(sshBrowseTarget);
+  const previousSshBrowseTarget = useRef(sshBrowseTarget);
+  latestSshBrowseTarget.current = sshBrowseTarget;
   const picker = repositoryPickerPresentation(repository.location, isDesktopRuntime());
   const pathInputId = `repository-path-${repository.id}`;
 
+  const invalidateSshBrowse = () => {
+    sshBrowseGeneration.current += 1;
+    sshBrowseAbort.current?.abort();
+    sshBrowseAbort.current = null;
+    setPickerBusy(false);
+    setSshListing(null);
+  };
+
+  useEffect(() => {
+    if (previousSshBrowseTarget.current !== sshBrowseTarget) {
+      previousSshBrowseTarget.current = sshBrowseTarget;
+      invalidateSshBrowse();
+    }
+  }, [sshBrowseTarget]);
+
+  useEffect(
+    () => () => {
+      sshBrowseGeneration.current += 1;
+      sshBrowseAbort.current?.abort();
+    },
+    [],
+  );
+
   const changeRepository = (patch: Partial<SetupRepository>) => {
-    if (patch.location !== undefined || patch.path !== undefined) setPickerError(null);
     if (patch.location !== undefined || patch.host !== undefined || patch.path !== undefined) {
-      setSshListing(null);
+      setPickerError(null);
+      invalidateSshBrowse();
     }
     onChange(patch);
   };
@@ -1126,22 +1161,40 @@ export function RepositoryEditor({
       setPickerError("Enter the SSH host before browsing.");
       return;
     }
+    sshBrowseAbort.current?.abort();
+    const controller = new AbortController();
+    const generation = ++sshBrowseGeneration.current;
+    const requestTarget = sshBrowseTarget;
+    const requestCanApply = () =>
+      latestSshBrowseRequestCanApply(
+        generation,
+        sshBrowseGeneration.current,
+        requestTarget,
+        latestSshBrowseTarget.current,
+      );
+    sshBrowseAbort.current = controller;
     setPickerBusy(true);
     setPickerError(null);
     try {
       const response = await api<SshRepositoryBrowseResponse>("/api/project-setup/ssh-paths", {
         method: "POST",
+        signal: controller.signal,
         body: JSON.stringify({ host, ...(path ? { path } : {}) }),
       });
+      if (!requestCanApply()) return;
       if (response.state !== "reachable" || !response.listing) {
         setPickerError(response.required_action ?? response.diagnostic);
         return;
       }
       setSshListing(response.listing);
     } catch (error) {
+      if (!requestCanApply()) return;
       setPickerError(error instanceof Error ? error.message : String(error));
     } finally {
-      setPickerBusy(false);
+      if (requestCanApply()) {
+        sshBrowseAbort.current = null;
+        setPickerBusy(false);
+      }
     }
   };
 

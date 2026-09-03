@@ -45,16 +45,7 @@ export function computeProbePresentation(probe: ComputeConnectionProbe | undefin
   tone: "ready" | "error" | "pending";
 } {
   if (!probe) return { label: "Not probed", tone: "pending" };
-  switch (probe.state) {
-    case "reachable":
-      return { label: "Reachable", tone: "ready" };
-    case "authentication_failed":
-      return { label: "Authentication failed", tone: "error" };
-    case "host_key_failed":
-      return { label: "Host key failed", tone: "error" };
-    case "unreachable":
-      return { label: "Unreachable", tone: "error" };
-  }
+  return { label: probe.status_label, tone: probe.status_tone };
 }
 
 function comparableTime(value: string): number {

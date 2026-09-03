@@ -151,3 +151,12 @@ def test_ssh_control_directory_refuses_unsafe_replacement(
 
     with pytest.raises(RuntimeError, match="control directory is unsafe"):
         ssh_arguments("research.example", "true")
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["-Ffoo", "-oProxyCommand=sh", "--", " host.example"],
+)
+def test_ssh_arguments_reject_option_shaped_destinations(host: str) -> None:
+    with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
+        ssh_arguments(host, "true")

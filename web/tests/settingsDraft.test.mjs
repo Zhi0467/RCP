@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  computeConnectionsChanged,
   deserializeSettingsDraft,
   machineProviderPathUpdates,
   machineProviderPathsFrom,
@@ -119,7 +120,7 @@ test("a dropped staged profile leaves the manifest profile intact", () => {
 
 test("settings drafts round trip staged provider paths", () => {
   const draft = {
-    version: 3,
+    version: 4,
     scope: ["repo"],
     profiles: {},
     autoResearchInvocationCeiling: 14,
@@ -139,7 +140,7 @@ test("v1 settings drafts migrate the campaign default into the current episode f
       }),
     ),
     {
-      version: 3,
+      version: 4,
       scope: ["repo"],
       profiles: {},
       autoResearchInvocationCeiling: 14,
@@ -182,7 +183,7 @@ test("v2 settings drafts accept one operational invocation and reject legacy or 
   );
 });
 
-test("settings drafts preserve only shaped non-secret compute metadata", () => {
+test("v3 settings drafts discard previously persisted compute metadata", () => {
   const draft = deserializeSettingsDraft(
     JSON.stringify({
       version: 3,
@@ -200,17 +201,55 @@ test("settings drafts preserve only shaped non-secret compute metadata", () => {
     }),
   );
 
-  assert.equal(draft?.computeConnections?.[0].name, "GPU VM");
+  assert.equal(draft?.version, 4);
+  assert.equal(Object.hasOwn(draft, "computeConnections"), false);
+
+  const malformed = deserializeSettingsDraft(
+    JSON.stringify({
+      version: 3,
+      scope: ["repo"],
+      profiles: {},
+      computeConnections: [{ id: "gpu", name: "GPU VM", kind: "ssh", password: "do-not-retain" }],
+    }),
+  );
+  assert.equal(malformed?.version, 4);
+  assert.equal(Object.hasOwn(malformed, "computeConnections"), false);
+});
+
+test("settings draft serialization excludes unsaved compute metadata defensively", () => {
+  const serialized = serializeSettingsDraft({
+    version: 4,
+    scope: ["repo"],
+    profiles: {},
+    computeConnections: [
+      {
+        id: "gpu",
+        name: "Unsaved GPU",
+        kind: "ssh",
+        ssh_target: "researcher@gpu.example",
+        access_hint: "Unsaved access hint",
+      },
+    ],
+  });
+
+  assert.doesNotMatch(serialized, /computeConnections|Unsaved GPU|researcher@gpu|access hint/);
+});
+
+test("compute changes compare complete non-secret connection metadata", () => {
+  const saved = [
+    {
+      id: "gpu",
+      name: "GPU",
+      kind: "ssh",
+      ssh_target: "alice@gpu.example",
+      access_hint: "Use scratch",
+    },
+  ];
+
+  assert.equal(computeConnectionsChanged(saved, structuredClone(saved)), false);
   assert.equal(
-    deserializeSettingsDraft(
-      JSON.stringify({
-        version: 3,
-        scope: ["repo"],
-        profiles: {},
-        computeConnections: [{ id: "gpu", name: "GPU VM", kind: "ssh", password: "no" }],
-      }),
-    ),
-    null,
+    computeConnectionsChanged(saved, [{ ...saved[0], ssh_target: "alice@gpu-2.example" }]),
+    true,
   );
 });
 

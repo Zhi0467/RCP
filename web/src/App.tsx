@@ -1403,6 +1403,7 @@ export default function App() {
           if (isActiveProject(requestedProjectId)) {
             setNotice({ kind: "error", text: message });
           }
+          if (refresh) throw error instanceof Error ? error : new Error(message);
           return null;
         })
         .finally(() => {

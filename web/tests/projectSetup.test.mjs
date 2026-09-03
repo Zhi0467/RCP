@@ -10,6 +10,7 @@ import {
   buildTeamProvisioningRequest,
   formatCommandArgv,
   invalidProjectProvisioningHash,
+  latestSshBrowseRequestCanApply,
   parseProjectSetupRoute,
   projectCreationPrimaryLabel,
   projectMoveSetupHash,
@@ -17,6 +18,7 @@ import {
   projectProvisioningRequestId,
   repositoryPickerPresentation,
   selectedProjectCreationIntent,
+  sshBrowseTargetIdentity,
   stateRepositoryAfterRemoval,
 } from "../src/projectSetup.ts";
 
@@ -108,6 +110,46 @@ test("SSH repositories retain manual paths and offer the bounded remote browser"
   assert.match(html, /value="\/home\/alice\/paper"/);
   assert.match(html, /Browse SSH…/);
   assert.doesNotMatch(html, /Choose folder…/);
+});
+
+test("a deferred SSH browse response cannot apply after the target inputs change", async () => {
+  let completeRequest;
+  const deferredResponse = new Promise((resolve) => {
+    completeRequest = resolve;
+  });
+  let currentGeneration = 1;
+  const requestGeneration = currentGeneration;
+  const requestTarget = sshBrowseTargetIdentity("ssh", "alice@gpu.example", "/home/alice");
+  let currentTarget = requestTarget;
+  const applied = [];
+  const consume = deferredResponse.then((response) => {
+    if (
+      latestSshBrowseRequestCanApply(
+        requestGeneration,
+        currentGeneration,
+        requestTarget,
+        currentTarget,
+      )
+    ) {
+      applied.push(response);
+    }
+  });
+
+  currentGeneration += 1; // Editing location, host, or path invalidates the request.
+  currentTarget = sshBrowseTargetIdentity("ssh", "alice@gpu-2.example", "/home/alice");
+  completeRequest({ listing: { path: "/stale" } });
+  await consume;
+
+  assert.deepEqual(applied, []);
+  assert.equal(
+    latestSshBrowseRequestCanApply(
+      currentGeneration,
+      currentGeneration,
+      currentTarget,
+      currentTarget,
+    ),
+    true,
+  );
 });
 
 test("the SSH repository browser does not introduce sub-10px primary or status text", async () => {

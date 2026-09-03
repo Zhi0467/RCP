@@ -26,6 +26,7 @@ import { AgentConfigControls, profileRunConfig } from "../components/AgentConfig
 import { AgentUsageWidgets } from "../components/AgentUsageWidgets";
 import { SkillPackageInspector } from "../components/SkillPackageInspector";
 import {
+  computeConnectionsChanged,
   deserializeSettingsDraft,
   machineProviderPathUpdates,
   machineProviderPathsFrom,
@@ -150,7 +151,7 @@ function stagedOrSaved(project: ProjectSnapshot) {
     profiles: mergeAgentProfiles(saved.profiles, staged.profiles),
     providerPaths: mergeMachineProviderPaths(saved.providerPaths, staged.providerPaths),
     skillDefaults: staged.skillDefaults ?? saved.skillDefaults,
-    computeConnections: staged.computeConnections ?? saved.computeConnections,
+    computeConnections: saved.computeConnections,
   };
 }
 
@@ -247,8 +248,8 @@ export function ProjectSettings({
   const autoResearchInvocationCeilingIsValid =
     Number.isSafeInteger(autoResearchInvocationCeiling) && autoResearchInvocationCeiling >= 1;
 
-  // Stage every edit locally so navigating away, or reloading, never loses it.
-  // Clearing on a clean form is what makes Save and Reset drop the staged copy.
+  // Stage ordinary settings edits locally. Compute metadata deliberately stays
+  // in component memory until Save; clearing a clean form drops the staged copy.
   useEffect(() => {
     const key = settingsDraftStorageKey(project.id);
     try {
@@ -256,13 +257,12 @@ export function ProjectSettings({
         localStorage.setItem(
           key,
           serializeSettingsDraft({
-            version: 3,
+            version: 4,
             scope,
             autoResearchInvocationCeiling,
             profiles,
             providerPaths,
             skillDefaults,
-            computeConnections,
           }),
         );
       } else {
@@ -386,6 +386,10 @@ export function ProjectSettings({
       providerPaths,
     );
     if (pathUpdates) body.machine_provider_paths = pathUpdates;
+    const computeConfigurationChanged = computeConnectionsChanged(
+      project.compute_connections ?? [],
+      computeConnections,
+    );
     try {
       const saved = await api<ProjectSnapshot>(`${apiBase}/settings`, {
         method: "PUT",
@@ -393,7 +397,9 @@ export function ProjectSettings({
       });
       setProviderPaths(machineProviderPathsFrom(saved.machines));
       setComputeConnections(saved.compute_connections);
-      onSaved(saved);
+      // The save response intentionally carries no live probe. Preserve prior
+      // readiness only when its compute cache key did not change.
+      onSaved(saved, !computeConfigurationChanged);
       try {
         await onRefreshReadiness();
         setStatus({ kind: "saved", text: "Saved." });
@@ -662,7 +668,7 @@ export function ProjectSettings({
               className="button secondary compact"
               type="button"
               disabled={writesDisabled || readinessRequest?.pending}
-              onClick={() => void onRefreshReadiness()}
+              onClick={() => void onRefreshReadiness().catch(() => {})}
             >
               {readinessRequest?.pending ? (
                 <LoaderCircle className="spin" size={13} />
@@ -821,7 +827,7 @@ export function ProjectSettings({
                       <strong>{machine}</strong>
                       <span>{presentation.label}</span>
                       {probe?.required_action ? <em>{probe.required_action}</em> : null}
-                      {probe && !probe.reachable && !probe.required_action ? (
+                      {probe && presentation.tone === "error" && !probe.required_action ? (
                         <em>{probe.diagnostic}</em>
                       ) : null}
                     </div>

@@ -35,16 +35,37 @@ test("the newest persisted chat or task selection restores composer state", () =
 
 test("compute probes expose distinct failure labels", () => {
   assert.equal(computeProbePresentation(undefined).label, "Not probed");
-  assert.equal(
-    computeProbePresentation({ state: "authentication_failed" }).label,
-    "Authentication failed",
+  assert.deepEqual(
+    computeProbePresentation({
+      state: "sealed-backend-state",
+      status_label: "Authentication failed",
+      status_tone: "error",
+    }),
+    { label: "Authentication failed", tone: "error" },
   );
-  assert.equal(computeProbePresentation({ state: "host_key_failed" }).label, "Host key failed");
-  assert.equal(computeProbePresentation({ state: "unreachable" }).label, "Unreachable");
-  assert.deepEqual(computeProbePresentation({ state: "reachable" }), {
-    label: "Reachable",
-    tone: "ready",
-  });
+  assert.deepEqual(
+    computeProbePresentation({
+      state: "contradictory-raw-value",
+      status_label: "Reachable",
+      status_tone: "ready",
+    }),
+    {
+      label: "Reachable",
+      tone: "ready",
+    },
+  );
+});
+
+test("the composer compute checklist uses native checkbox semantics", () => {
+  const source = readFileSync(new URL("../src/components/NodeChat.tsx", import.meta.url), "utf8");
+  const checklist = source.slice(
+    source.indexOf("{computeMenuOpen ? ("),
+    source.indexOf(") : null}", source.indexOf("{computeMenuOpen ? (")),
+  );
+
+  assert.match(checklist, /<fieldset[^>]*aria-label="Compute connections"/);
+  assert.match(checklist, /type="checkbox"/);
+  assert.doesNotMatch(checklist, /role="menu"|role="menuitemcheckbox"/);
 });
 
 test("compute controls introduce no sub-10px primary or status text", () => {

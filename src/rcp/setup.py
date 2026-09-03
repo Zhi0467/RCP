@@ -41,6 +41,7 @@ from rcp.providers import (
     configured_runtime_id,
 )
 from rcp.server_ops.models import redact_server_text
+from rcp.ssh_validation import validate_ssh_destination
 from rcp.storage import ProjectProvisioningRequestRecord, ProjectRecord
 from rcp.storage.provisioning import project_provisioning_review_digest
 from rcp.transport import StateWorkspace
@@ -77,6 +78,7 @@ class SetupRepository(_StrictSetupModel):
                 raise ValueError(f"local repository {self.alias} needs a specific absolute path")
             self.path = str(path.resolve())
         else:
+            validate_ssh_destination(self.host)
             if not re.fullmatch(r"[A-Za-z0-9_.@:-]+", self.host):
                 raise ValueError(f"remote repository {self.alias} needs a valid SSH host")
             path = PurePosixPath(self.path)
@@ -105,6 +107,7 @@ class SshRepositoryBrowseRequest(_StrictSetupModel):
     @model_validator(mode="after")
     def validate_target(self) -> SshRepositoryBrowseRequest:
         self.host = self.host.strip()
+        validate_ssh_destination(self.host)
         if not re.fullmatch(r"[A-Za-z0-9_.@:-]+", self.host):
             raise ValueError("SSH repository browser needs a valid host")
         if self.path is not None:
@@ -176,8 +179,11 @@ class SetupExecution(_StrictSetupModel):
     def validate_host(self) -> SetupExecution:
         if self.location == "local":
             self.host = ""
-        elif not re.fullmatch(r"[A-Za-z0-9_.@:-]+", self.host):
-            raise ValueError("remote execution needs a valid SSH host")
+        else:
+            self.host = self.host.strip()
+            validate_ssh_destination(self.host)
+            if not re.fullmatch(r"[A-Za-z0-9_.@:-]+", self.host):
+                raise ValueError("remote execution needs a valid SSH host")
         return self
 
 
@@ -198,8 +204,11 @@ class SetupAgentProfile(_StrictSetupModel):
     def validate_host(self) -> SetupAgentProfile:
         if self.location == "local":
             self.host = ""
-        elif not re.fullmatch(r"[A-Za-z0-9_.@:-]+", self.host):
-            raise ValueError("remote agent execution needs a valid SSH host")
+        else:
+            self.host = self.host.strip()
+            validate_ssh_destination(self.host)
+            if not re.fullmatch(r"[A-Za-z0-9_.@:-]+", self.host):
+                raise ValueError("remote agent execution needs a valid SSH host")
         return self
 
 

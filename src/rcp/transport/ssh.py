@@ -6,6 +6,8 @@ import stat
 from contextlib import suppress
 from pathlib import Path
 
+from rcp.ssh_validation import validate_ssh_destination
+
 # Options that do not require local filesystem preparation. A few strict
 # provisioning paths intentionally consume these directly without multiplexing.
 SSH_OPTIONS = [
@@ -22,6 +24,7 @@ def ssh_arguments(
     *,
     strict_host_key_checking: bool = False,
 ) -> list[str]:
+    validate_ssh_destination(host)
     options = _multiplexed_ssh_options()
     if strict_host_key_checking:
         options.extend(["-o", "StrictHostKeyChecking=yes"])

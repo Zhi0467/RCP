@@ -1566,13 +1566,20 @@ export interface ComputeConnection {
   access_hint: string;
 }
 
+declare const OPAQUE_COMPUTE_PROBE_STATE: unique symbol;
+export type ComputeProbeState = {
+  readonly [OPAQUE_COMPUTE_PROBE_STATE]: "ComputeProbeState";
+};
+
 export interface ComputeConnectionProbe {
   compute_id: string;
   execution_machine: string;
-  state: "reachable" | "unreachable" | "authentication_failed" | "host_key_failed";
+  state: ComputeProbeState;
   reachable: boolean;
   diagnostic: string;
   required_action: string | null;
+  status_label: string;
+  status_tone: "ready" | "error";
 }
 
 export interface AgentPermissions {

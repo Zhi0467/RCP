@@ -140,7 +140,9 @@ one probe result per agent execution machine and distinguishes unreachable,
 authentication, and host-key failures. Credential repair text names the exact
 agent machine rather than inviting credentials into RCP. The explicit **Probe**
 action refreshes those results; ordinary project polling reuses the last matrix
-and does not launch SSH work.
+and does not launch SSH work. The floating connection list uses native checkbox
+semantics, and unsaved connection edits are not copied into local settings-draft
+storage.
 
 ## Paper
 

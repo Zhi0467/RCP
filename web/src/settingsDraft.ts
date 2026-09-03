@@ -10,13 +10,12 @@ import type {
 export type MachineProviderPaths = Record<string, Record<ProviderId, string>>;
 
 export interface SettingsDraft {
-  version: 3;
+  version: 4;
   scope: string[];
   profiles: Partial<Record<AgentExecutionProfile, AgentProfileSettings>>;
   autoResearchInvocationCeiling?: number;
   providerPaths?: MachineProviderPaths;
   skillDefaults?: SkillDefaults;
-  computeConnections?: ComputeConnection[];
 }
 
 export function mergeAgentProfiles(
@@ -38,6 +37,13 @@ export function settingsFingerprint(state: unknown): string {
   return JSON.stringify(withSortedKeys(state));
 }
 
+export function computeConnectionsChanged(
+  saved: readonly ComputeConnection[],
+  current: readonly ComputeConnection[],
+): boolean {
+  return settingsFingerprint(saved) !== settingsFingerprint(current);
+}
+
 function withSortedKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withSortedKeys);
   if (!isRecord(value)) return value;
@@ -53,14 +59,19 @@ export function settingsDraftStorageKey(projectId: string): string {
 }
 
 export function serializeSettingsDraft(draft: SettingsDraft): string {
-  return JSON.stringify(draft);
+  const safeDraft = { ...draft } as SettingsDraft & { computeConnections?: unknown };
+  delete safeDraft.computeConnections;
+  return JSON.stringify(safeDraft);
 }
 
 export function deserializeSettingsDraft(value: string | null): SettingsDraft | null {
   if (!value) return null;
   try {
     const parsed: unknown = JSON.parse(value);
-    if (!isRecord(parsed) || (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3))
+    if (
+      !isRecord(parsed) ||
+      (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3 && parsed.version !== 4)
+    )
       return null;
     if (!Array.isArray(parsed.scope) || parsed.scope.some((item) => typeof item !== "string"))
       return null;
@@ -69,27 +80,28 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
     if (parsed.providerPaths !== undefined && !isMachineProviderPaths(parsed.providerPaths))
       return null;
     if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;
-    if (parsed.computeConnections !== undefined && !isComputeConnections(parsed.computeConnections))
-      return null;
+    // v3 briefly persisted unsaved compute metadata per keystroke. Drop it on
+    // read, regardless of shape; only backend-saved manifest metadata reloads.
+    delete parsed.computeConnections;
 
-    if (parsed.version === 3) {
+    if (parsed.version === 4) {
       if (parsed.campaignInvocationCeiling !== undefined) return null;
       if (!isInvocationCeiling(parsed.autoResearchInvocationCeiling)) return null;
       return parsed as unknown as SettingsDraft;
     }
 
-    if (parsed.version === 2) {
+    if (parsed.version === 2 || parsed.version === 3) {
       if (parsed.campaignInvocationCeiling !== undefined) return null;
       if (!isInvocationCeiling(parsed.autoResearchInvocationCeiling)) return null;
       return {
         ...(parsed as unknown as Omit<SettingsDraft, "version">),
-        version: 3,
+        version: 4,
       };
     }
 
     if (!isInvocationCeiling(parsed.campaignInvocationCeiling)) return null;
     return {
-      version: 3,
+      version: 4,
       scope: parsed.scope,
       profiles: parsed.profiles as SettingsDraft["profiles"],
       ...(parsed.campaignInvocationCeiling === undefined
@@ -173,24 +185,6 @@ function isSkillDefaults(value: unknown): value is SkillDefaults {
     value.workflow_ids.every((item) => typeof item === "string") &&
     Array.isArray(value.skill_ids) &&
     value.skill_ids.every((item) => typeof item === "string")
-  );
-}
-
-function isComputeConnections(value: unknown): value is ComputeConnection[] {
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (connection) =>
-        isRecord(connection) &&
-        Object.keys(connection).every((key) =>
-          ["id", "name", "kind", "ssh_target", "access_hint"].includes(key),
-        ) &&
-        typeof connection.id === "string" &&
-        typeof connection.name === "string" &&
-        (connection.kind === "local" || connection.kind === "ssh") &&
-        typeof connection.ssh_target === "string" &&
-        typeof connection.access_hint === "string",
-    )
   );
 }
 

@@ -4,22 +4,27 @@ status: pending
 tier: remote
 driver: pytest + browser + ssh
 covered_by:
+  - tests/test_api_project_state.py
   - tests/test_compute_connections.py
   - tests/test_config.py
+  - tests/test_transport_containment.py
   - tests/test_chat_prompt_protocol.py
   - tests/test_prompts.py
   - web/tests/compute.test.mjs
+  - web/tests/projectSession.test.mjs
   - web/tests/settingsDraft.test.mjs
 invariants: [4, 5, 10d]
 last_checked: >-
-  2026-09-02 — disposable browser verification covered Settings save/reload,
+  2026-09-03 — full backend and Web suites passed; disposable browser
+  verification covered Settings save/reload,
   local and unavailable probe presentation, composer attachment recovery,
-  desktop and 390 px layouts, unchanged run_on, and no console errors; a
+  native checkbox pointer/keyboard operation, desktop and 390 px layouts,
+  unchanged run_on, and no console errors; a
   disposable acceptance-agent Work launch confirmed exact selected metadata,
   an unchanged local execution binding, and secret-free provider context, while
-  prompt-protocol tests cover initial Discuss/Work context plus resumed
-  add/remove/update/no-op deltas. Live authentication/host-key targets remain
-  pending.
+  regressions cover initial Discuss/Work context, resumed add/remove/update/no-op
+  deltas, redacted diagnostics, bounded schemas, and stale-status invalidation.
+  Live authentication/host-key targets remain pending.
 ---
 
 # Attach compute without moving the agent

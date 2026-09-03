@@ -84,11 +84,13 @@ from rcp.core.validation.proposals import (
 )
 from rcp.history import HistoryManager
 from rcp.limits import (
+    ACTIVE_COMPUTE_ID_MAX_COUNT,
     BACKUP_INVENTORY_MAX_ENTRIES,
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
     CHAT_PREVIEW_MAX_CHARS,
     CHAT_TITLE_MAX_CHARS,
+    COMPUTE_CONNECTION_MAX_COUNT,
 )
 from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -301,7 +303,10 @@ class ChatMessage(BaseModel):
     graph_update: GraphUpdateResult | None = None
     trigger: TaskTrigger = "human"
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
-    active_compute_ids: list[str] = Field(default_factory=list)
+    active_compute_ids: list[str] = Field(
+        default_factory=list,
+        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
+    )
 
 
 class ChatSummary(BaseModel):
@@ -357,7 +362,11 @@ class _StoredChatRecord(BaseModel):
     graph_update: GraphUpdateResult | None = Field(default=None, alias="graphUpdate")
     trigger: TaskTrigger = "human"
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
-    active_compute_ids: list[str] = Field(default_factory=list, alias="activeComputeIds")
+    active_compute_ids: list[str] = Field(
+        default_factory=list,
+        alias="activeComputeIds",
+        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
+    )
 
 
 @dataclass(frozen=True)
@@ -825,7 +834,10 @@ class RunRequest(BaseModel):
     attachment_client_id: str | None = None
     attachment_batch_id: str | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
-    active_compute_ids: list[str] = Field(default_factory=list)
+    active_compute_ids: list[str] = Field(
+        default_factory=list,
+        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
+    )
 
     @model_validator(mode="after")
     def result_view_requires_node_work(self) -> RunRequest:
@@ -941,7 +953,10 @@ class ProjectSettingsRequest(BaseModel):
     machine_provider_paths: dict[str, dict[ProviderId, str]] | None = None
     # Omission preserves the manifest for older clients; an empty list removes
     # all project compute resources.
-    compute_connections: list[ComputeConnectionConfig] | None = None
+    compute_connections: list[ComputeConnectionConfig] | None = Field(
+        default=None,
+        max_length=COMPUTE_CONNECTION_MAX_COUNT,
+    )
 
     @model_validator(mode="after")
     def require_every_surface(self) -> ProjectSettingsRequest:

@@ -14,7 +14,10 @@ from rcp.config import load_manifest, permissions_for
 from rcp.history import HistoryManager
 from rcp.setup import (
     ProjectSetupRequest,
+    SetupAgentProfile,
     SetupAgents,
+    SetupExecution,
+    SetupRepository,
     SshRepositoryBrowseRequest,
     render_manifest,
 )
@@ -226,6 +229,26 @@ def test_personal_ssh_repository_browser_endpoint_uses_existing_local_ssh_state(
     )
     assert rejected.status_code == 422
     assert len(commands) == 1
+
+
+@pytest.mark.parametrize("host", ["-Ffoo", "-oProxyCommand=sh"])
+def test_setup_rejects_option_shaped_ssh_hosts_before_any_connection(host: str) -> None:
+    validators = (
+        lambda: SshRepositoryBrowseRequest(host=host),
+        lambda: SetupRepository(
+            alias="remote",
+            location="ssh",
+            path="/srv/research",
+            host=host,
+            default_read=True,
+        ),
+        lambda: SetupExecution(location="ssh", host=host),
+        lambda: SetupAgentProfile(location="ssh", host=host),
+    )
+
+    for validate in validators:
+        with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
+            validate()
 
 
 def test_ssh_repository_browser_rejects_untrusted_out_of_directory_entries(tmp_path) -> None:

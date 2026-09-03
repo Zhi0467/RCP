@@ -1,6 +1,5 @@
 import {
   AlertTriangle,
-  Check,
   ChevronUp,
   Cpu,
   Download,
@@ -1388,7 +1387,6 @@ export function NodeChat({
               <button
                 className="chat-compute-trigger"
                 type="button"
-                aria-haspopup="menu"
                 aria-expanded={computeMenuOpen}
                 onClick={() => setComputeMenuOpen((open) => !open)}
               >
@@ -1398,42 +1396,38 @@ export function NodeChat({
                 <ChevronUp size={12} />
               </button>
               {computeMenuOpen ? (
-                <div className="chat-compute-menu" role="menu" aria-label="Compute connections">
+                <fieldset className="chat-compute-menu" aria-label="Compute connections">
                   {computeConnections.map((connection) => {
                     const selected = computeState.ids.includes(connection.id);
                     const probe = project.compute_status?.[config.run_on]?.[connection.id];
                     const presentation = computeProbePresentation(probe);
                     return (
-                      <button
-                        type="button"
-                        role="menuitemcheckbox"
-                        aria-checked={selected}
+                      <label
                         aria-label={`${connection.name}, ${presentation.label}`}
                         key={connection.id}
-                        onClick={() => {
-                          setComputeState((current) => ({
-                            ids: selected
-                              ? current.ids.filter((id) => id !== connection.id)
-                              : [...current.ids, connection.id],
-                            pinned: true,
-                          }));
-                          setSubmitError(null);
-                        }}
                       >
-                        <span className="chat-compute-check" aria-hidden="true">
-                          {selected ? <Check size={11} /> : null}
-                        </span>
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => {
+                            setComputeState((current) => ({
+                              ids: selected
+                                ? current.ids.filter((id) => id !== connection.id)
+                                : [...current.ids, connection.id],
+                              pinned: true,
+                            }));
+                            setSubmitError(null);
+                          }}
+                        />
                         <span
-                          className={`chat-compute-dot ${
-                            probe ? (probe.reachable ? "ready" : "error") : "pending"
-                          }`}
+                          className={`chat-compute-dot ${presentation.tone}`}
                           aria-hidden="true"
                         />
                         <strong>{connection.name}</strong>
-                      </button>
+                      </label>
                     );
                   })}
-                </div>
+                </fieldset>
               ) : null}
             </div>
           )}

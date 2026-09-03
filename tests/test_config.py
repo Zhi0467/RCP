@@ -8,11 +8,13 @@ from rcp.config import (
     AgentExecutionProfile,
     AgentSurface,
     ComputeConnectionConfig,
+    MachineConfig,
     Manifest,
     load_manifest,
     permissions_for,
     write_agent_settings,
 )
+from rcp.limits import COMPUTE_CONNECTION_MAX_COUNT
 from rcp.providers import AgentCapability
 
 
@@ -240,12 +242,31 @@ def test_compute_connection_is_not_a_machine_or_execution_selector(manifest) -> 
 
     payload["compute_connections"][0]["access_hint"] = ""
     payload["compute_connections"][0]["ssh_target"] = "-ProxyCommand"
-    with pytest.raises(ValueError, match="SSH target contains unsupported characters"):
+    with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
         Manifest.model_validate(payload)
 
     payload["compute_connections"][0]["ssh_target"] = "alice@gpu.example"
     payload["compute_connections"][0]["access_hint"] = "Use ~/.ssh/id_ed25519"
     with pytest.raises(ValueError, match="cannot contain SSH credential paths"):
+        Manifest.model_validate(payload)
+
+
+@pytest.mark.parametrize("host", ["-Ffoo", "-oProxyCommand=sh"])
+def test_machine_and_compute_connections_reject_option_shaped_ssh_hosts(host: str) -> None:
+    with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
+        MachineConfig(alias="remote", host=host)
+    with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
+        ComputeConnectionConfig(id="gpu", name="GPU", kind="ssh", ssh_target=host)
+
+
+def test_manifest_bounds_compute_connections_before_they_can_be_used(manifest) -> None:
+    payload = manifest.model_dump(mode="python")
+    payload["compute_connections"] = [
+        {"id": f"compute-{index}", "name": f"Compute {index}", "kind": "local"}
+        for index in range(COMPUTE_CONNECTION_MAX_COUNT + 1)
+    ]
+
+    with pytest.raises(ValueError, match="at most 32 items"):
         Manifest.model_validate(payload)
 
 

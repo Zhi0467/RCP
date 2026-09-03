@@ -7,6 +7,8 @@ import pytest
 
 from rcp.compute import _probe_one, probe_compute_connections, selected_compute_connections
 from rcp.config import ComputeConnectionConfig, Manifest
+from rcp.limits import ACTIVE_COMPUTE_ID_MAX_COUNT
+from rcp.service import RunRequest
 from rcp.transport.remote_compute_probe import classify_ssh_failure, probe_connection
 
 
@@ -59,8 +61,105 @@ def test_authentication_failure_names_the_agent_execution_machine() -> None:
 
     assert result.state == "authentication_failed"
     assert result.reachable is False
+    assert result.status_label == "Authentication failed"
+    assert result.status_tone == "error"
     assert 'agent machine "lab-mac"' in result.required_action
     assert "does not collect keys or passwords" in result.required_action
+
+
+def test_probe_redacts_and_normalizes_remote_payload_diagnostics() -> None:
+    connection = ComputeConnectionConfig(
+        id="gpu",
+        name="GPU VM",
+        kind="ssh",
+        ssh_target="alice@gpu.example",
+    )
+
+    def runner(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                {
+                    "state": "unreachable",
+                    "diagnostic": "token=super-secret-token\nBearer abcdefghijklmnop",
+                }
+            ),
+            "",
+        )
+
+    result = _probe_one(
+        connection,
+        execution_machine="remote-agent",
+        execution_host="agent.example",
+        runner=runner,
+    )
+
+    assert result.state == "unreachable"
+    assert result.status_label == "Unreachable"
+    assert result.status_tone == "error"
+    assert "super-secret-token" not in result.diagnostic
+    assert "abcdefghijklmnop" not in result.diagnostic
+    assert "[REDACTED]" in result.diagnostic
+    assert "\n" not in result.diagnostic
+
+
+def test_probe_redacts_credential_shaped_remote_stderr() -> None:
+    connection = ComputeConnectionConfig(
+        id="gpu",
+        name="GPU VM",
+        kind="ssh",
+        ssh_target="alice@gpu.example",
+    )
+
+    def runner(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            255,
+            "",
+            "Authorization: Bearer abcdefghijklmnop\npassword=hunter2",
+        )
+
+    result = _probe_one(
+        connection,
+        execution_machine="remote-agent",
+        execution_host="agent.example",
+        runner=runner,
+    )
+
+    assert result.state == "unreachable"
+    assert "abcdefghijklmnop" not in result.diagnostic
+    assert "hunter2" not in result.diagnostic
+    assert "Authorization: [REDACTED]" in result.diagnostic
+    assert "password=[REDACTED]" in result.diagnostic
+    assert "\n" not in result.diagnostic
+
+
+def test_probe_redacts_runtime_errors_from_ssh_setup(monkeypatch) -> None:
+    connection = ComputeConnectionConfig(
+        id="gpu",
+        name="GPU VM",
+        kind="ssh",
+        ssh_target="alice@gpu.example",
+    )
+
+    def fail_ssh_arguments(*_args, **_kwargs):
+        raise RuntimeError("password=hunter2\nprivate_key=/tmp/key")
+
+    monkeypatch.setattr("rcp.compute.ssh_arguments", fail_ssh_arguments)
+    result = _probe_one(
+        connection,
+        execution_machine="remote-agent",
+        execution_host="agent.example",
+        runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+
+    assert result.state == "unreachable"
+    assert "hunter2" not in result.diagnostic
+    assert "/tmp/key" not in result.diagnostic
+    assert "password=[REDACTED]" in result.diagnostic
+    assert "private_key=[REDACTED]" in result.diagnostic
+    assert "\n" not in result.diagnostic
 
 
 def test_remote_execution_machine_runs_the_shipped_probe_there(manifest) -> None:
@@ -103,3 +202,12 @@ def test_compute_selection_rejects_unknown_ids_without_affecting_run_on(manifest
     assert configured.agent_profile("project_chat").run_on == "laptop"
     with pytest.raises(ValueError, match="unknown compute connections"):
         selected_compute_connections(configured, ["missing"])
+
+
+def test_active_compute_ids_are_bounded_before_request_or_prompt_assembly(manifest) -> None:
+    ids = [f"compute-{index}" for index in range(ACTIVE_COMPUTE_ID_MAX_COUNT + 1)]
+
+    with pytest.raises(ValueError, match="at most 32 items"):
+        RunRequest(active_compute_ids=ids)
+    with pytest.raises(ValueError, match="exceed the limit of 32"):
+        selected_compute_connections(manifest, ids)

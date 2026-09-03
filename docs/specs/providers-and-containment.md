@@ -261,7 +261,17 @@ machine on which the operator must repair ordinary SSH state. RCP has no key or
 password field and never imports, stores, stages, or transmits those credentials.
 Only explicit readiness refresh runs these SSH probes. Normal readiness polling
 returns the last authoritative matrix without network work, and any connection
-or execution-binding change invalidates that matrix.
+or execution-binding change invalidates that matrix. Probe diagnostics cross one
+redacting, single-line boundary before projection, and the backend exports the
+status label and tone consumed by every UI surface. A changed connection never
+inherits the old target's status; if the post-save refresh fails, Settings keeps
+the saved metadata, leaves status empty, and reports that the refresh failed.
+
+Projects configure at most 32 compute connections and a turn selects at most 32
+ids. These shared schema limits apply before manifest persistence, probing, chat
+record storage, or prompt assembly. Unsaved compute form metadata remains only in
+the live Settings component; local settings drafts deliberately omit it and
+discard the briefly shipped v3 field during migration.
 
 The human attaches configured computes through the conversation composer. The
 task request and canonical chat record persist the selected ids so reload and

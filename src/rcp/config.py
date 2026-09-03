@@ -8,6 +8,7 @@ from typing import Any, Literal
 import tomlkit
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
+from rcp.limits import COMPUTE_CONNECTION_MAX_COUNT
 from rcp.providers import (
     DEFAULT_PROVIDER,
     AgentCapability,
@@ -16,6 +17,7 @@ from rcp.providers import (
 )
 from rcp.server_ops.models import redact_server_text
 from rcp.skill_registry import SkillDefaults
+from rcp.ssh_validation import validate_ssh_destination
 
 DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING = 10
 COMPUTE_SSH_TARGET = re.compile(
@@ -32,6 +34,13 @@ class MachineConfig(BaseModel):
     host: str = ""
     os_account: str = ""
     provider_paths: dict[ProviderId, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_host(self) -> MachineConfig:
+        self.host = self.host.strip()
+        if self.host:
+            validate_ssh_destination(self.host)
+        return self
 
     @model_validator(mode="after")
     def validate_provider_paths(self) -> MachineConfig:
@@ -105,7 +114,9 @@ class ComputeConnectionConfig(BaseModel):
                 raise ValueError("local compute cannot define an SSH target")
         elif not self.ssh_target:
             raise ValueError("remote compute requires an SSH target")
-        elif COMPUTE_SSH_TARGET.fullmatch(self.ssh_target) is None:
+        else:
+            validate_ssh_destination(self.ssh_target)
+        if self.kind == "ssh" and COMPUTE_SSH_TARGET.fullmatch(self.ssh_target) is None:
             raise ValueError("compute SSH target contains unsupported characters")
         return self
 
@@ -216,7 +227,10 @@ class PaperCoachConfig(BaseModel):
 class Manifest(BaseModel):
     name: str
     machines: list[MachineConfig]
-    compute_connections: list[ComputeConnectionConfig] = Field(default_factory=list)
+    compute_connections: list[ComputeConnectionConfig] = Field(
+        default_factory=list,
+        max_length=COMPUTE_CONNECTION_MAX_COUNT,
+    )
     repositories: list[RepositoryConfig]
     project: ProjectConfig
     state: StateConfig

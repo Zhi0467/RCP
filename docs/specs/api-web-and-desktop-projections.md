@@ -541,7 +541,10 @@ children that contain `.git` or `.research`. An authentication or host-key
 failure names the exact RCP machine where ordinary SSH state must be repaired;
 RCP never accepts or stores a password, private key, or credential path. Team
 project provisioning continues to use server-managed checkout paths instead of
-this personal path browser.
+this personal path browser. Every SSH destination is centrally rejected before
+OpenSSH when it is empty, option-shaped, or contains unsupported characters.
+Editing the repository location, host, or path aborts and invalidates an
+in-flight browse request, so a late response cannot replace the new target.
 
 The desktop may add shell-only dictation, update, reconnection, and packaging
 behavior only where an active acceptance contract owns it. Browser verification

@@ -2216,7 +2216,11 @@ class ProjectCatalog:
         generation = self.reserve_cached_snapshot_generation(project_id)
         service = self.open(project_id)
         project_id = self._canonical_project_id(project_id)
+        prior_compute_key = compute_probe_cache_key(service.manifest)
         service.update_settings(request)
+        if compute_probe_cache_key(service.manifest) != prior_compute_key:
+            with self._services_lock:
+                self._compute_status_cache.pop(project_id, None)
         self._persist_bootstrap_locator(project_id, service)
         snapshot = _snapshot_payload(service.project_snapshot())
         self._stamp_snapshot_identity(snapshot, project_id)
