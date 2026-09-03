@@ -1,5 +1,7 @@
 import {
   AlertTriangle,
+  ChevronUp,
+  Cpu,
   Download,
   ExternalLink,
   File,
@@ -69,6 +71,11 @@ import {
   type ChatAnnotationViewportMetrics,
   type StagedChatAnnotation,
 } from "../chatInput";
+import {
+  computeProbePresentation,
+  latestPersistedComputeIds,
+  reconcileActiveComputeIds,
+} from "../compute";
 import type { GlossaryIndex } from "../glossary";
 import { skillInvocationFields } from "../skillPicker";
 import {
@@ -380,6 +387,10 @@ export function NodeChat({
   onRefreshTask,
 }: Props) {
   const surface = node ? "node_chat" : "project_chat";
+  const computeConnections = useMemo(
+    () => project.compute_connections ?? [],
+    [project.compute_connections],
+  );
   const skillCatalog = project.skill_catalog ?? [];
   const skillDefaults = project.skill_defaults ?? { workflow_ids: [], skill_ids: [] };
   const relatedTasks = useMemo(
@@ -433,6 +444,10 @@ export function NodeChat({
     () => latestPersistedConversationMode(historyMessages, relatedTasks),
     [historyMessages, relatedTasks],
   );
+  const derivedComputeIds = useMemo(
+    () => latestPersistedComputeIds(historyMessages, relatedTasks, computeConnections),
+    [computeConnections, historyMessages, relatedTasks],
+  );
   const [message, setMessage] = useState(() => readStorage(draftKey) ?? "");
   const [artifactContext, setArtifactContext] = useState<ArtifactContextRequest | null>(null);
   const [annotations, setAnnotations] = useState<StagedChatAnnotation[]>(() =>
@@ -448,6 +463,12 @@ export function NodeChat({
     const storedMode = parseConversationMode(readStorage(modeKey));
     return { value: storedMode ?? derivedMode, pinned: Boolean(storedMode) };
   });
+  const [computeState, setComputeState] = useState<{ ids: string[]; pinned: boolean }>(() => ({
+    ids: derivedComputeIds,
+    pinned: false,
+  }));
+  const computeIdentityRef = useRef(`${project.id}\0${chatId}`);
+  const [computeMenuOpen, setComputeMenuOpen] = useState(false);
   const modeRef = useRef(modeState.value);
   const [submitting, setSubmitting] = useState(false);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
@@ -661,6 +682,19 @@ export function NodeChat({
         : { ...current, value: derivedMode },
     );
   }, [derivedMode]);
+
+  useEffect(() => {
+    const identity = `${project.id}\0${chatId}`;
+    const reset = computeIdentityRef.current !== identity;
+    computeIdentityRef.current = identity;
+    setComputeState((current) => {
+      if (reset) return { ids: derivedComputeIds, pinned: false };
+      const reconciled = reconcileActiveComputeIds(current.ids, computeConnections);
+      if (current.pinned) return { ...current, ids: reconciled };
+      return { ids: derivedComputeIds, pinned: false };
+    });
+    if (reset) setComputeMenuOpen(false);
+  }, [chatId, computeConnections, derivedComputeIds, project.id]);
 
   useEffect(() => {
     skills.reset();
@@ -1177,6 +1211,7 @@ export function NodeChat({
         chat_id: chatId,
         session_id: sessionId,
         mode,
+        active_compute_ids: computeState.ids,
         ...(artifactContext ? { artifact_context: artifactContext } : {}),
         ...(readyAttachments.length && attachmentSetId
           ? {
@@ -1739,6 +1774,55 @@ export function NodeChat({
           }}
         >
           <SkillPicker {...skills.props} />
+          {computeConnections.length > 0 && (
+            <div className="chat-compute-picker">
+              <button
+                className="chat-compute-trigger"
+                type="button"
+                aria-expanded={computeMenuOpen}
+                onClick={() => setComputeMenuOpen((open) => !open)}
+              >
+                <Cpu size={13} />
+                Compute
+                {computeState.ids.length ? <strong>{computeState.ids.length}</strong> : null}
+                <ChevronUp size={12} />
+              </button>
+              {computeMenuOpen ? (
+                <fieldset className="chat-compute-menu" aria-label="Compute connections">
+                  {computeConnections.map((connection) => {
+                    const selected = computeState.ids.includes(connection.id);
+                    const probe = project.compute_status?.[config.run_on]?.[connection.id];
+                    const presentation = computeProbePresentation(probe);
+                    return (
+                      <label
+                        aria-label={`${connection.name}, ${presentation.label}`}
+                        key={connection.id}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => {
+                            setComputeState((current) => ({
+                              ids: selected
+                                ? current.ids.filter((id) => id !== connection.id)
+                                : [...current.ids, connection.id],
+                              pinned: true,
+                            }));
+                            setSubmitError(null);
+                          }}
+                        />
+                        <span
+                          className={`chat-compute-dot ${presentation.tone}`}
+                          aria-hidden="true"
+                        />
+                        <strong>{connection.name}</strong>
+                      </label>
+                    );
+                  })}
+                </fieldset>
+              ) : null}
+            </div>
+          )}
           {annotations.length > 0 && (
             <div className="chat-annotation-summary">
               <button

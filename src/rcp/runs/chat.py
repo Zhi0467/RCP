@@ -384,12 +384,40 @@ def _chat_context_delta(
     changed = {
         key: value
         for key, value in current.items()
-        if key not in previous or previous[key] != value
+        if key != "compute" and (key not in previous or previous[key] != value)
     }
+    prior_compute = _compute_profiles(previous.get("compute"))
+    current_compute = _compute_profiles(current.get("compute"))
+    if prior_compute != current_compute:
+        prior_ids = set(prior_compute)
+        current_ids = set(current_compute)
+        changed["compute"] = {
+            "added": [current_compute[item] for item in sorted(current_ids - prior_ids)],
+            "removed": [prior_compute[item]["name"] for item in sorted(prior_ids - current_ids)],
+            "updated": [
+                current_compute[item]
+                for item in sorted(prior_ids & current_ids)
+                if prior_compute[item] != current_compute[item]
+            ],
+        }
     removed = sorted(key for key in previous if key not in current)
     if removed:
         changed["removed"] = removed
     return changed or None
+
+
+def _compute_profiles(value: object) -> dict[str, dict[str, str]]:
+    if not isinstance(value, dict) or not isinstance(value.get("active"), list):
+        return {}
+    profiles: dict[str, dict[str, str]] = {}
+    for item in value["active"]:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            continue
+        profiles[item["id"]] = {
+            key: str(item.get(key, ""))
+            for key in ("id", "name", "kind", "ssh_target", "access_hint")
+        }
+    return profiles
 
 
 def _clear_stale_turn_handoffs(
@@ -1241,6 +1269,7 @@ def _append_chat_exchange(
             "operationId": execution.operation_id if execution is not None else None,
             "mode": request.mode,
             "trigger": request.trigger,
+            "activeComputeIds": request.active_compute_ids,
         }
         records = []
         if request.trigger != "watcher":
@@ -1308,6 +1337,7 @@ def _append_chat_graph_receipt(
             "operationId": execution.operation_id,
             "mode": "work",
             "trigger": request.trigger,
+            "activeComputeIds": request.active_compute_ids,
             "uuid": str(uuid.uuid4()),
             "type": "assistant",
             "role": "assistant",

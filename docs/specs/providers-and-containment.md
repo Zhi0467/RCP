@@ -241,6 +241,55 @@ scratch transfer, and recovery. A task resumed remotely must prove the saved
 host and stage. SSH or provider transport failure is reported as unavailable,
 not converted into semantic correction.
 
+### Compute connections are resources, not execution profiles
+
+A project may configure named local or SSH compute connections as non-secret
+resource metadata. A compute connection is not a `MachineConfig`, never supplies
+`run_on`, and never changes where a provider launches. Local compute means the
+machine on which the current agent is already running; an SSH compute target is
+reached from that same machine. Attaching or detaching one does not relaunch,
+move, or replace the provider, and it does not expand repository or write scope.
+
+The backend probes every configured connection from every machine currently
+selected by an agent execution profile. Readiness is therefore keyed by
+`(agent execution machine, compute connection)`, not stored as one global fact.
+SSH probes use the ordinary OpenSSH credentials already configured for the
+execution account, batch mode, a bounded connection timeout, and strict host-key
+checking. Strict host-key probes use a direct OpenSSH transport with connection
+sharing disabled, so an existing multiplexed master cannot bypass the check.
+Results distinguish reachable, unreachable, authentication failure, and host-key
+failure. An authentication or host-key action names the exact agent machine on
+which the operator must repair ordinary SSH state. RCP has no key or password field
+and never imports, stores, stages, or transmits those credentials.
+Only explicit readiness refresh runs these SSH probes. Normal readiness polling
+returns the last authoritative matrix without network work, and any connection
+or execution-binding change invalidates that matrix. Probe diagnostics cross one
+redacting, single-line boundary before projection, and the backend exports the
+status label and tone consumed by every UI surface. A changed connection never
+inherits the old target's status; if the post-save refresh fails, Settings keeps
+the saved metadata, leaves status empty, and reports that the refresh failed.
+
+Projects configure at most 32 compute connections and a turn selects at most 32
+ids. These shared schema limits apply before manifest persistence, probing, chat
+record storage, or prompt assembly. Unsaved compute form metadata remains only in
+the live Settings component; local settings drafts deliberately omit it and
+discard the briefly shipped v3 field during migration.
+
+The human attaches configured computes through the conversation composer. The
+task request and canonical chat record persist the selected ids so reload and
+recovery render the last truthful active set. Only selected profiles are eligible
+for agent context. Admission resolves those ids once into a bounded, immutable,
+server-owned non-secret profile snapshot stored with the task; client-supplied
+resolved metadata is ignored. Fresh and resumed prompts, Retry, recovery, and
+generic or Experiment watcher wakes use that snapshot rather than re-reading a
+later manifest. Watcher continuations persist both the selected ids and resolved
+snapshot; older rows default to an empty selection. The first master/task context
+describes the names, local or SSH access route, and optional non-secret access
+hint. Later ordinary additions and updates send the same bounded profile metadata
+in a concise delta so a resumed native session can use a newly attached or
+retargeted resource; removals send only the display name. Compute metadata never
+grants authority and never includes credential contents or paths.
+
 ### Team execution accounts and credentials
 
 The team backend remains the one owner of every provider call, whether the

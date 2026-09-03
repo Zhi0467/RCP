@@ -228,7 +228,7 @@ def project_readiness(
         return catalog.readiness_snapshot(project_id, refresh=refresh)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
-    except (FileNotFoundError, OSError, ValueError) as exc:
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 

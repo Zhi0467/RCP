@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  computeConnectionNeedsSave,
+  computeConnectionsChanged,
   deserializeSettingsDraft,
   machineProviderPathUpdates,
   machineProviderPathsFrom,
@@ -66,7 +68,7 @@ test("a staged profile keeps its own runtime over the manifest", () => {
 test("a staged profile written before runtime selection is dropped", () => {
   const draft = deserializeSettingsDraft(
     JSON.stringify({
-      version: 2,
+      version: 3,
       scope: ["repo"],
       profiles: {
         // A provider switch with no runtime beside it. Provider and runtime are
@@ -107,7 +109,7 @@ test("a dropped staged profile leaves the manifest profile intact", () => {
   };
   const draft = deserializeSettingsDraft(
     JSON.stringify({
-      version: 2,
+      version: 3,
       scope: ["repo"],
       profiles: { seed: { provider: "claude", model: "", reasoning: "medium", run_on: "local" } },
     }),
@@ -119,7 +121,7 @@ test("a dropped staged profile leaves the manifest profile intact", () => {
 
 test("settings drafts round trip staged provider paths", () => {
   const draft = {
-    version: 2,
+    version: 4,
     scope: ["repo"],
     profiles: {},
     autoResearchInvocationCeiling: 14,
@@ -128,7 +130,7 @@ test("settings drafts round trip staged provider paths", () => {
   assert.deepEqual(deserializeSettingsDraft(serializeSettingsDraft(draft)), draft);
 });
 
-test("v1 settings drafts migrate the campaign default into the v2 episode field", () => {
+test("v1 settings drafts migrate the campaign default into the current episode field", () => {
   assert.deepEqual(
     deserializeSettingsDraft(
       JSON.stringify({
@@ -139,7 +141,7 @@ test("v1 settings drafts migrate the campaign default into the v2 episode field"
       }),
     ),
     {
-      version: 2,
+      version: 4,
       scope: ["repo"],
       profiles: {},
       autoResearchInvocationCeiling: 14,
@@ -179,6 +181,81 @@ test("v2 settings drafts accept one operational invocation and reject legacy or 
       }),
     ),
     null,
+  );
+});
+
+test("v3 settings drafts discard previously persisted compute metadata", () => {
+  const draft = deserializeSettingsDraft(
+    JSON.stringify({
+      version: 3,
+      scope: ["repo"],
+      profiles: {},
+      computeConnections: [
+        {
+          id: "gpu",
+          name: "GPU VM",
+          kind: "ssh",
+          ssh_target: "researcher@gpu.example",
+          access_hint: "Use the shared scratch directory",
+        },
+      ],
+    }),
+  );
+
+  assert.equal(draft?.version, 4);
+  assert.equal(Object.hasOwn(draft, "computeConnections"), false);
+
+  const malformed = deserializeSettingsDraft(
+    JSON.stringify({
+      version: 3,
+      scope: ["repo"],
+      profiles: {},
+      computeConnections: [{ id: "gpu", name: "GPU VM", kind: "ssh", password: "do-not-retain" }],
+    }),
+  );
+  assert.equal(malformed?.version, 4);
+  assert.equal(Object.hasOwn(malformed, "computeConnections"), false);
+});
+
+test("settings draft serialization excludes unsaved compute metadata defensively", () => {
+  const serialized = serializeSettingsDraft({
+    version: 4,
+    scope: ["repo"],
+    profiles: {},
+    computeConnections: [
+      {
+        id: "gpu",
+        name: "Unsaved GPU",
+        kind: "ssh",
+        ssh_target: "researcher@gpu.example",
+        access_hint: "Unsaved access hint",
+      },
+    ],
+  });
+
+  assert.doesNotMatch(serialized, /computeConnections|Unsaved GPU|researcher@gpu|access hint/);
+});
+
+test("compute changes compare complete non-secret connection metadata", () => {
+  const saved = [
+    {
+      id: "gpu",
+      name: "GPU",
+      kind: "ssh",
+      ssh_target: "alice@gpu.example",
+      access_hint: "Use scratch",
+    },
+  ];
+
+  assert.equal(computeConnectionsChanged(saved, structuredClone(saved)), false);
+  assert.equal(computeConnectionNeedsSave(saved, structuredClone(saved[0])), false);
+  assert.equal(
+    computeConnectionsChanged(saved, [{ ...saved[0], ssh_target: "alice@gpu-2.example" }]),
+    true,
+  );
+  assert.equal(
+    computeConnectionNeedsSave(saved, { ...saved[0], ssh_target: "alice@gpu-2.example" }),
+    true,
   );
 });
 

@@ -215,7 +215,25 @@ type ProjectReadinessSnapshot = Awaited<ReturnType<typeof loadProjectReadiness>>
 
 interface ProviderReadinessInFlight {
   refresh: boolean;
+  generation: number;
   request: Promise<ProjectReadinessSnapshot | null>;
+}
+
+export function advanceProjectReadinessGeneration(
+  generations: Map<string, number>,
+  projectId: string,
+): number {
+  const next = (generations.get(projectId) ?? 0) + 1;
+  generations.set(projectId, next);
+  return next;
+}
+
+export function projectReadinessRequestCanApply(
+  generations: ReadonlyMap<string, number>,
+  projectId: string,
+  requestGeneration: number,
+): boolean {
+  return (generations.get(projectId) ?? 0) === requestGeneration;
 }
 
 export function shouldPollProviderSkillReadiness(
@@ -803,6 +821,7 @@ export default function App() {
   } | null>(null);
   const initialShowHandshake = useRef(false);
   const providerReadinessRequestsInFlight = useRef(new Map<string, ProviderReadinessInFlight>());
+  const providerReadinessGenerations = useRef(new Map<string, number>());
   const providerSkillReadinessPoll = useRef<{ projectId: string; timeoutId: number } | null>(null);
   const currentProjectStateRef = useRef<Omit<CachedProjectTabState, "viewState"> | null>(null);
   const updateProject = useCallback(
@@ -1387,8 +1406,9 @@ export default function App() {
     (refresh: boolean): Promise<ProjectReadinessSnapshot | null> => {
       if (!apiBase || !projectId) return Promise.resolve(null);
       const requestedProjectId = projectId;
+      const requestGeneration = providerReadinessGenerations.current.get(requestedProjectId) ?? 0;
       const existing = providerReadinessRequestsInFlight.current.get(requestedProjectId);
-      if (existing) {
+      if (existing?.generation === requestGeneration) {
         if (!refresh || existing.refresh) return existing.request;
         return existing.request.then(() => requestProjectReadiness(true));
       }
@@ -1400,6 +1420,14 @@ export default function App() {
       let request: Promise<ProjectReadinessSnapshot | null>;
       request = loadProjectReadiness(apiBase, refresh)
         .then((readiness) => {
+          if (
+            !projectReadinessRequestCanApply(
+              providerReadinessGenerations.current,
+              requestedProjectId,
+              requestGeneration,
+            )
+          )
+            return null;
           if (isActiveProject(requestedProjectId)) {
             updateProject((current) =>
               current?.id === requestedProjectId ? { ...current, ...readiness } : current,
@@ -1408,6 +1436,14 @@ export default function App() {
           return readiness;
         })
         .catch((error) => {
+          if (
+            !projectReadinessRequestCanApply(
+              providerReadinessGenerations.current,
+              requestedProjectId,
+              requestGeneration,
+            )
+          )
+            return null;
           const message = error instanceof Error ? error.message : String(error);
           setProviderReadinessRequests((current) => ({
             ...current,
@@ -1416,6 +1452,7 @@ export default function App() {
           if (isActiveProject(requestedProjectId)) {
             setNotice({ kind: "error", text: message });
           }
+          if (refresh) throw error instanceof Error ? error : new Error(message);
           return null;
         })
         .finally(() => {
@@ -1423,16 +1460,20 @@ export default function App() {
             providerReadinessRequestsInFlight.current.get(requestedProjectId)?.request === request
           ) {
             providerReadinessRequestsInFlight.current.delete(requestedProjectId);
+            setProviderReadinessRequests((current) => ({
+              ...current,
+              [requestedProjectId]: {
+                pending: false,
+                error: current[requestedProjectId]?.error ?? null,
+              },
+            }));
           }
-          setProviderReadinessRequests((current) => ({
-            ...current,
-            [requestedProjectId]: {
-              pending: false,
-              error: current[requestedProjectId]?.error ?? null,
-            },
-          }));
         });
-      providerReadinessRequestsInFlight.current.set(requestedProjectId, { refresh, request });
+      providerReadinessRequestsInFlight.current.set(requestedProjectId, {
+        refresh,
+        generation: requestGeneration,
+        request,
+      });
       return request;
     },
     [apiBase, isActiveProject, projectId, updateProject],
@@ -3705,6 +3746,9 @@ export default function App() {
                 );
               }}
               onSaved={(saved, preserveReadiness = true) => {
+                if (!preserveReadiness) {
+                  advanceProjectReadinessGeneration(providerReadinessGenerations.current, saved.id);
+                }
                 beginProjectSnapshotRequest(saved.id);
                 updateProject((current) =>
                   projectSettingsSavedProject(saved, current, preserveReadiness),

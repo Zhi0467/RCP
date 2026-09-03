@@ -3,7 +3,9 @@ import {
   ArrowRight,
   Check,
   CheckCircle2,
+  ChevronRight,
   FileCode2,
+  Folder,
   FolderGit2,
   FolderOpen,
   LoaderCircle,
@@ -14,7 +16,7 @@ import {
   TriangleAlert,
   XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api";
 import { chooseDesktopRepositoryFolder, isDesktopRuntime } from "../desktopRuntime";
@@ -29,8 +31,10 @@ import {
 } from "../providers";
 import {
   assertSupportedProjectCreationIntent,
+  latestSshBrowseRequestCanApply,
   repositoryPickerPresentation,
   selectedProjectCreationIntent,
+  sshBrowseTargetIdentity,
   stateRepositoryAfterRemoval,
   type ProjectSetupRoute,
 } from "../projectSetup";
@@ -44,6 +48,7 @@ import type {
   ProjectCreationControl,
   ProjectCreationIntent,
   ProjectSetupRequest,
+  SshRepositoryBrowseResponse,
   SetupAgentProfile,
   SetupAgents,
   SetupPreview,
@@ -1092,11 +1097,48 @@ export function RepositoryEditor({
 }) {
   const [pickerBusy, setPickerBusy] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
+  const [sshListing, setSshListing] = useState<SshRepositoryBrowseResponse["listing"]>(null);
+  const sshBrowseGeneration = useRef(0);
+  const sshBrowseAbort = useRef<AbortController | null>(null);
+  const sshBrowseTarget = sshBrowseTargetIdentity(
+    repository.location,
+    repository.host,
+    repository.path,
+  );
+  const latestSshBrowseTarget = useRef(sshBrowseTarget);
+  const previousSshBrowseTarget = useRef(sshBrowseTarget);
+  latestSshBrowseTarget.current = sshBrowseTarget;
   const picker = repositoryPickerPresentation(repository.location, isDesktopRuntime());
   const pathInputId = `repository-path-${repository.id}`;
 
+  const invalidateSshBrowse = () => {
+    sshBrowseGeneration.current += 1;
+    sshBrowseAbort.current?.abort();
+    sshBrowseAbort.current = null;
+    setPickerBusy(false);
+    setSshListing(null);
+  };
+
+  useEffect(() => {
+    if (previousSshBrowseTarget.current !== sshBrowseTarget) {
+      previousSshBrowseTarget.current = sshBrowseTarget;
+      invalidateSshBrowse();
+    }
+  }, [sshBrowseTarget]);
+
+  useEffect(
+    () => () => {
+      sshBrowseGeneration.current += 1;
+      sshBrowseAbort.current?.abort();
+    },
+    [],
+  );
+
   const changeRepository = (patch: Partial<SetupRepository>) => {
-    if (patch.location !== undefined || patch.path !== undefined) setPickerError(null);
+    if (patch.location !== undefined || patch.host !== undefined || patch.path !== undefined) {
+      setPickerError(null);
+      invalidateSshBrowse();
+    }
     onChange(patch);
   };
 
@@ -1110,6 +1152,49 @@ export function RepositoryEditor({
       setPickerError(error instanceof Error ? error.message : String(error));
     } finally {
       setPickerBusy(false);
+    }
+  };
+
+  const browseSshDirectory = async (path?: string) => {
+    const host = repository.host.trim();
+    if (!host) {
+      setPickerError("Enter the SSH host before browsing.");
+      return;
+    }
+    sshBrowseAbort.current?.abort();
+    const controller = new AbortController();
+    const generation = ++sshBrowseGeneration.current;
+    const requestTarget = sshBrowseTarget;
+    const requestCanApply = () =>
+      latestSshBrowseRequestCanApply(
+        generation,
+        sshBrowseGeneration.current,
+        requestTarget,
+        latestSshBrowseTarget.current,
+      );
+    sshBrowseAbort.current = controller;
+    setPickerBusy(true);
+    setPickerError(null);
+    try {
+      const response = await api<SshRepositoryBrowseResponse>("/api/project-setup/ssh-paths", {
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify({ host, ...(path ? { path } : {}) }),
+      });
+      if (!requestCanApply()) return;
+      if (response.state !== "reachable" || !response.listing) {
+        setPickerError(response.required_action ?? response.diagnostic);
+        return;
+      }
+      setSshListing(response.listing);
+    } catch (error) {
+      if (!requestCanApply()) return;
+      setPickerError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (requestCanApply()) {
+        sshBrowseAbort.current = null;
+        setPickerBusy(false);
+      }
     }
   };
 
@@ -1159,7 +1244,7 @@ export function RepositoryEditor({
             <span>SSH host</span>
             <input
               value={repository.host}
-              onChange={(event) => onChange({ host: event.target.value })}
+              onChange={(event) => changeRepository({ host: event.target.value })}
               placeholder="gpu.example.edu"
             />
           </label>
@@ -1196,6 +1281,16 @@ export function RepositoryEditor({
                 Choose folder…
               </button>
             )}
+            {picker.showSshBrowser && (
+              <button type="button" onClick={() => void browseSshDirectory()} disabled={pickerBusy}>
+                {pickerBusy ? (
+                  <LoaderCircle className="spin" size={14} />
+                ) : (
+                  <FolderOpen size={14} />
+                )}
+                Browse SSH…
+              </button>
+            )}
           </div>
           {picker.hint && (
             <small id={`${pathInputId}-hint`} className="repository-path-hint">
@@ -1206,6 +1301,64 @@ export function RepositoryEditor({
             <small id={`${pathInputId}-error`} className="repository-path-error" role="alert">
               {pickerError}
             </small>
+          )}
+          {sshListing && (
+            <section className="ssh-repository-browser" aria-label="SSH repository folders">
+              <header>
+                <code>{sshListing.path}</code>
+                <div>
+                  <button type="button" onClick={() => changeRepository({ path: sshListing.path })}>
+                    Use this folder
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Close SSH folder browser"
+                    onClick={() => setSshListing(null)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </header>
+              <div className="ssh-repository-browser-list">
+                {sshListing.parent && (
+                  <button
+                    type="button"
+                    className="ssh-repository-browser-up"
+                    onClick={() => void browseSshDirectory(sshListing.parent ?? undefined)}
+                    disabled={pickerBusy}
+                  >
+                    <Folder size={14} />
+                    <strong>Parent folder</strong>
+                    <ChevronRight size={13} />
+                  </button>
+                )}
+                {sshListing.entries.map((entry) => (
+                  <button
+                    type="button"
+                    key={entry.path}
+                    onClick={() => void browseSshDirectory(entry.path)}
+                    disabled={pickerBusy}
+                  >
+                    <Folder size={14} />
+                    <strong>{entry.name}</strong>
+                    <span className="ssh-repository-browser-labels">
+                      {entry.git_repository && <span>Git repository</span>}
+                      {entry.has_research && <span>.research</span>}
+                    </span>
+                    <ChevronRight size={13} />
+                  </button>
+                ))}
+                {!sshListing.entries.length && (
+                  <div className="ssh-repository-browser-empty">No child folders.</div>
+                )}
+              </div>
+              {sshListing.truncated && (
+                <div className="ssh-repository-browser-truncated" role="status">
+                  Showing the first bounded set of entries. Enter another absolute path manually if
+                  needed.
+                </div>
+              )}
+            </section>
           )}
         </div>
       </div>

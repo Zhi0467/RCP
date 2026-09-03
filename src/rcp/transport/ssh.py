@@ -6,6 +6,8 @@ import stat
 from contextlib import suppress
 from pathlib import Path
 
+from rcp.ssh_validation import validate_ssh_destination
+
 # Options that do not require local filesystem preparation. A few strict
 # provisioning paths intentionally consume these directly without multiplexing.
 SSH_OPTIONS = [
@@ -16,8 +18,21 @@ SSH_OPTIONS = [
 ]
 
 
-def ssh_arguments(host: str, command: str) -> list[str]:
-    return ["ssh", *_multiplexed_ssh_options(), host, command]
+def ssh_arguments(
+    host: str,
+    command: str,
+    *,
+    strict_host_key_checking: bool = False,
+) -> list[str]:
+    validate_ssh_destination(host)
+    if strict_host_key_checking:
+        # A pre-existing multiplexed master has already completed host-key
+        # negotiation and can bypass the strict policy on this invocation.
+        # OpenSSH documents ``-S none`` as disabling connection sharing.
+        options = [*SSH_OPTIONS, "-o", "StrictHostKeyChecking=yes", "-S", "none"]
+    else:
+        options = _multiplexed_ssh_options()
+    return ["ssh", *options, host, command]
 
 
 def rsync_ssh_arguments() -> list[str]:

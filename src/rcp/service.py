@@ -28,12 +28,16 @@ from rcp.agents import (
 )
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentDescriptor
+from rcp.compute import selected_compute_connections
 from rcp.config import (
     AgentExecutionProfile,
     AgentSurface,
     AgentSurfaceConfig,
+    ComputeConnectionConfig,
     MachineConfig,
     Manifest,
+    ResolvedComputeContext,
+    ResolvedComputeProfile,
 )
 from rcp.control import derive_experiment_control_state
 from rcp.core.attention import (
@@ -82,11 +86,13 @@ from rcp.core.validation.proposals import (
 )
 from rcp.history import HistoryManager
 from rcp.limits import (
+    ACTIVE_COMPUTE_ID_MAX_COUNT,
     BACKUP_INVENTORY_MAX_ENTRIES,
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
     CHAT_PREVIEW_MAX_CHARS,
     CHAT_TITLE_MAX_CHARS,
+    COMPUTE_CONNECTION_MAX_COUNT,
 )
 from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -299,6 +305,10 @@ class ChatMessage(BaseModel):
     graph_update: GraphUpdateResult | None = None
     trigger: TaskTrigger = "human"
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
+    active_compute_ids: list[str] = Field(
+        default_factory=list,
+        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
+    )
 
 
 class ChatSummary(BaseModel):
@@ -354,6 +364,11 @@ class _StoredChatRecord(BaseModel):
     graph_update: GraphUpdateResult | None = Field(default=None, alias="graphUpdate")
     trigger: TaskTrigger = "human"
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
+    active_compute_ids: list[str] = Field(
+        default_factory=list,
+        alias="activeComputeIds",
+        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
+    )
 
 
 @dataclass(frozen=True)
@@ -821,6 +836,15 @@ class RunRequest(BaseModel):
     attachment_client_id: str | None = None
     attachment_batch_id: str | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
+    active_compute_ids: list[str] = Field(
+        default_factory=list,
+        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
+    )
+    # This value is accepted only from RCP's own admission and durable rows.
+    # HTTP admission discards any client copy before resolving the selected ids.
+    resolved_compute_context: ResolvedComputeContext = Field(
+        default_factory=ResolvedComputeContext,
+    )
 
     @model_validator(mode="after")
     def result_view_requires_node_work(self) -> RunRequest:
@@ -934,6 +958,12 @@ class ProjectSettingsRequest(BaseModel):
     # Partial by machine and provider. Omission preserves every recorded path;
     # an empty string explicitly clears one provider's record.
     machine_provider_paths: dict[str, dict[ProviderId, str]] | None = None
+    # Omission preserves the manifest for older clients; an empty list removes
+    # all project compute resources.
+    compute_connections: list[ComputeConnectionConfig] | None = Field(
+        default=None,
+        max_length=COMPUTE_CONNECTION_MAX_COUNT,
+    )
 
     @model_validator(mode="after")
     def require_every_surface(self) -> ProjectSettingsRequest:
@@ -1287,6 +1317,7 @@ class ProjectService:
                     graph_update=record.graph_update,
                     trigger=record.trigger,
                     attachments=record.attachments,
+                    active_compute_ids=record.active_compute_ids,
                 )
             )
         first_user = next((message.text for message in messages if message.role == "user"), "")
@@ -1344,6 +1375,11 @@ class ProjectService:
                     repository.model_dump() for repository in self.manifest.repositories
                 ],
                 "machines": [machine.model_dump() for machine in self.manifest.machines],
+                "compute_connections": [
+                    connection.model_dump(mode="json")
+                    for connection in self.manifest.compute_connections
+                ],
+                "compute_status": {},
                 "primary_question": (
                     primary.model_dump(mode="json") if primary is not None else None
                 ),
@@ -1549,6 +1585,7 @@ class ProjectService:
             provider_path_updates,
             request.skill_defaults,
             request.default_auto_research_invocation_ceiling,
+            request.compute_connections,
         )
         for (alias, provider), prior_path in prior_paths.items():
             machine = self.manifest.machine_map[alias]
@@ -1569,6 +1606,25 @@ class ProjectService:
                 )
         self.paper.manifest = self.manifest
         self.invalidate_source_index()
+
+    def resolve_compute_request(self, request: RunRequest) -> RunRequest:
+        ids = list(dict.fromkeys(request.active_compute_ids))
+        selected = selected_compute_connections(self.manifest, ids)
+        context = ResolvedComputeContext(
+            active=tuple(
+                ResolvedComputeProfile.model_validate(connection) for connection in selected
+            )
+        )
+        return request.model_copy(
+            update={
+                "active_compute_ids": ids,
+                "resolved_compute_context": context,
+            }
+        )
+
+    @staticmethod
+    def compute_prompt_profiles(context: ResolvedComputeContext) -> list[dict[str, str]]:
+        return [profile.model_dump(mode="json") for profile in context.active]
 
     def resolve_provider_path(
         self,

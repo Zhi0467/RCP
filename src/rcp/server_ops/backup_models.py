@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
+    COMPUTE_CREDENTIAL_PATH,
+    COMPUTE_SSH_TARGET,
     AgentExecutionProfile,
     AgentPermissions,
     Manifest,
@@ -573,6 +575,56 @@ class BackupManifestMachine(_StrictBackupModel):
         return value
 
 
+class BackupManifestComputeConnection(_StrictBackupModel):
+    id: str
+    name: str
+    kind: Literal["local", "ssh"]
+    ssh_target: str = Field(max_length=255)
+    access_hint: str
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", value) is None:
+            raise ValueError("backup compute connection id is invalid")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        value = _safe_line(value, label="backup compute connection name", maximum=80)
+        if COMPUTE_CREDENTIAL_PATH.search(value):
+            raise ValueError("backup compute connection name cannot contain an SSH credential path")
+        return value
+
+    @field_validator("ssh_target")
+    @classmethod
+    def validate_ssh_target(cls, value: str) -> str:
+        if value and (
+            COMPUTE_SSH_TARGET.fullmatch(value) is None or redact_server_text(value) != value
+        ):
+            raise ValueError("backup compute SSH target is invalid")
+        return value
+
+    @field_validator("access_hint")
+    @classmethod
+    def validate_access_hint(cls, value: str) -> str:
+        if not value:
+            return value
+        value = _safe_line(value, label="backup compute access hint", maximum=512)
+        if COMPUTE_CREDENTIAL_PATH.search(value):
+            raise ValueError("backup compute access hint cannot contain an SSH credential path")
+        return value
+
+    @model_validator(mode="after")
+    def validate_kind(self) -> BackupManifestComputeConnection:
+        if self.kind == "local" and self.ssh_target:
+            raise ValueError("backup local compute cannot define an SSH target")
+        if self.kind == "ssh" and not self.ssh_target:
+            raise ValueError("backup remote compute requires an SSH target")
+        return self
+
+
 class BackupManifestRepository(_StrictBackupModel):
     alias: str
     machine: str
@@ -647,6 +699,9 @@ class BackupManifestConfiguration(_StrictBackupModel):
     skill_defaults: SkillDefaults
     agent_profiles: tuple[BackupManifestAgentProfile, ...]
     sources: BackupManifestSources
+    compute_connections: tuple[BackupManifestComputeConnection, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
 
     @field_validator("name")
     @classmethod
@@ -690,6 +745,9 @@ class BackupManifestConfiguration(_StrictBackupModel):
             raise ValueError("backup manifest must carry every agent profile exactly once")
         if any(profile.run_on not in machines for profile in self.agent_profiles):
             raise ValueError("backup agent profile names an unknown machine")
+        compute_ids = [connection.id for connection in self.compute_connections]
+        if len(compute_ids) != len(set(compute_ids)):
+            raise ValueError("backup compute connection ids must be unique")
         return self
 
     @classmethod
@@ -737,6 +795,16 @@ class BackupManifestConfiguration(_StrictBackupModel):
                 codex_roots=tuple(manifest.sources.codex_roots),
                 remote_claude_roots=tuple(manifest.sources.remote_claude_roots),
                 remote_codex_roots=tuple(manifest.sources.remote_codex_roots),
+            ),
+            compute_connections=tuple(
+                BackupManifestComputeConnection(
+                    id=connection.id,
+                    name=connection.name,
+                    kind=connection.kind,
+                    ssh_target=connection.ssh_target,
+                    access_hint=connection.access_hint,
+                )
+                for connection in manifest.compute_connections
             ),
         )
 
@@ -1338,6 +1406,7 @@ __all__ = [
     "BackupImportedProviderSourceInventory",
     "BackupImportedProviderSourceCapture",
     "BackupManifestConfiguration",
+    "BackupManifestComputeConnection",
     "BackupProjectCapture",
     "BackupRecoveryMachine",
     "BackupRecoveryRepository",

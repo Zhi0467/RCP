@@ -20,7 +20,11 @@ from pydantic import (
 )
 
 from rcp.artifacts import validate_artifact_bytes
-from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING, AgentExecutionProfile
+from rcp.config import (
+    DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
+    AgentExecutionProfile,
+    ResolvedComputeContext,
+)
 from rcp.core.authority import (
     AgentDispatchAuthority,
 )
@@ -31,6 +35,7 @@ from rcp.core.models import (
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import (
+    ACTIVE_COMPUTE_ID_MAX_COUNT,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
@@ -3029,6 +3034,13 @@ class WatcherContinuation(BaseModel):
     invoked_workflow_ids: list[str] = Field(default_factory=list)
     invoked_skill_ids: list[str] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] = Field(default_factory=list)
+    active_compute_ids: list[str] = Field(
+        default_factory=list,
+        max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
+    )
+    resolved_compute_context: ResolvedComputeContext = Field(
+        default_factory=ResolvedComputeContext,
+    )
 
 
 class NodeStatusGraphCondition(BaseModel):

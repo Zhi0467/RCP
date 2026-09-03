@@ -115,7 +115,7 @@ def _authoring_rules(ontology_extensions: bool) -> str:
     return f"Graph authoring rules:\n{extension}{_BASE_AUTHORING_RULES}"
 
 
-CHAT_MASTER_CONTEXT_VERSION = 5
+CHAT_MASTER_CONTEXT_VERSION = 6
 
 
 def _pointer(label: str, path: str | None) -> str:
@@ -188,6 +188,60 @@ def _repository_pointers(repositories: list[dict[str, str]]) -> str:
     return "".join(
         f"- {item['alias']}: host=`{item['host']}` path=`{item['path']}`\n" for item in repositories
     )
+
+
+def compute_connection_section(connections: list[dict[str, str]] | None) -> str:
+    if not connections:
+        return ""
+    lines = []
+    for connection in connections:
+        location = (
+            "kind: local (this agent execution machine)"
+            if connection["kind"] == "local"
+            else f"kind: SSH; target: `{connection['ssh_target']}`"
+        )
+        hint = connection.get("access_hint", "")
+        suffix = f"; access hint: {hint}" if hint else ""
+        lines.append(f"- `{connection['id']}` — {connection['name']}: {location}{suffix}")
+    return """Compute resources attached to this turn:
+{}
+- These are resources the running agent may use; they do not change the provider, execution
+  machine, `run_on`, repository pointers, or enforced write boundary.
+- Use only credentials already configured on this agent execution machine. Never request, print,
+  copy, or store a private key or password. Keep SSH host-key verification enabled.
+""".format("\n".join(lines))
+
+
+def _compute_delta_section(delta: object) -> str:
+    if not isinstance(delta, dict):
+        return ""
+    actions = []
+    for key, verb in (("added", "added"), ("updated", "updated")):
+        profiles = delta.get(key)
+        if isinstance(profiles, list):
+            rendered = [
+                _compute_profile_delta(profile) for profile in profiles if isinstance(profile, dict)
+            ]
+            if rendered:
+                actions.append(f"{verb} " + ", ".join(rendered))
+    removed = delta.get("removed")
+    if isinstance(removed, list) and removed:
+        actions.append("removed " + ", ".join(f"`{value}`" for value in removed))
+    return "RCP compute update: " + "; ".join(actions) + "." if actions else ""
+
+
+def _compute_profile_delta(profile: dict[object, object]) -> str:
+    name = str(profile.get("name", ""))
+    compute_id = str(profile.get("id", ""))
+    kind = str(profile.get("kind", ""))
+    if kind == "local":
+        location = "kind: local; this agent execution machine"
+    else:
+        location = f"kind: SSH; target: `{profile.get('ssh_target', '')}`"
+    hint = str(profile.get("access_hint", ""))
+    if hint:
+        location += f"; access hint: {hint}"
+    return f"`{name}` (`{compute_id}`; {location})"
 
 
 def _watcher_execution_host(execution_host: str) -> str:
@@ -612,10 +666,15 @@ class PromptFactory:
         # rendered beside it; RCP never rewrites or consumes the visible slash token.
         parts.append(human_message)
         if context_delta:
-            parts.append(
-                "RCP context update — these master-context values have changed:\n"
-                + json.dumps(context_delta, ensure_ascii=False, indent=2, sort_keys=True)
-            )
+            ordinary_delta = dict(context_delta)
+            compute_delta = _compute_delta_section(ordinary_delta.pop("compute", None))
+            if compute_delta:
+                parts.append(compute_delta)
+            if ordinary_delta:
+                parts.append(
+                    "RCP context update — these master-context values have changed:\n"
+                    + json.dumps(ordinary_delta, ensure_ascii=False, indent=2, sort_keys=True)
+                )
         return "\n\n".join(parts)
 
     @staticmethod
@@ -640,6 +699,7 @@ class PromptFactory:
         execution_host: str = "",
         experiment_watcher_resources: list[dict[str, str]] | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
+        compute_connections: list[dict[str, str]] | None = None,
     ) -> str:
         artifact_path = (
             f"{workspace_path}/turns/<this turn's directory, named in the envelope>/artifacts"
@@ -701,6 +761,7 @@ Turn protocol:
   when present, replaces only its named values for this turn and later ones.
 - A `graph_revision` in that block means the human accepted new work into the graph since your last
   turn. Nothing else about the graph is pushed to you; re-read what you need from `{graph_path}`.
+{compute_connection_section(compute_connections)}
 {_focused_node_snapshot(graph_revision, focused_node, focused_relations)}
 ## Discuss contract
 
@@ -853,6 +914,7 @@ Output contract:
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
         attachments: list[dict[str, object]] | None = None,
+        compute_connections: list[dict[str, str]] | None = None,
         embedded: bool = False,
     ) -> str:
         authority = "" if embedded else _TASK_AUTHORITY_BOUNDARY
@@ -885,7 +947,7 @@ Required current-state pointers:
 Relevant inputs; read only when the question needs them:
 {_pointer("human introduction", introduction_path)}
 Repository pointers:
-{_repository_pointers(repositories)}{experiment_resources}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_chat_attachment_section(attachments)}
+{_repository_pointers(repositories)}{compute_connection_section(compute_connections)}{experiment_resources}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_chat_attachment_section(attachments)}
 
 Required objective:
 {objective}
@@ -949,6 +1011,7 @@ Execution environment:
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
         attachments: list[dict[str, object]] | None = None,
+        compute_connections: list[dict[str, str]] | None = None,
         embedded: bool = False,
     ) -> str:
         authority = "" if embedded else _TASK_AUTHORITY_BOUNDARY
@@ -1030,7 +1093,7 @@ Required current-state pointers:
 Relevant context:
 {_pointer("human introduction", introduction_path)}
 Relevant repository pointers and expected operational targets:
-{_repository_pointers(repositories)}{experiment_resources}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_chat_attachment_section(attachments)}
+{_repository_pointers(repositories)}{compute_connection_section(compute_connections)}{experiment_resources}{selected_skill_section(skill_pointers)}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_chat_attachment_section(attachments)}
 Required objective:
 {objective}
 {_pointer("Prior-attempt diagnostics", retry_diagnostics_path)}

@@ -333,6 +333,43 @@ test("a settings save replaces project metadata without reconciling session stat
   assert.deepEqual(updated.draftReconciliationDiscardedProposalIds, ["proposal/retained"]);
 });
 
+test("a changed compute configuration does not preserve stale readiness", () => {
+  const current = snapshot(1, {
+    compute_status: {
+      laptop: {
+        gpu: {
+          compute_id: "gpu",
+          execution_machine: "laptop",
+          state: "opaque",
+          reachable: true,
+          diagnostic: "Old target was reachable.",
+          required_action: null,
+          status_label: "Reachable",
+          status_tone: "ready",
+        },
+      },
+    },
+  });
+  const saved = snapshot(1, {
+    compute_connections: [
+      {
+        id: "gpu",
+        name: "GPU",
+        kind: "ssh",
+        ssh_target: "alice@gpu-2.example",
+        access_hint: "",
+      },
+    ],
+    compute_status: {},
+  });
+
+  assert.deepEqual(projectSettingsSavedProject(saved, current, false).compute_status, {});
+  assert.deepEqual(
+    projectSettingsSavedProject(saved, current, true).compute_status,
+    current.compute_status,
+  );
+});
+
 test("a populated project session survives tab serialization and restoration", () => {
   let populated = projectSessionReducer(emptyProjectSessionState("alpha"), {
     kind: "snapshot_applied",

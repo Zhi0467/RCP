@@ -279,8 +279,9 @@ creates a backend-owned durable provisioning request from GitHub repository
 sources and derived central paths. Personal-to-team transfer creates linked
 requests in the two authenticated backends and is available only in the
 source-built desktop because its native shell owns the archive relay. A direct
-team request to `/api/projects`, `/api/project-setup/preflight`, or
-`/api/project-setup/create` is refused before request-body interpretation,
+team request to `/api/projects`, `/api/project-setup/preflight`,
+`/api/project-setup/ssh-paths`, or `/api/project-setup/create` is refused before
+request-body interpretation,
 filesystem inspection, or catalog mutation. The separately validated
 provisioning finalizer is the only team-project entrance into the existing
 setup/registration owners.
@@ -483,8 +484,15 @@ while unrelated background tasks run.
 ### Paper, Settings, and History
 
 Paper owns human Markdown Write/Preview and read-only coaching. Settings owns
-repositories, execution profiles, packages, caches, project membership, and
-prospective episode limits, not ontology authoring. History and task detail own
+repositories, execution profiles, compute connections, packages, caches, project
+membership, and prospective episode limits, not ontology authoring. Project
+snapshots expose non-secret compute metadata; readiness exposes a backend-owned
+execution-machine/connection matrix with distinct unreachable, authentication,
+and host-key states. Normal readiness reads reuse the last result; only an
+explicit refresh runs network probes, and a connection or execution-binding
+change invalidates the cached matrix. Settings writes never accept private keys
+or passwords.
+History and task detail own
 complete provider attempts, stages, events, diagnostics, package versions,
 answers, graph outcomes, and recovery chains.
 
@@ -549,10 +557,23 @@ the main project WebView. Desktop repository links and result/report artifacts
 therefore cannot strand the main project window. Native downloads resolve
 through shell-controlled destinations.
 
-In project setup, every local repository path has a native folder action in the
-desktop shell. Selecting a folder fills its absolute path; cancelling preserves
-the current value. SSH paths remain manual, and the browser states that native
-folder selection is available only in the desktop app.
+In personal project setup, every local repository path has a native folder
+action in the desktop shell. Selecting a folder fills its absolute path;
+cancelling preserves the current value. An SSH repository keeps its manual
+absolute-path field and also offers a backend-owned bounded browser in both Web
+and desktop. The browser uses only SSH credentials already configured on the
+machine running RCP, opens at the authenticated remote user's home, and lists
+one directory level per request without recursive discovery. It labels direct
+children that contain `.git` or `.research`. An authentication or host-key
+failure names the exact RCP machine where ordinary SSH state must be repaired;
+RCP never accepts or stores a password, private key, or credential path. Team
+project provisioning continues to use server-managed checkout paths instead of
+this personal path browser. Every SSH destination is centrally rejected before
+OpenSSH when it is empty, option-shaped, or contains unsupported characters.
+Editing the repository location, host, or path aborts and invalidates an
+in-flight browse request, so a late response cannot replace the new target.
+Strict host-key browser calls use a direct OpenSSH transport with connection
+sharing disabled, so an existing multiplexed master cannot bypass the check.
 
 The desktop may add shell-only dictation, update, reconnection, and packaging
 behavior only where an active acceptance contract owns it. Browser verification

@@ -417,6 +417,31 @@ def test_completed_provisioning_allows_settings_owned_provider_path_updates(
     }
 
 
+def test_backup_configuration_preserves_secret_free_compute_metadata(manifest) -> None:
+    payload = manifest.model_dump(mode="python")
+    payload["machines"][0]["os_account"] = "alice"
+    empty_manifest = Manifest.model_validate(payload)
+    empty = BackupManifestConfiguration.from_manifest(empty_manifest)
+    assert "compute_connections" not in empty.model_dump(mode="json")
+
+    payload["compute_connections"] = [
+        {
+            "id": "gpu",
+            "name": "GPU VM",
+            "kind": "ssh",
+            "ssh_target": "alice@gpu.example",
+            "access_hint": "Use /scratch/shared",
+        }
+    ]
+    configured = Manifest.model_validate(payload)
+
+    recovery = BackupManifestConfiguration.from_manifest(configured)
+
+    assert recovery.compute_connections[0].id == "gpu"
+    assert recovery.compute_connections[0].ssh_target == "alice@gpu.example"
+    assert "password" not in recovery.model_dump_json().casefold()
+
+
 def test_missing_or_stale_recovery_proof_makes_the_project_uncapturable(
     tmp_path: Path,
 ) -> None:

@@ -16,6 +16,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,11 @@ from pydantic import BaseModel, TypeAdapter
 from rcp.agents import AgentLauncher
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentStore
+from rcp.compute import (
+    ComputeProbeCacheKey,
+    compute_probe_cache_key,
+    probe_compute_connections,
+)
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
     Manifest,
@@ -87,7 +93,7 @@ from rcp.transport.state import SSHStateWorkspace, state_workspace_for_probe
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution, AgentTaskRequest
 
-_DISPLAY_SNAPSHOT_SCHEMA_VERSION = 3
+_DISPLAY_SNAPSHOT_SCHEMA_VERSION = 4
 _DISPLAY_SNAPSHOT_ENVELOPE_ADAPTER = TypeAdapter(dict[str, object])
 _PATCH_LOG_HEAD_UNSET = object()
 _DISPLAY_SNAPSHOT_FIELDS = {
@@ -105,6 +111,8 @@ _DISPLAY_SNAPSHOT_FIELDS = {
     "default_auto_research_invocation_ceiling",
     "repositories",
     "machines",
+    "compute_connections",
+    "compute_status",
     "primary_question",
     "last_refresh_at",
     "attention",
@@ -526,6 +534,19 @@ def _render_restored_manifest(
             machine.add("provider_paths", paths)
         machines.append(machine)
     document.add("machines", machines)
+    if configuration.compute_connections:
+        connections = tomlkit.aot()
+        for item in configuration.compute_connections:
+            connection = tomlkit.table()
+            connection.add("id", item.id)
+            connection.add("name", item.name)
+            connection.add("kind", item.kind)
+            if item.ssh_target:
+                connection.add("ssh_target", item.ssh_target)
+            if item.access_hint:
+                connection.add("access_hint", item.access_hint)
+            connections.append(connection)
+        document.add("compute_connections", connections)
     repositories = tomlkit.aot()
     for item in configuration.repositories:
         repository = tomlkit.table()
@@ -725,6 +746,11 @@ class ProjectCatalog:
         self._committed_snapshot_generations: dict[str, int] = {}
         self._cached_snapshot_patch_heads: dict[str, int | None] = {}
         self._candidate_snapshot_patch_heads: dict[str, int | None] = {}
+        self._compute_status_cache: dict[
+            str, tuple[ComputeProbeCacheKey, dict[str, dict[str, dict[str, object]]]]
+        ] = {}
+        self._compute_probe_generations: dict[str, int] = {}
+        self._compute_probe_locks: dict[str, threading.Lock] = {}
         self._registration_lock = threading.Lock()
         self._project_aliases = self.store.project_aliases()
 
@@ -1326,6 +1352,8 @@ class ProjectCatalog:
                 self._committed_snapshot_generations,
                 self._cached_snapshot_patch_heads,
                 self._candidate_snapshot_patch_heads,
+                self._compute_status_cache,
+                self._compute_probe_generations,
             ):
                 if old_project_id not in mapping:
                     continue
@@ -1335,6 +1363,9 @@ class ProjectCatalog:
                         "Project identity migration found conflicting in-memory cache state."
                     )
                 mapping[canonical_project_id] = old_value
+            old_compute_lock = self._compute_probe_locks.pop(old_project_id, None)
+            if old_compute_lock is not None:
+                self._compute_probe_locks.setdefault(canonical_project_id, old_compute_lock)
 
     def cards(self) -> list[dict[str, object]]:
         can_delete = self.store.space_kind == "personal"
@@ -1572,18 +1603,56 @@ class ProjectCatalog:
         with self._services_lock:
             cached = self._services.get(project_id)
         if cached is not None:
-            return cached.readiness_snapshot(refresh=refresh)
+            snapshot = cached.readiness_snapshot(refresh=refresh)
+            snapshot["compute_status"] = self._compute_status_snapshot(
+                project_id,
+                cached.manifest,
+                refresh=refresh,
+            )
+            return snapshot
         record = self.store.project(project_id)
         if record is None:
             raise KeyError(project_id)
         manifest = load_manifest(record.locator)
         snapshot = ProjectService.readiness_for(manifest, self.launcher, refresh=refresh)
+        snapshot["compute_status"] = self._compute_status_snapshot(
+            project_id,
+            manifest,
+            refresh=refresh,
+        )
         ProjectService.wait_for_provider_skill_inventories_for(manifest, self.provider_skills)
         snapshot["provider_skill_inventories"] = ProjectService.provider_skill_inventories_for(
             manifest,
             self.provider_skills,
         )
         return snapshot
+
+    def _compute_status_snapshot(
+        self,
+        project_id: str,
+        manifest: Manifest,
+        *,
+        refresh: bool,
+    ) -> dict[str, object]:
+        """Run compute probes only for an explicit refresh; otherwise reuse the last matrix."""
+
+        with self._services_lock:
+            key = compute_probe_cache_key(manifest)
+            generation = self._compute_probe_generations.get(project_id, 0)
+            lock = self._compute_probe_locks.setdefault(project_id, threading.Lock())
+        with lock:
+            with self._services_lock:
+                cached = self._compute_status_cache.get(project_id)
+            status = cached[1] if cached is not None and cached[0] == key else {}
+            if refresh:
+                status = probe_compute_connections(manifest)
+                with self._services_lock:
+                    if self._compute_probe_generations.get(project_id, 0) == generation:
+                        self._compute_status_cache[project_id] = (key, status)
+            elif cached is not None and cached[0] != key:
+                with self._services_lock:
+                    self._compute_status_cache.pop(project_id, None)
+            return deepcopy(status)
 
     def provider_targets(self) -> list[tuple[ProviderId, str, str | None]]:
         """Unique configured provider capabilities known to this app process."""
@@ -1658,6 +1727,9 @@ class ProjectCatalog:
                 self._committed_snapshot_generations.pop(project_id, None)
                 self._cached_snapshot_patch_heads.pop(project_id, None)
                 self._candidate_snapshot_patch_heads.pop(project_id, None)
+                self._compute_status_cache.pop(project_id, None)
+                self._compute_probe_generations.pop(project_id, None)
+                self._compute_probe_locks.pop(project_id, None)
                 database_records = self.store.delete_project_records(project_id)
             return ProjectDeletionResult(
                 project_id=project_id,
@@ -1964,7 +2036,7 @@ class ProjectCatalog:
             "snapshot",
         }:
             patch_log_head = None
-        elif schema_version in {2, _DISPLAY_SNAPSHOT_SCHEMA_VERSION} and set(envelope) == {
+        elif schema_version in {2, 3, _DISPLAY_SNAPSHOT_SCHEMA_VERSION} and set(envelope) == {
             "schema_version",
             "project_id",
             "canonical_patch_head",
@@ -2149,7 +2221,14 @@ class ProjectCatalog:
         generation = self.reserve_cached_snapshot_generation(project_id)
         service = self.open(project_id)
         project_id = self._canonical_project_id(project_id)
+        prior_compute_key = compute_probe_cache_key(service.manifest)
         service.update_settings(request)
+        if compute_probe_cache_key(service.manifest) != prior_compute_key:
+            with self._services_lock:
+                self._compute_status_cache.pop(project_id, None)
+                self._compute_probe_generations[project_id] = (
+                    self._compute_probe_generations.get(project_id, 0) + 1
+                )
         self._persist_bootstrap_locator(project_id, service)
         snapshot = _snapshot_payload(service.project_snapshot())
         self._stamp_snapshot_identity(snapshot, project_id)
@@ -2773,6 +2852,7 @@ def _valid_display_snapshot(
             "provider_skill_inventories",
             "providers",
             "cache_metrics",
+            "compute_status",
         )
     ):
         return False
@@ -2807,6 +2887,7 @@ def _valid_display_snapshot(
             "default_run_truth_scope",
             "repositories",
             "machines",
+            "compute_connections",
             "validation_messages",
         )
     ):

@@ -659,6 +659,7 @@ function preserveProjectReadiness(
   if (!current || current.id !== next.id) return next;
   return {
     ...next,
+    compute_status: current.compute_status,
     provider_readiness: current.provider_readiness,
     providers: current.providers,
     provider_skill_inventories: current.provider_skill_inventories,

@@ -133,6 +133,27 @@ than execution configuration. Settings supplies fresh conversation defaults; an
 existing native conversation retains the profile it last ran with, so
 continuation never silently moves providers or machines.
 
+The composer also has one compact **Compute** menu. It lists only the project's
+configured compute connections, shows green reachable or red unavailable status
+for the conversation's actual execution machine, and attaches or detaches each
+resource without changing the provider or `run_on`. The active count and checked
+items recover from the newest persisted turn. Sending keeps the active set for
+the next turn; settings removal reconciles a stale selection away.
+
+Project Settings owns compute connections beside provider executables. A local
+entry needs a name; an SSH entry adds `user@host`; either may carry one optional
+non-secret access hint. There is no password or private-key input. Settings shows
+one probe result per agent execution machine and distinguishes unreachable,
+authentication, and host-key failures. Credential repair text names the exact
+agent machine rather than inviting credentials into RCP. The explicit **Probe**
+action refreshes those results; ordinary project polling reuses the last matrix
+and does not launch SSH work. The floating connection list uses native checkbox
+semantics, and unsaved connection edits are not copied into local settings-draft
+storage. Editing a connection masks its saved probe result and disables **Probe**
+with a concise save-first label until the metadata is saved. A compute-settings
+save also invalidates older in-flight readiness responses, so a late old-target
+success cannot replace the empty state left by a failed new-target probe.
+
 ## Paper
 
 The editor/coach split is human-resizable, and the editor begins with authored

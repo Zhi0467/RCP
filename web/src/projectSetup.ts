@@ -129,11 +129,29 @@ export function stateRepositoryAfterRemoval(
 export function repositoryPickerPresentation(location: "local" | "ssh", desktop: boolean) {
   return {
     showPicker: location === "local" && desktop,
+    showSshBrowser: location === "ssh",
     hint:
       location === "local" && !desktop
         ? "Paste an absolute path. Finder selection is available in the desktop app."
         : null,
   };
+}
+
+export function latestSshBrowseRequestCanApply(
+  requestGeneration: number,
+  currentGeneration: number,
+  requestTarget: string,
+  currentTarget: string,
+): boolean {
+  return requestGeneration === currentGeneration && requestTarget === currentTarget;
+}
+
+export function sshBrowseTargetIdentity(
+  location: "local" | "ssh",
+  host: string,
+  path: string,
+): string {
+  return JSON.stringify([location, host, path]);
 }
 
 export function selectedProjectCreationIntent(

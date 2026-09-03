@@ -29,8 +29,9 @@ provider's context without making the displayed transcript an RCP input.
 
 The first ordinary turn in an RCP-owned native session receives one master
 context containing the current graph target and head, focused node, exact
-run-scope repository pointers, enabled-package pointers, schemas, outputs, and
-both Discuss and Work contracts. Seeing both contracts grants no cumulative
+run-scope repository pointers, enabled-package pointers, selected non-secret
+compute connection metadata, schemas, outputs, and both Discuss and Work
+contracts. Seeing both contracts grants no cumulative
 authority: each turn carries one explicit mode marker.
 
 Later ordinary resumes repeat only the master-context path, then send the marker,
@@ -40,6 +41,13 @@ a pointer, not an instruction to reread unchanged context. A new baseline commit
 only after a mechanically successful turn and is bound to provider, host, native
 session, project, graph target, conversation, and focused node. Failed or
 interrupted work does not advance it.
+
+Compute selection is stable conversation context, persisted independently on
+the task request and canonical chat record for truthful recovery. Ordinary turns
+send a concise added/removed/updated delta: additions and updates carry the
+selected profile's non-secret access metadata so a resumed agent can use it,
+while removals need only the display name. The resource metadata cannot change
+the provider, execution machine, `run_on`, graph target, or write scope.
 
 An exact conversation/native session cannot be reused across a different chat
 or graph target. Main and branch-bound stages fail closed instead of silently

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from rcp.config import (
     AgentExecutionProfile,
     AgentSurfaceConfig,
+    ComputeConnectionConfig,
     Manifest,
     load_manifest,
     validate_project_scope_update,
@@ -1437,6 +1438,7 @@ class HistoryManager:
         provider_path_updates: dict[str, dict[ProviderId, str]] | None = None,
         skill_defaults: SkillDefaults | None = None,
         default_auto_research_invocation_ceiling: int | None = None,
+        compute_connections: list[ComputeConnectionConfig] | None = None,
     ) -> Manifest:
         with self.workspace.transaction(), self._append_lock():
             self._reload_manifest()
@@ -1451,6 +1453,7 @@ class HistoryManager:
                 provider_path_updates,
                 skill_defaults,
                 default_auto_research_invocation_ceiling,
+                compute_connections,
             )
             self.workspace.publish([Path("manifest.toml")])
         return self.manifest

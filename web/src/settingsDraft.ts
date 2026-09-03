@@ -1,6 +1,7 @@
 import type {
   AgentExecutionProfile,
   AgentProfileSettings,
+  ComputeConnection,
   Machine,
   ProviderId,
   SkillDefaults,
@@ -9,7 +10,7 @@ import type {
 export type MachineProviderPaths = Record<string, Record<ProviderId, string>>;
 
 export interface SettingsDraft {
-  version: 2;
+  version: 4;
   scope: string[];
   profiles: Partial<Record<AgentExecutionProfile, AgentProfileSettings>>;
   autoResearchInvocationCeiling?: number;
@@ -36,6 +37,21 @@ export function settingsFingerprint(state: unknown): string {
   return JSON.stringify(withSortedKeys(state));
 }
 
+export function computeConnectionsChanged(
+  saved: readonly ComputeConnection[],
+  current: readonly ComputeConnection[],
+): boolean {
+  return settingsFingerprint(saved) !== settingsFingerprint(current);
+}
+
+export function computeConnectionNeedsSave(
+  saved: readonly ComputeConnection[],
+  current: ComputeConnection,
+): boolean {
+  const persisted = saved.find((connection) => connection.id === current.id);
+  return persisted === undefined || settingsFingerprint(persisted) !== settingsFingerprint(current);
+}
+
 function withSortedKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withSortedKeys);
   if (!isRecord(value)) return value;
@@ -51,14 +67,20 @@ export function settingsDraftStorageKey(projectId: string): string {
 }
 
 export function serializeSettingsDraft(draft: SettingsDraft): string {
-  return JSON.stringify(draft);
+  const safeDraft = { ...draft } as SettingsDraft & { computeConnections?: unknown };
+  delete safeDraft.computeConnections;
+  return JSON.stringify(safeDraft);
 }
 
 export function deserializeSettingsDraft(value: string | null): SettingsDraft | null {
   if (!value) return null;
   try {
     const parsed: unknown = JSON.parse(value);
-    if (!isRecord(parsed) || (parsed.version !== 1 && parsed.version !== 2)) return null;
+    if (
+      !isRecord(parsed) ||
+      (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3 && parsed.version !== 4)
+    )
+      return null;
     if (!Array.isArray(parsed.scope) || parsed.scope.some((item) => typeof item !== "string"))
       return null;
     if (!isRecord(parsed.profiles)) return null;
@@ -66,16 +88,28 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
     if (parsed.providerPaths !== undefined && !isMachineProviderPaths(parsed.providerPaths))
       return null;
     if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;
+    // v3 briefly persisted unsaved compute metadata per keystroke. Drop it on
+    // read, regardless of shape; only backend-saved manifest metadata reloads.
+    delete parsed.computeConnections;
 
-    if (parsed.version === 2) {
+    if (parsed.version === 4) {
       if (parsed.campaignInvocationCeiling !== undefined) return null;
       if (!isInvocationCeiling(parsed.autoResearchInvocationCeiling)) return null;
       return parsed as unknown as SettingsDraft;
     }
 
+    if (parsed.version === 2 || parsed.version === 3) {
+      if (parsed.campaignInvocationCeiling !== undefined) return null;
+      if (!isInvocationCeiling(parsed.autoResearchInvocationCeiling)) return null;
+      return {
+        ...(parsed as unknown as Omit<SettingsDraft, "version">),
+        version: 4,
+      };
+    }
+
     if (!isInvocationCeiling(parsed.campaignInvocationCeiling)) return null;
     return {
-      version: 2,
+      version: 4,
       scope: parsed.scope,
       profiles: parsed.profiles as SettingsDraft["profiles"],
       ...(parsed.campaignInvocationCeiling === undefined

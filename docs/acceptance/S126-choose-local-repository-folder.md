@@ -15,8 +15,9 @@ last_checked: 2026-09-01 — Web coverage passed; the native desktop picker was 
 
 The desktop project-setup wizard lets a researcher choose each local repository
 through the native macOS folder picker instead of requiring a manually copied
-absolute path. The browser and SSH setup paths remain truthful about why they
-still require text entry.
+absolute path. The browser remains truthful about why local Finder selection is
+desktop-only. SSH setup has its separate bounded remote-folder contract in
+[S130](S130-browse-ssh-repository-folders.md).
 
 ## Drive
 
@@ -26,7 +27,7 @@ still require text entry.
    path becomes the selected absolute path.
 4. Open the picker again and cancel. Confirm that the existing path remains.
 5. Switch the repository to SSH. Confirm that the Finder action disappears and
-   the remote absolute path remains a text field.
+   the remote absolute path remains a text field alongside its remote browser.
 6. Open the same wizard in a browser. Confirm that local setup explains that an
    absolute path must be pasted and that Finder selection is desktop-only.
 
