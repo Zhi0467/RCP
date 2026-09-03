@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { after, test } from "node:test";
 import { createServer } from "vite";
 
@@ -11,12 +12,15 @@ const server = await createServer({
 });
 
 const {
+  WEBMCP_NODE_CONTENT_MAX_CHARS,
   WEBMCP_RESULT_MAX_CHARS,
+  boundJsonToBudget,
   createWebMcpToolRegistry,
   currentWebMcpContext,
   inspectProjectConversation,
   inspectProjectExperiment,
   inspectProjectNode,
+  listProjectConversations,
   listProjectsForWebMcp,
   listProjectArtifacts,
   modelContextFromDocument,
@@ -664,7 +668,8 @@ test("project overview returns bounded saved facts without an AI summary", () =>
 test("node inspection returns exact saved content and direct relation identities", () => {
   const project = projectFixture();
   const inspected = inspectProjectNode(project, { node_id: "hyp-1" });
-  assert.equal(inspected.node, project.graph.nodes["hyp-1"]);
+  assert.deepEqual(inspected.node, project.graph.nodes["hyp-1"]);
+  assert.equal(inspected.node_truncation, null);
   assert.equal(inspected.relation_count, 1);
   assert.equal(inspected.relations_truncated, false);
   assert.deepEqual(inspected.related_node_ids, ["rq-1"]);
@@ -698,7 +703,7 @@ test("node inspection bounds high-degree relation indices without losing the exa
 
   const inspected = inspectProjectNode(project, { node_id: "hyp-1" });
 
-  assert.equal(inspected.node, project.graph.nodes["hyp-1"]);
+  assert.deepEqual(inspected.node, project.graph.nodes["hyp-1"]);
   assert.equal(inspected.relation_count, 40);
   assert.equal(inspected.relations.length, 32);
   assert.equal(inspected.relations_truncated, true);
@@ -713,10 +718,80 @@ test("node inspection refuses stale ids and includes backend Experiment control"
     /not present in the current project graph/,
   );
   assert.throws(() => inspectProjectNode(project, {}), /node_id must be a non-blank string/);
-  assert.equal(
-    inspectProjectNode(project, { node_id: "exp-1" }).experiment_control,
-    project.experiment_control["exp-1"],
-  );
+  project.experiment_control["exp-1"] = {
+    can_start: true,
+    can_stop: false,
+    reasons: ["r".repeat(400)],
+    operational: null,
+    episode: null,
+  };
+  const control = inspectProjectNode(project, { node_id: "exp-1" }).experiment_control;
+  assert.equal(control.can_start, true);
+  assert.equal(control.can_stop, false);
+  assert.equal(control.reasons[0].length, 180);
+  assert.equal(control.operational, null);
+});
+
+test("node inspection bounds oversized saved content and names every shortened path", () => {
+  const project = projectFixture();
+  project.graph.nodes["exp-1"] = {
+    ...project.graph.nodes["exp-1"],
+    objective: "o".repeat(5_000),
+    current_summary: "s".repeat(5_000),
+    source_refs: Array.from({ length: 40 }, (_, index) => ({
+      machine: "local",
+      truth_repository: "plasticity",
+      source: "codex",
+      session_id: `session-${index}`,
+      record_uuid: `record-${index}`,
+      timestamp: "2026-08-31T10:00:00Z",
+      excerpt: "e".repeat(2_000),
+    })),
+    attempts: Array.from({ length: 30 }, (_, index) => ({
+      id: `attempt-${index}`,
+      sequence: index + 1,
+      purpose: "p".repeat(1_500),
+      attempt_kind: "external_run",
+      decision_bundle: [],
+      status: "completed",
+      outcome: "x".repeat(1_500),
+      failure_reason: null,
+      job_refs: [],
+    })),
+  };
+  project.experiment_control["exp-1"] = {
+    can_start: false,
+    can_stop: false,
+    reasons: Array.from({ length: 8 }, () => "reason".repeat(80)),
+    operational: null,
+    episode: null,
+  };
+  const exact = JSON.stringify(project.graph.nodes["exp-1"]);
+  assert.ok(exact.length > 100_000);
+
+  const tool = projectReadToolDefinitions(project)[1];
+  const result = tool.execute({ node_id: "exp-1" });
+  const text = result.content[0].text;
+  const parsed = JSON.parse(text);
+
+  assert.ok(text.length <= 16_000);
+  assert.ok(JSON.stringify(parsed.node).length <= WEBMCP_NODE_CONTENT_MAX_CHARS);
+  assert.equal(parsed.node.id, "exp-1");
+  assert.equal(parsed.node.title, "Held-out plasticity replicate");
+  assert.ok(parsed.node.objective.length < 5_000);
+  assert.ok(parsed.node.source_refs.length < 40);
+  assert.ok(parsed.node.attempts.length < 30);
+  assert.ok(parsed.node_truncation.path_count >= 4);
+  assert.ok(parsed.node_truncation.paths.length <= 24);
+  assert.ok(parsed.node_truncation.paths.includes("objective"));
+  assert.ok(parsed.node_truncation.paths.includes("source_refs"));
+  assert.ok(parsed.node_truncation.paths.includes("attempts"));
+  assert.ok(parsed.node_truncation.text_limit >= 64);
+  assert.ok(parsed.node_truncation.list_limit >= 2);
+  assert.equal(parsed.experiment_control.reasons.length, 4);
+
+  const small = boundJsonToBudget({ text: "short", items: [1, 2, 3] }, 1_000);
+  assert.deepEqual(small, { value: { text: "short", items: [1, 2, 3] }, truncation: null });
 });
 
 test("the project read surface registers exactly the two confirmed tools", () => {
@@ -736,12 +811,17 @@ test("the project read surface registers exactly the two confirmed tools", () =>
   assert.deepEqual(tools[1].inputSchema.required, ["node_id"]);
 });
 
-test("artifact listing returns current task artifacts, kept state, and episode reports", () => {
+const noEpisodeFetch = async () => {
+  throw new Error("the recent-episode window should have answered without a fetch");
+};
+
+test("artifact listing returns current task artifacts, kept state, and episode reports", async () => {
   const project = projectFixture();
   const { tasks, episodes } = artifactFixtures();
-  const listed = listProjectArtifacts(project, tasks, episodes, {});
+  const listed = await listProjectArtifacts(project, tasks, episodes, {}, noEpisodeFetch);
   assert.equal(listed.total, 3);
   assert.equal(listed.truncated, false);
+  assert.equal(listed.recent_episode_count, 1);
   assert.deepEqual(
     listed.artifacts.map((artifact) => artifact.viewer_id),
     ["report:episode-1", "task:task-2:artifact-2", "task:task-1:artifact-1"],
@@ -750,33 +830,105 @@ test("artifact listing returns current task artifacts, kept state, and episode r
   assert.equal("viewer_url" in listed.artifacts[0], false);
 });
 
-test("artifact listing narrows to one exact current owner and rejects stale filters", () => {
+test("artifact listing narrows to one exact current owner and rejects stale filters", async () => {
   const project = projectFixture();
   const { tasks, episodes } = artifactFixtures();
   assert.deepEqual(
-    listProjectArtifacts(project, tasks, episodes, { node_id: "hyp-1" }).artifacts.map(
-      (artifact) => artifact.viewer_id,
-    ),
+    (
+      await listProjectArtifacts(project, tasks, episodes, { node_id: "hyp-1" }, noEpisodeFetch)
+    ).artifacts.map((artifact) => artifact.viewer_id),
     ["task:task-1:artifact-1"],
   );
   assert.deepEqual(
-    listProjectArtifacts(project, tasks, episodes, { episode_id: "episode-1" }).artifacts.map(
-      (artifact) => artifact.viewer_id,
-    ),
+    (
+      await listProjectArtifacts(
+        project,
+        tasks,
+        episodes,
+        { episode_id: "episode-1" },
+        noEpisodeFetch,
+      )
+    ).artifacts.map((artifact) => artifact.viewer_id),
     ["report:episode-1", "task:task-2:artifact-2"],
   );
-  assert.throws(
-    () => listProjectArtifacts(project, tasks, episodes, { task_id: "missing" }),
+  await assert.rejects(
+    listProjectArtifacts(project, tasks, episodes, { task_id: "missing" }, noEpisodeFetch),
     /Task missing is not present/,
   );
-  assert.throws(
-    () => listProjectArtifacts(project, tasks, episodes, { chat_id: "missing" }),
+  await assert.rejects(
+    listProjectArtifacts(project, tasks, episodes, { chat_id: "missing" }, noEpisodeFetch),
     /Conversation missing is not present/,
   );
-  assert.throws(
-    () => listProjectArtifacts(project, tasks, episodes, { node_id: "hyp-1", chat_id: "chat-1" }),
+  await assert.rejects(
+    listProjectArtifacts(
+      project,
+      tasks,
+      episodes,
+      { node_id: "hyp-1", chat_id: "chat-1" },
+      noEpisodeFetch,
+    ),
     /at most one artifact filter/,
   );
+});
+
+test("an exact episode outside the recent window is fetched once from the backend", async () => {
+  const project = projectFixture();
+  const { tasks, episodes } = artifactFixtures();
+  const older = {
+    ...episodes[0],
+    episode_id: "episode-old",
+    updated_at: "2026-07-01T10:02:00Z",
+    report: { report_id: "report-old", ending: "completed", created_at: "2026-07-01T10:03:00Z" },
+  };
+  const fetched = [];
+  const loadEpisode = async (episodeId) => {
+    fetched.push(episodeId);
+    return episodeId === "episode-old" ? older : null;
+  };
+
+  const listed = await listProjectArtifacts(
+    project,
+    tasks,
+    episodes,
+    { episode_id: "episode-old" },
+    loadEpisode,
+  );
+  assert.deepEqual(
+    listed.artifacts.map((artifact) => artifact.viewer_id),
+    ["report:episode-old"],
+  );
+  assert.equal(listed.recent_episode_count, 1);
+  await assert.rejects(
+    listProjectArtifacts(project, tasks, episodes, { episode_id: "episode-none" }, loadEpisode),
+    /Episode episode-none is not present/,
+  );
+
+  const opened = [];
+  const receipt = await openProjectArtifact(
+    project,
+    tasks,
+    episodes,
+    { viewer_id: "report:episode-old" },
+    (viewerUrl) => {
+      opened.push(viewerUrl);
+      return true;
+    },
+    loadEpisode,
+  );
+  assert.equal(receipt.viewer_id, "report:episode-old");
+  assert.deepEqual(opened, ["/api/projects/project-1/episodes/episode-old/report/viewer"]);
+  await assert.rejects(
+    openProjectArtifact(
+      project,
+      tasks,
+      episodes,
+      { viewer_id: "report:episode-none" },
+      () => true,
+      loadEpisode,
+    ),
+    /Artifact viewer report:episode-none is not present/,
+  );
+  assert.deepEqual(fetched, ["episode-old", "episode-none", "episode-old", "episode-none"]);
 });
 
 test("artifact opening revalidates availability and opens only the existing viewer URL", async () => {
@@ -793,6 +945,7 @@ test("artifact opening revalidates availability and opens only the existing view
         opened.push([viewerUrl, contentUrl]);
         return true;
       },
+      noEpisodeFetch,
     ),
     {
       project_id: "project-1",
@@ -814,11 +967,19 @@ test("artifact opening revalidates availability and opens only the existing view
       episodes,
       { viewer_id: "task:task-2:artifact-2" },
       () => true,
+      noEpisodeFetch,
     ),
     /Artifact bytes expired/,
   );
   await assert.rejects(
-    openProjectArtifact(project, tasks, episodes, { viewer_id: "report:episode-1" }, () => false),
+    openProjectArtifact(
+      project,
+      tasks,
+      episodes,
+      { viewer_id: "report:episode-1" },
+      () => false,
+      noEpisodeFetch,
+    ),
     /could not be shown/,
   );
 });
@@ -826,7 +987,13 @@ test("artifact opening revalidates availability and opens only the existing view
 test("artifact tools expose only list and visual-open schemas", () => {
   const project = projectFixture();
   const { tasks, episodes } = artifactFixtures();
-  const tools = projectArtifactToolDefinitions(project, tasks, episodes, () => true);
+  const tools = projectArtifactToolDefinitions(
+    project,
+    tasks,
+    episodes,
+    () => true,
+    noEpisodeFetch,
+  );
   assert.deepEqual(
     tools.map((tool) => [
       tool.name,
@@ -959,7 +1126,13 @@ test("conversation inspection stays within its result budget at every declared l
   }));
   transcript.message_count = transcript.messages.length;
 
-  const tool = projectConversationToolDefinitions(project, [task], async () => transcript)[0];
+  const tool = projectConversationToolDefinitions(
+    project,
+    [],
+    0,
+    [task],
+    async () => transcript,
+  )[1];
   const result = await tool.execute({ chat_id: "chat-1" });
   const parsed = JSON.parse(result.content[0].text);
 
@@ -1005,20 +1178,111 @@ test("conversation inspection names branch, active, and stale-transcript refusal
   );
 });
 
-test("the conversation inspection tool has one exact read-only schema", async () => {
+function conversationSummaryFixtures() {
+  return [
+    {
+      chat_id: "chat-1",
+      kind: "node_chat",
+      node_id: "hyp-1",
+      title: "Functional drift is predictive",
+      updated_at: "2026-08-31T10:01:00Z",
+      message_count: 2,
+      last_message_preview: "The held-out curve remains stable.",
+    },
+    {
+      chat_id: "chat-2",
+      kind: "project_chat",
+      node_id: null,
+      title: "Planning the replicate",
+      updated_at: "2026-09-01T08:00:00Z",
+      message_count: 5,
+      last_message_preview: "p".repeat(400),
+    },
+    {
+      chat_id: "chat-3",
+      kind: "node_chat",
+      node_id: "exp-1",
+      title: "Replicate run notes",
+      updated_at: "2026-08-30T08:00:00Z",
+      message_count: 1,
+      last_message_preview: "Calibration looked fine.",
+    },
+  ];
+}
+
+test("conversation listing exposes exact saved chat ids, newest first, with bounded previews", () => {
+  const project = projectFixture();
+  const summaries = conversationSummaryFixtures();
+  const listed = listProjectConversations(project, summaries, 12, {});
+  assert.equal(listed.total, 12);
+  assert.equal(listed.loaded, 3);
+  assert.equal(listed.matched, 3);
+  assert.equal(listed.truncated, false);
+  assert.deepEqual(
+    listed.conversations.map((item) => item.chat_id),
+    ["chat-2", "chat-1", "chat-3"],
+  );
+  assert.equal(listed.conversations[1].node_title, "Functional drift is predictive");
+  assert.equal(listed.conversations[0].node_title, null);
+  assert.equal(listed.conversations[0].last_message_preview.length, 160);
+  assert.deepEqual(
+    listProjectConversations(project, summaries, 3, { node_id: "exp-1" }).conversations.map(
+      (item) => item.chat_id,
+    ),
+    ["chat-3"],
+  );
+  assert.deepEqual(
+    listProjectConversations(project, summaries, 3, { query: "calibration" }).conversations.map(
+      (item) => item.chat_id,
+    ),
+    ["chat-3"],
+  );
+  assert.throws(
+    () => listProjectConversations(project, summaries, 3, { node_id: "missing" }),
+    /Node missing is not present/,
+  );
+  const many = Array.from({ length: 30 }, (_, index) => ({
+    ...summaries[0],
+    chat_id: `chat-${index}`,
+    title: "t".repeat(500),
+    updated_at: `2026-08-${String((index % 28) + 1).padStart(2, "0")}T10:00:00Z`,
+  }));
+  const tool = projectConversationToolDefinitions(project, many, 200, [], async () => {
+    throw new Error("unused");
+  })[0];
+  const result = tool.execute({});
+  const parsed = JSON.parse(result.content[0].text);
+  assert.ok(result.content[0].text.length <= 6_000);
+  assert.equal(parsed.total, 200);
+  assert.equal(parsed.returned, 8);
+  assert.equal(parsed.truncated, true);
+});
+
+test("the conversation read tools are one bounded listing and one exact inspection", async () => {
   const project = projectFixture();
   const { task, transcript } = conversationFixtures();
-  const tools = projectConversationToolDefinitions(project, [task], async () => transcript);
+  const tools = projectConversationToolDefinitions(
+    project,
+    conversationSummaryFixtures(),
+    3,
+    [task],
+    async () => transcript,
+  );
   assert.deepEqual(
     tools.map((tool) => [
       tool.name,
       tool.annotations?.readOnlyHint,
       tool.annotations?.untrustedContentHint,
     ]),
-    [["rcp_inspect_conversation", true, true]],
+    [
+      ["rcp_list_conversations", true, true],
+      ["rcp_inspect_conversation", true, true],
+    ],
   );
-  assert.deepEqual(tools[0].inputSchema.required, ["chat_id"]);
-  const result = await tools[0].execute({ chat_id: "chat-1" });
+  assert.deepEqual(Object.keys(tools[0].inputSchema.properties), ["node_id", "query"]);
+  assert.equal(tools[0].inputSchema.required, undefined);
+  assert.deepEqual(tools[1].inputSchema.required, ["chat_id"]);
+  const result = await tools[1].execute({ chat_id: "chat-1" });
   assert.match(result.content[0].text, /"chat_id":"chat-1"/);
 });
 
@@ -1492,8 +1756,20 @@ function evalToolDefinitions(state) {
   const { tasks, episodes } = artifactFixtures();
   return [
     ...projectReadToolDefinitions(project),
-    ...projectArtifactToolDefinitions(project, tasks, episodes, () => true),
-    ...projectConversationToolDefinitions(project, [task], async () => transcript),
+    ...projectArtifactToolDefinitions(
+      project,
+      tasks,
+      episodes,
+      () => true,
+      async () => null,
+    ),
+    ...projectConversationToolDefinitions(
+      project,
+      conversationSummaryFixtures(),
+      3,
+      [task],
+      async () => transcript,
+    ),
     ...projectConversationSendToolDefinitions(
       project,
       [task],
@@ -1529,4 +1805,20 @@ test("all WebMCP metadata stays descriptive and within model-facing budgets", ()
       );
     }
   }
+});
+
+test("the App exposes the project surface only behind the same backend-session gate as the index", async () => {
+  const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  assert.match(
+    appSource,
+    /const backendSessionReady =\s*identityReady && !identityIssue && actorIdentityChecked && !teamSessionRequired;/,
+  );
+  assert.match(appSource, /const webMcpPageReady = backendSessionReady && !setupOpen && !loading;/);
+  assert.match(appSource, /const projectIndexWebMcpAvailable = webMcpPageReady && !projectId;/);
+  assert.match(
+    appSource,
+    /const webMcpProject =\s*webMcpPageReady && project && project\.id === projectId \? project : null;/,
+  );
+  assert.match(appSource, /const webMcpSurfaceKey = webMcpProject\s*\?/);
+  assert.doesNotMatch(appSource, /webMcpSurfaceKey =\s*project\?\.id === projectId/);
 });

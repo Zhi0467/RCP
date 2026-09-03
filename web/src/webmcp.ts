@@ -16,6 +16,7 @@ import type {
   AgentRunConfig,
   AgentTask,
   ChatMessage,
+  ChatSummary,
   ChatTranscript,
   Episode,
   GraphNode,
@@ -68,15 +69,23 @@ export type WebMcpToolRegistry = {
 };
 
 export const WEBMCP_RESULT_MAX_CHARS = 1_500;
-const WEBMCP_NODE_RESULT_MAX_CHARS = 12_000;
+const WEBMCP_NODE_RESULT_MAX_CHARS = 16_000;
+export const WEBMCP_NODE_CONTENT_MAX_CHARS = 6_000;
 const WEBMCP_ARTIFACT_RESULT_MAX_CHARS = 8_000;
 const WEBMCP_CONVERSATION_RESULT_MAX_CHARS = 12_000;
+const WEBMCP_CONVERSATION_LIST_RESULT_MAX_CHARS = 6_000;
 const WEBMCP_EXPERIMENT_RESULT_MAX_CHARS = 12_000;
 const WEBMCP_PROJECT_INDEX_RESULT_MAX_CHARS = 6_000;
 const PROJECT_LIST_LIMIT = 8;
 const OVERVIEW_LIST_LIMIT = 2;
 const NODE_RELATION_LIMIT = 32;
+const NODE_TEXT_LIMIT = 1_200;
+const NODE_TEXT_LIMIT_FLOOR = 64;
+const NODE_LIST_LIMIT = 16;
+const NODE_LIST_LIMIT_FLOOR = 2;
+const NODE_TRUNCATED_PATH_LIMIT = 24;
 const ARTIFACT_LIST_LIMIT = 8;
+const CONVERSATION_LIST_LIMIT = 8;
 const CONVERSATION_MESSAGE_LIMIT = 6;
 const CONVERSATION_MESSAGE_TEXT_LIMIT = 320;
 const CONVERSATION_ARTIFACT_LIMIT = 4;
@@ -439,6 +448,76 @@ function stringListInput(input: Record<string, unknown>, name: string, maximum =
   return items;
 }
 
+type BoundedJson = {
+  value: unknown;
+  truncation: {
+    text_limit: number;
+    list_limit: number;
+    path_count: number;
+    paths: string[];
+  } | null;
+};
+
+function boundJsonValue(
+  value: unknown,
+  textLimit: number,
+  listLimit: number,
+  path: string,
+  truncatedPaths: string[],
+): unknown {
+  if (typeof value === "string") {
+    if (value.length <= textLimit) return value;
+    truncatedPaths.push(path);
+    return compactText(value, textLimit);
+  }
+  if (Array.isArray(value)) {
+    if (value.length > listLimit) truncatedPaths.push(path);
+    return value
+      .slice(0, listLimit)
+      .map((item, index) =>
+        boundJsonValue(item, textLimit, listLimit, `${path}[${index}]`, truncatedPaths),
+      );
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        boundJsonValue(item, textLimit, listLimit, path ? `${path}.${key}` : key, truncatedPaths),
+      ]),
+    );
+  }
+  return value;
+}
+
+/** Bound one saved record to a serialized budget by shortening strings and
+ * lists, halving both limits until the record fits. Every shortened path is
+ * reported so the reader can tell exact content from truncated content. */
+export function boundJsonToBudget(value: unknown, maxChars: number): BoundedJson {
+  let textLimit = NODE_TEXT_LIMIT;
+  let listLimit = NODE_LIST_LIMIT;
+  for (;;) {
+    const truncatedPaths: string[] = [];
+    const bounded = boundJsonValue(value, textLimit, listLimit, "", truncatedPaths);
+    const fits = JSON.stringify(bounded).length <= maxChars;
+    const atFloor = textLimit <= NODE_TEXT_LIMIT_FLOOR && listLimit <= NODE_LIST_LIMIT_FLOOR;
+    if (fits || atFloor) {
+      return {
+        value: bounded,
+        truncation: truncatedPaths.length
+          ? {
+              text_limit: textLimit,
+              list_limit: listLimit,
+              path_count: truncatedPaths.length,
+              paths: truncatedPaths.slice(0, NODE_TRUNCATED_PATH_LIMIT),
+            }
+          : null,
+      };
+    }
+    textLimit = Math.max(NODE_TEXT_LIMIT_FLOOR, Math.floor(textLimit / 2));
+    listLimit = Math.max(NODE_LIST_LIMIT_FLOOR, Math.floor(listLimit / 2));
+  }
+}
+
 export function inspectProjectNode(
   project: ProjectSnapshot,
   input: Record<string, unknown>,
@@ -446,6 +525,8 @@ export function inspectProjectNode(
   const nodeId = requiredStringInput(input, "node_id");
   const node = project.graph.nodes[nodeId];
   if (!node) throw new Error(`Node ${nodeId} is not present in the current project graph.`);
+  const bounded = boundJsonToBudget(node, WEBMCP_NODE_CONTENT_MAX_CHARS);
+  const control = node.type === "experiment" ? project.experiment_control[node.id] : undefined;
   const allRelations = Object.values(project.graph.edges)
     .filter((edge) => edge.source === nodeId || edge.target === nodeId)
     .sort((left, right) => left.id.localeCompare(right.id))
@@ -464,14 +545,15 @@ export function inspectProjectNode(
   return {
     project_id: project.id,
     graph_revision: project.graph.revision,
-    node,
+    node: bounded.value,
+    node_truncation: bounded.truncation,
     relation_count: allRelations.length,
     relations_truncated: allRelations.length > relations.length,
     relations,
     related_node_ids: relatedNodeIds.slice(0, NODE_RELATION_LIMIT),
     related_node_ids_truncated: relatedNodeIds.length > NODE_RELATION_LIMIT,
     ...(node.type === "experiment"
-      ? { experiment_control: project.experiment_control[node.id] ?? null }
+      ? { experiment_control: control ? compactExperimentControl(control) : null }
       : {}),
   };
 }
@@ -487,7 +569,8 @@ export function projectReadToolDefinitions(project: ProjectSnapshot): WebMcpTool
     },
     {
       name: "rcp_inspect_node",
-      description: "Read one exact saved RCP graph node and its direct relations.",
+      description:
+        "Read one exact saved RCP graph node and its direct relations. Oversized text or lists are shortened and every shortened path is reported in node_truncation.",
       inputSchema: {
         type: "object",
         properties: {
@@ -599,13 +682,27 @@ function assertArtifactFilterTarget(
   }
 }
 
+/** Resolve one exact episode id through the backend when it lies outside the
+ * bounded recent-episode window the page holds; null means the backend has no
+ * such episode. */
+type LoadWebMcpEpisode = (episodeId: string) => Promise<Episode | null>;
+
+async function withExactEpisode(
+  episodes: Episode[],
+  episodeId: string | null,
+  loadEpisode: LoadWebMcpEpisode,
+): Promise<Episode[]> {
+  if (!episodeId || episodes.some((episode) => episode.episode_id === episodeId)) return episodes;
+  const exact = await loadEpisode(episodeId);
+  return exact && exact.episode_id === episodeId ? [...episodes, exact] : episodes;
+}
+
 function projectArtifactRecords(
   project: ProjectSnapshot,
   tasks: AgentTask[],
   episodes: Episode[],
-  input: Record<string, unknown>,
+  filter: ArtifactFilter,
 ): ProjectArtifactRecord[] {
-  const filter = artifactFilter(input);
   assertArtifactFilterTarget(project, tasks, episodes, filter);
   const artifacts = tasks
     .filter((task) => taskMatchesArtifactFilter(task, filter))
@@ -661,22 +758,28 @@ function projectArtifactRecords(
   );
 }
 
-export function listProjectArtifacts(
+export async function listProjectArtifacts(
   project: ProjectSnapshot,
   tasks: AgentTask[],
   episodes: Episode[],
   input: Record<string, unknown>,
-): Record<string, unknown> {
-  const records = projectArtifactRecords(project, tasks, episodes, input);
+  loadEpisode: LoadWebMcpEpisode,
+): Promise<Record<string, unknown>> {
+  const filter = artifactFilter(input);
+  const knownEpisodes = await withExactEpisode(episodes, filter.episodeId, loadEpisode);
+  const records = projectArtifactRecords(project, tasks, knownEpisodes, filter);
   return {
     project_id: project.id,
     total: records.length,
     truncated: records.length > ARTIFACT_LIST_LIMIT,
+    recent_episode_count: episodes.length,
     artifacts: records
       .slice(0, ARTIFACT_LIST_LIMIT)
       .map(({ sort_time: _, viewer_url: __, content_url: ___, ...record }) => record),
   };
 }
+
+const REPORT_VIEWER_PREFIX = "report:";
 
 export async function openProjectArtifact(
   project: ProjectSnapshot,
@@ -684,9 +787,14 @@ export async function openProjectArtifact(
   episodes: Episode[],
   input: Record<string, unknown>,
   openViewer: (viewerUrl: string, contentUrl: string) => boolean | Promise<boolean>,
+  loadEpisode: LoadWebMcpEpisode,
 ): Promise<Record<string, unknown>> {
   const viewerId = requiredStringInput(input, "viewer_id");
-  const record = projectArtifactRecords(project, tasks, episodes, {}).find(
+  const reportEpisodeId = viewerId.startsWith(REPORT_VIEWER_PREFIX)
+    ? viewerId.slice(REPORT_VIEWER_PREFIX.length)
+    : null;
+  const knownEpisodes = await withExactEpisode(episodes, reportEpisodeId, loadEpisode);
+  const record = projectArtifactRecords(project, tasks, knownEpisodes, artifactFilter({})).find(
     (candidate) => candidate.viewer_id === viewerId,
   );
   if (!record)
@@ -710,11 +818,13 @@ export function projectArtifactToolDefinitions(
   tasks: AgentTask[],
   episodes: Episode[],
   openViewer: (viewerUrl: string, contentUrl: string) => boolean | Promise<boolean>,
+  loadEpisode: LoadWebMcpEpisode,
 ): WebMcpToolDefinition[] {
   return [
     {
       name: "rcp_list_artifacts",
-      description: "List RCP task artifacts and immutable episode reports in the open project.",
+      description:
+        "List RCP task artifacts and immutable episode reports in the open project. Reports come from the recent-episode window unless an exact episode_id is supplied.",
       inputSchema: {
         type: "object",
         properties: {
@@ -742,9 +852,9 @@ export function projectArtifactToolDefinitions(
         additionalProperties: false,
       },
       annotations: { readOnlyHint: true, untrustedContentHint: true },
-      execute: (input) =>
+      execute: async (input) =>
         webMcpTextResult(
-          listProjectArtifacts(project, tasks, episodes, input),
+          await listProjectArtifacts(project, tasks, episodes, input, loadEpisode),
           WEBMCP_ARTIFACT_RESULT_MAX_CHARS,
         ),
     },
@@ -765,7 +875,9 @@ export function projectArtifactToolDefinitions(
       },
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       execute: async (input) =>
-        webMcpTextResult(await openProjectArtifact(project, tasks, episodes, input, openViewer)),
+        webMcpTextResult(
+          await openProjectArtifact(project, tasks, episodes, input, openViewer, loadEpisode),
+        ),
     },
   ];
 }
@@ -1034,13 +1146,91 @@ export async function inspectProjectConversation(
   };
 }
 
+export function listProjectConversations(
+  project: ProjectSnapshot,
+  summaries: ChatSummary[],
+  summaryTotal: number,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const nodeId = optionalStringInput(input, "node_id");
+  if (nodeId && !project.graph.nodes[nodeId]) {
+    throw new Error(`Node ${nodeId} is not present in the current project graph.`);
+  }
+  const query = optionalStringInput(input, "query")?.trim().toLowerCase() ?? null;
+  const matches = summaries
+    .filter((summary) => (nodeId ? summary.node_id === nodeId : true))
+    .filter(
+      (summary) =>
+        !query ||
+        [summary.title, summary.last_message_preview].some((value) =>
+          value.toLowerCase().includes(query),
+        ),
+    )
+    .sort(
+      (left, right) =>
+        Date.parse(right.updated_at) - Date.parse(left.updated_at) ||
+        left.chat_id.localeCompare(right.chat_id),
+    );
+  const visible = matches.slice(0, CONVERSATION_LIST_LIMIT);
+  return {
+    project_id: project.id,
+    total: Math.max(summaryTotal, summaries.length),
+    loaded: summaries.length,
+    matched: matches.length,
+    returned: visible.length,
+    truncated: matches.length > visible.length,
+    conversations: visible.map((summary) => {
+      const node = summary.node_id ? project.graph.nodes[summary.node_id] : null;
+      return {
+        chat_id: summary.chat_id,
+        kind: summary.kind,
+        node_id: summary.node_id,
+        node_title: node ? compactText(node.title, 96) : null,
+        title: compactText(summary.title, 96),
+        updated_at: summary.updated_at,
+        message_count: summary.message_count,
+        last_message_preview: compactText(summary.last_message_preview, 160),
+      };
+    }),
+  };
+}
+
 export function projectConversationToolDefinitions(
   project: ProjectSnapshot,
+  summaries: ChatSummary[],
+  summaryTotal: number,
   tasks: AgentTask[],
   loadTranscript: (chatId: string) => Promise<ChatTranscript>,
   taskStartPending = false,
 ): WebMcpToolDefinition[] {
   return [
+    {
+      name: "rcp_list_conversations",
+      description:
+        "List saved RCP conversations in the open project so an exact chat_id can be inspected or resumed.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          node_id: {
+            type: "string",
+            minLength: 1,
+            description: "Optional exact graph node id whose conversations should be listed.",
+          },
+          query: {
+            type: "string",
+            minLength: 1,
+            description: "Optional words from the conversation title or latest message.",
+          },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, untrustedContentHint: true },
+      execute: (input) =>
+        webMcpTextResult(
+          listProjectConversations(project, summaries, summaryTotal, input),
+          WEBMCP_CONVERSATION_LIST_RESULT_MAX_CHARS,
+        ),
+    },
     {
       name: "rcp_inspect_conversation",
       description: "Read one bounded RCP conversation and its current Send options.",

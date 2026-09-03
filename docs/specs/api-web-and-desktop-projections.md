@@ -384,9 +384,11 @@ When the browser host supplies `document.modelContext.registerTool`, RCP
 registers a page-scoped WebMCP surface over its existing application owners. A
 ready project index exposes project listing and exact project navigation. A
 loaded project replaces those tools with project overview and node inspection,
-artifact/report listing and visual opening, conversation inspection and Send,
-and bounded Experiment inspection, Start, and graceful Stop. Login, project
-setup, loading, and invalid project states expose no tools.
+artifact/report listing and visual opening, conversation listing, inspection,
+and Send, and bounded Experiment inspection, Start, and graceful Stop. Login,
+project setup, loading, and invalid project states expose no tools; the project
+surface waits for the same verified backend identity, actor, and team-session
+state as the index, so a reconnect screen retires it.
 
 The inventory follows current backend and browser state. Experiment Start and
 Stop are registered only while at least one exact action can succeed or while
@@ -397,8 +399,14 @@ the host does not mistake successful navigation for a stale tool failure.
 
 Every call accepts exact ids returned by an RCP read tool and revalidates them
 against the current page snapshot before acting. Read results are bounded JSON,
-not generated summaries, and omit storage locators. Artifact opening uses the
-existing backend viewer inside the page after confirming current availability.
+not generated summaries, and omit storage locators. Node inspection shortens
+oversized saved text and lists to fit its budget and names every shortened path,
+so exact content is never confused with truncated content. Conversation listing
+exposes the saved chat ids the page has loaded together with the backend total.
+Report listing and opening use the recent-episode window the page holds; an
+exact `episode_id` outside that window is fetched from the existing episodes
+route rather than reported missing. Artifact opening uses the existing backend
+viewer inside the page after confirming current availability.
 Conversation Send starts one asynchronous ordinary Discuss or Work turn through
 the same provider profile, native-session, skill, task-admission, and local or
 SSH execution path as the visible composer; it returns the durable task id rather

@@ -44,6 +44,7 @@ import {
 import {
   api,
   ApiError,
+  loadEpisodes,
   loadProjectReadiness,
   mergeEpisodeToMain,
   reauthorizeEpisode,
@@ -729,6 +730,10 @@ export default function App() {
     currentActiveAgentTasks,
     updateActorNameDraft,
   } = useActorIdentity();
+  // Every backend-facing surface, including the WebMCP inventory, waits for the
+  // same verified identity, actor, and team-session state that gates the page.
+  const backendSessionReady =
+    identityReady && !identityIssue && actorIdentityChecked && !teamSessionRequired;
   const {
     reconnecting,
     desktopUpdate,
@@ -829,8 +834,7 @@ export default function App() {
   } = useProjectTabs<CachedProjectTabState>({
     initialProjectId: initialRoute.project.projectId,
     initialSetupOpen: initialRoute.setupOpen,
-    projectIndexReady:
-      identityReady && !identityIssue && actorIdentityChecked && !teamSessionRequired,
+    projectIndexReady: backendSessionReady,
     project: sessionProject,
     reportError: reportErrorNotice,
   });
@@ -2613,6 +2617,17 @@ export default function App() {
     (chatId: string) => loadChatTranscript(apiBase, chatId, api),
     [apiBase],
   );
+  const loadWebMcpEpisode = useCallback(
+    async (episodeId: string): Promise<Episode | null> => {
+      try {
+        return (await loadEpisodes(apiBase, undefined, episodeId))[0] ?? null;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    [apiBase],
+  );
   const createWebMcpConversation = useCallback(
     (kind: ChatKind, node: GraphNode | null) => {
       if (!project) throw new Error("No RCP project is open.");
@@ -3050,20 +3065,32 @@ export default function App() {
       ),
     [],
   );
-  const projectIndexWebMcpAvailable =
-    !projectId &&
-    !setupOpen &&
-    !loading &&
-    identityReady &&
-    !identityIssue &&
-    actorIdentityChecked &&
-    !teamSessionRequired;
+  // The page shows no project or index content until the backend identity is
+  // verified, the actor is known, any team login is complete, setup is closed,
+  // and the open has finished; the WebMCP inventory follows the same gate.
+  const webMcpPageReady = backendSessionReady && !setupOpen && !loading;
+  const projectIndexWebMcpAvailable = webMcpPageReady && !projectId;
+  const webMcpProject = webMcpPageReady && project && project.id === projectId ? project : null;
   const webMcpTools = useMemo(() => {
-    if (project?.id === projectId) {
+    if (webMcpProject) {
+      const project = webMcpProject;
       return [
         ...projectReadToolDefinitions(project),
-        ...projectArtifactToolDefinitions(project, tasks, episodes, showWebMcpArtifactViewer),
-        ...projectConversationToolDefinitions(project, tasks, loadWebMcpConversation, taskStarting),
+        ...projectArtifactToolDefinitions(
+          project,
+          tasks,
+          episodes,
+          showWebMcpArtifactViewer,
+          loadWebMcpEpisode,
+        ),
+        ...projectConversationToolDefinitions(
+          project,
+          visibleChatSummaries,
+          chatSummaryTotal,
+          tasks,
+          loadWebMcpConversation,
+          taskStarting,
+        ),
         ...projectConversationSendToolDefinitions(
           project,
           tasks,
@@ -3091,14 +3118,14 @@ export default function App() {
     }
     return projectIndexWebMcpAvailable ? projectIndexWebMcpTools : [];
   }, [
+    chatSummaryTotal,
     createWebMcpConversation,
     episodes,
     experimentStartRequiresSync,
     experimentStopId,
     loadWebMcpConversation,
+    loadWebMcpEpisode,
     mutationsDisabled,
-    project,
-    projectId,
     projectIndexWebMcpAvailable,
     projectIndexWebMcpTools,
     requestExperimentStop,
@@ -3107,15 +3134,16 @@ export default function App() {
     startWebMcpExperiment,
     taskStarting,
     tasks,
+    visibleChatSummaries,
     watchers,
     webMcpExperimentStartProjectId,
+    webMcpProject,
   ]);
-  const webMcpSurfaceKey =
-    project?.id === projectId
-      ? `project:${project.id}`
-      : projectIndexWebMcpAvailable
-        ? "project-index"
-        : null;
+  const webMcpSurfaceKey = webMcpProject
+    ? `project:${webMcpProject.id}`
+    : projectIndexWebMcpAvailable
+      ? "project-index"
+      : null;
   const webMcpRegistryRef = useRef<{
     surfaceKey: string;
     registry: WebMcpToolRegistry;

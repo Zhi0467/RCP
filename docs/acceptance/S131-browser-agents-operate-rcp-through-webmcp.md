@@ -16,7 +16,11 @@ last_passed: >-
   complete 589-test Web suite and production build also passed. The drive had no
   page exception or failed application request; Chromium emitted only an
   unsupported navigate-to CSP directive warning while the sandboxed viewer
-  rendered normally.
+  rendered normally. A second served drive on 2026-09-03 with a recorded host
+  shim confirmed the conversation listing tool, the exact-episode fetch reaching
+  the backend episodes route for an unknown id, a Send that waited on the page's
+  own display-name prompt before its 202, and every project tool unregistering
+  on the reconnect screen and returning after Reconnect.
 ---
 
 # Let a browser agent operate RCP without creating a second authority plane
@@ -34,15 +38,17 @@ project projections and actions as the visible application.
 2. Confirm the index tools retire after navigation and the project tools appear.
    Read the compact overview, inspect an exact node, list artifacts, and open one
    available artifact or episode report in RCP's page viewer.
-3. Inspect an existing conversation. Confirm its latest task, bounded messages,
-   provider/session configuration, available skills, and any refusal are current.
+3. List the saved conversations and inspect one returned `chat_id`. Confirm its
+   latest task, bounded messages, provider/session configuration, available
+   skills, and any refusal are current.
    Send one Discuss or Work message and confirm the call returns its durable task
    and conversation ids without waiting for provider completion.
 4. Inspect a ready Experiment, start its next bounded episode, and confirm the
    Start tool remains stable until the accepted call returns. Inspect the new
    exact episode, request graceful Stop with both returned ids, and confirm an
    unavailable Start or Stop is no longer advertised.
-5. Navigate to login or project setup and confirm the project tools are removed.
+5. Navigate to login or project setup, or lose the backend so the reconnect
+   screen appears, and confirm the project tools are removed.
 
 ## Pass condition
 
