@@ -65,6 +65,21 @@ Attachment bytes, hashes, and paths never become canonical chat or graph data.
 Chat history retains only display metadata and expiry. Files are untrusted
 temporary context and cannot be the sole durable provenance for Evidence.
 
+An assistant answer also supports temporary selection comments for the next
+human turn. Pointer-selecting answer text opens a comment composer beside the
+selection. A visible Comment command opens the same floating flow with the
+answer in a real keyboard-selectable text control. At every layout width, the
+composer stays inside the soft-keyboard-adjusted visual viewport and scrolls
+when necessary.
+Each submitted comment becomes one editable or removable composer annotation,
+and the main composer shows their count. Several annotations may be staged. They
+remain a per-chat draft, including after a comment is edited blank, and block
+send until completed or removed. On send, each contributes only its copied
+selected text followed by `comment: <comment>` to the ordinary human message.
+There are no message references, source identifiers, offsets, durable
+annotation records, or graph authority. Staging clears when the turn is accepted
+and otherwise remains a client-side draft for that chat.
+
 ## Common episode parent
 
 Auto-research and Experiment-loop are modes of one persisted episode parent.

@@ -116,6 +116,57 @@ The same command implementation emits either interactive terminal guidance or
 structured progress for the desktop shell. RCP does not add CLI mirrors of
 ordinary graph, task, chat, or project-member actions.
 
+### Package identity and offline storage migration
+
+Two top-level commands expose the release and storage contract without starting
+a server. `rcp --version` requires no subcommand and prints one line containing
+the full package version, build number, and build commit. A source checkout has
+no build identity and reports `build none commit none`; a release version such
+as `0.3.2+build.412.gfe06636` reports `build 412 commit fe06636`. The full
+version remains the package's verbatim `__version__`; its base version is the
+part before the first `+`. With `--machine-readable`, the command emits one JSON
+event in the existing machine-operation event shape carrying `version`,
+`base_version`, `build`, and `commit`. Because the event's nonsecret field type
+does not admit null, a missing build or commit is the string `none`; the
+equivalent fields in `/api/health` are JSON null.
+
+`rcp migrate [--data-dir PATH] [--machine-readable]` and `rcp migrate --check`
+resolve their data directory exactly as `rcp serve` does. Both acquire that
+directory's exclusive instance lock before inspecting or changing the database.
+If a running server or another process owns the directory, the command fails
+nonzero with a plain message and leaves the database unchanged. It never skips
+the lock, migrates under a running server, or falls back to a copy.
+
+`rcp migrate --check` is read-only. It does not create a missing database, apply
+a migration to the target, or change existing database or WAL bytes. It opens
+the live database in SQLite read-only mode so every committed WAL transaction is
+included; SQLite may create or touch its normal sidecars while reading. The
+command reports the applied ledger head, registry head, and ordered pending
+migration names, and distinguishes these exit-zero results:
+
+- **fresh**: no database file exists; the next ordinary open will construct the
+  current schema;
+- **current**: the ledger head equals the registry head, there are no pending
+  migrations, and read-only validation passes; and
+- **pending**: the ledger is behind and every pending migration is a known
+  registry entry. Recognized frozen pre-ledger server boundaries are classified
+  as this known-pending state rather than being modified during inspection.
+
+Exit `2` means the state is unknown and unsafe to migrate: the ledger names an
+unknown migration, its head is ahead of this RCP's registry, read-only validation
+fails, an otherwise nonempty unrecognized database has no ledger table, or the
+file is not valid SQLite. These results are distinct from the nonzero
+instance-lock refusal.
+
+`rcp migrate` first performs that read-only classification and refuses an
+unknown database with exit `2` and the same plain message, without changing it.
+For a fresh, current, or known-pending state it opens the store normally, applies
+the ordered ledger, runs the storage validator, reports the resulting ledger
+head, and exits `0`. It never serves the application. With
+`--machine-readable`, either migration form emits the same events as its human
+output in the existing JSON event shape, and the last record carries the exit
+outcome.
+
 There is deliberately no uninstall operation. Install converges instead of
 stacking, so a failed install is corrected and rerun, and every refusal names
 its cause. Teardown is therefore an ordinary operating-system sequence, complete
@@ -258,7 +309,8 @@ ordinary loss recovery is re-invitation by the other enrolled member.
 
 The installed version is the exact commit of the service's current source
 release. `rcp server doctor` reports the managed-main, candidate, current, and
-running commits plus the configured upstream. The running process captures its
+running commits plus the configured upstream origin and authentication mode. The
+running process captures its
 physical immutable release and a bounded, deterministic SHA-256 identity of the
 symlink-free Web bundle before startup and publishes both through server
 metadata and health. Non-installed personal/desktop processes publish neither.
@@ -467,6 +519,37 @@ The source checkout has its own fetch identity, separate from every project. A
 public RCP origin needs no secret; a private origin uses a dedicated read-only
 source deploy key installed for `rcp`. Update never pushes RCP source, copies an
 operator's personal SSH key, or borrows a project's write deploy key.
+
+An installation that still records the RCP source as deploy-key SSH performs one
+one-way convergence during `rcp server update`, or when `rcp server install` is
+rerun, when credential-free probing proves the corresponding HTTPS origin is
+public. Both commands call the same transition function. It first atomically
+rewrites installed configuration to the public HTTPS origin and
+`authentication = "public"`, preserving the immutable `installation_id` so
+protected archives carrying `rcp-source:<installation-id>` remain valid. Only
+after that write succeeds does its public-mode finishing path remove whichever
+local `source_ed25519` files remain, fsync the credentials directory, and change
+the managed checkout's `origin` from the matching SSH URL to that HTTPS URL as
+`rcp`, without `GIT_SSH_COMMAND`, before comparing the configured origin and
+fetching. If interrupted after the config write, the next install or update uses
+that same path to finish the key removal and checkout rewrite and repeats the
+deploy-key revocation instruction. After a ready probe and before any mutation,
+the transition requires an existing managed checkout to use either the matching
+SSH origin or the HTTPS origin it will record; otherwise it refuses without
+changing the configuration, key pair, or checkout. A credential-free probe that
+still needs a grant or is unavailable leaves the configuration, key pair, and SSH
+checkout unchanged. A public configuration never returns to deploy-key mode and
+is never probed over SSH. A candidate receipt recorded under the retired SSH
+origin remains valid for the same repository after the transition. The probe
+runs with an empty home and runs Git from that empty directory with its parent as
+the repository-discovery ceiling, so no netrc, per-user configuration, or
+repository-local configuration can authenticate or redirect it and `ready`
+therefore means anonymous read access.
+
+The transition does not wait for GitHub-side revocation. Its wizard event reports
+the public authentication and origin, the retired label, and the repository's
+deploy-key settings URL, and tells the operator to revoke that exact key after
+the update completes and `server doctor` shows the public origin.
 
 The configured `origin/main` commit is trusted host code. Git, npm, Web, and
 Python build steps intentionally run as `rcp`, so they share that account's

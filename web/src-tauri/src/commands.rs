@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use reqwest::{Method, Response};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{ipc::Channel, AppHandle, Emitter, State, WebviewWindow};
@@ -68,6 +69,151 @@ pub struct QuitResult {
 #[derive(Serialize)]
 pub struct ApplyUpdateResult {
     started: bool,
+}
+
+#[derive(Clone, Debug)]
+enum ResourceTarget {
+    Personal(DesktopStatus),
+    Team(Box<EstablishedTeamSession>),
+}
+
+impl ResourceTarget {
+    fn base_url(&self) -> &str {
+        match self {
+            Self::Personal(status) => &status.base_url,
+            Self::Team(session) => &session.status.base_url,
+        }
+    }
+}
+
+struct ResourceAccess<'a> {
+    target: &'a ResourceTarget,
+    personal: &'a BackendState,
+    connections: &'a TeamConnectionState,
+    sessions: &'a TeamSessionState,
+}
+
+impl<'a> ResourceAccess<'a> {
+    fn new(
+        target: &'a ResourceTarget,
+        personal: &'a BackendState,
+        connections: &'a TeamConnectionState,
+        sessions: &'a TeamSessionState,
+    ) -> Self {
+        Self {
+            target,
+            personal,
+            connections,
+            sessions,
+        }
+    }
+
+    async fn response(
+        &self,
+        method: Method,
+        url: Url,
+        description: &str,
+        timeout: Duration,
+    ) -> Result<Response, String> {
+        match self.target {
+            ResourceTarget::Personal(status) => {
+                let response = reqwest::Client::builder()
+                    .timeout(timeout)
+                    .build()
+                    .map_err(|error| error.to_string())?
+                    .request(method, url)
+                    .send()
+                    .await
+                    .map_err(|error| format!("{description} is unavailable: {error}"))?;
+                backend::reverify_identity(self.personal, status).await?;
+                Ok(response)
+            }
+            ResourceTarget::Team(session) => self
+                .sessions
+                .authenticated_resource_request(
+                    self.connections,
+                    &session.connection.connection_id,
+                    method,
+                    url,
+                    timeout,
+                )
+                .await
+                .map_err(|error| format!("{description} is unavailable: {error}")),
+        }
+    }
+
+    async fn ensure_available(
+        &self,
+        method: Method,
+        url: &Url,
+        description: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        self.response(method, url.clone(), description, timeout)
+            .await?
+            .error_for_status()
+            .map_err(|error| format!("{description} is unavailable: {error}"))?;
+        Ok(())
+    }
+
+    async fn verify(&self) -> Result<(), String> {
+        match self.target {
+            ResourceTarget::Personal(status) => backend::reverify_identity(self.personal, status)
+                .await
+                .map(|_| ()),
+            ResourceTarget::Team(_) => {
+                let mut url = Url::parse(self.target.base_url())
+                    .map_err(|_| "the displayed team origin is invalid".to_string())?;
+                url.set_path("/api/health");
+                url.set_query(None);
+                url.set_fragment(None);
+                self.response(
+                    Method::GET,
+                    url,
+                    "team server",
+                    ARTIFACT_AVAILABILITY_TIMEOUT,
+                )
+                .await?
+                .error_for_status()
+                .map_err(|error| format!("team server is unavailable: {error}"))?;
+                Ok(())
+            }
+        }
+    }
+}
+
+fn current_resource_target(
+    window: &WebviewWindow,
+    state: &BackendState,
+    sessions: &TeamSessionState,
+) -> Result<ResourceTarget, String> {
+    let caller = window
+        .url()
+        .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?;
+    if let Some(team) = sessions.established_for_origin(&caller)? {
+        return Ok(ResourceTarget::Team(Box::new(team)));
+    }
+    let personal = state.status()?;
+    select_resource_target(&caller, personal, None, cfg!(debug_assertions))
+}
+
+fn select_resource_target(
+    caller: &Url,
+    personal: DesktopStatus,
+    team: Option<EstablishedTeamSession>,
+    allow_dev: bool,
+) -> Result<ResourceTarget, String> {
+    if let Some(team) = team {
+        if Url::parse(&team.status.base_url)
+            .is_ok_and(|base| navigation::same_origin(caller, &base))
+        {
+            return Ok(ResourceTarget::Team(Box::new(team)));
+        }
+    }
+    if is_personal_origin(caller, &personal.base_url, allow_dev)? {
+        return Ok(ResourceTarget::Personal(personal));
+    }
+    Err("the displayed desktop origin has no verified RCP session".into())
 }
 
 #[tauri::command]
@@ -833,77 +979,98 @@ fn folder_selection_result(path: Option<PathBuf>) -> Result<FolderSelectionResul
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn open_artifact_preview(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, BackendState>,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
     project_id: String,
     task_id: String,
     artifact_id: String,
 ) -> Result<OpenResult, String> {
-    let status = state.status()?;
+    let target = current_resource_target(&window, &state, &sessions)?;
+    let access = ResourceAccess::new(&target, &state, &connections, &sessions);
     let url = artifact_url(
-        &status.base_url,
+        target.base_url(),
         &project_id,
         &task_id,
         &artifact_id,
         "viewer",
     )?;
-    ensure_available(&url, "artifact", ARTIFACT_AVAILABILITY_TIMEOUT).await?;
-    backend::reverify_identity(&state, &status).await?;
-    windows::open_preview(&app, url, status.base_url)?;
+    access
+        .ensure_available(Method::GET, &url, "artifact", ARTIFACT_AVAILABILITY_TIMEOUT)
+        .await?;
+    windows::open_preview(&app, url, target.base_url().to_string())?;
     Ok(OpenResult { opened: true })
 }
 
 #[tauri::command]
 pub async fn open_episode_report_preview(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, BackendState>,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
     project_id: String,
     episode_id: String,
 ) -> Result<OpenResult, String> {
-    let status = state.status()?;
-    let url = episode_report_preview_url(&status.base_url, &project_id, &episode_id)?;
-    if !navigation::is_loopback_rcp_url(&url, &status.base_url, false) {
+    let target = current_resource_target(&window, &state, &sessions)?;
+    let access = ResourceAccess::new(&target, &state, &connections, &sessions);
+    let url = episode_report_preview_url(target.base_url(), &project_id, &episode_id)?;
+    if !Url::parse(target.base_url()).is_ok_and(|base| navigation::same_origin(&url, &base)) {
         return Err("episode report preview URL is outside the RCP backend".into());
     }
-    backend::reverify_identity(&state, &status).await?;
-    windows::open_preview(&app, url, status.base_url)?;
+    access.verify().await?;
+    windows::open_preview(&app, url, target.base_url().to_string())?;
     Ok(OpenResult { opened: true })
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn open_repository_file_preview(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, BackendState>,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
     project_id: String,
     path: String,
     line: Option<u64>,
 ) -> Result<OpenResult, String> {
-    let status = state.status()?;
-    let url = repository_file_preview_url(&status.base_url, &project_id, &path, line)?;
-    ensure_available(
-        &url,
-        "repository file",
-        REPOSITORY_PREVIEW_AVAILABILITY_TIMEOUT,
-    )
-    .await?;
-    backend::reverify_identity(&state, &status).await?;
-    windows::open_preview(&app, url, status.base_url)?;
+    let target = current_resource_target(&window, &state, &sessions)?;
+    let access = ResourceAccess::new(&target, &state, &connections, &sessions);
+    let url = repository_file_preview_url(target.base_url(), &project_id, &path, line)?;
+    access
+        .ensure_available(
+            Method::HEAD,
+            &url,
+            "repository file",
+            REPOSITORY_PREVIEW_AVAILABILITY_TIMEOUT,
+        )
+        .await?;
+    windows::open_preview(&app, url, target.base_url().to_string())?;
     Ok(OpenResult { opened: true })
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn download_artifact(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, BackendState>,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
     project_id: String,
     task_id: String,
     artifact_id: String,
     suggested_name: String,
 ) -> Result<DownloadResult, String> {
-    let status = state.status()?;
+    let target = current_resource_target(&window, &state, &sessions)?;
+    let access = ResourceAccess::new(&target, &state, &connections, &sessions);
     let url = artifact_url(
-        &status.base_url,
+        target.base_url(),
         &project_id,
         &task_id,
         &artifact_id,
@@ -925,15 +1092,14 @@ pub async fn download_artifact(
     let path = chosen
         .into_path()
         .map_err(|error| format!("selected destination is not a local file: {error}"))?;
-    backend::reverify_identity(&state, &status).await?;
-    let response = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|error| error.to_string())?
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| format!("artifact download failed: {error}"))?
+    let response = access
+        .response(
+            Method::GET,
+            url,
+            "artifact download",
+            Duration::from_secs(30),
+        )
+        .await?
         .error_for_status()
         .map_err(|error| format!("artifact download failed: {error}"))?;
     let bytes = response
@@ -1083,20 +1249,6 @@ fn validate_repository_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-async fn ensure_available(url: &Url, description: &str, timeout: Duration) -> Result<(), String> {
-    reqwest::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|error| error.to_string())?
-        .head(url.clone())
-        .send()
-        .await
-        .map_err(|error| format!("{description} is unavailable: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("{description} is unavailable: {error}"))?;
-    Ok(())
-}
-
 fn safe_filename(suggested: &str) -> &str {
     Path::new(suggested)
         .file_name()
@@ -1108,6 +1260,7 @@ fn safe_filename(suggested: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::team_session::{TeamIdentity, TeamUserIdentity};
 
     fn saved_connection(connection_id: &str, port: u16) -> TeamConnectionMetadata {
         TeamConnectionMetadata {
@@ -1123,6 +1276,81 @@ mod tests {
             last_known_cards: Vec::new(),
             operator_route: None,
         }
+    }
+
+    fn desktop_status(base_url: &str) -> DesktopStatus {
+        DesktopStatus {
+            desktop: true,
+            version: "0.3.2".into(),
+            base_url: base_url.into(),
+            instance_id: "instance".into(),
+            data_dir_id: "data".into(),
+            owner_kind: "desktop".into(),
+            active_agent_tasks: 0,
+            owned: true,
+        }
+    }
+
+    fn established_team(connection: TeamConnectionMetadata) -> EstablishedTeamSession {
+        EstablishedTeamSession {
+            status: DesktopStatus {
+                owner_kind: "cli".into(),
+                owned: false,
+                ..desktop_status(&connection.local_origin)
+            },
+            identity: TeamIdentity {
+                space_id: connection.expected_space_id.clone(),
+                space_kind: "team".into(),
+                space_name: Some(connection.display_name.clone()),
+                user: TeamUserIdentity {
+                    user_id: "55555555-5555-4555-8555-555555555555".into(),
+                    display_name: Some("Researcher".into()),
+                    identity_kind: "team_member".into(),
+                    created_at: "2026-09-02T00:00:00Z".into(),
+                    updated_at: "2026-09-02T00:00:00Z".into(),
+                    removal_started_at: None,
+                    removed_at: None,
+                },
+            },
+            connection,
+        }
+    }
+
+    #[test]
+    fn resource_actions_follow_the_displayed_personal_or_team_origin() {
+        let personal = desktop_status("http://127.0.0.1:8421");
+        let team = established_team(saved_connection(
+            "11111111-1111-4111-8111-111111111111",
+            18421,
+        ));
+
+        let selected = select_resource_target(
+            &Url::parse("http://127.0.0.1:8421/#/projects/personal").unwrap(),
+            personal.clone(),
+            Some(team.clone()),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(selected, ResourceTarget::Personal(_)));
+        assert_eq!(selected.base_url(), personal.base_url);
+
+        let selected = select_resource_target(
+            &Url::parse(&format!("{}/#/projects/team", team.status.base_url)).unwrap(),
+            personal.clone(),
+            Some(team.clone()),
+            false,
+        )
+        .unwrap();
+        assert!(matches!(selected, ResourceTarget::Team(_)));
+        assert_eq!(selected.base_url(), team.status.base_url);
+
+        assert!(select_resource_target(
+            &Url::parse("https://example.com/").unwrap(),
+            personal,
+            None,
+            false,
+        )
+        .is_err());
     }
 
     #[test]

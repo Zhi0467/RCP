@@ -155,6 +155,16 @@ test("artifact revision review remains available when its preview is unavailable
   assert.match(artifactCard, /revisionCandidate && \([\s\S]*Review revision/);
 });
 
+test("artifact revision comparison frames stay opaque but run artifact scripts", () => {
+  const compare = nodeChatSource.slice(
+    nodeChatSource.indexOf('className="artifact-revision-compare"'),
+    nodeChatSource.indexOf("revisionReviewCandidate.diagnostic &&"),
+  );
+  assert.equal(compare.match(/<iframe/g)?.length, 2);
+  assert.equal(compare.match(/sandbox="allow-scripts"/g)?.length, 2);
+  assert.doesNotMatch(compare, /allow-same-origin/);
+});
+
 test("artifact revision review wires the proven keyboard modal lifecycle", () => {
   assert.match(nodeChatSource, /ref=\{revisionDialogRef\}/);
   assert.match(nodeChatSource, /ref=\{revisionCloseRef\}/);

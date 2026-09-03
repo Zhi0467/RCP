@@ -70,6 +70,7 @@ def _report(*, problems: tuple[str, ...] = ()) -> ServerDoctorReport:
         source_root="/home/rcp/rcp-server/source",
         releases_root="/home/rcp/rcp-server/releases",
         configured_origin="https://github.com/openai/rcp.git",
+        configured_authentication="public",
         configured_branch="main",
         source_public_key_fingerprint=None,
         managed_main_head=COMMIT,
@@ -123,8 +124,9 @@ def test_doctor_renders_one_complete_report_through_both_cli_modes() -> None:
     assert [event["event"] for event in events] == ["plan", "step", "step"]
     assert events[-1]["step"]["state"] == "succeeded"
     fields = {item["name"]: item["value"] for item in events[-1]["step"]["fields"]}
-    assert len(fields) == 48
+    assert len(fields) == 49
     assert fields["overall_state"] == "healthy"
+    assert fields["configured_authentication"] == "public"
     assert fields["candidate_commit"] == "none"
     assert fields["running_commit"] == COMMIT
     assert fields["provider_check_status"] == "available"
@@ -139,7 +141,7 @@ def test_doctor_renders_one_complete_report_through_both_cli_modes() -> None:
     for name, value in list(fields.items())[:8]:
         assert f"{name.replace('_', ' ')}: {value}" in interactive
     assert "source public key fingerprint: none" not in interactive
-    assert "40 more field(s); use --machine-readable for the complete record" in interactive
+    assert "41 more field(s); use --machine-readable for the complete record" in interactive
 
 
 def test_doctor_returns_a_complete_failed_report_for_owned_problems() -> None:
@@ -682,6 +684,7 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
     assert report.overall_state == "healthy", report.problems
     assert report.problems == ()
     assert report.current_commit == report.running_commit == report.managed_main_head == COMMIT
+    assert report.configured_authentication == "public"
     assert report.current_web_build_id == report.running_web_build_id == web_identity
     assert report.control_socket_status == "healthy"
     assert report.dependencies_ready is True
