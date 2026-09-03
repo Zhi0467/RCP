@@ -6475,9 +6475,22 @@ button.relation-map-node:hover {
 .chat-annotatable-answer *::selection {
   background: color-mix(in srgb, var(--plum) 28%, transparent);
 }
-.chat-annotatable-answer:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--plum) 42%, transparent);
-  outline-offset: 4px;
+.chat-answer-annotation-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--plum);
+  display: flex;
+  font: 700 9px var(--mono);
+  gap: 4px;
+  margin: 6px 0 0 auto;
+  padding: 2px;
+}
+.chat-answer-annotation-button:hover,
+.chat-answer-annotation-button:focus-visible {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .chat-annotation-summary {
   display: flex;
@@ -6596,6 +6609,10 @@ button.relation-map-node:hover {
   padding: 7px 8px;
   resize: none;
 }
+.chat-annotation-composer .chat-annotation-source {
+  height: 150px;
+  white-space: pre-wrap;
+}
 .chat-annotation-composer textarea:focus-visible {
   border-color: var(--plum);
   outline: 2px solid color-mix(in srgb, var(--plum) 30%, transparent);
@@ -6605,11 +6622,23 @@ button.relation-map-node:hover {
   justify-self: end;
   margin: 0 10px 10px;
 }
+.chat-annotation-error {
+  color: var(--red);
+  font: 700 9px/1.35 var(--mono);
+  margin: 0 10px;
+}
 @media (max-width: 640px) {
   .chat-annotation-composer {
-    bottom: max(10px, env(safe-area-inset-bottom));
+    bottom: calc(
+      var(--chat-annotation-viewport-bottom, 0px) + max(10px, env(safe-area-inset-bottom))
+    );
     left: 10px !important;
-    max-height: min(440px, calc(100vh - 20px));
+    max-height: min(
+      440px,
+      calc(var(--chat-annotation-viewport-height, 100dvh) - 20px - env(safe-area-inset-bottom))
+    );
+    overflow-y: auto;
+    overscroll-behavior: contain;
     right: 10px;
     top: auto !important;
     width: auto;

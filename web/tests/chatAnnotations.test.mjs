@@ -2,24 +2,49 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import {
+  chatAnnotationTextControlSelection,
+  chatAnnotationViewportMetrics,
+  parseStagedChatAnnotations,
+  stagedChatAnnotationsAreComplete,
+} from "../src/chatInput.ts";
+
 const nodeChatSource = await readFile(
   new URL("../src/components/NodeChat.tsx", import.meta.url),
   "utf8",
 );
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 
-test("assistant answer selection opens a keyboard-accessible floating comment composer", () => {
+test("assistant answers expose pointer selection and a real keyboard selection command", () => {
   assert.match(nodeChatSource, /className="chat-markdown chat-annotatable-answer"/);
   assert.match(nodeChatSource, /onPointerUp=/);
-  assert.match(nodeChatSource, /event\.shiftKey && event\.key\.startsWith\("Arrow"\)/);
+  assert.doesNotMatch(
+    nodeChatSource,
+    /className="chat-markdown chat-annotatable-answer"\s+tabIndex=/,
+  );
+  assert.match(nodeChatSource, /aria-label="Comment on this answer"/);
+  assert.match(nodeChatSource, /aria-label="Select answer text"/);
+  assert.match(nodeChatSource, /className="chat-annotation-source"/);
+  assert.match(nodeChatSource, /aria-readonly="true"/);
+  assert.match(nodeChatSource, /onBeforeInput=\{\(event\) => event\.preventDefault\(\)\}/);
+  assert.match(nodeChatSource, /onSelect=/);
   assert.match(nodeChatSource, /createPortal\(/);
-  assert.match(nodeChatSource, /aria-label="Add annotation"/);
   assert.match(nodeChatSource, /event\.key === "Escape"/);
   assert.match(nodeChatSource, /event\.metaKey \|\| event\.ctrlKey/);
   assert.match(styles, /\.chat-annotation-composer\s*\{[\s\S]*?position: fixed/);
-  assert.match(
-    styles,
-    /@media \(max-width: 640px\)[\s\S]*?\.chat-annotation-composer\s*\{[\s\S]*?bottom:/,
+
+  const value = "The baseline improved by 12%, but variance was not reported.";
+  const selectedText = "variance was not reported";
+  const selectionStart = value.indexOf(selectedText);
+  const control = {
+    value,
+    selectionStart,
+    selectionEnd: selectionStart + selectedText.length,
+  };
+  assert.equal(chatAnnotationTextControlSelection(control), selectedText);
+  assert.equal(
+    chatAnnotationTextControlSelection({ ...control, selectionEnd: selectionStart }),
+    "",
   );
 });
 
@@ -38,4 +63,39 @@ test("staged annotations can be counted, edited, and removed before the ordinary
   assert.doesNotMatch(send, /annotation_context|message_id|source_id|offset/);
   assert.ok(send.indexOf("await onStartTask") < send.indexOf("setAnnotations([])"));
   assert.match(send, /setMessage\(\(current\) => \(current \? current : draftMessage\)\)/);
+});
+
+test("a comment edited blank survives a switch away and back and still blocks send", () => {
+  const persisted = JSON.stringify([
+    {
+      id: "annotation-1",
+      selectedText: "The reported result.",
+      comment: "",
+    },
+  ]);
+
+  const restoredAfterChatSwitch = parseStagedChatAnnotations(persisted);
+
+  assert.deepEqual(restoredAfterChatSwitch, [
+    {
+      id: "annotation-1",
+      selectedText: "The reported result.",
+      comment: "",
+    },
+  ]);
+  assert.equal(stagedChatAnnotationsAreComplete(restoredAfterChatSwitch), false);
+  assert.match(nodeChatSource, /!annotationsComplete \|\|/);
+});
+
+test("the mobile sheet follows the soft-keyboard viewport and remains scrollable", () => {
+  assert.deepEqual(chatAnnotationViewportMetrics(800, { height: 390, offsetTop: 50 }), {
+    height: 390,
+    bottom: 360,
+  });
+  assert.match(nodeChatSource, /window\.visualViewport/);
+  assert.match(nodeChatSource, /viewport\.addEventListener\("resize", update\)/);
+  assert.match(
+    styles,
+    /@media \(max-width: 640px\)[\s\S]*?--chat-annotation-viewport-bottom[\s\S]*?--chat-annotation-viewport-height[\s\S]*?overflow-y: auto[\s\S]*?overscroll-behavior: contain/,
+  );
 });

@@ -17,7 +17,15 @@ import {
   Send,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { createPortal } from "react-dom";
 import { removeChatAttachment, uploadChatAttachment } from "../api";
 import {
@@ -45,7 +53,15 @@ import { MarkdownAnswer } from "../chatMarkdown";
 import {
   assembleChatTurn,
   chatAnnotationComposerPosition,
+  chatAnnotationTextControlSelection,
+  chatAnnotationViewportMetrics,
+  MAX_CHAT_ANNOTATIONS,
+  MAX_CHAT_ANNOTATION_COMMENT_LENGTH,
+  MAX_CHAT_ANNOTATION_TEXT_LENGTH,
+  parseStagedChatAnnotations,
   replaceTextSpan,
+  stagedChatAnnotationsAreComplete,
+  type ChatAnnotationViewportMetrics,
   type StagedChatAnnotation,
 } from "../chatInput";
 import type { GlossaryIndex } from "../glossary";
@@ -143,16 +159,23 @@ interface DictationSpan {
   end: number;
 }
 
-interface ChatAnnotationComposer {
+interface SelectedChatAnnotationComposer {
+  step: "comment";
   selectedText: string;
   position: { left: number; top: number };
 }
 
+interface KeyboardChatAnnotationComposer {
+  step: "select";
+  answerText: string;
+  selectedText: string;
+  position: { left: number; top: number };
+}
+
+type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnotationComposer;
+
 const ARTIFACT_ID_PATTERN = /^[0-9a-f]{24}$/;
 const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
-const MAX_CHAT_ANNOTATIONS = 12;
-const MAX_CHAT_ANNOTATION_TEXT_LENGTH = 4096;
-const MAX_CHAT_ANNOTATION_COMMENT_LENGTH = 2048;
 
 interface ArtifactContextPayload {
   type: "rcp-artifact-context";
@@ -398,6 +421,8 @@ export function NodeChat({
   );
   const [annotationComposer, setAnnotationComposer] = useState<ChatAnnotationComposer | null>(null);
   const [annotationComment, setAnnotationComment] = useState("");
+  const [annotationViewport, setAnnotationViewport] =
+    useState<ChatAnnotationViewportMetrics | null>(null);
   const [annotationsOpen, setAnnotationsOpen] = useState(false);
   const lastArtifactContextRef = useRef<string | null>(null);
   const [modeState, setModeState] = useState<{ value: ConversationMode; pinned: boolean }>(() => {
@@ -420,6 +445,7 @@ export function NodeChat({
   const chatLinesRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const annotationCommentRef = useRef<HTMLTextAreaElement | null>(null);
+  const annotationSelectionRef = useRef<HTMLTextAreaElement | null>(null);
   const annotationOriginRef = useRef<HTMLElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentSetIdRef = useRef<string | null>(null);
@@ -553,6 +579,8 @@ export function NodeChat({
   );
   const attachmentsPreparing = attachments.some((item) => item.status === "preparing");
   const attachmentsUnready = attachments.some((item) => item.status !== "ready");
+  const annotationComposerOpen = annotationComposer !== null;
+  const annotationsComplete = stagedChatAnnotationsAreComplete(annotations);
   const dictating = dictationState !== "idle" && dictationState !== "error";
   useEffect(() => {
     const identity = `${project.id}\0${chatId}`;
@@ -586,6 +614,25 @@ export function NodeChat({
     if (annotations.length) writeSessionStorage(annotationsKey, JSON.stringify(annotations));
     else removeSessionStorage(annotationsKey);
   }, [annotations, annotationsKey]);
+
+  useEffect(() => {
+    if (!annotationComposerOpen || !window.visualViewport) {
+      setAnnotationViewport(null);
+      return;
+    }
+    const viewport = window.visualViewport;
+    const update = () =>
+      setAnnotationViewport(chatAnnotationViewportMetrics(window.innerHeight, viewport));
+    update();
+    viewport.addEventListener("resize", update);
+    viewport.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    return () => {
+      viewport.removeEventListener("resize", update);
+      viewport.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [annotationComposerOpen]);
 
   useEffect(() => {
     if (lastChatIdRef.current !== chatId) {
@@ -887,10 +934,11 @@ export function NodeChat({
     const range = selection.getRangeAt(0);
     const rects = range.getClientRects();
     const rect = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
-    annotationOriginRef.current = answer;
+    annotationOriginRef.current = null;
     setAnnotationComment("");
     setSubmitError(null);
     setAnnotationComposer({
+      step: "comment",
       selectedText,
       position: chatAnnotationComposerPosition(rect, {
         width: window.innerWidth,
@@ -900,16 +948,64 @@ export function NodeChat({
     window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
   };
 
+  const openKeyboardAnnotationComposer = (answer: HTMLElement, origin: HTMLElement) => {
+    if (annotations.length >= MAX_CHAT_ANNOTATIONS) {
+      setSubmitError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
+      return;
+    }
+    const answerText = answer.innerText.trim();
+    if (!answerText) return;
+    const rect = origin.getBoundingClientRect();
+    annotationOriginRef.current = origin;
+    setAnnotationComment("");
+    setSubmitError(null);
+    setAnnotationComposer({
+      step: "select",
+      answerText,
+      selectedText: "",
+      position: chatAnnotationComposerPosition(rect, {
+        width: window.innerWidth,
+        height: window.innerHeight,
+      }),
+    });
+    window.requestAnimationFrame(() => {
+      annotationSelectionRef.current?.focus();
+      annotationSelectionRef.current?.setSelectionRange(0, 0);
+    });
+  };
+
+  const updateKeyboardAnnotationSelection = (control: HTMLTextAreaElement) => {
+    const selectedText = chatAnnotationTextControlSelection(control);
+    setAnnotationComposer((current) =>
+      current?.step === "select" ? { ...current, selectedText } : current,
+    );
+  };
+
+  const continueKeyboardAnnotation = () => {
+    if (annotationComposer?.step !== "select") return;
+    const selectedText = annotationComposer.selectedText;
+    if (!selectedText || selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH) return;
+    setAnnotationComposer({
+      step: "comment",
+      selectedText,
+      position: annotationComposer.position,
+    });
+    window.requestAnimationFrame(() => annotationCommentRef.current?.focus());
+  };
+
   const dismissAnnotationComposer = (returnFocus: boolean) => {
+    const origin = annotationOriginRef.current;
+    annotationOriginRef.current = null;
     setAnnotationComposer(null);
     setAnnotationComment("");
     if (returnFocus) {
-      window.requestAnimationFrame(() => annotationOriginRef.current?.focus());
+      window.requestAnimationFrame(() => (origin ?? textareaRef.current)?.focus());
     }
   };
 
   const stageAnnotation = () => {
     if (!annotationComposer) return;
+    if (annotationComposer.step !== "comment") return;
     const comment = annotationComment.trim();
     if (!comment) return;
     setAnnotations((current) => [
@@ -944,7 +1040,7 @@ export function NodeChat({
     if (readOnly) return;
     const draftMessage = message;
     const text = assembleChatTurn(message, annotations);
-    if (annotations.some((annotation) => !annotation.comment.trim())) {
+    if (!annotationsComplete) {
       setAnnotationsOpen(true);
       setSubmitError("Each staged annotation needs a comment.");
       return;
@@ -1266,32 +1362,45 @@ export function NodeChat({
               )}
               {line.role === "agent" ? (
                 line.text && (
-                  <div
-                    className="chat-markdown chat-annotatable-answer"
-                    tabIndex={readOnly ? undefined : 0}
-                    aria-label={readOnly ? undefined : "Assistant answer; select text to comment"}
-                    onPointerUp={(event) => {
-                      if (!readOnly) openAnnotationComposer(event.currentTarget);
-                    }}
-                    onKeyUp={(event) => {
-                      if (!readOnly && event.shiftKey && event.key.startsWith("Arrow")) {
-                        openAnnotationComposer(event.currentTarget);
-                      }
-                    }}
-                  >
-                    <MarkdownAnswer
-                      text={line.text}
-                      nodes={nodes}
-                      glossaryIndex={glossaryIndex}
-                      onOpenNode={onOpenNode}
-                      onOpenRepositoryFileLink={(href) => void openRepositoryFile(messageId, href)}
-                    />
-                    {repositoryFileErrors.get(messageId) && (
-                      <strong className="chat-repository-file-error" role="alert">
-                        {repositoryFileErrors.get(messageId)}
-                      </strong>
+                  <>
+                    <div
+                      className="chat-markdown chat-annotatable-answer"
+                      onPointerUp={(event) => {
+                        if (!readOnly) openAnnotationComposer(event.currentTarget);
+                      }}
+                    >
+                      <MarkdownAnswer
+                        text={line.text}
+                        nodes={nodes}
+                        glossaryIndex={glossaryIndex}
+                        onOpenNode={onOpenNode}
+                        onOpenRepositoryFileLink={(href) =>
+                          void openRepositoryFile(messageId, href)
+                        }
+                      />
+                      {repositoryFileErrors.get(messageId) && (
+                        <strong className="chat-repository-file-error" role="alert">
+                          {repositoryFileErrors.get(messageId)}
+                        </strong>
+                      )}
+                    </div>
+                    {!readOnly && (
+                      <button
+                        className="chat-answer-annotation-button"
+                        type="button"
+                        aria-label="Comment on this answer"
+                        onClick={(event) => {
+                          const answer =
+                            event.currentTarget.parentElement?.querySelector<HTMLElement>(
+                              ".chat-annotatable-answer",
+                            );
+                          if (answer) openKeyboardAnnotationComposer(answer, event.currentTarget);
+                        }}
+                      >
+                        <MessageCirclePlus size={12} /> Comment
+                      </button>
                     )}
-                  </div>
+                  </>
                 )
               ) : line.role === "human" ? (
                 <>
@@ -1660,7 +1769,7 @@ export function NodeChat({
                 className="icon-button primary chat-send-button"
                 disabled={
                   !assembleChatTurn(message, annotations) ||
-                  annotations.some((annotation) => !annotation.comment.trim()) ||
+                  !annotationsComplete ||
                   attachmentsUnready ||
                   relatedActive ||
                   Boolean(pausedAttempt) ||
@@ -1688,14 +1797,25 @@ export function NodeChat({
         ? createPortal(
             <form
               className="chat-annotation-composer"
-              aria-label="Add annotation"
-              style={{
-                left: annotationComposer.position.left,
-                top: annotationComposer.position.top,
-              }}
+              aria-label={
+                annotationComposer.step === "select" ? "Select answer text" : "Add annotation"
+              }
+              style={
+                {
+                  left: annotationComposer.position.left,
+                  top: annotationComposer.position.top,
+                  ...(annotationViewport
+                    ? {
+                        "--chat-annotation-viewport-height": `${annotationViewport.height}px`,
+                        "--chat-annotation-viewport-bottom": `${annotationViewport.bottom}px`,
+                      }
+                    : {}),
+                } as CSSProperties
+              }
               onSubmit={(event) => {
                 event.preventDefault();
-                stageAnnotation();
+                if (annotationComposer.step === "select") continueKeyboardAnnotation();
+                else stageAnnotation();
               }}
               onKeyDown={(event) => {
                 if (event.key === "Escape") {
@@ -1704,12 +1824,15 @@ export function NodeChat({
                 }
                 if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                   event.preventDefault();
-                  stageAnnotation();
+                  if (annotationComposer.step === "select") continueKeyboardAnnotation();
+                  else stageAnnotation();
                 }
               }}
             >
               <header>
-                <strong>Add annotation</strong>
+                <strong>
+                  {annotationComposer.step === "select" ? "Select text" : "Add annotation"}
+                </strong>
                 <button
                   className="icon-button"
                   type="button"
@@ -1719,21 +1842,58 @@ export function NodeChat({
                   <X size={14} />
                 </button>
               </header>
-              <blockquote>{annotationComposer.selectedText}</blockquote>
-              <textarea
-                ref={annotationCommentRef}
-                aria-label="Comment"
-                maxLength={MAX_CHAT_ANNOTATION_COMMENT_LENGTH}
-                value={annotationComment}
-                onChange={(event) => setAnnotationComment(event.target.value)}
-              />
-              <button
-                className="button compact primary"
-                type="submit"
-                disabled={!annotationComment.trim()}
-              >
-                Add comment
-              </button>
+              {annotationComposer.step === "select" ? (
+                <>
+                  <textarea
+                    className="chat-annotation-source"
+                    ref={annotationSelectionRef}
+                    aria-label="Select answer text"
+                    aria-readonly="true"
+                    defaultValue={annotationComposer.answerText}
+                    onBeforeInput={(event) => event.preventDefault()}
+                    onCut={(event) => event.preventDefault()}
+                    onDrop={(event) => event.preventDefault()}
+                    onPaste={(event) => event.preventDefault()}
+                    onChange={(event) => {
+                      event.currentTarget.value = annotationComposer.answerText;
+                    }}
+                    onSelect={(event) => updateKeyboardAnnotationSelection(event.currentTarget)}
+                  />
+                  {annotationComposer.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH && (
+                    <strong className="chat-annotation-error" role="alert">
+                      Select at most {MAX_CHAT_ANNOTATION_TEXT_LENGTH.toLocaleString()} characters.
+                    </strong>
+                  )}
+                  <button
+                    className="button compact primary"
+                    type="submit"
+                    disabled={
+                      !annotationComposer.selectedText ||
+                      annotationComposer.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH
+                    }
+                  >
+                    Comment on selection
+                  </button>
+                </>
+              ) : (
+                <>
+                  <blockquote>{annotationComposer.selectedText}</blockquote>
+                  <textarea
+                    ref={annotationCommentRef}
+                    aria-label="Comment"
+                    maxLength={MAX_CHAT_ANNOTATION_COMMENT_LENGTH}
+                    value={annotationComment}
+                    onChange={(event) => setAnnotationComment(event.target.value)}
+                  />
+                  <button
+                    className="button compact primary"
+                    type="submit"
+                    disabled={!annotationComment.trim()}
+                  >
+                    Add comment
+                  </button>
+                </>
+              )}
             </form>,
             document.body,
           )
@@ -2004,31 +2164,7 @@ function chatAnnotationsStorageKey(projectId: string, chatId: string): string {
 
 function readStagedChatAnnotations(key: string): StagedChatAnnotation[] {
   try {
-    const parsed: unknown = JSON.parse(sessionStorage.getItem(key) ?? "[]");
-    if (!Array.isArray(parsed) || parsed.length > MAX_CHAT_ANNOTATIONS) return [];
-    return parsed.flatMap((item) => {
-      if (!item || typeof item !== "object" || Array.isArray(item)) return [];
-      const candidate = item as Record<string, unknown>;
-      if (
-        typeof candidate.id !== "string" ||
-        candidate.id.length < 1 ||
-        candidate.id.length > 128 ||
-        typeof candidate.selectedText !== "string" ||
-        candidate.selectedText.trim().length < 1 ||
-        candidate.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH ||
-        typeof candidate.comment !== "string" ||
-        candidate.comment.trim().length < 1 ||
-        candidate.comment.length > MAX_CHAT_ANNOTATION_COMMENT_LENGTH
-      )
-        return [];
-      return [
-        {
-          id: candidate.id,
-          selectedText: candidate.selectedText,
-          comment: candidate.comment,
-        },
-      ];
-    });
+    return parseStagedChatAnnotations(sessionStorage.getItem(key));
   } catch {
     return [];
   }
