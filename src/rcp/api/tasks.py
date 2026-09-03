@@ -1096,9 +1096,10 @@ def _require_auto_research_retry_target_ready(
     ).strip()
     if diagnostic.endswith("."):
         diagnostic = diagnostic[:-1]
-    raise ValueError(
-        f"Auto-research Retry cannot start: {diagnostic}. The current task was left unchanged."
-    )
+    detail = f"Auto-research Retry cannot start: {diagnostic}. The current task was left unchanged."
+    if readiness.path_state == "unreachable":
+        raise OSError(detail)
+    raise ValueError(detail)
 
 
 __all__ = [

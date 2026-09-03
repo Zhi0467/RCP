@@ -1389,8 +1389,21 @@ def retry_auto_research_task(
     )
     episode = tasks.store.episode(original.episode_id)
     stopping = episode is not None and episode.stop_requested_at is not None
-    problem: str | None = None
-    if previous.stage_root:
+    logical_problem = (
+        "the native provider session reached its limit"
+        if session_limit
+        else "the saved continuation context is unavailable"
+        if continuation_unavailable
+        else "the prior task has no complete RCP-owned session and stage"
+        if not owned_checkpoint
+        else None
+    )
+    problem = (
+        logical_problem
+        if logical_problem is not None and (not clean_orchestrator_retry or stopping)
+        else None
+    )
+    if problem is None and previous.stage_root:
         if previous.stage_host:
             try:
                 available = RemoteRunStage(previous.stage_host).directory_exists(
@@ -1412,23 +1425,8 @@ def retry_auto_research_task(
             stage = Path(previous.stage_root)
             if not stage.is_dir() or stage.is_symlink():
                 problem = "the saved provider workspace is unavailable"
-    elif not clean_orchestrator_retry:
+    elif problem is None and not clean_orchestrator_retry:
         problem = "the prior task has no complete RCP-owned session and stage"
-    if not clean_orchestrator_retry:
-        if session_limit:
-            problem = "the native provider session reached its limit"
-        elif continuation_unavailable:
-            problem = "the saved continuation context is unavailable"
-        elif not owned_checkpoint:
-            problem = "the prior task has no complete RCP-owned session and stage"
-    elif stopping:
-        problem = (
-            "the native provider session reached its limit"
-            if session_limit
-            else "the saved continuation context is unavailable"
-            if continuation_unavailable
-            else "the prior task has no complete RCP-owned session and stage"
-        )
     if problem is not None:
         if stopping:
             tasks.store.abandon_auto_research_recovery_and_settle_stop(

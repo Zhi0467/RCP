@@ -500,7 +500,12 @@ def test_stopping_episode_remote_outage_preserves_recovery(
 
 @pytest.mark.parametrize(
     "unusable",
-    ["missing_stage", "missing_remote_stage", "clean_session"],
+    [
+        "missing_stage",
+        "missing_remote_stage",
+        "clean_session",
+        "session_limit_remote_outage",
+    ],
 )
 def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
     manifest,
@@ -513,12 +518,21 @@ def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
     assert project_id is not None
     store = app.state.background_tasks.store
     stage = tmp_path / f"{unusable}-stage"
-    if unusable == "clean_session":
+    if unusable in {"clean_session", "session_limit_remote_outage"}:
         stage.mkdir()
-    elif unusable == "missing_remote_stage":
+    if unusable == "missing_remote_stage":
         monkeypatch.setattr(
             "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
             lambda _stage, _root: False,
+        )
+    elif unusable == "session_limit_remote_outage":
+
+        def unreachable_remote_stage(_stage, _root):
+            raise OSError("host unreachable")
+
+        monkeypatch.setattr(
+            "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
+            unreachable_remote_stage,
         )
 
     with TestClient(app) as client:
@@ -529,9 +543,13 @@ def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
             episode_id=unusable,
             status="failed",
             stage=stage,
-            stage_host="worker.example" if unusable == "missing_remote_stage" else None,
+            stage_host=(
+                "worker.example"
+                if unusable in {"missing_remote_stage", "session_limit_remote_outage"}
+                else None
+            ),
         )
-        if unusable == "clean_session":
+        if unusable in {"clean_session", "session_limit_remote_outage"}:
             store.record_agent_task_receipt(
                 root.operation_id,
                 "provider_terminal_error",

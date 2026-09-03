@@ -166,7 +166,9 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     machine.provider_paths["codex"] = binary
     monkeypatch.setattr(service.history, "_reload_manifest", lambda: None)
 
-    async def failing_stream(_project_id, _kind, _request, _execution):
+    async def failing_stream(_project_id, _kind, _request, execution):
+        execution.checkpoint_stage(host, "/tmp/rcp-run.remote-retry")
+        yield f"data: {AgentEvent(event='session', session_id='remote-retry-session').model_dump_json()}\n\n"
         yield f"data: {AgentEvent(event='error', text='Host unreachable.').model_dump_json()}\n\n"
 
     tasks.stream = failing_stream
@@ -180,6 +182,7 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     operation_id = started.json()["root_operation_id"]
     failed = wait_for_task(store, operation_id, expect="failed")
     assert failed.can_retry is True
+    assert failed.stage_host == machine.host == host
     before = [task.operation_id for task in store.episode_tasks(episode_id, include_hidden=True)]
 
     readiness_calls: list[tuple[str, str, str | None, bool]] = []
@@ -207,7 +210,7 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
         json={},
     )
 
-    assert blocked.status_code == 409
+    assert blocked.status_code == 503
     assert blocked.json() == {
         "detail": (
             "Auto-research Retry cannot start: tianhaowang-gpu0.ucsd.edu is unreachable, "
@@ -231,6 +234,25 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     claude_binary = "/opt/claude/bin/claude"
     machine.provider_paths["claude"] = claude_binary
     readiness_calls.clear()
+
+    def unauthenticated_readiness(
+        provider: str,
+        *,
+        host: str = "",
+        binary: str | None = None,
+        refresh: bool = False,
+    ) -> ProviderReadiness:
+        readiness_calls.append((provider, host, binary, refresh))
+        return ProviderReadiness(
+            provider=provider,
+            installed=True,
+            authenticated=False,
+            binary_path=binary,
+            path_state="resolved",
+            reason=f"{provider} is not authenticated on {host}.",
+        )
+
+    monkeypatch.setattr(service.launcher, "readiness", unauthenticated_readiness)
     switched = client.post(
         f"/api/projects/{project_id}/tasks/{operation_id}/retry",
         json={"provider": "claude"},
@@ -241,9 +263,11 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
         task.operation_id for task in store.episode_tasks(episode_id, include_hidden=True)
     ] == before
 
-    stage = tmp_path / "recovered-stage"
-    stage.mkdir()
-    tasks.stream = settling_auto_research_stream(stage)
+    async def recovered_stream(_project_id, _kind, request, _execution):
+        yield f"data: {AgentEvent(event='session', session_id=request.session_id).model_dump_json()}\n\n"
+        yield f"data: {AgentEvent(event='done').model_dump_json()}\n\n"
+
+    tasks.stream = recovered_stream
 
     def ready(
         provider: str,
@@ -262,6 +286,10 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
         )
 
     monkeypatch.setattr(service.launcher, "readiness", ready)
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
+        lambda _stage, _root: True,
+    )
     readiness_calls.clear()
     accepted = client.post(
         f"/api/projects/{project_id}/tasks/{operation_id}/retry",
