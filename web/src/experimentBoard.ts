@@ -61,18 +61,34 @@ export function spaceRunRouteToken(entry: SpaceRunIndexEntry): string {
   })}`;
 }
 
-export function experimentBoardHref(projectId: string, experimentSelection: string): string {
-  if (experimentSelection.startsWith(AUTO_RESEARCH_ROUTE_PREFIX)) {
+export function experimentBoardHref(
+  projectId: string,
+  experimentSelection: string | ExperimentRouteIdentity,
+): string {
+  if (
+    typeof experimentSelection === "string" &&
+    experimentSelection.startsWith(AUTO_RESEARCH_ROUTE_PREFIX)
+  ) {
     const episodeId = experimentSelection.slice(AUTO_RESEARCH_ROUTE_PREFIX.length);
     return episodeId
       ? `#/projects/${encodeURIComponent(projectId)}?view=runs&mode=auto_research&episode=${encodeURIComponent(episodeId)}`
       : `#/projects/${encodeURIComponent(projectId)}?view=runs`;
   }
-  const route = experimentRouteFromToken(experimentSelection);
-  if (experimentSelection.startsWith(INDEX_ROUTE_PREFIX) && !route) {
+  const route =
+    typeof experimentSelection === "string"
+      ? experimentRouteFromToken(experimentSelection)
+      : experimentSelection;
+  if (
+    typeof experimentSelection === "string" &&
+    experimentSelection.startsWith(INDEX_ROUTE_PREFIX) &&
+    !route
+  ) {
     return `#/projects/${encodeURIComponent(projectId)}?view=runs`;
   }
-  const experimentId = route?.experiment_id ?? experimentSelection;
+  const experimentId =
+    typeof experimentSelection === "string"
+      ? (route?.experiment_id ?? experimentSelection)
+      : experimentSelection.experiment_id;
   const fields = [
     "view=runs",
     `experiment=${encodeURIComponent(experimentId)}`,

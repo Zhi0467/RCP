@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from rcp.agents import AgentEvent
+from rcp.agents import AgentEvent, ProviderReadiness
 from rcp.background import AgentTaskExecution
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import GraphBranchMetadata
@@ -388,6 +388,7 @@ def test_episode_list_start_and_stop_use_only_the_canonical_surface(manifest, tm
 def test_stopping_episode_recovery_controls_execute_exact_allocation(
     manifest,
     tmp_path,
+    monkeypatch,
     status: str,
     action: str,
 ) -> None:
@@ -399,11 +400,22 @@ def test_stopping_episode_recovery_controls_execute_exact_allocation(
     stage = tmp_path / f"{status}-{action}-stage"
     stage.mkdir()
     tasks.stream = exact_recovery_stream(stage)
+    service = app.state.catalog.open(project_id)
+    monkeypatch.setattr(
+        service.launcher,
+        "readiness",
+        lambda provider, **_kwargs: ProviderReadiness(
+            provider=provider,
+            installed=True,
+            authenticated=True,
+            path_state="resolved",
+        ),
+    )
 
     with TestClient(app) as client:
         episode, root = create_recoverable_auto_episode(
             store,
-            app.state.catalog.open(project_id).history,
+            service.history,
             project_id,
             episode_id=f"{status}-{action}",
             status=status,

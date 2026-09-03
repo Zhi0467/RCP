@@ -20,7 +20,7 @@ const {
   projectTabShortcut,
   projectViewportRef,
 } = await server.ssrLoadModule("/src/projectTabs.ts");
-const { branchExperimentPollingKey, parseProjectHash } =
+const { branchExperimentPollingKey, experimentBoardHref, parseProjectHash } =
   await server.ssrLoadModule("/src/experimentBoard.ts");
 const { reduceExperimentSelection } = await server.ssrLoadModule("/src/hooks/useGraphSelection.ts");
 const { ProjectDock } = await server.ssrLoadModule("/src/components/ProjectDock.tsx");
@@ -79,6 +79,36 @@ test("leaving Runs and returning preserves the exact branch Experiment identity"
   assert.equal(
     branchExperimentPollingKey("project-one", returned.selectedExperimentRoute),
     '["project-one","experiment/shared","child-episode","parent-episode","parent-episode"]',
+  );
+});
+
+test("collapsing and re-expanding keeps an exact branch Experiment URL", () => {
+  const route = {
+    experiment_id: "experiment/shared",
+    episode_id: "child-episode",
+    graph_target: { kind: "branch", branch_id: "parent-episode" },
+    parent_episode_id: "parent-episode",
+  };
+  const selected = {
+    selectedExperimentRunId: route.experiment_id,
+    focusExperimentRunId: route.experiment_id,
+    selectedExperimentRoute: route,
+    selectedAutoResearchEpisodeId: null,
+  };
+  const collapsed = reduceExperimentSelection(selected, {
+    kind: "select",
+    experimentId: null,
+  });
+  const reexpanded = reduceExperimentSelection(collapsed, {
+    kind: "select",
+    experimentId: route.experiment_id,
+  });
+
+  assert.deepEqual(reexpanded.selectedExperimentRoute, route);
+  assert.deepEqual(
+    parseProjectHash(experimentBoardHref("project-one", reexpanded.selectedExperimentRoute))
+      .experimentRoute,
+    route,
   );
 });
 
