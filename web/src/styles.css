@@ -6468,6 +6468,81 @@ button.relation-map-node:hover {
   position: relative;
   transition: box-shadow 0.14s ease;
 }
+.chat-compute-picker {
+  flex-basis: 100%;
+  position: relative;
+}
+.chat-compute-trigger {
+  align-items: center;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--ink-soft);
+  display: inline-flex;
+  font: 700 11px var(--mono);
+  gap: 5px;
+  height: 27px;
+  padding: 0 7px;
+}
+.chat-compute-trigger strong {
+  align-items: center;
+  background: var(--cobalt-soft);
+  border-radius: 50%;
+  color: var(--cobalt-dark);
+  display: inline-flex;
+  font-size: 10px;
+  height: 15px;
+  justify-content: center;
+  min-width: 15px;
+}
+.chat-compute-menu {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  bottom: 34px;
+  box-shadow: var(--shadow);
+  left: 0;
+  max-height: 230px;
+  min-width: min(340px, calc(100vw - 38px));
+  overflow: auto;
+  position: absolute;
+  z-index: 16;
+}
+.chat-compute-menu > button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  display: grid;
+  gap: 7px;
+  grid-template-columns: 16px 7px minmax(0, 1fr);
+  padding: 9px 10px;
+  text-align: left;
+  width: 100%;
+}
+.chat-compute-menu > button:last-child {
+  border-bottom: 0;
+}
+.chat-compute-menu > button:hover,
+.chat-compute-menu > button:focus-visible {
+  background: var(--cobalt-soft);
+  outline: 0;
+}
+.chat-compute-check {
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  display: inline-flex;
+  height: 15px;
+  justify-content: center;
+  width: 15px;
+}
+.chat-compute-menu strong {
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .artifact-context-chip {
   align-items: center;
   background: color-mix(in srgb, var(--chat-mode-soft) 62%, var(--paper));
@@ -9624,6 +9699,127 @@ button.relation-map-node:hover {
   border-color: color-mix(in srgb, var(--cobalt) 35%, var(--line));
   color: var(--cobalt-dark);
 }
+.compute-settings > header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  padding: 18px 20px;
+}
+.compute-settings > header > span {
+  align-items: center;
+  background: var(--cobalt-soft);
+  color: var(--cobalt-dark);
+  display: flex;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+.compute-settings h2 {
+  font-family: var(--editorial);
+  font-size: 21px;
+  font-weight: 550;
+  margin: 0;
+}
+.compute-settings-actions {
+  display: flex;
+  gap: 6px;
+}
+.compute-connection-list {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+.compute-connection {
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.compute-connection-fields {
+  align-items: end;
+  display: grid;
+  gap: 9px;
+  grid-template-columns:
+    minmax(120px, 0.8fr) minmax(90px, 0.35fr) minmax(155px, 0.8fr) minmax(190px, 1.2fr)
+    30px;
+  padding: 11px 12px;
+}
+.compute-connection-fields label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.compute-connection-fields label > span {
+  color: var(--muted);
+  font: 750 10px var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.compute-connection-fields input,
+.compute-connection-fields select {
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  font: 11px var(--mono);
+  height: 31px;
+  min-width: 0;
+  padding: 0 8px;
+  width: 100%;
+}
+.compute-probe-list {
+  border-top: 1px solid var(--line);
+  display: grid;
+}
+.compute-probe {
+  align-items: center;
+  display: grid;
+  font-size: 11px;
+  gap: 7px;
+  grid-template-columns: 7px minmax(80px, auto) minmax(105px, auto) minmax(0, 1fr);
+  padding: 8px 12px;
+}
+.compute-probe + .compute-probe {
+  border-top: 1px solid var(--line);
+}
+.compute-probe-dot,
+.chat-compute-dot {
+  background: var(--muted);
+  border-radius: 50%;
+  height: 7px;
+  width: 7px;
+}
+.compute-probe.ready .compute-probe-dot,
+.chat-compute-dot.ready {
+  background: var(--green);
+}
+.compute-probe.error .compute-probe-dot,
+.chat-compute-dot.error {
+  background: var(--red);
+}
+.compute-probe > span:not(.compute-probe-dot) {
+  font-weight: 750;
+}
+.compute-probe.ready > span:not(.compute-probe-dot) {
+  color: var(--green);
+}
+.compute-probe.error > span:not(.compute-probe-dot),
+.compute-probe.error em {
+  color: var(--red);
+}
+.compute-probe em {
+  font-style: normal;
+}
+.settings-empty {
+  color: var(--muted);
+  font: 11px var(--mono);
+  padding: 12px;
+  text-align: center;
+}
+.settings-error {
+  border-top: 1px solid color-mix(in srgb, var(--red) 35%, var(--line));
+  color: var(--red);
+  font-size: 11px;
+  padding: 9px 16px;
+}
 .agent-machine-fixed > span {
   align-items: center;
   color: var(--oxblood-dark);
@@ -10022,6 +10218,12 @@ button.relation-map-node:hover {
     grid-column: 3;
     grid-row: 1 / span 2;
   }
+  .compute-connection-fields {
+    grid-template-columns: minmax(120px, 1fr) minmax(90px, 0.45fr) minmax(180px, 1.2fr) 30px;
+  }
+  .compute-access-hint {
+    grid-column: 1 / 4;
+  }
   .cache-meter + .cache-meter {
     border-left: 0;
     border-top: 1px solid var(--line);
@@ -10184,6 +10386,35 @@ button.relation-map-node:hover {
   .provider-path-row .button {
     grid-column: 2;
     grid-row: auto;
+  }
+  .compute-settings > header {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+  .compute-settings-actions {
+    flex-wrap: wrap;
+    grid-column: 1 / -1;
+  }
+  .compute-connection-fields {
+    grid-template-columns: minmax(0, 1fr) 30px;
+  }
+  .compute-connection-fields > label,
+  .compute-access-hint {
+    grid-column: 1 / -1;
+  }
+  .compute-connection-fields > label:first-child {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .compute-connection-fields > .icon-button {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .compute-probe {
+    align-items: start;
+    grid-template-columns: 7px minmax(75px, auto) minmax(0, 1fr);
+  }
+  .compute-probe em {
+    grid-column: 2 / -1;
   }
   .boundary-settings > header {
     grid-template-columns: 28px minmax(0, 1fr);

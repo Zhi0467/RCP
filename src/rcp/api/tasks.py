@@ -1008,6 +1008,8 @@ def _validated_task_request(
             "the artifact through the unified viewer."
         )
     if kind in {"seed", "refresh"}:
+        if request.active_compute_ids:
+            raise ValueError("Compute connections can be attached only to a chat turn.")
         service.history.require_writable()
         if request.session_id:
             raise ValueError(

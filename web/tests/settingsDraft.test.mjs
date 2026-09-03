@@ -66,7 +66,7 @@ test("a staged profile keeps its own runtime over the manifest", () => {
 test("a staged profile written before runtime selection is dropped", () => {
   const draft = deserializeSettingsDraft(
     JSON.stringify({
-      version: 2,
+      version: 3,
       scope: ["repo"],
       profiles: {
         // A provider switch with no runtime beside it. Provider and runtime are
@@ -107,7 +107,7 @@ test("a dropped staged profile leaves the manifest profile intact", () => {
   };
   const draft = deserializeSettingsDraft(
     JSON.stringify({
-      version: 2,
+      version: 3,
       scope: ["repo"],
       profiles: { seed: { provider: "claude", model: "", reasoning: "medium", run_on: "local" } },
     }),
@@ -119,7 +119,7 @@ test("a dropped staged profile leaves the manifest profile intact", () => {
 
 test("settings drafts round trip staged provider paths", () => {
   const draft = {
-    version: 2,
+    version: 3,
     scope: ["repo"],
     profiles: {},
     autoResearchInvocationCeiling: 14,
@@ -128,7 +128,7 @@ test("settings drafts round trip staged provider paths", () => {
   assert.deepEqual(deserializeSettingsDraft(serializeSettingsDraft(draft)), draft);
 });
 
-test("v1 settings drafts migrate the campaign default into the v2 episode field", () => {
+test("v1 settings drafts migrate the campaign default into the current episode field", () => {
   assert.deepEqual(
     deserializeSettingsDraft(
       JSON.stringify({
@@ -139,7 +139,7 @@ test("v1 settings drafts migrate the campaign default into the v2 episode field"
       }),
     ),
     {
-      version: 2,
+      version: 3,
       scope: ["repo"],
       profiles: {},
       autoResearchInvocationCeiling: 14,
@@ -176,6 +176,38 @@ test("v2 settings drafts accept one operational invocation and reject legacy or 
         scope: ["repo"],
         profiles: {},
         campaignInvocationCeiling: 14,
+      }),
+    ),
+    null,
+  );
+});
+
+test("settings drafts preserve only shaped non-secret compute metadata", () => {
+  const draft = deserializeSettingsDraft(
+    JSON.stringify({
+      version: 3,
+      scope: ["repo"],
+      profiles: {},
+      computeConnections: [
+        {
+          id: "gpu",
+          name: "GPU VM",
+          kind: "ssh",
+          ssh_target: "researcher@gpu.example",
+          access_hint: "Use the shared scratch directory",
+        },
+      ],
+    }),
+  );
+
+  assert.equal(draft?.computeConnections?.[0].name, "GPU VM");
+  assert.equal(
+    deserializeSettingsDraft(
+      JSON.stringify({
+        version: 3,
+        scope: ["repo"],
+        profiles: {},
+        computeConnections: [{ id: "gpu", name: "GPU VM", kind: "ssh", password: "no" }],
       }),
     ),
     null,

@@ -210,7 +210,10 @@ export function loadProjectReadiness(
   apiBase: string,
   refresh = false,
 ): Promise<
-  Pick<ProjectSnapshot, "provider_readiness" | "providers" | "provider_skill_inventories">
+  Pick<
+    ProjectSnapshot,
+    "compute_status" | "provider_readiness" | "providers" | "provider_skill_inventories"
+  >
 > {
   return api(`${apiBase}/readiness${refresh ? "?refresh=true" : ""}`);
 }

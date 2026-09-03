@@ -5312,11 +5312,13 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
         "settings",
         "current",
         "repositories",
+        "compute",
         "skills",
         "patch",
         "workspace",
     }
     assert isinstance(prompt_values["current"]["graph_revision"], int)
+    assert prompt_values["compute"] == {"active": []}
     inputs = master_path.parent
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1
     assert len(list(inputs.glob("chat-patch-schema-*.json"))) == 1

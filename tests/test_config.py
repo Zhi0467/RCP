@@ -7,6 +7,7 @@ import pytest
 from rcp.config import (
     AgentExecutionProfile,
     AgentSurface,
+    ComputeConnectionConfig,
     Manifest,
     load_manifest,
     permissions_for,
@@ -157,6 +158,95 @@ def test_write_agent_settings_persists_all_six_execution_profiles(manifest) -> N
     content = manifest.path.read_text(encoding="utf-8")
     assert "default_auto_research_invocation_ceiling = 14" in content
     assert "default_campaign_invocation_ceiling" not in content
+
+
+def test_compute_connections_persist_without_changing_execution_profiles(manifest) -> None:
+    profiles = {
+        surface: manifest.agent_profile(surface).model_copy(deep=True)
+        for surface in (
+            "seed",
+            "refresh",
+            "node_chat",
+            "project_chat",
+            "paper_coach",
+            "orchestrator",
+        )
+    }
+    original_run_on = {surface: profile.run_on for surface, profile in profiles.items()}
+
+    updated = write_agent_settings(
+        manifest,
+        list(manifest.agent.default_run_truth_scope),
+        profiles,
+        compute_connections=[
+            ComputeConnectionConfig(
+                id="gpu-vm",
+                name="GPU VM",
+                kind="ssh",
+                ssh_target="researcher@gpu.example",
+                access_hint="Use the shared scratch directory",
+            )
+        ],
+    )
+
+    assert updated.compute_connections[0].ssh_target == "researcher@gpu.example"
+    assert {
+        surface: updated.agent_profile(surface).run_on for surface in original_run_on
+    } == original_run_on
+    content = updated.path.read_text(encoding="utf-8")
+    assert "[[compute_connections]]" in content
+    assert "password" not in content.casefold()
+
+    removed = write_agent_settings(
+        updated,
+        list(updated.agent.default_run_truth_scope),
+        profiles,
+        compute_connections=[],
+    )
+    assert removed.compute_connections == []
+    assert "[[compute_connections]]" not in removed.path.read_text(encoding="utf-8")
+
+
+def test_compute_connection_is_not_a_machine_or_execution_selector(manifest) -> None:
+    payload = manifest.model_dump(mode="python")
+    payload["compute_connections"] = [
+        {
+            "id": "gpu",
+            "name": "GPU",
+            "kind": "ssh",
+            "ssh_target": "alice@gpu.example",
+            "access_hint": "",
+            "run_on": "laptop",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        Manifest.model_validate(payload)
+
+    payload["compute_connections"][0].pop("run_on")
+    payload["compute_connections"][0]["access_hint"] = "password=hunter2"
+    with pytest.raises(ValueError, match="cannot contain credential-shaped text"):
+        Manifest.model_validate(payload)
+
+    payload["compute_connections"][0]["access_hint"] = ""
+    payload["compute_connections"][0]["name"] = "password=hunter2"
+    with pytest.raises(ValueError, match="name cannot contain credential-shaped text"):
+        Manifest.model_validate(payload)
+
+    payload["compute_connections"][0]["name"] = "GPU"
+    payload["compute_connections"][0]["ssh_target"] = "sk-ant-secret123@gpu.example"
+    with pytest.raises(ValueError, match="SSH target cannot contain credential-shaped text"):
+        Manifest.model_validate(payload)
+
+    payload["compute_connections"][0]["access_hint"] = ""
+    payload["compute_connections"][0]["ssh_target"] = "-ProxyCommand"
+    with pytest.raises(ValueError, match="SSH target contains unsupported characters"):
+        Manifest.model_validate(payload)
+
+    payload["compute_connections"][0]["ssh_target"] = "alice@gpu.example"
+    payload["compute_connections"][0]["access_hint"] = "Use ~/.ssh/id_ed25519"
+    with pytest.raises(ValueError, match="cannot contain SSH credential paths"):
+        Manifest.model_validate(payload)
 
 
 def test_exact_legacy_chat_permissions_normalize_without_widening(manifest) -> None:

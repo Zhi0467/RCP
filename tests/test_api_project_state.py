@@ -458,7 +458,7 @@ def test_project_get_creates_then_reuses_display_snapshot_without_reopening(
     assert len(cached_files) == 1
     cache_path = cached_files[0]
     initial_envelope = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert initial_envelope["schema_version"] == 3
+    assert initial_envelope["schema_version"] == 4
     assert initial_envelope["canonical_patch_head"] == 1
     assert initial_envelope["project_id"] == project_id
     assert initial_envelope["snapshot"] == initial.json()
@@ -600,6 +600,7 @@ def test_project_readiness_does_not_open_or_materialize_project(
         ),
     )
     calls: list[tuple[str, bool]] = []
+    compute_calls: list[list[str]] = []
     inventory_waits: list[tuple[str, str, str | None]] = []
 
     def readiness(provider: str, *, host: str = "", refresh: bool = False):
@@ -612,6 +613,15 @@ def test_project_readiness_does_not_open_or_materialize_project(
         )
 
     monkeypatch.setattr(app.state.catalog.launcher, "readiness", readiness)
+    monkeypatch.setattr(
+        "rcp.projects.probe_compute_connections",
+        lambda probed_manifest: (
+            compute_calls.append(
+                [connection.id for connection in probed_manifest.compute_connections]
+            )
+            or {"laptop": {}}
+        ),
+    )
     monkeypatch.setattr(
         app.state.provider_skills,
         "refresh",
@@ -627,9 +637,13 @@ def test_project_readiness_does_not_open_or_materialize_project(
 
     response = client.get(f"/api/projects/{project_id}/readiness")
     refreshed = client.get(f"/api/projects/{project_id}/readiness?refresh=true")
+    cached = client.get(f"/api/projects/{project_id}/readiness")
 
-    assert response.status_code == 200
-    assert refreshed.status_code == 200
+    assert response.status_code == refreshed.status_code == cached.status_code == 200
+    assert response.json()["compute_status"] == {}
+    assert refreshed.json()["compute_status"] == {"laptop": {}}
+    assert cached.json()["compute_status"] == refreshed.json()["compute_status"]
+    assert compute_calls == [[]]
     assert response.json()["provider_readiness"]["laptop"]["codex"]["version"] == ("codex-ready")
     assert response.json()["providers"] == response.json()["provider_readiness"]["laptop"]
     assert response.json()["provider_skill_inventories"]["laptop"]["codex"]["status"] == (
@@ -646,8 +660,101 @@ def test_project_readiness_does_not_open_or_materialize_project(
         ("claude", "", None),
         ("codex", "", None),
         ("claude", "", None),
+        ("codex", "", None),
+        ("claude", "", None),
     ]
     assert project_id not in app.state.catalog._services
+
+
+def test_loaded_project_compute_readiness_probes_only_on_refresh_and_invalidates_on_change(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    before = client.get(f"/api/projects/{project_id}").json()
+    body = {
+        "default_run_truth_scope": before["default_run_truth_scope"],
+        "agent_profiles": {
+            surface: {
+                key: profile[key] for key in ("provider", "runtime", "model", "reasoning", "run_on")
+            }
+            for surface, profile in before["agent_profiles"].items()
+        },
+    }
+    connection = {
+        "id": "gpu",
+        "name": "GPU VM",
+        "kind": "ssh",
+        "ssh_target": "alice@gpu.example",
+        "access_hint": "Use /scratch/shared",
+    }
+    saved = client.put(
+        f"/api/projects/{project_id}/settings",
+        json={**body, "compute_connections": [connection]},
+    )
+    assert saved.status_code == 200
+
+    compute_calls: list[list[str]] = []
+    status = {
+        "laptop": {
+            "gpu": {
+                "compute_id": "gpu",
+                "execution_machine": "laptop",
+                "state": "reachable",
+                "reachable": True,
+                "diagnostic": "SSH connection succeeded.",
+                "required_action": None,
+            }
+        }
+    }
+
+    def probe(probed_manifest):
+        compute_calls.append([connection.id for connection in probed_manifest.compute_connections])
+        return status
+
+    monkeypatch.setattr("rcp.projects.probe_compute_connections", probe)
+
+    first = client.get(f"/api/projects/{project_id}/readiness")
+    second = client.get(f"/api/projects/{project_id}/readiness")
+    refreshed = client.get(f"/api/projects/{project_id}/readiness?refresh=true")
+    cached = client.get(f"/api/projects/{project_id}/readiness")
+
+    assert first.json()["compute_status"] == second.json()["compute_status"] == {}
+    assert refreshed.json()["compute_status"] == cached.json()["compute_status"] == status
+    assert compute_calls == [["gpu"]]
+
+    removed = client.put(
+        f"/api/projects/{project_id}/settings",
+        json={**body, "compute_connections": []},
+    )
+    after_change = client.get(f"/api/projects/{project_id}/readiness")
+    assert removed.status_code == after_change.status_code == 200
+    assert after_change.json()["compute_status"] == {}
+    assert compute_calls == [["gpu"]]
+
+
+def test_unopened_compute_readiness_cache_survives_project_open(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    app.state.catalog._services.clear()
+    status = {"laptop": {}}
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "rcp.projects.probe_compute_connections",
+        lambda _manifest: calls.append("probe") or status,
+    )
+
+    refreshed = client.get(f"/api/projects/{project_id}/readiness?refresh=true")
+    opened = client.get(f"/api/projects/{project_id}")
+    cached = client.get(f"/api/projects/{project_id}/readiness")
+
+    assert refreshed.status_code == opened.status_code == cached.status_code == 200
+    assert cached.json()["compute_status"] == status
+    assert calls == ["probe"]
 
 
 def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, tmp_path) -> None:
@@ -810,6 +917,60 @@ def test_project_settings_merge_partial_provider_paths_and_preserve_omitted_valu
         ("codex", "", "/opt/agents/codex"),
         ("claude", "", "/opt/agents/claude"),
     ]
+
+
+def test_project_settings_persist_nonsecret_compute_metadata_without_moving_agents(
+    manifest, tmp_path
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    before = client.get(f"/api/projects/{project_id}").json()
+    profiles = {
+        surface: {
+            key: profile[key] for key in ("provider", "runtime", "model", "reasoning", "run_on")
+        }
+        for surface, profile in before["agent_profiles"].items()
+    }
+    body = {
+        "default_run_truth_scope": before["default_run_truth_scope"],
+        "agent_profiles": profiles,
+    }
+    connection = {
+        "id": "gpu",
+        "name": "GPU VM",
+        "kind": "ssh",
+        "ssh_target": "alice@gpu.example",
+        "access_hint": "Use /scratch/shared",
+    }
+
+    saved = client.put(
+        f"/api/projects/{project_id}/settings",
+        json={**body, "compute_connections": [connection]},
+    )
+    omitted = client.put(f"/api/projects/{project_id}/settings", json=body)
+
+    assert saved.status_code == omitted.status_code == 200
+    assert saved.json()["compute_connections"] == [connection]
+    assert omitted.json()["compute_connections"] == [connection]
+    assert omitted.json()["agent_profiles"] == before["agent_profiles"]
+    assert load_manifest(manifest.path).compute_connections[0].id == "gpu"
+
+    credential_field = client.put(
+        f"/api/projects/{project_id}/settings",
+        json={
+            **body,
+            "compute_connections": [{**connection, "private_key": "not accepted"}],
+        },
+    )
+    removed = client.put(
+        f"/api/projects/{project_id}/settings",
+        json={**body, "compute_connections": []},
+    )
+
+    assert credential_field.status_code == 422
+    assert removed.status_code == 200
+    assert removed.json()["compute_connections"] == []
 
 
 def test_invalid_provider_path_update_is_atomic(manifest, tmp_path) -> None:

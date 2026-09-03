@@ -456,8 +456,15 @@ while unrelated background tasks run.
 ### Paper, Settings, and History
 
 Paper owns human Markdown Write/Preview and read-only coaching. Settings owns
-repositories, execution profiles, packages, caches, project membership, and
-prospective episode limits, not ontology authoring. History and task detail own
+repositories, execution profiles, compute connections, packages, caches, project
+membership, and prospective episode limits, not ontology authoring. Project
+snapshots expose non-secret compute metadata; readiness exposes a backend-owned
+execution-machine/connection matrix with distinct unreachable, authentication,
+and host-key states. Normal readiness reads reuse the last result; only an
+explicit refresh runs network probes, and a connection or execution-binding
+change invalidates the cached matrix. Settings writes never accept private keys
+or passwords.
+History and task detail own
 complete provider attempts, stages, events, diagnostics, package versions,
 answers, graph outcomes, and recovery chains.
 

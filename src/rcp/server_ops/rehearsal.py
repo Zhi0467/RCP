@@ -958,6 +958,19 @@ def _render_overlay_manifest(
         machine.add("os_account", "")
         machines.append(machine)
     document.add("machines", machines)
+    if configuration.compute_connections:
+        connections = tomlkit.aot()
+        for item in configuration.compute_connections:
+            connection = tomlkit.table()
+            connection.add("id", item.id)
+            connection.add("name", item.name)
+            connection.add("kind", item.kind)
+            if item.ssh_target:
+                connection.add("ssh_target", item.ssh_target)
+            if item.access_hint:
+                connection.add("access_hint", item.access_hint)
+            connections.append(connection)
+        document.add("compute_connections", connections)
     repositories = tomlkit.aot()
     for item in configuration.repositories:
         repository = tomlkit.table()

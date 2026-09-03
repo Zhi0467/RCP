@@ -26,6 +26,7 @@ from rcp.core.models import GraphState
 from rcp.core.operations import CoverageUpdate, SetCoverageOperation
 from rcp.core.transition_models import GraphTargetRef
 from rcp.providers import ProviderSkillReference
+from rcp.runs.chat import _chat_context_delta
 from rcp.runs.experiment_loop import stage_experiment_loop_context
 from rcp.service import RunRequest
 from tests.helpers import seed_patch
@@ -1303,3 +1304,126 @@ def test_only_a_work_turn_envelope_carries_a_write_boundary() -> None:
             attachments=None,
             write_scope=scope,
         )
+
+
+def test_compute_resources_are_described_without_credentials_or_execution_changes() -> None:
+    master = PromptFactory.chat_master_context(
+        project_name="Example",
+        ontology_path="/state/graph.json#ontology",
+        ontology_extensions=True,
+        graph_path="/state/graph.json",
+        research_path="/state/research.md",
+        graph_revision=7,
+        focused_node_id=None,
+        repositories=[],
+        introduction_path=None,
+        patch_path="/stage/workspace/patch.json",
+        workspace_path="/stage/workspace",
+        output_schema_path="/stage/inputs/schema.json",
+        validator_command="python3 /stage/inputs/validate.py",
+        compute_connections=[
+            {
+                "id": "gpu",
+                "name": "GPU VM",
+                "kind": "ssh",
+                "ssh_target": "alice@gpu.example",
+                "access_hint": "Use /scratch/shared",
+            }
+        ],
+    )
+
+    assert "Compute resources attached to this turn" in master
+    assert (
+        "GPU VM: kind: SSH; target: `alice@gpu.example`; access hint: Use /scratch/shared" in master
+    )
+    assert "do not change the provider, execution machine, `run_on`" in " ".join(master.split())
+    assert "Never request, print, copy, or store a private key or password" in " ".join(
+        master.split()
+    )
+
+
+def test_compute_context_changes_render_as_a_concise_named_delta() -> None:
+    previous = {
+        "compute": {
+            "active": [
+                {"id": "local", "name": "Current machine", "kind": "local"},
+                {
+                    "id": "old",
+                    "name": "Old VM",
+                    "kind": "ssh",
+                    "ssh_target": "alice@old.example",
+                },
+            ]
+        }
+    }
+    current = {
+        "compute": {
+            "active": [
+                {"id": "local", "name": "Current machine", "kind": "local"},
+                {
+                    "id": "gpu",
+                    "name": "GPU VM",
+                    "kind": "ssh",
+                    "ssh_target": "alice@gpu.example",
+                    "access_hint": "Use /scratch/shared",
+                },
+            ]
+        }
+    }
+
+    delta = _chat_context_delta(previous, current)
+    assert delta == {
+        "compute": {
+            "added": [
+                {
+                    "id": "gpu",
+                    "name": "GPU VM",
+                    "kind": "ssh",
+                    "ssh_target": "alice@gpu.example",
+                    "access_hint": "Use /scratch/shared",
+                }
+            ],
+            "removed": ["Old VM"],
+            "updated": [],
+        }
+    }
+    turn = PromptFactory.discuss_turn_prompt(
+        artifact_path="/stage/turns/t1/artifacts",
+        human_message="Continue.",
+        context_delta=delta,
+    )
+    assert (
+        "RCP compute update: added `GPU VM` (`gpu`; kind: SSH; target: "
+        "`alice@gpu.example`; access hint: Use /scratch/shared); removed `Old VM`." in turn
+    )
+    assert '"active"' not in turn
+
+    updated = {
+        "compute": {
+            "active": [
+                {
+                    "id": "gpu",
+                    "name": "GPU Accelerator",
+                    "kind": "ssh",
+                    "ssh_target": "alice@gpu.example",
+                    "access_hint": "Use /scratch/new",
+                }
+            ]
+        }
+    }
+    assert _chat_context_delta(current, updated) == {
+        "compute": {
+            "added": [],
+            "removed": ["Current machine"],
+            "updated": [
+                {
+                    "id": "gpu",
+                    "name": "GPU Accelerator",
+                    "kind": "ssh",
+                    "ssh_target": "alice@gpu.example",
+                    "access_hint": "Use /scratch/new",
+                }
+            ],
+        }
+    }
+    assert _chat_context_delta(updated, updated) is None

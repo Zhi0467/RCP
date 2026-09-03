@@ -1558,6 +1558,23 @@ export interface Machine {
   provider_paths: Record<ProviderId, string>;
 }
 
+export interface ComputeConnection {
+  id: string;
+  name: string;
+  kind: "local" | "ssh";
+  ssh_target: string;
+  access_hint: string;
+}
+
+export interface ComputeConnectionProbe {
+  compute_id: string;
+  execution_machine: string;
+  state: "reachable" | "unreachable" | "authentication_failed" | "host_key_failed";
+  reachable: boolean;
+  diagnostic: string;
+  required_action: string | null;
+}
+
 export interface AgentPermissions {
   read_graph: boolean;
   read_research_md: boolean;
@@ -1656,6 +1673,7 @@ export interface AgentTaskRequest {
   invoked_provider_skill_names?: string[];
   resolved_provider_skills?: ProviderSkillReference[];
   resolved_skill_packages?: SkillReference[] | null;
+  active_compute_ids?: string[];
   [key: string]: unknown;
 }
 
@@ -2052,6 +2070,7 @@ export interface ChatMessage {
   graph_update: GraphUpdateResult | null;
   trigger: TaskTrigger;
   attachments: ChatAttachmentDescriptor[];
+  active_compute_ids: string[];
 }
 
 export interface ChatAttachmentDescriptor {
@@ -2127,6 +2146,8 @@ export interface ProjectSnapshot {
   default_auto_research_invocation_ceiling: number;
   repositories: Repository[];
   machines: Machine[];
+  compute_connections: ComputeConnection[];
+  compute_status: Record<string, Record<string, ComputeConnectionProbe>>;
   primary_question?: GraphNode | null;
   last_refresh_at?: string | null;
   experiment_control: Record<string, ExperimentControlState>;
@@ -2258,6 +2279,7 @@ export interface ProjectSettingsRequest {
   agent_profiles: Record<AgentExecutionProfile, AgentProfileSettings>;
   skill_defaults: SkillDefaults;
   machine_provider_paths?: Record<string, Record<ProviderId, string>>;
+  compute_connections?: ComputeConnection[];
 }
 
 export interface ProviderPathResolution {

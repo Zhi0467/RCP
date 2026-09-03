@@ -6,7 +6,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 import tomlkit
-from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from rcp.providers import (
     DEFAULT_PROVIDER,
@@ -14,9 +14,17 @@ from rcp.providers import (
     ProviderId,
     configured_runtime,
 )
+from rcp.server_ops.models import redact_server_text
 from rcp.skill_registry import SkillDefaults
 
 DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING = 10
+COMPUTE_SSH_TARGET = re.compile(
+    r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}"
+)
+COMPUTE_CREDENTIAL_PATH = re.compile(
+    r"(?i)(?:\.ssh[/\\]|(?:^|[/\\])id_(?:rsa|dsa|ecdsa|ed25519)(?:$|[\s,;])|"
+    r"identity[_ -]?file)"
+)
 
 
 class MachineConfig(BaseModel):
@@ -47,6 +55,58 @@ class MachineConfig(BaseModel):
             and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,127}", self.os_account) is None
         ):
             raise ValueError("machine operating-system account is invalid")
+        return self
+
+
+class ComputeConnectionConfig(BaseModel):
+    """A project resource reachable from an agent's execution machine.
+
+    This is intentionally not a ``MachineConfig``. It never selects where a
+    provider launches, owns a repository, or supplies an execution identity.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    name: str = Field(min_length=1, max_length=80)
+    kind: Literal["local", "ssh"]
+    ssh_target: str = Field(default="", max_length=255)
+    access_hint: str = Field(default="", max_length=512)
+
+    @model_validator(mode="after")
+    def validate_connection(self) -> ComputeConnectionConfig:
+        self.name = self.name.strip()
+        self.ssh_target = self.ssh_target.strip()
+        self.access_hint = self.access_hint.strip()
+        if any(
+            ord(character) < 32 or ord(character) == 127
+            for value in (self.name, self.ssh_target, self.access_hint)
+            for character in value
+        ):
+            raise ValueError("compute connection metadata must be one line")
+        # These fields are deliberately metadata, not credential channels. Reuse
+        # the server's bounded redactor as a validator so credential-shaped text
+        # is refused before it reaches the manifest or a provider prompt.
+        if redact_server_text(self.name) != self.name:
+            raise ValueError("compute connection name cannot contain credential-shaped text")
+        if redact_server_text(self.ssh_target) != self.ssh_target:
+            raise ValueError("compute SSH target cannot contain credential-shaped text")
+        if redact_server_text(self.access_hint) != self.access_hint:
+            raise ValueError("compute access hint cannot contain credential-shaped text")
+        if any(
+            COMPUTE_CREDENTIAL_PATH.search(value)
+            for value in (self.name, self.ssh_target, self.access_hint)
+        ):
+            raise ValueError("compute connection metadata cannot contain SSH credential paths")
+        if not self.name:
+            raise ValueError("compute connection name must not be blank")
+        if self.kind == "local":
+            if self.ssh_target:
+                raise ValueError("local compute cannot define an SSH target")
+        elif not self.ssh_target:
+            raise ValueError("remote compute requires an SSH target")
+        elif COMPUTE_SSH_TARGET.fullmatch(self.ssh_target) is None:
+            raise ValueError("compute SSH target contains unsupported characters")
         return self
 
 
@@ -156,6 +216,7 @@ class PaperCoachConfig(BaseModel):
 class Manifest(BaseModel):
     name: str
     machines: list[MachineConfig]
+    compute_connections: list[ComputeConnectionConfig] = Field(default_factory=list)
     repositories: list[RepositoryConfig]
     project: ProjectConfig
     state: StateConfig
@@ -173,6 +234,9 @@ class Manifest(BaseModel):
             raise ValueError("machine aliases must be unique")
         if len(repository_aliases) != len(set(repository_aliases)):
             raise ValueError("repository aliases must be unique")
+        compute_ids = [item.id for item in self.compute_connections]
+        if len(compute_ids) != len(set(compute_ids)):
+            raise ValueError("compute connection ids must be unique")
         machines = set(machine_aliases)
         repositories = set(repository_aliases)
         missing_machines = {item.machine for item in self.repositories} - machines
@@ -465,6 +529,7 @@ def write_agent_settings(
     provider_path_updates: dict[str, dict[ProviderId, str]] | None = None,
     skill_defaults: SkillDefaults | None = None,
     default_auto_research_invocation_ceiling: int | None = None,
+    compute_connections: list[ComputeConnectionConfig] | None = None,
 ) -> Manifest:
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
     agent = document.get("agent")
@@ -512,6 +577,21 @@ def write_agent_settings(
             del document["paper"]
 
     _apply_machine_provider_path_updates(document, provider_path_updates or {})
+    if compute_connections is not None:
+        document.pop("compute_connections", None)
+        if compute_connections:
+            connections = tomlkit.aot()
+            for connection in compute_connections:
+                table = tomlkit.table()
+                table.add("id", connection.id)
+                table.add("name", connection.name)
+                table.add("kind", connection.kind)
+                if connection.ssh_target:
+                    table.add("ssh_target", connection.ssh_target)
+                if connection.access_hint:
+                    table.add("access_hint", connection.access_hint)
+                connections.append(table)
+            document["compute_connections"] = connections
 
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())

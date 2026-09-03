@@ -547,6 +547,7 @@ def _compose_fresh_prompt(
 ) -> _ComposedWorkPrompt:
     assert turn.request.message is not None
     focused_node_id = str(turn.context.node["id"]) if turn.context.node else None
+    compute_profiles = turn.service.compute_prompt_profiles(turn.request.active_compute_ids)
     if not turn.uses_master_protocol:
         human_request_path = _stage_task_input(
             turn.local_stage,
@@ -581,6 +582,7 @@ def _compose_fresh_prompt(
             ),
             invoked_provider_skills=turn.request.resolved_provider_skills,
             attachments=staged.attachment_pointers,
+            compute_connections=compute_profiles,
         )
         contract_path, prompt = _stage_task_contract(
             turn.local_stage,
@@ -616,6 +618,7 @@ def _compose_fresh_prompt(
         execution_host=turn.execution_host,
         experiment_watcher_resources=staged.experiment_resource_pointers,
         skill_pointers=staged.skill_pointers,
+        compute_connections=compute_profiles,
     )
     stable_prompt_values: dict[str, object] = {
         "project": {"name": turn.context.project_name},
@@ -635,6 +638,7 @@ def _compose_fresh_prompt(
             "experiment_watcher_resources": staged.experiment_resource_pointers,
         },
         "repositories": staged.repositories,
+        "compute": {"active": compute_profiles},
         "skills": {"pointers": staged.skill_pointers},
         "patch": {
             "path": turn.patch_inputs.patch_path,

@@ -1,6 +1,7 @@
 import type {
   AgentExecutionProfile,
   AgentProfileSettings,
+  ComputeConnection,
   Machine,
   ProviderId,
   SkillDefaults,
@@ -9,12 +10,13 @@ import type {
 export type MachineProviderPaths = Record<string, Record<ProviderId, string>>;
 
 export interface SettingsDraft {
-  version: 2;
+  version: 3;
   scope: string[];
   profiles: Partial<Record<AgentExecutionProfile, AgentProfileSettings>>;
   autoResearchInvocationCeiling?: number;
   providerPaths?: MachineProviderPaths;
   skillDefaults?: SkillDefaults;
+  computeConnections?: ComputeConnection[];
 }
 
 export function mergeAgentProfiles(
@@ -58,7 +60,8 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
   if (!value) return null;
   try {
     const parsed: unknown = JSON.parse(value);
-    if (!isRecord(parsed) || (parsed.version !== 1 && parsed.version !== 2)) return null;
+    if (!isRecord(parsed) || (parsed.version !== 1 && parsed.version !== 2 && parsed.version !== 3))
+      return null;
     if (!Array.isArray(parsed.scope) || parsed.scope.some((item) => typeof item !== "string"))
       return null;
     if (!isRecord(parsed.profiles)) return null;
@@ -66,16 +69,27 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
     if (parsed.providerPaths !== undefined && !isMachineProviderPaths(parsed.providerPaths))
       return null;
     if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;
+    if (parsed.computeConnections !== undefined && !isComputeConnections(parsed.computeConnections))
+      return null;
 
-    if (parsed.version === 2) {
+    if (parsed.version === 3) {
       if (parsed.campaignInvocationCeiling !== undefined) return null;
       if (!isInvocationCeiling(parsed.autoResearchInvocationCeiling)) return null;
       return parsed as unknown as SettingsDraft;
     }
 
+    if (parsed.version === 2) {
+      if (parsed.campaignInvocationCeiling !== undefined) return null;
+      if (!isInvocationCeiling(parsed.autoResearchInvocationCeiling)) return null;
+      return {
+        ...(parsed as unknown as Omit<SettingsDraft, "version">),
+        version: 3,
+      };
+    }
+
     if (!isInvocationCeiling(parsed.campaignInvocationCeiling)) return null;
     return {
-      version: 2,
+      version: 3,
       scope: parsed.scope,
       profiles: parsed.profiles as SettingsDraft["profiles"],
       ...(parsed.campaignInvocationCeiling === undefined
@@ -159,6 +173,24 @@ function isSkillDefaults(value: unknown): value is SkillDefaults {
     value.workflow_ids.every((item) => typeof item === "string") &&
     Array.isArray(value.skill_ids) &&
     value.skill_ids.every((item) => typeof item === "string")
+  );
+}
+
+function isComputeConnections(value: unknown): value is ComputeConnection[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (connection) =>
+        isRecord(connection) &&
+        Object.keys(connection).every((key) =>
+          ["id", "name", "kind", "ssh_target", "access_hint"].includes(key),
+        ) &&
+        typeof connection.id === "string" &&
+        typeof connection.name === "string" &&
+        (connection.kind === "local" || connection.kind === "ssh") &&
+        typeof connection.ssh_target === "string" &&
+        typeof connection.access_hint === "string",
+    )
   );
 }
 

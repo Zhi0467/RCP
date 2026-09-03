@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
 from rcp.background import AgentTaskExecution
+from rcp.config import ComputeConnectionConfig
 from rcp.providers import ProviderSkillReference
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
@@ -91,6 +92,18 @@ def _enable_graph_audit(service) -> None:
         service.manifest.agent.default_run_truth_scope,
         {surface: service.manifest.agent_profile(surface) for surface in surfaces},
         skill_defaults=SkillDefaults(skill_ids=["graph-audit"]),
+    )
+
+
+def _configure_compute_connections(
+    service,
+    connections: list[ComputeConnectionConfig],
+) -> None:
+    surfaces = ("seed", "refresh", "node_chat", "project_chat", "paper_coach")
+    service.history.update_agent_settings(
+        service.manifest.agent.default_run_truth_scope,
+        {surface: service.manifest.agent_profile(surface) for surface in surfaces},
+        compute_connections=connections,
     )
 
 
@@ -255,6 +268,7 @@ async def test_fresh_discuss_bootstraps_one_master_with_both_mode_contracts(
         "settings",
         "current",
         "repositories",
+        "compute",
         "skills",
         "patch",
         "workspace",
@@ -262,6 +276,7 @@ async def test_fresh_discuss_bootstraps_one_master_with_both_mode_contracts(
     # The revision is the one graph fact the session tracks, so a human Sync
     # between turns can reach the conversation as a compact delta.
     assert snapshot["values"]["current"]["graph_revision"] == service.graph_snapshot()["revision"]
+    assert snapshot["values"]["compute"] == {"active": []}
     assert "artifacts" not in snapshot["values"]
     launch_receipt = next(
         item
@@ -269,6 +284,178 @@ async def test_fresh_discuss_bootstraps_one_master_with_both_mode_contracts(
         if item.category == "agent_prompt"
     )
     assert launch_receipt.payload["contract_path"] == str(master_path)
+
+
+@pytest.mark.parametrize("mode", ["discuss", "work"])
+def test_fresh_chat_master_contains_only_selected_nonsecret_compute_metadata(
+    manifest, tmp_path, mode: str
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    _configure_compute_connections(
+        service,
+        [
+            ComputeConnectionConfig(id="current", name="Current machine", kind="local"),
+            ComputeConnectionConfig(
+                id="gpu",
+                name="GPU VM",
+                kind="ssh",
+                ssh_target="alice@gpu.example",
+                access_hint="Use /scratch/shared for temporary outputs",
+            ),
+        ],
+    )
+    project_id = app.state.default_project_id
+    chat_id = "3f3eea3f-0e1d-4c92-a1c2-71c877be342d"
+    session_id = f"native-compute-{mode}"
+    launcher = _RecordingLauncher(session_id)
+
+    async def stream(_project_id, kind, request, execution):
+        run = stream_work_run if request.mode == "work" else stream_discuss_run
+        async for frame in run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+    response = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": chat_id,
+            "message": "Use the attached compute resource.",
+            "run_truth_scope": ["repo-a"],
+            "mode": mode,
+            "active_compute_ids": ["gpu"],
+        },
+    )
+    assert response.status_code == 202, response.text
+    operation_id = response.json()["operation_id"]
+    assert wait_for_task_response(client, project_id, operation_id)["status"] == "succeeded"
+
+    task = app.state.background_tasks.store.agent_task(operation_id)
+    assert task is not None
+    assert task.request["provider"] == "codex"
+    assert task.request["run_on"] == "laptop"
+    assert task.request["active_compute_ids"] == ["gpu"]
+    assert launcher.sessions == [None]
+    assert launcher.launch_kwargs[0].get("host", "") == ""
+
+    master_path = Path(launcher.prompts[0].splitlines()[1])
+    master = master_path.read_text(encoding="utf-8")
+    assert master.count("Compute resources attached to this turn:") == 1
+    assert "`gpu` — GPU VM: kind: SSH; target: `alice@gpu.example`" in master
+    assert "access hint: Use /scratch/shared for temporary outputs" in master
+    assert "Current machine" not in master
+    assert ".ssh/" not in master
+    assert "identity_file" not in master
+    assert "private_key" not in master
+
+    baseline = app.state.background_tasks.store.chat_session_context("codex", "laptop", session_id)
+    assert baseline is not None
+    compute = json.loads(baseline.snapshot_json)["values"]["compute"]
+    assert compute == {
+        "active": [
+            {
+                "id": "gpu",
+                "name": "GPU VM",
+                "kind": "ssh",
+                "ssh_target": "alice@gpu.example",
+                "access_hint": "Use /scratch/shared for temporary outputs",
+            }
+        ]
+    }
+
+
+def test_resumed_chat_sends_only_named_compute_add_remove_update_deltas(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    current = ComputeConnectionConfig(id="current", name="Current machine", kind="local")
+    gpu = ComputeConnectionConfig(
+        id="gpu",
+        name="GPU VM",
+        kind="ssh",
+        ssh_target="alice@gpu.example",
+        access_hint="Use /scratch/old",
+    )
+    _configure_compute_connections(service, [current, gpu])
+    project_id = app.state.default_project_id
+    chat_id = "943025d2-e23d-4a6c-a48e-6d16ded8d870"
+    session_id = "native-compute-delta"
+    launcher = _RecordingLauncher(session_id)
+
+    async def stream(_project_id, kind, request, execution):
+        async for frame in stream_discuss_run(
+            service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution=execution,
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+
+    def turn(message: str, active_compute_ids: list[str], *, first: bool = False) -> None:
+        body: dict[str, object] = {
+            "chat_id": chat_id,
+            "message": message,
+            "run_truth_scope": ["repo-a"],
+            "mode": "discuss",
+            "active_compute_ids": active_compute_ids,
+        }
+        if not first:
+            body["session_id"] = session_id
+        response = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json=body,
+        )
+        assert response.status_code == 202, response.text
+        operation_id = response.json()["operation_id"]
+        assert wait_for_task_response(client, project_id, operation_id)["status"] == "succeeded"
+
+    turn("Start with local compute.", ["current"], first=True)
+    turn("Keep the same compute.", ["current"])
+    assert "RCP compute update" not in launcher.prompts[1]
+    assert "RCP context update" not in launcher.prompts[1]
+
+    turn("Switch to the GPU.", ["gpu"])
+    assert (
+        "RCP compute update: added `GPU VM` (`gpu`; kind: SSH; target: "
+        "`alice@gpu.example`; access hint: Use /scratch/old); removed `Current machine`."
+        in launcher.prompts[2]
+    )
+    assert ".ssh/" not in launcher.prompts[2]
+    assert "private_key" not in launcher.prompts[2]
+
+    renamed_gpu = gpu.model_copy(
+        update={
+            "name": "GPU Accelerator",
+            "ssh_target": "alice@gpu-v2.example",
+            "access_hint": "Use /scratch/new",
+        }
+    )
+    _configure_compute_connections(service, [current, renamed_gpu])
+    turn("Use the renamed resource.", ["gpu"])
+    assert (
+        "RCP compute update: updated `GPU Accelerator` (`gpu`; kind: SSH; target: "
+        "`alice@gpu-v2.example`; access hint: Use /scratch/new)." in launcher.prompts[3]
+    )
+
+    turn("Detach compute.", [])
+    assert "RCP compute update: removed `GPU Accelerator`." in launcher.prompts[4]
+    assert launcher.sessions == [None, session_id, session_id, session_id, session_id]
+
+    transcript = service.chat_transcript(chat_id)
+    assert transcript is not None
+    assert transcript.messages[-1].active_compute_ids == []
 
 
 @pytest.mark.asyncio
