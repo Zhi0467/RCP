@@ -96,7 +96,10 @@ jobs:
           RCP_LIVE_BACKUP_ARCHIVE_RECEIPT_FILE: ${{ runner.temp }}/rcp-live-backup-archive-path
           RCP_LIVE_BACKUP_IDENTITY_FILE: ${{ runner.temp }}/rcp-live-backup-identity
           RCP_LIVE_BACKUP_METADATA_FILE: ${{ runner.temp }}/rcp-live-backup-metadata.json
-        run: uv run pytest tests/test_server_install_live.py -vv
+        # `-n0` opts out of the repository-wide `-n auto`: this file owns the
+        # whole host, runs one destructive sequence, and drives a pty, none of
+        # which gains anything from xdist workers.
+        run: uv run pytest tests/test_server_install_live.py -vv -n0
 
       - name: Prepare the protected restore drill inputs
         shell: bash
@@ -270,7 +273,10 @@ jobs:
           RCP_LIVE_RESTORE_ARCHIVE_FILE: ${{ runner.temp }}/rcp-live-restore-inputs/rcp-live-backup.tar.age
           RCP_LIVE_RESTORE_IDENTITY_FILE: ${{ runner.temp }}/rcp-live-restore-inputs/rcp-live-backup-identity
           RCP_LIVE_RESTORE_METADATA_FILE: ${{ runner.temp }}/rcp-live-restore-inputs/rcp-live-backup-metadata.json
-        run: uv run pytest tests/test_server_restore_live.py -vv
+        # `-n0` opts out of the repository-wide `-n auto`: this file owns the
+        # whole host, runs one destructive sequence, and drives a pty, none of
+        # which gains anything from xdist workers.
+        run: uv run pytest tests/test_server_restore_live.py -vv -n0
 
       - name: Revoke interrupted restore deploy keys
         if: always()

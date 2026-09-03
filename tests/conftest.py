@@ -7,6 +7,20 @@ import pytest
 from rcp.config import Manifest, load_manifest
 
 
+@pytest.fixture(autouse=True)
+def fixed_terminal_width(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the width the console renderers wrap to.
+
+    `_print_wrapped` takes its width from `shutil.get_terminal_size`, so every
+    assertion on rendered prose otherwise depends on the ambient terminal. The
+    same install plan passes at 100 columns and fails at 80, where a phrase a
+    test searches for straddles a line break. 100 is the renderer's own
+    fallback, so this pins the value an undetectable terminal already produces.
+    """
+
+    monkeypatch.setenv("COLUMNS", "100")
+
+
 @pytest.fixture
 def manifest(tmp_path: Path) -> Manifest:
     repo_a = tmp_path / "repo-a"

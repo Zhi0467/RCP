@@ -7,6 +7,7 @@ import socket
 import stat
 import struct
 import tempfile
+import threading
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -48,6 +49,7 @@ from rcp.server_runtime import (
 )
 from rcp.storage import AppStore
 from rcp.transfer.target import upload_target_transfer_archive
+from tests.helpers import TASK_SETTLE_TIMEOUT
 from tests.test_project_transfer_request_storage import _archive_bound_pair
 from tests.test_transfer_import import _archive_fixture
 
@@ -761,6 +763,113 @@ def test_unauthorized_os_peer_is_rejected_before_request_dispatch(control_root: 
         assert dispatched is False
     finally:
         server.stop()
+
+
+def test_a_rejection_queued_before_the_request_survives_a_refused_send(
+    control_root: Path,
+) -> None:
+    """An unauthorized peer reads its own refusal even when the server closed first.
+
+    The server answers this case before it ever reads a request, so under load
+    the close can beat the client's write and break the pipe. The refusal is
+    already queued on the socket by then, and reporting an outage instead would
+    tell an operator to go looking at a healthy service.
+    """
+
+    socket_path = control_root / "control.sock"
+    metadata = ServerMetadata.create(
+        control_root / "data",
+        host="127.0.0.1",
+        port=8421,
+        owner_kind="cli",
+        control_socket=socket_path,
+    )
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    listener.listen(1)
+    closed = threading.Event()
+
+    def refuse_then_close() -> None:
+        connection, _ = listener.accept()
+        with connection:
+            body = control.ServerControlResponse(
+                request_id=None,
+                instance_id=metadata.instance_id,
+                ok=False,
+                error=control.ServerControlFailure(
+                    code="unauthorized_peer",
+                    message="This operating-system account cannot use the RCP control socket.",
+                ),
+            ).model_dump_json()
+            payload = body.encode("utf-8")
+            connection.sendall(struct.pack("!I", len(payload)) + payload)
+        closed.set()
+
+    server = threading.Thread(target=refuse_then_close, daemon=True)
+    server.start()
+
+    def resolve_after_close(_connection) -> ServerControlPeer:
+        # The client resolves the peer between connecting and sending, so this
+        # is where the test forces the losing side of the race deterministically.
+        assert closed.wait(TASK_SETTLE_TIMEOUT)
+        return ServerControlPeer(pid=os.getpid(), uid=os.geteuid(), gid=os.getegid())
+
+    try:
+        client = ServerControlClient(
+            metadata,
+            expected_server_uid=os.geteuid(),
+            peer_resolver=resolve_after_close,
+        )
+        with pytest.raises(ServerControlError) as caught:
+            client.probe()
+        assert caught.value.code == "unauthorized_peer"
+    finally:
+        listener.close()
+        server.join(timeout=SERVER_CONTROL_IO_TIMEOUT_SECONDS)
+
+
+def test_a_broken_socket_with_nothing_queued_still_reports_itself_unavailable(
+    control_root: Path,
+) -> None:
+    """Reading after a refused write must not turn a dead socket into a refusal."""
+
+    socket_path = control_root / "control.sock"
+    metadata = ServerMetadata.create(
+        control_root / "data",
+        host="127.0.0.1",
+        port=8421,
+        owner_kind="cli",
+        control_socket=socket_path,
+    )
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    listener.listen(1)
+    closed = threading.Event()
+
+    def close_without_answering() -> None:
+        connection, _ = listener.accept()
+        connection.close()
+        closed.set()
+
+    server = threading.Thread(target=close_without_answering, daemon=True)
+    server.start()
+
+    def resolve_after_close(_connection) -> ServerControlPeer:
+        assert closed.wait(TASK_SETTLE_TIMEOUT)
+        return ServerControlPeer(pid=os.getpid(), uid=os.geteuid(), gid=os.getegid())
+
+    try:
+        client = ServerControlClient(
+            metadata,
+            expected_server_uid=os.geteuid(),
+            peer_resolver=resolve_after_close,
+        )
+        with pytest.raises(ServerControlError) as caught:
+            client.probe()
+        assert caught.value.code == "control_socket_unavailable"
+    finally:
+        listener.close()
+        server.join(timeout=SERVER_CONTROL_IO_TIMEOUT_SECONDS)
 
 
 def test_server_accepts_previous_protocol_and_echoes_it_on_success_and_error(

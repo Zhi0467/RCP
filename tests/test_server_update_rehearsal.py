@@ -1000,9 +1000,11 @@ def test_candidate_migration_and_reads_cross_the_real_subprocess_boundary(tmp_pa
     assert result["reads"] == ["/api/health", "/api/projects"]
 
 
-def test_overlay_refuses_a_new_unclassified_database_path_column(
+def _future_schema_capture(
     tmp_path: Path,
-) -> None:
+) -> tuple[BackupSQLiteCaptureReceipt, str, BackupProjectFileCaptureReceipt, Path, Path]:
+    """Copy-ready receipts for one fresh snapshot a candidate may migrate."""
+
     capture_id = str(uuid.uuid4())
     space_id = str(uuid.uuid4())
     capture_root = tmp_path / f"backup-{capture_id}"
@@ -1053,6 +1055,15 @@ def test_overlay_refuses_a_new_unclassified_database_path_column(
     )
     operation_root = tmp_path / "operation"
     operation_root.mkdir(mode=0o700)
+    return sqlite_receipt, sqlite_receipt_sha256, project_receipt, capture_root, operation_root
+
+
+def test_overlay_refuses_a_new_unclassified_database_path_column(
+    tmp_path: Path,
+) -> None:
+    sqlite_receipt, sqlite_receipt_sha256, project_receipt, capture_root, operation_root = (
+        _future_schema_capture(tmp_path)
+    )
 
     def candidate_adds_unknown_path(database_path: Path) -> None:
         with sqlite3.connect(database_path) as connection:
@@ -1068,3 +1079,57 @@ def test_overlay_refuses_a_new_unclassified_database_path_column(
             capture_root=capture_root,
             candidate_migrator=candidate_adds_unknown_path,
         )
+
+
+def test_overlay_records_the_running_release_expectation_before_candidate_migration(
+    tmp_path: Path,
+) -> None:
+    """A candidate that appends a ledger row must still rehearse.
+
+    The running release cannot open a copy whose migration ledger is longer
+    than its own, so its startup-recovery expectation has to be taken before
+    the candidate migrates the copy. The lab update from 8dc68e1 to 0684bc4 was
+    refused with "migration ledger is invalid" when it was taken afterwards.
+    """
+
+    sqlite_receipt, sqlite_receipt_sha256, project_receipt, capture_root, operation_root = (
+        _future_schema_capture(tmp_path)
+    )
+    migrated: list[tuple[int, str]] = []
+
+    def candidate_appends_a_ledger_row(database_path: Path) -> None:
+        with sqlite3.connect(database_path) as connection:
+            head = connection.execute(
+                "SELECT MAX(migration_version) FROM storage_schema_migrations"
+            ).fetchone()[0]
+            connection.execute(
+                "INSERT INTO storage_schema_migrations "
+                "(migration_version, migration_name, completed_at) VALUES (?, ?, ?)",
+                (head + 1, "future_candidate_v1", datetime.now(UTC).isoformat()),
+            )
+            migrated.append((head + 1, "future_candidate_v1"))
+
+    overlay = build_rehearsal_overlay(
+        operation_root,
+        sqlite_receipt=sqlite_receipt,
+        sqlite_receipt_sha256=sqlite_receipt_sha256,
+        project_receipt=project_receipt,
+        project_receipt_sha256="1" * 64,
+        capture_root=capture_root,
+        candidate_migrator=candidate_appends_a_ledger_row,
+    )
+
+    assert migrated == [(len(AppStore._STORAGE_SCHEMA_MIGRATIONS) + 1, "future_candidate_v1")]
+    assert overlay.expected_startup_recovery == StartupRecoveryReadModel(
+        active_operation_ids=(),
+        stopping_experiment_operation_ids=(),
+        report_episode_ids=(),
+        auto_research_recovery_operation_ids=(),
+        active_watcher_ids=(),
+    )
+    with sqlite3.connect(overlay.database_path) as connection:
+        ledger = connection.execute(
+            "SELECT migration_version, migration_name FROM storage_schema_migrations "
+            "ORDER BY migration_version"
+        ).fetchall()
+    assert ledger[-1] == migrated[0]
