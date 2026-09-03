@@ -698,6 +698,12 @@ def build_rehearsal_overlay(
         expected_sha256=sqlite_receipt.sqlite_snapshot.sha256,
         expected_size=sqlite_receipt.sqlite_snapshot.size_bytes,
     )
+    # The running release records its startup-recovery expectation on the
+    # unmigrated copy. Its store refuses a ledger longer than its own, so it
+    # cannot read the copy once the candidate has migrated it; the plan reads
+    # only task, watcher, and episode rows, which the rebinding below and the
+    # candidate migration must both leave unchanged.
+    expected_startup_recovery = _expected_startup_recovery(database_path)
     if (
         project_receipt.capture_id != sqlite_receipt.capture_id
         or project_receipt.sqlite_receipt_sha256 != sqlite_receipt_sha256
@@ -784,7 +790,6 @@ def build_rehearsal_overlay(
         connection.close()
     _fsync_file(database_path)
     _fsync_directory(data_dir)
-    expected_startup_recovery = _expected_startup_recovery(database_path)
     overlay = RehearsalOverlay(
         root=str(root),
         data_dir=str(data_dir),

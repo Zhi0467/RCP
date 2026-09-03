@@ -806,8 +806,11 @@ def test_provider_provenance_does_not_block_current_episode_delivery(manifest, t
     loop.deliver("other-provider")
 
     record = loop.store.watcher("other-provider")
-    assert record.status == "completed"
+    # `status` reads "stopped" once the origin episode has an ending, and this
+    # delivery spends the last invocation, so it races its own wake. The claimed
+    # notification id proves delivery without depending on that ordering.
     assert record.notified is True
+    assert record.notification_operation_id is not None
     woken = [
         item
         for item in loop.store.agent_tasks(loop.project_id)

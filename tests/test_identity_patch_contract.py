@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import uuid
-
 import pytest
 from pydantic import ValidationError
 
@@ -9,6 +7,8 @@ from rcp.agents.schema import AgentPatch
 from rcp.core.models import AuthorizedHuman, GraphState, Patch, ProjectIdentity
 from rcp.core.operations import CoverageUpdate, SetCoverageOperation
 from rcp.core.validation import validate_patch
+
+from .helpers import NON_UUID4
 
 PROJECT_ID = "123e4567-e89b-42d3-a456-426614174000"
 SPACE_ID = "123e4567-e89b-42d3-b456-426614174000"
@@ -318,7 +318,7 @@ def test_authorized_by_alone_is_valid_human_attribution(mode: str) -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("project_id", str(uuid.uuid1())),
+        ("project_id", NON_UUID4),
         ("home_space_id", SPACE_ID.upper()),
         ("home_space_id", "not-a-uuid"),
     ],

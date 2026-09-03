@@ -23,6 +23,7 @@ dev = [
   "pytest>=8.4.0",
   "pytest-asyncio>=1.1.0",
   "pytest-cov>=7.1.0",
+  "pytest-xdist>=3.6.0",
   "ruff>=0.12.0",
 ]
 
@@ -53,7 +54,12 @@ path = "src/rcp/__init__.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --strict-markers"
+# The suite is setup-bound rather than assertion-bound: roughly 3,400 tests each
+# build their own SQLite store, data directory, and TestClient app, so wall time
+# scales with worker count. `--dist loadfile` keeps one file's tests on one
+# worker, which bounds the fixture churn and keeps a failure reproducible with a
+# plain single-file run. Pass `-n0` to debug serially.
+addopts = "-q --strict-markers -n auto --dist loadfile"
 
 [tool.ruff]
 target-version = "py311"

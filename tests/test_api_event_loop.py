@@ -7,7 +7,7 @@ from contextlib import contextmanager
 import httpx
 import pytest
 
-from .helpers import create_named_app
+from .helpers import TASK_SETTLE_TIMEOUT, create_named_app, wait_for_entry
 
 
 def test_health_sqlite_wait_does_not_block_event_loop(manifest, tmp_path, monkeypatch) -> None:
@@ -20,7 +20,7 @@ def test_health_sqlite_wait_does_not_block_event_loop(manifest, tmp_path, monkey
     @contextmanager
     def blocked_connection():
         entered.set()
-        assert release.wait(timeout=3)
+        assert release.wait(TASK_SETTLE_TIMEOUT)
         with original_connection() as connection:
             yield connection
 
@@ -31,8 +31,11 @@ def test_health_sqlite_wait_does_not_block_event_loop(manifest, tmp_path, monkey
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             request = asyncio.create_task(client.get("/api/health"))
             try:
-                assert await asyncio.to_thread(entered.wait, 1)
-                await asyncio.wait_for(asyncio.sleep(0), timeout=0.2)
+                await asyncio.to_thread(wait_for_entry, entered)
+                # A blocked loop never resumes this tick, so the bound is a
+                # hang guard; the still-pending request is what makes it proof.
+                await asyncio.wait_for(asyncio.sleep(0), timeout=TASK_SETTLE_TIMEOUT)
+                assert not request.done()
             finally:
                 release.set()
             return await request
@@ -53,7 +56,7 @@ def test_project_cache_hit_does_not_block_event_loop(manifest, tmp_path, monkeyp
 
     def blocked_cached_snapshot(candidate_project_id: str):
         entered.set()
-        assert release.wait(timeout=3)
+        assert release.wait(TASK_SETTLE_TIMEOUT)
         return original_cached_snapshot(candidate_project_id)
 
     monkeypatch.setattr(display_cache, "cached_project_snapshot", blocked_cached_snapshot)
@@ -63,8 +66,11 @@ def test_project_cache_hit_does_not_block_event_loop(manifest, tmp_path, monkeyp
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             request = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
             try:
-                assert await asyncio.to_thread(entered.wait, 1)
-                await asyncio.wait_for(asyncio.sleep(0), timeout=0.2)
+                await asyncio.to_thread(wait_for_entry, entered)
+                # A blocked loop never resumes this tick, so the bound is a
+                # hang guard; the still-pending request is what makes it proof.
+                await asyncio.wait_for(asyncio.sleep(0), timeout=TASK_SETTLE_TIMEOUT)
+                assert not request.done()
             finally:
                 release.set()
             return await request
@@ -96,7 +102,7 @@ def test_project_cache_miss_does_not_block_event_loop(
 
     def block() -> None:
         entered.set()
-        assert release.wait(timeout=3)
+        assert release.wait(TASK_SETTLE_TIMEOUT)
 
     def miss_then_fallback(candidate_project_id: str):
         nonlocal cache_reads
@@ -143,8 +149,11 @@ def test_project_cache_miss_does_not_block_event_loop(
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             request = asyncio.create_task(client.get(f"/api/projects/{project_id}"))
             try:
-                assert await asyncio.to_thread(entered.wait, 1)
-                await asyncio.wait_for(asyncio.sleep(0), timeout=0.2)
+                await asyncio.to_thread(wait_for_entry, entered)
+                # A blocked loop never resumes this tick, so the bound is a
+                # hang guard; the still-pending request is what makes it proof.
+                await asyncio.wait_for(asyncio.sleep(0), timeout=TASK_SETTLE_TIMEOUT)
+                assert not request.done()
             finally:
                 release.set()
             return await request
