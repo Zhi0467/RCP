@@ -947,6 +947,7 @@ export function NodeChat({
   };
 
   const openAnnotationComposer = (answer: HTMLElement) => {
+    if (submitting) return;
     const selection = window.getSelection();
     if (
       !selection ||
@@ -986,6 +987,7 @@ export function NodeChat({
   };
 
   const openKeyboardAnnotationComposer = (answer: HTMLElement, origin: HTMLElement) => {
+    if (submitting) return;
     if (annotations.length >= MAX_CHAT_ANNOTATIONS) {
       setSubmitError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
       return;
@@ -1017,6 +1019,7 @@ export function NodeChat({
   };
 
   const continueKeyboardAnnotation = () => {
+    if (submitting) return;
     if (annotationComposer?.step !== "select") return;
     const selectedText = annotationComposer.selectedText;
     if (!selectedText || selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH) return;
@@ -1040,6 +1043,7 @@ export function NodeChat({
   };
 
   const stageAnnotation = () => {
+    if (submitting) return;
     if (!annotationComposer) return;
     if (annotationComposer.step !== "comment") return;
     const comment = annotationComment.trim();
@@ -1058,6 +1062,7 @@ export function NodeChat({
   };
 
   const updateAnnotation = (id: string, comment: string) => {
+    if (submitting) return;
     setAnnotations((current) =>
       current.map((annotation) => (annotation.id === id ? { ...annotation, comment } : annotation)),
     );
@@ -1065,6 +1070,7 @@ export function NodeChat({
   };
 
   const removeAnnotation = (id: string) => {
+    if (submitting) return;
     setAnnotations((current) => {
       const next = current.filter((annotation) => annotation.id !== id);
       if (next.length === 0) setAnnotationsOpen(false);
@@ -1402,7 +1408,7 @@ export function NodeChat({
                     <div
                       className="chat-markdown chat-annotatable-answer"
                       onPointerUp={(event) => {
-                        if (!readOnly) openAnnotationComposer(event.currentTarget);
+                        if (!readOnly && !submitting) openAnnotationComposer(event.currentTarget);
                       }}
                     >
                       <MarkdownAnswer
@@ -1425,6 +1431,7 @@ export function NodeChat({
                         className="chat-answer-annotation-button"
                         type="button"
                         aria-label="Comment on this answer"
+                        disabled={submitting}
                         onClick={(event) => {
                           const answer =
                             event.currentTarget.parentElement?.querySelector<HTMLElement>(
@@ -1659,6 +1666,7 @@ export function NodeChat({
                     <blockquote>{annotation.selectedText}</blockquote>
                     <textarea
                       aria-label={`Comment for annotation ${index + 1}`}
+                      disabled={submitting}
                       maxLength={MAX_CHAT_ANNOTATION_COMMENT_LENGTH}
                       value={annotation.comment}
                       onChange={(event) => updateAnnotation(annotation.id, event.target.value)}
@@ -1666,6 +1674,7 @@ export function NodeChat({
                     <button
                       type="button"
                       aria-label={`Remove annotation ${index + 1}`}
+                      disabled={submitting}
                       onClick={() => removeAnnotation(annotation.id)}
                     >
                       <X size={12} /> Remove
@@ -1856,6 +1865,7 @@ export function NodeChat({
               }
               onSubmit={(event) => {
                 event.preventDefault();
+                if (submitting) return;
                 if (annotationComposer.step === "select") continueKeyboardAnnotation();
                 else stageAnnotation();
               }}
@@ -1879,6 +1889,7 @@ export function NodeChat({
                   className="icon-button"
                   type="button"
                   aria-label="Cancel annotation"
+                  disabled={submitting}
                   onClick={() => dismissAnnotationComposer(true)}
                 >
                   <X size={14} />
@@ -1890,6 +1901,7 @@ export function NodeChat({
                     className="chat-annotation-source"
                     ref={annotationSelectionRef}
                     aria-label="Select answer text"
+                    disabled={submitting}
                     readOnly
                     defaultValue={annotationComposer.answerText}
                     onSelect={(event) => updateKeyboardAnnotationSelection(event.currentTarget)}
@@ -1903,6 +1915,7 @@ export function NodeChat({
                     className="button compact primary"
                     type="submit"
                     disabled={
+                      submitting ||
                       !annotationComposer.selectedText ||
                       annotationComposer.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH
                     }
@@ -1916,6 +1929,7 @@ export function NodeChat({
                   <textarea
                     ref={annotationCommentRef}
                     aria-label="Comment"
+                    disabled={submitting}
                     maxLength={MAX_CHAT_ANNOTATION_COMMENT_LENGTH}
                     value={annotationComment}
                     onChange={(event) => setAnnotationComment(event.target.value)}
@@ -1923,7 +1937,7 @@ export function NodeChat({
                   <button
                     className="button compact primary"
                     type="submit"
-                    disabled={!annotationComment.trim()}
+                    disabled={submitting || !annotationComment.trim()}
                   >
                     Add comment
                   </button>

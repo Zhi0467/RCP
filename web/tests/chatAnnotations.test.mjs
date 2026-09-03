@@ -72,6 +72,25 @@ test("staged annotations can be counted, edited, and removed before the ordinary
   assert.match(send, /setMessage\(\(current\) => \(current \? current : draftMessage\)\)/);
 });
 
+test("annotation creation and editing are fenced while a turn is submitting", () => {
+  assert.match(
+    nodeChatSource,
+    /if \(submitting\) return;[\s\S]*?const selection = window\.getSelection/,
+  );
+  assert.match(
+    nodeChatSource,
+    /aria-label="Comment on this answer"[\s\S]*?disabled=\{submitting\}/,
+  );
+  assert.match(
+    nodeChatSource,
+    /aria-label=\{`Comment for annotation \$\{index \+ 1\}`\}[\s\S]*?disabled=\{submitting\}/,
+  );
+  assert.match(
+    nodeChatSource,
+    /aria-label=\{`Remove annotation \$\{index \+ 1\}`\}[\s\S]*?disabled=\{submitting\}/,
+  );
+});
+
 test("a comment edited blank survives a switch away and back and still blocks send", () => {
   const persisted = JSON.stringify([
     {

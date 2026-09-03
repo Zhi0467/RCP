@@ -89,7 +89,24 @@ test("a wide annotation composer stays interactive inside a keyboard-shrunken vi
     await page.getByRole("button", { name: "Comment on selection" }).click();
     await page.getByRole("textbox", { name: "Comment" }).fill("Show the comparison.");
     await page.getByRole("button", { name: "Add comment" }).click();
-    await page.getByRole("button", { name: "1 annotation" }).waitFor({ state: "visible" });
+    const annotationCount = page.getByRole("button", { name: "1 annotation" });
+    await annotationCount.waitFor({ state: "visible" });
+    await annotationCount.click();
+    const stagedComment = page.getByRole("textbox", { name: "Comment for annotation 1" });
+    await stagedComment.waitFor({ state: "visible" });
+    await page.getByRole("textbox", { name: "Message" }).fill("Send the staged annotation.");
+    await page.getByRole("button", { name: "Start Discuss turn" }).click();
+
+    assert.equal(await comment.isDisabled(), true);
+    assert.equal(await stagedComment.isDisabled(), true);
+    assert.equal(
+      await page.getByRole("button", { name: "Remove annotation 1" }).isDisabled(),
+      true,
+    );
+    assert.equal(await stagedComment.inputValue(), "Show the comparison.");
+
+    await page.evaluate(() => window.resolveViewportTask());
+    await annotationCount.waitFor({ state: "detached" });
   } finally {
     await browser?.close();
     await server.close();

@@ -59,6 +59,11 @@ const historyMessages = [
   },
 ];
 
+let resolveTask: (() => void) | null = null;
+(window as typeof window & { resolveViewportTask?: () => void }).resolveViewportTask = () => {
+  resolveTask?.();
+};
+
 createRoot(document.getElementById("root")!).render(
   <main style={{ height: "100vh", padding: 24 }}>
     <NodeChat
@@ -69,7 +74,11 @@ createRoot(document.getElementById("root")!).render(
       historyMessages={historyMessages as never}
       chatId="viewport-regression"
       presentation="workspace"
-      onStartTask={() => Promise.resolve()}
+      onStartTask={() =>
+        new Promise<void>((resolve) => {
+          resolveTask = resolve;
+        })
+      }
       onInspectTask={() => undefined}
       onOpenInbox={() => undefined}
       onRepairGraphUpdate={() => Promise.resolve()}
