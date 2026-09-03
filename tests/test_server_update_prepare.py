@@ -113,6 +113,7 @@ def _source_transition_fixture(
     checkout_origin: str | None = None,
     doctor_reports_origin_mismatch: bool = False,
     doctor_reports_missing_source_key: bool = False,
+    doctor_problems: tuple[str, ...] = (),
 ):
     layout = _layout(tmp_path)
     _prepare_owned_roots(layout)
@@ -162,7 +163,8 @@ def _source_transition_fixture(
         )
         return SimpleNamespace(
             problems=(
-                source_key_problem
+                doctor_problems
+                or source_key_problem
                 or (
                     (MANAGED_SOURCE_ORIGIN_MISMATCH,)
                     if doctor_reports_origin_mismatch
@@ -998,6 +1000,51 @@ def test_update_transitions_before_missing_source_key_blocks_doctor(
     assert inspection.source_transition is not None
     assert not fixture.private.exists() and not fixture.public.exists()
     assert fixture.remote_origin == [HTTPS_ORIGIN]
+
+    wizard_machine = FakeUpdateMachine(fixture.layout, target_commit=BASE)
+    wizard_machine.observed = inspection
+    exit_code, events = _run_update(fixture.layout, wizard_machine)
+    succeeded = next(
+        event["step"]
+        for event in events
+        if event.get("step", {}).get("number") == 1 and event["step"]["state"] == "succeeded"
+    )
+    assert exit_code == 0
+    assert succeeded["message"] == (
+        f"The source is now the public HTTPS origin {HTTPS_ORIGIN}. "
+        "The local deploy key pair was retired. The operator should revoke deploy key "
+        f"rcp-source:{INSTALLATION_ID} at {DEPLOY_KEYS_URL} after this update completes and "
+        "server doctor shows the public origin."
+    )
+
+
+def test_update_refuses_unrelated_doctor_problem_before_public_source_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    problem = "managed source has tracked or untracked changes"
+    fixture = _source_transition_fixture(
+        tmp_path,
+        monkeypatch,
+        authentication="deploy_key",
+        public_probe="ready",
+        doctor_problems=(problem,),
+    )
+    before = {
+        path: path.read_bytes()
+        for path in (fixture.layout.config_path, fixture.private, fixture.public)
+    }
+
+    with pytest.raises(UpdateRefused) as refused:
+        fixture.machine.inspect()
+
+    assert str(refused.value) == f"Server doctor blocks update: {problem}. Repair it and rerun."
+    assert {path: path.read_bytes() for path in before} == before
+    assert fixture.current_config[0].source.authentication == "deploy_key"
+    assert fixture.remote_origin == [SSH_ORIGIN]
+    assert fixture.probe_calls == []
+    assert fixture.git_text_calls == []
+    assert fixture.git_calls == []
 
 
 @pytest.mark.parametrize("public_probe", ["grant_needed", "unavailable"])

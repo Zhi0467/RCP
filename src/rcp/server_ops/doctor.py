@@ -45,6 +45,12 @@ _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _SAFE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_-]{0,79}")
 _NO_VALUE = "none"
 MANAGED_SOURCE_ORIGIN_MISMATCH = "managed source origin differs from installed configuration"
+SOURCE_KEY_PAIR_PROBLEMS = (
+    "source private key is missing or unreadable",
+    "source private key has the wrong type, owner, group, or mode",
+    "source public key is missing or unreadable",
+    "source public key has the wrong type, owner, group, or mode",
+)
 
 DoctorOverallState = Literal[
     "healthy",
@@ -1476,6 +1482,7 @@ def _problem_text(problems: tuple[str, ...]) -> str:
 __all__ = [
     "LinuxServerDoctorMachine",
     "MANAGED_SOURCE_ORIGIN_MISMATCH",
+    "SOURCE_KEY_PAIR_PROBLEMS",
     "ServerDoctorReport",
     "prepare_doctor_command",
     "release_relationship",

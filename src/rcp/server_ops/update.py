@@ -35,6 +35,7 @@ from rcp.server_ops.config import InstalledServerConfig, load_installed_server_c
 from rcp.server_ops.control import ServerControlClient, ServerControlError
 from rcp.server_ops.doctor import (
     MANAGED_SOURCE_ORIGIN_MISMATCH,
+    SOURCE_KEY_PAIR_PROBLEMS,
     LinuxServerDoctorMachine,
     ServerDoctorMachine,
     ServerDoctorReport,
@@ -1230,6 +1231,11 @@ class LinuxUpdateMachine:
         inspection, report = self._read_status()
         transition = None
         if inspection.config.source.authentication == "deploy_key":
+            unrelated_problems = tuple(
+                problem for problem in report.problems if problem not in SOURCE_KEY_PAIR_PROBLEMS
+            )
+            if unrelated_problems:
+                self._validate_inspection(inspection, report)
             repository = normalize_github_repository(inspection.config.source.origin)
             transition = converge_public_source(
                 self.layout,
