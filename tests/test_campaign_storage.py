@@ -435,11 +435,12 @@ def test_unusable_stopping_recovery_is_abandoned_and_settled_atomically(tmp_path
     episode, root = _episode(store, root_status="failed")
     store.request_auto_research_stop_and_settle_watchers(episode.episode_id)
 
-    settled = store.abandon_auto_research_recovery_and_settle_stop(
+    settled = store.abandon_auto_research_recovery_and_settle_if_stopping(
         root.operation_id,
         diagnostic="the saved provider workspace is unavailable",
     )
 
+    assert settled is not None
     assert settled.status == "stopped"
     assert settled.ending == "stopped"
     assert settled.stop_settled_at is not None

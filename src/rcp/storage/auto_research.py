@@ -1471,13 +1471,13 @@ class AutoResearchStoreMixin:
         assert stored is not None
         return stored
 
-    def abandon_auto_research_recovery_and_settle_stop(
+    def abandon_auto_research_recovery_and_settle_if_stopping(
         self,
         operation_id: str,
         *,
         diagnostic: str,
-    ) -> EpisodeRecord:
-        """Abandon one unusable exact continuation and settle Stop if now quiescent."""
+    ) -> EpisodeRecord | None:
+        """Atomically abandon known-unusable recovery only behind a durable Stop."""
 
         detail = " ".join(diagnostic.split())[:2000]
         if not detail:
@@ -1485,17 +1485,19 @@ class AutoResearchStoreMixin:
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            episode_id = self._abandon_auto_research_recovery_in_connection(
+            episode_id = self._auto_research_recovery_episode_id_in_connection(
+                connection,
+                operation_id,
+            )
+            episode = self._load_auto_research_episode(connection, episode_id)
+            if episode.stop_requested_at is None:
+                return None
+            self._abandon_auto_research_recovery_in_connection(
                 connection,
                 operation_id,
                 diagnostic=detail,
                 now=now,
             )
-            episode = self._load_auto_research_episode(connection, episode_id)
-            if episode.stop_requested_at is None:
-                raise EpisodeNotRunning(
-                    "Auto-research recovery can only settle a durable Stop request."
-                )
             if self._auto_research_is_quiescent_in_connection(connection, episode_id):
                 return self._mark_episode_stop_skipped_in_connection(
                     connection,
@@ -1505,13 +1507,10 @@ class AutoResearchStoreMixin:
                 )
             return episode
 
-    def _abandon_auto_research_recovery_in_connection(
-        self,
+    @staticmethod
+    def _auto_research_recovery_episode_id_in_connection(
         connection: sqlite3.Connection,
         operation_id: str,
-        *,
-        diagnostic: str,
-        now: str,
     ) -> str:
         row = connection.execute(
             """
@@ -1527,6 +1526,20 @@ class AutoResearchStoreMixin:
             raise KeyError(operation_id)
         if row["status"] not in {"paused", "interrupted", "failed"}:
             raise ValueError("only a paused, interrupted, or failed task can be abandoned")
+        return str(row["episode_id"])
+
+    def _abandon_auto_research_recovery_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        operation_id: str,
+        *,
+        diagnostic: str,
+        now: str,
+    ) -> str:
+        episode_id = self._auto_research_recovery_episode_id_in_connection(
+            connection,
+            operation_id,
+        )
         connection.execute(
             """
             INSERT INTO graph_run_receipts (
@@ -1553,7 +1566,7 @@ class AutoResearchStoreMixin:
             """,
             (diagnostic, now, operation_id, operation_id),
         )
-        return str(row["episode_id"])
+        return episode_id
 
     def settle_auto_research_watchers(self, episode_id: str) -> int:
         """Retain every current Auto watcher once any parent ending is fenced."""

@@ -488,7 +488,7 @@ class BackgroundAgentTasks:
             )
         original = self._request_from_record(previous)
         if isinstance(original, AutoResearchRunRequest):
-            preflight_auto_research_task_resume(self, previous, original)
+            preflight_auto_research_task_resume(self, previous)
         preflight_experiment_episode_recovery(self, previous, request=original)
         request = original.model_copy(
             update={"session_id": previous.native_session_id, **skill_update(skills)}

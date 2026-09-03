@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 import uuid
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -634,6 +636,136 @@ def test_stopping_episode_known_failure_precedes_remote_retry_probes(
     settled = store.episode(episode.episode_id)
     assert settled is not None and settled.status == "stopped"
     assert settled.stop_settled_at is not None
+    assert "auto_research_recovery_abandoned" in {
+        receipt.category for receipt in store.agent_task_receipts(root.operation_id)
+    }
+
+
+def test_retry_stop_during_missing_remote_stage_probe_abandons_and_settles(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    stage = tmp_path / "remote-stop-race-stage"
+    stage.mkdir()
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+
+    def missing_remote_stage(_stage, _root):
+        probe_started.set()
+        assert release_probe.wait(timeout=2)
+        return False
+
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
+        missing_remote_stage,
+    )
+
+    with TestClient(app) as client:
+        episode, root = create_recoverable_auto_episode(
+            store,
+            app.state.catalog.open(project_id).history,
+            project_id,
+            episode_id="remote-stage-stop-race",
+            status="failed",
+            stage=stage,
+            stage_host="worker.example",
+        )
+        retry_url = f"/api/projects/{project_id}/tasks/{root.operation_id}/retry"
+        stop_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop"
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                retry = executor.submit(client.post, retry_url)
+                assert probe_started.wait(timeout=2)
+                stopped = client.post(stop_url)
+                assert stopped.status_code == 200, stopped.text
+                assert stopped.json()["status"] == "stopping"
+                release_probe.set()
+                refused = retry.result(timeout=2)
+        finally:
+            release_probe.set()
+
+    assert refused.status_code == 409, refused.text
+    settled = store.episode(episode.episode_id)
+    assert settled is not None and settled.status == "stopped"
+    assert settled.stop_settled_at is not None
+    assert store.auto_research_task_recovery_child(root.operation_id) is None
+    assert "auto_research_recovery_abandoned" in {
+        receipt.category for receipt in store.agent_task_receipts(root.operation_id)
+    }
+
+
+def test_clean_retry_stop_during_final_admission_abandons_and_settles(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    tasks = app.state.background_tasks
+    store = tasks.store
+    service = app.state.catalog.open(project_id)
+    stage = tmp_path / "clean-retry-stop-race-stage"
+    stage.mkdir()
+    admission_started = threading.Event()
+    release_admission = threading.Event()
+    create_and_spawn = tasks._create_and_spawn
+
+    def blocked_create_and_spawn(*args, **kwargs):
+        admission_started.set()
+        assert release_admission.wait(timeout=2)
+        return create_and_spawn(*args, **kwargs)
+
+    monkeypatch.setattr(tasks, "_create_and_spawn", blocked_create_and_spawn)
+    monkeypatch.setattr(
+        service.launcher,
+        "readiness",
+        lambda provider, **_kwargs: ProviderReadiness(
+            provider=provider,
+            installed=True,
+            authenticated=True,
+            path_state="resolved",
+        ),
+    )
+
+    with TestClient(app) as client:
+        episode, root = create_recoverable_auto_episode(
+            store,
+            service.history,
+            project_id,
+            episode_id="clean-retry-stop-race",
+            status="failed",
+            stage=stage,
+        )
+        store.record_agent_task_receipt(
+            root.operation_id,
+            "provider_terminal_error",
+            {"classification": "session_limit"},
+        )
+        retry_url = f"/api/projects/{project_id}/tasks/{root.operation_id}/retry"
+        stop_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop"
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                retry = executor.submit(client.post, retry_url)
+                assert admission_started.wait(timeout=2)
+                stopped = client.post(stop_url)
+                assert stopped.status_code == 200, stopped.text
+                assert stopped.json()["status"] == "stopping"
+                release_admission.set()
+                refused = retry.result(timeout=2)
+        finally:
+            release_admission.set()
+
+    assert refused.status_code == 409, refused.text
+    settled = store.episode(episode.episode_id)
+    assert settled is not None and settled.status == "stopped"
+    assert settled.stop_settled_at is not None
+    assert store.auto_research_task_recovery_child(root.operation_id) is None
     assert "auto_research_recovery_abandoned" in {
         receipt.category for receipt in store.agent_task_receipts(root.operation_id)
     }
