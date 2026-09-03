@@ -460,6 +460,127 @@ def test_temporary_artifact_revision_preserves_an_edit_at_atomic_publication(
     assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
 
 
+@pytest.mark.parametrize(
+    "newest",
+    [b"<p>newest external edit racing rollback</p>", b"<p>candidate</p>"],
+    ids=("different-bytes", "candidate-bytes-new-inode"),
+)
+def test_temporary_artifact_revision_preserves_a_save_that_races_rollback(
+    tmp_path: Path,
+    monkeypatch,
+    newest: bytes,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    target = artifacts / "result.html"
+    original = b"<p>original</p>"
+    external = b"<p>external edit before publication</p>"
+    recovery = tmp_path / "recovery" / "turn-1"
+    target.write_bytes(original)
+    exchange = artifact_replace_module.exchange_regular_files
+    exchanges = 0
+
+    def save(data: bytes) -> None:
+        staged = target.with_name(".external-save")
+        staged.write_bytes(data)
+        os.replace(staged, target)
+
+    def save_then_exchange(
+        first_directory_fd: int,
+        first: str,
+        second_directory_fd: int,
+        second: str,
+    ) -> None:
+        nonlocal exchanges
+        exchanges += 1
+        if exchanges == 1:
+            save(external)
+        elif exchanges == 2:
+            save(newest)
+        exchange(first_directory_fd, first, second_directory_fd, second)
+
+    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", save_then_exchange)
+
+    replaced = replace_local_regular_file(
+        artifacts,
+        target.name,
+        b"<p>candidate</p>",
+        expected_sha256=hashlib.sha256(original).hexdigest(),
+        recovery_directory=recovery,
+    )
+
+    assert replaced is False
+    assert exchanges == 3
+    assert target.read_bytes() == newest
+    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
+
+
+def test_temporary_artifact_revision_recovers_a_save_displaced_by_rollback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    target = artifacts / "result.html"
+    original = b"<p>original</p>"
+    external = b"<p>external edit before publication</p>"
+    newest = b"<p>newest external edit racing rollback</p>"
+    candidate = b"<p>candidate</p>"
+    recovery = tmp_path / "recovery" / "turn-1"
+    target.write_bytes(original)
+    exchange = artifact_replace_module.exchange_regular_files
+    exchanges = 0
+
+    def save(data: bytes) -> None:
+        staged = target.with_name(".external-save")
+        staged.write_bytes(data)
+        os.replace(staged, target)
+
+    def save_exchange_then_crash(
+        first_directory_fd: int,
+        first: str,
+        second_directory_fd: int,
+        second: str,
+    ) -> None:
+        nonlocal exchanges
+        exchanges += 1
+        if exchanges == 1:
+            save(external)
+        elif exchanges == 2:
+            save(newest)
+            exchange(first_directory_fd, first, second_directory_fd, second)
+            raise OSError("simulated interruption after racing rollback")
+        exchange(first_directory_fd, first, second_directory_fd, second)
+
+    monkeypatch.setattr(
+        artifact_replace_module,
+        "exchange_regular_files",
+        save_exchange_then_crash,
+    )
+
+    with pytest.raises(OSError, match="simulated interruption after racing rollback"):
+        replace_local_regular_file(
+            artifacts,
+            target.name,
+            candidate,
+            expected_sha256=hashlib.sha256(original).hexdigest(),
+            recovery_directory=recovery,
+        )
+
+    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange)
+    replaced = replace_local_regular_file(
+        artifacts,
+        target.name,
+        candidate,
+        expected_sha256=hashlib.sha256(external).hexdigest(),
+        recovery_directory=recovery,
+    )
+
+    assert replaced is False
+    assert target.read_bytes() == newest
+    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
+
+
 def test_temporary_artifact_revision_ignores_an_agent_planted_recovery_marker(
     tmp_path: Path,
 ) -> None:

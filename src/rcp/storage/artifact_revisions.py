@@ -99,6 +99,21 @@ class ArtifactRevisionStoreMixin:
             ).fetchone()
         return self._artifact_revision_candidate_record(row) if row is not None else None
 
+    def unresolved_project_artifact_revision_candidates(
+        self,
+        project_id: str,
+    ) -> tuple[ArtifactRevisionCandidateRecord, ...]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM artifact_revision_candidates
+                WHERE project_id = ? AND status IN ('pending', 'accepting', 'conflicted')
+                ORDER BY source_operation_id, source_artifact_id
+                """,
+                (project_id,),
+            ).fetchall()
+        return tuple(self._artifact_revision_candidate_record(row) for row in rows)
+
     def begin_artifact_revision_acceptance(
         self,
         candidate_id: str,

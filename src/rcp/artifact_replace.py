@@ -11,6 +11,8 @@ import stat
 import sys
 from contextlib import suppress
 
+_ROLLBACK_EXCHANGE_ATTEMPTS = 8
+
 
 def replace_regular_file_in_open_directory(
     directory_fd: int,
@@ -31,8 +33,9 @@ def replace_regular_file_in_open_directory(
         replacement_name = f".rcp-artifact-{secrets.token_hex(16)}"
     else:
         name_hash = hashlib.sha256(name.encode("utf-8")).hexdigest()[:24]
+        replacement_token = secrets.token_hex(8)
         replacement_name = (
-            f".rcp-artifact-{name_hash}-{expected_sha256}-{candidate_sha256}-{secrets.token_hex(8)}"
+            f".rcp-artifact-{name_hash}-{expected_sha256}-{candidate_sha256}-{replacement_token}"
         )
     descriptor = os.open(
         replacement_name,
@@ -64,35 +67,54 @@ def replace_regular_file_in_open_directory(
             os.fsync(recovery_directory_fd)
             return True
 
+        candidate_written_sha256, candidate_fingerprint, candidate_stable = _regular_file_state(
+            recovery_directory_fd, replacement_name
+        )
+        if not candidate_stable or candidate_written_sha256 != candidate_sha256:
+            raise ValueError("artifact replacement candidate did not stabilize")
+        pending_name = (
+            f".rcp-artifact-{name_hash}-{expected_sha256}-{candidate_sha256}-"
+            f"{candidate_fingerprint}-{replacement_token}"
+        )
+        os.rename(
+            replacement_name,
+            pending_name,
+            src_dir_fd=recovery_directory_fd,
+            dst_dir_fd=recovery_directory_fd,
+        )
+        replacement_name = pending_name
+        os.fsync(recovery_directory_fd)
         replacement_holds_candidate = False
         exchange_regular_files(recovery_directory_fd, replacement_name, directory_fd, name)
         os.fsync(directory_fd)
         os.fsync(recovery_directory_fd)
-        try:
-            displaced_sha256, displaced_stable = _regular_file_digest(
-                recovery_directory_fd, replacement_name
-            )
-        except (OSError, ValueError):
-            displaced_sha256, displaced_stable = "", False
+        displaced_sha256, displaced_fingerprint, displaced_stable = _regular_file_state(
+            recovery_directory_fd, replacement_name
+        )
         if displaced_stable and displaced_sha256 == expected_sha256:
             os.unlink(replacement_name, dir_fd=recovery_directory_fd)
             os.fsync(recovery_directory_fd)
             return True
-
-        exchange_regular_files(recovery_directory_fd, replacement_name, directory_fd, name)
-        os.fsync(directory_fd)
-        os.fsync(recovery_directory_fd)
-        try:
-            restored_sha256, restored_stable = _regular_file_digest(
-                recovery_directory_fd, replacement_name
-            )
-        except (OSError, ValueError):
-            restored_sha256, restored_stable = "", False
-        if restored_stable and restored_sha256 == candidate_sha256:
-            replacement_holds_candidate = True
-            os.unlink(replacement_name, dir_fd=recovery_directory_fd)
-            replacement_holds_candidate = False
-            os.fsync(recovery_directory_fd)
+        if not displaced_stable:
+            raise ValueError("artifact displaced during publication did not stabilize")
+        replacement_name = _rename_regular_file_rollback(
+            recovery_directory_fd,
+            replacement_name,
+            name_hash=name_hash,
+            expected_live_fingerprint=candidate_fingerprint,
+            desired_fingerprint=displaced_fingerprint,
+            token=replacement_token,
+        )
+        _complete_regular_file_rollback(
+            directory_fd,
+            recovery_directory_fd,
+            name,
+            replacement_name,
+            name_hash=name_hash,
+            expected_live_fingerprint=candidate_fingerprint,
+            desired_fingerprint=displaced_fingerprint,
+            token=replacement_token,
+        )
         return False
     except BaseException:
         if replacement_holds_candidate:
@@ -119,19 +141,48 @@ def _recover_regular_file_replacements(
     name: str,
 ) -> None:
     name_hash = hashlib.sha256(name.encode("utf-8")).hexdigest()[:24]
-    pattern = re.compile(
-        rf"[.]rcp-artifact-{name_hash}-([0-9a-f]{{64}})-([0-9a-f]{{64}})-[0-9a-f]{{16}}"
+    pending_pattern = re.compile(
+        rf"[.]rcp-artifact-{name_hash}-([0-9a-f]{{64}})-([0-9a-f]{{64}})-"
+        rf"([0-9a-f]{{64}})-([0-9a-f]{{16}})"
+    )
+    staged_pattern = re.compile(
+        rf"[.]rcp-artifact-{name_hash}-([0-9a-f]{{64}})-([0-9a-f]{{64}})-([0-9a-f]{{16}})"
+    )
+    rollback_pattern = re.compile(
+        rf"[.]rcp-artifact-{name_hash}-rollback-"
+        rf"([0-9a-f]{{64}})-([0-9a-f]{{64}})-([0-9a-f]{{16}})"
     )
     for replacement_name in sorted(os.listdir(recovery_directory_fd)):
-        matched = pattern.fullmatch(replacement_name)
-        if matched is None:
+        rollback = rollback_pattern.fullmatch(replacement_name)
+        if rollback is not None:
+            expected_live_fingerprint, desired_fingerprint, token = rollback.groups()
+            _complete_regular_file_rollback(
+                directory_fd,
+                recovery_directory_fd,
+                name,
+                replacement_name,
+                name_hash=name_hash,
+                expected_live_fingerprint=expected_live_fingerprint,
+                desired_fingerprint=desired_fingerprint,
+                token=token,
+            )
             continue
-        expected_sha256, candidate_sha256 = matched.groups()
-        replacement_sha256, replacement_stable = _regular_file_digest(
+        matched = pending_pattern.fullmatch(replacement_name)
+        if matched is not None:
+            expected_sha256, candidate_sha256, candidate_fingerprint, token = matched.groups()
+        else:
+            staged = staged_pattern.fullmatch(replacement_name)
+            if staged is None:
+                continue
+            expected_sha256, candidate_sha256, token = staged.groups()
+            candidate_fingerprint = None
+        replacement_sha256, replacement_fingerprint, replacement_stable = _regular_file_state(
             recovery_directory_fd, replacement_name
         )
         try:
-            current_sha256, current_stable = _regular_file_digest(directory_fd, name)
+            current_sha256, current_fingerprint, current_stable = _regular_file_state(
+                directory_fd, name
+            )
         except FileNotFoundError:
             if replacement_sha256 == candidate_sha256:
                 os.unlink(replacement_name, dir_fd=recovery_directory_fd)
@@ -147,25 +198,123 @@ def _recover_regular_file_replacements(
             continue
         if not replacement_stable or not current_stable:
             raise ValueError("artifact replacement recovery found changing source bytes")
-        if current_sha256 == candidate_sha256 and replacement_sha256 not in {
+        if (
+            replacement_sha256 not in {expected_sha256, candidate_sha256}
+            and candidate_fingerprint is not None
+            and current_fingerprint == candidate_fingerprint
+        ):
+            replacement_name = _rename_regular_file_rollback(
+                recovery_directory_fd,
+                replacement_name,
+                name_hash=name_hash,
+                expected_live_fingerprint=current_fingerprint,
+                desired_fingerprint=replacement_fingerprint,
+                token=token,
+            )
+            _complete_regular_file_rollback(
+                directory_fd,
+                recovery_directory_fd,
+                name,
+                replacement_name,
+                name_hash=name_hash,
+                expected_live_fingerprint=current_fingerprint,
+                desired_fingerprint=replacement_fingerprint,
+                token=token,
+            )
+            continue
+        if replacement_sha256 not in {
             expected_sha256,
             candidate_sha256,
         }:
-            exchange_regular_files(recovery_directory_fd, replacement_name, directory_fd, name)
-            os.fsync(directory_fd)
-            os.fsync(recovery_directory_fd)
-            restored_sha256, restored_stable = _regular_file_digest(
-                recovery_directory_fd, replacement_name
-            )
-            if not restored_stable or restored_sha256 != candidate_sha256:
+            if candidate_fingerprint is None:
                 raise ValueError("artifact replacement recovery preserved concurrent edits")
-        elif replacement_sha256 not in {expected_sha256, candidate_sha256}:
-            raise ValueError("artifact replacement recovery preserved concurrent edits")
+            os.unlink(replacement_name, dir_fd=recovery_directory_fd)
+            os.fsync(recovery_directory_fd)
+            continue
         os.unlink(replacement_name, dir_fd=recovery_directory_fd)
         os.fsync(recovery_directory_fd)
 
 
+def _rename_regular_file_rollback(
+    recovery_directory_fd: int,
+    replacement_name: str,
+    *,
+    name_hash: str,
+    expected_live_fingerprint: str,
+    desired_fingerprint: str,
+    token: str,
+) -> str:
+    rollback_name = (
+        f".rcp-artifact-{name_hash}-rollback-"
+        f"{expected_live_fingerprint}-{desired_fingerprint}-{token}"
+    )
+    if rollback_name != replacement_name:
+        os.rename(
+            replacement_name,
+            rollback_name,
+            src_dir_fd=recovery_directory_fd,
+            dst_dir_fd=recovery_directory_fd,
+        )
+        os.fsync(recovery_directory_fd)
+    return rollback_name
+
+
+def _complete_regular_file_rollback(
+    directory_fd: int,
+    recovery_directory_fd: int,
+    name: str,
+    replacement_name: str,
+    *,
+    name_hash: str,
+    expected_live_fingerprint: str,
+    desired_fingerprint: str,
+    token: str,
+) -> None:
+    """Restore the newest displaced bytes and retain a resumable exchange state."""
+
+    for _ in range(_ROLLBACK_EXCHANGE_ATTEMPTS):
+        _, replacement_fingerprint, replacement_stable = _regular_file_state(
+            recovery_directory_fd, replacement_name
+        )
+        _, current_fingerprint, current_stable = _regular_file_state(directory_fd, name)
+        if not replacement_stable or not current_stable:
+            raise ValueError("artifact replacement rollback found changing source bytes")
+        if replacement_fingerprint == expected_live_fingerprint:
+            os.unlink(replacement_name, dir_fd=recovery_directory_fd)
+            os.fsync(recovery_directory_fd)
+            return
+        if replacement_fingerprint == desired_fingerprint:
+            if current_fingerprint != expected_live_fingerprint:
+                os.unlink(replacement_name, dir_fd=recovery_directory_fd)
+                os.fsync(recovery_directory_fd)
+                return
+        elif current_fingerprint == desired_fingerprint:
+            expected_live_fingerprint = current_fingerprint
+            desired_fingerprint = replacement_fingerprint
+            replacement_name = _rename_regular_file_rollback(
+                recovery_directory_fd,
+                replacement_name,
+                name_hash=name_hash,
+                expected_live_fingerprint=expected_live_fingerprint,
+                desired_fingerprint=desired_fingerprint,
+                token=token,
+            )
+        else:
+            os.unlink(replacement_name, dir_fd=recovery_directory_fd)
+            os.fsync(recovery_directory_fd)
+            return
+        exchange_regular_files(recovery_directory_fd, replacement_name, directory_fd, name)
+        os.fsync(directory_fd)
+        os.fsync(recovery_directory_fd)
+    raise ValueError("artifact replacement rollback did not stabilize")
+
+
 def _regular_file_digest(directory_fd: int, name: str) -> tuple[str, bool]:
+    digest, _, stable = _regular_file_state(directory_fd, name)
+    return digest, stable
+
+
+def _regular_file_state(directory_fd: int, name: str) -> tuple[str, str, bool]:
     descriptor = os.open(
         name,
         os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
@@ -201,7 +350,18 @@ def _regular_file_digest(directory_fd: int, name: str) -> tuple[str, bool]:
             path.st_mtime_ns,
             path.st_ctime_ns,
         )
-        return digest.hexdigest(), initial_identity == final_identity == path_identity
+        digest_sha256 = digest.hexdigest()
+        fingerprint_identity = (
+            path.st_dev,
+            path.st_ino,
+            stat.S_IFMT(path.st_mode),
+            path.st_size,
+            path.st_mtime_ns,
+        )
+        fingerprint = hashlib.sha256(
+            (":".join(str(value) for value in fingerprint_identity) + ":" + digest_sha256).encode()
+        ).hexdigest()
+        return digest_sha256, fingerprint, initial_identity == final_identity == path_identity
     finally:
         os.close(descriptor)
 

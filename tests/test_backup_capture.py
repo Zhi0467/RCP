@@ -274,6 +274,7 @@ def _project_inventory(
                 source_name="figure.png",
                 media_type="image/png",
                 expected_size_bytes=len(artifact),
+                expected_sha256=hashlib.sha256(artifact).hexdigest(),
                 kept_filename="kept-figure.png",
                 kept_at="2026-08-29T12:00:00+00:00",
             ),
@@ -397,6 +398,87 @@ def test_project_file_capture_selects_only_typed_sources_and_chat_snapshot_prefi
         captured = receipt_path.parent / entry.archive_path
         assert captured.is_file()
         assert hashlib.sha256(captured.read_bytes()).hexdigest() == entry.sha256
+
+
+@pytest.mark.parametrize("remote_reader", [False, True], ids=("local", "remote"))
+@pytest.mark.parametrize("race", ["pending_accept", "interrupted_accept"])
+def test_unresolved_kept_artifact_revision_race_marks_project_uncaptured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    remote_reader: bool,
+    race: str,
+) -> None:
+    data_dir = tmp_path / "data"
+    project_id = str(uuid.uuid4())
+    inventory, repository = _project_inventory(
+        tmp_path,
+        project_id=project_id,
+        task_id=str(uuid.uuid4()),
+        with_files=True,
+    )
+    receipt_path, receipt_sha256 = _sqlite_capture_with_projects(data_dir, (inventory,))
+    target = repository / "artifacts" / "kept-figure.png"
+    candidate = b"agent rewrite"
+    assert len(candidate) == target.stat().st_size
+    local_workspace = project_files.state_workspace_for_probe(
+        load_manifest(inventory.locator or ""),
+        data_dir,
+    )
+    reads = 0
+
+    def maybe_accept() -> None:
+        nonlocal reads
+        reads += 1
+        if race == "pending_accept" and reads == 2:
+            staged = target.with_name(".accepted-candidate")
+            staged.write_bytes(candidate)
+            os.replace(staged, target)
+
+    if race == "interrupted_accept":
+        target.write_bytes(candidate)
+
+    if remote_reader:
+        workspace = SSHStateWorkspace(
+            tmp_path / "remote-cache" / ".research",
+            "research.example",
+            str(repository),
+        )
+
+        def remote_read(arguments: list[str], *, timeout: float = 30):
+            maybe_accept()
+            return subprocess.CompletedProcess(arguments, 0, target.read_bytes(), b"")
+
+        monkeypatch.setattr(workspace, "_ssh_bytes", remote_read)
+        monkeypatch.setattr(
+            workspace,
+            "backup_source_root",
+            lambda _destination: local_workspace.root,
+        )
+    else:
+        workspace = local_workspace
+        read_kept_artifact = workspace.read_kept_artifact
+
+        def local_read(name: str, *, max_bytes: int = 16 * 1024 * 1024) -> bytes:
+            maybe_accept()
+            return read_kept_artifact(name, max_bytes=max_bytes)
+
+        monkeypatch.setattr(workspace, "read_kept_artifact", local_read)
+
+    monkeypatch.setattr(project_files, "state_workspace_for_probe", lambda *_args: workspace)
+
+    receipt = (
+        BackupProjectFileCaptureCoordinator(data_dir)
+        .capture(
+            receipt_path,
+            expected_sha256=receipt_sha256,
+        )
+        .receipt
+    )
+
+    assert reads >= 2
+    assert receipt.projects[0].status == "uncaptured"
+    assert receipt.status == "partial"
+    assert not (receipt_path.parent / "projects" / project_id).exists()
 
 
 def test_one_unavailable_ssh_project_does_not_spoil_a_healthy_capture(

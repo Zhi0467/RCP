@@ -531,8 +531,11 @@ class BackupProjectFileCaptureCoordinator:
             if (
                 reference.expected_size_bytes is not None
                 and len(data) != reference.expected_size_bytes
+            ) or (
+                reference.expected_sha256 is not None
+                and hashlib.sha256(data).hexdigest() != reference.expected_sha256
             ):
-                raise BackupProjectFileUnavailable("A kept artifact size differs from SQLite.")
+                raise BackupProjectFileUnavailable("A kept artifact differs from SQLite.")
             files.append(
                 write_bytes_entry(
                     data,
