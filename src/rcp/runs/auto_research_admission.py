@@ -1392,10 +1392,21 @@ def retry_auto_research_task(
     problem: str | None = None
     if previous.stage_root:
         if previous.stage_host:
-            if (
-                RemoteRunStage(previous.stage_host).directory_exists(previous.stage_root)
-                is not True
-            ):
+            try:
+                available = RemoteRunStage(previous.stage_host).directory_exists(
+                    previous.stage_root
+                )
+            except Exception as exc:
+                raise OSError(
+                    "The saved provider workspace could not be checked because its remote "
+                    "infrastructure is unavailable."
+                ) from exc
+            if available is None:
+                raise OSError(
+                    "The saved provider workspace could not be checked because its remote "
+                    "infrastructure is unavailable."
+                )
+            if available is False:
                 problem = "the saved provider workspace is unavailable"
         else:
             stage = Path(previous.stage_root)

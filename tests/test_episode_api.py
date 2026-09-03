@@ -77,6 +77,7 @@ def create_recoverable_auto_episode(
     episode_id: str,
     status: str,
     stage: Path,
+    stage_host: str | None = None,
 ) -> tuple[EpisodeRecord, AgentTaskRecord]:
     episode_id = str(
         uuid.UUID(bytes=hashlib.sha256(episode_id.encode("utf-8")).digest()[:16], version=4)
@@ -158,6 +159,7 @@ def create_recoverable_auto_episode(
     store.checkpoint_agent_task(
         root.operation_id,
         native_session_id="recoverable-session",
+        stage_host=stage_host,
         stage_root=str(stage),
     )
     if status == "failed":
@@ -439,10 +441,71 @@ def test_stopping_episode_recovery_controls_execute_exact_allocation(
     assert store.episode_report(episode.episode_id) is None
 
 
-@pytest.mark.parametrize("unusable", ["missing_stage", "clean_session"])
+@pytest.mark.parametrize(
+    ("status", "action"),
+    [("failed", "retry"), ("interrupted", "resume")],
+)
+def test_stopping_episode_remote_outage_preserves_recovery(
+    manifest,
+    tmp_path,
+    monkeypatch,
+    status: str,
+    action: str,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store = app.state.background_tasks.store
+    stage = tmp_path / f"remote-{action}-stage"
+    stage.mkdir()
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
+        lambda _stage, _root: None,
+    )
+
+    with TestClient(app) as client:
+        episode, root = create_recoverable_auto_episode(
+            store,
+            app.state.catalog.open(project_id).history,
+            project_id,
+            episode_id=f"remote-{action}",
+            status=status,
+            stage=stage,
+            stage_host="worker.example",
+        )
+        stopped = client.post(f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop")
+        assert stopped.status_code == 200, stopped.text
+
+        unavailable = client.post(f"/api/projects/{project_id}/tasks/{root.operation_id}/{action}")
+
+    assert unavailable.status_code == 503, unavailable.text
+    assert unavailable.json() == {
+        "detail": (
+            "The saved provider workspace could not be checked because its remote "
+            "infrastructure is unavailable."
+        )
+    }
+    current = store.episode(episode.episode_id)
+    assert current is not None and current.status == "stopping"
+    assert current.stop_settled_at is None
+    assert store.auto_research_task_recovery_child(root.operation_id) is None
+    preserved = store.agent_task(root.operation_id)
+    assert preserved is not None
+    assert preserved.can_resume is (action == "resume")
+    assert preserved.can_retry is True
+    assert "auto_research_recovery_abandoned" not in {
+        receipt.category for receipt in store.agent_task_receipts(root.operation_id)
+    }
+
+
+@pytest.mark.parametrize(
+    "unusable",
+    ["missing_stage", "missing_remote_stage", "clean_session"],
+)
 def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
     manifest,
     tmp_path,
+    monkeypatch,
     unusable: str,
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -452,6 +515,11 @@ def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
     stage = tmp_path / f"{unusable}-stage"
     if unusable == "clean_session":
         stage.mkdir()
+    elif unusable == "missing_remote_stage":
+        monkeypatch.setattr(
+            "rcp.runs.auto_research_admission.RemoteRunStage.directory_exists",
+            lambda _stage, _root: False,
+        )
 
     with TestClient(app) as client:
         episode, root = create_recoverable_auto_episode(
@@ -461,6 +529,7 @@ def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
             episode_id=unusable,
             status="failed",
             stage=stage,
+            stage_host="worker.example" if unusable == "missing_remote_stage" else None,
         )
         if unusable == "clean_session":
             store.record_agent_task_receipt(

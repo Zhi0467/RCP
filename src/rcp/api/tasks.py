@@ -621,6 +621,8 @@ def resume_agent_task(
             skills=skills,
             authorized_by=authorized_by,
         ).model_dump(mode="json")
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     finally:
@@ -750,6 +752,8 @@ def retry_agent_task(
             authorized_by=authorized_by,
             **overrides,
         ).model_dump(mode="json")
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     finally:
