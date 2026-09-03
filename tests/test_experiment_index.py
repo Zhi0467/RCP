@@ -5,6 +5,7 @@ import hashlib
 import json
 import threading
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from fastapi.testclient import TestClient
 import rcp.api.app as api_app_module
 from rcp.agents import AgentEvent
 from rcp.api.app import create_app as create_raw_app
+from rcp.api.index import SpaceRunIndexEntryResponse, _space_run_is_visible
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -394,6 +396,68 @@ def test_experiment_index_uses_one_coherent_runtime_snapshot_per_project(
     assert entry["control"]["invocation_ceiling"] == 3
     assert entry["control"]["operational"]["current_operation_id"] == "current-loop"
     assert entry["control"]["operational"]["current_status"] == "succeeded"
+
+
+def test_space_runs_aggregates_experiment_and_auto_research_parents(
+    manifest, tmp_path: Path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, current_episode = _seed_indexed_project(app)
+    parent, child = _record_branch_target_child_experiment(app, node_id="exp/never-run")
+    client = TestClient(app)
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+
+    response = client.get("/api/space/runs")
+
+    assert response.status_code == 200, response.text
+    entries = response.json()
+    assert {(entry["mode"], entry["episode_id"]) for entry in entries} == {
+        ("experiment_loop", current_episode),
+        ("experiment_loop", child.episode_id),
+        ("auto_research", parent.episode_id),
+    }
+    assert all(entry["project_id"] == project_id for entry in entries)
+    assert all(entry["project_name"] == manifest.name for entry in entries)
+    experiment = next(entry for entry in entries if entry["episode_id"] == current_episode)
+    assert experiment["experiment_id"] == "exp/launched"
+    assert experiment["run_section"] == "needs_action"
+    auto_research = next(entry for entry in entries if entry["episode_id"] == parent.episode_id)
+    assert auto_research["experiment_id"] is None
+    assert auto_research["title"] == "Auto-research"
+    assert auto_research["run_section"] == "needs_action"
+
+
+def test_space_runs_keeps_completed_parents_for_seven_days() -> None:
+    as_of = datetime(2026, 9, 2, 12, tzinfo=UTC)
+
+    def entry(last_activity_at: datetime, section: str) -> SpaceRunIndexEntryResponse:
+        return SpaceRunIndexEntryResponse(
+            episode_id=str(uuid.uuid4()),
+            project_id=str(uuid.uuid4()),
+            project_name="TTL project",
+            project_reachable=True,
+            mode="auto_research",
+            title="Auto-research",
+            graph_target=GraphTargetRef(kind="main"),
+            parent_episode_id=None,
+            experiment_id=None,
+            started_at=last_activity_at.isoformat(),
+            last_activity_at=last_activity_at.isoformat(),
+            health_label="Completed",
+            health_tone="completed",
+            run_section=section,
+        )
+
+    cutoff = as_of - timedelta(days=7)
+    assert _space_run_is_visible(entry(cutoff, "completed"), as_of=as_of) is True
+    assert (
+        _space_run_is_visible(entry(cutoff - timedelta(microseconds=1), "completed"), as_of=as_of)
+        is False
+    )
+    assert (
+        _space_run_is_visible(entry(cutoff - timedelta(days=30), "needs_action"), as_of=as_of)
+        is True
+    )
 
 
 def test_experiment_index_skips_an_orphan_main_runtime(manifest, tmp_path: Path) -> None:

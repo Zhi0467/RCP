@@ -10,6 +10,7 @@ import type {
   ProjectProvisioningResponse,
   ProjectSnapshot,
   ServerStatus,
+  SpaceRunIndexEntry,
   SpaceUserSummary,
   StartEpisodeRequest,
   TeamInvitation,
@@ -261,6 +262,10 @@ export function loadEpisodes(apiBase: string, mode?: EpisodeMode): Promise<Episo
 
 export function loadExperimentEpisodes(): Promise<ExperimentLoopIndexEntry[]> {
   return api<ExperimentLoopIndexEntry[]>("/api/episodes?mode=experiment_loop");
+}
+
+export function loadSpaceRuns(): Promise<SpaceRunIndexEntry[]> {
+  return api<SpaceRunIndexEntry[]>("/api/space/runs");
 }
 
 export function startEpisode(apiBase: string, request: StartEpisodeRequest): Promise<Episode> {

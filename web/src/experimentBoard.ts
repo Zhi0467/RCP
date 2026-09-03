@@ -5,6 +5,7 @@ import type {
   ExperimentLoopIndexEntry,
   GraphNode,
   GraphTargetRef,
+  SpaceRunIndexEntry,
   WatcherRecord,
 } from "./types";
 
@@ -32,6 +33,7 @@ export interface ExperimentExecutionProjection {
 }
 
 const INDEX_ROUTE_PREFIX = "rcp-index:";
+const RUNS_ROUTE_TOKEN = "rcp-runs";
 
 export function experimentTerminalLabel(status: unknown): string {
   if (status === "completed") return "Succeeded";
@@ -44,7 +46,20 @@ export function experimentBoardRouteToken(entry: ExperimentLoopIndexEntry): stri
   return `${INDEX_ROUTE_PREFIX}${JSON.stringify(experimentRouteIdentity(entry))}`;
 }
 
+export function spaceRunRouteToken(entry: SpaceRunIndexEntry): string {
+  if (!entry.experiment_id) return RUNS_ROUTE_TOKEN;
+  return `${INDEX_ROUTE_PREFIX}${JSON.stringify({
+    experiment_id: entry.experiment_id,
+    episode_id: entry.episode_id,
+    graph_target: entry.graph_target,
+    parent_episode_id: entry.parent_episode_id,
+  })}`;
+}
+
 export function experimentBoardHref(projectId: string, experimentSelection: string): string {
+  if (experimentSelection === RUNS_ROUTE_TOKEN) {
+    return `#/projects/${encodeURIComponent(projectId)}?view=runs`;
+  }
   const route = experimentRouteFromToken(experimentSelection);
   if (experimentSelection.startsWith(INDEX_ROUTE_PREFIX) && !route) {
     return `#/projects/${encodeURIComponent(projectId)}?view=runs`;

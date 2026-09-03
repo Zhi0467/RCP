@@ -660,6 +660,7 @@ export default function App() {
     projects,
     openProjectTabs,
     experimentLoops,
+    spaceRuns,
     projectHeaderCollapsed,
     isActiveProject,
     getActiveProjectId,
@@ -3024,7 +3025,7 @@ export default function App() {
           projects={projects}
           invitations={projectInvitations}
           onAnswerInvitation={answerProjectInvitation}
-          experimentLoops={experimentLoops}
+          spaceRuns={spaceRuns}
           onOpen={openProject}
           onOpenExperiment={openProject}
           onCreate={openSetup}

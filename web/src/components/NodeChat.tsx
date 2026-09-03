@@ -1509,13 +1509,15 @@ function InlineTaskProgress({ task }: { task: AgentTask | null }) {
     ? task.status_message || `${taskKindLabel(task.kind)} is running`
     : "Starting task";
   return (
-    <div className="chat-task-inline running" role="status" aria-label="Agent task running">
-      <LoaderCircle className="spin" size={12} />
-      <span>{label}</span>
-      <div className="chat-task-progress" role="progressbar" aria-label="Task in progress">
-        <span style={{ width: `${Math.round((task?.progress ?? 0) * 100)}%` }} />
+    <details className="chat-task-activity">
+      <summary>
+        <LoaderCircle className="spin" size={12} />
+        <span>Activity</span>
+      </summary>
+      <div className="chat-task-inline running" role="status" aria-label="Agent task running">
+        <span>{label}</span>
       </div>
-    </div>
+    </details>
   );
 }
 

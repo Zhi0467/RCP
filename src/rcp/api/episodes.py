@@ -260,6 +260,7 @@ def serialize_episode(
     *,
     branch_summary: BranchSummaryResolver | None = None,
     projection_snapshot: ExperimentEpisodeProjectionSnapshot | None = None,
+    include_graph_branch: bool = True,
 ) -> EpisodeResponse:
     """Serialize one project-owned parent from its current durable ledgers."""
 
@@ -274,7 +275,7 @@ def serialize_episode(
         and episode.graph_target.kind == "branch"
         and episode.graph_target.branch_id == episode.episode_id
     )
-    if owns_graph_branch and branch_summary is None:
+    if owns_graph_branch and include_graph_branch and branch_summary is None:
         raise ValueError("a branch-target episode requires its strict graph branch summary")
 
     task_records = (
@@ -348,7 +349,9 @@ def serialize_episode(
         graph_target=episode.graph_target,
         graph_base_head=episode.graph_base_head,
         graph_branch=(
-            branch_summary(episode) if owns_graph_branch and branch_summary is not None else None
+            branch_summary(episode)
+            if owns_graph_branch and include_graph_branch and branch_summary is not None
+            else None
         ),
         root_operation_id=episode.root_operation_id,
         current_operation_id=current_operation_id,

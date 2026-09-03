@@ -102,11 +102,14 @@ caches never become canonical input or graph authority.
 
 ## Project index and identity
 
-The project index keeps project cards first and one distinct cross-project
-**Experiments** board below. The board includes only Experiments with loop
-history, orders actionable/active work before folded finished work, preserves
-last-known rows for unavailable projects, and navigates to the owning project's
-exact Runs detail. It grants no control outside that project.
+The project index keeps project cards first and one distinct space-level
+**Runs** ledger below. It aggregates the current Experiment-loop parent selected
+by each Experiment's backend control with Auto-research parents across visible
+projects. **Needs Action** stays unfolded and mixes both modes in reverse
+chronological order; **Completed** folds by Experiment loop then Auto-research.
+The backend owns membership, lifecycle placement, health, project identity, and
+the exact Experiment route. The space ledger keeps completed parents for seven
+days, without deleting episode records or changing project Runs or History.
 
 The index header contains the compact current-human identity control. An unnamed
 personal owner sees **Sign in** as naming the durable local identity, not creating
@@ -445,6 +448,12 @@ never switch to branch truth. An exact branch Experiment route may show branch
 history and its transcript, but its chat/composer and repair controls are
 read-only until a deliberate branch conversation authority is designed. Generic
 main NodeChat cannot reuse the branch-bound conversation or native session.
+
+The space project index reuses these same backend lifecycle projections in a
+summary ledger. It does not derive a second status machine from task or episode
+fields. Its seven-day completed window is presentation-only; active and
+actionable parents remain visible regardless of age, and project-scoped Runs and
+History retain their existing complete records.
 
 ### Chats
 

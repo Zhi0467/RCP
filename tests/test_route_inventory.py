@@ -36,6 +36,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("PATCH",), "/api/team/space"),
     (("GET",), "/api/projects"),
     (("GET",), "/api/episodes"),
+    (("GET",), "/api/space/runs"),
     (("GET",), "/api/space/users"),
     (("GET",), "/api/project-invitations"),
     (("POST",), "/api/project-invitations/{invitation_id}/{response}"),
@@ -198,6 +199,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "graph_transition_manifest": "src/rcp/api/history.py",
     "health": "src/rcp/api/health.py",
     "server_status": "src/rcp/api/server_status.py",
+    "space_runs": "src/rcp/api/index.py",
     "history": "src/rcp/api/history.py",
     "history_summaries": "src/rcp/api/history.py",
     "invite_project_member": "src/rcp/api/project_state.py",
@@ -293,15 +295,15 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 119
-    assert len(_FROZEN_ROUTE_INVENTORY) == 119
+    assert len(entries) == 120
+    assert len(_FROZEN_ROUTE_INVENTORY) == 120
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 115
+    assert sum(isinstance(route, APIRoute) for route in routes) == 116
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4
 
 
@@ -316,5 +318,5 @@ def test_handler_module_map_is_separate_and_current(route_app: FastAPI) -> None:
         assert source is not None
         observed[endpoint.__name__] = str(Path(source).resolve().relative_to(repository_root))
 
-    assert len(observed) == 108
+    assert len(observed) == 109
     assert observed == _HANDLER_MODULE_MAP

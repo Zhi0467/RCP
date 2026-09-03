@@ -8,10 +8,13 @@ covered_by:
   - tests/test_service_contracts.py
   - tests/test_transition_api.py
   - tests/test_transition_control_projection.py
+  - tests/test_experiment_index.py
   - web/tests/attentionRunsOntology.test.mjs
   - web/tests/decisionChoice.test.mjs
   - web/tests/experimentRunDetail.test.mjs
+  - web/tests/runDialog.test.mjs
   - web/tests/runProjection.test.mjs
+  - web/tests/spaceRuns.test.mjs
   - web/tests/transitionAppIntegration.test.mjs
   - web/tests/transitionPresentation.test.mjs
 invariants: [3, 10]
@@ -77,7 +80,8 @@ but task surfaces do not show an estimated progress bar, percentage, or ETA.
    the active Research flow, no longer gates its Experiment, and any affected
    summary or next action is explicitly stale rather than shown as current.
 8. Open Runs with active and completed episodes of both modes, then project
-   History, then inspect a terminal task.
+   History, then inspect a terminal task. Return to the space project index and
+   inspect its Runs ledger across projects.
 
 ## Assert
 
@@ -125,6 +129,11 @@ but task surfaces do not show an estimated progress bar, percentage, or ETA.
 - Seed, Refresh, Blockers, node chat, project chat, and paper-coach tasks do not
   become Runs rows. They remain reachable in Inbox, project History, episode
   detail, and the Agent task inspector as applicable.
+- The space index Runs ledger mixes current Experiment-loop and Auto-research
+  parents under the same Needs Action and folded Completed grammar, carries the
+  owning project and exact Experiment route, and uses backend lifecycle answers.
+  Completed parents leave this space-only surface after seven days; episode
+  records, project Runs, and project History remain unchanged.
 - Active, failed, succeeded, interrupted, and paused tasks show no progress bar,
   percentage, or ETA in the task inspector.
 - No console, network, or server error occurs.
