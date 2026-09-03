@@ -142,6 +142,11 @@ GitHub exit proof, observed 2026-09-03 (UTC):
   release targets the build commit, the `v0.3.2` tag resolves to `974084f`, and
   the three downloaded assets are byte-identical to the `build/291` assets and
   verify against the manifest. `v0.3.2` is the first `stable`.
+- After the version-bump PR #26 merged as `0d53b1d`, its `main` run published
+  `build/309` (`rcp-0.3.3+build.309.g0d53b1d`). The human promoted it to
+  `v0.3.3` (run 33726666549, 16:5x); the tag resolves to `0d53b1d`, the release
+  is `latest`, and all three assets are byte-identical to the build's. Later
+  merges to `main` are served to the lab from source and were not promoted.
 - The prune workflow dispatched in dry-run mode (run 33719387541, 05:34) listed
   no stale builds, all being younger than thirty days, and deleted nothing.
 
@@ -179,6 +184,25 @@ Lab receipts, 2026-09-03 (UTC), host `wth-gpu-01`, installation
 3. 05:29 the human deleted the GitHub deploy key; the repository has none.
 4. 05:30 `rcp server update` fetched over HTTPS with no key and no grant prompt
    (`FETCH_HEAD` 05:30:22) and reported already current.
+5. 16:38 `rcp server update` from `8dc68e1` to `0684bc4` was refused at the
+   copied-state rehearsal with `migration ledger is invalid`. Cause: Phase 0
+   made the store refuse a ledger that differs from its own, and
+   `build_rehearsal_overlay` recorded the running release's startup-recovery
+   expectation only after the candidate had migrated the copy (ledger 5 to 7).
+   Every update that adds a migration was refused by the release already
+   serving; the 05:20 update that added ledger row 5 had passed only because
+   `accb589` had no ledger check. PR #28 (`5b5947b`) records the expectation on
+   the unmigrated copy. A hand edit of the running release's file was refused
+   by `server doctor` (dirty release tree) and `server install` refuses to move
+   the release pointer, so no tool path existed for the running release.
+6. 17:28 the refused update had already built `releases/5b5947b`. 17:35 the
+   human stopped `rcp.service`, copied `data/rcp.sqlite3` (sha256 `d8df42fd…`)
+   to `manual-checkpoint-2026-09-03/`, replaced the `/etc/rcp/current` symlink
+   atomically, and started the service. Health: `running_commit 5b5947b`,
+   `version 0.3.3`, `schema_ledger_head 7`; `server doctor` healthy;
+   `rcp server update` reports already current. This one manual cutover is
+   the only deviation from the update path in this migration; releases from
+   `5b5947b` on rehearse candidates with added migrations normally.
 
 Enforcement record: `main` protection requires the five CI jobs, includes
 administrators, and forbids force pushes and deletion; PR #14 stayed `BLOCKED`
