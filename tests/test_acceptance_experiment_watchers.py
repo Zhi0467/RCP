@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from rcp.agents import acceptance
 from rcp.agents.acceptance import ACCEPTANCE_GENERIC_WATCHER_MARKER
 from rcp.core.models import Patch
 from rcp.storage import AgentTaskRecord, AppStore, WatcherRecord
+from rcp.watchers import WatchSpec, run_watcher_check
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -215,26 +217,6 @@ def _poll_after_due(app, watchers: list[WatcherRecord]) -> None:
     app.state.watcher_poller.clock = lambda: "2100-01-01T00:00:00+00:00"
 
 
-def _wait_for_fixture_jobs(watchers: list[WatcherRecord], *, timeout: float = 30.0) -> None:
-    """Let every detached fixture job finish before a poller can observe the group.
-
-    Each job is its own process sleeping from its own start, so under load one
-    ``.done`` file can land a poll interval ahead of the other. Delivering a wake
-    for the watcher that genuinely finished first is correct — coalescing joins
-    the watchers already complete at delivery, it does not wait for stragglers —
-    so a test about one coalesced wake must settle the jobs before polling starts.
-    """
-
-    deadline = time.monotonic() + timeout
-    pending = [Path(watcher.log_path).with_suffix(".done") for watcher in watchers]
-    while time.monotonic() < deadline:
-        if all(path.is_file() for path in pending):
-            return
-        time.sleep(0.02)
-    missing = [str(path) for path in pending if not path.is_file()]
-    raise AssertionError(f"detached fixture jobs did not finish within {timeout}s: {missing}")
-
-
 def _assert_completed_job_artifacts(watchers: list[WatcherRecord]) -> None:
     for watcher in watchers:
         log_path = Path(watcher.log_path)
@@ -243,9 +225,165 @@ def _assert_completed_job_artifacts(watchers: list[WatcherRecord]) -> None:
         assert log_path.with_suffix(".done").read_text(encoding="utf-8") == "done\n"
 
 
-def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
-    manifest, tmp_path: Path
+def _fixture_job_logs(cwd: Path) -> list[Path]:
+    """The log paths the fixture's watcher checks are built against."""
+
+    return [Path(spec["log_path"]) for spec in acceptance._watch_specs(cwd)]
+
+
+def _complete_fixture_job_artifacts(log_paths: Iterable[Path]) -> None:
+    """Write what a finished fixture job leaves behind, exactly as the real one does."""
+
+    for log_path in log_paths:
+        name = log_path.stem
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{name}: completed\n")
+        log_path.with_suffix(".status").write_text("completed\n", encoding="utf-8")
+        log_path.with_suffix(".done").write_text("done\n", encoding="utf-8")
+
+
+def _double_fixture_jobs(monkeypatch: pytest.MonkeyPatch, *, finished: bool) -> None:
+    """Put the fixture's job artifacts under the test's control instead of a clock.
+
+    The real fixture spawns two detached interpreters that sleep for
+    `ACCEPTANCE_AGENT_JOB_SECONDS` before writing their markers, so both the
+    arming check and the first poll after a restart race those processes.
+    Shortening the sleep only biases that race. Writing the same artifacts
+    directly decides each stage outright.
+
+    ``finished=False`` leaves them mid-run, which is the state S42 needs while
+    RCP is still up, and it also makes both markers appear together later, so
+    no poll can ever see a real subset of the group.
+    """
+
+    def start(cwd: Path) -> None:
+        log_paths = _fixture_job_logs(cwd)
+        for log_path in log_paths:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(f"{log_path.stem}: started\n", encoding="utf-8")
+            log_path.with_suffix(".status").write_text("running\n", encoding="utf-8")
+        if finished:
+            _complete_fixture_job_artifacts(log_paths)
+
+    monkeypatch.setattr(acceptance, "_start_fixture_jobs", start)
+
+
+def test_the_detached_fixture_jobs_write_what_their_watcher_checks_ask_for(
+    tmp_path: Path,
 ) -> None:
+    """Ask the real launcher directly, since two tests above double it out.
+
+    S41 still drives it end to end and does fail when the detached payload
+    regresses, but only as a watcher that never completes, a minute later. This
+    names the launcher itself, so a break in it reads as a break in it.
+    """
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    acceptance._start_fixture_jobs(stage)
+
+    specs = [WatchSpec(**spec) for spec in acceptance._watch_specs(stage)]
+    assert len(specs) == 2
+    assert len({spec.check_command for spec in specs}) == 2
+
+    # The workers are detached and sleep before writing, so this is the one
+    # place that legitimately waits on them rather than deciding for them.
+    wait_until(
+        lambda: all(Path(spec.log_path).with_suffix(".done").is_file() for spec in specs),
+        timeout=TASK_SETTLE_TIMEOUT,
+        detail="the detached fixture jobs never wrote their completion markers",
+    )
+
+    for spec in specs:
+        log_path = Path(spec.log_path)
+        name = log_path.stem
+        assert log_path.read_text(encoding="utf-8") == f"{name}: started\n{name}: completed\n"
+        assert log_path.with_suffix(".status").read_text(encoding="utf-8") == "completed\n"
+        assert log_path.with_suffix(".done").read_text(encoding="utf-8") == "done\n"
+        # The shipped checker, not a hand-rolled one, must call this complete.
+        assert run_watcher_check(spec).state == "complete"
+
+
+def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
+    manifest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the arming outcome that makes the armed status unassertable in S42.
+
+    `arm_watchers` validates every spec, so one whose check already passes is
+    persisted completed rather than active. The real fixture jobs finish after
+    `ACCEPTANCE_AGENT_JOB_SECONDS`, and a loaded runner can spend longer than
+    that inside the correction turn, which is how S42 read completed on a
+    docs-only pull request. Here the jobs are already finished when arming
+    runs, so the outcome does not depend on which side won.
+
+    The complementary case, arming while the jobs still run, is S42's own
+    opening; only this one needs forcing.
+    """
+
+    _double_fixture_jobs(monkeypatch, finished=True)
+    app = create_app(
+        str(manifest.path),
+        data_dir=tmp_path / "acceptance-data",
+        acceptance_agent=True,
+    )
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    service = app.state.service
+    append_fixture_patch(service, _experiment_fixture_patch())
+    baseline_patches = service.history.load_patches()
+    chat_id = str(uuid.uuid4())
+
+    try:
+        started = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json={
+                "chat_id": chat_id,
+                "message": f"Launch the local fixture. {ACCEPTANCE_GENERIC_WATCHER_MARKER}",
+                "mode": "work",
+                "run_truth_scope": ["repo-a"],
+            },
+        )
+        assert started.status_code == 202, started.text
+        origin = wait_for_task_response(client, project_id, started.json()["operation_id"])
+        assert origin["status"] == "succeeded", origin
+        assert {"watcher_correction_requested", "watchers_armed"} <= _receipt_categories(origin)
+
+        armed = app.state.background_tasks.store.watchers(project_id, chat_id=chat_id)
+        assert len(armed) == 2
+        # This app never starts a poller, and only a poll writes a shell
+        # watcher's status afterwards, so arming alone completed these.
+        assert not app.state.watcher_poller.is_running()
+        assert {record.status for record in armed} == {"completed"}
+        # The completion carries arming's own check: its exit code and the
+        # instant it recorded. A later poll would have moved `last_checked_at`
+        # past `completed_at`, so this ties the status to arming itself.
+        assert all(record.last_exit_code == 0 for record in armed)
+        assert all(record.completed_at == record.last_checked_at for record in armed)
+        # Completed at arming is still undelivered, which is what the rest of
+        # the journey depends on.
+        assert all(not record.notified for record in armed)
+        assert all(record.notification_operation_id is None for record in armed)
+        assert len({_watcher_spec(record) for record in armed}) == 2
+        assert all(record.continuation.patch_kind == "work" for record in armed)
+        assert all(record.continuation.control_node_id is None for record in armed)
+        assert service.history.load_patches() == baseline_patches
+    finally:
+        client.close()
+        app.state.background_tasks.shutdown()
+
+
+def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
+    manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The scenario turns on RCP reloading *active* records after a restart and
+    # detecting completion on its first new poll. Real detached jobs finish on
+    # their own clock, so a slow correction turn can complete them before the
+    # restart and quietly retire that path. Hold them mid-run instead, and
+    # release them below once the first process is gone.
+    _double_fixture_jobs(monkeypatch, finished=False)
     data_dir = tmp_path / "acceptance-data"
     app = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
     client = TestClient(app)
@@ -278,7 +416,10 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
 
         armed = app.state.background_tasks.store.watchers(project_id, chat_id=chat_id)
         assert len(armed) == 2
+        # Held mid-run above, so arming's own check saw them incomplete and this
+        # is the restart-from-active state the scenario promises, not a race.
         assert {record.status for record in armed} == {"active"}
+        assert all(not record.notified for record in armed)
         assert len({_watcher_spec(record) for record in armed}) == 2
         assert all(record.continuation.patch_kind == "work" for record in armed)
         assert all(record.continuation.control_node_id is None for record in armed)
@@ -292,9 +433,11 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
         client.close()
         app.state.background_tasks.shutdown()
 
-    # Both jobs must be finished before the poller starts, or the group coalesces
-    # a real subset and this test's single-wake assertion becomes load-dependent.
-    _wait_for_fixture_jobs(armed)
+    # "Close RCP, let both fixture jobs finish, and reopen it." Both markers
+    # appear together and only now, so the reopened poller reloads two active
+    # records and detects completion on its first ask, and no poll can ever see
+    # a real subset of the group.
+    _complete_fixture_job_artifacts(Path(record.log_path) for record in armed)
 
     # Reopening the same data directory proves the active watcher ledger is durable.
     reopened = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
