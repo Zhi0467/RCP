@@ -121,6 +121,12 @@ class SourceTransition:
 
 
 @dataclass(frozen=True)
+class SourceProbeContext:
+    environment: dict[str, str]
+    working_directory: Path | None
+
+
+@dataclass(frozen=True)
 class HostFacts:
     ubuntu_release: Literal["22.04", "24.04"]
     architecture: Literal["x86_64"] = "x86_64"
@@ -405,11 +411,14 @@ def source_probe_environment(
     *,
     service_uid: int,
     service_gid: int,
-) -> Iterator[dict[str, str]]:
+) -> Iterator[SourceProbeContext]:
     """Yield the Git environment for one source probe."""
 
     if source is not None:
-        yield source_git_environment(source, layout)
+        yield SourceProbeContext(
+            environment=source_git_environment(source, layout),
+            working_directory=None,
+        )
         return
 
     empty_home = Path(tempfile.mkdtemp(prefix="rcp-anonymous-source-probe-"))
@@ -418,11 +427,15 @@ def source_probe_environment(
         if (info.st_uid, info.st_gid) != (service_uid, service_gid):
             os.chown(empty_home, service_uid, service_gid)
         os.chmod(empty_home, _SERVICE_DIRECTORY_MODE)
-        yield {
-            **source_git_environment(None, layout),
-            "HOME": str(empty_home),
-            "XDG_CONFIG_HOME": str(empty_home),
-        }
+        yield SourceProbeContext(
+            environment={
+                **source_git_environment(None, layout),
+                "GIT_CEILING_DIRECTORIES": str(empty_home.parent),
+                "HOME": str(empty_home),
+                "XDG_CONFIG_HOME": str(empty_home),
+            },
+            working_directory=empty_home,
+        )
     finally:
         shutil.rmtree(empty_home)
 
@@ -442,10 +455,15 @@ def _probe_source_with_runner(
         layout,
         service_uid=service_uid,
         service_gid=service_gid,
-    ) as environment:
+    ) as context:
+        command = (
+            ("git", "-C", str(context.working_directory))
+            if context.working_directory is not None
+            else ("git",)
+        )
         result = run_as_service(
-            ("git", "ls-remote", "--exit-code", origin, "refs/heads/main"),
-            environment=environment,
+            (*command, "ls-remote", "--exit-code", origin, "refs/heads/main"),
+            environment=context.environment,
             timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
             capture_output=True,
         )

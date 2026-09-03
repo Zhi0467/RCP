@@ -528,11 +528,21 @@ def test_source_probe_separates_grant_work_from_network_failure(
     machine._service_gid = os.getgid()
     anonymous_homes: list[Path] = []
 
-    def fake_run(*_args, **kwargs):
+    def fake_run(argv, **kwargs):
         environment = kwargs["environment"]
         anonymous_home = Path(environment["HOME"])
+        assert argv == (
+            "git",
+            "-C",
+            str(anonymous_home),
+            "ls-remote",
+            "--exit-code",
+            REPOSITORY.https_origin,
+            "refs/heads/main",
+        )
         assert anonymous_home != layout.service_home
         assert environment["XDG_CONFIG_HOME"] == str(anonymous_home)
+        assert environment["GIT_CEILING_DIRECTORIES"] == str(anonymous_home.parent)
         assert list(anonymous_home.iterdir()) == []
         anonymous_homes.append(anonymous_home)
         return subprocess.CompletedProcess(("git",), returncode, "", diagnostic)
@@ -613,10 +623,13 @@ def test_source_probe_environment_isolates_only_anonymous_probe(tmp_path: Path) 
         layout,
         service_uid=os.getuid(),
         service_gid=os.getgid(),
-    ) as environment:
+    ) as context:
+        environment = context.environment
         anonymous_home = Path(environment["HOME"])
+        assert context.working_directory == anonymous_home
         assert anonymous_home != layout.service_home
         assert environment["XDG_CONFIG_HOME"] == str(anonymous_home)
+        assert environment["GIT_CEILING_DIRECTORIES"] == str(anonymous_home.parent)
         info = anonymous_home.stat()
         assert (info.st_uid, info.st_gid) == (os.getuid(), os.getgid())
         assert stat.S_IMODE(info.st_mode) == 0o700
@@ -629,8 +642,9 @@ def test_source_probe_environment_isolates_only_anonymous_probe(tmp_path: Path) 
         layout,
         service_uid=os.getuid(),
         service_gid=os.getgid(),
-    ) as environment:
-        assert environment == expected
+    ) as context:
+        assert context.environment == expected
+        assert context.working_directory is None
 
 
 def _configured_source_install(
@@ -696,9 +710,13 @@ def test_existing_deploy_key_source_transitions_config_keys_and_checkout(
         loaded_config[0] = updated
 
     def run_as_service(argv: tuple[str, ...], **kwargs):
-        assert argv[0:3] == ("git", "ls-remote", "--exit-code")
-        assert "GIT_SSH_COMMAND" not in kwargs["environment"]
-        probes.append((argv[3], None))
+        environment = kwargs["environment"]
+        anonymous_home = environment["HOME"]
+        assert argv[0:3] == ("git", "-C", anonymous_home)
+        assert argv[3:5] == ("ls-remote", "--exit-code")
+        assert environment["GIT_CEILING_DIRECTORIES"] == str(Path(anonymous_home).parent)
+        assert "GIT_SSH_COMMAND" not in environment
+        probes.append((argv[5], None))
         return subprocess.CompletedProcess(argv, 0, COMMIT, "")
 
     def git_text(_root: Path, argv: tuple[str, ...], **_kwargs) -> str:
@@ -920,9 +938,13 @@ def test_existing_deploy_key_source_does_not_transition_without_a_ready_public_p
         return ssh_probe
 
     def run_as_service(argv: tuple[str, ...], **kwargs):
-        assert argv[0:3] == ("git", "ls-remote", "--exit-code")
-        assert "GIT_SSH_COMMAND" not in kwargs["environment"]
-        probes.append((argv[3], None))
+        environment = kwargs["environment"]
+        anonymous_home = environment["HOME"]
+        assert argv[0:3] == ("git", "-C", anonymous_home)
+        assert argv[3:5] == ("ls-remote", "--exit-code")
+        assert environment["GIT_CEILING_DIRECTORIES"] == str(Path(anonymous_home).parent)
+        assert "GIT_SSH_COMMAND" not in environment
+        probes.append((argv[5], None))
         diagnostic = (
             "could not resolve host" if public_probe == "unavailable" else "repository not found"
         )
@@ -1098,11 +1120,13 @@ def test_deploy_key_transition_refuses_a_third_checkout_origin_before_mutation(
     before = {path: path.read_bytes() for path in (layout.config_path, private, public)}
 
     def run_as_service(argv: tuple[str, ...], **kwargs):
-        assert argv[0:3] == ("git", "ls-remote", "--exit-code")
         environment = kwargs["environment"]
         anonymous_home = environment["HOME"]
+        assert argv[0:3] == ("git", "-C", anonymous_home)
+        assert argv[3:5] == ("ls-remote", "--exit-code")
         assert environment == {
             **server_install.source_git_environment(None, layout),
+            "GIT_CEILING_DIRECTORIES": str(Path(anonymous_home).parent),
             "HOME": anonymous_home,
             "XDG_CONFIG_HOME": anonymous_home,
         }
@@ -1201,8 +1225,12 @@ def test_source_transition_set_url_failure_converges_on_next_run(
         loaded_config[0] = updated
 
     def run_as_service(argv: tuple[str, ...], **kwargs):
-        assert argv[0:3] == ("git", "ls-remote", "--exit-code")
-        assert "GIT_SSH_COMMAND" not in kwargs["environment"]
+        environment = kwargs["environment"]
+        anonymous_home = environment["HOME"]
+        assert argv[0:3] == ("git", "-C", anonymous_home)
+        assert argv[3:5] == ("ls-remote", "--exit-code")
+        assert environment["GIT_CEILING_DIRECTORIES"] == str(Path(anonymous_home).parent)
+        assert "GIT_SSH_COMMAND" not in environment
         return subprocess.CompletedProcess(argv, 0, COMMIT, "")
 
     def git_text(_root: Path, argv: tuple[str, ...], **_kwargs) -> str:
@@ -1300,7 +1328,8 @@ def test_existing_source_key_mismatch_is_refused_after_nonready_public_probe(
 
     def run_as_service(argv: tuple[str, ...], **_kwargs):
         calls.append(argv)
-        if argv[0:3] == ("git", "ls-remote", "--exit-code"):
+        if argv[0:2] == ("git", "-C"):
+            assert argv[3:5] == ("ls-remote", "--exit-code")
             return subprocess.CompletedProcess(argv, 128, "", "repository not found")
         assert argv[0:2] == ("ssh-keygen", "-y")
         return subprocess.CompletedProcess(argv, 0, "ssh-ed25519 ZGlmZmVyZW50\n", "")

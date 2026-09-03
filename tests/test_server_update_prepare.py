@@ -183,11 +183,13 @@ def _source_transition_fixture(
 
     def runner(argv, *, cwd, environment, timeout, capture_output):
         del cwd, timeout, capture_output
-        assert argv[0:3] == ("git", "ls-remote", "--exit-code")
         assert environment is not None
         anonymous_home = Path(environment["HOME"])
+        assert argv[0:3] == ("git", "-C", str(anonymous_home))
+        assert argv[3:5] == ("ls-remote", "--exit-code")
         assert anonymous_home != layout.service_home
         assert environment["XDG_CONFIG_HOME"] == str(anonymous_home)
+        assert environment["GIT_CEILING_DIRECTORIES"] == str(anonymous_home.parent)
         assert list(anonymous_home.iterdir()) == []
         probe_calls.append((argv, environment))
         if public_probe == "ready":
