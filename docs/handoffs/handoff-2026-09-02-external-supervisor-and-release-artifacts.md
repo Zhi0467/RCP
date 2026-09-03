@@ -99,7 +99,7 @@ from package metadata, so a source checkout reports `build: null` honestly.
 
 Implemented: a `build` job in `.github/workflows/ci.yml` on `push` to `main` that
 builds the `rcp` wheel with the `+build.<N>.g<sha7>` local version, runs
-`uv export --frozen` with hashes, writes a SHA-256 manifest, and creates
+`uv export --frozen --no-dev` with hashes, writes a SHA-256 manifest, and creates
 prerelease `build/<N>`; the workflow's `concurrency.cancel-in-progress` narrowed
 to pull-request runs only, because today's setting cancels an earlier `main`
 run when a second merge lands and would silently drop that merge's build; a

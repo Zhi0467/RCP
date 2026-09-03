@@ -29,8 +29,9 @@ so that merging often costs nothing and releasing stays deliberate.
 2. The `build` job builds the wheel once. Its version is
    `<__version__>+build.<N>.g<sha7>`, where `__version__` comes from
    `src/rcp/__init__.py`.
-3. The job exports the locked dependencies with hashes, writes a manifest of
-   SHA-256 sums, and publishes everything as prerelease `build/<N>`.
+3. The job exports the locked runtime dependencies with hashes, writes a
+   manifest of SHA-256 sums, and publishes everything as prerelease
+   `build/<N>`.
 4. A later merge never cancels an earlier `main` run. Every merge that passes
    CI gets its own build, however close together they land.
 

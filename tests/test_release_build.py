@@ -135,6 +135,16 @@ def test_select_stale_builds_selects_only_expired_prerelease_builds(tmp_path: Pa
                     "isPrerelease": True,
                     "createdAt": "2026-07-01T00:00:00Z",
                 },
+                {
+                    "tagName": "build/manual",
+                    "isPrerelease": True,
+                    "createdAt": "2026-07-01T00:00:00Z",
+                },
+                {
+                    "tagName": "build/412/candidate",
+                    "isPrerelease": True,
+                    "createdAt": "2026-07-01T00:00:00Z",
+                },
             ]
         ),
         encoding="utf-8",

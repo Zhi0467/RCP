@@ -22,6 +22,7 @@ _VERSION_ASSIGNMENT = re.compile(
     re.MULTILINE,
 )
 _TAG = re.compile(r"^v\d+\.\d+\.\d+$")
+_BUILD_TAG = re.compile(r"^build/\d+$")
 _BUILD_VERSION = re.compile(r"\+build\.(?P<run>\d+)\.g[0-9a-f]{7}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -187,7 +188,7 @@ def select_stale_builds(releases_file: Path, now: str, days: int) -> list[str]:
             raise ReleaseBuildError("release entry has invalid tagName or isPrerelease")
         if (
             is_prerelease
-            and tag_name.startswith("build/")
+            and _BUILD_TAG.fullmatch(tag_name)
             and _timestamp(release.get("createdAt"), "createdAt") < cutoff
         ):
             stale.append((_timestamp(release["createdAt"], "createdAt"), tag_name))

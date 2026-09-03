@@ -127,7 +127,7 @@ jobs:
       - name: Export locked dependencies
         run: |
           mkdir -p dist
-          uv export --frozen --no-emit-project --format requirements-txt --output-file dist/requirements.lock.txt
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt --output-file dist/requirements.lock.txt
       - name: Stamp the build version
         run: uv run --no-project python packaging/release_build.py stamp-version --run-number "${{ github.run_number }}" --sha "${{ github.sha }}"
       - name: Build the wheel
