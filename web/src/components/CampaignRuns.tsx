@@ -66,6 +66,27 @@ export function AutoResearchEpisodeCard({
   const [message, setMessage] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const taskRows = useMemo(() => episodeTaskRows(episode), [episode]);
+  const turnRows = useMemo(
+    () =>
+      [
+        ...taskRows.map((row) => ({
+          kind: "task" as const,
+          createdAt: row.task.created_at,
+          key: row.task.operation_id,
+          row,
+        })),
+        ...childExperiments.map((entry) => ({
+          kind: "experiment" as const,
+          createdAt: entry.episode.created_at,
+          key: `experiment:${entry.episode.episode_id}`,
+          entry,
+        })),
+      ].sort(
+        (left, right) =>
+          left.createdAt.localeCompare(right.createdAt) || left.key.localeCompare(right.key),
+      ),
+    [childExperiments, taskRows],
+  );
   const projection = useMemo(
     () =>
       episodeProjection(
@@ -347,36 +368,35 @@ export function AutoResearchEpisodeCard({
           <section className="campaign-turns" aria-label="Episode turns">
             <header>
               <h3>Turns</h3>
-              <span>{taskRows.length + childExperiments.length}</span>
+              <span>{turnRows.length}</span>
             </header>
-            {taskRows.length > 0 || childExperiments.length > 0 ? (
+            {turnRows.length > 0 ? (
               <ul>
-                {taskRows.map(({ task, role, depth }) => {
-                  const target = taskTarget(task);
-                  const roleLabel =
-                    task.kind === "branch_merge" ? "Branch merge" : episodeTaskRoleLabel(role);
-                  return (
-                    <li className={`campaign-task depth-${depth}`} key={task.operation_id}>
-                      <button type="button" onClick={() => onInspectTask(task.operation_id)}>
-                        <span className={`campaign-task-role ${role}`}>{roleLabel}</span>
-                        <span className="campaign-task-copy">
-                          <strong>{target || roleLabel}</strong>
-                          <span>{task.status_message}</span>
-                        </span>
-                        <span className={`status-pill ${task.status}`}>
-                          {taskStatusLabel(task)}
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-                {childExperiments.map((entry) => {
+                {turnRows.map((turn) => {
+                  if (turn.kind === "task") {
+                    const { task, role, depth } = turn.row;
+                    const target = taskTarget(task);
+                    const roleLabel =
+                      task.kind === "branch_merge" ? "Branch merge" : episodeTaskRoleLabel(role);
+                    return (
+                      <li className={`campaign-task depth-${depth}`} key={turn.key}>
+                        <button type="button" onClick={() => onInspectTask(task.operation_id)}>
+                          <span className={`campaign-task-role ${role}`}>{roleLabel}</span>
+                          <span className="campaign-task-copy">
+                            <strong>{target || roleLabel}</strong>
+                            <span>{task.status_message}</span>
+                          </span>
+                          <span className={`status-pill ${task.status}`}>
+                            {taskStatusLabel(task)}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  }
+                  const { entry } = turn;
                   const tone = experimentHealthTone(entry.control.health);
                   return (
-                    <li
-                      className="campaign-task depth-1"
-                      key={`experiment:${entry.episode.episode_id}`}
-                    >
+                    <li className="campaign-task depth-1" key={turn.key}>
                       <a
                         href={experimentBoardHref(
                           entry.project_id,

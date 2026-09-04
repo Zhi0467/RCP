@@ -382,6 +382,24 @@ test("project Runs shows a dispatched child as a nested turn and its own run car
     },
     episode: childEpisode,
   };
+  const parentBefore = {
+    ...childTask,
+    operation_id: "parent-before-child",
+    episode_id: parentEpisodeId,
+    created_at: "2026-08-06T00:00:00Z",
+    status_message: "Parent turn before child.",
+    role: "orchestrator",
+    depth: 0,
+  };
+  const parentAfter = {
+    ...childTask,
+    operation_id: "parent-after-child",
+    episode_id: parentEpisodeId,
+    created_at: "2026-08-06T02:00:00Z",
+    status_message: "Parent wake after child.",
+    role: "wake",
+    depth: 0,
+  };
   const parentEpisode = episode({
     episode_id: parentEpisodeId,
     project_id: "project-one",
@@ -398,6 +416,7 @@ test("project Runs shows a dispatched child as a nested turn and its own run car
     health: "active",
     recommendation: "continue",
     run_section: "needs_action",
+    tasks: [parentAfter, parentBefore],
   });
   const html = renderToStaticMarkup(
     React.createElement(ExecutionView, {
@@ -468,7 +487,13 @@ test("project Runs shows a dispatched child as a nested turn and its own run car
   assert.match(html, /Needs Action<\/h2><span>2<\/span>/);
   assert.match(html, /campaign-task depth-1/);
   assert.match(html, /campaign-task-role experiment">Experiment/);
-  assert.match(html, /Turns<\/h3><span>1<\/span>/);
+  const parentBeforeIndex = html.indexOf("Parent turn before child.");
+  const nestedChildIndex = html.indexOf("Reproduce the baseline", parentBeforeIndex);
+  const parentAfterIndex = html.indexOf("Parent wake after child.");
+  assert.ok(parentBeforeIndex >= 0);
+  assert.ok(parentBeforeIndex < nestedChildIndex);
+  assert.ok(nestedChildIndex < parentAfterIndex);
+  assert.match(html, /Turns<\/h3><span>3<\/span>/);
   assert.match(html, /campaign-task depth-1[\s\S]*?<strong>Reproduce the baseline<\/strong>/);
   assert.match(html, /campaign-run-title[\s\S]*?<span>Reproduce the baseline<\/span>/);
   assert.match(
