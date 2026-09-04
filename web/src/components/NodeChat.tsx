@@ -52,6 +52,7 @@ import {
   latestPersistedChatConfig,
   latestPersistedConversationMode,
   parseConversationMode,
+  startConversationTurn,
   toggleConversationMode,
 } from "../chatWorkspace";
 import { MarkdownAnswer } from "../chatMarkdown";
@@ -77,7 +78,6 @@ import {
   reconcileActiveComputeIds,
 } from "../compute";
 import type { GlossaryIndex } from "../glossary";
-import { skillInvocationFields } from "../skillPicker";
 import {
   graphConditionLabel,
   isExternalWatcherRecord,
@@ -1202,24 +1202,21 @@ export function NodeChat({
     setSubmitError(null);
     setSubmitting(true);
     try {
-      await onStartTask(surface, {
-        ...config,
-        model: config.model || null,
-        run_truth_scope: scope,
-        node_id: node?.id ?? null,
+      await startConversationTurn(onStartTask, {
+        kind: surface,
+        config,
+        runTruthScope: scope,
+        nodeId: node?.id ?? null,
         message: text,
-        chat_id: chatId,
-        session_id: sessionId,
+        chatId,
+        sessionId,
         mode,
-        active_compute_ids: computeState.ids,
-        ...(artifactContext ? { artifact_context: artifactContext } : {}),
-        ...(readyAttachments.length && attachmentSetId
-          ? {
-              attachment_set_id: attachmentSetId,
-              attachment_client_id: attachmentClientId,
-            }
-          : {}),
-        ...skillInvocationFields(skills.selection, skills.providerSkillNames),
+        activeComputeIds: computeState.ids,
+        artifactContext,
+        attachmentSetId: readyAttachments.length ? attachmentSetId : null,
+        attachmentClientId: readyAttachments.length ? attachmentClientId : null,
+        skills: skills.selection,
+        providerSkillNames: skills.providerSkillNames,
       });
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       skills.reset();
