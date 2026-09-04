@@ -1993,20 +1993,12 @@ def _assert_installed_ownership_and_modes() -> None:
             mode=0o700,
             kind="directory",
         )
-    _assert_path(
-        Path("/home/rcp/rcp-server/credentials/source_ed25519"),
-        uid=account.pw_uid,
-        gid=account.pw_gid,
-        mode=0o600,
-        kind="file",
-    )
-    _assert_path(
-        Path("/home/rcp/rcp-server/credentials/source_ed25519.pub"),
-        uid=account.pw_uid,
-        gid=account.pw_gid,
-        mode=0o644,
-        kind="file",
-    )
+    # This qualification installs the public origin, which needs no source key.
+    for name in ("source_ed25519", "source_ed25519.pub"):
+        path = Path("/home/rcp/rcp-server/credentials") / name
+        assert not _root_path_exists_or_is_symlink(path), (
+            f"public-source installation unexpectedly retained a source key: {path}"
+        )
     _assert_path(
         Path("/etc/rcp/server.toml"),
         uid=0,
