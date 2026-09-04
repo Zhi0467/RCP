@@ -51,11 +51,20 @@ HTTP 415; rebuilt desktop admission and source release then passed. Quitting
 and restarting the personal backend preserved source request revision 6, fence
 revision 2, and the exact sealed 20,480-byte archive. The manual import refused
 before upload because the desktop had not bound that archive on the target.
-Both native relay entrances now call the existing binding API and verify its
-readback; live qualification awaits merge and rebuild. Completed relay,
-activation, content comparison, and deletion remain open. Resume
-the existing linked requests recorded in the
+Merged PR #43 repaired both relay entrances. Rebuilt desktop binding, manual
+tmux stdin import, target activation, native proof return, source retirement,
+canonical hash comparison, and registration-only team deletion then passed.
+The wizard displayed Transfer complete and opened the team project at revision
+2. The source request completed at revision 10 with its proof consumed. The
+disposable registration is now deleted; do not resume its requests. See the
 [production qualification receipt](../handoffs/handoff-2026-08-27-dev-team-space-and-server.md#production-qualification-receipts-and-next-boundary--2026-09-04).
+
+This passed subset used a small unseeded project and an explicitly manual
+operator import because the saved SSH route lacks noninteractive sudo. It does
+not prove unattended relay, partial-stream recovery, the earlier confirmation
+interruption, or the richer retained-history fixtures below. Reopening used the
+saved wizard route; the native Resume saved archive picker left Open disabled
+for the selected file and was cancelled. Those UI paths remain unqualified.
 
 The implemented path now covers the canonical home-transfer Patch, linked
 cross-space requests, independent human receipts, strict repository/configuration

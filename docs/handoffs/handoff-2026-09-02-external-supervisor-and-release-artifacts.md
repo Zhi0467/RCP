@@ -16,6 +16,14 @@ wait for
 to meet its closure condition and be archived, because the human has frozen new
 team and server lifecycle surface until that first lab deployment is closed.
 
+The 2026-09-04 production receipts now qualify concurrent-task protected backup,
+manual personal-to-team transfer with post-fence personal-backend restart,
+native activation-proof cleanup, content preservation, and registration-only
+team deletion. They explicitly skip unreachable-SSH backup and do not qualify
+unattended/partial-stream relay or the broader two-member and retained-history
+fixtures. The predecessor remains active, so this does not lift the Phase 3–6
+gate. No supervisor implementation is authorized by the scoped drive alone.
+
 Closure condition, all of it:
 
 1. Phase 5 deletions are verified: `create_app` reads no update or restore
