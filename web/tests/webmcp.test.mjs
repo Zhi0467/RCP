@@ -340,6 +340,10 @@ function conversationFixtures() {
   return { task, transcript };
 }
 
+function conversationSource(transcript, loadTask = async () => null) {
+  return { loadTranscript: async () => transcript, loadTask };
+}
+
 function artifactFixtures() {
   const tasks = [
     {
@@ -1021,7 +1025,7 @@ test("conversation inspection returns bounded transcript, latest result, and cur
     project,
     [task],
     { chat_id: "chat-1" },
-    async () => transcript,
+    conversationSource(transcript),
   );
   assert.equal(inspected.chat_id, "chat-1");
   assert.equal(inspected.node_id, "hyp-1");
@@ -1131,7 +1135,7 @@ test("conversation inspection stays within its result budget at every declared l
     [],
     0,
     [task],
-    async () => transcript,
+    conversationSource(transcript),
   )[1];
   const result = await tool.execute({ chat_id: "chat-1" });
   const parsed = JSON.parse(result.content[0].text);
@@ -1158,7 +1162,7 @@ test("conversation inspection names branch, active, and stale-transcript refusal
     project,
     [{ ...task, graph_target: { kind: "branch", branch_id: "branch-1" } }],
     { chat_id: "chat-1" },
-    async () => transcript,
+    conversationSource(transcript),
   );
   assert.equal(branch.send_options.can_send, false);
   assert.match(branch.send_options.refusal_reason, /branch conversation is read-only/);
@@ -1166,16 +1170,73 @@ test("conversation inspection names branch, active, and stale-transcript refusal
     project,
     [{ ...task, active: true, settled: false, status_message: "Running provider turn" }],
     { chat_id: "chat-1" },
-    async () => transcript,
+    conversationSource(transcript),
   );
   assert.equal(active.send_options.refusal_reason, "Running provider turn");
   await assert.rejects(
-    inspectProjectConversation(project, [task], { chat_id: "chat-1" }, async () => ({
-      ...transcript,
-      chat_id: "different",
-    })),
+    inspectProjectConversation(
+      project,
+      [task],
+      { chat_id: "chat-1" },
+      {
+        loadTranscript: async () => ({ ...transcript, chat_id: "different" }),
+        loadTask: async () => null,
+      },
+    ),
     /mismatched transcript/,
   );
+});
+
+test("a branch conversation stays read-only when its tasks have aged out of the page window", async () => {
+  const project = projectFixture();
+  const { task, transcript } = conversationFixtures();
+  const branchTask = { ...task, graph_target: { kind: "branch", branch_id: "branch-1" } };
+  const fetched = [];
+  const source = conversationSource(transcript, async (operationId) => {
+    fetched.push(operationId);
+    return operationId === "task-chat-1" ? branchTask : null;
+  });
+
+  const inspected = await inspectProjectConversation(project, [], { chat_id: "chat-1" }, source);
+  assert.equal(inspected.latest_task.task_id, "task-chat-1");
+  assert.equal(inspected.send_options.can_send, false);
+  assert.match(inspected.send_options.refusal_reason, /branch conversation is read-only/);
+  assert.equal(inspected.send_options.stable_session_id, "session-1");
+
+  const started = [];
+  await assert.rejects(
+    sendProjectConversationMessage(
+      project,
+      [],
+      { message: "continue", mode: "work", chat_id: "chat-1" },
+      source,
+      false,
+      () => {
+        throw new Error("must not create a conversation");
+      },
+      async (submission) => {
+        started.push(submission);
+        return { operation_id: "task-next" };
+      },
+    ),
+    /branch conversation is read-only/,
+  );
+  assert.deepEqual(started, []);
+  assert.deepEqual(fetched, ["task-chat-1", "task-chat-1"]);
+
+  const foreign = conversationSource(transcript, async () => ({
+    ...branchTask,
+    request: { ...branchTask.request, chat_id: "chat-other" },
+  }));
+  const mismatched = await inspectProjectConversation(project, [], { chat_id: "chat-1" }, foreign);
+  assert.equal(mismatched.latest_task, null);
+  assert.equal(mismatched.send_options.can_send, true);
+
+  const inWindow = conversationSource(transcript, async () => {
+    throw new Error("the page window already holds this conversation's task");
+  });
+  const cached = await inspectProjectConversation(project, [task], { chat_id: "chat-1" }, inWindow);
+  assert.equal(cached.send_options.can_send, true);
 });
 
 function conversationSummaryFixtures() {
@@ -1266,7 +1327,7 @@ test("the conversation read tools are one bounded listing and one exact inspecti
     conversationSummaryFixtures(),
     3,
     [task],
-    async () => transcript,
+    conversationSource(transcript),
   );
   assert.deepEqual(
     tools.map((tool) => [
@@ -1302,7 +1363,7 @@ test("conversation Send resumes the exact saved route and returns after durable 
       skill_ids: ["plot"],
       provider_skill_names: ["browser"],
     },
-    async () => transcript,
+    conversationSource(transcript),
     false,
     (kind, node) => {
       created.push([kind, node]);
@@ -1406,7 +1467,7 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
         message: "Ambiguous.",
         mode: "discuss",
       },
-      async () => transcript,
+      conversationSource(transcript),
       false,
       unreachable,
       unreachable,
@@ -1418,7 +1479,7 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
       project,
       [{ ...task, active: true, settled: false, status_message: "Still running" }],
       { chat_id: "chat-1", message: "Too soon.", mode: "discuss" },
-      async () => transcript,
+      conversationSource(transcript),
       false,
       unreachable,
       unreachable,
@@ -1430,7 +1491,7 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
       project,
       [],
       { message: "Use it.", mode: "work", skill_ids: ["not-enabled"] },
-      async () => transcript,
+      conversationSource(transcript),
       false,
       unreachable,
       unreachable,
@@ -1768,12 +1829,12 @@ function evalToolDefinitions(state) {
       conversationSummaryFixtures(),
       3,
       [task],
-      async () => transcript,
+      conversationSource(transcript),
     ),
     ...projectConversationSendToolDefinitions(
       project,
       [task],
-      async () => transcript,
+      conversationSource(transcript),
       false,
       () => "chat-1",
       async () => ({ operation_id: "task-next" }),

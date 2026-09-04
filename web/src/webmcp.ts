@@ -969,14 +969,22 @@ function conversationRefusal(
   return null;
 }
 
+/** Backend reads a conversation tool needs beyond the page snapshot: the exact
+ * transcript, and the exact task record behind a transcript message when that
+ * task has aged out of the bounded task window the page holds. */
+export type WebMcpConversationSource = {
+  loadTranscript: (chatId: string) => Promise<ChatTranscript>;
+  loadTask: (operationId: string) => Promise<AgentTask | null>;
+};
+
 async function resolveProjectConversationContext(
   project: ProjectSnapshot,
   tasks: AgentTask[],
   chatId: string,
-  loadTranscript: (chatId: string) => Promise<ChatTranscript>,
+  source: WebMcpConversationSource,
   taskStartPending: boolean,
 ) {
-  const transcript = await loadTranscript(chatId);
+  const transcript = await source.loadTranscript(chatId);
   if (transcript.chat_id !== chatId) {
     throw new Error(`Conversation ${chatId} returned a mismatched transcript.`);
   }
@@ -985,8 +993,22 @@ async function resolveProjectConversationContext(
   if (surface === "node_chat" && !node) {
     throw new Error(`Conversation ${chatId} points to a node outside the current project graph.`);
   }
-  const relatedTasks = relatedChatTasks(tasks, surface, transcript.node_id, chatId);
-  const latestTask = latestConversationTask(relatedTasks);
+  let relatedTasks = relatedChatTasks(tasks, surface, transcript.node_id, chatId);
+  let latestTask = latestConversationTask(relatedTasks);
+  if (!latestTask) {
+    // The page task cache is a bounded recent window. A saved conversation whose
+    // turns have aged out of it still carries its durable identity (graph
+    // target, native session, scope) on the task behind its latest message, so
+    // read that exact record before deciding whether Send may continue it.
+    const lastOperationId =
+      [...transcript.messages].reverse().find((message) => message.operation_id)?.operation_id ??
+      null;
+    const exact = lastOperationId ? await source.loadTask(lastOperationId) : null;
+    if (exact && taskChatId(exact) === chatId) {
+      latestTask = exact;
+      relatedTasks = [exact];
+    }
+  }
   const profile = project.agent_profiles[surface];
   const fallbackConfig: AgentRunConfig = {
     provider: profile.provider,
@@ -1030,7 +1052,7 @@ export async function inspectProjectConversation(
   project: ProjectSnapshot,
   tasks: AgentTask[],
   input: Record<string, unknown>,
-  loadTranscript: (chatId: string) => Promise<ChatTranscript>,
+  source: WebMcpConversationSource,
   taskStartPending = false,
 ): Promise<Record<string, unknown>> {
   const chatId = requiredStringInput(input, "chat_id");
@@ -1038,7 +1060,7 @@ export async function inspectProjectConversation(
     project,
     tasks,
     chatId,
-    loadTranscript,
+    source,
     taskStartPending,
   );
   const {
@@ -1200,7 +1222,7 @@ export function projectConversationToolDefinitions(
   summaries: ChatSummary[],
   summaryTotal: number,
   tasks: AgentTask[],
-  loadTranscript: (chatId: string) => Promise<ChatTranscript>,
+  source: WebMcpConversationSource,
   taskStartPending = false,
 ): WebMcpToolDefinition[] {
   return [
@@ -1249,7 +1271,7 @@ export function projectConversationToolDefinitions(
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       execute: async (input) =>
         webMcpTextResult(
-          await inspectProjectConversation(project, tasks, input, loadTranscript, taskStartPending),
+          await inspectProjectConversation(project, tasks, input, source, taskStartPending),
           WEBMCP_CONVERSATION_RESULT_MAX_CHARS,
         ),
     },
@@ -1299,7 +1321,7 @@ export async function sendProjectConversationMessage(
   project: ProjectSnapshot,
   tasks: AgentTask[],
   input: Record<string, unknown>,
-  loadTranscript: (chatId: string) => Promise<ChatTranscript>,
+  source: WebMcpConversationSource,
   taskStartPending: boolean,
   createConversation: CreateWebMcpConversation,
   startTurn: StartWebMcpConversationTurn,
@@ -1326,7 +1348,7 @@ export async function sendProjectConversationMessage(
         project,
         tasks,
         requestedChatId,
-        loadTranscript,
+        source,
         taskStartPending,
       )
     : null;
@@ -1389,7 +1411,7 @@ export async function sendProjectConversationMessage(
 export function projectConversationSendToolDefinitions(
   project: ProjectSnapshot,
   tasks: AgentTask[],
-  loadTranscript: (chatId: string) => Promise<ChatTranscript>,
+  source: WebMcpConversationSource,
   taskStartPending: boolean,
   createConversation: CreateWebMcpConversation,
   startTurn: StartWebMcpConversationTurn,
@@ -1455,7 +1477,7 @@ export function projectConversationSendToolDefinitions(
             project,
             tasks,
             toolInput,
-            loadTranscript,
+            source,
             taskStartPending,
             createConversation,
             startTurn,
