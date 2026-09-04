@@ -29,6 +29,9 @@ from rcp.server_ops._local_primitives import (
     write_all,
 )
 from rcp.server_ops._local_primitives import (
+    canonical_operation_uuid as _canonical_operation_uuid,
+)
+from rcp.server_ops._local_primitives import (
     canonical_uuid4 as _canonical_uuid4,
 )
 from rcp.server_ops._local_primitives import (
@@ -134,7 +137,7 @@ class BackupKeptArtifactReference(_StrictCaptureModel):
     @field_validator("operation_id")
     @classmethod
     def validate_operation_id(cls, value: str) -> str:
-        return _canonical_uuid4(value, label="artifact operation identity")
+        return _canonical_operation_uuid(value, label="artifact operation identity")
 
     @field_validator("artifact_id")
     @classmethod
@@ -180,7 +183,7 @@ class BackupKeptResultViewReference(_StrictCaptureModel):
     @field_validator("origin_operation_id", "latest_operation_id")
     @classmethod
     def validate_operation_id(cls, value: str, info) -> str:
-        return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
+        return _canonical_operation_uuid(value, label=info.field_name.replace("_", " "))
 
     @field_validator("kept_filename")
     @classmethod
@@ -231,7 +234,7 @@ class BackupSnapshotProjectInventory(_StrictCaptureModel):
     @classmethod
     def validate_task_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         for operation_id in value:
-            _canonical_uuid4(operation_id, label="task operation identity")
+            _canonical_operation_uuid(operation_id, label="task operation identity")
         if tuple(sorted(set(value))) != value:
             raise ValueError("captured task identities must be sorted and unique")
         return value

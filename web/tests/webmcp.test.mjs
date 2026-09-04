@@ -340,6 +340,10 @@ function conversationFixtures() {
   return { task, transcript };
 }
 
+function conversationSource(transcript, loadTask = async () => null) {
+  return { loadTranscript: async () => transcript, loadTask };
+}
+
 function artifactFixtures() {
   const tasks = [
     {
@@ -794,6 +798,32 @@ test("node inspection bounds oversized saved content and names every shortened p
   assert.deepEqual(small, { value: { text: "short", items: [1, 2, 3] }, truncation: null });
 });
 
+test("node inspection bounds runaway extension-field maps and long keys", () => {
+  const project = projectFixture();
+  const longKey = "k".repeat(500);
+  project.graph.nodes["hyp-1"] = {
+    ...project.graph.nodes["hyp-1"],
+    extension_fields: Object.fromEntries([
+      [longKey, "long-key value"],
+      ...Array.from({ length: 2_000 }, (_, index) => [`field_${index}`, `value ${index}`]),
+    ]),
+  };
+  assert.ok(JSON.stringify(project.graph.nodes["hyp-1"]).length > 40_000);
+
+  const tool = projectReadToolDefinitions(project)[1];
+  const parsed = JSON.parse(tool.execute({ node_id: "hyp-1" }).content[0].text);
+
+  assert.ok(JSON.stringify(parsed.node).length <= WEBMCP_NODE_CONTENT_MAX_CHARS);
+  assert.equal(parsed.node.id, "hyp-1");
+  assert.equal(parsed.node.title, "Functional drift is predictive");
+  const keys = Object.keys(parsed.node.extension_fields);
+  assert.ok(keys.length <= parsed.node_truncation.entry_limit);
+  assert.ok(keys.every((key) => key.length <= 96));
+  assert.ok(parsed.node_truncation.paths.includes("extension_fields"));
+  assert.ok(parsed.node_truncation.paths.includes(`extension_fields.${longKey}`));
+  assert.ok(parsed.node_truncation.entry_limit >= 8);
+});
+
 test("the project read surface registers exactly the two confirmed tools", () => {
   const tools = projectReadToolDefinitions(projectFixture());
   assert.deepEqual(
@@ -814,14 +844,19 @@ test("the project read surface registers exactly the two confirmed tools", () =>
 const noEpisodeFetch = async () => {
   throw new Error("the recent-episode window should have answered without a fetch");
 };
+const noTaskFetch = async () => {
+  throw new Error("the recent-task window should have answered without a fetch");
+};
+const noArtifactFetch = { loadEpisode: noEpisodeFetch, loadTask: noTaskFetch };
 
 test("artifact listing returns current task artifacts, kept state, and episode reports", async () => {
   const project = projectFixture();
   const { tasks, episodes } = artifactFixtures();
-  const listed = await listProjectArtifacts(project, tasks, episodes, {}, noEpisodeFetch);
+  const listed = await listProjectArtifacts(project, tasks, episodes, {}, noArtifactFetch);
   assert.equal(listed.total, 3);
   assert.equal(listed.truncated, false);
   assert.equal(listed.recent_episode_count, 1);
+  assert.equal(listed.recent_task_count, 2);
   assert.deepEqual(
     listed.artifacts.map((artifact) => artifact.viewer_id),
     ["report:episode-1", "task:task-2:artifact-2", "task:task-1:artifact-1"],
@@ -835,7 +870,7 @@ test("artifact listing narrows to one exact current owner and rejects stale filt
   const { tasks, episodes } = artifactFixtures();
   assert.deepEqual(
     (
-      await listProjectArtifacts(project, tasks, episodes, { node_id: "hyp-1" }, noEpisodeFetch)
+      await listProjectArtifacts(project, tasks, episodes, { node_id: "hyp-1" }, noArtifactFetch)
     ).artifacts.map((artifact) => artifact.viewer_id),
     ["task:task-1:artifact-1"],
   );
@@ -846,17 +881,26 @@ test("artifact listing narrows to one exact current owner and rejects stale filt
         tasks,
         episodes,
         { episode_id: "episode-1" },
-        noEpisodeFetch,
+        noArtifactFetch,
       )
     ).artifacts.map((artifact) => artifact.viewer_id),
     ["report:episode-1", "task:task-2:artifact-2"],
   );
   await assert.rejects(
-    listProjectArtifacts(project, tasks, episodes, { task_id: "missing" }, noEpisodeFetch),
+    listProjectArtifacts(
+      project,
+      tasks,
+      episodes,
+      { task_id: "missing" },
+      {
+        loadEpisode: noEpisodeFetch,
+        loadTask: async () => null,
+      },
+    ),
     /Task missing is not present/,
   );
   await assert.rejects(
-    listProjectArtifacts(project, tasks, episodes, { chat_id: "missing" }, noEpisodeFetch),
+    listProjectArtifacts(project, tasks, episodes, { chat_id: "missing" }, noArtifactFetch),
     /Conversation missing is not present/,
   );
   await assert.rejects(
@@ -865,7 +909,7 @@ test("artifact listing narrows to one exact current owner and rejects stale filt
       tasks,
       episodes,
       { node_id: "hyp-1", chat_id: "chat-1" },
-      noEpisodeFetch,
+      noArtifactFetch,
     ),
     /at most one artifact filter/,
   );
@@ -891,7 +935,7 @@ test("an exact episode outside the recent window is fetched once from the backen
     tasks,
     episodes,
     { episode_id: "episode-old" },
-    loadEpisode,
+    { loadEpisode, loadTask: noTaskFetch },
   );
   assert.deepEqual(
     listed.artifacts.map((artifact) => artifact.viewer_id),
@@ -899,7 +943,13 @@ test("an exact episode outside the recent window is fetched once from the backen
   );
   assert.equal(listed.recent_episode_count, 1);
   await assert.rejects(
-    listProjectArtifacts(project, tasks, episodes, { episode_id: "episode-none" }, loadEpisode),
+    listProjectArtifacts(
+      project,
+      tasks,
+      episodes,
+      { episode_id: "episode-none" },
+      { loadEpisode, loadTask: noTaskFetch },
+    ),
     /Episode episode-none is not present/,
   );
 
@@ -913,7 +963,7 @@ test("an exact episode outside the recent window is fetched once from the backen
       opened.push(viewerUrl);
       return true;
     },
-    loadEpisode,
+    { loadEpisode, loadTask: noTaskFetch },
   );
   assert.equal(receipt.viewer_id, "report:episode-old");
   assert.deepEqual(opened, ["/api/projects/project-1/episodes/episode-old/report/viewer"]);
@@ -924,11 +974,82 @@ test("an exact episode outside the recent window is fetched once from the backen
       episodes,
       { viewer_id: "report:episode-none" },
       () => true,
-      loadEpisode,
+      { loadEpisode, loadTask: noTaskFetch },
     ),
     /Artifact viewer report:episode-none is not present/,
   );
   assert.deepEqual(fetched, ["episode-old", "episode-none", "episode-old", "episode-none"]);
+});
+
+test("an exact task outside the recent window is fetched once for listing and opening", async () => {
+  const project = projectFixture();
+  const { tasks, episodes } = artifactFixtures();
+  const older = {
+    ...tasks[0],
+    operation_id: "task-old",
+    request: { node_id: "hyp-1", chat_id: "chat-old" },
+    created_at: "2026-07-01T10:00:00Z",
+    updated_at: "2026-07-01T10:01:00Z",
+  };
+  const fetched = [];
+  const source = {
+    loadEpisode: noEpisodeFetch,
+    loadTask: async (operationId) => {
+      fetched.push(operationId);
+      return operationId === "task-old" ? older : null;
+    },
+  };
+
+  const listed = await listProjectArtifacts(
+    project,
+    tasks,
+    episodes,
+    { task_id: "task-old" },
+    source,
+  );
+  assert.deepEqual(
+    listed.artifacts.map((artifact) => artifact.viewer_id),
+    ["task:task-old:artifact-1"],
+  );
+  assert.equal(listed.recent_task_count, 2);
+  await assert.rejects(
+    listProjectArtifacts(project, tasks, episodes, { task_id: "task-none" }, source),
+    /Task task-none is not present/,
+  );
+
+  const opened = [];
+  const receipt = await openProjectArtifact(
+    project,
+    tasks,
+    episodes,
+    { viewer_id: "task:task-old:artifact-1" },
+    (viewerUrl) => {
+      opened.push(viewerUrl);
+      return true;
+    },
+    source,
+  );
+  assert.equal(receipt.viewer_id, "task:task-old:artifact-1");
+  assert.deepEqual(opened, ["/api/projects/project-1/tasks/task-old/artifacts/artifact-1/viewer"]);
+  await assert.rejects(
+    openProjectArtifact(
+      project,
+      tasks,
+      episodes,
+      { viewer_id: "task:task-none:artifact-1" },
+      () => true,
+      source,
+    ),
+    /Artifact viewer task:task-none:artifact-1 is not present/,
+  );
+  await assert.rejects(
+    openProjectArtifact(project, tasks, episodes, { viewer_id: "task::artifact-1" }, () => true, {
+      loadEpisode: noEpisodeFetch,
+      loadTask: noTaskFetch,
+    }),
+    /is not present/,
+  );
+  assert.deepEqual(fetched, ["task-old", "task-none", "task-old", "task-none"]);
 });
 
 test("artifact opening revalidates availability and opens only the existing viewer URL", async () => {
@@ -945,7 +1066,7 @@ test("artifact opening revalidates availability and opens only the existing view
         opened.push([viewerUrl, contentUrl]);
         return true;
       },
-      noEpisodeFetch,
+      noArtifactFetch,
     ),
     {
       project_id: "project-1",
@@ -967,7 +1088,7 @@ test("artifact opening revalidates availability and opens only the existing view
       episodes,
       { viewer_id: "task:task-2:artifact-2" },
       () => true,
-      noEpisodeFetch,
+      noArtifactFetch,
     ),
     /Artifact bytes expired/,
   );
@@ -978,7 +1099,7 @@ test("artifact opening revalidates availability and opens only the existing view
       episodes,
       { viewer_id: "report:episode-1" },
       () => false,
-      noEpisodeFetch,
+      noArtifactFetch,
     ),
     /could not be shown/,
   );
@@ -992,7 +1113,7 @@ test("artifact tools expose only list and visual-open schemas", () => {
     tasks,
     episodes,
     () => true,
-    noEpisodeFetch,
+    noArtifactFetch,
   );
   assert.deepEqual(
     tools.map((tool) => [
@@ -1021,7 +1142,7 @@ test("conversation inspection returns bounded transcript, latest result, and cur
     project,
     [task],
     { chat_id: "chat-1" },
-    async () => transcript,
+    conversationSource(transcript),
   );
   assert.equal(inspected.chat_id, "chat-1");
   assert.equal(inspected.node_id, "hyp-1");
@@ -1131,7 +1252,7 @@ test("conversation inspection stays within its result budget at every declared l
     [],
     0,
     [task],
-    async () => transcript,
+    conversationSource(transcript),
   )[1];
   const result = await tool.execute({ chat_id: "chat-1" });
   const parsed = JSON.parse(result.content[0].text);
@@ -1158,7 +1279,7 @@ test("conversation inspection names branch, active, and stale-transcript refusal
     project,
     [{ ...task, graph_target: { kind: "branch", branch_id: "branch-1" } }],
     { chat_id: "chat-1" },
-    async () => transcript,
+    conversationSource(transcript),
   );
   assert.equal(branch.send_options.can_send, false);
   assert.match(branch.send_options.refusal_reason, /branch conversation is read-only/);
@@ -1166,16 +1287,73 @@ test("conversation inspection names branch, active, and stale-transcript refusal
     project,
     [{ ...task, active: true, settled: false, status_message: "Running provider turn" }],
     { chat_id: "chat-1" },
-    async () => transcript,
+    conversationSource(transcript),
   );
   assert.equal(active.send_options.refusal_reason, "Running provider turn");
   await assert.rejects(
-    inspectProjectConversation(project, [task], { chat_id: "chat-1" }, async () => ({
-      ...transcript,
-      chat_id: "different",
-    })),
+    inspectProjectConversation(
+      project,
+      [task],
+      { chat_id: "chat-1" },
+      {
+        loadTranscript: async () => ({ ...transcript, chat_id: "different" }),
+        loadTask: async () => null,
+      },
+    ),
     /mismatched transcript/,
   );
+});
+
+test("a branch conversation stays read-only when its tasks have aged out of the page window", async () => {
+  const project = projectFixture();
+  const { task, transcript } = conversationFixtures();
+  const branchTask = { ...task, graph_target: { kind: "branch", branch_id: "branch-1" } };
+  const fetched = [];
+  const source = conversationSource(transcript, async (operationId) => {
+    fetched.push(operationId);
+    return operationId === "task-chat-1" ? branchTask : null;
+  });
+
+  const inspected = await inspectProjectConversation(project, [], { chat_id: "chat-1" }, source);
+  assert.equal(inspected.latest_task.task_id, "task-chat-1");
+  assert.equal(inspected.send_options.can_send, false);
+  assert.match(inspected.send_options.refusal_reason, /branch conversation is read-only/);
+  assert.equal(inspected.send_options.stable_session_id, "session-1");
+
+  const started = [];
+  await assert.rejects(
+    sendProjectConversationMessage(
+      project,
+      [],
+      { message: "continue", mode: "work", chat_id: "chat-1" },
+      source,
+      false,
+      () => {
+        throw new Error("must not create a conversation");
+      },
+      async (submission) => {
+        started.push(submission);
+        return { operation_id: "task-next" };
+      },
+    ),
+    /branch conversation is read-only/,
+  );
+  assert.deepEqual(started, []);
+  assert.deepEqual(fetched, ["task-chat-1", "task-chat-1"]);
+
+  const foreign = conversationSource(transcript, async () => ({
+    ...branchTask,
+    request: { ...branchTask.request, chat_id: "chat-other" },
+  }));
+  const mismatched = await inspectProjectConversation(project, [], { chat_id: "chat-1" }, foreign);
+  assert.equal(mismatched.latest_task, null);
+  assert.equal(mismatched.send_options.can_send, true);
+
+  const inWindow = conversationSource(transcript, async () => {
+    throw new Error("the page window already holds this conversation's task");
+  });
+  const cached = await inspectProjectConversation(project, [task], { chat_id: "chat-1" }, inWindow);
+  assert.equal(cached.send_options.can_send, true);
 });
 
 function conversationSummaryFixtures() {
@@ -1266,7 +1444,7 @@ test("the conversation read tools are one bounded listing and one exact inspecti
     conversationSummaryFixtures(),
     3,
     [task],
-    async () => transcript,
+    conversationSource(transcript),
   );
   assert.deepEqual(
     tools.map((tool) => [
@@ -1302,7 +1480,7 @@ test("conversation Send resumes the exact saved route and returns after durable 
       skill_ids: ["plot"],
       provider_skill_names: ["browser"],
     },
-    async () => transcript,
+    conversationSource(transcript),
     false,
     (kind, node) => {
       created.push([kind, node]);
@@ -1406,7 +1584,7 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
         message: "Ambiguous.",
         mode: "discuss",
       },
-      async () => transcript,
+      conversationSource(transcript),
       false,
       unreachable,
       unreachable,
@@ -1418,7 +1596,7 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
       project,
       [{ ...task, active: true, settled: false, status_message: "Still running" }],
       { chat_id: "chat-1", message: "Too soon.", mode: "discuss" },
-      async () => transcript,
+      conversationSource(transcript),
       false,
       unreachable,
       unreachable,
@@ -1430,7 +1608,7 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
       project,
       [],
       { message: "Use it.", mode: "work", skill_ids: ["not-enabled"] },
-      async () => transcript,
+      conversationSource(transcript),
       false,
       unreachable,
       unreachable,
@@ -1756,24 +1934,21 @@ function evalToolDefinitions(state) {
   const { tasks, episodes } = artifactFixtures();
   return [
     ...projectReadToolDefinitions(project),
-    ...projectArtifactToolDefinitions(
-      project,
-      tasks,
-      episodes,
-      () => true,
-      async () => null,
-    ),
+    ...projectArtifactToolDefinitions(project, tasks, episodes, () => true, {
+      loadEpisode: async () => null,
+      loadTask: async () => null,
+    }),
     ...projectConversationToolDefinitions(
       project,
       conversationSummaryFixtures(),
       3,
       [task],
-      async () => transcript,
+      conversationSource(transcript),
     ),
     ...projectConversationSendToolDefinitions(
       project,
       [task],
-      async () => transcript,
+      conversationSource(transcript),
       false,
       () => "chat-1",
       async () => ({ operation_id: "task-next" }),
