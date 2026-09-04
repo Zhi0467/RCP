@@ -66,6 +66,7 @@ struct SourceTransferRequest {
     target_activation_proof_sha256: String,
     archive_sha256: String,
     archive_size_bytes: u64,
+    source_fence_head: TransferGraphHead,
 }
 
 /// Public, browser-supplied intent for the one target provisioning request.
@@ -2284,6 +2285,16 @@ fn parse_source_request(
     if require_archive && record.phase != "archive_bound" {
         return Err("the personal transfer archive is no longer available for local relay".into());
     }
+    let source_fence_head: TransferGraphHead = serde_json::from_value(
+        value
+            .get("source_fence_head")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|_| "the personal transfer has no valid source fence head".to_string())?;
+    if source_fence_head.target.kind != "main" || source_fence_head.target.branch_id.is_some() {
+        return Err("the source transfer fence must name the main graph".into());
+    }
     Ok(SourceTransferRequest {
         request_id: record.request_id,
         phase: record.phase,
@@ -2294,6 +2305,7 @@ fn parse_source_request(
         target_activation_proof_sha256,
         archive_sha256,
         archive_size_bytes,
+        source_fence_head,
     })
 }
 
@@ -3363,6 +3375,7 @@ pub async fn run(
             cleanup_acknowledged: finish.cleanup_acknowledged,
         });
     }
+    bind_target_archive(sessions, connections, &source, &target).await?;
     let archive = fetch_source_archive(&pinned, &source).await?;
     let (exit_code, event_count) = server_commands::run_project_transfer_import(
         &target,
@@ -3528,9 +3541,60 @@ pub async fn terminal(
     let target =
         resolve_target_connection(lifecycle, connections, sessions, tunnels, &source).await?;
     verify_local_archive(&archive_path, &source)?;
+    bind_target_archive(sessions, connections, &source, &target).await?;
     let argv =
         server_commands::terminal_transfer_argv(&target, &source.target_request_id, &archive_path)?;
     server_commands::open_terminal(argv).await
+}
+
+/// Both SSH relay entrances must commit the exact source boundary before the
+/// stdin-only server command can obtain its upload lease. The backend owns
+/// idempotence and rejects changed digests or an invalid lifecycle phase.
+async fn bind_target_archive(
+    sessions: &TeamSessionState,
+    connections: &TeamConnectionState,
+    source: &SourceTransferRequest,
+    target: &TeamConnectionMetadata,
+) -> Result<(), String> {
+    let value = sessions
+        .bind_target_project_transfer_archive(
+            connections,
+            &target.connection_id,
+            &source.target_request_id,
+            &crate::team_session::TransferArchiveBinding {
+                archive_sha256: &source.archive_sha256,
+                archive_size_bytes: source.archive_size_bytes,
+                source_fence_head: &source.source_fence_head,
+            },
+        )
+        .await?;
+    validate_target_archive_binding(&value, source)
+}
+
+fn validate_target_archive_binding(
+    value: &Value,
+    source: &SourceTransferRequest,
+) -> Result<(), String> {
+    let record = parse_transfer_mutation_record(value, &source.target_request_id, "target")?;
+    let fence: TransferGraphHead = serde_json::from_value(
+        value
+            .get("source_fence_head")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|_| "the target transfer has no valid source fence head".to_string())?;
+    if record.phase != "archive_bound"
+        || record.linked_request_id.as_deref() != Some(&source.request_id)
+        || record.project_id != source.project_id
+        || record.source_space_id != source.source_space_id
+        || record.target_space_id != source.target_space_id
+        || record.archive_sha256.as_deref() != Some(&source.archive_sha256)
+        || record.archive_size_bytes != Some(source.archive_size_bytes)
+        || fence != source.source_fence_head
+    {
+        return Err("the target archive binding does not match the sealed source transfer".into());
+    }
+    Ok(())
 }
 
 async fn finish_loaded(
@@ -4645,6 +4709,7 @@ mod tests {
             target_activation_proof_sha256: hex_digest(&[7; 32]),
             archive_sha256: "c".repeat(64),
             archive_size_bytes: 1,
+            source_fence_head: acknowledgment().source_fence_head,
         };
         assert_eq!(hex_digest(&[7; 32]), source.target_activation_proof_sha256);
         assert_ne!(hex_digest(&[8; 32]), source.target_activation_proof_sha256);
@@ -4665,6 +4730,7 @@ mod tests {
                 "target_activation_proof_sha256": "b".repeat(64),
                 "archive_sha256": archive.clone(),
                 "archive_size_bytes": 17,
+                "source_fence_head": acknowledgment().source_fence_head,
             })
         };
         let completed = parse_source_request(&payload("completed"), REQUEST_ID, false).unwrap();
@@ -4674,6 +4740,15 @@ mod tests {
         let bound = parse_source_request(&payload("archive_bound"), REQUEST_ID, false).unwrap();
         assert_eq!(bound.phase, "archive_bound");
         assert_eq!(bound.archive_sha256, archive);
+        let mut missing_fence = payload("archive_bound");
+        missing_fence
+            .as_object_mut()
+            .unwrap()
+            .remove("source_fence_head");
+        assert!(parse_source_request(&missing_fence, REQUEST_ID, true).is_err());
+        let mut branch_fence = payload("archive_bound");
+        branch_fence["source_fence_head"]["target"]["kind"] = serde_json::json!("branch");
+        assert!(parse_source_request(&branch_fence, REQUEST_ID, true).is_err());
     }
 
     #[test]
@@ -4688,6 +4763,7 @@ mod tests {
             target_activation_proof_sha256: "b".repeat(64),
             archive_sha256: "c".repeat(64),
             archive_size_bytes: 17,
+            source_fence_head: acknowledgment().source_fence_head,
         };
         let target = TeamConnectionMetadata {
             connection_id: "66666666-6666-4666-8666-666666666666".into(),
@@ -4719,6 +4795,7 @@ mod tests {
             target_activation_proof_sha256: "b".repeat(64),
             archive_sha256: hex_digest(bytes),
             archive_size_bytes: bytes.len() as u64,
+            source_fence_head: acknowledgment().source_fence_head,
         }
     }
 
@@ -4741,6 +4818,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn relay_requires_the_exact_target_archive_binding() {
+        let source = source_for_archive(b"sealed history");
+        let value = serde_json::json!({
+            "request_id": TARGET_ID, "side": "target", "phase": "archive_bound",
+            "linked_request_id": REQUEST_ID, "project_id": PROJECT_ID,
+            "source_space_id": SOURCE_SPACE_ID, "target_space_id": TARGET_SPACE_ID,
+            "archive_sha256": source.archive_sha256, "archive_size_bytes": source.archive_size_bytes,
+            "source_fence_head": source.source_fence_head,
+        });
+        validate_target_archive_binding(&value, &source).unwrap();
+        for (field, wrong) in [
+            ("phase", serde_json::json!("source_released")),
+            ("project_id", serde_json::json!(REQUEST_ID)),
+            ("linked_request_id", serde_json::json!(PROJECT_ID)),
+            ("source_space_id", serde_json::json!(TARGET_SPACE_ID)),
+            ("target_space_id", serde_json::json!(SOURCE_SPACE_ID)),
+            ("archive_sha256", serde_json::json!("0".repeat(64))),
+            (
+                "archive_size_bytes",
+                serde_json::json!(source.archive_size_bytes + 1),
+            ),
+            ("source_fence_head", Value::Null),
+        ] {
+            let mut changed = value.clone();
+            changed[field] = wrong;
+            assert!(
+                validate_target_archive_binding(&changed, &source).is_err(),
+                "accepted {field}"
+            );
+        }
+        let mut changed = value;
+        changed["source_fence_head"]["revision"] =
+            serde_json::json!(source.source_fence_head.revision + 1);
+        assert!(validate_target_archive_binding(&changed, &source).is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn manual_export_cleanup_removes_only_the_exact_verified_copy() {
@@ -4759,6 +4873,7 @@ mod tests {
             target_activation_proof_sha256: "b".repeat(64),
             archive_sha256: hex_digest(bytes),
             archive_size_bytes: bytes.len() as u64,
+            source_fence_head: acknowledgment().source_fence_head,
         };
 
         remove_local_export(&archive_path, &source).unwrap();
@@ -4782,6 +4897,7 @@ mod tests {
             target_activation_proof_sha256: "b".repeat(64),
             archive_sha256: "c".repeat(64),
             archive_size_bytes: 17,
+            source_fence_head: acknowledgment().source_fence_head,
         };
 
         assert!(remove_local_export(&archive_path, &source).is_err());

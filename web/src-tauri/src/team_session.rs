@@ -25,6 +25,7 @@ use crate::{
     local_https::{install_team_session_cookie, LocalHttpsIdentity},
     project_transfer::{
         validate_digest, ProjectTransferCleanupAcknowledgment, ProjectTransferSourceReleaseReceipt,
+        TransferGraphHead,
     },
     server_commands::ProjectProvisionReadback,
     team_connections::{CachedTeamProjectCard, TeamConnectionMetadata, TeamConnectionState},
@@ -46,6 +47,13 @@ const DESKTOP_SOURCE_COMMIT: &str = env!("RCP_DESKTOP_SOURCE_COMMIT");
 const EXPECTED_SERVER_OWNER: &str = "cli";
 const TARGET_ACTIVATION_PROOF_BYTES: usize = 32;
 const TRANSFER_BINARY_CONTENT_TYPE: &str = "application/octet-stream";
+
+#[derive(Serialize)]
+pub(crate) struct TransferArchiveBinding<'a> {
+    pub archive_sha256: &'a str,
+    pub archive_size_bytes: u64,
+    pub source_fence_head: &'a TransferGraphHead,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -324,6 +332,30 @@ impl TeamSessionState {
             .await
             .map_err(|error| format!("could not accept the source transfer release: {error}"))?;
         response_json(response, "source transfer release acceptance").await
+    }
+
+    pub(crate) async fn bind_target_project_transfer_archive(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        request_id: &str,
+        binding: &TransferArchiveBinding<'_>,
+    ) -> Result<Value, String> {
+        validate_uuid4(request_id, "target transfer request identity")?;
+        let (connection, client, cookie) = self
+            .authenticated_request_context(connections, connection_id)
+            .await?;
+        let response = target_archive_request(
+            &client,
+            &connection.local_origin,
+            cookie,
+            request_id,
+            binding,
+        )?
+        .send()
+        .await
+        .map_err(|error| format!("could not bind the target transfer archive: {error}"))?;
+        response_json(response, "target transfer archive binding").await
     }
 
     /// Re-enter a restored target transfer using the exact durable revision
@@ -1248,6 +1280,22 @@ fn parse_target_transfer_readback(
     })
 }
 
+fn target_archive_request(
+    client: &Client,
+    origin: &str,
+    cookie: HeaderValue,
+    request_id: &str,
+    binding: &TransferArchiveBinding<'_>,
+) -> Result<RequestBuilder, String> {
+    Ok(client
+        .post(endpoint(
+            origin,
+            &format!("/api/project-transfers/requests/{request_id}/archive"),
+        )?)
+        .header(COOKIE, cookie)
+        .json(binding))
+}
+
 fn target_admission_request(
     client: &Client,
     origin: &str,
@@ -1497,6 +1545,49 @@ mod tests {
         let body: Value =
             serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
         assert_eq!(body, serde_json::json!({}));
+    }
+
+    #[test]
+    fn target_archive_request_sends_the_fenced_source_boundary_as_json() {
+        let fence = TransferGraphHead {
+            target: crate::project_transfer::TransferGraphTarget {
+                kind: "main".into(),
+                branch_id: None,
+            },
+            revision: 2,
+            transition_id: None,
+        };
+        let digest = "a".repeat(64);
+        let binding = TransferArchiveBinding {
+            archive_sha256: &digest,
+            archive_size_bytes: 20480,
+            source_fence_head: &fence,
+        };
+        let request = target_archive_request(
+            &Client::new(),
+            "https://team.rcp.localhost:8421",
+            HeaderValue::from_static("__Host-rcp_session=test-session"),
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            &binding,
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        assert_eq!(request.method(), Method::POST);
+        assert_eq!(
+            request.url().path(),
+            "/api/project-transfers/requests/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/archive"
+        );
+        assert_eq!(request.headers()[CONTENT_TYPE], "application/json");
+        assert_eq!(request.headers()[COOKIE], "__Host-rcp_session=test-session");
+        let body: Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "archive_sha256": digest, "archive_size_bytes": 20480, "source_fence_head": fence,
+            })
+        );
     }
 
     fn health() -> TeamHealth {

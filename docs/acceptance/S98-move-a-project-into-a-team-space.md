@@ -46,11 +46,14 @@ implemented and hermetically verified.
 
 The 2026-09-04 production drive reached final review for disposable project
 `c3997083-a534-47f6-a4c1-74286f93422c`: Git write access, central checkout, and
-six provider readiness checks passed. The native admission request then failed
-with HTTP 415 because it omitted the JSON content type. Its regression now
-checks the native empty-JSON request and the authenticated backend's rejection
-of a missing content type before any admission mutation. Live validation of
-the fix, relay, restart recovery, activation, and deletion remain open. Resume
+six provider readiness checks passed. Merged PR #42 fixed the native admission
+HTTP 415; rebuilt desktop admission and source release then passed. Quitting
+and restarting the personal backend preserved source request revision 6, fence
+revision 2, and the exact sealed 20,480-byte archive. The manual import refused
+before upload because the desktop had not bound that archive on the target.
+Both native relay entrances now call the existing binding API and verify its
+readback; live qualification awaits merge and rebuild. Completed relay,
+activation, content comparison, and deletion remain open. Resume
 the existing linked requests recorded in the
 [production qualification receipt](../handoffs/handoff-2026-08-27-dev-team-space-and-server.md#production-qualification-receipts-and-next-boundary--2026-09-04).
 
