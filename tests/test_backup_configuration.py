@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import subprocess
+import tomllib
 from contextlib import nullcontext
 from io import StringIO
 from pathlib import Path
@@ -24,6 +25,7 @@ from rcp.server_ops.backup_config import (
     prepare_backup_configure_command,
     render_backup_timer_unit,
 )
+from rcp.server_ops.backup_identity import backup_identity_recipient_path
 from rcp.server_ops.cli import CallerIdentity, run_server_command
 from rcp.server_ops.config import (
     SERVER_CONFIG_SCHEMA_VERSION,
@@ -36,6 +38,7 @@ from rcp.server_ops.config import (
 )
 
 AGE_RECIPIENT = "age1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusqmwn7f2"
+OTHER_RECIPIENT = "age1qgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpquuzgag"
 INSTALLATION_ID = "70994440-4c57-41b0-a2f6-8878856db969"
 ROOT_IDENTITY = CallerIdentity(uid=0, username="root", host="lab.example")
 
@@ -64,8 +67,17 @@ def _installed(*, backup: ServerBackupConfig | None = None) -> InstalledServerCo
     )
 
 
-def _resolved(config: ServerBackupConfig) -> ResolvedBackupConfiguration:
-    return ResolvedBackupConfiguration(config=config)
+def _resolved(
+    config: ServerBackupConfig,
+    *,
+    observed_installed_backup: ServerBackupConfig | None = None,
+    encryption_source: str = "server-managed",
+) -> ResolvedBackupConfiguration:
+    return ResolvedBackupConfiguration(
+        config=config,
+        observed_installed_backup=observed_installed_backup,
+        encryption_source=encryption_source,
+    )
 
 
 def _argv(
@@ -112,14 +124,15 @@ class RecordingMachine:
         return _resolved(
             _settings(
                 age_recipient=request.backup_age_recipient or AGE_RECIPIENT,
-                identity_source=(
-                    "server_managed" if request.backup_age_recipient is None else "external"
-                ),
-            )
+            ),
+            encryption_source=(
+                "server-managed" if request.backup_age_recipient is None else "external-recipient"
+            ),
         )
 
     def persist_and_install(self, resolved: ResolvedBackupConfiguration) -> None:
-        assert resolved.config == _settings(identity_source="server_managed")
+        assert resolved.config == _settings()
+        assert resolved.encryption_source == "server-managed"
         self._call("persist_and_install")
 
     def readback(self, config: ServerBackupConfig) -> BackupConfigurationReadback:
@@ -271,7 +284,12 @@ def test_backup_section_round_trips_and_legacy_v1_loads_unconfigured() -> None:
     assert "[backup]" in rendered
     assert 'schedule = "03:17"' in rendered
     assert "retention = 45" in rendered
-    assert 'identity_source = "external"' in rendered
+    assert set(tomllib.loads(rendered)["backup"]) == {
+        "destination",
+        "schedule",
+        "retention",
+        "age_recipient",
+    }
     assert "AGE-SECRET-KEY" not in rendered
 
     legacy = render_installed_server_config(_installed()).replace(
@@ -452,7 +470,7 @@ def test_pending_configuration_recovers_before_a_new_request(
     assert pending.is_file()
     assert config_owner.load_installed_server_config(config_path).backup is None
 
-    machine.persist_and_install(_resolved(second))
+    machine.persist_and_install(_resolved(second, observed_installed_backup=first))
 
     assert converged == [first, first, second]
     assert config_owner.load_installed_server_config(config_path).backup == second
@@ -472,12 +490,15 @@ def test_pending_server_identity_is_validated_before_recovery_mutates_units(
     monkeypatch.setattr(config_owner, "_expected_config_ownership", lambda: ownership)
     monkeypatch.setattr(backup_owner, "_root_ownership", lambda: ownership)
     current = _installed()
-    pending = _installed(backup=_settings(identity_source="server_managed"))
+    pending = _installed(backup=_settings())
     config_owner.write_installed_server_config(current, layout.config_path)
     config_owner.write_installed_server_config(
         pending,
         backup_owner._pending_backup_configuration_path(layout),
     )
+    marker = backup_identity_recipient_path(layout)
+    marker.write_text(f"{AGE_RECIPIENT}\n", encoding="ascii")
+    marker.chmod(0o644)
     mutations: list[str] = []
     monkeypatch.setattr(
         backup_owner,
@@ -550,7 +571,12 @@ def test_server_managed_identity_must_still_exist_before_publication(
         systemd_unit=tmp_path / "etc" / "systemd" / "system" / "rcp.service",
     )
     layout.config_path.parent.mkdir(parents=True)
+    ownership = (os.getuid(), os.getgid())
+    marker = backup_identity_recipient_path(layout)
+    marker.write_text(f"{AGE_RECIPIENT}\n", encoding="ascii")
+    marker.chmod(0o644)
     mutations: list[str] = []
+    monkeypatch.setattr(backup_owner, "_root_ownership", lambda: ownership)
     monkeypatch.setattr(
         backup_owner,
         "backup_configuration_lock",
@@ -573,11 +599,58 @@ def test_server_managed_identity_must_still_exist_before_publication(
     )
 
     with pytest.raises(BackupConfigurationRefused, match="identity is missing"):
-        LinuxBackupConfigurationMachine(layout).persist_and_install(
-            _resolved(_settings(identity_source="server_managed"))
-        )
+        LinuxBackupConfigurationMachine(layout).persist_and_install(_resolved(_settings()))
 
     assert mutations == []
+
+
+def test_publication_refuses_when_installed_backup_changed_after_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "etc" / "rcp" / "server.toml"
+    config_path.parent.mkdir(parents=True)
+    layout = SimpleNamespace(
+        config_path=config_path,
+        systemd_unit=tmp_path / "etc" / "systemd" / "system" / "rcp.service",
+    )
+    ownership = (os.getuid(), os.getgid())
+    monkeypatch.setattr(config_owner, "_expected_config_ownership", lambda: ownership)
+    monkeypatch.setattr(backup_owner, "_root_ownership", lambda: ownership)
+    monkeypatch.setattr(backup_owner, "fence_backup_timer_before_unit_change", lambda: None)
+    monkeypatch.setattr(
+        backup_owner,
+        "_converge_installed_backup_configuration",
+        lambda installed, actual_layout: config_owner.write_installed_server_config(
+            installed, actual_layout.config_path
+        ),
+    )
+    config_owner.write_installed_server_config(_installed(), config_path)
+    machine = LinuxBackupConfigurationMachine(layout)
+
+    def request(recipient: str):
+        return backup_owner.ServerCommandRequest.model_validate(
+            {
+                "command": "server backup configure",
+                "backup_destination": "/srv/rcp-backups",
+                "backup_schedule": "02:00",
+                "backup_retention": 30,
+                "backup_age_recipient": recipient,
+                "backup_confirmed": True,
+            }
+        )
+
+    first = machine.resolve_config(request(AGE_RECIPIENT))
+    second = machine.resolve_config(request(OTHER_RECIPIENT))
+    assert first.observed_installed_backup is second.observed_installed_backup is None
+
+    machine.persist_and_install(first)
+    with pytest.raises(BackupConfigurationRefused, match="changed.*Rerun the same command"):
+        machine.persist_and_install(second)
+
+    installed = config_owner.load_installed_server_config(config_path)
+    assert installed.backup == first.config
+    assert installed.backup.age_recipient == AGE_RECIPIENT
 
 
 def test_persist_preserves_identity_and_activates_only_after_first_backup(

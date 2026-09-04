@@ -9,8 +9,10 @@ import pytest
 
 from rcp.server_ops import backup_identity as identity_owner
 from rcp.server_ops.backup_identity import (
+    BACKUP_IDENTITY_RECIPIENT_MODE,
     BackupIdentityRefused,
     backup_identity_path,
+    backup_identity_recipient_path,
     resolve_backup_recipient,
 )
 
@@ -61,6 +63,7 @@ def test_first_simple_configuration_creates_and_reuses_one_root_owned_identity(
         expected_owner=owner,
     )
     path = backup_identity_path(layout)
+    marker = backup_identity_recipient_path(layout)
     first_inode = path.stat().st_ino
     second = resolve_backup_recipient(
         layout=layout,
@@ -72,6 +75,8 @@ def test_first_simple_configuration_creates_and_reuses_one_root_owned_identity(
     assert first == second == AGE_RECIPIENT
     assert path.stat().st_ino == first_inode
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert marker.read_text(encoding="ascii") == f"{AGE_RECIPIENT}\n"
+    assert stat.S_IMODE(marker.stat().st_mode) == BACKUP_IDENTITY_RECIPIENT_MODE
     assert sum("--output" in call for call in calls) == 1
 
 
@@ -145,6 +150,65 @@ def test_retained_identity_refuses_a_different_recipient(
             requested_recipient=OTHER_RECIPIENT,
             expected_owner=owner,
         )
+
+
+def test_retained_identity_refuses_a_mismatched_configured_recipient(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _fake_age_keygen(monkeypatch)
+    layout = _layout(tmp_path)
+    owner = (os.getuid(), os.getgid())
+    assert (
+        resolve_backup_recipient(
+            layout=layout,
+            configured_recipient=None,
+            requested_recipient=None,
+            expected_owner=owner,
+        )
+        == AGE_RECIPIENT
+    )
+    identity = backup_identity_path(layout)
+    before = identity.read_bytes()
+
+    with pytest.raises(BackupIdentityRefused, match="does not match the configured recipient"):
+        resolve_backup_recipient(
+            layout=layout,
+            configured_recipient=OTHER_RECIPIENT,
+            requested_recipient=None,
+            expected_owner=owner,
+        )
+
+    assert identity.read_bytes() == before
+
+
+def test_missing_retained_identity_is_identified_by_its_public_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _fake_age_keygen(monkeypatch)
+    layout = _layout(tmp_path)
+    owner = (os.getuid(), os.getgid())
+    assert (
+        resolve_backup_recipient(
+            layout=layout,
+            configured_recipient=None,
+            requested_recipient=None,
+            expected_owner=owner,
+        )
+        == AGE_RECIPIENT
+    )
+    backup_identity_path(layout).unlink()
+
+    with pytest.raises(BackupIdentityRefused, match="identity is missing"):
+        resolve_backup_recipient(
+            layout=layout,
+            configured_recipient=AGE_RECIPIENT,
+            requested_recipient=None,
+            expected_owner=owner,
+        )
+
+    assert backup_identity_recipient_path(layout).is_file()
 
 
 def test_existing_external_configuration_requires_its_explicit_recipient(

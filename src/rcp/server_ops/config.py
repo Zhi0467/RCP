@@ -106,7 +106,6 @@ class ServerBackupConfig(_StrictModel):
     schedule: str = DEFAULT_BACKUP_SCHEDULE
     retention: int = DEFAULT_BACKUP_RETENTION
     age_recipient: str
-    identity_source: Literal["external", "server_managed"] = "external"
 
     @field_validator("destination")
     @classmethod
@@ -188,7 +187,6 @@ def render_installed_server_config(config: InstalledServerConfig) -> str:
         backup.add("schedule", config.backup.schedule)
         backup.add("retention", config.backup.retention)
         backup.add("age_recipient", config.backup.age_recipient)
-        backup.add("identity_source", config.backup.identity_source)
         document.add("backup", backup)
     content = tomlkit.dumps(document)
     if parse_installed_server_config(content) != config:

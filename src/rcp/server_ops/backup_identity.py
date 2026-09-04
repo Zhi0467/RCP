@@ -16,6 +16,8 @@ from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 
 BACKUP_IDENTITY_MODE = 0o600
 BACKUP_IDENTITY_NAME = "backup-recovery.agekey"
+BACKUP_IDENTITY_RECIPIENT_MODE = 0o644
+BACKUP_IDENTITY_RECIPIENT_SUFFIX = ".pub"
 
 
 class BackupIdentityRefused(ValueError):
@@ -24,6 +26,11 @@ class BackupIdentityRefused(ValueError):
 
 def backup_identity_path(layout: ServerLayout = DEFAULT_SERVER_LAYOUT) -> Path:
     return layout.config_path.parent / BACKUP_IDENTITY_NAME
+
+
+def backup_identity_recipient_path(layout: ServerLayout = DEFAULT_SERVER_LAYOUT) -> Path:
+    identity = backup_identity_path(layout)
+    return identity.with_name(f"{identity.name}{BACKUP_IDENTITY_RECIPIENT_SUFFIX}")
 
 
 def resolve_backup_recipient(
@@ -37,6 +44,7 @@ def resolve_backup_recipient(
     """Resolve explicit compatibility input or one durable server-managed identity."""
 
     path = backup_identity_path(layout)
+    marker = backup_identity_recipient_path(layout)
     if path.exists() or path.is_symlink():
         observed = read_backup_identity_recipient(
             path,
@@ -48,12 +56,32 @@ def resolve_backup_recipient(
                 "The server-managed backup identity does not match the configured recipient. "
                 "Restore the original root-owned identity before reconfiguring backups."
             )
+        _ensure_backup_identity_recipient_marker(
+            marker,
+            observed,
+            expected_owner=expected_owner,
+        )
         if requested_recipient is not None and requested_recipient != observed:
             raise BackupIdentityRefused(
                 "The supplied recipient differs from the retained server-managed backup "
                 "identity. Omit --recipient to reuse the existing identity."
             )
         return observed
+
+    if marker.exists() or marker.is_symlink():
+        recorded = read_backup_identity_recipient_marker(
+            marker,
+            expected_owner=expected_owner,
+        )
+        if configured_recipient == recorded:
+            raise BackupIdentityRefused(
+                "The retained server-managed backup identity is missing. Restore it before "
+                "reconfiguring backups."
+            )
+        raise BackupIdentityRefused(
+            "The retained server-managed backup identity marker does not match the configured "
+            "recipient. Inspect the root-owned identity state before reconfiguring backups."
+        )
 
     if configured_recipient is not None and requested_recipient is None:
         raise BackupIdentityRefused(
@@ -168,12 +196,115 @@ def create_backup_identity(
             raise BackupIdentityRefused(
                 "The published server-managed backup identity changed during readback."
             )
+        _ensure_backup_identity_recipient_marker(
+            path.with_name(f"{path.name}{BACKUP_IDENTITY_RECIPIENT_SUFFIX}"),
+            observed,
+            expected_owner=expected_owner,
+        )
         return observed
     except BackupIdentityRefused:
         raise
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise BackupIdentityRefused(
             "RCP could not safely create the root-owned backup identity."
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        with suppress(OSError):
+            temporary.unlink()
+
+
+def read_backup_identity_recipient_marker(
+    path: Path,
+    *,
+    expected_owner: tuple[int, int] = (0, 0),
+) -> str:
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or (info.st_uid, info.st_gid) != expected_owner
+            or stat.S_IMODE(info.st_mode) != BACKUP_IDENTITY_RECIPIENT_MODE
+        ):
+            raise BackupIdentityRefused(
+                "The server-managed backup identity marker must be one root-owned mode-0644 file."
+            )
+        payload = os.read(descriptor, 4097)
+        if len(payload) > 4096 or os.read(descriptor, 1):
+            raise BackupIdentityRefused("The server-managed backup identity marker is malformed.")
+    except BackupIdentityRefused:
+        raise
+    except OSError as exc:
+        raise BackupIdentityRefused(
+            "The server-managed backup identity marker is missing or unreadable."
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    try:
+        text = payload.decode("ascii")
+        if text != f"{text.strip()}\n":
+            raise ValueError
+        return validate_age_recipient(text.strip())
+    except (UnicodeError, ValueError) as exc:
+        raise BackupIdentityRefused(
+            "The server-managed backup identity marker is malformed."
+        ) from exc
+
+
+def _ensure_backup_identity_recipient_marker(
+    path: Path,
+    recipient: str,
+    *,
+    expected_owner: tuple[int, int],
+) -> None:
+    if path.exists() or path.is_symlink():
+        if read_backup_identity_recipient_marker(path, expected_owner=expected_owner) != recipient:
+            raise BackupIdentityRefused(
+                "The server-managed backup identity marker does not match the retained identity."
+            )
+        return
+
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.partial")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            BACKUP_IDENTITY_RECIPIENT_MODE,
+        )
+        os.fchown(descriptor, *expected_owner)
+        os.fchmod(descriptor, BACKUP_IDENTITY_RECIPIENT_MODE)
+        remaining = memoryview(f"{recipient}\n".encode("ascii"))
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written == 0:
+                raise OSError("short write")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError as exc:
+            raise BackupIdentityRefused(
+                "The server-managed backup identity marker appeared during configuration; "
+                "rerun the same command."
+            ) from exc
+        temporary.unlink()
+        fsync_directory(path.parent)
+        if read_backup_identity_recipient_marker(path, expected_owner=expected_owner) != recipient:
+            raise BackupIdentityRefused(
+                "The published server-managed backup identity marker changed during readback."
+            )
+    except BackupIdentityRefused:
+        raise
+    except OSError as exc:
+        raise BackupIdentityRefused(
+            "RCP could not safely create the root-owned backup identity marker."
         ) from exc
     finally:
         if descriptor >= 0:
@@ -226,9 +357,12 @@ def _require_identity_file(path: Path, *, expected_owner: tuple[int, int]) -> No
 
 __all__ = [
     "BACKUP_IDENTITY_MODE",
+    "BACKUP_IDENTITY_RECIPIENT_MODE",
     "BackupIdentityRefused",
     "backup_identity_path",
+    "backup_identity_recipient_path",
     "create_backup_identity",
     "read_backup_identity_recipient",
+    "read_backup_identity_recipient_marker",
     "resolve_backup_recipient",
 ]

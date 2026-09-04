@@ -15,14 +15,16 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Protocol, TypeVar
+from typing import BinaryIO, Literal, Protocol, TypeVar
 
 from rcp.limits import SERVER_BACKUP_CONFIGURATION_TIMEOUT_SECONDS
 from rcp.server_ops._local_primitives import fsync_directory as _fsync_directory
 from rcp.server_ops.backup_identity import (
     BackupIdentityRefused,
     backup_identity_path,
+    backup_identity_recipient_path,
     read_backup_identity_recipient,
+    read_backup_identity_recipient_marker,
     resolve_backup_recipient,
 )
 from rcp.server_ops.cli import (
@@ -80,6 +82,8 @@ class BackupConfigurationReadback:
 @dataclass(frozen=True)
 class ResolvedBackupConfiguration:
     config: ServerBackupConfig
+    observed_installed_backup: ServerBackupConfig | None
+    encryption_source: Literal["server-managed", "external-recipient"]
 
 
 class BackupConfigurationMachine(Protocol):
@@ -232,7 +236,10 @@ def _execute_configuration(
             running="Resolving backup encryption without exposing private identity text.",
             operation=lambda: machine.resolve_config(request),
             succeeded="The backup recipient is resolved without exposing private identity text.",
-            fields=lambda value: _configuration_fields(value.config),
+            fields=lambda value: _configuration_fields(
+                value.config,
+                encryption_source=value.encryption_source,
+            ),
         )
         _run_step(
             emitter,
@@ -249,7 +256,10 @@ def _execute_configuration(
             operation=lambda: machine.readback(config),
             succeeded="The stored policy and active systemd schedule agree exactly.",
             fields=lambda value: (
-                *_configuration_fields(value.config),
+                *_configuration_fields(
+                    value.config,
+                    encryption_source=resolved.encryption_source,
+                ),
                 NonsecretField(name="timer_active_state", value=value.timer_active_state),
                 NonsecretField(name="timer_unit_file_state", value=value.timer_unit_file_state),
             ),
@@ -303,13 +313,17 @@ def _complete_step(
     )
 
 
-def _configuration_fields(config: ServerBackupConfig) -> tuple[NonsecretField, ...]:
+def _configuration_fields(
+    config: ServerBackupConfig,
+    *,
+    encryption_source: Literal["server-managed", "external-recipient"],
+) -> tuple[NonsecretField, ...]:
     return (
         NonsecretField(name="destination", value=config.destination),
         NonsecretField(name="schedule", value=config.schedule),
         NonsecretField(name="retention", value=config.retention),
         NonsecretField(name="age_recipient", value=config.age_recipient),
-        NonsecretField(name="encryption_source", value=config.identity_source.replace("_", "-")),
+        NonsecretField(name="encryption_source", value=encryption_source),
     )
 
 
@@ -428,8 +442,10 @@ class LinuxBackupConfigurationMachine:
                     expected_owner=_root_ownership(),
                 )
                 identity = backup_identity_path(self.layout)
-                identity_source = (
-                    "server_managed" if identity.exists() or identity.is_symlink() else "external"
+                encryption_source = (
+                    "server-managed"
+                    if identity.exists() or identity.is_symlink()
+                    else "external-recipient"
                 )
             return ResolvedBackupConfiguration(
                 config=ServerBackupConfig(
@@ -437,8 +453,9 @@ class LinuxBackupConfigurationMachine:
                     schedule=request.backup_schedule,
                     retention=request.backup_retention,
                     age_recipient=recipient,
-                    identity_source=identity_source,
-                )
+                ),
+                observed_installed_backup=installed.backup,
+                encryption_source=encryption_source,
             )
         except BackupIdentityRefused as exc:
             raise BackupConfigurationRefused(str(exc)) from exc
@@ -454,6 +471,11 @@ class LinuxBackupConfigurationMachine:
             with backup_configuration_lock(self.layout):
                 recover_pending_backup_configuration(self.layout)
                 installed = load_installed_server_config(self.layout.config_path)
+                if installed.backup != resolved.observed_installed_backup:
+                    raise BackupConfigurationRefused(
+                        "The installed backup configuration changed after this command resolved "
+                        "it. Rerun the same command against the current configuration."
+                    )
                 _validate_configured_backup_identity(
                     config,
                     self.layout,
@@ -706,12 +728,25 @@ def _validate_configured_backup_identity(
 ) -> None:
     identity = backup_identity_path(layout)
     identity_exists = identity.exists() or identity.is_symlink()
-    if config.identity_source == "server_managed" and not identity_exists:
-        raise BackupConfigurationRefused(
-            "The retained server-managed backup identity is missing. Restore it before "
-            "continuing backup configuration or activation."
-        )
     if not identity_exists:
+        marker = backup_identity_recipient_path(layout)
+        if marker.exists() or marker.is_symlink():
+            try:
+                recorded = read_backup_identity_recipient_marker(
+                    marker,
+                    expected_owner=_root_ownership(),
+                )
+            except BackupIdentityRefused as exc:
+                raise BackupConfigurationRefused(str(exc)) from exc
+            if recorded == config.age_recipient:
+                raise BackupConfigurationRefused(
+                    "The retained server-managed backup identity is missing. Restore it before "
+                    "continuing backup configuration or activation."
+                )
+            raise BackupConfigurationRefused(
+                "The retained server-managed backup identity marker does not match the "
+                "configured recipient. Inspect /etc/rcp before continuing."
+            )
         return
     try:
         observed = read_backup_identity_recipient(

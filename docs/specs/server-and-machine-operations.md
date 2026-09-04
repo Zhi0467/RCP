@@ -65,10 +65,11 @@ RCP verifies the selected executable and existing login as its separate final
 step.
 
 Only root/system integration lives elsewhere: `/etc/rcp/server.toml`, the
-root-only `/etc/rcp/backup-recovery.agekey`, the root-owned current-release
-pointer, `/run/rcp/control.sock`, the stable CLI wrapper, systemd units, and
-journald. Backup destination remains explicitly configurable and may live
-outside this layout.
+root-only `/etc/rcp/backup-recovery.agekey`, its root-owned nonsecret `.pub`
+recipient sidecar, the root-owned current-release pointer,
+`/run/rcp/control.sock`, the stable CLI wrapper, systemd units, and journald.
+Backup destination remains explicitly configurable and may live outside this
+layout.
 
 The installed config carries one immutable random nonsecret `installation_id`.
 A private source checkout's read-only deploy key is labelled
@@ -1170,11 +1171,12 @@ another storage transport. The directory may be a local path or a mounted
 filesystem. RCP neither infers nor warns whether its physical storage is on or
 off the server, and it makes no durability claim based on that topology.
 
-Backup destination, `age` public recipient, nonsecret identity source, schedule,
-and retention are strict versioned machine configuration in the installed
-server config file, not team SQLite state. The root-owned config is readable by
-`rcp`, contains no private recovery identity, and is replaced atomically only
-through the following explicit operation:
+Backup destination, `age` public recipient, schedule, and retention are strict
+versioned machine configuration in the installed server config file, not team
+SQLite state. Its schema-v2 `[backup]` table remains exactly those four keys.
+The root-owned config is readable by `rcp`, contains no private recovery
+identity, and is replaced atomically only through the following explicit
+operation:
 
 ```bash
 sudo rcp server backup configure \
@@ -1188,13 +1190,18 @@ The schedule and retention flags default to `02:00` server-local
 time and 30 newest integrity-readback archives; only the destination and
 explicit confirmation are required. The default path uses `age-keygen` to
 create the fixed root-only identity atomically and records only its derived
-native X25519 public recipient in `server.toml`. Reconfiguration without
-`--recipient` must validate and reuse that same identity. A missing, damaged,
-unsafe, or mismatched retained identity fails loudly and is never silently
-replaced. `--recipient <age1-public-recipient>` remains an advanced path for an
-externally managed identity; an already configured external recipient must be
-supplied again exactly, and recipient rotation is not implicit. Private
-`AGE-SECRET-KEY-...` text is never accepted by the CLI or emitted in progress.
+native X25519 public recipient in `server.toml`. It atomically publishes the
+same nonsecret recipient in the root-owned mode-`0644`
+`backup-recovery.agekey.pub` sidecar. The presence of the private identity file,
+not a config key, identifies the server-managed path for progress; recipient
+equality with the sidecar preserves a loud missing-identity refusal if that file
+is later lost. Reconfiguration without `--recipient` must validate and reuse the
+same identity. A missing, damaged, unsafe, or mismatched retained identity fails
+loudly and is never silently replaced. `--recipient <age1-public-recipient>`
+remains an advanced path for an externally managed identity; an already
+configured external recipient must be supplied again exactly, and recipient
+rotation is not implicit. Private `AGE-SECRET-KEY-...` text is never accepted by
+the CLI or emitted in progress.
 The same resolved schedule renders the systemd timer; there is no second
 editable timer value. Retention also preserves the newest complete archive if
 it has fallen outside the configured count.

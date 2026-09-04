@@ -193,7 +193,7 @@ server-to-remote SSH route, and no provider-native login.
 - `an_unreachable_project_does_not_fail_the_whole_backup`
 - `the_manifest_names_each_uncaptured_project_with_a_reason_and_time`
 - `server_settings_shows_which_projects_are_actually_protected`
-- `the_server_stores_only_an_age_public_recipient`
+- `config_sqlite_archives_and_progress_carry_only_the_public_recipient`
 - `backup_configure_creates_one_root_only_server_identity_by_default`
 - `backup_reconfiguration_reuses_the_same_identity`
 - `damaged_missing_or_mismatched_identity_state_is_never_silently_replaced`
@@ -289,8 +289,11 @@ revocation checklist; the durable identity boundary remains in
 
 The first implementation accepts the upstream `age` 1.x CLI and one native
 X25519 public recipient. The ordinary path creates one fixed root-only identity
-on the server; this makes setup simple but does not claim survival after total
-machine loss. Labs needing that property retain a protected external copy or
-configure an external public recipient. Recipient rotation is not implicit and
-old archives are never rewritten. A real restore drill, not successful
-encryption alone, proves the backup usable.
+on the server and a root-owned nonsecret public-recipient sidecar next to it.
+Config, SQLite, archives, and progress carry only the public recipient; the
+private identity lives only in the root-only identity file. This makes setup
+simple but does not claim survival after total machine loss. Labs needing that
+property retain a protected external copy or configure an external public
+recipient. Recipient rotation is not implicit and old archives are never
+rewritten. A real restore drill, not successful encryption alone, proves the
+backup usable.
