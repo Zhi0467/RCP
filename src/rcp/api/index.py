@@ -28,7 +28,7 @@ from rcp.api.episodes import (
 from rcp.api.experiment_controls import ExperimentControlResponse, _experiment_control_response
 from rcp.api.identity import IdentityAccess
 from rcp.api.team_shell_protocol import acknowledge_team_shell_protocol
-from rcp.core.models import Experiment, GraphState
+from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, Experiment, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.keyed_locks import KeyedLocks
 from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON, ProjectCatalog, ProjectDisplayCache
@@ -49,6 +49,7 @@ from rcp.storage import (
     ExperimentControlProjectionSnapshot,
     ExperimentEpisodeProjectionSnapshot,
     ExperimentLoopRuntime,
+    NodeStatusGraphCondition,
     ProjectActiveTaskConflict,
 )
 from rcp.transport import StateUnavailable
@@ -331,6 +332,8 @@ def _experiment_episode_entries(
                     and watcher.episode_id == parent_episode_id
                     and watcher.graph_target == target
                     and watcher.condition.node_id == node.id
+                    and isinstance(watcher.condition, NodeStatusGraphCondition)
+                    and set(watcher.condition.status_in).issubset(CLOSED_EXPERIMENT_STATUSES)
                     for watcher in active_graph_watchers
                 )
                 if target.kind == "branch" and parent_episode_id != target.branch_id:

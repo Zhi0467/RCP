@@ -406,7 +406,6 @@ export function AutoResearchEpisodeCard({
                         <span className="campaign-task-role experiment">Experiment</span>
                         <span className="campaign-task-copy">
                           <strong>{entry.node.title}</strong>
-                          <span>{entry.node.id}</span>
                         </span>
                         <span className={`status-pill ${tone}`}>
                           {experimentHealthLabel(entry.control.health)}

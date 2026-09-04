@@ -495,6 +495,7 @@ test("project Runs shows a dispatched child as a nested turn and its own run car
   assert.ok(nestedChildIndex < parentAfterIndex);
   assert.match(html, /Turns<\/h3><span>3<\/span>/);
   assert.match(html, /campaign-task depth-1[\s\S]*?<strong>Reproduce the baseline<\/strong>/);
+  assert.doesNotMatch(html, /campaign-task-copy"><strong>Reproduce the baseline<\/strong><span>/);
   assert.match(html, /campaign-run-title[\s\S]*?<span>Reproduce the baseline<\/span>/);
   assert.match(
     html,

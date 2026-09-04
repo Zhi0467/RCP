@@ -3871,12 +3871,12 @@ button:disabled {
   margin: 0;
   padding-top: 9px;
 }
-.experiment-turn-pending-note {
-  background: color-mix(in srgb, var(--teal) 7%, var(--sheet));
-  border-left: 3px solid var(--teal);
-  font-size: 12px;
-  line-height: 1.45;
-  padding: 8px 10px;
+.experiment-parent-watch {
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+  font-weight: 650;
+  margin: 0;
+  padding: 9px 0;
 }
 .experiment-run-empty {
   border-top: 1px solid var(--rule);

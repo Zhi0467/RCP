@@ -129,9 +129,6 @@ export function ExperimentRunDetail({
   const nextActionGuidance = experimentGuidanceDetail(node, "next_action");
   const currentSummary = currentExperimentGuidance(node, "current_summary");
   const currentNextAction = currentExperimentGuidance(node, "next_action");
-  const staleGuidanceWhileActive =
-    health === "agent_active" &&
-    (summaryGuidance.status === "stale" || nextActionGuidance.status === "stale");
   const watcherActionsDisabled =
     runDisabled || runBusy || stopBusy || recoveryBusy || watcherCheckBusyId !== null;
 
@@ -305,12 +302,6 @@ export function ExperimentRunDetail({
         <p className="experiment-run-prose">
           {String(currentSummary || node.objective || "No current summary recorded")}
         </p>
-        {staleGuidanceWhileActive && (
-          <div className="experiment-turn-pending-note" role="status">
-            The current turn has not reported yet. Its summary and next action will update when it
-            finishes.
-          </div>
-        )}
         {currentNextAction && (
           <p className="experiment-run-prose experiment-run-next-action">
             <span className="eyebrow">Next action</span>
@@ -342,15 +333,18 @@ export function ExperimentRunDetail({
       )}
 
       <Fold title="Watchers" count={currentWatcherCount} defaultOpen>
+        {watchedByParentAutoResearch && (
+          <p className="experiment-parent-watch" role="status">
+            The owning Auto-research episode is watching this Experiment's completion.
+          </p>
+        )}
         {currentWatcherItems.length === 0 ? (
           <p className="experiment-run-empty">
-            {watchedByParentAutoResearch && health === "agent_active"
-              ? "The agent is still working. The owning Auto-research episode is watching this Experiment's completion; this section only shows detached work handed off by the Experiment itself."
-              : ownedByAutoResearch && health === "agent_active"
-                ? "The agent is still working. No detached work has been handed off by this Experiment."
-                : stoppedWatcherCount > 0
-                  ? "No current watchers."
-                  : "No detached work has been handed off."}
+            {ownedByAutoResearch && health === "agent_active"
+              ? "The agent is still working. No detached work has been handed off by this Experiment."
+              : stoppedWatcherCount > 0
+                ? "No current watchers."
+                : "No detached work has been handed off."}
           </p>
         ) : (
           <ul className="experiment-run-watchers" aria-label="Experiment watchers">

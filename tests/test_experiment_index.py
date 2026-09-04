@@ -963,9 +963,31 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         client.close()
 
 
+@pytest.mark.parametrize(
+    ("parent_condition", "expected_parent_watching"),
+    [
+        pytest.param(
+            {"node_id": "exp/branch-created", "status_in": ["abandoned", "completed"]},
+            True,
+            id="terminal-node-status",
+        ),
+        pytest.param(
+            {"node_id": "exp/branch-created", "proposal_resolved": True},
+            False,
+            id="proposal-resolution",
+        ),
+        pytest.param(
+            {"node_id": "exp/branch-created", "status_in": ["running"]},
+            False,
+            id="nonterminal-node-status",
+        ),
+    ],
+)
 def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
     manifest,
     tmp_path: Path,
+    parent_condition: dict[str, object],
+    expected_parent_watching: bool,
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -1012,10 +1034,7 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
                     run_truth_scope=["repo-a"],
                     patch_kind="work",
                 ),
-                condition={
-                    "node_id": "exp/branch-created",
-                    "status_in": ["abandoned", "completed"],
-                },
+                condition=parent_condition,
                 armed_revision=branch_head.revision,
                 created_at=app.state.background_tasks.store.now(),
             )
@@ -1038,7 +1057,7 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
         assert entry["graph_target"] == parent.graph_target.model_dump(mode="json")
         assert entry["graph_head"]["target"] == parent.graph_target.model_dump(mode="json")
         assert entry["parent_episode_id"] == parent.episode_id
-        assert entry["parent_watching"] is True
+        assert entry["parent_watching"] is expected_parent_watching
         assert "exp/branch-created" not in service.history.state().nodes
 
 

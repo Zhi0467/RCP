@@ -1232,8 +1232,8 @@ function ExperimentEpisodeCard({
           onClick={() => {
             const next = !expanded;
             setExpanded(next);
+            onSelectExperiment(next ? run.node.id : null);
             if (next && indexedEntry) onOpenExperimentEntry(indexedEntry);
-            else onSelectExperiment(next ? run.node.id : null);
           }}
         />
         <span className="campaign-run-identity">

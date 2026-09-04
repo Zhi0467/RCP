@@ -736,7 +736,7 @@ test("an Auto-research child explains its active turn, stale guidance, and watch
   assert.match(html, /<strong>Invocation 1<\/strong>/);
   assert.match(html, /Agent task is running\./);
   assert.match(html, /<h4>Experiment objective<\/h4>/);
-  assert.match(html, /The current turn has not reported yet\./);
+  assert.doesNotMatch(html, /will update when it finishes/);
   assert.match(html, /Previous research summary \(stale\).*No baseline has been run yet\./s);
   assert.match(html, /Previous next action \(stale\).*Run the baseline\./s);
   assert.match(html, /The owning Auto-research episode is watching this Experiment/);
@@ -1211,22 +1211,26 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
   assert.doesNotMatch(row, /OBSOLETE SUCCEEDED TASK STATUS/);
 });
 
-test("graph watcher detail shows its canonical condition without shell fields", () => {
+test("graph watcher detail shows its condition and independent parent ownership", () => {
   const graph = graphWatcher({
     watcher_id: "graph-watcher",
     status: "active",
     completed_at: null,
   });
-  const html = render({
-    node: node(),
-    control: control({ invocations_used: 1, invocations_remaining: 2, paused: false }),
-    taskGroup: null,
-    currentTask: null,
-    watchers: [graph],
-    currentWatchers: [graph],
-    health: "waiting_on_watchers",
-  });
+  const html = render(
+    {
+      node: node(),
+      control: control({ invocations_used: 1, invocations_remaining: 2, paused: false }),
+      taskGroup: null,
+      currentTask: null,
+      watchers: [graph],
+      currentWatchers: [graph],
+      health: "waiting_on_watchers",
+    },
+    { ownedByAutoResearch: true, watchedByParentAutoResearch: true },
+  );
 
+  assert.match(html, /The owning Auto-research episode is watching this Experiment.*completion/);
   assert.match(html, /blk\/upstream reaches resolved/);
   assert.match(html, /Graph condition/);
   assert.match(html, /Last evaluation/);
