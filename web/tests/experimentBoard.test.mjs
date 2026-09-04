@@ -751,6 +751,98 @@ test("a stale main index entry cannot duplicate the current Experiment card", ()
   assert.doesNotMatch(html, /episode-previous/);
 });
 
+test("a stale main index entry cannot replace a fresher project run", () => {
+  const experiment = {
+    ...node("experiment/main", "active", 5),
+    current_summary: "Fresh project summary.",
+  };
+  const currentEpisode = episode({
+    episode_id: "episode-current",
+    project_id: "project-one",
+    control_node_id: experiment.id,
+    graph_target: { kind: "main" },
+    status: "running",
+  });
+  const currentControl = control({
+    episode_id: currentEpisode.episode_id,
+    episode: currentEpisode,
+    active: true,
+    health: "agent_active",
+    recommendation: "wait",
+    run_section: "running",
+  });
+  const staleEpisode = {
+    ...currentEpisode,
+    status: "stopped",
+    updated_at: "2026-08-06T01:00:00Z",
+  };
+  const staleEntry = {
+    ...entry(
+      experiment.id,
+      "planned",
+      control({
+        episode_id: staleEpisode.episode_id,
+        episode: staleEpisode,
+        active: false,
+        health: "failed",
+        recommendation: "retry",
+        run_section: "running",
+      }),
+    ),
+    project_id: "project-one",
+    node: {
+      ...node(experiment.id, "planned", 4),
+      current_summary: "Older indexed summary.",
+    },
+    episode: staleEpisode,
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(ExecutionView, {
+      graph: {
+        revision: 5,
+        nodes: { [experiment.id]: experiment },
+        edges: {},
+        proposals: {},
+        ambiguities: {},
+        glossary: {},
+        validation_messages: [],
+        belief_transitions: [],
+        replay_status: "complete",
+        replay_failure: null,
+        ontology: { types: [], fields: [], relations: [] },
+      },
+      episodes: [currentEpisode],
+      episodeMessages: {},
+      episodeAction: null,
+      tasks: [],
+      watchers: [],
+      experimentControl: { [experiment.id]: currentControl },
+      experimentEntries: [staleEntry],
+      selectedExperimentId: experiment.id,
+      focusExperimentId: null,
+      runBusy: false,
+      stopBusyId: null,
+      watcherCheckBusyId: null,
+      taskActionId: null,
+      onInspectTask() {},
+      onSelectExperiment() {},
+      onDetailFocused() {},
+      onOpenHistory() {},
+      onRunExperiment() {},
+      onStopExperiment() {},
+      onCheckExperimentWatcher() {},
+      onRecoverExperiment() {},
+      onSwitchExperimentProvider() {},
+      episodeReportHref: () => "#",
+    }),
+  );
+
+  assert.equal((html.match(/class="campaign-run experiment-episode-card/g) ?? []).length, 1);
+  assert.match(html, /Agent active/);
+  assert.match(html, /Fresh project summary\./);
+  assert.doesNotMatch(html, /Older indexed summary\.|>Failed</);
+});
+
 test("an exact Auto-research route focuses and scrolls its accessible detail", () => {
   const calls = [];
   focusRunDetail({

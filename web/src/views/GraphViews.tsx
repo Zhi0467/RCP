@@ -912,6 +912,9 @@ export function ExecutionView({
         `Experiment ${entry.node.id} index entry does not identify one exact episode.`,
       );
     }
+    if (entry.graph_target.kind === "main" && experimentRuns.has(entry.episode.episode_id)) {
+      return;
+    }
     const exactWatchers = watchers.filter((watcher) =>
       graphTargetsEqual(watcher.graph_target, entry.graph_target),
     );
