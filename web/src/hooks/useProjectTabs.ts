@@ -61,6 +61,13 @@ export function mergeProjectExperimentLoops(
   return [...current.filter((entry) => entry.project_id !== projectId), ...nextEntries];
 }
 
+export function experimentLoopRefreshIsCurrent(
+  responseGeneration: number,
+  currentGeneration: number,
+): boolean {
+  return responseGeneration === currentGeneration;
+}
+
 export function projectTabStateForOpen<T>(
   cache: Map<string, T>,
   projectId: string,
@@ -145,6 +152,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const openProjectTabsRef = useRef(openProjectTabs);
   const projectTabStatesRef = useRef(new Map<string, T>());
   const projectCacheHeartbeatInFlight = useRef(new Map<string, Promise<void>>());
+  const experimentLoopRefreshGeneration = useRef(0);
   activeProjectId.current = projectId;
   openProjectTabsRef.current = openProjectTabs;
 
@@ -157,15 +165,25 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     setProjects(nextProjects);
   }, []);
   const refreshExperimentLoops = useCallback(async () => {
+    const refreshGeneration = ++experimentLoopRefreshGeneration.current;
     const nextEntries = await loadExperimentEpisodes();
-    setExperimentLoops(nextEntries);
+    if (
+      experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
+    ) {
+      setExperimentLoops(nextEntries);
+    }
     return nextEntries;
   }, []);
   const refreshProjectExperimentLoops = useCallback(async (requestedProjectId: string) => {
+    const refreshGeneration = ++experimentLoopRefreshGeneration.current;
     const nextEntries = await loadProjectExperimentEpisodes(requestedProjectId);
-    setExperimentLoops((current) =>
-      mergeProjectExperimentLoops(current, requestedProjectId, nextEntries),
-    );
+    if (
+      experimentLoopRefreshIsCurrent(refreshGeneration, experimentLoopRefreshGeneration.current)
+    ) {
+      setExperimentLoops((current) =>
+        mergeProjectExperimentLoops(current, requestedProjectId, nextEntries),
+      );
+    }
     return nextEntries;
   }, []);
   const loadProjectIndex = useCallback(async () => {
