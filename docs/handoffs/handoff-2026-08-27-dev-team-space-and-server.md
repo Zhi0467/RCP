@@ -90,16 +90,12 @@ What each open drive is waiting on:
   `state-{pre,post}-second-update.json`, and `research-post-update.sha256`.
   Do not repeat the completed disposable transfer or deploy again merely to
   match a later documentation-only receipt commit.
-- **Separate existing experiment failure:** reopening resumed task
-  `648ffb00-3b19-4519-bc25-2c396137517f`, attempt 4 of parent
-  `2770b4ca-f5a8-4b74-bbb5-c360de0af3fa`, for episode
-  `c1054666-2311-59db-bbbe-d4a1fbe4fe8d`. Both attempts failed with the same
-  error: `Experiment-loop Patch could not be validated after its watcher handoff:
-  branch Patch attribution does not match its owning episode`. This is not a
-  successful experiment receipt. Diagnosis/repair of that real project's
-  episode is separate from the scoped server-operations drive; no research
-  state was manually edited. See `resumed-task.json` and
-  `resumed-task-error.json` beside the other server receipts.
+- Reopening retried an existing failed Experiment invocation, which failed
+  with the same attribution error as before the update. Its active diagnosis
+  and repair item belongs to
+  [S41](../acceptance/S41-bounded-experiment-control.md#open-live-failure--2026-09-04).
+  The server qualification proves record preservation and normal reopening,
+  not successful scientific work; no real research state was manually edited.
 - Production `wth-gpu-01` and the source-built desktop were qualified at
   `519f80bed8a7fc78aa596036859e0a7a0f8ceeea`. The separately authorized manual
   release bridge retained the checkpoint
