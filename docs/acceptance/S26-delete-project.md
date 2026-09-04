@@ -12,6 +12,9 @@ covered_by:
   - browser 2026-08-29 — former team action omission
   - source desktop 2026-09-04 — disposable transferred team project deletion
 last_passed: >-
+  2026-08-29 — personal deletion remains live-verified. Team deletion has
+  hermetic API, catalog, restart, and rendered-action coverage.
+last_checked: >-
   2026-09-04 — transferred team-project confirmation, Cancel, deletion,
   direct project-row removal, preserved checkout/canonical bytes/deploy key,
   and absence after desktop restart passed. Production-server restart and
