@@ -1118,6 +1118,9 @@ unresolved.
 When the SQLite snapshot contains an unresolved kept-artifact revision, its
 kept-file inventory is bound to the candidate's base digest. A later mismatch
 makes that project uncaptured instead of archiving unaccepted candidate bytes.
+A project inventory accepts every canonical task identity RCP mints: UUID4 for
+ordinary tasks and deterministic UUID5 for Auto-research child Experiments, so a
+project that has run one such episode stays capturable and updatable.
 
 The app-data inventory is closed rather than an implicit recursive copy.
 `rcp.sqlite3` enters only through SQLite's online snapshot, and transferred

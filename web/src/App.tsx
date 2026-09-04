@@ -2617,6 +2617,21 @@ export default function App() {
     (chatId: string) => loadChatTranscript(apiBase, chatId, api),
     [apiBase],
   );
+  const loadWebMcpTask = useCallback(
+    async (operationId: string): Promise<AgentTask | null> => {
+      try {
+        return await api<AgentTask>(`${apiBase}/tasks/${encodeURIComponent(operationId)}`);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    [apiBase],
+  );
+  const webMcpConversationSource = useMemo(
+    () => ({ loadTranscript: loadWebMcpConversation, loadTask: loadWebMcpTask }),
+    [loadWebMcpConversation, loadWebMcpTask],
+  );
   const loadWebMcpEpisode = useCallback(
     async (episodeId: string): Promise<Episode | null> => {
       try {
@@ -2627,6 +2642,10 @@ export default function App() {
       }
     },
     [apiBase],
+  );
+  const webMcpArtifactSource = useMemo(
+    () => ({ loadEpisode: loadWebMcpEpisode, loadTask: loadWebMcpTask }),
+    [loadWebMcpEpisode, loadWebMcpTask],
   );
   const createWebMcpConversation = useCallback(
     (kind: ChatKind, node: GraphNode | null) => {
@@ -3081,20 +3100,20 @@ export default function App() {
           tasks,
           episodes,
           showWebMcpArtifactViewer,
-          loadWebMcpEpisode,
+          webMcpArtifactSource,
         ),
         ...projectConversationToolDefinitions(
           project,
           visibleChatSummaries,
           chatSummaryTotal,
           tasks,
-          loadWebMcpConversation,
+          webMcpConversationSource,
           taskStarting,
         ),
         ...projectConversationSendToolDefinitions(
           project,
           tasks,
-          loadWebMcpConversation,
+          webMcpConversationSource,
           taskStarting,
           createWebMcpConversation,
           startWebMcpConversationTurn,
@@ -3123,8 +3142,6 @@ export default function App() {
     episodes,
     experimentStartRequiresSync,
     experimentStopId,
-    loadWebMcpConversation,
-    loadWebMcpEpisode,
     mutationsDisabled,
     projectIndexWebMcpAvailable,
     projectIndexWebMcpTools,
@@ -3136,6 +3153,8 @@ export default function App() {
     tasks,
     visibleChatSummaries,
     watchers,
+    webMcpArtifactSource,
+    webMcpConversationSource,
     webMcpExperimentStartProjectId,
     webMcpProject,
   ]);
