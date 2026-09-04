@@ -343,12 +343,14 @@ def _remove_live_member(
     assert preview_code == 3
     preview = _terminal_step(preview_events, "member_removal")
     assert preview["state"] == "operator_action_needed"
-    commands = _command_actions(preview)
+    direct_prefix = ("/usr/local/bin/rcp", "server", "member", "remove", member_id)
+    commands = [command for command in _command_actions(preview) if command[:5] == direct_prefix]
     if len(commands) != 1:
-        pytest.fail("member-removal preview did not return one exact confirmation command")
+        pytest.fail("member-removal preview did not return one exact direct confirmation command")
     confirmation = commands[0]
-    if confirmation[:5] != ("rcp", "server", "member", "remove", member_id):
-        pytest.fail("member-removal confirmation changed the reviewed member")
+    assert len(confirmation) == 7 and confirmation[5] == "--confirm-boundary"
+    assert re.fullmatch(r"[0-9a-f]{64}", confirmation[6])
+    assert confirmation[6] == _fields(preview)["boundary_sha256"]
 
     confirmed_code, confirmed_events = _run_installed_server_command(
         (*confirmation[1:], "--machine-readable"),
