@@ -10,14 +10,28 @@ covered_by:
   - web/tests/landingIdentity.test.mjs
   - browser 2026-07-31 — personal deletion flow
   - browser 2026-08-29 — former team action omission
+  - source desktop 2026-09-04 — disposable transferred team project deletion
 last_passed: >-
-  2026-08-29 — personal deletion remains live-verified. Team deletion now has
-  hermetic API, catalog, restart, and rendered-action coverage, while its
-  source-built desktop drive against a disposable transferred project remains.
+  2026-09-04 — transferred team-project confirmation, Cancel, deletion,
+  direct project-row removal, preserved checkout/canonical bytes/deploy key,
+  and absence after desktop restart passed. Production-server restart and
+  nonempty task-stage/imported-history cleanup remain unqualified live.
 invariants: [1, 2, 8, 9, 10g]
 ---
 
 # Delete an RCP project without deleting the research project
+
+The 2026-09-04 source desktop deleted disposable transferred project
+`c3997083-a534-47f6-a4c1-74286f93422c` after Cancel first preserved it. The
+dialog named checkout and deploy-key preservation. All 11 target `.research`
+file hashes and Git HEAD were unchanged; GitHub key 162317885 remained present
+and writable. A read-only inspection found no direct project-owned rows in
+21 tables, SQLite integrity `ok`, and no foreign-key violations. The card stayed
+absent after desktop restart and fresh team connection. The production service
+was deliberately not restarted. This small fixture does not prove the broader
+active-work refusal or nonempty app-file cleanup cases below; status stays
+pending. Exact receipts are in the
+[production qualification handoff](../handoffs/handoff-2026-08-27-dev-team-space-and-server.md#production-qualification-receipts-and-next-boundary--2026-09-04).
 
 Deleting a personal or team project removes it from that RCP space and erases
 the app-owned records that belong only to the registration. It never deletes or

@@ -8,12 +8,14 @@ source install, continuous update, member enrollment, provider readiness, and
 real GitHub-backed project creation. Backup setup is one root CLI operation with
 a retained server-managed recovery identity by default; the 2026-09-04 production
 concurrent-task backup drive passed. Unreachable-SSH backup qualification was
-explicitly skipped. The disposable transfer passed admission after merged PR #42
-and survived a personal-backend restart at the sealed archive boundary. Relay
-then exposed a missing desktop target archive-binding call; that focused fix
-awaits merged-main qualification. The two-member desktop switching, first task, SSH execution
-target, broader backup/restore, transfer, and complete one-lab closure drive
-remain.
+explicitly skipped. The disposable personal-to-team transfer, source-backend
+restart recovery, target activation, proof cleanup, content comparison, and
+registration-only team deletion passed on 2026-09-04 after merged desktop fixes
+#42 and #43. The byte import used the explicitly selected manual operator path
+through the human's sudo-enabled tmux session, not an unattended SSH relay.
+Both provider updates also passed. Two-member desktop switching, SSH execution
+targets, broader backup/restore and transfer fixtures, and complete one-lab
+closure remain; these scoped receipts do not close this handoff.
 
 ### Packet status
 
@@ -43,10 +45,12 @@ What each open drive is waiting on:
   routes. The persistent lab host now has the installed `rcp` account and CLI;
   direct operator-terminal provisioning passes, but that is not evidence for
   the native desktop launcher.
-- **T5a, T5b** — the native relay, unified move wizard, and restart recovery are
-  implemented and hermetically verified. They still need the S98 source-built
-  desktop drive against two real spaces and a real SSH operator route. Resume
-  the existing disposable request below after merging the archive-binding fix.
+- **T5a, T5b** — the source-built wizard, post-fence source restart, manual
+  import, native proof return, and source retirement passed against the real
+  personal and team spaces. Unattended/partial-stream SSH relay, interruption
+  between confirmations, and S98's larger retained-history fixtures remain.
+  The disposable project has been deleted from RCP; do not resume its retired
+  requests or recreate it merely to repeat this passed subset.
 
 ### Production qualification receipts and next boundary — 2026-09-04
 
@@ -96,21 +100,76 @@ What each open drive is waiting on:
   preserved that exact request, revision, fence, digest, and size. Recovery
   reopened the saved request route; automatic discovery from the project card
   was not demonstrated.
-- The protected manual export is mode 0600. Import via the authorized tmux
-  sudo session refused at preparation with `target transfer must be archive-bound
-  for upload`; no target activation occurred. The desktop omitted the existing
-  archive-binding API in both automatic and manual relay entrances. The focused
-  fix binds the source digest, size, and fence through the admitting member's
-  session, validates target readback, then launches the stdin-only CLI.
-- Continue after merge using a rebuilt desktop from merged `main`. The human
-  authorized iteration and merge of the focused repair PRs. Do not update
-  production or test branch code there without the required authorization.
-  Reuse the two existing requests and review digest; do not create another
-  disposable project. The saved `zhiwang` operator route lacks noninteractive
-  sudo permission; CLI setup used the authorized tmux session. No sudoers policy
-  was changed. Automated relay still needs operator-route authorization, or the
-  documented manual relay. Finish restart recovery, content comparison, and team
-  deletion; preserve the Git checkout, canonical research files, and deploy key.
+- The first tmux import refused before upload with `target transfer must be
+  archive-bound for upload`. PR #43, merged as
+  `65f89daa301ae2de581448dd6a43f0b06997bee6` at 20:05:10 UTC, repaired the
+  omitted archive-binding call in both native relay entrances. CI run
+  `33913831077` passed both Python versions, web, lint, and old-data upgrade;
+  native run `33913831075` passed on its second attempt after an unchanged
+  process-group test transiently returned EPERM instead of ESRCH. Local full
+  backend tests, 137 native tests (one live-SSH test ignored), Clippy, and hooks
+  passed. The rebuilt merged desktop bound the same archive on the target.
+  Production stayed on `519f80be`: the two repair PRs changed only native code,
+  tests, and receipts, not server implementation or Web application sources.
+  This is a mixed desktop/server commit receipt, not a claim of one identical
+  source revision or a second server update.
+- **T5a/T5b manual/recovery subset passed:** exported bytes were mode 0600,
+  20,480 bytes, and matched the digest above locally and remotely. The saved
+  `zhiwang` SSH route correctly failed without noninteractive sudo. The human's
+  existing `rcp-update` tmux session ran the fixed stdin-only
+  `rcp server project transfer-import 7b003fb4-6c4e-42a8-8dd2-ef9885da244d --machine-readable`
+  command. Upload succeeded at 20:15:48.696401 UTC and target activation at
+  20:15:48.918385 UTC. A desktop retry verified the target proof, retired the
+  personal catalog entry, and completed source request revision 10 with
+  `proof_state=consumed` at 20:16:31.446536 UTC. The wizard displayed
+  **Transfer complete**; the team opened the project at revision 2 with the
+  canonical home-change event. No credentials or raw proofs entered browser
+  code, command arguments, or these receipts.
+- Canonical source/target equality passed: Patch 1 SHA-256
+  `8b4ba0dd4e8fd56cbfa0efeafb9f1c19c9251fed67390580a38af3a2532a5bd5`,
+  Patch 2 `1568ef583b28f23db69b8dfd7c69cb64023dc956b8148ae9d84996bef670cccb`,
+  scope-base `ff95eb936bac744eecd132c5721c8b49bee3f211be0cc8f9687f0eaa526930ad`.
+  Git HEAD remained `f772cb0db7fe46298ec079941b0e5fa765ed2185`; the target
+  checkout and `.research` remained `rcp:rcp`, mode 0700. This small unseeded
+  fixture contained two Patches, scope-base, manifest provenance, and one
+  project record; it did not exercise retained chats, Paper drafts, artifacts,
+  provider-history selection, or a task launched after transfer.
+- **S26 team subset passed:** Cancel preserved the disposable project. The
+  source-built desktop then confirmed **Delete project** with the backend's
+  explicit checkout/key-preservation wording. The card disappeared; all 11
+  target `.research` file hashes and Git HEAD were unchanged, and GitHub key
+  162317885 remained writable and unrevoked. A read-only SQLite inspection
+  found zero rows for that project in all 21 inspected tables with direct
+  project ownership, including registration, membership, transfers, imports,
+  uploads, and activations; integrity `ok`, foreign-key violations zero.
+  Restarting the desktop and reconnecting to the team kept the card absent.
+  The production service was not restarted for deletion; that S26 assertion
+  and nonempty app-file cleanup fixtures remain unqualified.
+- **Provider updates passed:** root used the existing CLI wrappers under `rcp`.
+  Codex updated `0.152.1` → `0.153.3` at 20:00:05.717384 UTC; Claude Code
+  `2.1.258` → `2.1.261` at 20:00:11.023372 UTC. Both returned exit 0,
+  authentication ready, unchanged stable paths `/home/rcp/.local/bin/{codex,claude}`.
+  No provider processes were live at preflight. No login or sudoers policy
+  was changed.
+- Final doctor at 20:22:57.190383 UTC reported healthy/aligned, protected backup,
+  active/enabled timer, no problems, and unchanged production PID 767236 and
+  instance `83b19ac7-28af-4d85-bfe2-8848da29ef0f`. Nonsecret detailed receipts
+  are in remote `/tmp/rcp-transfer-7b003fb4.k35zMG/`: `import-bound.jsonl`,
+  `content-before-delete.txt`, `research-before-delete.sha256`,
+  `research-after-delete.sha256`, `deletion-database.json`,
+  `update-codex.jsonl`, `update-claude.jsonl`, and `doctor-final.jsonl`.
+  After proof consumption and deletion, the exact local manual archive and
+  remote temporary `archive.rcp-transfer` were hash-verified and removed;
+  the personal backend's request export was already absent. No checkout,
+  canonical research file, deploy key, backup, or release checkpoint was removed.
+- Remaining usability gaps are explicit, not passed: reopening the transfer
+  used its saved route in the desktop inspector; the native **Resume saved
+  archive** picker displayed the exact file but kept Open disabled, so that
+  path was cancelled. Native automatic binding plus manual tmux import plus
+  native completion was the successful recovery path. The generated Terminal
+  command creates a fresh SSH session and cannot inherit tmux's cached sudo.
+  The human also identified crowded transfer controls and exposed technical
+  metadata; visual redesign is separate work, not part of this drive.
 
 The dated implementation log and the fifty-five completed packet sections moved
 to [the evidence archive](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-evidence.md)
@@ -1358,11 +1417,13 @@ Keychain reference or any routing identity.
 
 ### T5a — Native transfer relay
 
-**Implemented 2026-08-31; real source-built SSH drive still open:** the native
+**Implemented 2026-08-31; manual subset passed 2026-09-04:** the native
 shell owns one request-bound streaming relay, proof return, cleanup
 acknowledgment, protected manual export, exact retry, and strict IPC boundary.
-Hermetic native tests and lint pass; S98 still owes the real operator-route
-drive.
+Hermetic native tests and lint pass. The real desktop bound the source archive,
+the authorized tmux CLI imported it, and native proof/cleanup completed. Exact
+receipts are above. Unattended operator-route and partial-stream interruption
+drives remain open; do not equate manual import with those qualifications.
 
 Own:
 
@@ -1420,11 +1481,13 @@ own the transfer screen or decide transfer lifecycle state.
 
 ### T5b — Transfer UI and crash-recovery drive
 
-**Implemented 2026-08-31; live two-space drive still open:** the existing
+**Implemented 2026-08-31; post-fence restart subset passed 2026-09-04:** the existing
 wizard owns the pinned move route, durable final-review coordinator, native
 restart recovery, explicit manual relay, and loud retry state. Browser, build,
-native, and hook checks pass; S98 remains pending until the source-built desktop
-interruption drive passes.
+native, and hook checks pass. The exact source request and archive survived a
+personal-backend restart and later completed in the real team space. S98 remains
+pending for its other interruption boundaries and broader history fixtures;
+manual archive selection and recovery-route discoverability are not qualified.
 
 Own:
 
