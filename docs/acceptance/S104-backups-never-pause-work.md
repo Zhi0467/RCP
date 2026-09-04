@@ -9,6 +9,7 @@ covered_by:
   - tests/test_backup_capture.py
   - tests/test_backup_configuration.py
   - tests/test_backup_encryption.py
+  - tests/test_backup_identity.py
   - tests/test_backup_retention.py
   - tests/test_server_doctor.py
   - tests/test_server_restore_state.py
@@ -32,8 +33,10 @@ main/branch heads, complete chat boundaries, stable mutable reads, filtered
 remote export, and per-project failure isolation. Deterministic `age` 1.x
 encryption, atomic publication, ciphertext readback, immutable receipts, durable
 status, proven retention, doctor projection, and first-run timer activation are
-also covered hermetically, including one real upstream `age` 1.3.1
-encrypt/decrypt drive. Replacement restore is also complete hermetically through
+also covered hermetically. Default root-only identity creation, reuse, and loud
+refusal of damaged or mismatched identity state are covered as well, including
+one real upstream `age` 1.3.1 encrypt/decrypt drive. Replacement restore is also
+complete hermetically through
 archive verification, lifecycle detachment, fresh checkout reconstruction,
 canonical publication/replay, exact authority/member review, offline stale-member
 removal, and fenced durable activation. Exact-head workflow run
@@ -68,9 +71,10 @@ episode waiting on a watcher, one Auto-research episode with pending recovery an
 child admission, and one queued episode-report attempt. Use check/provider
 helpers that fail the test if any of those old effects executes on the restore
 host. Include one provisioning request with a claimed machine step and one
-in-progress server-operation receipt. An `age` recipient has its private
-recovery identity held off-server, with
-one operator-chosen writable backup directory and a fresh restore host. One
+in-progress server-operation receipt. Configure one default root-only server
+recovery identity and one operator-chosen writable backup directory. For the
+fresh-host restore portion, securely copy that identity to a protected file on
+the restore host or repeat with an explicitly supplied external recipient. One
 captured project has byte-identifiable provider transcripts
 imported by personal-to-team transfer plus different live provider-home logs.
 Keep one permanent member token, one HTTP session, and one unused team
@@ -110,10 +114,10 @@ server-to-remote SSH route, and no provider-native login.
 5. Make one project's host unreachable and run a scheduled backup.
 6. Read the archive manifest and Server Settings afterward.
 7. Inspect the archive bytes without the recovery identity, decrypt them with the
-   off-server identity, and validate the manifest and hashes.
+   matching protected identity, and validate the manifest and hashes.
 8. Restore the archive into the fresh/empty configured `RCP_DATA_DIR` after
    inspecting that destination and explicitly confirming that the old copy
-   cannot resume. Supply the off-server identity through its protected
+   cannot resume. Supply the matching identity through its protected
    file/descriptor path, not raw argv or environment text. First present a copy
    with an unknown newer format/persistence boundary and confirm refusal before
    target mutation. Follow the old source/project deploy-key,
@@ -159,10 +163,12 @@ server-to-remote SSH route, and no provider-native login.
     run/transfer staging, sealed personal transfer exports, and caches. Add one
     unknown direct app-data child and confirm the next capture is partial rather
     than silently omitting it.
-13. Configure the proposed daily 02:00 schedule and 30-archive retention, change
-    both through the CLI, and compare the versioned server config, systemd timer,
-    and displayed status. Restore an older SQLite snapshot and inspect the
-    machine configuration again.
+13. Configure the proposed daily 02:00 schedule and 30-archive retention without
+    supplying a recipient. Reconfigure both values and prove the identity inode,
+    bytes, and derived public recipient were reused. On a disposable installation,
+    damage the identity and confirm configuration fails without replacing it.
+    Compare the versioned server config, systemd timer, and displayed status.
+    Restore an older SQLite snapshot and inspect the machine configuration again.
 
 ## Assert
 
@@ -188,6 +194,10 @@ server-to-remote SSH route, and no provider-native login.
 - `the_manifest_names_each_uncaptured_project_with_a_reason_and_time`
 - `server_settings_shows_which_projects_are_actually_protected`
 - `the_server_stores_only_an_age_public_recipient`
+- `backup_configure_creates_one_root_only_server_identity_by_default`
+- `backup_reconfiguration_reuses_the_same_identity`
+- `damaged_missing_or_mismatched_identity_state_is_never_silently_replaced`
+- `an_external_public_recipient_remains_an_explicit_advanced_option`
 - `age_1_x_native_x25519_archives_encrypt_and_restore_on_both_supported_ubuntu_releases`
 - `plugin_ssh_passphrase_and_post_quantum_recipients_are_rejected_in_this_format`
 - `backup_accepts_an_explicit_local_or_mounted_filesystem_directory`
@@ -197,7 +207,7 @@ server-to-remote SSH route, and no provider-native login.
 - `restoring_sqlite_does_not_reconfigure_the_backup_timer`
 - `retention_keeps_thirty_readback_archives_and_the_newest_complete_archive`
 - `every_archive_is_age_encrypted_and_integrity_checked_before_restore`
-- `the_private_recovery_identity_remains_off_server`
+- `the_private_recovery_identity_stays_out_of_config_sqlite_archives_and_progress`
 - `restore_reads_the_private_identity_for_one_run_without_argv_environment_or_persistence`
 - `imported_project_provider_histories_are_backed_up_and_restored_byte_identically`
 - `explicitly_kept_artifacts_are_backed_up_and_restored_byte_identically`
@@ -278,7 +288,9 @@ revocation checklist; the durable identity boundary remains in
 [S95](S95-durable-team-space.md).
 
 The first implementation accepts the upstream `age` 1.x CLI and one native
-X25519 public recipient. Recipient rotation creates new archives for the new
-recipient; it does not rewrite old archives or copy a private recovery identity
-onto the server. A real restore drill, not successful encryption alone, proves
-the backup usable.
+X25519 public recipient. The ordinary path creates one fixed root-only identity
+on the server; this makes setup simple but does not claim survival after total
+machine loss. Labs needing that property retain a protected external copy or
+configure an external public recipient. Recipient rotation is not implicit and
+old archives are never rewritten. A real restore drill, not successful
+encryption alone, proves the backup usable.

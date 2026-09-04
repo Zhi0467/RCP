@@ -191,9 +191,11 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
     backup_configure.add_argument(
         "--recipient",
         dest="backup_age_recipient",
-        required=True,
         type=_backup_age_recipient,
-        help="Native X25519 age1 public recipient; never provide the private identity",
+        help=(
+            "Advanced: use an externally managed native X25519 age1 public recipient "
+            "instead of RCP's root-owned server identity"
+        ),
     )
     backup_configure.add_argument(
         "--schedule",
@@ -214,7 +216,7 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
         dest="backup_confirmed",
         action="store_true",
         required=True,
-        help="Confirm the destination, recipient, schedule, and retention supplied here",
+        help="Confirm the destination, encryption source, schedule, and retention supplied here",
     )
     backup_configure.set_defaults(server_operation="server backup configure")
     backup_run = _leaf(backup_commands, "run", "Capture and verify one configured backup")
@@ -226,8 +228,10 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
         "--identity-file",
         dest="recovery_identity_file",
         type=_identity_file,
-        required=True,
-        help="Absolute path to a protected off-server age identity file",
+        help=(
+            "Advanced: absolute path to another protected age identity file; defaults to "
+            "the server-managed backup identity"
+        ),
     )
     restore.add_argument(
         "--confirm-data-dir",

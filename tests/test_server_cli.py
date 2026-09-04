@@ -200,11 +200,34 @@ def _operator_execution() -> ServerCommandExecution:
                 "backup_confirmed": True,
             },
         ),
+        (
+            (
+                "server",
+                "backup",
+                "configure",
+                "--destination",
+                "/srv/rcp-backups",
+                "--confirm",
+            ),
+            "server backup configure",
+            {
+                "backup_destination": "/srv/rcp-backups",
+                "backup_schedule": "02:00",
+                "backup_retention": 30,
+                "backup_age_recipient": None,
+                "backup_confirmed": True,
+            },
+        ),
         (("server", "backup", "run"), "server backup run", {}),
         (
             ("server", "restore", "/backups/lab.age", "--identity-file", "/safe/age.key"),
             "server restore",
             {"archive_path": "/backups/lab.age", "recovery_identity_file": "/safe/age.key"},
+        ),
+        (
+            ("server", "restore", "/backups/lab.age"),
+            "server restore",
+            {"archive_path": "/backups/lab.age", "recovery_identity_file": None},
         ),
         (
             (

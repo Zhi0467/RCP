@@ -1083,6 +1083,7 @@ class LinuxInstallMachine:
             )
         for command in (
             "age",
+            "age-keygen",
             "curl",
             "git",
             "node",
