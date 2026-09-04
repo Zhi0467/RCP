@@ -400,16 +400,18 @@ the host does not mistake successful navigation for a stale tool failure.
 Every call accepts exact ids returned by an RCP read tool and revalidates them
 against the current page snapshot before acting. Read results are bounded JSON,
 not generated summaries, and omit storage locators. Node inspection shortens
-oversized saved text and lists to fit its budget and names every shortened path,
-so exact content is never confused with truncated content. Conversation listing
+oversized saved text, lists, object entry counts, and key names to fit its budget
+and names every shortened path, so exact content is never confused with
+truncated content. Conversation listing
 exposes the saved chat ids the page has loaded together with the backend total.
 When a conversation's turns have aged out of the bounded task window the page
 holds, inspection and Send read the exact task behind its latest transcript
 message, so an Auto-research branch conversation stays read-only and is never
 resumed as an ordinary main-graph turn.
-Report listing and opening use the recent-episode window the page holds; an
-exact `episode_id` outside that window is fetched from the existing episodes
-route rather than reported missing. Artifact opening uses the existing backend
+Artifact and report listing and opening use the recent task and episode windows
+the page holds and report both window sizes; an exact `task_id`, task viewer id,
+or `episode_id` outside those windows is fetched from the existing task or
+episodes route rather than reported missing. Artifact opening uses the existing backend
 viewer inside the page after confirming current availability.
 Conversation Send starts one asynchronous ordinary Discuss or Work turn through
 the same provider profile, native-session, skill, task-admission, and local or
