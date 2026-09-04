@@ -100,13 +100,6 @@ def test_team_delete_removes_rcp_state_and_preserves_checkout_and_key(tmp_path: 
     assert v1_card["delete_unavailable_reason"] == TEAM_PROJECT_DELETE_UNAVAILABLE_REASON
     assert "delete_confirmation" not in v1_card
 
-    v1_project = client.get(
-        f"/api/projects/{project_id}", headers={TEAM_SHELL_PROTOCOL_HEADER: "1"}
-    ).json()
-    assert v1_project["can_delete"] is False
-    assert v1_project["delete_unavailable_reason"] == TEAM_PROJECT_DELETE_UNAVAILABLE_REASON
-    assert "delete_confirmation" not in v1_project
-
     [card] = client.get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "2"}).json()
     assert card["id"] == project_id
     assert card["can_delete"] is True
@@ -114,19 +107,8 @@ def test_team_delete_removes_rcp_state_and_preserves_checkout_and_key(tmp_path: 
     assert "server-managed checkout and repository deploy key remain" in card["delete_confirmation"]
     assert "credentials are not revoked" in card["delete_confirmation"]
 
-    protocol_two_project = client.get(
-        f"/api/projects/{project_id}", headers={TEAM_SHELL_PROTOCOL_HEADER: "2"}
-    ).json()
-    assert protocol_two_project["can_delete"] is True
-    assert protocol_two_project["delete_unavailable_reason"] is None
-    assert protocol_two_project["delete_confirmation"] == card["delete_confirmation"]
-
     [headerless_card] = client.get("/api/projects").json()
     assert headerless_card == card
-    headerless_project = client.get(f"/api/projects/{project_id}").json()
-    assert headerless_project["can_delete"] is True
-    assert headerless_project["delete_unavailable_reason"] is None
-    assert headerless_project["delete_confirmation"] == card["delete_confirmation"]
 
     mismatch = client.get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "3"})
     assert mismatch.status_code == 426

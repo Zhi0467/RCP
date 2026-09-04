@@ -405,9 +405,10 @@ test("team session exchange sends the raw token once in the JSON body only", asy
 
 test("team shell protocol one remains the initial thin entrance contract", () => {
   assert.deepEqual(teamShellProtocolOne.advertised_range, {
-    minimum: TEAM_SHELL_PROTOCOL_VERSION,
-    maximum: TEAM_SHELL_PROTOCOL_VERSION,
+    minimum: 1,
+    maximum: 1,
   });
+  assert.equal(TEAM_SHELL_PROTOCOL_VERSION, 2);
   assert.equal(teamShellProtocolOne.selection_header, TEAM_SHELL_PROTOCOL_HEADER);
   assert.deepEqual(teamShellProtocolOne.mismatch, {
     status: 426,

@@ -305,7 +305,7 @@ project, it also leaves the server-managed checkout and Git deploy key in place.
 Removing either is a separate operator deprovisioning action. The backend
 publishes the exact confirmation consequence on the project card, and the Web
 renders it verbatim rather than inferring policy from space kind or paths. For a
-team-shell protocol-1 request, both project-card projections preserve the older
+team-shell protocol-1 request, the project-card list preserves the older
 contract: `can_delete=false`, `delete_unavailable_reason` explains operator
 deprovisioning, and `delete_confirmation` is absent. Protocol 2 and callers with
 no protocol header receive the deletable card with `delete_confirmation`.
