@@ -54,36 +54,57 @@ What each open drive is waiting on:
 
 ### Production qualification receipts and next boundary — 2026-09-04
 
-- **Current next boundary:** the human authorized a second production update
-  to match desktop and server revisions. The source desktop is built from
-  merged `276a2bb3bb44d4a23f6865e6f14f3c202b4040ce`; production still serves
-  `519f80be`. Hosted qualification run `33919068513` passed install, forced
+- **Revision alignment complete:** the explicitly authorized second production
+  update committed merged `276a2bb3bb44d4a23f6865e6f14f3c202b4040ce` at
+  21:26:02.672622 UTC through the normal guarded CLI, exit 0. The source desktop
+  was built from that exact revision and reconnected to WTH UCSD successfully.
+  Hosted qualification run `33919068513` passed install, forced
   rollback, backup, member removal, and fresh-host restore on both Ubuntu
   22.04 and 24.04 at the target revision. PR #45 corrected the public-install
   fixture's obsolete source-key requirement; PR #46 corrected its obsolete
   single member-confirmation-command assumption and verifies the displayed
   boundary digest. Both PRs passed ordinary CI before merge.
-  The normal update preview refused at admission at 21:11:09 UTC, before
-  fetching or switching releases: the managed checkpoint directory contains
-  the retained `manual-bridge-519f80b-20260904T182649Z` and failed
+  The first preview refused safely at admission because the managed checkpoint
+  directory contained retained `manual-bridge-519f80b-20260904T182649Z` and failed
   `rehearsal-519f80bed8a7fc78aa596036859e0a7a0f8ceeea-b99451e9d15d4cc0887139e9b6f678d3`.
-  Approval was requested to relocate both intact into
-  `/home/rcp/rcp-server/retained-update-evidence/`, verify content equality,
-  and retry. That relocation is not yet authorized or performed; do not delete
-  either directory or bypass the updater's safety checks. Production health
-  after refusal retained PID 767236, the same space/data/instance identity,
-  zero active agent tasks, and one real project. The pre-update read-only
-  inventory retained all 20 task IDs and request hashes, integrity `ok`, no
-  foreign-key violations, and no disposable project registration. Receipts
-  are under `/tmp/rcp-transfer-7b003fb4.k35zMG/` on the server:
-  `second-update-preview.jsonl`, `update-maintenance-inventory.txt`, and
-  `state-pre-second-update.json`. After approval, finish the guarded update,
-  compare the inventory, and verify the matching source desktop reconnects;
-  do not repeat the completed disposable transfer.
+  The human approved relocating both intact into root-only mode-0700
+  `/home/rcp/rcp-server/retained-update-evidence/`. All file hashes and recorded
+  ownership, permissions, types, sizes, and symlink targets matched after the
+  move. Nothing was deleted, and updater safety checks were not bypassed.
+  Update operation `3d7addba-219b-4011-8427-f9b78438230a` then passed copied-state
+  rehearsal, final checkpoint, cutover, readback, and reopening. Doctor at
+  21:27:06 UTC reported healthy/aligned, current/running/source at `276a2bb`,
+  PID 1165398, instance `820377d2-2742-40c6-a285-1c38f37532f2`, unchanged team
+  and data identity, protected backup, enabled/active timer, and no problems.
+  All 20 pre-update task IDs, statuses, creation identities, and request hashes
+  were unchanged; SQLite integrity was `ok`, foreign-key violations zero.
+  The only added task was normal episode recovery, documented separately below.
+  The disposable registration stayed absent after both server and desktop
+  restart. All 11 retained canonical file hashes and Git HEAD were unchanged;
+  deploy key 162317885 remained writable. Codex `0.153.3` and Claude Code
+  `2.1.261` remained selected. No warning-priority service journal entries were
+  found since the update began.
+  Nonsecret receipts are under `/tmp/rcp-transfer-7b003fb4.k35zMG/` on the server:
+  `relocation.txt`, `retained-{0,1}-{before,after}.{sha256,metadata}`,
+  `second-update-confirmed.jsonl`, `doctor-post-second-update.jsonl`,
+  `state-{pre,post}-second-update.json`, and `research-post-update.sha256`.
+  Do not repeat the completed disposable transfer or deploy again merely to
+  match a later documentation-only receipt commit.
+- **Separate existing experiment failure:** reopening resumed task
+  `648ffb00-3b19-4519-bc25-2c396137517f`, attempt 4 of parent
+  `2770b4ca-f5a8-4b74-bbb5-c360de0af3fa`, for episode
+  `c1054666-2311-59db-bbbe-d4a1fbe4fe8d`. Both attempts failed with the same
+  error: `Experiment-loop Patch could not be validated after its watcher handoff:
+  branch Patch attribution does not match its owning episode`. This is not a
+  successful experiment receipt. Diagnosis/repair of that real project's
+  episode is separate from the scoped server-operations drive; no research
+  state was manually edited. See `resumed-task.json` and
+  `resumed-task-error.json` beside the other server receipts.
 - Production `wth-gpu-01` and the source-built desktop were qualified at
   `519f80bed8a7fc78aa596036859e0a7a0f8ceeea`. The separately authorized manual
   release bridge retained the checkpoint
-  `/home/rcp/rcp-server/update-checkpoints/manual-bridge-519f80b-20260904T182649Z`.
+  `/home/rcp/rcp-server/retained-update-evidence/manual-bridge-519f80b-20260904T182649Z`
+  (relocated intact with approval after the initial qualification).
   Doctor at 18:42:42 UTC reported healthy/aligned, matching current/running
   commit and web build, unchanged team/data identity, and no problems. Retain
   the checkpoint; it is not disposable test data.
@@ -169,8 +190,8 @@ What each open drive is waiting on:
   project ownership, including registration, membership, transfers, imports,
   uploads, and activations; integrity `ok`, foreign-key violations zero.
   Restarting the desktop and reconnecting to the team kept the card absent.
-  The production service was not restarted for deletion; that S26 assertion
-  and nonempty app-file cleanup fixtures remain unqualified.
+  The later authorized server update/restart also preserved the deletion and
+  checkout bytes. Nonempty app-file cleanup fixtures remain unqualified.
 - **Provider updates passed:** root used the existing CLI wrappers under `rcp`.
   Codex updated `0.152.1` → `0.153.3` at 20:00:05.717384 UTC; Claude Code
   `2.1.258` → `2.1.261` at 20:00:11.023372 UTC. Both returned exit 0,
