@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { withExperimentControlAnswers, withTurnAnswers } from "./taskAnswers.mjs";
+import { withExperimentControlAnswers, withTaskAnswers, withTurnAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -21,6 +21,7 @@ const {
   parseProjectHash,
   projectExperimentExecution,
   projectHashAfterViewChange,
+  projectRunsNeedsExperimentIndex,
 } = await server.ssrLoadModule("/src/experimentBoard.ts");
 const { ExperimentBoard } = await server.ssrLoadModule("/src/components/ExperimentBoard.tsx");
 const { NodeChat } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
@@ -278,6 +279,207 @@ test("branch Experiment links carry the exact child episode and target identity"
     experimentStopPath("/api/projects/project%2Fone", indexed.node.id, childEpisode.episode_id),
     "/api/projects/project%2Fone/experiments/experiment%2Fbranch-only/stop?episode_id=child%2Fepisode",
   );
+});
+
+test("project Runs polls the Experiment index before a branch child is selected", () => {
+  assert.equal(projectRunsNeedsExperimentIndex("project-one", "execution"), true);
+  assert.equal(projectRunsNeedsExperimentIndex("project-one", "overview"), false);
+  assert.equal(projectRunsNeedsExperimentIndex(null, "execution"), false);
+});
+
+test("project Runs shows a dispatched child as a nested turn and its own run card", () => {
+  const parentEpisodeId = "auto-research-parent";
+  const childTask = withTaskAnswers({
+    operation_id: "child-agent-turn",
+    project_id: "project-one",
+    kind: "node_chat",
+    status: "running",
+    request: {
+      provider: "codex",
+      model: null,
+      reasoning: "medium",
+      run_on: "local",
+      patch_kind: "experiment_loop",
+      control_node_id: "experiment/branch-child",
+      control_episode_id: "child-experiment-episode",
+      control_invocation: 1,
+    },
+    created_at: "2026-08-06T01:00:00Z",
+    updated_at: "2026-08-06T01:01:00Z",
+    status_message: "Agent task is running.",
+    error: null,
+    attempt: 1,
+    estimate_seconds: 60,
+    estimate_samples: 1,
+    phase: "provider",
+    elapsed_seconds: 1,
+    progress: 0,
+    can_pause: true,
+    can_resume: false,
+    can_retry: false,
+    role: "orchestrator",
+    depth: 0,
+  });
+  const childEpisode = episode({
+    episode_id: "child-experiment-episode",
+    project_id: "project-one",
+    control_node_id: "experiment/branch-child",
+    graph_target: { kind: "branch", branch_id: parentEpisodeId },
+    root_operation_id: childTask.operation_id,
+    current_operation_id: childTask.operation_id,
+    current_control_task_id: childTask.operation_id,
+    status: "running",
+    ending: null,
+    wrapup_state: "not_started",
+    budget: {
+      invocation_ceiling: 5,
+      invocations_used: 1,
+      invocations_remaining: 4,
+      observed_input_tokens: 0,
+      observed_generated_tokens: 0,
+    },
+    can_stop: true,
+    live: true,
+    health: "active",
+    recommendation: "wait",
+    run_section: "needs_action",
+    tasks: [childTask],
+  });
+  const childControl = control(
+    {
+      episode_id: childEpisode.episode_id,
+      episode: childEpisode,
+      active: true,
+      health: "agent_active",
+      recommendation: "wait",
+      run_section: "running",
+      live: true,
+      can_start: false,
+      can_stop: true,
+    },
+    {
+      task_active: true,
+      current_operation_id: childTask.operation_id,
+      current_status: "running",
+      current_status_message: "Agent task is running.",
+    },
+  );
+  const indexed = {
+    ...entry("experiment/branch-child", "running", childControl),
+    project_id: "project-one",
+    graph_target: { kind: "branch", branch_id: parentEpisodeId },
+    graph_head: {
+      target: { kind: "branch", branch_id: parentEpisodeId },
+      revision: 4,
+      transition_id: "branch-four",
+    },
+    parent_episode_id: parentEpisodeId,
+    node: {
+      ...node("experiment/branch-child", "running"),
+      title: "Reproduce the baseline",
+    },
+    episode: childEpisode,
+  };
+  const parentEpisode = episode({
+    episode_id: parentEpisodeId,
+    project_id: "project-one",
+    mode: "auto_research",
+    control_node_id: null,
+    root_operation_id: "orchestrator-turn",
+    graph_target: { kind: "branch", branch_id: parentEpisodeId },
+    status: "running",
+    ending: null,
+    wrapup_state: "not_started",
+    can_stop: true,
+    can_message: true,
+    live: true,
+    health: "active",
+    recommendation: "continue",
+    run_section: "needs_action",
+  });
+  const html = renderToStaticMarkup(
+    React.createElement(ExecutionView, {
+      graph: {
+        revision: 3,
+        nodes: {},
+        edges: {},
+        proposals: {},
+        ambiguities: {},
+        glossary: {},
+        validation_messages: [],
+        belief_transitions: [],
+        replay_status: "complete",
+        replay_failure: null,
+        ontology: { types: [], fields: [], relations: [] },
+      },
+      episodes: [parentEpisode],
+      episodeMessages: {},
+      episodeAction: null,
+      tasks: [],
+      watchers: [
+        {
+          watcher_id: "parent-completion-watch",
+          origin_task_kind: "auto_research",
+          episode_id: parentEpisodeId,
+          graph_target: { kind: "branch", branch_id: parentEpisodeId },
+          status: "active",
+          condition: {
+            node_id: indexed.node.id,
+            status_in: ["abandoned", "completed"],
+          },
+          continuation: {
+            patch_kind: "work",
+            control_node_id: null,
+            control_episode_id: null,
+          },
+        },
+      ],
+      experimentControl: {},
+      experimentEntries: [indexed],
+      selectedExperimentId: indexed.node.id,
+      focusExperimentId: null,
+      selectedAutoResearchEpisodeId: parentEpisodeId,
+      runBusy: false,
+      stopBusyId: null,
+      watcherCheckBusyId: null,
+      taskActionId: null,
+      onInspectTask() {},
+      async onLoadEpisodeMessages() {},
+      async onStopEpisode() {},
+      async onMergeEpisode() {},
+      async onReauthorizeEpisode() {},
+      async onSendEpisodeMessage() {},
+      async onOperateEpisodeTask() {},
+      onSelectExperiment() {},
+      onOpenExperimentEntry() {},
+      onDetailFocused() {},
+      onOpenHistory() {},
+      onRunExperiment() {},
+      onStopExperiment() {},
+      onCheckExperimentWatcher() {},
+      onRecoverExperiment() {},
+      onSwitchExperimentProvider() {},
+      episodeReportHref: () => "#",
+    }),
+  );
+
+  assert.match(html, /Needs Action<\/h2><span>2<\/span>/);
+  assert.match(html, /campaign-task depth-1/);
+  assert.match(html, /campaign-task-role experiment">Experiment/);
+  assert.match(html, /Turns<\/h3><span>1<\/span>/);
+  assert.match(html, /campaign-task depth-1[\s\S]*?<strong>Reproduce the baseline<\/strong>/);
+  assert.match(html, /campaign-run-title[\s\S]*?<span>Reproduce the baseline<\/span>/);
+  assert.match(
+    html,
+    /href="#\/projects\/project-one\?view=runs&amp;experiment=experiment%2Fbranch-child&amp;episode=child-experiment-episode&amp;target=branch&amp;branch=auto-research-parent&amp;parent=auto-research-parent"/,
+  );
+  assert.match(html, /1 \/ 5 invocations/);
+  assert.match(html, /Wait for the active Experiment turn/);
+  assert.match(html, /<h3>Current turn<\/h3><span>1<\/span>/);
+  assert.match(html, /campaign-task-role worker">Agent/);
+  assert.match(html, /The owning Auto-research episode is watching this Experiment/);
+  assert.match(html, /Stop loop/);
+  assert.doesNotMatch(html, /Start episode/);
 });
 
 test("branch projection replaces colliding main state and filters control resources by target", () => {

@@ -671,12 +671,75 @@ test("detail follows the exact backend operation even when a newer retry row exi
   );
   const html = render(run);
 
-  assertDetailProjection(html, "Agent active", "Wait for the agent");
+  assertDetailProjection(html, "Agent active", "Wait for the active Experiment turn");
   assert.match(
     html,
     /Current task<\/dt><dd class="mono experiment-run-breakable">failed-attempt<\/dd>/,
   );
   assert.doesNotMatch(html, /Retry Codex|Switch provider…/);
+});
+
+test("an Auto-research child explains its active turn, stale guidance, and watcher ownership", () => {
+  const task = recoveryTask({
+    operation_id: "active-child-turn",
+    status: "running",
+    status_message: "Agent task is running.",
+    error: null,
+    can_retry: false,
+    request: {
+      provider: "codex",
+      model: "gpt-5.6",
+      reasoning: "high",
+      run_on: "cluster",
+      patch_kind: "experiment_loop",
+      control_node_id: "experiment/detail",
+      control_episode_id: "episode-1",
+      control_invocation: 1,
+    },
+  });
+  const run = buildExperimentRun(
+    node({
+      current_summary: "No baseline has been run yet.",
+      current_summary_stale: true,
+      next_action: "Run the baseline.",
+      next_action_stale: true,
+    }),
+    control(
+      {
+        episode: episode({ tasks: [{ ...task, role: "orchestrator", depth: 0 }] }),
+        active: true,
+        health: "agent_active",
+        recommendation: "wait",
+        run_section: "running",
+        live: true,
+        can_start: false,
+        can_stop: true,
+      },
+      {
+        task_active: true,
+        current_operation_id: task.operation_id,
+        current_status: "running",
+        current_invocation: 1,
+      },
+    ),
+    [task],
+    [],
+  );
+  const html = render(run, {
+    ownedByAutoResearch: true,
+    watchedByParentAutoResearch: true,
+  });
+
+  assertDetailProjection(html, "Agent active", "Wait for the active Experiment turn");
+  assert.match(html, /<h3>Current turn<\/h3><span>1<\/span>/);
+  assert.match(html, /campaign-task-role worker">Agent/);
+  assert.match(html, /<strong>Invocation 1<\/strong>/);
+  assert.match(html, /Agent task is running\./);
+  assert.match(html, /<h4>Experiment objective<\/h4>/);
+  assert.match(html, /The current turn has not reported yet\./);
+  assert.match(html, /Previous research summary \(stale\).*No baseline has been run yet\./s);
+  assert.match(html, /Previous next action \(stale\).*Run the baseline\./s);
+  assert.match(html, /The owning Auto-research episode is watching this Experiment/);
 });
 
 test("staged graph changes disable Start until Sync", () => {

@@ -48,6 +48,10 @@ export function experimentBoardRouteToken(entry: ExperimentLoopIndexEntry): stri
   return `${INDEX_ROUTE_PREFIX}${JSON.stringify(experimentRouteIdentity(entry))}`;
 }
 
+export function projectRunsNeedsExperimentIndex(projectId: string | null, view: AppView): boolean {
+  return Boolean(projectId && view === "execution");
+}
+
 export function spaceRunRouteToken(entry: SpaceRunIndexEntry): string {
   if (entry.mode === "auto_research") {
     return `${AUTO_RESEARCH_ROUTE_PREFIX}${entry.episode_id}`;
@@ -458,7 +462,7 @@ function hasExperimentIdentityParams(params: URLSearchParams): boolean {
   return ["episode", "target", "branch", "parent"].some((key) => params.has(key));
 }
 
-function graphTargetsEqual(left: GraphTargetRef, right: GraphTargetRef): boolean {
+export function graphTargetsEqual(left: GraphTargetRef, right: GraphTargetRef): boolean {
   return (
     left?.kind === right.kind &&
     (left.kind === "main" || (right.kind === "branch" && left.branch_id === right.branch_id))

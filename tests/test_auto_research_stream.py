@@ -11,6 +11,7 @@ import threading
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 
@@ -28,7 +29,7 @@ from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import load_manifest
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
-from rcp.core.models import GraphBranchMetadata, Patch
+from rcp.core.models import Experiment, GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
@@ -121,6 +122,14 @@ def test_orchestrator_contract_assigns_clear_work_and_requests_prose_difficulty(
         "Blocker",
     ):
         assert f"- {node_type} \u2014" in contract
+
+    experiment_ontology = re.search(
+        r"- Experiment \u2014(?P<body>.*?)- Evidence \u2014", contract, re.S
+    )
+    assert experiment_ontology is not None
+    expected_statuses = ", ".join(get_args(Experiment.model_fields["status"].annotation))
+    assert expected_statuses in experiment_ontology.group("body")
+    assert "blocked" not in experiment_ontology.group("body")
 
 
 def test_refreshed_orchestrator_paths_return_the_staged_context_revision(monkeypatch) -> None:

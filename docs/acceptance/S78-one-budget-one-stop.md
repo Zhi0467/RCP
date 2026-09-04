@@ -11,6 +11,7 @@ covered_by:
   - tests/test_background.py
   - tests/test_acceptance_agent.py
   - web/tests/campaigns.test.mjs
+  - web/tests/experimentBoard.test.mjs
 last_passed: 2026-08-14 — isolated acceptance-agent browser drive covered an
   operational-only three-turn completion and visual report plus an active
   graceful Stop that exposed no report, report error, Retry, or Resume
@@ -111,7 +112,9 @@ exhaust during the drive.
 1. Start auto-research from the project header and set a budget in invocations.
 2. Open **Runs** and find the Auto-research episode as a parent row, its workers nested
    beneath it, and one budget meter on the parent showing both the invocation
-   ceiling and the cost observed so far.
+   ceiling and the cost observed so far. When the orchestrator dispatches a child
+   Experiment, find that child both as a linked subordinate **Experiment** turn
+   and as its own Experiment-loop card with its separate budget and controls.
 3. While the episode is healthy and active, confirm its compact row and detail
    derive the same one health and **Let auto-research continue** recommendation.
    In the expanded detail they appear as two distinct views: **Episode health**
@@ -170,6 +173,7 @@ exhaust during the drive.
 - `episode_wrapup_receives_only_the_ending_and_compact_durable_receipt`
 - `normal_completion_requires_the_idempotent_finish_command`
 - `campaign_controls_are_derived_from_state_and_never_attached_to_a_worker`
+- `a_dispatched_experiment_is_linked_under_its_parent_and_keeps_its_own_run_card`
 - `episode_parent_shows_one_health_and_one_recommendation`
 - `compact_and_expanded_episode_views_share_the_same_projection`
 - `episode_health_and_recommended_next_step_are_separate_projected_views`

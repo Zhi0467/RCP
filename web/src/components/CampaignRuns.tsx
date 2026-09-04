@@ -22,7 +22,9 @@ import {
   formatTokenCount,
 } from "../campaigns";
 import { MarkdownAnswer } from "../chatMarkdown";
-import type { AgentTask, Episode, EpisodeMessage } from "../types";
+import { experimentBoardHref, experimentBoardRouteToken } from "../experimentBoard";
+import { experimentHealthLabel, experimentHealthTone } from "./ExperimentRunDetail";
+import type { AgentTask, Episode, EpisodeMessage, ExperimentLoopIndexEntry } from "../types";
 import { EpisodeReportLink } from "./EpisodeReportLink";
 
 export function AutoResearchEpisodeCard({
@@ -33,6 +35,7 @@ export function AutoResearchEpisodeCard({
   detailRef,
   busyAction,
   taskActionId,
+  childExperiments = [],
   onInspectTask,
   onLoadMessages,
   onStop,
@@ -48,6 +51,7 @@ export function AutoResearchEpisodeCard({
   detailRef?: Ref<HTMLDivElement>;
   busyAction: string | null;
   taskActionId: string | null;
+  childExperiments?: ExperimentLoopIndexEntry[];
   onInspectTask: (operationId: string) => void;
   onLoadMessages: (episodeId: string) => Promise<void>;
   onStop: (episodeId: string) => Promise<void>;
@@ -343,9 +347,9 @@ export function AutoResearchEpisodeCard({
           <section className="campaign-turns" aria-label="Episode turns">
             <header>
               <h3>Turns</h3>
-              <span>{taskRows.length}</span>
+              <span>{taskRows.length + childExperiments.length}</span>
             </header>
-            {taskRows.length > 0 ? (
+            {taskRows.length > 0 || childExperiments.length > 0 ? (
               <ul>
                 {taskRows.map(({ task, role, depth }) => {
                   const target = taskTarget(task);
@@ -363,6 +367,31 @@ export function AutoResearchEpisodeCard({
                           {taskStatusLabel(task)}
                         </span>
                       </button>
+                    </li>
+                  );
+                })}
+                {childExperiments.map((entry) => {
+                  const tone = experimentHealthTone(entry.control.health);
+                  return (
+                    <li
+                      className="campaign-task depth-1"
+                      key={`experiment:${entry.episode.episode_id}`}
+                    >
+                      <a
+                        href={experimentBoardHref(
+                          entry.project_id,
+                          experimentBoardRouteToken(entry),
+                        )}
+                      >
+                        <span className="campaign-task-role experiment">Experiment</span>
+                        <span className="campaign-task-copy">
+                          <strong>{entry.node.title}</strong>
+                          <span>{entry.node.id}</span>
+                        </span>
+                        <span className={`status-pill ${tone}`}>
+                          {experimentHealthLabel(entry.control.health)}
+                        </span>
+                      </a>
                     </li>
                   );
                 })}

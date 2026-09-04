@@ -59,12 +59,13 @@ import {
 } from "./graphAuthority";
 import { buildGlossaryIndex } from "./glossary";
 import {
-  branchExperimentPollingKey,
+  experimentBoardRouteToken,
   experimentIndexEntryForRoute,
   experimentStopPath,
   mainExperimentRouteMatchesControl,
   parseProjectHash,
   projectExperimentExecution,
+  projectRunsNeedsExperimentIndex,
   type ProjectHashRoute,
 } from "./experimentBoard";
 import {
@@ -871,9 +872,8 @@ export default function App() {
   );
   const selectedExperimentUsesBranch = selectedExperimentRoute?.graph_target.kind === "branch";
   const selectedBranchExperiment = selectedExperimentUsesBranch ? selectedIndexedExperiment : null;
-  const selectedBranchRouteKey = branchExperimentPollingKey(projectId, selectedExperimentRoute);
   useEffect(() => {
-    if (!projectId || !selectedBranchRouteKey) return;
+    if (!projectRunsNeedsExperimentIndex(projectId, view)) return;
     let stopped = false;
     let timer = 0;
     const schedule = () => {
@@ -901,7 +901,7 @@ export default function App() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [projectId, refreshExperimentLoops, reportErrorNotice, selectedBranchRouteKey]);
+  }, [projectId, refreshExperimentLoops, reportErrorNotice, view]);
   const authoritativeProjectId = useRef<string | null>(null);
   const reloadRef = useRef<(includeTasks?: boolean) => Promise<void>>(async () => undefined);
   const authoritativeReloadInFlight = useRef<{
@@ -3775,6 +3775,9 @@ export default function App() {
                 tasks={tasks}
                 watchers={watchers}
                 experimentControl={presentedExperimentControl}
+                experimentEntries={experimentLoops.filter(
+                  (entry) => entry.project_id === project.id,
+                )}
                 exactExperimentRoute={selectedExperimentRoute}
                 exactExperimentEntry={selectedBranchExperiment}
                 selectedExperimentId={selectedExperimentRunId}
@@ -3801,6 +3804,9 @@ export default function App() {
                 onSendEpisodeMessage={messageEpisodeOrchestrator}
                 onOperateEpisodeTask={operateEpisodeOrchestratorTask}
                 onSelectExperiment={selectExperiment}
+                onOpenExperimentEntry={(entry) =>
+                  commitProjectOpen(project.id, experimentBoardRouteToken(entry))
+                }
                 onDetailFocused={clearExperimentFocus}
                 onOpenHistory={openProjectHistory}
                 onRunExperiment={(node) => void runExperiment(node)}

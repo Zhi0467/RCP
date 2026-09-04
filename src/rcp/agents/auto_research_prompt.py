@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, get_args
+
+from pydantic import BaseModel
 
 # The staged-package block is rendered in exactly one place. A second copy here
 # would drift from the one every other contract uses.
 from rcp.agents.prompts import selected_skill_section
+from rcp.core.models import Blocker, Decision, Experiment, Hypothesis, ResearchQuestion
 from rcp.limits import AUTO_RESEARCH_APPLY_MAX_PER_TURN
 
 
@@ -44,22 +47,30 @@ def _optional_pointer(label: str, path: str | None) -> str:
     return f"- {label}: `{path}`\n" if path else ""
 
 
-_NODE_ONTOLOGY = """Node types in this graph:
-- ResearchQuestion — a question the project is trying to answer. Status is one of open, answered,
-  abandoned, superseded.
+def _status_vocabulary(model: type[BaseModel]) -> str:
+    """Render the same status Literal that graph-condition validation consumes."""
+
+    values = get_args(model.model_fields["status"].annotation)
+    if not values or not all(isinstance(value, str) for value in values):
+        raise RuntimeError(f"{model.__name__}.status must be a string Literal")
+    return ", ".join(values)
+
+
+_NODE_ONTOLOGY = f"""Node types in this graph:
+- ResearchQuestion — a question the project is trying to answer. Status is one of
+  {_status_vocabulary(ResearchQuestion)}.
 - Hypothesis — a claim that evidence could support or reject, with its rationale and predictions.
-  Status is one of proposed, active, supported, weakened, rejected, superseded.
+  Status is one of {_status_vocabulary(Hypothesis)}.
 - Experiment — planned or running work that produces Evidence, carrying an objective, design,
-  expected outcomes, interpretation rules, and completion criteria. Status is one of proposed,
-  designing, implementing, debugging, running, analyzing, completed, blocked, abandoned,
-  superseded.
+  expected outcomes, interpretation rules, and completion criteria. Status is one of
+  {_status_vocabulary(Experiment)}.
 - Evidence — one observation and your interpretation of it, with a methodological role (`result`
   or `diagnostic`) and a validity (valid, qualified, invalid, superseded). Role is not evidential
   weight; never author node-global `strength` or replay-only `legacy_strength`.
-- Decision — a choice the project must make, with options and at most one selected option. Status
-  is one of open, ready, decided, revisit, superseded.
+- Decision — a choice the project must make, with options and at most one selected option. Status is
+  one of {_status_vocabulary(Decision)}.
 - Blocker — something stopping progress, with the condition that would resolve it. Status is one of
-  open, resolved, superseded.
+  {_status_vocabulary(Blocker)}.
 
 ResearchQuestions and Hypotheses are the project's beliefs. That is why changing an existing one
 needs human judgment while the other four types do not.
