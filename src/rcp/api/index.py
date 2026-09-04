@@ -28,7 +28,7 @@ from rcp.api.episodes import (
 from rcp.api.experiment_controls import ExperimentControlResponse, _experiment_control_response
 from rcp.api.identity import IdentityAccess
 from rcp.api.team_shell_protocol import acknowledge_team_shell_protocol
-from rcp.core.models import Experiment, GraphState
+from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, Experiment, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.keyed_locks import KeyedLocks
 from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON, ProjectCatalog, ProjectDisplayCache
@@ -49,6 +49,7 @@ from rcp.storage import (
     ExperimentControlProjectionSnapshot,
     ExperimentEpisodeProjectionSnapshot,
     ExperimentLoopRuntime,
+    NodeStatusGraphCondition,
     ProjectActiveTaskConflict,
 )
 from rcp.transport import StateUnavailable
@@ -93,6 +94,7 @@ class ExperimentLoopIndexEntryResponse(BaseModel):
     graph_target: GraphTargetRef
     graph_head: GraphHeadRef | None
     parent_episode_id: str | None
+    parent_watching: bool
     node: Experiment
     control: ExperimentControlResponse
     episode: EpisodeResponse
@@ -169,6 +171,28 @@ def experiment_episodes(
     )
 
 
+@membership_router.get(
+    "/api/projects/{project_id}/experiment-episodes",
+    response_model=list[ExperimentLoopIndexEntryResponse],
+)
+def project_experiment_episodes(
+    project_id: str,
+    mode: Literal["experiment_loop"] = Query(...),
+    *,
+    catalog: CatalogDependency,
+    project_display_cache: DisplayCacheDependency,
+    store: StoreDependency,
+    experiment_operation_lock: ExperimentOperationLockDependency,
+) -> list[ExperimentLoopIndexEntryResponse]:
+    return _experiment_episode_entries(
+        catalog=catalog,
+        project_display_cache=project_display_cache,
+        store=store,
+        experiment_operation_lock=experiment_operation_lock,
+        visible={catalog.resolve_project_id(project_id)},
+    )
+
+
 def _experiment_episode_entries(
     *,
     catalog: ProjectCatalog,
@@ -187,6 +211,7 @@ def _experiment_episode_entries(
         read_models = store.experiment_control_projection_snapshots(record.project_id)
         if not read_models:
             continue
+        active_graph_watchers = store.active_graph_watchers(record.project_id)
         settle_ids = [
             experiment_id
             for experiment_id, read_model in read_models.items()
@@ -324,6 +349,15 @@ def _experiment_episode_entries(
                     continue
                 route = store.auto_research_child_experiment(episode.episode_id)
                 parent_episode_id = route.auto_research_episode_id if route is not None else None
+                parent_watching = parent_episode_id is not None and any(
+                    watcher.origin_task_kind == "auto_research"
+                    and watcher.episode_id == parent_episode_id
+                    and watcher.graph_target == target
+                    and watcher.condition.node_id == node.id
+                    and isinstance(watcher.condition, NodeStatusGraphCondition)
+                    and set(watcher.condition.status_in).issubset(CLOSED_EXPERIMENT_STATUSES)
+                    for watcher in active_graph_watchers
+                )
                 if target.kind == "branch" and parent_episode_id != target.branch_id:
                     raise ValueError(
                         "Branch-target Experiment lost its Auto-research parent identity."
@@ -366,6 +400,7 @@ def _experiment_episode_entries(
                         graph_target=target,
                         graph_head=graph_head,
                         parent_episode_id=parent_episode_id,
+                        parent_watching=parent_watching,
                         node=node,
                         control=control,
                         episode=serialized_episode,

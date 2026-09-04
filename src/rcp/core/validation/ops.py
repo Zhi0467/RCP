@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from rcp.core.authority import DECIDE_DECISION, QUEUE_DECISION, permits
 from rcp.core.models import (
     ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
+    EXPERIMENT_COMPATIBILITY_STATUSES,
     RELATION_SPEC,
     Decision,
     Edge,
@@ -101,7 +102,7 @@ def validate_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
 
 def author_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
     for node in op.nodes:
-        if isinstance(node, Experiment) and node.status == "unspecified":
+        if isinstance(node, Experiment) and node.status in EXPERIMENT_COMPATIBILITY_STATUSES:
             ctx.report.reject(
                 "live-legacy-experiment-phase",
                 f"New Experiment {node.id!r} cannot author compatibility-only phase 'unspecified'.",
@@ -134,7 +135,7 @@ def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> Any:
         live_legacy_phase = (
             ctx.mode == "admission"
             and isinstance(node, Experiment)
-            and changes.get("status") == "unspecified"
+            and changes.get("status") in EXPERIMENT_COMPATIBILITY_STATUSES
         )
         if live_legacy_phase:
             ctx.report.reject(

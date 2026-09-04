@@ -175,6 +175,9 @@ class Experiment(BaseNode):
         return migrated
 
 
+EXPERIMENT_COMPATIBILITY_STATUSES = frozenset({"unspecified"})
+
+
 # The human's own verdict that an Experiment is finished with, which outranks how
 # any one bounded episode inside it happened to end.
 CLOSED_EXPERIMENT_STATUSES = frozenset({"completed", "abandoned", "superseded"})

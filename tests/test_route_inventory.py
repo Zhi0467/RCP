@@ -85,6 +85,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
         "/api/native/project-transfers/target-requests/{request_id}/activation-proof",
     ),
     (("DELETE",), "/api/projects/{project_id}/caches/all"),
+    (("GET",), "/api/projects/{project_id}/experiment-episodes"),
     (("GET",), "/api/skills/{kind}/{package_id}"),
     (("DELETE",), "/api/projects/{project_id}"),
     (("GET",), "/api/projects/{project_id}"),
@@ -219,6 +220,7 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "paper_sessions": "src/rcp/api/paper.py",
     "pause_agent_task": "src/rcp/api/tasks.py",
     "preflight_project": "src/rcp/api/index.py",
+    "project_experiment_episodes": "src/rcp/api/index.py",
     "preview_agent_artifact": "src/rcp/api/tasks.py",
     "preview_episode_report": "src/rcp/api/episode_routes.py",
     "view_episode_report": "src/rcp/api/episode_routes.py",
@@ -304,15 +306,15 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 125
-    assert len(_FROZEN_ROUTE_INVENTORY) == 125
+    assert len(entries) == 126
+    assert len(_FROZEN_ROUTE_INVENTORY) == 126
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 121
+    assert sum(isinstance(route, APIRoute) for route in routes) == 122
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4
 
 
@@ -327,5 +329,5 @@ def test_handler_module_map_is_separate_and_current(route_app: FastAPI) -> None:
         assert source is not None
         observed[endpoint.__name__] = str(Path(source).resolve().relative_to(repository_root))
 
-    assert len(observed) == 113
+    assert len(observed) == 114
     assert observed == _HANDLER_MODULE_MAP

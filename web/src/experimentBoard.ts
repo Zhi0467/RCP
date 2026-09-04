@@ -48,6 +48,10 @@ export function experimentBoardRouteToken(entry: ExperimentLoopIndexEntry): stri
   return `${INDEX_ROUTE_PREFIX}${JSON.stringify(experimentRouteIdentity(entry))}`;
 }
 
+export function projectRunsNeedsExperimentIndex(projectId: string | null, view: AppView): boolean {
+  return Boolean(projectId && view === "execution");
+}
+
 export function spaceRunRouteToken(entry: SpaceRunIndexEntry): string {
   if (entry.mode === "auto_research") {
     return `${AUTO_RESEARCH_ROUTE_PREFIX}${entry.episode_id}`;
@@ -337,20 +341,6 @@ export function experimentStopPath(
   return episodeId ? `${path}?episode_id=${encodeURIComponent(episodeId)}` : path;
 }
 
-export function branchExperimentPollingKey(
-  projectId: string | null,
-  route: ExperimentRouteIdentity | null,
-): string | null {
-  if (!projectId || route?.graph_target.kind !== "branch") return null;
-  return JSON.stringify([
-    projectId,
-    route.experiment_id,
-    route.episode_id,
-    route.graph_target.branch_id,
-    route.parent_episode_id,
-  ]);
-}
-
 function experimentRouteIdentity(entry: ExperimentLoopIndexEntry): ExperimentRouteIdentity {
   const episodeId = entry.episode?.episode_id ?? entry.control.episode_id;
   if (!episodeId) throw new Error("An indexed Experiment route requires its durable episode.");
@@ -458,7 +448,7 @@ function hasExperimentIdentityParams(params: URLSearchParams): boolean {
   return ["episode", "target", "branch", "parent"].some((key) => params.has(key));
 }
 
-function graphTargetsEqual(left: GraphTargetRef, right: GraphTargetRef): boolean {
+export function graphTargetsEqual(left: GraphTargetRef, right: GraphTargetRef): boolean {
   return (
     left?.kind === right.kind &&
     (left.kind === "main" || (right.kind === "branch" && left.branch_id === right.branch_id))

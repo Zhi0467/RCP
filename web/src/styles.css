@@ -3871,6 +3871,13 @@ button:disabled {
   margin: 0;
   padding-top: 9px;
 }
+.experiment-parent-watch {
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+  font-weight: 650;
+  margin: 0;
+  padding: 9px 0;
+}
 .experiment-run-empty {
   border-top: 1px solid var(--rule);
   color: var(--muted);
@@ -11903,21 +11910,26 @@ button.relation-map-node:hover {
 .campaign-task.depth-4 {
   margin-left: 72px;
 }
-.campaign-task > button {
+.campaign-task > button,
+.campaign-task > a {
   align-items: center;
   background: var(--surface);
   border: 1px solid var(--line);
+  color: inherit;
   display: grid;
   gap: 10px;
   grid-template-columns: 82px minmax(0, 1fr) auto;
   padding: 8px 10px;
+  text-decoration: none;
   text-align: left;
   width: 100%;
 }
-.campaign-task > button:hover {
+.campaign-task > button:hover,
+.campaign-task > a:hover {
   border-color: var(--line-strong);
 }
-.campaign-task > button:focus-visible {
+.campaign-task > button:focus-visible,
+.campaign-task > a:focus-visible {
   outline: 2px solid var(--cobalt);
   outline-offset: 1px;
 }
@@ -11928,6 +11940,9 @@ button.relation-map-node:hover {
   text-transform: uppercase;
 }
 .campaign-task-role.worker {
+  color: var(--teal);
+}
+.campaign-task-role.experiment {
   color: var(--teal);
 }
 .campaign-task-role.wake,
@@ -12121,7 +12136,8 @@ button.relation-map-node:hover {
   .campaign-task.depth-4 {
     margin-left: 32px;
   }
-  .campaign-task > button {
+  .campaign-task > button,
+  .campaign-task > a {
     align-items: start;
     grid-template-columns: minmax(0, 1fr) auto;
   }
@@ -12132,7 +12148,8 @@ button.relation-map-node:hover {
     grid-column: 1 / -1;
     grid-row: 2;
   }
-  .campaign-task > button > .status-pill {
+  .campaign-task > button > .status-pill,
+  .campaign-task > a > .status-pill {
     grid-column: 2;
     grid-row: 1;
   }

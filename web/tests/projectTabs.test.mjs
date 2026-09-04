@@ -20,12 +20,8 @@ const {
   projectTabShortcut,
   projectViewportRef,
 } = await server.ssrLoadModule("/src/projectTabs.ts");
-const {
-  branchExperimentPollingKey,
-  exactAutoResearchEpisodeHref,
-  exactRunExperimentSelectionHref,
-  parseProjectHash,
-} = await server.ssrLoadModule("/src/experimentBoard.ts");
+const { exactAutoResearchEpisodeHref, exactRunExperimentSelectionHref, parseProjectHash } =
+  await server.ssrLoadModule("/src/experimentBoard.ts");
 const { reduceExperimentSelection } = await server.ssrLoadModule("/src/hooks/useGraphSelection.ts");
 const { ProjectDock } = await server.ssrLoadModule("/src/components/ProjectDock.tsx");
 
@@ -80,10 +76,6 @@ test("leaving Runs and returning preserves the exact branch Experiment identity"
 
   assert.strictEqual(away, selected);
   assert.strictEqual(returned, selected);
-  assert.equal(
-    branchExperimentPollingKey("project-one", returned.selectedExperimentRoute),
-    '["project-one","experiment/shared","child-episode","parent-episode","parent-episode"]',
-  );
 });
 
 test("collapsing and re-expanding keeps an exact branch Experiment URL", () => {
@@ -279,10 +271,6 @@ test("tab restoration retains the branch target instead of resolving the node id
     selectedAutoResearchEpisodeId: null,
   });
   assert.notStrictEqual(restored.selectedExperimentRoute, route);
-  assert.equal(
-    branchExperimentPollingKey("project-one", restored.selectedExperimentRoute),
-    '["project-one","experiment/shared","child-episode","parent-episode","parent-episode"]',
-  );
 });
 
 test("Runs routing and tab selection retain an exact Auto-research episode", () => {
