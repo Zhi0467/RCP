@@ -54,6 +54,32 @@ What each open drive is waiting on:
 
 ### Production qualification receipts and next boundary — 2026-09-04
 
+- **Current next boundary:** the human authorized a second production update
+  to match desktop and server revisions. The source desktop is built from
+  merged `276a2bb3bb44d4a23f6865e6f14f3c202b4040ce`; production still serves
+  `519f80be`. Hosted qualification run `33919068513` passed install, forced
+  rollback, backup, member removal, and fresh-host restore on both Ubuntu
+  22.04 and 24.04 at the target revision. PR #45 corrected the public-install
+  fixture's obsolete source-key requirement; PR #46 corrected its obsolete
+  single member-confirmation-command assumption and verifies the displayed
+  boundary digest. Both PRs passed ordinary CI before merge.
+  The normal update preview refused at admission at 21:11:09 UTC, before
+  fetching or switching releases: the managed checkpoint directory contains
+  the retained `manual-bridge-519f80b-20260904T182649Z` and failed
+  `rehearsal-519f80bed8a7fc78aa596036859e0a7a0f8ceeea-b99451e9d15d4cc0887139e9b6f678d3`.
+  Approval was requested to relocate both intact into
+  `/home/rcp/rcp-server/retained-update-evidence/`, verify content equality,
+  and retry. That relocation is not yet authorized or performed; do not delete
+  either directory or bypass the updater's safety checks. Production health
+  after refusal retained PID 767236, the same space/data/instance identity,
+  zero active agent tasks, and one real project. The pre-update read-only
+  inventory retained all 20 task IDs and request hashes, integrity `ok`, no
+  foreign-key violations, and no disposable project registration. Receipts
+  are under `/tmp/rcp-transfer-7b003fb4.k35zMG/` on the server:
+  `second-update-preview.jsonl`, `update-maintenance-inventory.txt`, and
+  `state-pre-second-update.json`. After approval, finish the guarded update,
+  compare the inventory, and verify the matching source desktop reconnects;
+  do not repeat the completed disposable transfer.
 - Production `wth-gpu-01` and the source-built desktop were qualified at
   `519f80bed8a7fc78aa596036859e0a7a0f8ceeea`. The separately authorized manual
   release bridge retained the checkpoint
