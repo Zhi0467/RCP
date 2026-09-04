@@ -355,6 +355,67 @@ def test_catalog_delete_refuses_active_watcher(manifest, tmp_path) -> None:
     assert store.watcher("live-watcher") is not None
 
 
+@pytest.mark.parametrize(("notified", "blocks_deletion"), [(False, True), (True, False)])
+def test_catalog_delete_handles_degraded_watcher_delivery(
+    manifest,
+    tmp_path,
+    notified: bool,
+    blocks_deletion: bool,
+) -> None:
+    data_dir = tmp_path / "app-data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+    record = catalog.register(str(manifest.path), identity_action="adopted")
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="watch-origin",
+            project_id=record.project_id,
+            kind="project_chat",
+            status="failed",
+            request={},
+            created_at=now,
+            updated_at=now,
+            status_message="failed",
+        )
+    )
+    store.create_watchers(
+        [
+            WatcherRecord(
+                watcher_id="degraded-watcher",
+                project_id=record.project_id,
+                origin_operation_id="watch-origin",
+                origin_task_kind="project_chat",
+                chat_id="chat",
+                check_command="true",
+                log_path="/tmp/degraded-watcher.log",
+                cwd="/tmp",
+                continuation=WatcherContinuation(
+                    provider="codex",
+                    run_on="local",
+                ),
+                status="degraded",
+                created_at=now,
+                notified=notified,
+                last_error="temporary watcher failure",
+                consecutive_error_count=1,
+            )
+        ]
+    )
+
+    if blocks_deletion:
+        with pytest.raises(ValueError, match="stop watching"):
+            catalog.delete(record.project_id)
+
+        assert store.project(record.project_id) is not None
+        assert store.watcher("degraded-watcher") is not None
+    else:
+        catalog.delete(record.project_id)
+
+        assert store.project(record.project_id) is None
+        assert store.watcher("degraded-watcher") is None
+
+
 def test_deleted_tagged_project_reregisters_with_canonical_id_and_alias(
     manifest,
     tmp_path,

@@ -648,11 +648,25 @@ class ProjectStoreMixin:
         if (
             connection.execute(
                 """
+                SELECT 1 FROM project_transfer_requests
+                WHERE project_id = ? AND phase != 'completed'
+                LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+            is not None
+        ):
+            raise ProjectActiveTaskConflict(
+                "Let the project transfer finish before deleting this project."
+            )
+        if (
+            connection.execute(
+                """
                 SELECT 1 FROM watchers
                 WHERE project_id = ?
                   AND (
-                    status IN ('active', 'degraded')
-                    OR (status = 'completed' AND notified = 0)
+                    status = 'active'
+                    OR (status IN ('degraded', 'completed') AND notified = 0)
                   )
                 LIMIT 1
                 """,

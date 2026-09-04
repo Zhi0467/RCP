@@ -4,14 +4,22 @@ import hashlib
 import uuid
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from rcp.agents import AgentLauncher
+from rcp.projects import ProjectCatalog
 from rcp.sources import ImportedProviderSourceStore, project_cache_roots
-from rcp.storage import AgentTaskRecord
+from rcp.storage import AgentTaskRecord, ProjectActiveTaskConflict
 from rcp.transfer import TransferArchiveEntry
 
 from .helpers import create_named_app as create_app
 from .test_project_membership import _create_project, _team_app
+from .test_project_transfer_request_storage import (
+    _activate_target,
+    _archive_bound_pair,
+    _complete_target_boundaries,
+)
 
 
 def _tree_digest(root: Path) -> str:
@@ -293,3 +301,53 @@ def test_team_delete_refuses_an_active_task_before_touching_the_checkout(tmp_pat
     assert refused.json()["detail"] == ("Pause the active agent task before deleting this project.")
     assert store.project(project_id) is not None
     assert _tree_digest(repository) == before
+
+
+def test_team_delete_waits_for_target_activated_transfer_to_complete(tmp_path: Path) -> None:
+    source, target, source_request, target_request = _archive_bound_pair(tmp_path)
+    assert target_request.target_admission_receipt is not None
+    target_actor = target_request.target_admission_receipt.admitted_by
+    _complete_target_boundaries(target, target_request.request_id)
+    _activate_target(target, target_request.request_id)
+    catalog = ProjectCatalog(target.path.parent, target, AgentLauncher())
+
+    with pytest.raises(ProjectActiveTaskConflict, match="Let the project transfer finish"):
+        catalog.delete(target_request.project_id)
+
+    retained_request = target.project_transfer_request(target_request.request_id)
+    assert retained_request is not None
+    assert retained_request.phase == "target_activated"
+    with target.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM project_transfer_proofs WHERE request_id = ?",
+                (target_request.request_id,),
+            ).fetchone()
+            is not None
+        )
+
+    activation_proof = target.expose_project_transfer_proof(target_request.request_id)
+    cleanup = source.verify_target_project_transfer_activation(
+        source_request.request_id,
+        proof=activation_proof,
+    )
+    target_request = target.accept_project_transfer_cleanup_acknowledgment(
+        target_request.request_id,
+        acknowledgment=cleanup,
+        accepted_by=target_actor,
+    )
+    source_request = source.acknowledge_project_transfer_cleanup(source_request.request_id)
+    assert source_request.proof_acknowledgement_sha256 is not None
+    source.consume_project_transfer_proof(
+        source_request.request_id,
+        acknowledgement_sha256=source_request.proof_acknowledgement_sha256,
+    )
+    source.retire_source_project_transfer(source_request.request_id)
+    source_request = source.complete_project_transfer_request(source_request.request_id)
+    assert source_request.phase == target_request.phase == "completed"
+
+    deleted = catalog.delete(target_request.project_id)
+
+    assert deleted.project_id == target_request.project_id
+    assert target.project(target_request.project_id) is None
+    assert target.project_transfer_request(target_request.request_id) is None

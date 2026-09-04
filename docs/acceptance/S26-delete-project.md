@@ -38,8 +38,9 @@ says: **The server-managed checkout and repository deploy key remain;
 credentials are not revoked.** The final destructive button is also labeled
 **Delete project**.
 
-A queued, running, or pausing task, any non-terminal episode, and any active,
-pollable, or deliverable watcher blocks deletion in either space. The API directs
+A queued, running, or pausing task; any non-terminal episode; any unfinished
+project transfer; any active watcher; and any degraded or completed watcher with
+an undelivered notification blocks deletion in either space. The API directs
 the human to Pause the task, use episode Stop, or stop watching, then refuses the
 deletion. Settled work does not block deletion, but the confirmation states that
 its resumable stage and RCP history will no longer be reachable through the app.
