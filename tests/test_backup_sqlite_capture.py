@@ -528,9 +528,12 @@ def test_inventory_failure_log_redacts_rejected_values(
     store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Concurrent lab")
     _register_completed_project(store, data_dir, name="Unsafe artifact project")
     secret = "rcp_member_this_must_not_enter_the_journal"
+    basic_payload = "dXNlcjpwYXNz"
 
     def _invalid(self: AppStore, project_id: str) -> list[AgentTaskRecord]:
-        raise ValueError(f"kept filename rejected; input_value='{secret}'")
+        raise ValueError(
+            f"kept filename rejected; input_value='{secret} Authorization: Basic {basic_payload}'"
+        )
 
     monkeypatch.setattr(AppStore, "all_project_agent_tasks", _invalid)
 
@@ -538,7 +541,9 @@ def test_inventory_failure_log_redacts_rejected_values(
         BackupCaptureCoordinator(store, data_dir, _metadata(data_dir)).capture_sqlite()
 
     assert secret not in caplog.text
+    assert basic_payload not in caplog.text
     assert "[REDACTED RCP CREDENTIAL]" in caplog.text
+    assert "Authorization: [REDACTED]" in caplog.text
     assert caplog.records[0].exc_info is None
 
 
