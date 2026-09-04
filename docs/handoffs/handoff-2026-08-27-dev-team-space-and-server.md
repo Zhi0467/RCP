@@ -6,8 +6,11 @@ complete. The two-release disposable server lifecycle and fresh-host restore
 qualification pass. A persistent Ubuntu 22.04 lab server now passes clean
 source install, continuous update, member enrollment, provider readiness, and
 real GitHub-backed project creation. Backup setup is one root CLI operation with
-a retained server-managed recovery identity by default; its live concurrent
-drive remains. The two-member desktop switching, first task, SSH execution
+a retained server-managed recovery identity by default; the 2026-09-04 production
+concurrent-task backup drive passed. Unreachable-SSH backup qualification was
+explicitly skipped. The disposable transfer reached final review but the native
+admission request failed with HTTP 415; its desktop fix awaits merged-main
+qualification. The two-member desktop switching, first task, SSH execution
 target, broader backup/restore, transfer, and complete one-lab closure drive
 remain.
 
@@ -41,7 +44,60 @@ What each open drive is waiting on:
   the native desktop launcher.
 - **T5a, T5b** — the native relay, unified move wizard, and restart recovery are
   implemented and hermetically verified. They still need the S98 source-built
-  desktop drive against two real spaces and a real SSH operator route.
+  desktop drive against two real spaces and a real SSH operator route. Resume
+  the existing disposable request below after merging the admission JSON fix.
+
+### Production qualification receipts and next boundary — 2026-09-04
+
+- Production `wth-gpu-01` and the source-built desktop were qualified at
+  `519f80bed8a7fc78aa596036859e0a7a0f8ceeea`. The separately authorized manual
+  release bridge retained the checkpoint
+  `/home/rcp/rcp-server/update-checkpoints/manual-bridge-519f80b-20260904T182649Z`.
+  Doctor at 18:42:42 UTC reported healthy/aligned, matching current/running
+  commit and web build, unchanged team/data identity, and no problems. Retain
+  the checkpoint; it is not disposable test data.
+- **O2a/O2b/O3, S104 concurrent-task subset passed:** root ran
+  `rcp server backup configure --destination /var/backups/rcp --confirm --machine-readable`.
+  The destination is `rcp:rcp`, mode 0700; the server-managed recovery identity
+  remains root-only. Doctor reported protected, timer active/enabled, daily
+  02:00, retention 30. Capture `c31765de-40e0-4adc-9a23-d38cd17bbf92` at
+  18:36:55.760899 UTC produced
+  `/var/backups/rcp/rcp-team-backup-v1-20260904T183655760899Z-c31765de-40e0-4adc-9a23-d38cd17bbf92.tar.age`:
+  complete, one protected project, zero uncaptured, 1,730,768 captured bytes.
+  Independent decryption/member-hash/manifest verification passed; snapshot
+  SQLite integrity was `ok`, foreign-key violations zero, and all 20 task IDs
+  and valid request payloads were retained. Auto-research task
+  `1c693966-5596-4cde-a5c4-2603509eefd4` started at 18:36:36.695111 UTC,
+  was captured running, and succeeded at 18:37:30.759359 UTC with the same
+  creation/start identity. The archive was verified without a restore into live
+  data. Unreachable-SSH/partial capture and the broader S104 fixtures remain
+  unqualified; the human explicitly excluded that SSH drive.
+- **T5a/T5b, S98 stopped before target admission:** disposable project
+  `c3997083-a534-47f6-a4c1-74286f93422c` uses personal checkout
+  `/private/tmp/rcp-transfer-live-20260904` and repository
+  `Zhi0467/rcp-git-credentials-live-test` at
+  `f772cb0db7fe46298ec079941b0e5fa765ed2185`. Source request
+  `eb972346-323b-44c0-9387-5df47c9b535e` is linked to target/provisioning request
+  `7b003fb4-6c4e-42a8-8dd2-ef9885da244d`. The human installed GitHub deploy key
+  162317885 with write access. Provisioning through the existing `rcp-update`
+  tmux sudo session passed Git read/write, central checkout, and six Codex
+  provider roles, reaching ready-for-review revision 13 at 19:14:31 UTC.
+  Review digest: `bf67c94242c3da099bb9a32034d7181b18714f6f03d717b2d68d4e325594dd31`.
+  Central checkout:
+  `/home/rcp/rcp-server/projects/c3997083-a534-47f6-a4c1-74286f93422c/repositories/research`.
+- The actual desktop confirmation returned HTTP 415: native target admission
+  omitted JSON while the authenticated team middleware requires it. No target
+  admission, source release, relay, restart recovery, activation, or deletion
+  is claimed. The fix sends an empty JSON object; native request and authenticated
+  API regressions cover the wire requirement and refusal before mutation.
+- Continue after human merge using a rebuilt desktop from merged `main`. Do not
+  update production or test branch code there without the required authorization.
+  Reuse the two existing requests and review digest; do not create another
+  disposable project. The saved `zhiwang` operator route lacks noninteractive
+  sudo permission; CLI setup used the authorized tmux session. No sudoers policy
+  was changed. Automated relay still needs operator-route authorization, or the
+  documented manual relay. Finish restart recovery, content comparison, and team
+  deletion; preserve the Git checkout, canonical research files, and deploy key.
 
 The dated implementation log and the fifty-five completed packet sections moved
 to [the evidence archive](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-evidence.md)

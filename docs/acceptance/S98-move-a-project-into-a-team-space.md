@@ -32,6 +32,7 @@ covered_by:
   - web/tests/projectSetup.test.mjs
   - web/src-tauri/src/project_transfer.rs::tests
   - web/src-tauri/src/server_commands.rs::tests
+  - web/src-tauri/src/team_session.rs::tests
 invariants: [1, 3, 6, 11]
 ---
 
@@ -42,6 +43,16 @@ interruption drive against two real spaces and a real SSH operator route has not
 yet passed. The backend transfer, native desktop relay, proof return/source
 cleanup orchestration, unified wizard, and crash-recovery coordinator are
 implemented and hermetically verified.
+
+The 2026-09-04 production drive reached final review for disposable project
+`c3997083-a534-47f6-a4c1-74286f93422c`: Git write access, central checkout, and
+six provider readiness checks passed. The native admission request then failed
+with HTTP 415 because it omitted the JSON content type. Its regression now
+checks the native empty-JSON request and the authenticated backend's rejection
+of a missing content type before any admission mutation. Live validation of
+the fix, relay, restart recovery, activation, and deletion remain open. Resume
+the existing linked requests recorded in the
+[production qualification receipt](../handoffs/handoff-2026-08-27-dev-team-space-and-server.md#production-qualification-receipts-and-next-boundary--2026-09-04).
 
 The implemented path now covers the canonical home-transfer Patch, linked
 cross-space requests, independent human receipts, strict repository/configuration

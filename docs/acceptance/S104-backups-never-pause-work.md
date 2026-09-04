@@ -44,10 +44,21 @@ removal, and fenced durable activation. Exact-head workflow run
 source-host protected backup followed by fresh-host Git reconstruction,
 old-authority/member review, offline stale-member removal, activation, and
 cleanup on both Ubuntu 22.04 and 24.04. The scenario remains pending because its
-broader live concurrent/no-pause, unreachable-SSH partial-capture, active
+broader live concurrent-Apply, unreachable-SSH partial-capture, active
 lifecycle detachment, and full retained-history inspection have not yet been
 driven together. Its boundary is in
 [Server and machine operations](../specs/server-and-machine-operations.md).
+
+The 2026-09-04 production concurrent-task subset passed on source `519f80be`.
+Capture `c31765de-40e0-4adc-9a23-d38cd17bbf92` retained all 20 task rows with
+valid request payloads, passed archive/member hashes and SQLite integrity, and
+captured task `1c693966-5596-4cde-a5c4-2603509eefd4` running between its
+18:36:36 UTC start and 18:37:30 UTC success. Simple root CLI configuration
+created the retained identity and enabled the daily timer. Exact paths, times,
+and checks are in the
+[production qualification receipt](../handoffs/handoff-2026-08-27-dev-team-space-and-server.md#production-qualification-receipts-and-next-boundary--2026-09-04).
+Unreachable-SSH qualification was explicitly skipped, not passed. This subset
+does not complete the other fixtures below.
 
 An earlier design had the server delay dispatch and delay applying results for
 the duration of each capture. With canonical history on remote machines that

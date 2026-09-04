@@ -677,8 +677,10 @@ async def test_detached_prior_turn_process_cannot_command_reused_stage(tmp_path)
         "  time.sleep(0.01)\n"
         "with open(instruction,encoding='utf-8') as stream: argv=json.load(stream)\n"
         "result=subprocess.run(argv,capture_output=True,text=True,check=False)\n"
-        "with open(result_path,'w',encoding='utf-8') as stream:\n"
+        "temporary=result_path+'.tmp'\n"
+        "with open(temporary,'w',encoding='utf-8') as stream:\n"
         "  json.dump({'code':result.returncode,'stdout':result.stdout},stream)\n"
+        "os.replace(temporary,result_path)\n"
     )
     stale = await asyncio.create_subprocess_exec(
         sys.executable,
