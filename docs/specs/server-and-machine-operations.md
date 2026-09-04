@@ -185,10 +185,15 @@ sudo userdel -r rcp
 ```
 
 `/run/rcp` is a systemd `RuntimeDirectory` and disappears when the service
-stops. Skip the backup units when no backup timer was configured. The last
-command takes `/home/rcp` with it, which is where the team space, project
-checkouts, and deploy keys live; deploy keys stay registered with GitHub until
-they are revoked there.
+stops. Skip the backup units when no backup timer was configured. Removing
+`/etc/rcp` also destroys the server-managed recovery identity at
+`/etc/rcp/backup-recovery.agekey`, the only key that decrypts archives made with
+it. When backups use that default identity, copy the file to protected storage
+off the host before this step, or accept that every retained archive becomes
+permanently undecryptable; no later install recreates it. The last command
+takes `/home/rcp` with it, which is where the team space, project checkouts, and
+deploy keys live; deploy keys stay registered with GitHub until they are revoked
+there.
 
 Interactive TTY output is a continuous, plain-language wizard. The CLI validates
 the complete operation plan before doing work, but normal output does not dump

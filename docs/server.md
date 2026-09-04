@@ -577,7 +577,10 @@ stores only its public recipient in the unchanged schema-v2 backup table in
 server-managed identity without adding a config key. Later configuration reuses
 the same identity. If that file is missing, damaged, unsafe, or does not match
 the configured recipient, RCP stops and tells you to restore it; it never
-silently makes a replacement.
+silently makes a replacement. That file is also the only key that decrypts the
+archives made with it: before the teardown sequence removes `/etc/rcp`, copy it
+to protected storage off the host, or accept that the retained archives become
+permanently undecryptable.
 
 The wizard verifies the destination, creates and reads back one protected
 archive, and only then enables the systemd timer. The destination may be local
