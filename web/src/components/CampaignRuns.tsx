@@ -404,7 +404,18 @@ export function AutoResearchEpisodeCard({
                           entry.project_id,
                           experimentBoardRouteToken(entry),
                         )}
-                        onClick={() => onOpenExperimentEntry(entry)}
+                        onClick={(event) => {
+                          if (
+                            event.button !== 0 ||
+                            event.metaKey ||
+                            event.ctrlKey ||
+                            event.shiftKey ||
+                            event.altKey
+                          ) {
+                            return;
+                          }
+                          onOpenExperimentEntry(entry);
+                        }}
                       >
                         <span className="campaign-task-role experiment">Experiment</span>
                         <span className="campaign-task-copy">
