@@ -66,6 +66,22 @@ def canonical_uuid4(value: str, *, label: str) -> str:
     return value
 
 
+def canonical_operation_uuid(value: str, *, label: str) -> str:
+    """Require the canonical spelling of a task operation identity.
+
+    RCP mints ordinary task ids with UUID4 and deterministic Experiment-loop and
+    Auto-research child ids with UUID5, so a durable capture must accept both.
+    """
+
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a canonical UUID") from exc
+    if parsed.version not in (4, 5) or str(parsed) != value:
+        raise ValueError(f"{label} must be a lowercase, hyphenated canonical UUID4 or UUID5")
+    return value
+
+
 def is_canonical_uuid4(value: object) -> bool:
     """Return whether a value is the canonical spelling of a UUID4."""
 

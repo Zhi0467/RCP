@@ -921,3 +921,69 @@ def test_remote_backup_export_rejects_an_unknown_direct_root_before_rsync(
     monkeypatch.setattr(state_module.subprocess, "run", unexpected_rsync)
     with pytest.raises(StateUnavailable, match="unclassified"):
         workspace.backup_source_root(destination)
+
+
+def test_deterministic_uuid5_task_identities_stay_capturable(tmp_path: Path) -> None:
+    """Experiment-loop and Auto-research child tasks carry UUID5 operation ids.
+
+    A project that has run one such episode must still produce a capturable
+    inventory; on 2026-09-04 the strict UUID4 rule turned every capture of the
+    lab project into an inventory failure and blocked the server update.
+    """
+
+    data_dir = tmp_path / "data"
+    project_id = str(uuid.uuid4())
+    task_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "rcp:experiment-loop:invocation:1"))
+    assert uuid.UUID(task_id).version == 5
+    inventory, _ = _project_inventory(
+        tmp_path,
+        project_id=project_id,
+        task_id=task_id,
+        with_files=True,
+    )
+    assert inventory.task_operation_ids == (task_id,)
+    assert inventory.kept_artifacts[0].operation_id == task_id
+    assert inventory.kept_result_views[0].origin_operation_id == task_id
+    receipt_path, receipt_sha256 = _sqlite_capture_with_projects(data_dir, (inventory,))
+
+    publication = BackupProjectFileCaptureCoordinator(data_dir).capture(
+        receipt_path,
+        expected_sha256=receipt_sha256,
+    )
+    receipt = read_backup_project_file_capture_receipt(
+        publication.receipt_path,
+        expected_sha256=publication.receipt_sha256,
+    )
+
+    assert receipt.status == "complete"
+    assert receipt.projects[0].status == "captured"
+    assert receipt.projects[0].recovery is not None
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    [
+        str(uuid.uuid1()),
+        str(uuid.uuid4()).upper(),
+        "not-a-uuid",
+    ],
+    ids=("uuid1", "uppercase", "garbage"),
+)
+def test_non_canonical_task_identities_are_still_rejected(operation_id: str) -> None:
+    with pytest.raises(ValueError, match="task operation identity"):
+        BackupSnapshotProjectInventory(
+            project_id=str(uuid.uuid4()),
+            home_space_id="00000000-0000-4000-8000-000000000001",
+            locator="/tmp/manifest.toml",
+            status="capturable",
+            task_operation_ids=(operation_id,),
+        )
+    with pytest.raises(ValueError, match="artifact operation identity"):
+        BackupKeptArtifactReference(
+            operation_id=operation_id,
+            artifact_id="e" * 24,
+            source_name="figure.png",
+            media_type="image/png",
+            kept_filename="kept-figure.png",
+            kept_at="2026-08-29T12:00:00+00:00",
+        )

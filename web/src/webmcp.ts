@@ -83,6 +83,9 @@ const NODE_TEXT_LIMIT = 1_200;
 const NODE_TEXT_LIMIT_FLOOR = 64;
 const NODE_LIST_LIMIT = 16;
 const NODE_LIST_LIMIT_FLOOR = 2;
+const NODE_ENTRY_LIMIT = 64;
+const NODE_ENTRY_LIMIT_FLOOR = 8;
+const NODE_KEY_LIMIT = 96;
 const NODE_TRUNCATED_PATH_LIMIT = 24;
 const ARTIFACT_LIST_LIMIT = 8;
 const CONVERSATION_LIST_LIMIT = 8;
@@ -453,37 +456,44 @@ type BoundedJson = {
   truncation: {
     text_limit: number;
     list_limit: number;
+    entry_limit: number;
     path_count: number;
     paths: string[];
   } | null;
 };
 
+type JsonBounds = { textLimit: number; listLimit: number; entryLimit: number };
+
 function boundJsonValue(
   value: unknown,
-  textLimit: number,
-  listLimit: number,
+  bounds: JsonBounds,
   path: string,
   truncatedPaths: string[],
 ): unknown {
   if (typeof value === "string") {
-    if (value.length <= textLimit) return value;
+    if (value.length <= bounds.textLimit) return value;
     truncatedPaths.push(path);
-    return compactText(value, textLimit);
+    return compactText(value, bounds.textLimit);
   }
   if (Array.isArray(value)) {
-    if (value.length > listLimit) truncatedPaths.push(path);
+    if (value.length > bounds.listLimit) truncatedPaths.push(path);
     return value
-      .slice(0, listLimit)
-      .map((item, index) =>
-        boundJsonValue(item, textLimit, listLimit, `${path}[${index}]`, truncatedPaths),
-      );
+      .slice(0, bounds.listLimit)
+      .map((item, index) => boundJsonValue(item, bounds, `${path}[${index}]`, truncatedPaths));
   }
   if (value && typeof value === "object") {
+    const entries = Object.entries(value);
+    if (entries.length > bounds.entryLimit) truncatedPaths.push(path);
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        key,
-        boundJsonValue(item, textLimit, listLimit, path ? `${path}.${key}` : key, truncatedPaths),
-      ]),
+      entries.slice(0, bounds.entryLimit).map(([key, item]) => {
+        const childPath = path ? `${path}.${key}` : key;
+        if (key.length > NODE_KEY_LIMIT) truncatedPaths.push(childPath);
+        const boundedKey = compactText(key, NODE_KEY_LIMIT);
+        return [
+          boundedKey,
+          boundJsonValue(item, bounds, path ? `${path}.${boundedKey}` : boundedKey, truncatedPaths),
+        ];
+      }),
     );
   }
   return value;
@@ -493,28 +503,36 @@ function boundJsonValue(
  * lists, halving both limits until the record fits. Every shortened path is
  * reported so the reader can tell exact content from truncated content. */
 export function boundJsonToBudget(value: unknown, maxChars: number): BoundedJson {
-  let textLimit = NODE_TEXT_LIMIT;
-  let listLimit = NODE_LIST_LIMIT;
+  const bounds: JsonBounds = {
+    textLimit: NODE_TEXT_LIMIT,
+    listLimit: NODE_LIST_LIMIT,
+    entryLimit: NODE_ENTRY_LIMIT,
+  };
   for (;;) {
     const truncatedPaths: string[] = [];
-    const bounded = boundJsonValue(value, textLimit, listLimit, "", truncatedPaths);
+    const bounded = boundJsonValue(value, bounds, "", truncatedPaths);
     const fits = JSON.stringify(bounded).length <= maxChars;
-    const atFloor = textLimit <= NODE_TEXT_LIMIT_FLOOR && listLimit <= NODE_LIST_LIMIT_FLOOR;
+    const atFloor =
+      bounds.textLimit <= NODE_TEXT_LIMIT_FLOOR &&
+      bounds.listLimit <= NODE_LIST_LIMIT_FLOOR &&
+      bounds.entryLimit <= NODE_ENTRY_LIMIT_FLOOR;
     if (fits || atFloor) {
       return {
         value: bounded,
         truncation: truncatedPaths.length
           ? {
-              text_limit: textLimit,
-              list_limit: listLimit,
+              text_limit: bounds.textLimit,
+              list_limit: bounds.listLimit,
+              entry_limit: bounds.entryLimit,
               path_count: truncatedPaths.length,
               paths: truncatedPaths.slice(0, NODE_TRUNCATED_PATH_LIMIT),
             }
           : null,
       };
     }
-    textLimit = Math.max(NODE_TEXT_LIMIT_FLOOR, Math.floor(textLimit / 2));
-    listLimit = Math.max(NODE_LIST_LIMIT_FLOOR, Math.floor(listLimit / 2));
+    bounds.textLimit = Math.max(NODE_TEXT_LIMIT_FLOOR, Math.floor(bounds.textLimit / 2));
+    bounds.listLimit = Math.max(NODE_LIST_LIMIT_FLOOR, Math.floor(bounds.listLimit / 2));
+    bounds.entryLimit = Math.max(NODE_ENTRY_LIMIT_FLOOR, Math.floor(bounds.entryLimit / 2));
   }
 }
 
@@ -685,16 +703,32 @@ function assertArtifactFilterTarget(
 /** Resolve one exact episode id through the backend when it lies outside the
  * bounded recent-episode window the page holds; null means the backend has no
  * such episode. */
-type LoadWebMcpEpisode = (episodeId: string) => Promise<Episode | null>;
+export type WebMcpArtifactSource = {
+  loadEpisode: (episodeId: string) => Promise<Episode | null>;
+  loadTask: (operationId: string) => Promise<AgentTask | null>;
+};
 
 async function withExactEpisode(
   episodes: Episode[],
   episodeId: string | null,
-  loadEpisode: LoadWebMcpEpisode,
+  source: WebMcpArtifactSource,
 ): Promise<Episode[]> {
   if (!episodeId || episodes.some((episode) => episode.episode_id === episodeId)) return episodes;
-  const exact = await loadEpisode(episodeId);
+  const exact = await source.loadEpisode(episodeId);
   return exact && exact.episode_id === episodeId ? [...episodes, exact] : episodes;
+}
+
+/** The page holds only the newest bounded task rows; an exact task id outside
+ * that window is read through the existing task route so its saved artifacts
+ * stay listable and openable. */
+async function withExactTask(
+  tasks: AgentTask[],
+  operationId: string | null,
+  source: WebMcpArtifactSource,
+): Promise<AgentTask[]> {
+  if (!operationId || tasks.some((task) => task.operation_id === operationId)) return tasks;
+  const exact = await source.loadTask(operationId);
+  return exact && exact.operation_id === operationId ? [...tasks, exact] : tasks;
 }
 
 function projectArtifactRecords(
@@ -763,15 +797,17 @@ export async function listProjectArtifacts(
   tasks: AgentTask[],
   episodes: Episode[],
   input: Record<string, unknown>,
-  loadEpisode: LoadWebMcpEpisode,
+  source: WebMcpArtifactSource,
 ): Promise<Record<string, unknown>> {
   const filter = artifactFilter(input);
-  const knownEpisodes = await withExactEpisode(episodes, filter.episodeId, loadEpisode);
-  const records = projectArtifactRecords(project, tasks, knownEpisodes, filter);
+  const knownTasks = await withExactTask(tasks, filter.taskId, source);
+  const knownEpisodes = await withExactEpisode(episodes, filter.episodeId, source);
+  const records = projectArtifactRecords(project, knownTasks, knownEpisodes, filter);
   return {
     project_id: project.id,
     total: records.length,
     truncated: records.length > ARTIFACT_LIST_LIMIT,
+    recent_task_count: tasks.length,
     recent_episode_count: episodes.length,
     artifacts: records
       .slice(0, ARTIFACT_LIST_LIMIT)
@@ -780,6 +816,13 @@ export async function listProjectArtifacts(
 }
 
 const REPORT_VIEWER_PREFIX = "report:";
+const TASK_VIEWER_PREFIX = "task:";
+
+function taskViewerOperationId(viewerId: string): string | null {
+  if (!viewerId.startsWith(TASK_VIEWER_PREFIX)) return null;
+  const operationId = viewerId.slice(TASK_VIEWER_PREFIX.length).split(":")[0];
+  return operationId || null;
+}
 
 export async function openProjectArtifact(
   project: ProjectSnapshot,
@@ -787,16 +830,20 @@ export async function openProjectArtifact(
   episodes: Episode[],
   input: Record<string, unknown>,
   openViewer: (viewerUrl: string, contentUrl: string) => boolean | Promise<boolean>,
-  loadEpisode: LoadWebMcpEpisode,
+  source: WebMcpArtifactSource,
 ): Promise<Record<string, unknown>> {
   const viewerId = requiredStringInput(input, "viewer_id");
   const reportEpisodeId = viewerId.startsWith(REPORT_VIEWER_PREFIX)
     ? viewerId.slice(REPORT_VIEWER_PREFIX.length)
     : null;
-  const knownEpisodes = await withExactEpisode(episodes, reportEpisodeId, loadEpisode);
-  const record = projectArtifactRecords(project, tasks, knownEpisodes, artifactFilter({})).find(
-    (candidate) => candidate.viewer_id === viewerId,
-  );
+  const knownTasks = await withExactTask(tasks, taskViewerOperationId(viewerId), source);
+  const knownEpisodes = await withExactEpisode(episodes, reportEpisodeId, source);
+  const record = projectArtifactRecords(
+    project,
+    knownTasks,
+    knownEpisodes,
+    artifactFilter({}),
+  ).find((candidate) => candidate.viewer_id === viewerId);
   if (!record)
     throw new Error(`Artifact viewer ${viewerId} is not present in the current project.`);
   if (!record.available || !record.can_open) {
@@ -818,13 +865,13 @@ export function projectArtifactToolDefinitions(
   tasks: AgentTask[],
   episodes: Episode[],
   openViewer: (viewerUrl: string, contentUrl: string) => boolean | Promise<boolean>,
-  loadEpisode: LoadWebMcpEpisode,
+  source: WebMcpArtifactSource,
 ): WebMcpToolDefinition[] {
   return [
     {
       name: "rcp_list_artifacts",
       description:
-        "List RCP task artifacts and immutable episode reports in the open project. Reports come from the recent-episode window unless an exact episode_id is supplied.",
+        "List RCP task artifacts and immutable episode reports in the open project. Results come from the recent task and episode windows unless an exact task_id or episode_id is supplied.",
       inputSchema: {
         type: "object",
         properties: {
@@ -854,7 +901,7 @@ export function projectArtifactToolDefinitions(
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       execute: async (input) =>
         webMcpTextResult(
-          await listProjectArtifacts(project, tasks, episodes, input, loadEpisode),
+          await listProjectArtifacts(project, tasks, episodes, input, source),
           WEBMCP_ARTIFACT_RESULT_MAX_CHARS,
         ),
     },
@@ -876,7 +923,7 @@ export function projectArtifactToolDefinitions(
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       execute: async (input) =>
         webMcpTextResult(
-          await openProjectArtifact(project, tasks, episodes, input, openViewer, loadEpisode),
+          await openProjectArtifact(project, tasks, episodes, input, openViewer, source),
         ),
     },
   ];
@@ -969,14 +1016,22 @@ function conversationRefusal(
   return null;
 }
 
+/** Backend reads a conversation tool needs beyond the page snapshot: the exact
+ * transcript, and the exact task record behind a transcript message when that
+ * task has aged out of the bounded task window the page holds. */
+export type WebMcpConversationSource = {
+  loadTranscript: (chatId: string) => Promise<ChatTranscript>;
+  loadTask: (operationId: string) => Promise<AgentTask | null>;
+};
+
 async function resolveProjectConversationContext(
   project: ProjectSnapshot,
   tasks: AgentTask[],
   chatId: string,
-  loadTranscript: (chatId: string) => Promise<ChatTranscript>,
+  source: WebMcpConversationSource,
   taskStartPending: boolean,
 ) {
-  const transcript = await loadTranscript(chatId);
+  const transcript = await source.loadTranscript(chatId);
   if (transcript.chat_id !== chatId) {
     throw new Error(`Conversation ${chatId} returned a mismatched transcript.`);
   }
@@ -985,8 +1040,22 @@ async function resolveProjectConversationContext(
   if (surface === "node_chat" && !node) {
     throw new Error(`Conversation ${chatId} points to a node outside the current project graph.`);
   }
-  const relatedTasks = relatedChatTasks(tasks, surface, transcript.node_id, chatId);
-  const latestTask = latestConversationTask(relatedTasks);
+  let relatedTasks = relatedChatTasks(tasks, surface, transcript.node_id, chatId);
+  let latestTask = latestConversationTask(relatedTasks);
+  if (!latestTask) {
+    // The page task cache is a bounded recent window. A saved conversation whose
+    // turns have aged out of it still carries its durable identity (graph
+    // target, native session, scope) on the task behind its latest message, so
+    // read that exact record before deciding whether Send may continue it.
+    const lastOperationId =
+      [...transcript.messages].reverse().find((message) => message.operation_id)?.operation_id ??
+      null;
+    const exact = lastOperationId ? await source.loadTask(lastOperationId) : null;
+    if (exact && taskChatId(exact) === chatId) {
+      latestTask = exact;
+      relatedTasks = [exact];
+    }
+  }
   const profile = project.agent_profiles[surface];
   const fallbackConfig: AgentRunConfig = {
     provider: profile.provider,
@@ -1030,7 +1099,7 @@ export async function inspectProjectConversation(
   project: ProjectSnapshot,
   tasks: AgentTask[],
   input: Record<string, unknown>,
-  loadTranscript: (chatId: string) => Promise<ChatTranscript>,
+  source: WebMcpConversationSource,
   taskStartPending = false,
 ): Promise<Record<string, unknown>> {
   const chatId = requiredStringInput(input, "chat_id");
@@ -1038,7 +1107,7 @@ export async function inspectProjectConversation(
     project,
     tasks,
     chatId,
-    loadTranscript,
+    source,
     taskStartPending,
   );
   const {
@@ -1200,7 +1269,7 @@ export function projectConversationToolDefinitions(
   summaries: ChatSummary[],
   summaryTotal: number,
   tasks: AgentTask[],
-  loadTranscript: (chatId: string) => Promise<ChatTranscript>,
+  source: WebMcpConversationSource,
   taskStartPending = false,
 ): WebMcpToolDefinition[] {
   return [
@@ -1249,7 +1318,7 @@ export function projectConversationToolDefinitions(
       annotations: { readOnlyHint: true, untrustedContentHint: true },
       execute: async (input) =>
         webMcpTextResult(
-          await inspectProjectConversation(project, tasks, input, loadTranscript, taskStartPending),
+          await inspectProjectConversation(project, tasks, input, source, taskStartPending),
           WEBMCP_CONVERSATION_RESULT_MAX_CHARS,
         ),
     },
@@ -1299,7 +1368,7 @@ export async function sendProjectConversationMessage(
   project: ProjectSnapshot,
   tasks: AgentTask[],
   input: Record<string, unknown>,
-  loadTranscript: (chatId: string) => Promise<ChatTranscript>,
+  source: WebMcpConversationSource,
   taskStartPending: boolean,
   createConversation: CreateWebMcpConversation,
   startTurn: StartWebMcpConversationTurn,
@@ -1326,7 +1395,7 @@ export async function sendProjectConversationMessage(
         project,
         tasks,
         requestedChatId,
-        loadTranscript,
+        source,
         taskStartPending,
       )
     : null;
@@ -1389,7 +1458,7 @@ export async function sendProjectConversationMessage(
 export function projectConversationSendToolDefinitions(
   project: ProjectSnapshot,
   tasks: AgentTask[],
-  loadTranscript: (chatId: string) => Promise<ChatTranscript>,
+  source: WebMcpConversationSource,
   taskStartPending: boolean,
   createConversation: CreateWebMcpConversation,
   startTurn: StartWebMcpConversationTurn,
@@ -1455,7 +1524,7 @@ export function projectConversationSendToolDefinitions(
             project,
             tasks,
             toolInput,
-            loadTranscript,
+            source,
             taskStartPending,
             createConversation,
             startTurn,
