@@ -1,8 +1,7 @@
 """Destructive, explicitly gated qualification of source install and rollback.
 
 This test is intentionally absent from ordinary CI execution. It owns an entire
-disposable Ubuntu host, installs system state, and temporarily adds one read-only
-deploy key to the private source repository. See ``docs/server.md``.
+disposable Ubuntu host and installs system state. See ``docs/server.md``.
 """
 
 from __future__ import annotations
@@ -40,7 +39,6 @@ _LIVE_GATE = "RCP_RUN_SERVER_INSTALL_LIVE"
 _DISPOSABLE_CONFIRMATION = "RCP_SERVER_INSTALL_LIVE_DISPOSABLE"
 _EXPECTED_DISPOSABLE_CONFIRMATION = "I_UNDERSTAND_THIS_MUTATES_THE_HOST"
 _TOKEN_FILE = "RCP_LIVE_GITHUB_ADMIN_TOKEN_FILE"
-_DEPLOY_KEY_RECEIPT_FILE = "RCP_LIVE_DEPLOY_KEY_RECEIPT_FILE"
 _BACKUP_ARCHIVE_RECEIPT_FILE = "RCP_LIVE_BACKUP_ARCHIVE_RECEIPT_FILE"
 _BACKUP_IDENTITY_FILE = "RCP_LIVE_BACKUP_IDENTITY_FILE"
 _BACKUP_METADATA_FILE = "RCP_LIVE_BACKUP_METADATA_FILE"
@@ -79,10 +77,16 @@ def test_source_server_install_on_disposable_ubuntu() -> None:
 
         first_code, first_events = _run_install(executable, cwd=bootstrap)
         assert first_code == 3
-        assert not any(
-            isinstance(event.get("step"), dict) and event["step"].get("phase") == "source_grant"
+        source_grant_events = [
+            event["step"]
             for event in first_events
-        ), "a public origin needs no deploy-key grant"
+            if isinstance(event.get("step"), dict) and event["step"].get("phase") == "source_grant"
+        ]
+        assert [step["state"] for step in source_grant_events] == ["running", "succeeded"]
+        assert not any(step["state"] == "operator_action_needed" for step in source_grant_events), (
+            "a public origin needs no deploy-key grant"
+        )
+        assert _fields(source_grant_events[-1]) == {"source_authentication": "public"}
         init_pause = _terminal_step(first_events, "team_space_init")
         assert init_pause["state"] == "operator_action_needed"
         init_commands = _command_actions(init_pause)
@@ -1624,45 +1628,6 @@ def _read_admin_token() -> str:
     return token
 
 
-def _deploy_key_receipt_path() -> Path:
-    raw = os.environ.get(_DEPLOY_KEY_RECEIPT_FILE)
-    if not raw:
-        pytest.fail(f"{_DEPLOY_KEY_RECEIPT_FILE} must name a protected cleanup receipt")
-    path = Path(raw)
-    if not path.is_absolute() or path.is_symlink() or not path.parent.is_dir():
-        pytest.fail(f"{_DEPLOY_KEY_RECEIPT_FILE} must be an absolute new regular-file path")
-    parent = path.parent.stat()
-    if parent.st_uid != os.getuid() or stat.S_IMODE(parent.st_mode) & 0o022:
-        pytest.fail(
-            f"{_DEPLOY_KEY_RECEIPT_FILE} parent must be caller-owned and not writable by others"
-        )
-    return path
-
-
-def _write_deploy_key_receipt(label: str) -> None:
-    if re.fullmatch(r"rcp-source:[0-9a-f-]{36}", label) is None:
-        pytest.fail("the generated source-key label is not safe for cleanup")
-    path = _deploy_key_receipt_path()
-    try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    except OSError:
-        pytest.fail("the deploy-key cleanup receipt already exists or cannot be created safely")
-    try:
-        os.write(descriptor, f"{label}\n".encode("ascii"))
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _clear_deploy_key_receipt() -> None:
-    path = _deploy_key_receipt_path()
-    if path.exists():
-        info = path.stat()
-        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
-            pytest.fail("the deploy-key cleanup receipt changed ownership or mode")
-        path.unlink()
-
-
 def _protected_live_output_path(environment_name: str) -> Path:
     raw = os.environ.get(environment_name)
     if not raw:
@@ -1892,19 +1857,6 @@ def _command_actions(step: dict[str, object]) -> list[tuple[str, ...]]:
             assert isinstance(argv, list) and all(isinstance(value, str) for value in argv)
             commands.append(tuple(argv))
     return commands
-
-
-def _create_read_only_deploy_key(token: str, *, title: str, public_key: str) -> int:
-    response = _github_request(
-        token,
-        method="POST",
-        path=f"/repos/{_REPOSITORY}/keys",
-        body={"title": title, "key": public_key, "read_only": True},
-    )
-    key_id = response.get("id")
-    if not isinstance(key_id, int) or response.get("read_only") is not True:
-        pytest.fail("GitHub did not confirm one read-only deploy key")
-    return key_id
 
 
 def _delete_deploy_key(token: str, key_id: int) -> None:

@@ -652,16 +652,15 @@ this install on separate `ubuntu-22.04` and `ubuntu-24.04` x86-64 hosts. It runs
 only by manual dispatch from `main`, because the production installer itself is
 fixed to GitHub `main`.
 
-The private RCP source repository requires one repository Actions secret named
+The fresh-host restore job requires one repository Actions secret named
 `RCP_LIVE_GITHUB_ADMIN_TOKEN`. Use a fine-grained token scoped only to
 `Zhi0467/RCP` with repository **Administration: write**, which is the GitHub
-permission required to create and remove deploy keys. The workflow writes it to
-a mode-0600 temporary file. The tests create temporary read-only source keys and
-write-enabled project keys where each workflow requires them, and unconditional
-cleanup removes those keys and protected files. A protected receipt records each
-generated key's nonsecret label before the API call, so cleanup can revoke it
-even if pytest is interrupted. The token never enters RCP CLI argv, event
-output, or the installed service environment.
+permission required to create and remove its temporary write-enabled project
+deploy key. The workflow writes it to a mode-0600 temporary file only in that
+job. A protected receipt records the generated key's nonsecret label before the
+API call, so unconditional cleanup can revoke it even if pytest is interrupted.
+The public-source install job needs no GitHub credential. The token never enters
+RCP CLI argv, event output, or the installed service environment.
 
 The live test refuses a reused host, requires an explicit destructive-test
 confirmation, removes its disposable bootstrap checkout, and checks the
