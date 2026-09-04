@@ -25,7 +25,10 @@ from rcp.background import StartupEffectBlocked, StartupEffectFence
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.history import HistoryManager
-from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON
+from rcp.projects import (
+    TEAM_PROJECT_DELETE_CONFIRMATION,
+    TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+)
 from rcp.server_ops.backup_capture import (
     BackupCaptureCoordinator,
     BackupSnapshotProjectInventory,
@@ -374,9 +377,12 @@ def _run_unavailable_project_candidate_child(
         "error_sha256": hashlib.sha256(remote_error.encode()).hexdigest(),
         "can_delete": True,
         "delete_unavailable_reason": None,
+        "delete_confirmation": TEAM_PROJECT_DELETE_CONFIRMATION,
     }
     if expected_updates is not None:
         comparison.update(expected_updates)
+    if comparison["can_delete"] is False:
+        comparison.pop("delete_confirmation")
     expected_sha256 = rehearsal_module._canonical_sha256(comparison)
     overlay = RehearsalOverlay(
         root=str(overlay_root),
@@ -457,6 +463,17 @@ def test_candidate_child_accepts_current_team_deletion_card_projection(tmp_path:
     assert exit_code == 0, result
     assert result["status"] == "verified"
     assert result["projects"][0]["projection_sha256"] == expected_sha256
+
+
+def test_candidate_child_refuses_changed_team_delete_confirmation(tmp_path: Path) -> None:
+    exit_code, result, _expected_sha256 = _run_unavailable_project_candidate_child(
+        tmp_path,
+        expected_updates={"delete_confirmation": "Changed deletion warning."},
+    )
+
+    assert exit_code == 1
+    assert result["status"] == "failed"
+    assert "changed unavailable projection" in result["diagnostic"]
 
 
 def test_candidate_rehearsal_replays_a_copy_without_touching_live_state(

@@ -33,6 +33,7 @@ from rcp.api.team_shell_protocol import (
 )
 from rcp.core.models import Experiment, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS
@@ -643,6 +644,8 @@ def register_project(
             body.locator,
             seat_member=identity_access.acting_user(request).user_id,
         )
+    except ProjectIdentityConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return catalog.card(record.project_id)

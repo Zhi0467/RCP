@@ -31,7 +31,10 @@ from rcp.limits import (
     BACKUP_DIAGNOSTIC_MAX_CHARS,
     SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
 )
-from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON
+from rcp.projects import (
+    TEAM_PROJECT_DELETE_CONFIRMATION,
+    TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+)
 from rcp.server_ops._local_primitives import (
     PrivateFileReadError,
     canonical_json_bytes,
@@ -902,6 +905,7 @@ def _prepare_overlay_project(
         "error_sha256": _optional_text_sha256(row["error"]),
         "can_delete": True,
         "delete_unavailable_reason": None,
+        "delete_confirmation": TEAM_PROJECT_DELETE_CONFIRMATION,
     }
     return RehearsalProjectOverlay(
         project_id=str(row["project_id"]),
@@ -1335,11 +1339,12 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                         projection_sha256 != project.expected_card_sha256
                         and opened.space_kind == "team"
                     ):
-                        legacy_comparison = {
-                            **comparison,
-                            "can_delete": False,
-                            "delete_unavailable_reason": TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
-                        }
+                        legacy_comparison = dict(comparison)
+                        legacy_comparison.pop("delete_confirmation", None)
+                        legacy_comparison.update(
+                            can_delete=False,
+                            delete_unavailable_reason=TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+                        )
                         projection_sha256 = _canonical_sha256(legacy_comparison)
                     if projection_sha256 != project.expected_card_sha256:
                         raise CandidateRehearsalRefused(
@@ -1775,6 +1780,7 @@ def _project_card_comparison(card: Mapping[str, object]) -> dict[str, object]:
         "error_sha256": _optional_text_sha256(card.get("error")),
         "can_delete": card.get("can_delete"),
         "delete_unavailable_reason": card.get("delete_unavailable_reason"),
+        "delete_confirmation": card.get("delete_confirmation"),
     }
 
 

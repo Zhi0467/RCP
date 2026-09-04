@@ -800,6 +800,15 @@ class ProjectCatalog:
             seated_by=seat_member,
         )
 
+    def ensure_registration_available(self, project_id: str) -> None:
+        """Refuse registration while deletion still owns app-file cleanup."""
+
+        with self._services_lock:
+            if project_id in self._deleting:
+                raise ProjectIdentityConflict(
+                    f"Project {project_id} is being deleted. Retry after deletion finishes."
+                )
+
     def prepare_incoming_transfer_registration(
         self,
         locator: str,
@@ -887,6 +896,8 @@ class ProjectCatalog:
         """
 
         with self._registration_lock:
+            if prepared_project_id is not None:
+                self.ensure_registration_available(prepared_project_id)
             bootstrap = load_manifest(locator)
             canonical_locator = str(bootstrap.path)
             existing = self.store.project_by_locator(canonical_locator)
@@ -926,6 +937,8 @@ class ProjectCatalog:
                     "created" if prepared_project_id is not None else identity.action,
                     project_id=prepared_project_id,
                 )
+
+            self.ensure_registration_available(identity.project_id)
 
             if existing is None:
                 existing = self.store.project(identity.project_id)
@@ -1021,6 +1034,7 @@ class ProjectCatalog:
                     f"this space is {self.store.space_id}. Registration is refused."
                 )
             project_id = identity.project_id if identity is not None else _project_id(manifest)
+            self.ensure_registration_available(project_id)
             if existing is not None and existing.project_id != project_id:
                 raise ValueError(
                     "This canonical location is already registered as a different project."
@@ -1716,7 +1730,7 @@ class ProjectCatalog:
     def delete(self, project_id: str) -> ProjectDeletionResult:
         """Forget one RCP registration without touching any research source."""
         project_id = self._canonical_project_id(project_id)
-        with self._services_lock:
+        with self._registration_lock, self._services_lock:
             if self.store.project(project_id) is None or project_id in self._deleting:
                 raise KeyError(project_id)
             self._deleting.add(project_id)

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.core.models import AuthorizedHuman
+from rcp.history import ProjectIdentityConflict
 from rcp.projects import ProjectCatalog
 from rcp.sources import ImportedProviderSourceStore, project_cache_roots
 from rcp.storage import (
@@ -435,3 +438,40 @@ def test_deleted_tagged_project_reregisters_with_canonical_id_and_alias(
     assert restored.home_space_id == store.space_id
     assert store.resolve_project_id(old_project_id) == first.project_id
     assert catalog.card(old_project_id)["id"] == first.project_id
+
+
+def test_registration_waits_until_project_deletion_cleanup_finishes(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    data_dir = tmp_path / "app-data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+    record = catalog.register(str(manifest.path), identity_action="adopted")
+    cleanup_started = threading.Event()
+    finish_cleanup = threading.Event()
+    delete_records = store.delete_project_records
+
+    def pause_after_commit(project_id: str):
+        result = delete_records(project_id)
+        cleanup_started.set()
+        if not finish_cleanup.wait(timeout=5):
+            raise TimeoutError("test did not release project cleanup")
+        return result
+
+    monkeypatch.setattr(store, "delete_project_records", pause_after_commit)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        deletion = executor.submit(catalog.delete, record.project_id)
+        try:
+            assert cleanup_started.wait(timeout=5)
+            assert store.project(record.project_id) is None
+            with pytest.raises(ProjectIdentityConflict, match="being deleted"):
+                catalog.register(str(manifest.path))
+            assert store.project(record.project_id) is None
+        finally:
+            finish_cleanup.set()
+        assert deletion.result(timeout=5).project_id == record.project_id
+
+    restored = catalog.register(str(manifest.path))
+    assert restored.project_id == record.project_id

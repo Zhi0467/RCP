@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from rcp.api.dependencies import get_project_service
 from rcp.api.team_shell_protocol import TEAM_SHELL_PROTOCOL_HEADER
+from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
 from rcp.storage import AgentTaskRecord
 
@@ -72,6 +73,23 @@ def test_delete_project_validation_status_does_not_depend_on_exception_wording(
     response = TestClient(app).delete(f"/api/projects/{project_id}")
 
     assert response.status_code == 422
+
+
+def test_register_project_route_reports_deletion_conflict(manifest, tmp_path, monkeypatch) -> None:
+    app = create_app(data_dir=tmp_path / "data")
+
+    def reject_registration(*_args, **_kwargs):
+        raise ProjectIdentityConflict("The project is being deleted. Retry after it finishes.")
+
+    monkeypatch.setattr(app.state.catalog, "register", reject_registration)
+
+    response = TestClient(app).post(
+        "/api/projects",
+        json={"locator": str(manifest.path)},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == ("The project is being deleted. Retry after it finishes.")
 
 
 def test_delete_project_route_disappears_after_restart_without_touching_repository(
