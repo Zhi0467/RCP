@@ -65,9 +65,11 @@ RCP verifies the selected executable and existing login as its separate final
 step.
 
 Only root/system integration lives elsewhere: `/etc/rcp/server.toml`, the
-root-owned current-release pointer, `/run/rcp/control.sock`, the stable CLI
-wrapper, systemd units, and journald. Backup destination remains explicitly
-configurable and may live outside this layout.
+root-only `/etc/rcp/backup-recovery.agekey`, its root-owned nonsecret `.pub`
+recipient sidecar, the root-owned current-release pointer,
+`/run/rcp/control.sock`, the stable CLI wrapper, systemd units, and journald.
+Backup destination remains explicitly configurable and may live outside this
+layout.
 
 The installed config carries one immutable random nonsecret `installation_id`.
 A private source checkout's read-only deploy key is labelled
@@ -183,10 +185,15 @@ sudo userdel -r rcp
 ```
 
 `/run/rcp` is a systemd `RuntimeDirectory` and disappears when the service
-stops. Skip the backup units when no backup timer was configured. The last
-command takes `/home/rcp` with it, which is where the team space, project
-checkouts, and deploy keys live; deploy keys stay registered with GitHub until
-they are revoked there.
+stops. Skip the backup units when no backup timer was configured. Removing
+`/etc/rcp` also destroys the server-managed recovery identity at
+`/etc/rcp/backup-recovery.agekey`, the only key that decrypts archives made with
+it. When backups use that default identity, copy the file to protected storage
+off the host before this step, or accept that every retained archive becomes
+permanently undecryptable; no later install recreates it. The last command
+takes `/home/rcp` with it, which is where the team space, project checkouts, and
+deploy keys live; deploy keys stay registered with GitHub until they are revoked
+there.
 
 Interactive TTY output is a continuous, plain-language wizard. The CLI validates
 the complete operation plan before doing work, but normal output does not dump
@@ -488,7 +495,7 @@ checkpoint and previous pointer, starts and verifies the previous release, and
 only then reopens service. The failed target and restored commit remain loud in
 CLI output, server status, and a durable operation receipt; this is never a
 silent rollback. The checkpoint is an update-local safety boundary, not the
-off-server backup format. The service account receives no general sudo or
+protected backup format. The service account receives no general sudo or
 systemd-control permission.
 
 Fence release has its own durable point of no return. The selected candidate or
@@ -1091,8 +1098,11 @@ merely because the target was restored.
 
 ## Backup and restore
 
-An unattended backup uses an `age` public recipient stored on the server; the
-matching recovery identity stays off-server. The encrypted archive contains a
+An unattended backup uses an `age` public recipient stored on the server. By
+default, `backup configure` creates its matching identity once at
+`/etc/rcp/backup-recovery.agekey`, owned by root with mode `0600`, and reuses it
+without displaying or copying its private text. An operator may instead supply
+an externally managed public recipient. The encrypted archive contains a
 consistent SQLite snapshot, a manifest of captured main and graph-branch
 canonical heads, and the append-only main/branch history needed to replay or
 validate those heads. Immutable branch metadata, Patches, and merge receipts are
@@ -1168,26 +1178,45 @@ off the server, and it makes no durability claim based on that topology.
 
 Backup destination, `age` public recipient, schedule, and retention are strict
 versioned machine configuration in the installed server config file, not team
-SQLite state. The root-owned file is readable by `rcp`, contains no private
-recovery identity, and is replaced atomically only through
-the following explicit operation:
+SQLite state. Its schema-v2 `[backup]` table remains exactly those four keys.
+The root-owned config is readable by `rcp`, contains no private recovery
+identity, and is replaced atomically only through the following explicit
+operation:
 
 ```bash
 sudo rcp server backup configure \
   --destination <absolute-directory> \
-  --recipient <age1-public-recipient> \
   --schedule <HH:MM> \
   --retention <count> \
   --confirm
 ```
 
 The schedule and retention flags default to `02:00` server-local
-time and 30 newest integrity-readback archives, but the destination, native
-X25519 public recipient, and explicit confirmation are always required. The
-private `AGE-SECRET-KEY-...` identity is never accepted. The same resolved
-schedule renders the systemd timer; there is no second editable timer value.
-Retention also preserves the newest complete archive if it has fallen outside
-the configured count.
+time and 30 newest integrity-readback archives; only the destination and
+explicit confirmation are required. The default path uses `age-keygen` to
+create the fixed root-only identity atomically and records only its derived
+native X25519 public recipient in `server.toml`. It atomically publishes the
+same nonsecret recipient in the root-owned mode-`0644`
+`backup-recovery.agekey.pub` sidecar. The presence of the private identity file,
+not a config key, identifies the server-managed path for progress; recipient
+equality with the sidecar preserves a loud missing-identity refusal if that file
+is later lost. Reconfiguration without `--recipient` must validate and reuse the
+same identity. A missing, damaged, unsafe, or mismatched retained identity fails
+loudly and is never silently replaced. `--recipient <age1-public-recipient>`
+remains an advanced path for an externally managed identity; an already
+configured external recipient must be supplied again exactly, and recipient
+rotation is not implicit. Private `AGE-SECRET-KEY-...` text is never accepted by
+the CLI or emitted in progress.
+The same resolved schedule renders the systemd timer; there is no second
+editable timer value. Retention also preserves the newest complete archive if
+it has fallen outside the configured count.
+
+Keeping the default recovery identity on the same server makes routine backup
+setup and same-machine restore simple, but does not by itself survive total
+machine loss. A lab that needs that disaster-recovery property must either
+retain a protected copy of the generated identity outside the machine or use
+the explicit externally managed recipient path. RCP does not infer or claim
+that either the archive destination or identity placement is off-server.
 One stable root-owned operation lock serializes install and configuration. RCP
 fences an already loaded timer before changing either unit and proves it
 inactive and disabled after daemon reload. Before the first unit mutation it
@@ -1221,10 +1250,11 @@ lease boundary rather than loading the archive into browser or process memory.
 Restore is a console workflow with integrity checks, replay verification, the
 installed server's displayed configured `RCP_DATA_DIR` in fresh/empty state,
 and an operator confirmation that the old copy of the space cannot resume
-serving. The recovery identity is read only for that run from a protected
-operator-supplied file or descriptor; raw identity text never enters argv,
-environment, progress, installed config, or restored data. This first contract
-does not silently redirect systemd to a second data root. Before serving it
+serving. Restore defaults to the fixed root-only server identity and accepts
+`--identity-file <absolute-path>` for an external identity or a fresh
+replacement host. The private file is read only for that run; raw identity text
+never enters argv, environment, progress, installed config, or restored data.
+This first contract does not silently redirect systemd to a second data root. Before serving it
 names the old source and project deploy-key labels/fingerprints,
 server-to-remote SSH authorization, and provider-native login state that must be
 revoked or proven destroyed, then names the replacement checkout and SSH routes
@@ -1337,9 +1367,10 @@ Replacement restore implements its database, checkout-recovery, stopped
 project-publication, authority-review, and fenced-activation boundaries. `rcp
 server restore` requires either the installed server's fresh data directory or
 the exact phase-owned database and SQLite sidecars recorded by the same restore
-journal; any unknown entry still refuses re-entry. It also requires a protected
-off-server `age` identity and verifies the canonical
-manifest, every archived byte, the recorded database schema, and the source
+journal; any unknown entry still refuses re-entry. It also requires the matching
+protected `age` identity, using the fixed server-managed path by default or an
+explicit protected file on a fresh host, and verifies the canonical manifest,
+every archived byte, the recorded database schema, and the source
 commit boundary before target mutation, and constructs a service-owned SQLite
 candidate with every captured runnable lifecycle detached. It stops and disables
 the service, journals the exact archive, candidate, and confirmation outside

@@ -15,10 +15,18 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Protocol, TypeVar
+from typing import BinaryIO, Literal, Protocol, TypeVar
 
 from rcp.limits import SERVER_BACKUP_CONFIGURATION_TIMEOUT_SECONDS
 from rcp.server_ops._local_primitives import fsync_directory as _fsync_directory
+from rcp.server_ops.backup_identity import (
+    BackupIdentityRefused,
+    backup_identity_path,
+    backup_identity_recipient_path,
+    read_backup_identity_recipient,
+    read_backup_identity_recipient_marker,
+    resolve_backup_recipient,
+)
 from rcp.server_ops.cli import (
     CallerIdentity,
     PreparedServerCommand,
@@ -71,10 +79,19 @@ class BackupConfigurationReadback:
     timer_unit_file_state: str
 
 
-class BackupConfigurationMachine(Protocol):
-    def validate_destination(self, config: ServerBackupConfig) -> None: ...
+@dataclass(frozen=True)
+class ResolvedBackupConfiguration:
+    config: ServerBackupConfig
+    observed_installed_backup: ServerBackupConfig | None
+    encryption_source: Literal["server-managed", "external-recipient"]
 
-    def persist_and_install(self, config: ServerBackupConfig) -> None: ...
+
+class BackupConfigurationMachine(Protocol):
+    def validate_destination(self, destination: str) -> None: ...
+
+    def resolve_config(self, request: ServerCommandRequest) -> ResolvedBackupConfiguration: ...
+
+    def persist_and_install(self, resolved: ResolvedBackupConfiguration) -> None: ...
 
     def readback(self, config: ServerBackupConfig) -> BackupConfigurationReadback: ...
 
@@ -90,16 +107,9 @@ def prepare_backup_configure_command(
         or request.backup_destination is None
         or request.backup_schedule is None
         or request.backup_retention is None
-        or request.backup_age_recipient is None
         or request.backup_confirmed is not True
     ):
         raise ValueError("prepare_backup_configure_command requires one confirmed configuration")
-    config = ServerBackupConfig(
-        destination=request.backup_destination,
-        schedule=request.backup_schedule,
-        retention=request.backup_retention,
-        age_recipient=request.backup_age_recipient,
-    )
     target = MachineTarget(host=identity.host, os_account="root")
     plan = ServerPlanEvent(
         command=request.command,
@@ -109,7 +119,7 @@ def prepare_backup_configure_command(
     resolved_machine = machine or LinuxBackupConfigurationMachine()
 
     def execute(emitter: ServerEventEmitter, _input_stream: BinaryIO) -> None:
-        _execute_configuration(emitter, resolved_machine, config)
+        _execute_configuration(emitter, resolved_machine, request)
 
     return PreparedServerCommand(plan=plan, execute=execute)
 
@@ -120,14 +130,14 @@ def _configuration_plan(target: MachineTarget) -> tuple[ServerStep, ...]:
             number=1,
             title="Confirm the backup policy",
             purpose=(
-                "Record the operator's explicit destination, public recovery recipient, daily "
-                "server-local schedule, and archive retention count."
+                "Record the operator's explicit destination, daily server-local schedule, "
+                "archive retention count, and optional advanced public recipient."
             ),
             performed_by="human",
             target=target,
             phase="backup_policy_confirm",
             state="pending",
-            expected_success="The command carries all four reviewed values and --confirm.",
+            expected_success="The command carries the reviewed policy and --confirm.",
             message="RCP will record the explicitly confirmed backup policy.",
         ),
         ServerStep(
@@ -146,6 +156,23 @@ def _configuration_plan(target: MachineTarget) -> tuple[ServerStep, ...]:
         ),
         ServerStep(
             number=3,
+            title="Resolve backup encryption",
+            purpose=(
+                "Create or reuse one root-owned server recovery identity unless an advanced "
+                "external public recipient was supplied."
+            ),
+            performed_by="system",
+            target=target,
+            phase="backup_identity_resolve",
+            state="pending",
+            expected_success=(
+                "The configured public recipient comes from the retained server identity or "
+                "the explicitly supplied external recipient."
+            ),
+            message="RCP will resolve the backup recipient without exposing private key text.",
+        ),
+        ServerStep(
+            number=4,
             title="Publish configuration and prove the first backup",
             purpose=(
                 "Atomically replace the versioned machine config, render the timer from its "
@@ -163,7 +190,7 @@ def _configuration_plan(target: MachineTarget) -> tuple[ServerStep, ...]:
             message="RCP will publish the policy, prove one backup, and activate its timer.",
         ),
         ServerStep(
-            number=4,
+            number=5,
             title="Read back the active schedule",
             purpose=(
                 "Prove the stored values, rendered OnCalendar, and loaded enabled timer agree "
@@ -182,7 +209,7 @@ def _configuration_plan(target: MachineTarget) -> tuple[ServerStep, ...]:
 def _execute_configuration(
     emitter: ServerEventEmitter,
     machine: BackupConfigurationMachine,
-    config: ServerBackupConfig,
+    request: ServerCommandRequest,
 ) -> None:
     planned = emitter.events[0]
     if not isinstance(planned, ServerPlanEvent):  # pragma: no cover - emitter owns this
@@ -192,32 +219,47 @@ def _execute_configuration(
         _complete_step(
             emitter,
             steps[0],
-            running="Checking the four explicitly confirmed nonsecret values.",
-            succeeded="The operator explicitly confirmed the complete backup policy.",
-            fields=_configuration_fields(config),
+            running="Checking the explicitly confirmed nonsecret backup policy.",
+            succeeded="The operator explicitly confirmed the backup policy.",
+            fields=_requested_configuration_fields(request),
         )
         _run_step(
             emitter,
             steps[1],
-            running=f"Probing {config.destination} as the rcp account.",
-            operation=lambda: machine.validate_destination(config),
+            running=f"Probing {request.backup_destination} as the rcp account.",
+            operation=lambda: machine.validate_destination(request.backup_destination),
             succeeded="The rcp account created and removed an exclusive destination probe.",
+        )
+        resolved = _run_step(
+            emitter,
+            steps[2],
+            running="Resolving backup encryption without exposing private identity text.",
+            operation=lambda: machine.resolve_config(request),
+            succeeded="The backup recipient is resolved without exposing private identity text.",
+            fields=lambda value: _configuration_fields(
+                value.config,
+                encryption_source=value.encryption_source,
+            ),
         )
         _run_step(
             emitter,
-            steps[2],
+            steps[3],
             running="Publishing the policy, running one backup, and enabling the verified timer.",
-            operation=lambda: machine.persist_and_install(config),
+            operation=lambda: machine.persist_and_install(resolved),
             succeeded="The config, first protected archive, and enabled timer were published.",
         )
+        config = resolved.config
         readback = _run_step(
             emitter,
-            steps[3],
+            steps[4],
             running="Reading back machine config, timer text, and systemd timer state.",
             operation=lambda: machine.readback(config),
             succeeded="The stored policy and active systemd schedule agree exactly.",
             fields=lambda value: (
-                *_configuration_fields(value.config),
+                *_configuration_fields(
+                    value.config,
+                    encryption_source=resolved.encryption_source,
+                ),
                 NonsecretField(name="timer_active_state", value=value.timer_active_state),
                 NonsecretField(name="timer_unit_file_state", value=value.timer_unit_file_state),
             ),
@@ -271,21 +313,51 @@ def _complete_step(
     )
 
 
-def _configuration_fields(config: ServerBackupConfig) -> tuple[NonsecretField, ...]:
+def _configuration_fields(
+    config: ServerBackupConfig,
+    *,
+    encryption_source: Literal["server-managed", "external-recipient"],
+) -> tuple[NonsecretField, ...]:
     return (
         NonsecretField(name="destination", value=config.destination),
         NonsecretField(name="schedule", value=config.schedule),
         NonsecretField(name="retention", value=config.retention),
         NonsecretField(name="age_recipient", value=config.age_recipient),
+        NonsecretField(name="encryption_source", value=encryption_source),
+    )
+
+
+def _requested_configuration_fields(
+    request: ServerCommandRequest,
+) -> tuple[NonsecretField, ...]:
+    assert request.backup_destination is not None
+    assert request.backup_schedule is not None
+    assert request.backup_retention is not None
+    return (
+        NonsecretField(name="destination", value=request.backup_destination),
+        NonsecretField(name="schedule", value=request.backup_schedule),
+        NonsecretField(name="retention", value=request.backup_retention),
+        NonsecretField(
+            name="encryption_source",
+            value=(
+                "server-managed" if request.backup_age_recipient is None else "external-recipient"
+            ),
+        ),
     )
 
 
 class LinuxBackupConfigurationMachine:
-    def __init__(self, layout: ServerLayout = DEFAULT_SERVER_LAYOUT) -> None:
+    def __init__(
+        self,
+        layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
+        *,
+        age_keygen_executable: str = "age-keygen",
+    ) -> None:
         self.layout = layout
+        self.age_keygen_executable = age_keygen_executable
 
-    def validate_destination(self, config: ServerBackupConfig) -> None:
-        destination = Path(config.destination)
+    def validate_destination(self, destination_value: str) -> None:
+        destination = Path(destination_value)
         _reject_symlink_ancestry(destination)
         try:
             info = destination.stat()
@@ -323,7 +395,7 @@ class LinuxBackupConfigurationMachine:
             "-m",
             "rcp.server_ops.backup_config",
             "--probe-destination",
-            config.destination,
+            destination_value,
         )
         try:
             completed = subprocess.run(
@@ -346,11 +418,69 @@ class LinuxBackupConfigurationMachine:
                 "destination. Correct that directory's access and rerun the same command."
             )
 
-    def persist_and_install(self, config: ServerBackupConfig) -> None:
+    def resolve_config(self, request: ServerCommandRequest) -> ResolvedBackupConfiguration:
+        assert request.backup_destination is not None
+        assert request.backup_schedule is not None
+        assert request.backup_retention is not None
         try:
             with backup_configuration_lock(self.layout):
                 recover_pending_backup_configuration(self.layout)
                 installed = load_installed_server_config(self.layout.config_path)
+                if installed.backup is not None:
+                    _validate_configured_backup_identity(
+                        installed.backup,
+                        self.layout,
+                        age_keygen_executable=self.age_keygen_executable,
+                    )
+                recipient = resolve_backup_recipient(
+                    layout=self.layout,
+                    configured_recipient=(
+                        installed.backup.age_recipient if installed.backup is not None else None
+                    ),
+                    requested_recipient=request.backup_age_recipient,
+                    age_keygen_executable=self.age_keygen_executable,
+                    expected_owner=_root_ownership(),
+                )
+                identity = backup_identity_path(self.layout)
+                encryption_source = (
+                    "server-managed"
+                    if identity.exists() or identity.is_symlink()
+                    else "external-recipient"
+                )
+            return ResolvedBackupConfiguration(
+                config=ServerBackupConfig(
+                    destination=request.backup_destination,
+                    schedule=request.backup_schedule,
+                    retention=request.backup_retention,
+                    age_recipient=recipient,
+                ),
+                observed_installed_backup=installed.backup,
+                encryption_source=encryption_source,
+            )
+        except BackupIdentityRefused as exc:
+            raise BackupConfigurationRefused(str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise BackupConfigurationRefused(
+                "RCP could not resolve the server-managed backup identity. Inspect /etc/rcp "
+                "and rerun the same command."
+            ) from exc
+
+    def persist_and_install(self, resolved: ResolvedBackupConfiguration) -> None:
+        config = resolved.config
+        try:
+            with backup_configuration_lock(self.layout):
+                recover_pending_backup_configuration(self.layout)
+                installed = load_installed_server_config(self.layout.config_path)
+                if installed.backup != resolved.observed_installed_backup:
+                    raise BackupConfigurationRefused(
+                        "The installed backup configuration changed after this command resolved "
+                        "it. Rerun the same command against the current configuration."
+                    )
+                _validate_configured_backup_identity(
+                    config,
+                    self.layout,
+                    age_keygen_executable=self.age_keygen_executable,
+                )
                 updated = InstalledServerConfig.model_validate(
                     {**installed.model_dump(mode="python"), "backup": config}
                 )
@@ -360,6 +490,8 @@ class LinuxBackupConfigurationMachine:
                 _clear_pending_backup_configuration(self.layout)
         except BackupConfigurationRefused:
             raise
+        except BackupIdentityRefused as exc:
+            raise BackupConfigurationRefused(str(exc)) from exc
         except InstallRefused as exc:
             raise BackupConfigurationRefused(str(exc)) from exc
         except (OSError, ValueError) as exc:
@@ -453,6 +585,7 @@ def recover_pending_backup_configuration(
         current = load_installed_server_config(layout.config_path)
         if pending.backup is None or _without_backup(pending) != _without_backup(current):
             raise ValueError("pending backup configuration does not match this installation")
+        _validate_configured_backup_identity(pending.backup, layout)
         fence_backup_timer_before_unit_change()
         _converge_installed_backup_configuration(pending, layout)
         _clear_pending_backup_configuration(layout)
@@ -479,6 +612,7 @@ def activate_configured_backup_timer(
             config = installed.backup
             if config is None:
                 return None
+            _validate_configured_backup_identity(config, layout)
             try:
                 return _readback_backup_configuration(config, layout, expected_enabled=True)
             except BackupConfigurationRefused:
@@ -584,6 +718,49 @@ def _pending_backup_configuration_path(layout: ServerLayout) -> Path:
 
 def _without_backup(config: InstalledServerConfig) -> InstalledServerConfig:
     return config.model_copy(update={"backup": None})
+
+
+def _validate_configured_backup_identity(
+    config: ServerBackupConfig,
+    layout: ServerLayout,
+    *,
+    age_keygen_executable: str = "age-keygen",
+) -> None:
+    identity = backup_identity_path(layout)
+    identity_exists = identity.exists() or identity.is_symlink()
+    if not identity_exists:
+        marker = backup_identity_recipient_path(layout)
+        if marker.exists() or marker.is_symlink():
+            try:
+                recorded = read_backup_identity_recipient_marker(
+                    marker,
+                    expected_owner=_root_ownership(),
+                )
+            except BackupIdentityRefused as exc:
+                raise BackupConfigurationRefused(str(exc)) from exc
+            if recorded == config.age_recipient:
+                raise BackupConfigurationRefused(
+                    "The retained server-managed backup identity is missing. Restore it before "
+                    "continuing backup configuration or activation."
+                )
+            raise BackupConfigurationRefused(
+                "The retained server-managed backup identity marker does not match the "
+                "configured recipient. Inspect /etc/rcp before continuing."
+            )
+        return
+    try:
+        observed = read_backup_identity_recipient(
+            identity,
+            age_keygen_executable=age_keygen_executable,
+            expected_owner=_root_ownership(),
+        )
+    except BackupIdentityRefused as exc:
+        raise BackupConfigurationRefused(str(exc)) from exc
+    if observed != config.age_recipient:
+        raise BackupConfigurationRefused(
+            "The server-managed backup identity does not match the configured recipient. "
+            "Restore the original identity before continuing."
+        )
 
 
 def _root_ownership() -> tuple[int, int]:
@@ -695,6 +872,7 @@ __all__ = [
     "BackupConfigurationReadback",
     "BackupConfigurationRefused",
     "LinuxBackupConfigurationMachine",
+    "ResolvedBackupConfiguration",
     "activate_configured_backup_timer",
     "backup_configuration_lock",
     "backup_service_unit_text",

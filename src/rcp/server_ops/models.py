@@ -287,7 +287,9 @@ class ServerCommandRequest(_StrictModel):
             if self.member_confirmed_boundary is not None:
                 expected.add("member_confirmed_boundary")
         elif self.command == "server restore":
-            expected = {"archive_path", "recovery_identity_file"}
+            expected = {"archive_path"}
+            if self.recovery_identity_file is not None:
+                expected.add("recovery_identity_file")
             if self.restore_confirmed_data_dir is not None:
                 expected.add("restore_confirmed_data_dir")
             optional_restore_fields = {
@@ -323,9 +325,10 @@ class ServerCommandRequest(_StrictModel):
                 "backup_destination",
                 "backup_schedule",
                 "backup_retention",
-                "backup_age_recipient",
                 "backup_confirmed",
             }
+            if self.backup_age_recipient is not None:
+                expected.add("backup_age_recipient")
             if self.backup_confirmed is not True:
                 raise ValueError("backup configure requires explicit confirmation")
         elif self.command == "server update":
