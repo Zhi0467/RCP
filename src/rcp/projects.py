@@ -710,7 +710,8 @@ class ProjectDeletionResult(BaseModel):
     removed_paper_snapshot: bool
 
 
-# Retained for candidate rehearsal compatibility with pre-team-deletion releases.
+# Retained for protocol-1 cards and candidate rehearsal compatibility with
+# pre-team-deletion releases.
 TEAM_PROJECT_DELETE_UNAVAILABLE_REASON = (
     "Team projects cannot be deleted here. A server operator must deprovision the "
     "managed checkout and Git deploy keys."
@@ -1378,15 +1379,23 @@ class ProjectCatalog:
             if old_compute_lock is not None:
                 self._compute_probe_locks.setdefault(canonical_project_id, old_compute_lock)
 
-    def cards(self) -> list[dict[str, object]]:
-        return [self._card(record) for record in self.store.projects()]
+    def cards(self, *, team_shell_protocol: int | None = None) -> list[dict[str, object]]:
+        return [
+            self._card(record, team_shell_protocol=team_shell_protocol)
+            for record in self.store.projects()
+        ]
 
-    def card(self, project_id: str) -> dict[str, object]:
+    def card(
+        self,
+        project_id: str,
+        *,
+        team_shell_protocol: int | None = None,
+    ) -> dict[str, object]:
         project_id = self._canonical_project_id(project_id)
         record = self.store.project(project_id)
         if record is None:
             raise KeyError(project_id)
-        return self._card(record)
+        return self._card(record, team_shell_protocol=team_shell_protocol)
 
     def state_host(self, project_id: str) -> str:
         """Read the registered state host without opening canonical history."""
@@ -2330,8 +2339,13 @@ class ProjectCatalog:
             temp.write_text(service.manifest.path.read_text(encoding="utf-8"), encoding="utf-8")
             os.replace(temp, locator)
 
-    def _card(self, record: ProjectRecord) -> dict[str, object]:
-        return {
+    def _card(
+        self,
+        record: ProjectRecord,
+        *,
+        team_shell_protocol: int | None,
+    ) -> dict[str, object]:
+        card: dict[str, object] = {
             "id": record.project_id,
             "home_space_id": record.home_space_id,
             "name": record.name,
@@ -2345,14 +2359,23 @@ class ProjectCatalog:
             "last_refresh_at": record.last_refresh_at,
             "reachable": record.reachable,
             "error": record.error,
-            "can_delete": True,
-            "delete_unavailable_reason": None,
-            "delete_confirmation": (
+        }
+        if self.store.space_kind == "team" and team_shell_protocol == 1:
+            card.update(
+                can_delete=False,
+                delete_unavailable_reason=TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+            )
+            return card
+        card.update(
+            can_delete=True,
+            delete_unavailable_reason=None,
+            delete_confirmation=(
                 TEAM_PROJECT_DELETE_CONFIRMATION
                 if self.store.space_kind == "team"
                 else PERSONAL_PROJECT_DELETE_CONFIRMATION
             ),
-        }
+        )
+        return card
 
 
 class ProjectDisplayCache:

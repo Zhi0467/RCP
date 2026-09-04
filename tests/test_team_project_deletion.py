@@ -8,7 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentLauncher
-from rcp.projects import ProjectCatalog
+from rcp.api.team_shell_protocol import TEAM_SHELL_PROTOCOL_HEADER
+from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON, ProjectCatalog
 from rcp.sources import ImportedProviderSourceStore, project_cache_roots
 from rcp.storage import AgentTaskRecord, ProjectActiveTaskConflict
 from rcp.transfer import TransferArchiveEntry
@@ -93,14 +94,60 @@ def test_team_delete_removes_rcp_state_and_preserves_checkout_and_key(tmp_path: 
     paper.parent.mkdir(parents=True, exist_ok=True)
     paper.write_text("paper snapshot\n", encoding="utf-8")
 
-    [card] = client.get("/api/projects").json()
+    [v1_card] = client.get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "1"}).json()
+    assert v1_card["id"] == project_id
+    assert v1_card["can_delete"] is False
+    assert v1_card["delete_unavailable_reason"] == TEAM_PROJECT_DELETE_UNAVAILABLE_REASON
+    assert "delete_confirmation" not in v1_card
+
+    v1_project = client.get(
+        f"/api/projects/{project_id}", headers={TEAM_SHELL_PROTOCOL_HEADER: "1"}
+    ).json()
+    assert v1_project["can_delete"] is False
+    assert v1_project["delete_unavailable_reason"] == TEAM_PROJECT_DELETE_UNAVAILABLE_REASON
+    assert "delete_confirmation" not in v1_project
+
+    [card] = client.get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "2"}).json()
     assert card["id"] == project_id
     assert card["can_delete"] is True
     assert card["delete_unavailable_reason"] is None
     assert "server-managed checkout and repository deploy key remain" in card["delete_confirmation"]
     assert "credentials are not revoked" in card["delete_confirmation"]
 
-    deleted = client.delete(f"/api/projects/{project_id}")
+    protocol_two_project = client.get(
+        f"/api/projects/{project_id}", headers={TEAM_SHELL_PROTOCOL_HEADER: "2"}
+    ).json()
+    assert protocol_two_project["can_delete"] is True
+    assert protocol_two_project["delete_unavailable_reason"] is None
+    assert protocol_two_project["delete_confirmation"] == card["delete_confirmation"]
+
+    [headerless_card] = client.get("/api/projects").json()
+    assert headerless_card == card
+    headerless_project = client.get(f"/api/projects/{project_id}").json()
+    assert headerless_project["can_delete"] is True
+    assert headerless_project["delete_unavailable_reason"] is None
+    assert headerless_project["delete_confirmation"] == card["delete_confirmation"]
+
+    mismatch = client.get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "3"})
+    assert mismatch.status_code == 426
+    assert mismatch.json()["detail"]["code"] == "team_shell_protocol_mismatch"
+    assert mismatch.json()["detail"]["server_protocol"] == {"minimum": 1, "maximum": 2}
+
+    refused = client.delete(
+        f"/api/projects/{project_id}", headers={TEAM_SHELL_PROTOCOL_HEADER: "1"}
+    )
+    assert refused.status_code == 426
+    assert refused.json()["detail"] == {
+        "code": "team_shell_protocol_mismatch",
+        "message": "Team project deletion requires team-shell protocol 2.",
+        "server_protocol": {"minimum": 1, "maximum": 2},
+        "action": "Update and rebuild RCP desktop from current origin/main.",
+    }
+    assert store.project(project_id) is not None
+
+    deleted = client.delete(
+        f"/api/projects/{project_id}", headers={TEAM_SHELL_PROTOCOL_HEADER: "2"}
+    )
 
     assert deleted.status_code == 200, deleted.text
     assert deleted.json()["project_id"] == project_id

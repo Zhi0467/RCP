@@ -27,7 +27,10 @@ from rcp.api.episodes import (
 )
 from rcp.api.experiment_controls import ExperimentControlResponse, _experiment_control_response
 from rcp.api.identity import IdentityAccess
-from rcp.api.team_shell_protocol import acknowledge_team_shell_protocol
+from rcp.api.team_shell_protocol import (
+    acknowledge_team_shell_protocol,
+    team_shell_protocol_mismatch,
+)
 from rcp.core.models import Experiment, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.keyed_locks import KeyedLocks
@@ -140,9 +143,13 @@ def projects(
     identity_access: IdentityDependency,
     store: StoreDependency,
 ) -> list[dict[str, object]]:
-    acknowledge_team_shell_protocol(request, response)
+    selected_protocol = acknowledge_team_shell_protocol(request, response)
     visible = store.member_project_ids(identity_access.acting_user(request).user_id)
-    return [card for card in catalog.cards() if card["id"] in visible]
+    return [
+        card
+        for card in catalog.cards(team_shell_protocol=selected_protocol)
+        if card["id"] in visible
+    ]
 
 
 @router.get("/api/episodes", response_model=list[ExperimentLoopIndexEntryResponse])
@@ -644,10 +651,19 @@ def register_project(
 @membership_router.delete("/api/projects/{project_id}")
 def delete_project(
     project_id: str,
+    request: Request,
+    response: Response,
     *,
     catalog: CatalogDependency,
+    store: StoreDependency,
     experiment_operation_lock: ExperimentOperationLockDependency,
 ) -> dict[str, object]:
+    selected_protocol = acknowledge_team_shell_protocol(request, response)
+    if store.space_kind == "team" and selected_protocol == 1:
+        raise team_shell_protocol_mismatch(
+            message="Team project deletion requires team-shell protocol 2.",
+            action="Update and rebuild RCP desktop from current origin/main.",
+        )
     try:
         canonical = catalog.resolve_project_id(project_id)
         with experiment_operation_lock(canonical):

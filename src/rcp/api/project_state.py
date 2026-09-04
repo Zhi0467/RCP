@@ -20,6 +20,7 @@ from rcp.api.dependencies import (
     require_registered_project,
 )
 from rcp.api.identity import IdentityAccess
+from rcp.api.team_shell_protocol import acknowledge_team_shell_protocol
 from rcp.background import BackgroundAgentTasks
 from rcp.config import load_manifest
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
@@ -98,18 +99,28 @@ def _project_snapshot(
 @router.get("/api/projects/{project_id}")
 async def project(
     project_id: str,
+    request: Request,
+    response: Response,
     *,
     project_display_cache: DisplayCacheDependency,
     catalog: CatalogDependency,
 ) -> dict[str, object]:
+    selected_protocol = acknowledge_team_shell_protocol(request, response)
     try:
-        return await asyncio.to_thread(
+        snapshot = await asyncio.to_thread(
             _project_snapshot,
             project_id,
             project_display_cache,
             catalog,
         )
-    except _ProjectSnapshotNotFound as exc:
+        deletion = catalog.card(project_id, team_shell_protocol=selected_protocol)
+        for field in ("can_delete", "delete_unavailable_reason", "delete_confirmation"):
+            if field in deletion:
+                snapshot[field] = deletion[field]
+            else:
+                snapshot.pop(field, None)
+        return snapshot
+    except (_ProjectSnapshotNotFound, KeyError) as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except _ProjectSnapshotUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

@@ -85,7 +85,7 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
         "owner_kind": "desktop",
         "running_commit": None,
         "web_build_id": None,
-        "team_shell_protocol": {"minimum": 1, "maximum": 1},
+        "team_shell_protocol": {"minimum": 1, "maximum": 2},
         "active_agent_tasks": 0,
         "projects": 0,
         "agent_mode": "provider",
@@ -130,7 +130,7 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
     }
 
 
-def test_team_shell_protocol_one_fixture_matches_the_advertised_contract(tmp_path) -> None:
+def test_team_shell_protocol_one_fixture_remains_supported(tmp_path) -> None:
     fixture = json.loads(
         (Path(__file__).parent / "fixtures" / "team_shell_protocol_v1.json").read_text(
             encoding="utf-8"
@@ -142,14 +142,11 @@ def test_team_shell_protocol_one_fixture_matches_the_advertised_contract(tmp_pat
         advertised = client.get("/api/health").json()[fixture["health_field"]]
 
     assert fixture["schema_version"] == fixture["protocol_version"] == 1
-    assert (
-        advertised
-        == fixture["advertised_range"]
-        == {
-            "minimum": TEAM_SHELL_PROTOCOL_MINIMUM,
-            "maximum": TEAM_SHELL_PROTOCOL_MAXIMUM,
-        }
-    )
+    assert advertised == {
+        "minimum": TEAM_SHELL_PROTOCOL_MINIMUM,
+        "maximum": TEAM_SHELL_PROTOCOL_MAXIMUM,
+    }
+    assert fixture["advertised_range"] == {"minimum": 1, "maximum": 1}
     assert fixture["selection_header"] == TEAM_SHELL_PROTOCOL_HEADER
     assert fixture["mismatch"] == {
         "status": TEAM_SHELL_PROTOCOL_MISMATCH_STATUS,

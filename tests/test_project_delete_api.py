@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from rcp.api.dependencies import get_project_service
+from rcp.api.team_shell_protocol import TEAM_SHELL_PROTOCOL_HEADER
 from rcp.keyed_locks import KeyedLocks
 from rcp.storage import AgentTaskRecord
 
@@ -32,6 +33,10 @@ def test_delete_project_route_refuses_active_task(manifest, tmp_path) -> None:
     assert card["can_delete"] is True
     assert card["delete_unavailable_reason"] is None
     assert "server-managed checkout" not in card["delete_confirmation"]
+    [v1_card] = (
+        TestClient(app).get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "1"}).json()
+    )
+    assert v1_card == card
     now = app.state.background_tasks.store.now()
     app.state.background_tasks.store.create_agent_task(
         AgentTaskRecord(

@@ -26,7 +26,7 @@ let identityNameRequiredHandler: IdentityNameRequiredHandler | null = null;
 let pinnedInstanceId: string | null = null;
 
 export const TEAM_SHELL_PROTOCOL_HEADER = "RCP-Team-Shell-Protocol";
-export const TEAM_SHELL_PROTOCOL_VERSION = 1;
+export const TEAM_SHELL_PROTOCOL_VERSION = 2;
 
 export class ApiError extends Error {
   readonly status: number;
