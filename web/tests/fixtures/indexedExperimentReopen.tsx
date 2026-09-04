@@ -139,6 +139,48 @@ const entry = {
   control,
   episode,
 };
+const parentEpisode = {
+  episode_id: parentEpisodeId,
+  project_id: projectId,
+  mode: "auto_research",
+  control_node_id: null,
+  graph_target: { kind: "branch", branch_id: parentEpisodeId },
+  graph_base_head: null,
+  graph_branch: null,
+  root_operation_id: "parent-turn",
+  current_operation_id: null,
+  current_orchestrator_task_id: null,
+  current_control_task_id: null,
+  recovery: null,
+  status: "needs_action",
+  starting_instruction: null,
+  budget: {
+    invocation_ceiling: 5,
+    invocations_used: 1,
+    invocations_remaining: 4,
+    observed_input_tokens: 0,
+    observed_generated_tokens: 0,
+  },
+  authorized_by: null,
+  stop_requested_at: null,
+  ending: "human_pause",
+  ending_diagnostic: null,
+  wrapup_state: "legacy_unavailable",
+  wrapup_error: null,
+  created_at: "2026-09-03T11:00:00Z",
+  updated_at: "2026-09-03T13:00:00Z",
+  ended_at: "2026-09-03T13:00:00Z",
+  tasks: [],
+  report: null,
+  can_stop: false,
+  can_reauthorize: false,
+  can_message: false,
+  live: false,
+  health: "needs_action",
+  recommendation: "review",
+  task_control: null,
+  run_section: "needs_action",
+};
 
 function Fixture() {
   const [selectedExperimentId, setSelectedExperimentId] = useState<string | null>(experimentId);
@@ -157,7 +199,7 @@ function Fixture() {
         replay_failure: null,
         ontology: { types: [], fields: [], relations: [] },
       }}
-      episodes={[]}
+      episodes={[parentEpisode] as never}
       episodeMessages={{}}
       episodeAction={null}
       tasks={[]}
@@ -175,6 +217,7 @@ function Fixture() {
       exactExperimentEntry={entry as never}
       selectedExperimentId={selectedExperimentId}
       focusExperimentId={null}
+      selectedAutoResearchEpisodeId={parentEpisodeId}
       runBusy={false}
       stopBusyId={null}
       watcherCheckBusyId={null}

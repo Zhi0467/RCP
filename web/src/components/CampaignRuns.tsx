@@ -36,6 +36,7 @@ export function AutoResearchEpisodeCard({
   busyAction,
   taskActionId,
   childExperiments = [],
+  onOpenExperimentEntry,
   onInspectTask,
   onLoadMessages,
   onStop,
@@ -52,6 +53,7 @@ export function AutoResearchEpisodeCard({
   busyAction: string | null;
   taskActionId: string | null;
   childExperiments?: ExperimentLoopIndexEntry[];
+  onOpenExperimentEntry: (entry: ExperimentLoopIndexEntry) => void;
   onInspectTask: (operationId: string) => void;
   onLoadMessages: (episodeId: string) => Promise<void>;
   onStop: (episodeId: string) => Promise<void>;
@@ -402,6 +404,7 @@ export function AutoResearchEpisodeCard({
                           entry.project_id,
                           experimentBoardRouteToken(entry),
                         )}
+                        onClick={() => onOpenExperimentEntry(entry)}
                       >
                         <span className="campaign-task-role experiment">Experiment</span>
                         <span className="campaign-task-copy">

@@ -45,6 +45,20 @@ test("reopening an indexed Experiment restores selection when its exact hash is 
     await page.getByText("Selected child transcript").waitFor();
     assert.equal(await page.evaluate(() => window.location.hash), exactHash);
     assert.equal(await page.evaluate(() => window.hashChangesAfterCollapse), 0);
+
+    await page
+      .getByRole("button", { name: "Collapse Experiment loop episode Reproduce the baseline" })
+      .click();
+    assert.equal(await page.getByText("Selected child transcript").count(), 0);
+
+    await page
+      .getByRole("region", { name: "Episode turns" })
+      .getByRole("link", { name: /Reproduce the baseline/ })
+      .click();
+
+    await page.getByText("Selected child transcript").waitFor();
+    assert.equal(await page.evaluate(() => window.location.hash), exactHash);
+    assert.equal(await page.evaluate(() => window.hashChangesAfterCollapse), 0);
   } finally {
     await browser?.close();
     await server.close();

@@ -1072,6 +1072,10 @@ export function ExecutionView({
           busyAction={episodeAction}
           taskActionId={taskActionId}
           childExperiments={childExperimentsByParent.get(episode.episode_id) ?? []}
+          onOpenExperimentEntry={(entry) => {
+            onSelectExperiment(entry.node.id);
+            onOpenExperimentEntry(entry);
+          }}
           onInspectTask={onInspectTask}
           onLoadMessages={onLoadEpisodeMessages}
           onStop={onStopEpisode}
