@@ -24,7 +24,9 @@ const {
   ACTIVE_PROJECT_CACHE_OBSERVE_INTERVAL_MS,
   OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
   cacheProjectTabState,
+  experimentLoopRefreshIsCurrent,
   inactiveProjectTabState,
+  mergeProjectExperimentLoops,
   projectIdsForCacheHeartbeat,
   projectTabStateForOpen,
   singleFlightProjectCacheHeartbeat,
@@ -70,6 +72,49 @@ test("the per-project display cache is bounded and refreshed as an LRU", () => {
 
   assert.deepEqual([...cache.keys()], ["alpha", "gamma"]);
   assert.deepEqual(cache.get("alpha"), { revision: 3 });
+});
+
+test("a scoped Experiment refresh replaces only that project's entries", () => {
+  const alphaOld = { project_id: "alpha", episode: { episode_id: "alpha-old" } };
+  const beta = { project_id: "beta", episode: { episode_id: "beta-current" } };
+  const alphaNew = { project_id: "alpha", episode: { episode_id: "alpha-new" } };
+
+  assert.deepEqual(mergeProjectExperimentLoops([alphaOld, beta], "alpha", [alphaNew]), [
+    beta,
+    alphaNew,
+  ]);
+});
+
+test("an older scoped Experiment poll cannot overwrite a newer global refresh", async () => {
+  const active = [{ project_id: "alpha", episode: { episode_id: "active" } }];
+  const stopped = [{ project_id: "alpha", episode: { episode_id: "stopped" } }];
+  let experimentLoops = [];
+  let refreshGeneration = 0;
+  let resolveScoped;
+  const refresh = async (loadEntries, projectId = null) => {
+    const responseGeneration = ++refreshGeneration;
+    const nextEntries = await loadEntries();
+    if (experimentLoopRefreshIsCurrent(responseGeneration, refreshGeneration)) {
+      experimentLoops = projectId
+        ? mergeProjectExperimentLoops(experimentLoops, projectId, nextEntries)
+        : nextEntries;
+    }
+    return nextEntries;
+  };
+
+  const scopedRefresh = refresh(
+    () =>
+      new Promise((resolve) => {
+        resolveScoped = () => resolve(active);
+      }),
+    "alpha",
+  );
+  await Promise.resolve();
+  assert.deepEqual(await refresh(async () => stopped), stopped);
+
+  resolveScoped();
+  assert.deepEqual(await scopedRefresh, active);
+  assert.deepEqual(experimentLoops, stopped);
 });
 
 test("a cached response cannot move the rendered project backwards", () => {

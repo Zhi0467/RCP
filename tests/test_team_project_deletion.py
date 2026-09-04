@@ -126,6 +126,10 @@ def test_team_delete_removes_rcp_state_and_preserves_checkout_and_key(tmp_path: 
         "action": "Update and rebuild RCP desktop from current origin/main.",
     }
     assert store.project(project_id) is not None
+    headerless = client.delete(f"/api/projects/{project_id}")
+    assert headerless.status_code == 426
+    assert headerless.json()["detail"]["code"] == "team_shell_protocol_mismatch"
+    assert store.project(project_id) is not None
 
     deleted = client.delete(
         f"/api/projects/{project_id}", headers={TEAM_SHELL_PROTOCOL_HEADER: "2"}
@@ -263,7 +267,9 @@ def test_team_delete_removes_invitation_transfer_and_provisioning_history(
         ):
             connection.execute(f"INSERT INTO {table}(campaign_id) VALUES ('legacy')")
 
-    deleted = client.delete(f"/api/projects/{project_id}")
+    deleted = client.delete(
+        f"/api/projects/{project_id}", headers={TEAM_SHELL_PROTOCOL_HEADER: "2"}
+    )
 
     assert deleted.status_code == 200, deleted.text
     acting[0] = invitee.user_id
@@ -324,7 +330,9 @@ def test_team_delete_refuses_an_active_task_before_touching_the_checkout(tmp_pat
         )
     )
 
-    refused = client.delete(f"/api/projects/{project_id}")
+    refused = client.delete(
+        f"/api/projects/{project_id}", headers={TEAM_SHELL_PROTOCOL_HEADER: "2"}
+    )
 
     assert refused.status_code == 409
     assert refused.json()["detail"] == ("Pause the active agent task before deleting this project.")

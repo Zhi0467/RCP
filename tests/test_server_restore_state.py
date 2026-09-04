@@ -259,15 +259,7 @@ def test_restore_cli_pauses_with_the_exact_confirmed_destination(tmp_path: Path)
         def __getattr__(self, name: str):
             raise AssertionError(f"restore work began before destination confirmation: {name}")
 
-    arguments = build_parser().parse_args(
-        (
-            "server",
-            "restore",
-            "/backups/lab.age",
-            "--identity-file",
-            "/safe/identity.txt",
-        )
-    )
+    arguments = build_parser().parse_args(("server", "restore", "/backups/lab.age"))
     output = StringIO()
     identity = CallerIdentity(uid=0, username="root", host="lab.example")
 
@@ -281,6 +273,7 @@ def test_restore_cli_pauses_with_the_exact_confirmed_destination(tmp_path: Path)
             caller,
             machine=PlanOnlyMachine(),  # type: ignore[arg-type]
             resume_executable=Path("/usr/local/bin/rcp"),
+            default_identity_file=tmp_path / "etc" / "rcp" / "backup-recovery.agekey",
         ),
     )
 
@@ -288,6 +281,7 @@ def test_restore_cli_pauses_with_the_exact_confirmed_destination(tmp_path: Path)
     rendered = output.getvalue()
     assert str(tmp_path / "configured-data") in rendered
     assert "--confirm-data-dir" in rendered
+    assert str(tmp_path / "etc" / "rcp" / "backup-recovery.agekey") in rendered
     assert "AGE-SECRET-KEY" not in rendered
 
 

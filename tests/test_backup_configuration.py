@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import subprocess
+import tomllib
 from contextlib import nullcontext
 from io import StringIO
 from pathlib import Path
@@ -19,10 +20,12 @@ from rcp.server_ops.backup_config import (
     BackupConfigurationReadback,
     BackupConfigurationRefused,
     LinuxBackupConfigurationMachine,
+    ResolvedBackupConfiguration,
     backup_service_unit_text,
     prepare_backup_configure_command,
     render_backup_timer_unit,
 )
+from rcp.server_ops.backup_identity import backup_identity_recipient_path
 from rcp.server_ops.cli import CallerIdentity, run_server_command
 from rcp.server_ops.config import (
     SERVER_CONFIG_SCHEMA_VERSION,
@@ -35,6 +38,7 @@ from rcp.server_ops.config import (
 )
 
 AGE_RECIPIENT = "age1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusqmwn7f2"
+OTHER_RECIPIENT = "age1qgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpquuzgag"
 INSTALLATION_ID = "70994440-4c57-41b0-a2f6-8878856db969"
 ROOT_IDENTITY = CallerIdentity(uid=0, username="root", host="lab.example")
 
@@ -63,43 +67,76 @@ def _installed(*, backup: ServerBackupConfig | None = None) -> InstalledServerCo
     )
 
 
-def _argv(*, schedule: str = "02:00", retention: int = 30) -> list[str]:
-    return [
+def _resolved(
+    config: ServerBackupConfig,
+    *,
+    observed_installed_backup: ServerBackupConfig | None = None,
+    encryption_source: str = "server-managed",
+) -> ResolvedBackupConfiguration:
+    return ResolvedBackupConfiguration(
+        config=config,
+        observed_installed_backup=observed_installed_backup,
+        encryption_source=encryption_source,
+    )
+
+
+def _argv(
+    *,
+    schedule: str = "02:00",
+    retention: int = 30,
+    recipient: str | None = None,
+) -> list[str]:
+    argv = [
         "server",
         "backup",
         "configure",
         "--destination",
         "/srv/rcp-backups",
-        "--recipient",
-        AGE_RECIPIENT,
         "--schedule",
         schedule,
         "--retention",
         str(retention),
         "--confirm",
     ]
+    if recipient is not None:
+        argv[5:5] = ["--recipient", recipient]
+    return argv
 
 
 class RecordingMachine:
     def __init__(self, *, fail_at: str | None = None) -> None:
-        self.calls: list[tuple[str, ServerBackupConfig]] = []
+        self.calls: list[str] = []
         self.fail_at = fail_at
 
-    def _call(self, name: str, config: ServerBackupConfig) -> None:
-        self.calls.append((name, config))
+    def _call(self, name: str) -> None:
+        self.calls.append(name)
         if self.fail_at == name:
             raise BackupConfigurationRefused(
                 f"Focused {name} refusal; correct the machine and rerun the same command."
             )
 
-    def validate_destination(self, config: ServerBackupConfig) -> None:
-        self._call("validate_destination", config)
+    def validate_destination(self, destination: str) -> None:
+        assert destination == "/srv/rcp-backups"
+        self._call("validate_destination")
 
-    def persist_and_install(self, config: ServerBackupConfig) -> None:
-        self._call("persist_and_install", config)
+    def resolve_config(self, request) -> ResolvedBackupConfiguration:
+        self._call("resolve_config")
+        return _resolved(
+            _settings(
+                age_recipient=request.backup_age_recipient or AGE_RECIPIENT,
+            ),
+            encryption_source=(
+                "server-managed" if request.backup_age_recipient is None else "external-recipient"
+            ),
+        )
+
+    def persist_and_install(self, resolved: ResolvedBackupConfiguration) -> None:
+        assert resolved.config == _settings()
+        assert resolved.encryption_source == "server-managed"
+        self._call("persist_and_install")
 
     def readback(self, config: ServerBackupConfig) -> BackupConfigurationReadback:
-        self._call("readback", config)
+        self._call("readback")
         return BackupConfigurationReadback(
             config=config,
             timer_active_state="active",
@@ -131,7 +168,6 @@ def test_backup_configure_is_one_explicit_copyable_request() -> None:
             "backup_destination": "/srv/rcp-backups",
             "backup_schedule": "03:17",
             "backup_retention": 45,
-            "backup_age_recipient": AGE_RECIPIENT,
             "backup_confirmed": True,
         }
     )
@@ -139,7 +175,7 @@ def test_backup_configure_is_one_explicit_copyable_request() -> None:
     assert request.backup_destination == "/srv/rcp-backups"
     assert request.backup_schedule == "03:17"
     assert request.backup_retention == 45
-    assert request.backup_age_recipient == AGE_RECIPIENT
+    assert request.backup_age_recipient is None
     assert request.backup_confirmed is True
 
 
@@ -156,8 +192,6 @@ def test_backup_configure_is_one_explicit_copyable_request() -> None:
             "configure",
             "--destination",
             "relative",
-            "--recipient",
-            AGE_RECIPIENT,
             "--confirm",
         ],
         [
@@ -196,8 +230,9 @@ def test_interactive_and_structured_renderers_execute_the_same_policy() -> None:
 
     assert interactive_code == structured_code == 0
     assert interactive_machine.calls == structured_machine.calls
-    assert [name for name, _config in interactive_machine.calls] == [
+    assert interactive_machine.calls == [
         "validate_destination",
+        "resolve_config",
         "persist_and_install",
         "readback",
     ]
@@ -210,6 +245,7 @@ def test_interactive_and_structured_renderers_execute_the_same_policy() -> None:
         {"name": "schedule", "value": "02:00"},
         {"name": "retention", "value": 30},
         {"name": "age_recipient", "value": AGE_RECIPIENT},
+        {"name": "encryption_source", "value": "server-managed"},
         {"name": "timer_active_state", "value": "active"},
         {"name": "timer_unit_file_state", "value": "enabled"},
     ]
@@ -221,11 +257,22 @@ def test_known_failure_stops_before_later_configuration_steps() -> None:
     exit_code, output = _run(machine, machine_readable=False)
 
     assert exit_code == 1
-    assert [name for name, _config in machine.calls] == [
+    assert machine.calls == [
         "validate_destination",
+        "resolve_config",
         "persist_and_install",
     ]
     assert "Focused persist_and_install refusal" in output
+
+
+def test_identity_resolution_failure_stops_before_configuration_publication() -> None:
+    machine = RecordingMachine(fail_at="resolve_config")
+
+    exit_code, output = _run(machine, machine_readable=False)
+
+    assert exit_code == 1
+    assert machine.calls == ["validate_destination", "resolve_config"]
+    assert "Focused resolve_config refusal" in output
 
 
 def test_backup_section_round_trips_and_legacy_v1_loads_unconfigured() -> None:
@@ -237,6 +284,12 @@ def test_backup_section_round_trips_and_legacy_v1_loads_unconfigured() -> None:
     assert "[backup]" in rendered
     assert 'schedule = "03:17"' in rendered
     assert "retention = 45" in rendered
+    assert set(tomllib.loads(rendered)["backup"]) == {
+        "destination",
+        "schedule",
+        "retention",
+        "age_recipient",
+    }
     assert "AGE-SECRET-KEY" not in rendered
 
     legacy = render_installed_server_config(_installed()).replace(
@@ -304,9 +357,7 @@ def test_destination_probe_uses_the_rcp_account_and_bounded_internal_helper(
         return subprocess.CompletedProcess(argv, 0)
 
     monkeypatch.setattr(backup_owner.subprocess, "run", fake_run)
-    config = _settings(destination=str(tmp_path))
-
-    machine.validate_destination(config)
+    machine.validate_destination(str(tmp_path))
 
     assert calls == [
         (
@@ -414,16 +465,57 @@ def test_pending_configuration_recovers_before_a_new_request(
     machine = LinuxBackupConfigurationMachine(layout)
 
     with pytest.raises(BackupConfigurationRefused, match="could not finish publishing"):
-        machine.persist_and_install(first)
+        machine.persist_and_install(_resolved(first))
     pending = backup_owner._pending_backup_configuration_path(layout)
     assert pending.is_file()
     assert config_owner.load_installed_server_config(config_path).backup is None
 
-    machine.persist_and_install(second)
+    machine.persist_and_install(_resolved(second, observed_installed_backup=first))
 
     assert converged == [first, first, second]
     assert config_owner.load_installed_server_config(config_path).backup == second
     assert not pending.exists()
+
+
+def test_pending_server_identity_is_validated_before_recovery_mutates_units(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    layout = SimpleNamespace(
+        config_path=tmp_path / "etc" / "rcp" / "server.toml",
+        systemd_unit=tmp_path / "etc" / "systemd" / "system" / "rcp.service",
+    )
+    layout.config_path.parent.mkdir(parents=True)
+    ownership = (os.getuid(), os.getgid())
+    monkeypatch.setattr(config_owner, "_expected_config_ownership", lambda: ownership)
+    monkeypatch.setattr(backup_owner, "_root_ownership", lambda: ownership)
+    current = _installed()
+    pending = _installed(backup=_settings())
+    config_owner.write_installed_server_config(current, layout.config_path)
+    config_owner.write_installed_server_config(
+        pending,
+        backup_owner._pending_backup_configuration_path(layout),
+    )
+    marker = backup_identity_recipient_path(layout)
+    marker.write_text(f"{AGE_RECIPIENT}\n", encoding="ascii")
+    marker.chmod(0o644)
+    mutations: list[str] = []
+    monkeypatch.setattr(
+        backup_owner,
+        "fence_backup_timer_before_unit_change",
+        lambda: mutations.append("fence"),
+    )
+    monkeypatch.setattr(
+        backup_owner,
+        "_converge_installed_backup_configuration",
+        lambda *_args: mutations.append("converge"),
+    )
+
+    with pytest.raises(BackupConfigurationRefused, match="identity is missing"):
+        backup_owner.recover_pending_backup_configuration(layout)
+
+    assert mutations == []
+    assert backup_owner._pending_backup_configuration_path(layout).is_file()
 
 
 def test_failed_pre_fence_mutates_neither_journal_nor_units(
@@ -466,8 +558,99 @@ def test_failed_pre_fence_mutates_neither_journal_nor_units(
     )
 
     with pytest.raises(BackupConfigurationRefused, match="could not be stopped"):
-        LinuxBackupConfigurationMachine(layout).persist_and_install(_settings())
+        LinuxBackupConfigurationMachine(layout).persist_and_install(_resolved(_settings()))
     assert mutations == []
+
+
+def test_server_managed_identity_must_still_exist_before_publication(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    layout = SimpleNamespace(
+        config_path=tmp_path / "etc" / "rcp" / "server.toml",
+        systemd_unit=tmp_path / "etc" / "systemd" / "system" / "rcp.service",
+    )
+    layout.config_path.parent.mkdir(parents=True)
+    ownership = (os.getuid(), os.getgid())
+    marker = backup_identity_recipient_path(layout)
+    marker.write_text(f"{AGE_RECIPIENT}\n", encoding="ascii")
+    marker.chmod(0o644)
+    mutations: list[str] = []
+    monkeypatch.setattr(backup_owner, "_root_ownership", lambda: ownership)
+    monkeypatch.setattr(
+        backup_owner,
+        "backup_configuration_lock",
+        lambda _layout: nullcontext(),
+    )
+    monkeypatch.setattr(
+        backup_owner,
+        "recover_pending_backup_configuration",
+        lambda _layout: None,
+    )
+    monkeypatch.setattr(
+        backup_owner,
+        "load_installed_server_config",
+        lambda _path: _installed(),
+    )
+    monkeypatch.setattr(
+        backup_owner,
+        "fence_backup_timer_before_unit_change",
+        lambda: mutations.append("fence"),
+    )
+
+    with pytest.raises(BackupConfigurationRefused, match="identity is missing"):
+        LinuxBackupConfigurationMachine(layout).persist_and_install(_resolved(_settings()))
+
+    assert mutations == []
+
+
+def test_publication_refuses_when_installed_backup_changed_after_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "etc" / "rcp" / "server.toml"
+    config_path.parent.mkdir(parents=True)
+    layout = SimpleNamespace(
+        config_path=config_path,
+        systemd_unit=tmp_path / "etc" / "systemd" / "system" / "rcp.service",
+    )
+    ownership = (os.getuid(), os.getgid())
+    monkeypatch.setattr(config_owner, "_expected_config_ownership", lambda: ownership)
+    monkeypatch.setattr(backup_owner, "_root_ownership", lambda: ownership)
+    monkeypatch.setattr(backup_owner, "fence_backup_timer_before_unit_change", lambda: None)
+    monkeypatch.setattr(
+        backup_owner,
+        "_converge_installed_backup_configuration",
+        lambda installed, actual_layout: config_owner.write_installed_server_config(
+            installed, actual_layout.config_path
+        ),
+    )
+    config_owner.write_installed_server_config(_installed(), config_path)
+    machine = LinuxBackupConfigurationMachine(layout)
+
+    def request(recipient: str):
+        return backup_owner.ServerCommandRequest.model_validate(
+            {
+                "command": "server backup configure",
+                "backup_destination": "/srv/rcp-backups",
+                "backup_schedule": "02:00",
+                "backup_retention": 30,
+                "backup_age_recipient": recipient,
+                "backup_confirmed": True,
+            }
+        )
+
+    first = machine.resolve_config(request(AGE_RECIPIENT))
+    second = machine.resolve_config(request(OTHER_RECIPIENT))
+    assert first.observed_installed_backup is second.observed_installed_backup is None
+
+    machine.persist_and_install(first)
+    with pytest.raises(BackupConfigurationRefused, match="changed.*Rerun the same command"):
+        machine.persist_and_install(second)
+
+    installed = config_owner.load_installed_server_config(config_path)
+    assert installed.backup == first.config
+    assert installed.backup.age_recipient == AGE_RECIPIENT
 
 
 def test_persist_preserves_identity_and_activates_only_after_first_backup(
@@ -548,7 +731,7 @@ def test_persist_preserves_identity_and_activates_only_after_first_backup(
         lambda _layout: events.append("clear"),
     )
 
-    machine.persist_and_install(config)
+    machine.persist_and_install(_resolved(config))
 
     assert len(writes) == 1
     assert writes[0].installation_id == INSTALLATION_ID

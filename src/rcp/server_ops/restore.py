@@ -51,6 +51,7 @@ from rcp.server_ops._local_primitives import (
     normalized_absolute_non_root_path as _absolute,
 )
 from rcp.server_ops.backup import BACKUP_ARCHIVE_FORMAT, require_age_1x
+from rcp.server_ops.backup_identity import backup_identity_path
 from rcp.server_ops.backup_integrity import (
     canonical_backup_manifest_bytes,
     database_schema_sha256,
@@ -804,13 +805,19 @@ def prepare_restore_command(
     *,
     machine: RestoreMachine | None = None,
     resume_executable: Path = DEFAULT_SERVER_LAYOUT.cli_wrapper,
+    default_identity_file: Path | None = None,
 ) -> PreparedServerCommand:
-    if (
-        request.command != "server restore"
-        or request.archive_path is None
-        or request.recovery_identity_file is None
-    ):
+    if request.command != "server restore" or request.archive_path is None:
         raise ValueError("prepare_restore_command requires one complete server restore request")
+    if request.recovery_identity_file is None:
+        request = ServerCommandRequest.model_validate(
+            {
+                **request.model_dump(mode="python"),
+                "recovery_identity_file": str(
+                    default_identity_file or backup_identity_path(DEFAULT_SERVER_LAYOUT)
+                ),
+            }
+        )
     resolved_machine = machine or LinuxRestoreMachine()
     data_dir = resolved_machine.configured_data_dir()
     plan = ServerPlanEvent(

@@ -44,7 +44,11 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (!headers.has("Content-Type") && !(init?.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
-  if (path === "/api/projects" || path === "/api/team/session/exchange") {
+  if (
+    path === "/api/projects" ||
+    path === "/api/team/session/exchange" ||
+    (init?.method === "DELETE" && /^\/api\/projects\/[^/]+$/.test(path))
+  ) {
     headers.set(TEAM_SHELL_PROTOCOL_HEADER, String(TEAM_SHELL_PROTOCOL_VERSION));
   }
   if (mutation && pinnedInstanceId) headers.set("X-RCP-Instance-ID", pinnedInstanceId);
@@ -284,6 +288,14 @@ export function loadEpisodes(
 
 export function loadExperimentEpisodes(): Promise<ExperimentLoopIndexEntry[]> {
   return api<ExperimentLoopIndexEntry[]>("/api/episodes?mode=experiment_loop");
+}
+
+export function loadProjectExperimentEpisodes(
+  projectId: string,
+): Promise<ExperimentLoopIndexEntry[]> {
+  return api<ExperimentLoopIndexEntry[]>(
+    `/api/projects/${encodeURIComponent(projectId)}/experiment-episodes?mode=experiment_loop`,
+  );
 }
 
 export function loadSpaceRuns(): Promise<SpaceRunIndexEntry[]> {

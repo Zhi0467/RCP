@@ -5,9 +5,11 @@ Status: active. Design, grilling, and all planned implementation packets are
 complete. The two-release disposable server lifecycle and fresh-host restore
 qualification pass. A persistent Ubuntu 22.04 lab server now passes clean
 source install, continuous update, member enrollment, provider readiness, and
-real GitHub-backed project creation. The two-member desktop switching, first
-task, SSH execution target, backup/restore, transfer, and complete one-lab
-closure drive remain.
+real GitHub-backed project creation. Backup setup is one root CLI operation with
+a retained server-managed recovery identity by default; its live concurrent
+drive remains. The two-member desktop switching, first task, SSH execution
+target, broader backup/restore, transfer, and complete one-lab closure drive
+remain.
 
 ### Packet status
 
@@ -548,7 +550,7 @@ that a record already owns.
   previous release, verifies the restored service, and reports both commits in
   CLI output, server status, and a durable receipt. Never reset changes,
   force-pull, roll back silently, or switch to a package. This update checkpoint
-  is not the encrypted off-server backup.
+  is not the encrypted protected backup.
 - Source-built service operation is stable and non-reloading. `--reload` remains
   a developer command, not the team service.
 
@@ -724,7 +726,10 @@ that a record already owns.
 - Destination, `age` public recipient, schedule, and retention live in one
   strict versioned installed-server config file, not SQLite. The file is
   root-owned, readable by `rcp`, contains no private recovery identity, and is
-  atomically changed only by the CLI. The timer is rendered from the same
+  atomically changed only by the CLI. Without an explicit recipient, the same
+  CLI creates and retains one root-only mode-0600 identity at
+  `/etc/rcp/backup-recovery.agekey`; later configuration validates and reuses it
+  or fails loudly without replacement. The timer is rendered from the same
   resolved schedule rather than carrying a second editable value.
 - `backup configure` proposes a daily 02:00 server-local run and the newest 30
   integrity-readback archives, while preserving the newest complete archive if
@@ -751,8 +756,10 @@ that a record already owns.
   manifest configuration, and the old deploy-key labels/fingerprints. A project
   without enough verified metadata to reconstruct its checkout set is
   uncaptured, not a supposedly restorable project.
-- Archives are encrypted to an `age` public recipient on the server. The private
-  recovery identity remains off-server.
+- Archives are encrypted to an `age` public recipient on the server. The simple
+  path retains the matching identity root-only on that server; an explicit
+  external public recipient remains available when machine-loss recovery is
+  required.
 - The first backup format supports the upstream `age` CLI from `1.0.0` through
   the 1.x line and accepts only native X25519 `age1...` recipients. Plugin, SSH,
   passphrase, and post-quantum recipients are outside this compatibility target.
@@ -964,7 +971,7 @@ its live gate is available.
 | O2a | O1 | concurrent SQLite writers |
 | O2b | O2a | concurrent project-file writers and one unreachable host |
 | O3a | F3a | writable filesystem destination |
-| O3b | O2b, O3a | `age` recipient plus off-server recovery identity |
+| O3b | O2b, O3a | default server-managed `age` identity and protected transfer for fresh-host restore |
 | O3c | O2a, G2 | terminal and interrupted task/session fixtures |
 | O3c-ui | O3c | kept and unavailable artifact response fixtures |
 | O3d-a | O3c | active task, Experiment, report, session, and enrollment-code fixtures |
@@ -1389,8 +1396,8 @@ Team-to-personal and team-to-team remain absent.
 
 Use a fresh Linux server/VM, two distinct human desktop identities, a disposable
 GitHub repository, one local provider, one reachable SSH provider target where
-available, an off-server `age` recovery identity, and a fresh restore host/data
-directory.
+available, the default server-managed `age` recovery identity plus a protected
+copy for the fresh host, and a fresh restore host/data directory.
 
 Run the full lab drill on one supported Ubuntu release and retain separate
 install, service-start, doctor, update, and restore evidence on both Ubuntu 22.04

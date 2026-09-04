@@ -66,7 +66,7 @@ data directory. Take the protected backup. Close admission and stop the
 service. With nothing able to mutate, take a crash-safe local checkpoint of the
 data directory and every RCP-owned local state root, with a phase journal
 fsynced beside it; this is the same pre-switch checkpoint the current
-coordinator takes, and it is distinct from the off-server backup. Switch the
+coordinator takes, and it is distinct from the protected backup. Switch the
 current-release pointer. Start. Poll health until the reported build matches,
 or a timeout passes. On any failure: stop, restore the checkpoint from its
 journal, switch back, start the previous release, verify it, and report both

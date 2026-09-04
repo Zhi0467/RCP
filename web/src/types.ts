@@ -801,6 +801,7 @@ export interface ExperimentLoopIndexEntry {
   graph_target: GraphTargetRef;
   graph_head: GraphHeadRef | null;
   parent_episode_id: string | null;
+  parent_watching: boolean;
   node: GraphNode;
   control: ExperimentControlState;
   episode: Episode;

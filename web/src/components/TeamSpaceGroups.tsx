@@ -351,7 +351,7 @@ export function AddTeamSpaceDialog({
             <X size={16} aria-hidden="true" />
           </button>
         </header>
-        <div className="add-team-mode" role="group" aria-label="Team membership">
+        <div className="add-team-mode" role="group" aria-label="Credential you have">
           <button
             type="button"
             aria-pressed={mode === "enroll"}
@@ -360,7 +360,7 @@ export function AddTeamSpaceDialog({
               setSecret("");
             }}
           >
-            New member
+            Bootstrap or invitation code
           </button>
           <button
             type="button"
@@ -370,7 +370,7 @@ export function AddTeamSpaceDialog({
               setSecret("");
             }}
           >
-            Existing member
+            Member token
           </button>
         </div>
         <form autoComplete="off" onSubmit={(event) => void submit(event)}>

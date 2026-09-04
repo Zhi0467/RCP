@@ -61,6 +61,7 @@ _PEM_PRIVATE_KEY = re.compile(
     re.DOTALL,
 )
 _BEARER_TOKEN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
+_BASIC_AUTHORIZATION = re.compile(r"(?i)\b(authorization\s*(?::|=)\s*)Basic\s+[A-Za-z0-9+/=]+")
 _RCP_CREDENTIAL = re.compile(r"\brcp_(?:bootstrap|member)_[A-Za-z0-9_.-]+")
 _GITHUB_CREDENTIAL = re.compile(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{10,}")
 _AGE_IDENTITY = re.compile(r"\bAGE-SECRET-KEY-1[A-Z0-9]+")
@@ -89,6 +90,7 @@ def redact_server_text(value: str) -> str:
 
     redacted = _PEM_PRIVATE_KEY.sub("[REDACTED PRIVATE KEY]", value)
     redacted = _BEARER_TOKEN.sub("Bearer [REDACTED]", redacted)
+    redacted = _BASIC_AUTHORIZATION.sub(r"\1[REDACTED]", redacted)
     redacted = _RCP_CREDENTIAL.sub("[REDACTED RCP CREDENTIAL]", redacted)
     redacted = _GITHUB_CREDENTIAL.sub("[REDACTED GITHUB CREDENTIAL]", redacted)
     redacted = _AGE_IDENTITY.sub("[REDACTED AGE IDENTITY]", redacted)
@@ -285,7 +287,9 @@ class ServerCommandRequest(_StrictModel):
             if self.member_confirmed_boundary is not None:
                 expected.add("member_confirmed_boundary")
         elif self.command == "server restore":
-            expected = {"archive_path", "recovery_identity_file"}
+            expected = {"archive_path"}
+            if self.recovery_identity_file is not None:
+                expected.add("recovery_identity_file")
             if self.restore_confirmed_data_dir is not None:
                 expected.add("restore_confirmed_data_dir")
             optional_restore_fields = {
@@ -321,9 +325,10 @@ class ServerCommandRequest(_StrictModel):
                 "backup_destination",
                 "backup_schedule",
                 "backup_retention",
-                "backup_age_recipient",
                 "backup_confirmed",
             }
+            if self.backup_age_recipient is not None:
+                expected.add("backup_age_recipient")
             if self.backup_confirmed is not True:
                 raise ValueError("backup configure requires explicit confirmation")
         elif self.command == "server update":

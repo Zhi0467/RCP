@@ -114,7 +114,7 @@ export function experimentRecommendation(run: ExperimentRun): ExperimentRecommen
           ? "Wrapping up visualization and report"
           : run.health === "waiting_on_watchers"
             ? "Wait for watcher completion"
-            : "Wait for the agent",
+            : "Wait for the active Experiment turn",
     resume: run.control.can_switch_provider
       ? "Resume this episode, or switch provider"
       : "Resume this episode",

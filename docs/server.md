@@ -129,7 +129,7 @@ Finally check every system prerequisite:
 git --version
 ssh -V
 age --version
-command -v age curl getent git node npm runuser ssh ssh-keygen sudo systemctl useradd uv
+command -v age age-keygen curl getent git node npm runuser ssh ssh-keygen sudo systemctl useradd uv
 ```
 
 Success is a path for every command, Node.js major 24, and age major 1.
@@ -465,7 +465,8 @@ As an existing member:
 
 As the person joining, from their own source-built RCP desktop app:
 
-1. On the personal project index, select **Add team space** and **New member**.
+1. On the personal project index, select **Add team space** and
+   **Bootstrap or invitation code**.
 2. Enter their own SSH route, such as `alice@lab-server`, and server port
    `8421`. This SSH account only carries the loopback tunnel.
 3. Enter their display name and paste the bootstrap or invitation code into the
@@ -558,49 +559,58 @@ data directory.
 
 ## Back up the team server
 
-Create the recovery identity on a separate trusted machine that has `age`; do
-not generate or retain the private identity in the RCP server's data directory:
-
-```bash
-age-keygen --output rcp-team-backup-key.txt
-age-keygen -y rcp-team-backup-key.txt
-```
-
-The first command creates the protected `AGE-SECRET-KEY-...` identity. Store
-that file in the lab's credential or disaster-recovery system. The second
-prints its nonsecret `age1...` recipient. Copy only that public recipient to the
-server operator terminal.
-
-Configure one absolute backup destination, public recipient, server-local daily
-time, and retained archive count:
+Configure one absolute backup destination. The daily time and retained archive
+count are optional and default to 02:00 server-local time and 30 archives:
 
 ```bash
 sudo /usr/local/bin/rcp server backup configure \
   --destination /absolute/path/to/backups \
-  --recipient <age1-public-recipient> \
   --schedule 02:00 \
   --retention 30 \
   --confirm
 ```
 
-The wizard verifies the destination and systemd timer. The destination may be a
-local or mounted filesystem; RCP does not claim that an on-server disk is a
-disaster-recovery copy. Run and verify an immediate archive after configuration:
+On first setup, RCP creates one recovery identity at
+`/etc/rcp/backup-recovery.agekey`, keeps it root-owned with mode `0600`, and
+stores only its public recipient in the unchanged schema-v2 backup table in
+`server.toml`. It also stores that public recipient in the root-owned mode-`0644`
+`/etc/rcp/backup-recovery.agekey.pub` sidecar, which lets RCP recognize a missing
+server-managed identity without adding a config key. Later configuration reuses
+the same identity. If that file is missing, damaged, unsafe, or does not match
+the configured recipient, RCP stops and tells you to restore it; it never
+silently makes a replacement. That file is also the only key that decrypts the
+archives made with it: before the teardown sequence removes `/etc/rcp`, copy it
+to protected storage off the host, or accept that the retained archives become
+permanently undecryptable.
+
+The wizard verifies the destination, creates and reads back one protected
+archive, and only then enables the systemd timer. The destination may be local
+or mounted; RCP does not claim that an on-server disk is a disaster-recovery
+copy. Check the result at any time with:
 
 ```bash
 sudo -u rcp -H /usr/local/bin/rcp server backup run
 sudo -u rcp -H /usr/local/bin/rcp server doctor
 ```
 
-Keep the newest verified archive and the private recovery identity in locations
-that survive loss of the server. Never pass the private identity to `backup
-configure`; encryption needs only the public recipient.
+This simple default does not survive loss of the whole machine unless the
+backup destination and recovery identity are also retained elsewhere. Labs
+that need that stronger disaster-recovery setup may generate and protect an
+identity elsewhere, then pass only its public `age1...` value through the
+advanced `--recipient` option. Never pass private `AGE-SECRET-KEY-...` text to
+RCP.
 
 ## Restore a protected archive
 
 Restore requires a fresh installed server whose configured data directory is
-empty. Keep the native `age` recovery identity off-server until the restore and
-copy it only into a root-protected file for this run:
+empty. On the same server, RCP uses its fixed root-only identity by default:
+
+```bash
+sudo /usr/local/bin/rcp server restore /absolute/path/lab.tar.age
+```
+
+On a replacement host or when backups use an external recipient, copy the
+matching identity into a root-protected file and select it explicitly:
 
 ```bash
 sudo /usr/local/bin/rcp server restore /absolute/path/lab.tar.age \
@@ -652,16 +662,15 @@ this install on separate `ubuntu-22.04` and `ubuntu-24.04` x86-64 hosts. It runs
 only by manual dispatch from `main`, because the production installer itself is
 fixed to GitHub `main`.
 
-The private RCP source repository requires one repository Actions secret named
+The fresh-host restore job requires one repository Actions secret named
 `RCP_LIVE_GITHUB_ADMIN_TOKEN`. Use a fine-grained token scoped only to
 `Zhi0467/RCP` with repository **Administration: write**, which is the GitHub
-permission required to create and remove deploy keys. The workflow writes it to
-a mode-0600 temporary file. The tests create temporary read-only source keys and
-write-enabled project keys where each workflow requires them, and unconditional
-cleanup removes those keys and protected files. A protected receipt records each
-generated key's nonsecret label before the API call, so cleanup can revoke it
-even if pytest is interrupted. The token never enters RCP CLI argv, event
-output, or the installed service environment.
+permission required to create and remove its temporary write-enabled project
+deploy key. The workflow writes it to a mode-0600 temporary file only in that
+job. A protected receipt records the generated key's nonsecret label before the
+API call, so unconditional cleanup can revoke it even if pytest is interrupted.
+The public-source install job needs no GitHub credential. The token never enters
+RCP CLI argv, event output, or the installed service environment.
 
 The live test refuses a reused host, requires an explicit destructive-test
 confirmation, removes its disposable bootstrap checkout, and checks the

@@ -160,8 +160,8 @@ unavailable.
 The current protocol range is `[1, 2]`; a current desktop selects `2` with a
 current server and `1` with an older `[1, 1]` server. Protocol 1 keeps team
 project cards non-deletable. Protocol 2 adds team deletion: cards may advertise
-`can_delete=true` together with the exact `delete_confirmation`, and DELETE is
-refused with the protocol-mismatch response for a protocol-1 caller. A breaking
+`can_delete=true` together with the exact `delete_confirmation`, and a team DELETE
+is refused with the protocol-mismatch response unless the caller selected 2. A breaking
 change adds a new immutable per-version contract before either end advertises
 it. Narrowing a range is explicit retirement, not an automatic current-plus-
 previous or time-based rule. The native handshake ends after
@@ -503,6 +503,22 @@ non-null. Main-target entries consume the completed project snapshot's
 Experiment-control map; branch entries consume the exact branch read model.
 Episode task rows publish durable actor `role` and lineage `depth`, and episode
 cards consume those fields without interpreting persisted task requests.
+Project Runs refreshes this index while visible, so an Experiment dispatched on
+an Auto-research graph branch appears as its own episode card even before anyone
+opens its exact route. The project-scoped
+`/api/projects/{project_id}/experiment-episodes` path restricts projection work
+to that visible project. The same child appears once as a linked, subordinate
+**Experiment** row in the owning Auto-research card's **Turns** list. That row is
+navigational provenance, not a second lifecycle or budget: its label and status
+consume the indexed node and control, while the child card retains its own
+episode budget, transcript, and valid controls.
+An active child card names its current Experiment turn and links that row to the
+ordinary task inspector. Until the turn finishes, the card labels the durable
+objective separately from retained stale guidance. When the backend finds the
+matching active Auto-research graph condition, the Experiment index publishes
+`parent_watching`; the card explains that the owning episode watches the child
+while the child's own **Watchers** fold contains only detached work handed off
+by that Experiment.
 
 Starting an Experiment navigates to its Runs detail rather than opening floating
 chat. The detail separates historical episode budgets from **Next episode

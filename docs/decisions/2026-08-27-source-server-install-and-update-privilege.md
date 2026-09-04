@@ -13,8 +13,9 @@ checkout and one separately managed production checkout.
 
 The first supported server platforms are Ubuntu 22.04 LTS and Ubuntu 24.04 LTS
 on x86-64 with systemd. The server build uses Node.js 24 and Python 3.12 managed
-through `uv`, plus Git, OpenSSH, and the upstream `age` CLI in the range
-`>=1.0.0,<2.0.0`. The first backup format accepts only native X25519 `age1...`
+through `uv`, plus Git, OpenSSH, and the upstream `age` and `age-keygen` CLIs
+from the same release in the range `>=1.0.0,<2.0.0`. The first backup format
+accepts only native X25519 `age1...`
 recipients; plugin, SSH, passphrase, and post-quantum recipient behavior is not
 part of the two-Ubuntu compatibility promise. The operator guide provides tested
 prerequisite commands for both Ubuntu releases. The RCP installer validates
@@ -81,11 +82,27 @@ narrow service-account command family, but RCP neither guesses the named account
 nor silently edits sudo policy.
 
 Only root/system integration lives outside that home: the versioned machine
-configuration at `/etc/rcp/server.toml`, root-owned current-release pointer at
-`/etc/rcp/current`, private runtime socket at `/run/rcp/control.sock`, stable
-wrapper at `/usr/local/bin/rcp`, systemd units, and journald. The configured
-backup destination may be elsewhere. The installer records and validates these
+configuration at `/etc/rcp/server.toml`, fixed root-only backup identity at
+`/etc/rcp/backup-recovery.agekey`, its root-owned nonsecret `.pub` recipient
+sidecar, root-owned current-release pointer at `/etc/rcp/current`, private
+runtime socket at `/run/rcp/control.sock`, stable wrapper at
+`/usr/local/bin/rcp`, systemd units, and journald. The configured backup
+destination may be elsewhere. The installer records and validates these
 absolute paths rather than rediscovering them from platform defaults.
+
+`server backup configure` creates that backup identity once when no public
+recipient is supplied and reuses it for later configuration. This keeps the
+ordinary setup to one root CLI command and prevents each desktop user from
+owning lab-server key placement. The config continues to store only the public
+recipient in the unchanged schema-v2 backup table, so rollback readability and
+`rcp` access do not change. A root-owned `backup-recovery.agekey.pub` sidecar
+stores that same nonsecret recipient so a missing server-managed identity can
+still be distinguished from an external-recipient configuration. Runtime
+progress derives the source from whether the private identity file exists; it
+does not add a config key. Missing, damaged, unsafe, or mismatched identity
+state is a refusal, never permission to generate a replacement. The explicit
+public-recipient option remains available for labs that place recovery identity
+outside the server and need whole-machine disaster recovery.
 
 The machine config also retains one immutable random nonsecret
 `installation_id`. A private source origin's read-only deploy key is labelled
@@ -175,7 +192,9 @@ snapshot taken while new work can still commit would not identify one coherent
 state to restore. Candidate preparation and rehearsal therefore remain online,
 while only the final checkpoint, switch, verification, and possible restoration
 briefly stop new mutations. This local checkpoint is an update safety boundary,
-not a substitute for the encrypted off-server backup workflow.
+not a substitute for the encrypted protected-backup workflow; whether that
+backup and its recovery identity survive machine loss depends on their
+configured placement.
 
 ## Rejected alternatives
 

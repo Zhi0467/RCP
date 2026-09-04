@@ -136,7 +136,7 @@ test("Add team space keeps the one credential in a password field and out of URL
 
   assert.match(html, /<form[^>]*autoComplete="off"/);
   assert.match(html, /SSH target/);
-  assert.match(html, /Bootstrap or invitation code/);
+  assert.equal((html.match(/Bootstrap or invitation code/g) ?? []).length, 2);
   assert.match(html, /<input[^>]*type="password"/);
   assert.doesNotMatch(html, /action=|localStorage|sessionStorage|[?&](token|code)=/i);
 });

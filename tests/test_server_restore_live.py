@@ -17,11 +17,8 @@ import pytest
 from .test_server_install_live import (
     _COMMAND_TIMEOUT_SECONDS,
     _EVENT_ADAPTER,
-    _GITHUB_ED25519_FINGERPRINT,
     _REPOSITORY,
-    _clear_deploy_key_receipt,
     _command_actions,
-    _create_read_only_deploy_key,
     _delete_deploy_key,
     _fields,
     _github_request,
@@ -36,7 +33,6 @@ from .test_server_install_live import (
     _terminal_step,
     _wait_for_team_health,
     _workspace,
-    _write_deploy_key_receipt,
 )
 
 _LIVE_GATE = "RCP_RUN_SERVER_RESTORE_LIVE"
@@ -61,7 +57,6 @@ def test_protected_backup_restores_on_a_fresh_disposable_ubuntu() -> None:
     workspace = _workspace()
     token = _read_admin_token()
     metadata = _read_restore_metadata()
-    source_key_id: int | None = None
     project_key_id: int | None = None
     restore_root = Path("/tmp/rcp-server-restore-live")
     bootstrap_parent = Path(tempfile.mkdtemp(prefix="rcp-server-restore-bootstrap-"))
@@ -72,24 +67,7 @@ def test_protected_backup_restores_on_a_fresh_disposable_ubuntu() -> None:
         executable = bootstrap / ".venv" / "bin" / "rcp"
         first_code, first_events = _run_install(executable, cwd=bootstrap)
         assert first_code == 3
-        source_pause = _terminal_step(first_events, "source_grant")
-        source_fields = _fields(source_pause)
-        source_label = str(source_fields["deploy_key_label"])
-        _write_deploy_key_receipt(source_label)
-        source_key_id = _create_read_only_deploy_key(
-            token,
-            title=source_label,
-            public_key=str(source_fields["deploy_public_key"]),
-        )
-        source_trust = _command_actions(source_pause)
-        assert len(source_trust) == 1
-        trust_code, trust_output = _run_pty(source_trust[0], answer_host_key=True)
-        assert trust_code == 1
-        assert _GITHUB_ED25519_FINGERPRINT in trust_output
-
-        second_code, second_events = _run_install(executable, cwd=bootstrap)
-        assert second_code == 3
-        assert _terminal_step(second_events, "team_space_init")["state"] == (
+        assert _terminal_step(first_events, "team_space_init")["state"] == (
             "operator_action_needed"
         )
         shutil.rmtree(bootstrap_parent)
@@ -182,9 +160,6 @@ def test_protected_backup_restores_on_a_fresh_disposable_ubuntu() -> None:
         if project_key_id is not None:
             _delete_deploy_key(token, project_key_id)
             _clear_restore_key_receipt()
-        if source_key_id is not None:
-            _delete_deploy_key(token, source_key_id)
-            _clear_deploy_key_receipt()
         if bootstrap_parent.exists():
             shutil.rmtree(bootstrap_parent)
 
