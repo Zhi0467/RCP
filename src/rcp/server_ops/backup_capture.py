@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import sqlite3
@@ -49,6 +50,8 @@ from rcp.server_ops.models import redact_server_text
 from rcp.server_runtime import ServerMetadata, data_dir_identity
 from rcp.sources.imported import ImportedProviderSourceStore
 from rcp.storage import AppStore, ProjectRecord, ResultViewRecord
+
+logger = logging.getLogger(__name__)
 
 BACKUP_SQLITE_CAPTURE_SCHEMA_VERSION = 1
 
@@ -610,7 +613,16 @@ class BackupCaptureCoordinator:
             RuntimeError,
             ValueError,
             sqlite3.Error,
-        ):
+        ) as exc:
+            # The receipt keeps one fixed operator-safe reason, so the concrete
+            # cause is only recoverable from this log line.
+            logger.warning(
+                "Backup capture could not inventory project %s: %s: %s",
+                record.project_id,
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
             reason = "The captured project inventory is invalid or unavailable."
         return BackupSnapshotProjectInventory(
             project_id=record.project_id,

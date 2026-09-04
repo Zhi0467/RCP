@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import stat
@@ -483,6 +484,39 @@ def test_malformed_and_cross_project_references_make_only_their_projects_uncaptu
         == observed_wrong_home
     )
     assert receipt.status == "partial"
+
+
+def test_transient_inventory_failure_logs_its_concrete_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    data_dir = tmp_path / "data"
+    store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Concurrent lab")
+    project = _register_completed_project(store, data_dir, name="Busy project")
+
+    def _busy(self: AppStore, project_id: str) -> list[AgentTaskRecord]:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(AppStore, "all_project_agent_tasks", _busy)
+
+    with caplog.at_level(logging.WARNING, logger="rcp.server_ops.backup_capture"):
+        receipt = (
+            BackupCaptureCoordinator(store, data_dir, _metadata(data_dir)).capture_sqlite().receipt
+        )
+
+    captured = next(item for item in receipt.projects if item.project_id == project.project_id)
+    assert captured.status == "uncaptured"
+    assert (
+        captured.unavailable_reason == "The captured project inventory is invalid or unavailable."
+    )
+    logged = [record for record in caplog.records if record.name == "rcp.server_ops.backup_capture"]
+    assert len(logged) == 1
+    message = logged[0].getMessage()
+    assert project.project_id in message
+    assert "OperationalError" in message
+    assert "database is locked" in message
+    assert logged[0].exc_info is not None
 
 
 def test_capture_receipt_rejects_tampering(tmp_path: Path) -> None:
