@@ -241,7 +241,10 @@ boundary with crash-safe replacement journals. T3e preserves imported provider
 histories through that checkpoint. T4b/T4c preserve only receipt-backed complete
 transfer inbox files and ignore already-consumed uploads, while refusing any
 leftover untyped bytes. P6c now publishes and independently enforces the
-ordinary team-project deletion guard through the card, Web, API, and catalog.
+ordinary project-deletion decision through the card, Web, API, and catalog for
+both spaces. Team deletion removes the RCP registration and app-owned history
+while preserving the managed checkout, canonical research, and deploy key; it
+is not deprovisioning.
 
 ## Objective
 
@@ -590,12 +593,12 @@ that a record already owns.
   deploy key across repositories, RCP explicitly instructs the operator to
   enable **Allow write access** and verifies a real request-scoped
   push/readback/cleanup with each key.
-- The existing member-facing **Delete project** path remains available for a
-  personal project only. A team project card publishes deletion unavailable and
-  the API rechecks that decision: erasing its RCP rows while leaving its managed
-  checkout and deploy key would orphan machine authority. Full team-project
-  deprovisioning is outside this slice and must eventually be an operator-owned
-  flow that names GitHub-key revocation and checkout disposition.
+- The member-facing **Delete project** path removes either a personal or team
+  registration from RCP after confirmation and the active-task check. Team
+  deletion removes app-owned rows, stages, snapshots, caches, and imported
+  provider histories, while leaving the managed checkout, canonical research,
+  and repository deploy key untouched. It is deliberately not machine
+  deprovisioning or GitHub-key revocation.
 - RCP never asks for or stores a member's personal GitHub token.
 - Remote execution transport uses the ordinary OpenSSH configuration already
   present for the server's `rcp` account. RCP checks the exact configured route
@@ -866,8 +869,8 @@ Do not add any of the following to finish this handoff:
   [Q10](../open-questions.md#q10--should-a-client-detect-rollback-of-a-familiar-space);
 - per-member or per-project Linux service accounts;
 - member-laptop team execution or checkout discovery;
-- team-project deprovisioning or deletion; the unsafe ordinary Delete action is
-  disabled for team projects rather than leaving managed keys/checkouts orphaned;
+- team-project machine deprovisioning, including checkout removal or Git-key
+  revocation; confirmed catalog deletion intentionally leaves both in place;
 - team-to-team transfer, team-to-personal product transfer, or fresh-identity
   fork;
 - GitHub OAuth, personal access-token custody, or a general secret manager;

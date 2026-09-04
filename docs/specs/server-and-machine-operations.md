@@ -677,14 +677,14 @@ the operator confirms revocation or explicitly preserves the prepared request
 for reuse. Losing the private half is not falsely reported as deleting the
 GitHub grant.
 
-The ordinary member-facing **Delete project** action applies only to personal
-projects. A team project card publishes `can_delete=false`, and the Web omits
-that action rather than deriving safety from checkout state. The API and catalog
-repeat the space-kind check before any deletion work. Removing only RCP's rows
-would leave the server-managed checkout and repository deploy key with no owner,
-so full team-project deprovisioning requires a future operator CLI flow that
-names key revocation and checkout disposition. It is not part of the first
-one-lab server slice.
+The ordinary member-facing **Delete project** action removes either a personal
+or team project from its current RCP space after project-membership and active-task
+checks. The backend publishes the same deletion decision for both spaces, and
+the Web renders it. Deletion removes RCP database history, stages, snapshots,
+caches, and imported provider histories owned by that registration. It never
+edits or removes the central checkout, canonical `.research/` history, or
+repository deploy key. This is catalog deletion, not machine deprovisioning or
+credential revocation; the confirmation says so before the human commits it.
 
 ## Durable project provisioning
 
@@ -1403,7 +1403,9 @@ captures, recreates them through the owner in temporary verification, and
 owner-validates the immutable payload and restored live root on every rollback
 journal entry. Request-owned cleanup may discard one exact imported inventory
 only for the linked incoming transfer before project registration and target
-activation; it does not enable ordinary team-project deletion or deprovisioning.
+activation. Ordinary confirmed project deletion may also discard the exact
+registered project's imported history while preserving its checkout and Git
+credential; neither path is machine deprovisioning.
 The private installed-service control socket exposes probe, provider plan/check,
 project-provision plan/step, online SQLite capture, member-removal, update, and
 root-only restore-activation operations. The current control protocol is version
@@ -1418,8 +1420,8 @@ exits successfully only after reading back the same request as **ready for
 review**, and it has no project-creation route; only the authenticated final
 review route can append the reserved identity and complete the request.
 
-Machine orchestration, final creation, the team deletion guard, console member
-removal, and replacement activation are
+Machine orchestration, final creation, confirmed team catalog deletion, console
+member removal, and replacement activation are
 hermetically covered, but provisioning has not yet passed S128's complete
 source-built team-service/GitHub/SSH/browser/desktop live drive. Cancellation
 after machine preparation, the unified wizard and desktop operator bridge, the

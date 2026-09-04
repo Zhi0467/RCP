@@ -709,12 +709,6 @@ class ProjectDeletionResult(BaseModel):
     removed_paper_snapshot: bool
 
 
-TEAM_PROJECT_DELETE_UNAVAILABLE_REASON = (
-    "Team projects cannot be deleted here. A server operator must deprovision the "
-    "managed checkout and Git deploy keys."
-)
-
-
 EpisodeSerializer = Callable[
     [str, EpisodeRecord, ExperimentEpisodeProjectionSnapshot | None],
     dict[str, object],
@@ -1368,15 +1362,14 @@ class ProjectCatalog:
                 self._compute_probe_locks.setdefault(canonical_project_id, old_compute_lock)
 
     def cards(self) -> list[dict[str, object]]:
-        can_delete = self.store.space_kind == "personal"
-        return [self._card(record, can_delete=can_delete) for record in self.store.projects()]
+        return [self._card(record) for record in self.store.projects()]
 
     def card(self, project_id: str) -> dict[str, object]:
         project_id = self._canonical_project_id(project_id)
         record = self.store.project(project_id)
         if record is None:
             raise KeyError(project_id)
-        return self._card(record, can_delete=self.store.space_kind == "personal")
+        return self._card(record)
 
     def state_host(self, project_id: str) -> str:
         """Read the registered state host without opening canonical history."""
@@ -1696,8 +1689,6 @@ class ProjectCatalog:
 
     def delete(self, project_id: str) -> ProjectDeletionResult:
         """Forget one RCP registration without touching any research source."""
-        if self.store.space_kind == "team":
-            raise ValueError(TEAM_PROJECT_DELETE_UNAVAILABLE_REASON)
         project_id = self._canonical_project_id(project_id)
         with self._services_lock:
             if self.store.project(project_id) is None or project_id in self._deleting:
@@ -1714,6 +1705,8 @@ class ProjectCatalog:
                 display_snapshot = self._cached_snapshot_path(project_id)
                 paper_snapshot = self._paper_snapshot_path(project_id)
                 project_cache_root = _validate_project_cache_roots(self.data_dir, project_id)
+                imported_sources = ImportedProviderSourceStore(self.data_dir, project_id)
+                imported_inventory = imported_sources.inventory()
                 for stage in stages:
                     self._validate_stage_target(stage)
                 _validate_optional_regular_app_file(display_snapshot, "project display snapshot")
@@ -1725,6 +1718,7 @@ class ProjectCatalog:
                 removed_display = _unlink_regular_app_file(display_snapshot)
                 removed_paper = _unlink_regular_app_file(paper_snapshot)
                 _remove_validated_project_cache_root(project_cache_root)
+                imported_sources.discard(expected_inventory=imported_inventory)
                 self._snapshot_generations.pop(project_id, None)
                 self._committed_snapshot_generations.pop(project_id, None)
                 self._cached_snapshot_patch_heads.pop(project_id, None)
@@ -2287,7 +2281,7 @@ class ProjectCatalog:
             os.replace(temp, locator)
 
     @staticmethod
-    def _card(record: ProjectRecord, *, can_delete: bool) -> dict[str, object]:
+    def _card(record: ProjectRecord) -> dict[str, object]:
         return {
             "id": record.project_id,
             "home_space_id": record.home_space_id,
@@ -2302,10 +2296,8 @@ class ProjectCatalog:
             "last_refresh_at": record.last_refresh_at,
             "reachable": record.reachable,
             "error": record.error,
-            "can_delete": can_delete,
-            "delete_unavailable_reason": (
-                None if can_delete else TEAM_PROJECT_DELETE_UNAVAILABLE_REASON
-            ),
+            "can_delete": True,
+            "delete_unavailable_reason": None,
         }
 
 

@@ -31,7 +31,7 @@ from rcp.api.team_shell_protocol import acknowledge_team_shell_protocol
 from rcp.core.models import Experiment, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.keyed_locks import KeyedLocks
-from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON, ProjectCatalog, ProjectDisplayCache
+from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager, ProjectSetupRequest, SshRepositoryBrowseRequest
@@ -646,10 +646,7 @@ def delete_project(
     project_id: str,
     *,
     catalog: CatalogDependency,
-    store: StoreDependency,
 ) -> dict[str, object]:
-    if store.space_kind == "team":
-        raise HTTPException(status_code=409, detail=TEAM_PROJECT_DELETE_UNAVAILABLE_REASON)
     try:
         return catalog.delete(project_id).model_dump(mode="json")
     except KeyError as exc:

@@ -123,10 +123,11 @@ decline.
 Every member has the same project role. Settings shows membership, **Invite
 member**, and **Leave project**. A person may leave their own project only while
 another member remains; the last member must add another enrolled project
-member first. Ordinary deletion remains available to a personal project, while
-a team project requires the future operator-owned deprovisioning flow. Losing
-membership applies the durable Stop fence to further project work while an
-already-authorized turn settles honestly.
+member first. A last member may instead explicitly delete the project from RCP;
+that confirmed catalog operation is distinct from leaving and does not
+deprovision a team checkout or Git credential. Losing membership applies the
+durable Stop fence to further project work while an already-authorized turn
+settles honestly.
 
 Every project-scoped route checks membership before revealing existence, and
 Apply checks again under the canonical append lock. A nonmember project is
@@ -287,16 +288,16 @@ an exact diagnostic and no instruction to delete them.
 
 ## Deletion
 
-Deleting a personal project removes its RCP catalog/control-plane data and
-rebuildable caches after confirmation. It does not delete the underlying
-research repositories or canonical state repository. Active work and tabs
-reconcile through the existing ownership and Stop rules.
-
-Ordinary deletion is unavailable for a team project. The backend publishes that
-decision on its card and rechecks the team space kind before deleting anything;
-the Web does not infer it from paths or checkout state. A future operator-owned
-deprovision command must decide central-checkout disposition and Git deploy-key
-revocation before team deletion can exist.
+Deleting a personal or team project removes its RCP catalog/control-plane data,
+task stages, snapshots, rebuildable caches, and registered imported provider
+history after confirmation. It does not delete or edit the underlying research
+repositories or canonical state repository. For a team project, it also leaves
+the server-managed checkout and Git deploy key in place. Removing either is a
+separate operator deprovisioning action, not a consequence of catalog deletion.
+Active work blocks deletion; settled work and tabs reconcile through the
+existing ownership and Stop rules. The backend publishes the deletion decision
+on the project card, and the Web renders that answer rather than inferring it
+from space kind, paths, or checkout state.
 
 ## Verification contracts
 

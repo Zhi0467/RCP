@@ -31,7 +31,6 @@ from rcp.limits import (
     BACKUP_DIAGNOSTIC_MAX_CHARS,
     SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
 )
-from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON
 from rcp.server_ops._local_primitives import (
     PrivateFileReadError,
     canonical_json_bytes,
@@ -900,8 +899,8 @@ def _prepare_overlay_project(
         "last_refresh_at": row["last_refresh_at"],
         "reachable": None if row["reachable"] is None else bool(row["reachable"]),
         "error_sha256": _optional_text_sha256(row["error"]),
-        "can_delete": False,
-        "delete_unavailable_reason": TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+        "can_delete": True,
+        "delete_unavailable_reason": None,
     }
     return RehearsalProjectOverlay(
         project_id=str(row["project_id"]),

@@ -91,7 +91,7 @@ test("the project index starts with covers and exposes the named identity with i
   assert.match(html, /data-identity-record="provenance-slip"/);
 });
 
-test("the project menu renders only the actions supplied for that project and space", () => {
+test("the project menu renders backend deletion and personal-only move actions", () => {
   const personal = {
     id: "project-1",
     home_space_id: identity.space_id,
@@ -107,9 +107,8 @@ test("the project menu renders only the actions supplied for that project and sp
     ...personal,
     id: "project-2",
     name: "Team paper",
-    can_delete: false,
-    delete_unavailable_reason:
-      "Team projects cannot be deleted here. A server operator must deprovision the managed checkout and Git deploy keys.",
+    can_delete: true,
+    delete_unavailable_reason: null,
   };
   const props = {
     cover: "wood",
@@ -131,9 +130,8 @@ test("the project menu renders only the actions supplied for that project and sp
   assert.match(personalMenu, />Move to team space</);
   assert.match(personalMenu, />Delete project</);
   assert.doesNotMatch(teamMenu, /Move to team space/);
-  assert.doesNotMatch(teamMenu, /Delete project/);
+  assert.match(teamMenu, />Delete project</);
   assert.match(teamMenu, />Cover</);
-  assert.doesNotMatch(teamMenu, /server operator|deploy key/i);
 });
 
 test("an unnamed personal identity presents the landing sign-in action", () => {
