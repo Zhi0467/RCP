@@ -64,15 +64,8 @@ def _installed(*, backup: ServerBackupConfig | None = None) -> InstalledServerCo
     )
 
 
-def _resolved(
-    config: ServerBackupConfig,
-    *,
-    uses_server_identity: bool = False,
-) -> ResolvedBackupConfiguration:
-    return ResolvedBackupConfiguration(
-        config=config,
-        uses_server_identity=uses_server_identity,
-    )
+def _resolved(config: ServerBackupConfig) -> ResolvedBackupConfiguration:
+    return ResolvedBackupConfiguration(config=config)
 
 
 def _argv(
@@ -117,12 +110,16 @@ class RecordingMachine:
     def resolve_config(self, request) -> ResolvedBackupConfiguration:
         self._call("resolve_config")
         return _resolved(
-            _settings(age_recipient=request.backup_age_recipient or AGE_RECIPIENT),
-            uses_server_identity=request.backup_age_recipient is None,
+            _settings(
+                age_recipient=request.backup_age_recipient or AGE_RECIPIENT,
+                identity_source=(
+                    "server_managed" if request.backup_age_recipient is None else "external"
+                ),
+            )
         )
 
     def persist_and_install(self, resolved: ResolvedBackupConfiguration) -> None:
-        assert resolved.config == _settings()
+        assert resolved.config == _settings(identity_source="server_managed")
         self._call("persist_and_install")
 
     def readback(self, config: ServerBackupConfig) -> BackupConfigurationReadback:
@@ -235,6 +232,7 @@ def test_interactive_and_structured_renderers_execute_the_same_policy() -> None:
         {"name": "schedule", "value": "02:00"},
         {"name": "retention", "value": 30},
         {"name": "age_recipient", "value": AGE_RECIPIENT},
+        {"name": "encryption_source", "value": "server-managed"},
         {"name": "timer_active_state", "value": "active"},
         {"name": "timer_unit_file_state", "value": "enabled"},
     ]
@@ -273,6 +271,7 @@ def test_backup_section_round_trips_and_legacy_v1_loads_unconfigured() -> None:
     assert "[backup]" in rendered
     assert 'schedule = "03:17"' in rendered
     assert "retention = 45" in rendered
+    assert 'identity_source = "external"' in rendered
     assert "AGE-SECRET-KEY" not in rendered
 
     legacy = render_installed_server_config(_installed()).replace(
@@ -460,6 +459,44 @@ def test_pending_configuration_recovers_before_a_new_request(
     assert not pending.exists()
 
 
+def test_pending_server_identity_is_validated_before_recovery_mutates_units(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    layout = SimpleNamespace(
+        config_path=tmp_path / "etc" / "rcp" / "server.toml",
+        systemd_unit=tmp_path / "etc" / "systemd" / "system" / "rcp.service",
+    )
+    layout.config_path.parent.mkdir(parents=True)
+    ownership = (os.getuid(), os.getgid())
+    monkeypatch.setattr(config_owner, "_expected_config_ownership", lambda: ownership)
+    monkeypatch.setattr(backup_owner, "_root_ownership", lambda: ownership)
+    current = _installed()
+    pending = _installed(backup=_settings(identity_source="server_managed"))
+    config_owner.write_installed_server_config(current, layout.config_path)
+    config_owner.write_installed_server_config(
+        pending,
+        backup_owner._pending_backup_configuration_path(layout),
+    )
+    mutations: list[str] = []
+    monkeypatch.setattr(
+        backup_owner,
+        "fence_backup_timer_before_unit_change",
+        lambda: mutations.append("fence"),
+    )
+    monkeypatch.setattr(
+        backup_owner,
+        "_converge_installed_backup_configuration",
+        lambda *_args: mutations.append("converge"),
+    )
+
+    with pytest.raises(BackupConfigurationRefused, match="identity is missing"):
+        backup_owner.recover_pending_backup_configuration(layout)
+
+    assert mutations == []
+    assert backup_owner._pending_backup_configuration_path(layout).is_file()
+
+
 def test_failed_pre_fence_mutates_neither_journal_nor_units(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -535,9 +572,9 @@ def test_server_managed_identity_must_still_exist_before_publication(
         lambda: mutations.append("fence"),
     )
 
-    with pytest.raises(BackupConfigurationRefused, match="disappeared"):
+    with pytest.raises(BackupConfigurationRefused, match="identity is missing"):
         LinuxBackupConfigurationMachine(layout).persist_and_install(
-            _resolved(_settings(), uses_server_identity=True)
+            _resolved(_settings(identity_source="server_managed"))
         )
 
     assert mutations == []

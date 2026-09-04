@@ -1170,11 +1170,11 @@ another storage transport. The directory may be a local path or a mounted
 filesystem. RCP neither infers nor warns whether its physical storage is on or
 off the server, and it makes no durability claim based on that topology.
 
-Backup destination, `age` public recipient, schedule, and retention are strict
-versioned machine configuration in the installed server config file, not team
-SQLite state. The root-owned config is readable by `rcp`, contains no private
-recovery identity, and is replaced atomically only through the following
-explicit operation:
+Backup destination, `age` public recipient, nonsecret identity source, schedule,
+and retention are strict versioned machine configuration in the installed
+server config file, not team SQLite state. The root-owned config is readable by
+`rcp`, contains no private recovery identity, and is replaced atomically only
+through the following explicit operation:
 
 ```bash
 sudo rcp server backup configure \

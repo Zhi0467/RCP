@@ -571,8 +571,9 @@ sudo /usr/local/bin/rcp server backup configure \
 
 On first setup, RCP creates one recovery identity at
 `/etc/rcp/backup-recovery.agekey`, keeps it root-owned with mode `0600`, and
-stores only its public recipient in `server.toml`. Later configuration reuses
-the same identity. If that file is missing, damaged, unsafe, or does not match
+stores only its public recipient and the nonsecret `server_managed` source marker
+in `server.toml`. Later configuration reuses the same identity. If that file is
+missing, damaged, unsafe, or does not match
 the configured recipient, RCP stops and tells you to restore it; it never
 silently makes a replacement.
 

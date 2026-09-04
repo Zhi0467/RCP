@@ -80,7 +80,6 @@ class BackupConfigurationReadback:
 @dataclass(frozen=True)
 class ResolvedBackupConfiguration:
     config: ServerBackupConfig
-    uses_server_identity: bool
 
 
 class BackupConfigurationMachine(Protocol):
@@ -310,6 +309,7 @@ def _configuration_fields(config: ServerBackupConfig) -> tuple[NonsecretField, .
         NonsecretField(name="schedule", value=config.schedule),
         NonsecretField(name="retention", value=config.retention),
         NonsecretField(name="age_recipient", value=config.age_recipient),
+        NonsecretField(name="encryption_source", value=config.identity_source.replace("_", "-")),
     )
 
 
@@ -412,6 +412,12 @@ class LinuxBackupConfigurationMachine:
             with backup_configuration_lock(self.layout):
                 recover_pending_backup_configuration(self.layout)
                 installed = load_installed_server_config(self.layout.config_path)
+                if installed.backup is not None:
+                    _validate_configured_backup_identity(
+                        installed.backup,
+                        self.layout,
+                        age_keygen_executable=self.age_keygen_executable,
+                    )
                 recipient = resolve_backup_recipient(
                     layout=self.layout,
                     configured_recipient=(
@@ -422,15 +428,17 @@ class LinuxBackupConfigurationMachine:
                     expected_owner=_root_ownership(),
                 )
                 identity = backup_identity_path(self.layout)
-                uses_server_identity = identity.exists() or identity.is_symlink()
+                identity_source = (
+                    "server_managed" if identity.exists() or identity.is_symlink() else "external"
+                )
             return ResolvedBackupConfiguration(
                 config=ServerBackupConfig(
                     destination=request.backup_destination,
                     schedule=request.backup_schedule,
                     retention=request.backup_retention,
                     age_recipient=recipient,
-                ),
-                uses_server_identity=uses_server_identity,
+                    identity_source=identity_source,
+                )
             )
         except BackupIdentityRefused as exc:
             raise BackupConfigurationRefused(str(exc)) from exc
@@ -446,24 +454,11 @@ class LinuxBackupConfigurationMachine:
             with backup_configuration_lock(self.layout):
                 recover_pending_backup_configuration(self.layout)
                 installed = load_installed_server_config(self.layout.config_path)
-                identity = backup_identity_path(self.layout)
-                identity_exists = identity.exists() or identity.is_symlink()
-                if resolved.uses_server_identity and not identity_exists:
-                    raise BackupConfigurationRefused(
-                        "The retained server-managed backup identity disappeared before "
-                        "configuration publication. Restore it and rerun the same command."
-                    )
-                if identity_exists:
-                    observed = read_backup_identity_recipient(
-                        identity,
-                        age_keygen_executable=self.age_keygen_executable,
-                        expected_owner=_root_ownership(),
-                    )
-                    if observed != config.age_recipient:
-                        raise BackupConfigurationRefused(
-                            "The server-managed backup identity changed before configuration "
-                            "publication. Restore it and rerun the same command."
-                        )
+                _validate_configured_backup_identity(
+                    config,
+                    self.layout,
+                    age_keygen_executable=self.age_keygen_executable,
+                )
                 updated = InstalledServerConfig.model_validate(
                     {**installed.model_dump(mode="python"), "backup": config}
                 )
@@ -568,6 +563,7 @@ def recover_pending_backup_configuration(
         current = load_installed_server_config(layout.config_path)
         if pending.backup is None or _without_backup(pending) != _without_backup(current):
             raise ValueError("pending backup configuration does not match this installation")
+        _validate_configured_backup_identity(pending.backup, layout)
         fence_backup_timer_before_unit_change()
         _converge_installed_backup_configuration(pending, layout)
         _clear_pending_backup_configuration(layout)
@@ -594,6 +590,7 @@ def activate_configured_backup_timer(
             config = installed.backup
             if config is None:
                 return None
+            _validate_configured_backup_identity(config, layout)
             try:
                 return _readback_backup_configuration(config, layout, expected_enabled=True)
             except BackupConfigurationRefused:
@@ -699,6 +696,36 @@ def _pending_backup_configuration_path(layout: ServerLayout) -> Path:
 
 def _without_backup(config: InstalledServerConfig) -> InstalledServerConfig:
     return config.model_copy(update={"backup": None})
+
+
+def _validate_configured_backup_identity(
+    config: ServerBackupConfig,
+    layout: ServerLayout,
+    *,
+    age_keygen_executable: str = "age-keygen",
+) -> None:
+    identity = backup_identity_path(layout)
+    identity_exists = identity.exists() or identity.is_symlink()
+    if config.identity_source == "server_managed" and not identity_exists:
+        raise BackupConfigurationRefused(
+            "The retained server-managed backup identity is missing. Restore it before "
+            "continuing backup configuration or activation."
+        )
+    if not identity_exists:
+        return
+    try:
+        observed = read_backup_identity_recipient(
+            identity,
+            age_keygen_executable=age_keygen_executable,
+            expected_owner=_root_ownership(),
+        )
+    except BackupIdentityRefused as exc:
+        raise BackupConfigurationRefused(str(exc)) from exc
+    if observed != config.age_recipient:
+        raise BackupConfigurationRefused(
+            "The server-managed backup identity does not match the configured recipient. "
+            "Restore the original identity before continuing."
+        )
 
 
 def _root_ownership() -> tuple[int, int]:
