@@ -130,6 +130,9 @@ def test_orchestrator_contract_assigns_clear_work_and_requests_prose_difficulty(
     expected_statuses = ", ".join(get_args(Experiment.model_fields["status"].annotation))
     assert expected_statuses in experiment_ontology.group("body")
     assert "blocked" not in experiment_ontology.group("body")
+    assert "unspecified is compatibility-only and cannot be authored by a Patch" in " ".join(
+        experiment_ontology.group("body").split()
+    )
 
 
 def test_refreshed_orchestrator_paths_return_the_staged_context_revision(monkeypatch) -> None:

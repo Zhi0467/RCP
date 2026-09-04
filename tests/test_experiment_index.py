@@ -28,7 +28,9 @@ from rcp.storage import (
     AutoResearchStateRecord,
     EpisodeNotRunning,
     EpisodeRecord,
+    GraphWatcherRecord,
     ProjectRecord,
+    WatcherContinuation,
 )
 
 from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task, wait_until
@@ -382,6 +384,7 @@ def test_experiment_index_uses_one_coherent_runtime_snapshot_per_project(
         "graph_target",
         "graph_head",
         "parent_episode_id",
+        "parent_watching",
         "node",
         "control",
         "episode",
@@ -392,6 +395,7 @@ def test_experiment_index_uses_one_coherent_runtime_snapshot_per_project(
     assert entry["graph_target"] == {"kind": "main", "branch_id": None}
     assert entry["graph_head"] is None
     assert entry["parent_episode_id"] is None
+    assert entry["parent_watching"] is False
     assert entry["node"]["id"] == "exp/launched"
     assert entry["node"]["current_summary"] == ""
     assert entry["control"]["episode_id"] == current_episode
@@ -934,6 +938,7 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         assert entry["graph_head"]["target"] == parent.graph_target.model_dump(mode="json")
         assert entry["graph_head"]["revision"] > parent.graph_base_head.revision
         assert entry["parent_episode_id"] == parent.episode_id
+        assert entry["parent_watching"] is False
         assert entry["node"]["title"] == "Branch-only loop title"
         assert entry["node"]["current_summary"] == "Visible only on the episode branch."
         assert entry["control"]["episode_id"] == child.episode_id
@@ -986,6 +991,36 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
     )
     project_id = app.state.default_project_id
     assert project_id is not None
+    assert parent.root_operation_id is not None
+    branch_head = service.for_graph_target(
+        parent.graph_target,
+        expected_episode_id=parent.episode_id,
+    ).history.head_ref()
+    app.state.background_tasks.store.create_watchers(
+        [
+            GraphWatcherRecord(
+                watcher_id=str(uuid.uuid4()),
+                project_id=project_id,
+                origin_operation_id=parent.root_operation_id,
+                origin_task_kind="auto_research",
+                graph_target=parent.graph_target,
+                chat_id=parent.episode_id,
+                episode_id=parent.episode_id,
+                continuation=WatcherContinuation(
+                    provider="codex",
+                    run_on="laptop",
+                    run_truth_scope=["repo-a"],
+                    patch_kind="work",
+                ),
+                condition={
+                    "node_id": "exp/branch-created",
+                    "status_in": ["abandoned", "completed"],
+                },
+                armed_revision=branch_head.revision,
+                created_at=app.state.background_tasks.store.now(),
+            )
+        ]
+    )
 
     with TestClient(app) as client:
         cached = client.get(f"/api/projects/{project_id}")
@@ -1003,6 +1038,7 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
         assert entry["graph_target"] == parent.graph_target.model_dump(mode="json")
         assert entry["graph_head"]["target"] == parent.graph_target.model_dump(mode="json")
         assert entry["parent_episode_id"] == parent.episode_id
+        assert entry["parent_watching"] is True
         assert "exp/branch-created" not in service.history.state().nodes
 
 

@@ -97,6 +97,7 @@ function entry(id, nodeStatus, controlState, projectName = "Project") {
     graph_target: { kind: "main" },
     graph_head: null,
     parent_episode_id: null,
+    parent_watching: false,
     node: node(id, nodeStatus),
     control: controlState,
     episode: controlState.episode,
@@ -374,6 +375,7 @@ test("project Runs shows a dispatched child as a nested turn and its own run car
       transition_id: "branch-four",
     },
     parent_episode_id: parentEpisodeId,
+    parent_watching: true,
     node: {
       ...node("experiment/branch-child", "running"),
       title: "Reproduce the baseline",
@@ -645,6 +647,82 @@ test("an explicit main route becomes history when the Experiment advances concur
     html,
     /campaign-run-detail|Expand Experiment loop episode|Start episode|Stop loop|episode-current/,
   );
+});
+
+test("a stale main index entry cannot duplicate the current Experiment card", () => {
+  const experiment = node("experiment/main", "active");
+  const previousEpisode = episode({
+    episode_id: "episode-previous",
+    project_id: "project-one",
+    control_node_id: experiment.id,
+    graph_target: { kind: "main" },
+  });
+  const currentEpisode = episode({
+    episode_id: "episode-current",
+    project_id: "project-one",
+    control_node_id: experiment.id,
+    graph_target: { kind: "main" },
+  });
+  const currentControl = control({
+    episode_id: currentEpisode.episode_id,
+    episode: currentEpisode,
+  });
+  const staleEntry = {
+    ...entry(
+      experiment.id,
+      experiment.status,
+      control({
+        episode_id: previousEpisode.episode_id,
+        episode: previousEpisode,
+      }),
+    ),
+    project_id: "project-one",
+    episode: previousEpisode,
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(ExecutionView, {
+      graph: {
+        revision: 5,
+        nodes: { [experiment.id]: experiment },
+        edges: {},
+        proposals: {},
+        ambiguities: {},
+        glossary: {},
+        validation_messages: [],
+        belief_transitions: [],
+        replay_status: "complete",
+        replay_failure: null,
+        ontology: { types: [], fields: [], relations: [] },
+      },
+      episodes: [currentEpisode, previousEpisode],
+      episodeMessages: {},
+      episodeAction: null,
+      tasks: [],
+      watchers: [],
+      experimentControl: { [experiment.id]: currentControl },
+      experimentEntries: [staleEntry],
+      selectedExperimentId: experiment.id,
+      focusExperimentId: null,
+      runBusy: false,
+      stopBusyId: null,
+      watcherCheckBusyId: null,
+      taskActionId: null,
+      onInspectTask() {},
+      onSelectExperiment() {},
+      onDetailFocused() {},
+      onOpenHistory() {},
+      onRunExperiment() {},
+      onStopExperiment() {},
+      onCheckExperimentWatcher() {},
+      onRecoverExperiment() {},
+      onSwitchExperimentProvider() {},
+      episodeReportHref: () => "#",
+    }),
+  );
+
+  assert.match(html, /<h2>Needs Action<\/h2><span>1<\/span>/);
+  assert.match(html, />episode-current<\/dd>/);
+  assert.doesNotMatch(html, /episode-previous/);
 });
 
 test("an exact Auto-research route focuses and scrolls its accessible detail", () => {

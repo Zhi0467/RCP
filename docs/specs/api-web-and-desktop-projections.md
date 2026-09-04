@@ -509,10 +509,11 @@ consume the indexed node and control, while the child card retains its own
 episode budget, transcript, and valid controls.
 An active child card names its current Experiment turn and links that row to the
 ordinary task inspector. Until the turn finishes, the card labels the durable
-objective separately from retained stale guidance. When the loaded watcher rows
-contain the matching active Auto-research graph condition, the card explains
-that the owning episode watches the child while the child's own **Watchers**
-fold contains only detached work handed off by that Experiment.
+objective separately from retained stale guidance. When the backend finds the
+matching active Auto-research graph condition, the Experiment index publishes
+`parent_watching`; the card explains that the owning episode watches the child
+while the child's own **Watchers** fold contains only detached work handed off
+by that Experiment.
 
 Starting an Experiment navigates to its Runs detail rather than opening floating
 chat. The detail separates historical episode budgets from **Next episode

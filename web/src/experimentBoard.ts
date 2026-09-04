@@ -341,20 +341,6 @@ export function experimentStopPath(
   return episodeId ? `${path}?episode_id=${encodeURIComponent(episodeId)}` : path;
 }
 
-export function branchExperimentPollingKey(
-  projectId: string | null,
-  route: ExperimentRouteIdentity | null,
-): string | null {
-  if (!projectId || route?.graph_target.kind !== "branch") return null;
-  return JSON.stringify([
-    projectId,
-    route.experiment_id,
-    route.episode_id,
-    route.graph_target.branch_id,
-    route.parent_episode_id,
-  ]);
-}
-
 function experimentRouteIdentity(entry: ExperimentLoopIndexEntry): ExperimentRouteIdentity {
   const episodeId = entry.episode?.episode_id ?? entry.control.episode_id;
   if (!episodeId) throw new Error("An indexed Experiment route requires its durable episode.");

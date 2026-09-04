@@ -48,12 +48,7 @@ import {
   type DagPosition,
 } from "../hooks/useForceDag";
 import { buildResearchPaths } from "../researchProjection";
-import {
-  buildExperimentRun,
-  isGraphWatcherRecord,
-  watcherIsActive,
-  type ExperimentRun,
-} from "../runProjection";
+import { buildExperimentRun, type ExperimentRun } from "../runProjection";
 import {
   ExperimentRunDetail,
   experimentHealthLabel,
@@ -64,6 +59,7 @@ import { AutoResearchEpisodeCard, EpisodeBudgetMeter } from "../components/Campa
 import { runsEpisodeCards } from "../campaigns";
 import {
   graphTargetsEqual,
+  mainExperimentRouteMatchesControl,
   projectExperimentExecution,
   type ExperimentRouteIdentity,
 } from "../experimentBoard";
@@ -888,12 +884,25 @@ export function ExecutionView({
   });
   const indexedEntries = (
     exactExperimentEntry ? [...experimentEntries, exactExperimentEntry] : experimentEntries
-  ).filter(
-    (entry) =>
-      !exactExperimentRoute ||
-      entry.node.id !== exactExperimentRoute.experiment_id ||
-      entry.episode.episode_id === exactExperimentRoute.episode_id,
-  );
+  ).filter((entry) => {
+    if (
+      exactExperimentRoute &&
+      entry.node.id === exactExperimentRoute.experiment_id &&
+      entry.episode.episode_id !== exactExperimentRoute.episode_id
+    ) {
+      return false;
+    }
+    if (entry.graph_target.kind !== "main") return true;
+    return mainExperimentRouteMatchesControl(
+      {
+        experiment_id: entry.node.id,
+        episode_id: entry.episode.episode_id,
+        graph_target: entry.graph_target,
+        parent_episode_id: entry.parent_episode_id,
+      },
+      exactProjection.experimentControl[entry.node.id],
+    );
+  });
   indexedEntries.forEach((entry) => {
     if (
       entry.control.episode_id !== entry.episode.episode_id ||
@@ -1081,18 +1090,7 @@ export function ExecutionView({
       );
     }
     const indexedEntry = experimentEntriesByEpisode.get(episode.episode_id) ?? null;
-    const watchedByParentAutoResearch = Boolean(
-      indexedEntry?.parent_episode_id &&
-      watchers.some(
-        (watcher) =>
-          watcher.origin_task_kind === "auto_research" &&
-          watcher.episode_id === indexedEntry.parent_episode_id &&
-          graphTargetsEqual(watcher.graph_target, indexedEntry.graph_target) &&
-          isGraphWatcherRecord(watcher) &&
-          watcherIsActive(watcher) &&
-          watcher.condition.node_id === indexedEntry.node.id,
-      ),
-    );
+    const watchedByParentAutoResearch = indexedEntry?.parent_watching ?? false;
     return (
       <ExperimentEpisodeCard
         episode={episode}

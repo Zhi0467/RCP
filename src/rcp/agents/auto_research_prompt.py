@@ -9,7 +9,14 @@ from pydantic import BaseModel
 # The staged-package block is rendered in exactly one place. A second copy here
 # would drift from the one every other contract uses.
 from rcp.agents.prompts import selected_skill_section
-from rcp.core.models import Blocker, Decision, Experiment, Hypothesis, ResearchQuestion
+from rcp.core.models import (
+    EXPERIMENT_COMPATIBILITY_STATUSES,
+    Blocker,
+    Decision,
+    Experiment,
+    Hypothesis,
+    ResearchQuestion,
+)
 from rcp.limits import AUTO_RESEARCH_APPLY_MAX_PER_TURN
 
 
@@ -63,7 +70,9 @@ _NODE_ONTOLOGY = f"""Node types in this graph:
   Status is one of {_status_vocabulary(Hypothesis)}.
 - Experiment — planned or running work that produces Evidence, carrying an objective, design,
   expected outcomes, interpretation rules, and completion criteria. Status is one of
-  {_status_vocabulary(Experiment)}.
+  {_status_vocabulary(Experiment)}. All status values may be observed in graph conditions, but
+  {", ".join(sorted(EXPERIMENT_COMPATIBILITY_STATUSES))} is compatibility-only and cannot be
+  authored by a Patch.
 - Evidence — one observation and your interpretation of it, with a methodological role (`result`
   or `diagnostic`) and a validity (valid, qualified, invalid, superseded). Role is not evidential
   weight; never author node-global `strength` or replay-only `legacy_strength`.

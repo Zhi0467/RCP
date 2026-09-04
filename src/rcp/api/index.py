@@ -93,6 +93,7 @@ class ExperimentLoopIndexEntryResponse(BaseModel):
     graph_target: GraphTargetRef
     graph_head: GraphHeadRef | None
     parent_episode_id: str | None
+    parent_watching: bool
     node: Experiment
     control: ExperimentControlResponse
     episode: EpisodeResponse
@@ -187,6 +188,7 @@ def _experiment_episode_entries(
         read_models = store.experiment_control_projection_snapshots(record.project_id)
         if not read_models:
             continue
+        active_graph_watchers = store.active_graph_watchers(record.project_id)
         settle_ids = [
             experiment_id
             for experiment_id, read_model in read_models.items()
@@ -324,6 +326,13 @@ def _experiment_episode_entries(
                     continue
                 route = store.auto_research_child_experiment(episode.episode_id)
                 parent_episode_id = route.auto_research_episode_id if route is not None else None
+                parent_watching = parent_episode_id is not None and any(
+                    watcher.origin_task_kind == "auto_research"
+                    and watcher.episode_id == parent_episode_id
+                    and watcher.graph_target == target
+                    and watcher.condition.node_id == node.id
+                    for watcher in active_graph_watchers
+                )
                 if target.kind == "branch" and parent_episode_id != target.branch_id:
                     raise ValueError(
                         "Branch-target Experiment lost its Auto-research parent identity."
@@ -366,6 +375,7 @@ def _experiment_episode_entries(
                         graph_target=target,
                         graph_head=graph_head,
                         parent_episode_id=parent_episode_id,
+                        parent_watching=parent_watching,
                         node=node,
                         control=control,
                         episode=serialized_episode,
