@@ -457,6 +457,38 @@ def test_candidate_child_refuses_unrelated_retired_card_projection_change(
     assert "changed unavailable projection" in result["diagnostic"]
 
 
+def test_unavailable_card_projection_hash_accepts_only_the_retired_team_shape() -> None:
+    from rcp.projects import TEAM_PROJECT_DELETE_CONFIRMATION
+    from rcp.server_ops.rehearsal import (
+        _canonical_sha256,
+        _project_card_comparison,
+        unavailable_card_projection_sha256,
+    )
+
+    card = {
+        "id": "project-one",
+        "name": "Project one",
+        "revision": 4,
+        "can_delete": True,
+        "delete_unavailable_reason": None,
+        "delete_confirmation": TEAM_PROJECT_DELETE_CONFIRMATION,
+    }
+    current = _canonical_sha256(_project_card_comparison(card))
+    legacy_comparison = _project_card_comparison(card)
+    legacy_comparison.pop("delete_confirmation")
+    legacy_comparison.update(
+        can_delete=False,
+        delete_unavailable_reason=TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+    )
+    legacy = _canonical_sha256(legacy_comparison)
+    unrelated = _canonical_sha256({**legacy_comparison, "revision": 5})
+
+    assert unavailable_card_projection_sha256(card, current, team_space=True) == current
+    assert unavailable_card_projection_sha256(card, legacy, team_space=True) == legacy
+    assert unavailable_card_projection_sha256(card, legacy, team_space=False) == current
+    assert unavailable_card_projection_sha256(card, unrelated, team_space=True) == current
+
+
 def test_candidate_child_accepts_current_team_deletion_card_projection(tmp_path: Path) -> None:
     exit_code, result, expected_sha256 = _run_unavailable_project_candidate_child(tmp_path)
 

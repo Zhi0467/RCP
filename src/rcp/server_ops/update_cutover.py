@@ -1810,8 +1810,8 @@ def _live_read_model_digest(receipt, background, catalog, store, expected_uid: i
         CandidateProjectVerification,
         StartupRecoveryReadModel,
         _canonical_sha256,
-        _project_card_comparison,
         read_verified_candidate_receipt,
+        unavailable_card_projection_sha256,
     )
 
     if receipt.final_receipt_path is None or receipt.final_receipt_sha256 is None:
@@ -1841,12 +1841,15 @@ def _live_read_model_digest(receipt, background, catalog, store, expected_uid: i
     for expected in final.projects:
         card = cards[expected.project_id]
         if expected.status == "not_replay_verified":
-            comparison = _project_card_comparison(card)
             observed = CandidateProjectVerification(
                 project_id=expected.project_id,
                 status="not_replay_verified",
                 revision=None,
-                projection_sha256=_canonical_sha256(comparison),
+                projection_sha256=unavailable_card_projection_sha256(
+                    card,
+                    expected.projection_sha256,
+                    team_space=store.space_kind == "team",
+                ),
             )
         else:
             status, snapshot = catalog.cached_snapshot_status(expected.project_id)

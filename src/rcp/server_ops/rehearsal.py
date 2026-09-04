@@ -1333,19 +1333,11 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                     )
                 else:
                     card = cards[project.project_id]
-                    comparison = _project_card_comparison(card)
-                    projection_sha256 = _canonical_sha256(comparison)
-                    if (
-                        projection_sha256 != project.expected_card_sha256
-                        and opened.space_kind == "team"
-                    ):
-                        legacy_comparison = dict(comparison)
-                        legacy_comparison.pop("delete_confirmation", None)
-                        legacy_comparison.update(
-                            can_delete=False,
-                            delete_unavailable_reason=TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
-                        )
-                        projection_sha256 = _canonical_sha256(legacy_comparison)
+                    projection_sha256 = unavailable_card_projection_sha256(
+                        card,
+                        project.expected_card_sha256,
+                        team_space=opened.space_kind == "team",
+                    )
                     if projection_sha256 != project.expected_card_sha256:
                         raise CandidateRehearsalRefused(
                             f"Candidate changed unavailable projection {project.project_id}."
@@ -1761,6 +1753,37 @@ def _optional_text_sha256(value: object) -> str | None:
     if value is None:
         return None
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def unavailable_card_projection_sha256(
+    card: Mapping[str, object],
+    expected_sha256: str,
+    *,
+    team_space: bool,
+) -> str:
+    """Hash an uncaptured project's card, accepting a predecessor's retired team shape.
+
+    A release before team deletion hashed team cards as non-deletable and without
+    `delete_confirmation`. When the current shape does not match the expectation
+    and the space is a team, the retired shape is tried; if it matches, its digest
+    is returned so both the candidate rehearsal and the live cutover readback agree
+    with the predecessor. Any other mismatch returns the current digest, which the
+    caller refuses. Retire this adapter once no server runs a pre-team-deletion
+    release.
+    """
+
+    comparison = _project_card_comparison(card)
+    digest = _canonical_sha256(comparison)
+    if digest == expected_sha256 or not team_space:
+        return digest
+    legacy_comparison = dict(comparison)
+    legacy_comparison.pop("delete_confirmation", None)
+    legacy_comparison.update(
+        can_delete=False,
+        delete_unavailable_reason=TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+    )
+    legacy_digest = _canonical_sha256(legacy_comparison)
+    return legacy_digest if legacy_digest == expected_sha256 else digest
 
 
 def _project_card_comparison(card: Mapping[str, object]) -> dict[str, object]:
