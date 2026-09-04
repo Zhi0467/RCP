@@ -8,9 +8,10 @@ source install, continuous update, member enrollment, provider readiness, and
 real GitHub-backed project creation. Backup setup is one root CLI operation with
 a retained server-managed recovery identity by default; the 2026-09-04 production
 concurrent-task backup drive passed. Unreachable-SSH backup qualification was
-explicitly skipped. The disposable transfer reached final review but the native
-admission request failed with HTTP 415; its desktop fix awaits merged-main
-qualification. The two-member desktop switching, first task, SSH execution
+explicitly skipped. The disposable transfer passed admission after merged PR #42
+and survived a personal-backend restart at the sealed archive boundary. Relay
+then exposed a missing desktop target archive-binding call; that focused fix
+awaits merged-main qualification. The two-member desktop switching, first task, SSH execution
 target, broader backup/restore, transfer, and complete one-lab closure drive
 remain.
 
@@ -45,7 +46,7 @@ What each open drive is waiting on:
 - **T5a, T5b** — the native relay, unified move wizard, and restart recovery are
   implemented and hermetically verified. They still need the S98 source-built
   desktop drive against two real spaces and a real SSH operator route. Resume
-  the existing disposable request below after merging the admission JSON fix.
+  the existing disposable request below after merging the archive-binding fix.
 
 ### Production qualification receipts and next boundary — 2026-09-04
 
@@ -72,7 +73,7 @@ What each open drive is waiting on:
   creation/start identity. The archive was verified without a restore into live
   data. Unreachable-SSH/partial capture and the broader S104 fixtures remain
   unqualified; the human explicitly excluded that SSH drive.
-- **T5a/T5b, S98 stopped before target admission:** disposable project
+- **T5a/T5b, S98 partial drive:** disposable project
   `c3997083-a534-47f6-a4c1-74286f93422c` uses personal checkout
   `/private/tmp/rcp-transfer-live-20260904` and repository
   `Zhi0467/rcp-git-credentials-live-test` at
@@ -85,13 +86,25 @@ What each open drive is waiting on:
   Review digest: `bf67c94242c3da099bb9a32034d7181b18714f6f03d717b2d68d4e325594dd31`.
   Central checkout:
   `/home/rcp/rcp-server/projects/c3997083-a534-47f6-a4c1-74286f93422c/repositories/research`.
-- The actual desktop confirmation returned HTTP 415: native target admission
-  omitted JSON while the authenticated team middleware requires it. No target
-  admission, source release, relay, restart recovery, activation, or deletion
-  is claimed. The fix sends an empty JSON object; native request and authenticated
-  API regressions cover the wire requirement and refusal before mutation.
-- Continue after human merge using a rebuilt desktop from merged `main`. Do not
-  update production or test branch code there without the required authorization.
+- PR #42 (`b0b2360cddd7a17e7a371adc4bde5e19a9d59d43`) fixed the native
+  admission HTTP 415 by sending empty JSON. Both CI Python versions, web, lint,
+  upgrade, and native checks passed before merge. Rebuilt source desktop then
+  recorded target admission at 19:37:45.582945 UTC and source release at
+  19:37:50.763635 UTC. Source request revision 6 binds main fence revision 2,
+  SHA-256 `eec310f5e698acc326f7060bb321d900535fd6ef84a7a7a60b5639db5873aa54`,
+  20,480 bytes. Quitting the desktop stopped its personal backend; relaunch
+  preserved that exact request, revision, fence, digest, and size. Recovery
+  reopened the saved request route; automatic discovery from the project card
+  was not demonstrated.
+- The protected manual export is mode 0600. Import via the authorized tmux
+  sudo session refused at preparation with `target transfer must be archive-bound
+  for upload`; no target activation occurred. The desktop omitted the existing
+  archive-binding API in both automatic and manual relay entrances. The focused
+  fix binds the source digest, size, and fence through the admitting member's
+  session, validates target readback, then launches the stdin-only CLI.
+- Continue after merge using a rebuilt desktop from merged `main`. The human
+  authorized iteration and merge of the focused repair PRs. Do not update
+  production or test branch code there without the required authorization.
   Reuse the two existing requests and review digest; do not create another
   disposable project. The saved `zhiwang` operator route lacks noninteractive
   sudo permission; CLI setup used the authorized tmux session. No sudoers policy
