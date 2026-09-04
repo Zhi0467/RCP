@@ -360,7 +360,7 @@ export function AddTeamSpaceDialog({
               setSecret("");
             }}
           >
-            Invitation code
+            Bootstrap or invitation code
           </button>
           <button
             type="button"
