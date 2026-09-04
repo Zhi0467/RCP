@@ -290,15 +290,11 @@ impl TeamSessionState {
         let (connection, client, cookie) = self
             .authenticated_request_context(connections, connection_id)
             .await?;
-        let response = client
-            .post(endpoint(
-                &connection.local_origin,
-                &format!("/api/project-transfers/target-requests/{request_id}/admit"),
-            )?)
-            .header(COOKIE, cookie)
-            .send()
-            .await
-            .map_err(|error| format!("could not admit the target transfer request: {error}"))?;
+        let response =
+            target_admission_request(&client, &connection.local_origin, cookie, request_id)?
+                .send()
+                .await
+                .map_err(|error| format!("could not admit the target transfer request: {error}"))?;
         response_json(response, "target transfer admission").await
     }
 
@@ -1252,6 +1248,21 @@ fn parse_target_transfer_readback(
     })
 }
 
+fn target_admission_request(
+    client: &Client,
+    origin: &str,
+    cookie: HeaderValue,
+    request_id: &str,
+) -> Result<RequestBuilder, String> {
+    Ok(client
+        .post(endpoint(
+            origin,
+            &format!("/api/project-transfers/target-requests/{request_id}/admit"),
+        )?)
+        .header(COOKIE, cookie)
+        .json(&serde_json::json!({})))
+}
+
 fn endpoint(origin: &str, path: &str) -> Result<Url, String> {
     let mut url = Url::parse(origin).map_err(|_| "the local team origin is invalid".to_string())?;
     url.set_path(path);
@@ -1463,6 +1474,30 @@ async fn stop_candidate_after_failure(tunnels: &TeamTunnelState, connection_id: 
 mod tests {
     use super::*;
     use reqwest::header::HeaderValue;
+
+    #[test]
+    fn target_admission_sends_json_for_the_authenticated_team_mutation() {
+        let request_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let request = target_admission_request(
+            &Client::new(),
+            "https://team.rcp.localhost:8421",
+            HeaderValue::from_static("__Host-rcp_session=test-session"),
+            request_id,
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        assert_eq!(request.method(), Method::POST);
+        assert_eq!(
+            request.url().path(),
+            format!("/api/project-transfers/target-requests/{request_id}/admit")
+        );
+        assert_eq!(request.headers()[CONTENT_TYPE], "application/json");
+        assert_eq!(request.headers()[COOKIE], "__Host-rcp_session=test-session");
+        let body: Value =
+            serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body, serde_json::json!({}));
+    }
 
     fn health() -> TeamHealth {
         TeamHealth {

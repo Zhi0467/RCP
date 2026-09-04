@@ -416,6 +416,16 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
         assert target_projection.json()["can_review"] is True
         assert target_projection.json()["can_admit"] is True
         assert target_projection.json()["can_run_setup"] is False
+        missing_json = team_client.post(
+            f"/api/project-transfers/target-requests/{target_request['request_id']}/admit",
+        )
+        assert missing_json.status_code == 415
+        assert missing_json.json()["detail"]["code"] == "team_json_required"
+        unchanged = team_client.get(
+            f"/api/project-transfers/requests/{target_request['request_id']}"
+        ).json()
+        assert unchanged["target_admission_receipt"] is None
+        assert unchanged["revision"] == target_projection.json()["revision"]
         admitted = team_client.post(
             f"/api/project-transfers/target-requests/{target_request['request_id']}/admit",
             json={},
