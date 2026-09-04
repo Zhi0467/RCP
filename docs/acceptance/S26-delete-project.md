@@ -17,8 +17,8 @@ last_passed: >-
 last_checked: >-
   2026-09-04 — transferred team-project confirmation, Cancel, deletion,
   direct project-row removal, preserved checkout/canonical bytes/deploy key,
-  and absence after desktop restart passed. Production-server restart and
-  nonempty task-stage/imported-history cleanup remain unqualified live.
+  and absence after desktop and production-server restart passed. Nonempty
+  task-stage/imported-history cleanup remains unqualified live.
 invariants: [1, 2, 8, 9, 10g]
 ---
 
@@ -30,8 +30,10 @@ dialog named checkout and deploy-key preservation. All 11 target `.research`
 file hashes and Git HEAD were unchanged; GitHub key 162317885 remained present
 and writable. A read-only inspection found no direct project-owned rows in
 21 tables, SQLite integrity `ok`, and no foreign-key violations. The card stayed
-absent after desktop restart and fresh team connection. The production service
-was deliberately not restarted. This small fixture does not prove the broader
+absent after desktop restart and fresh team connection, then after the authorized
+production update to `276a2bb` and another desktop connection. All 11 canonical
+file hashes, Git HEAD, and the deploy key remained unchanged. This small fixture
+does not prove the broader
 active-work refusal or nonempty app-file cleanup cases below; status stays
 pending. Exact receipts are in the
 [production qualification handoff](../handoffs/handoff-2026-08-27-dev-team-space-and-server.md#production-qualification-receipts-and-next-boundary--2026-09-04).
