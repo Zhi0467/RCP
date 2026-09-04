@@ -11,7 +11,7 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { ProjectActionsMenu, ProjectLanding } = await server.ssrLoadModule(
+const { ProjectActionsMenu, ProjectDeleteDialog, ProjectLanding } = await server.ssrLoadModule(
   "/src/views/ProjectLanding.tsx",
 );
 const { IdentityProvenanceSlip, copyIdentityId } = await server.ssrLoadModule(
@@ -102,6 +102,8 @@ test("the project menu renders backend deletion and personal-only move actions",
     attention_count: 0,
     can_delete: true,
     delete_unavailable_reason: null,
+    delete_confirmation:
+      "RCP records will be erased. Repositories and their .research directories remain untouched.",
   };
   const team = {
     ...personal,
@@ -109,6 +111,8 @@ test("the project menu renders backend deletion and personal-only move actions",
     name: "Team paper",
     can_delete: true,
     delete_unavailable_reason: null,
+    delete_confirmation:
+      "RCP records will be erased. The server-managed checkout and repository deploy key remain; credentials are not revoked.",
   };
   const props = {
     cover: "wood",
@@ -132,6 +136,35 @@ test("the project menu renders backend deletion and personal-only move actions",
   assert.doesNotMatch(teamMenu, /Move to team space/);
   assert.match(teamMenu, />Delete project</);
   assert.match(teamMenu, />Cover</);
+});
+
+test("the delete dialog renders the backend team consequence only for a team project", () => {
+  const personal = {
+    id: "project-1",
+    name: "Personal paper",
+    can_delete: true,
+    delete_confirmation:
+      "RCP records will be erased. Repositories and their .research directories remain untouched.",
+  };
+  const team = {
+    ...personal,
+    id: "project-2",
+    name: "Team paper",
+    delete_confirmation:
+      "RCP records will be erased. The server-managed checkout and repository deploy key remain; credentials are not revoked.",
+  };
+  const props = { busy: false, error: null, onClose() {}, onConfirm() {} };
+
+  const personalDialog = renderToStaticMarkup(
+    React.createElement(ProjectDeleteDialog, { ...props, project: personal }),
+  );
+  const teamDialog = renderToStaticMarkup(
+    React.createElement(ProjectDeleteDialog, { ...props, project: team }),
+  );
+
+  assert.doesNotMatch(personalDialog, /server-managed checkout and repository deploy key remain/);
+  assert.match(teamDialog, /server-managed checkout and repository deploy key remain/);
+  assert.match(teamDialog, /credentials are not revoked/);
 });
 
 test("an unnamed personal identity presents the landing sign-in action", () => {

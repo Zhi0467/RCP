@@ -96,6 +96,7 @@ if TYPE_CHECKING:
 _DISPLAY_SNAPSHOT_SCHEMA_VERSION = 4
 _DISPLAY_SNAPSHOT_ENVELOPE_ADAPTER = TypeAdapter(dict[str, object])
 _PATCH_LOG_HEAD_UNSET = object()
+_LOGGER = logging.getLogger(__name__)
 _DISPLAY_SNAPSHOT_FIELDS = {
     "id",
     "home_space_id",
@@ -707,6 +708,17 @@ class ProjectDeletionResult(BaseModel):
     removed_stages: int
     removed_display_snapshot: bool
     removed_paper_snapshot: bool
+
+
+PERSONAL_PROJECT_DELETE_CONFIRMATION = (
+    "RCP records, task history, and staged run data will be permanently erased. "
+    "Repositories and their .research directories remain untouched. Paused, interrupted, "
+    "failed, and completed history will become unreachable."
+)
+TEAM_PROJECT_DELETE_CONFIRMATION = (
+    f"{PERSONAL_PROJECT_DELETE_CONFIRMATION} The server-managed checkout and repository "
+    "deploy key remain; credentials are not revoked."
+)
 
 
 EpisodeSerializer = Callable[
@@ -1705,20 +1717,18 @@ class ProjectCatalog:
                 display_snapshot = self._cached_snapshot_path(project_id)
                 paper_snapshot = self._paper_snapshot_path(project_id)
                 project_cache_root = _validate_project_cache_roots(self.data_dir, project_id)
-                imported_sources = ImportedProviderSourceStore(self.data_dir, project_id)
-                imported_inventory = imported_sources.inventory()
+                imported_sources: ImportedProviderSourceStore | None = None
+                imported_inventory: ImportedProviderSourceInventory | None = None
+                if _is_canonical_uuid4(project_id):
+                    imported_sources = ImportedProviderSourceStore(self.data_dir, project_id)
+                    imported_inventory = imported_sources.inventory()
+                    imported_sources.validate_discard(expected_inventory=imported_inventory)
                 for stage in stages:
                     self._validate_stage_target(stage)
                 _validate_optional_regular_app_file(display_snapshot, "project display snapshot")
                 _validate_optional_regular_app_file(paper_snapshot, "project paper snapshot")
 
-                for stage in stages:
-                    self._remove_stage(stage)
-
-                removed_display = _unlink_regular_app_file(display_snapshot)
-                removed_paper = _unlink_regular_app_file(paper_snapshot)
-                _remove_validated_project_cache_root(project_cache_root)
-                imported_sources.discard(expected_inventory=imported_inventory)
+                database_records = self.store.delete_project_records(project_id)
                 self._snapshot_generations.pop(project_id, None)
                 self._committed_snapshot_generations.pop(project_id, None)
                 self._cached_snapshot_patch_heads.pop(project_id, None)
@@ -1726,11 +1736,47 @@ class ProjectCatalog:
                 self._compute_status_cache.pop(project_id, None)
                 self._compute_probe_generations.pop(project_id, None)
                 self._compute_probe_locks.pop(project_id, None)
-                database_records = self.store.delete_project_records(project_id)
+
+                removed_stages = 0
+                for stage in stages:
+                    try:
+                        self._remove_stage(stage)
+                    except Exception as exc:
+                        location = f"{stage.host}:{stage.root}" if stage.host else stage.root
+                        _warn_project_cleanup_failure(project_id, location, exc)
+                    else:
+                        removed_stages += 1
+                try:
+                    removed_display = _unlink_regular_app_file(display_snapshot)
+                except Exception as exc:
+                    removed_display = False
+                    _warn_project_cleanup_failure(project_id, str(display_snapshot), exc)
+                try:
+                    removed_paper = _unlink_regular_app_file(paper_snapshot)
+                except Exception as exc:
+                    removed_paper = False
+                    _warn_project_cleanup_failure(project_id, str(paper_snapshot), exc)
+                try:
+                    _remove_validated_project_cache_root(project_cache_root)
+                except Exception as exc:
+                    cache_path = (
+                        project_cache_root
+                        or project_cache_roots(self.data_dir, project_id)[0].parent
+                    )
+                    _warn_project_cleanup_failure(project_id, str(cache_path), exc)
+                if imported_sources is not None and imported_inventory is not None:
+                    try:
+                        imported_sources.discard(expected_inventory=imported_inventory)
+                    except Exception as exc:
+                        _warn_project_cleanup_failure(
+                            project_id,
+                            str(imported_sources.project_root),
+                            exc,
+                        )
             return ProjectDeletionResult(
                 project_id=project_id,
                 database_records=database_records,
-                removed_stages=len(stages),
+                removed_stages=removed_stages,
                 removed_display_snapshot=removed_display,
                 removed_paper_snapshot=removed_paper,
             )
@@ -1786,8 +1832,7 @@ class ProjectCatalog:
             remote = RemoteRunStage(stage.host).attach_artifact_source(stage.root)
             if not remote.close():
                 raise RuntimeError(
-                    f"Could not remove saved run stage {stage.root!r} on {stage.host!r}; "
-                    "the project was not deleted."
+                    f"Could not remove saved run stage {stage.root!r} on {stage.host!r}."
                 )
             return
 
@@ -2280,8 +2325,7 @@ class ProjectCatalog:
             temp.write_text(service.manifest.path.read_text(encoding="utf-8"), encoding="utf-8")
             os.replace(temp, locator)
 
-    @staticmethod
-    def _card(record: ProjectRecord) -> dict[str, object]:
+    def _card(self, record: ProjectRecord) -> dict[str, object]:
         return {
             "id": record.project_id,
             "home_space_id": record.home_space_id,
@@ -2298,6 +2342,11 @@ class ProjectCatalog:
             "error": record.error,
             "can_delete": True,
             "delete_unavailable_reason": None,
+            "delete_confirmation": (
+                TEAM_PROJECT_DELETE_CONFIRMATION
+                if self.store.space_kind == "team"
+                else PERSONAL_PROJECT_DELETE_CONFIRMATION
+            ),
         }
 
 
@@ -2673,6 +2722,23 @@ def _timestamp(value: object) -> str | None:
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value)
+
+
+def _is_canonical_uuid4(value: str) -> bool:
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError:
+        return False
+    return parsed.version == 4 and str(parsed) == value
+
+
+def _warn_project_cleanup_failure(project_id: str, path: str, error: Exception) -> None:
+    _LOGGER.warning(
+        "Project %s deletion committed, but cleanup failed for %s: %s",
+        project_id,
+        path,
+        error,
+    )
 
 
 def _remove_local_stage(target: Path) -> None:

@@ -411,7 +411,11 @@ class SpaceStoreMixin:
             connection.execute("BEGIN IMMEDIATE")
             self._require_team_member_from_connection(connection, invited_user_id)
             row = connection.execute(
-                "SELECT * FROM project_invitations WHERE invitation_id = ?",
+                """
+                SELECT invitation.* FROM project_invitations AS invitation
+                JOIN projects AS project ON project.project_id = invitation.project_id
+                WHERE invitation.invitation_id = ? AND project.retired_at IS NULL
+                """,
                 (invitation_id,),
             ).fetchone()
             # An invitation addressed to somebody else is answered exactly as a

@@ -370,20 +370,7 @@ class ProjectStoreMixin:
                 is None
             ):
                 raise KeyError(project_id)
-            if (
-                connection.execute(
-                    """
-                SELECT 1 FROM graph_runs
-                WHERE project_id = ? AND status IN ('queued', 'running', 'pausing')
-                LIMIT 1
-                """,
-                    (project_id,),
-                ).fetchone()
-                is not None
-            ):
-                raise ProjectActiveTaskConflict(
-                    "Pause the active agent task before deleting this project."
-                )
+            self._require_project_deletion_safe(connection, project_id)
             rows = connection.execute(
                 """
                 SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root
@@ -410,20 +397,7 @@ class ProjectStoreMixin:
                     is None
                 ):
                     raise KeyError(project_id)
-                if (
-                    connection.execute(
-                        """
-                    SELECT 1 FROM graph_runs
-                    WHERE project_id = ? AND status IN ('queued', 'running', 'pausing')
-                    LIMIT 1
-                    """,
-                        (project_id,),
-                    ).fetchone()
-                    is not None
-                ):
-                    raise ProjectActiveTaskConflict(
-                        "Pause the active agent task before deleting this project."
-                    )
+                self._require_project_deletion_safe(connection, project_id)
 
                 operation_ids = connection.execute(
                     "SELECT operation_id FROM graph_runs WHERE project_id = ?",
@@ -431,6 +405,9 @@ class ProjectStoreMixin:
                 ).fetchall()
                 operation_count = len(operation_ids)
                 counts = {
+                    "project_invitations": connection.execute(
+                        "DELETE FROM project_invitations WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                     "project_members": connection.execute(
                         "DELETE FROM project_members WHERE project_id = ?", (project_id,)
                     ).rowcount,
@@ -458,6 +435,25 @@ class ProjectStoreMixin:
                         (project_id,),
                     ).rowcount,
                 }
+                for table in (
+                    "_legacy_campaign_invocations_archive",
+                    "_legacy_campaign_messages_archive",
+                    "_legacy_campaign_recoveries_archive",
+                    "_legacy_campaign_reports_archive",
+                ):
+                    counts[table] = connection.execute(
+                        f"""
+                        DELETE FROM {table}
+                        WHERE campaign_id IN (
+                            SELECT campaign_id FROM _legacy_campaigns_archive
+                            WHERE project_id = ?
+                        )
+                        """,
+                        (project_id,),
+                    ).rowcount
+                counts["_legacy_campaigns_archive"] = connection.execute(
+                    "DELETE FROM _legacy_campaigns_archive WHERE project_id = ?", (project_id,)
+                ).rowcount
                 connection.execute(
                     """
                     DELETE FROM auto_research_child_work_attempts
@@ -527,7 +523,9 @@ class ProjectStoreMixin:
                 counts["episodes"] = connection.execute(
                     "DELETE FROM episodes WHERE project_id = ?", (project_id,)
                 ).rowcount
-                connection.execute("DELETE FROM agent_usage WHERE project_id = ?", (project_id,))
+                counts["agent_usage"] = connection.execute(
+                    "DELETE FROM agent_usage WHERE project_id = ?", (project_id,)
+                ).rowcount
                 for table in (
                     "graph_run_outputs",
                     "graph_run_events",
@@ -547,6 +545,62 @@ class ProjectStoreMixin:
                     "DELETE FROM graph_runs WHERE project_id = ?", (project_id,)
                 ).rowcount
                 assert counts["graph_runs"] == operation_count
+                counts["project_transfer_import_configurations"] = connection.execute(
+                    """
+                    DELETE FROM project_transfer_import_configurations
+                    WHERE request_id IN (
+                        SELECT request_id FROM project_transfer_imports WHERE project_id = ?
+                    )
+                    """,
+                    (project_id,),
+                ).rowcount
+                counts["project_transfer_imports"] = connection.execute(
+                    "DELETE FROM project_transfer_imports WHERE project_id = ?", (project_id,)
+                ).rowcount
+                counts["project_transfer_restore_reentries"] = connection.execute(
+                    """
+                    DELETE FROM project_transfer_restore_reentries
+                    WHERE target_request_id IN (
+                        SELECT request_id FROM project_transfer_requests WHERE project_id = ?
+                    )
+                    """,
+                    (project_id,),
+                ).rowcount
+                counts["project_transfer_activations"] = connection.execute(
+                    "DELETE FROM project_transfer_activations WHERE project_id = ?", (project_id,)
+                ).rowcount
+                counts["project_transfer_uploads"] = connection.execute(
+                    "DELETE FROM project_transfer_uploads WHERE project_id = ?", (project_id,)
+                ).rowcount
+                counts["project_transfer_proofs"] = connection.execute(
+                    """
+                    DELETE FROM project_transfer_proofs
+                    WHERE request_id IN (
+                        SELECT request_id FROM project_transfer_requests WHERE project_id = ?
+                    )
+                    """,
+                    (project_id,),
+                ).rowcount
+                counts["project_transfer_requests"] = connection.execute(
+                    "DELETE FROM project_transfer_requests WHERE project_id = ?", (project_id,)
+                ).rowcount
+                counts["project_provisioning_step_receipts"] = connection.execute(
+                    """
+                    DELETE FROM project_provisioning_step_receipts
+                    WHERE request_id IN (
+                        SELECT request_id FROM project_provisioning_requests
+                        WHERE proposed_project_id = ? AND status = 'completed'
+                    )
+                    """,
+                    (project_id,),
+                ).rowcount
+                counts["project_provisioning_requests"] = connection.execute(
+                    """
+                    DELETE FROM project_provisioning_requests
+                    WHERE proposed_project_id = ? AND status = 'completed'
+                    """,
+                    (project_id,),
+                ).rowcount
                 counts["projects"] = connection.execute(
                     "DELETE FROM projects WHERE project_id = ?", (project_id,)
                 ).rowcount
@@ -556,6 +610,57 @@ class ProjectStoreMixin:
                 connection.rollback()
                 raise
         return counts
+
+    @staticmethod
+    def _require_project_deletion_safe(
+        connection: sqlite3.Connection,
+        project_id: str,
+    ) -> None:
+        if (
+            connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE project_id = ? AND status IN ('queued', 'running', 'pausing')
+                LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+            is not None
+        ):
+            raise ProjectActiveTaskConflict(
+                "Pause the active agent task before deleting this project."
+            )
+        if (
+            connection.execute(
+                """
+                SELECT 1 FROM episodes
+                WHERE project_id = ?
+                  AND status IN ('queued', 'running', 'stopping', 'wrapping_up')
+                LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+            is not None
+        ):
+            raise ProjectActiveTaskConflict(
+                "Use Stop and wait for the live episode to settle before deleting this project."
+            )
+        if (
+            connection.execute(
+                """
+                SELECT 1 FROM watchers
+                WHERE project_id = ?
+                  AND (
+                    status IN ('active', 'degraded')
+                    OR (status = 'completed' AND notified = 0)
+                  )
+                LIMIT 1
+                """,
+                (project_id,),
+            ).fetchone()
+            is not None
+        ):
+            raise ProjectActiveTaskConflict("Use stop watching before deleting this project.")
 
     def upsert_project(self, record: ProjectRecord) -> ProjectRecord:
         with self.connection() as connection:

@@ -288,16 +288,22 @@ an exact diagnostic and no instruction to delete them.
 
 ## Deletion
 
-Deleting a personal or team project removes its RCP catalog/control-plane data,
-task stages, snapshots, rebuildable caches, and registered imported provider
-history after confirmation. It does not delete or edit the underlying research
-repositories or canonical state repository. For a team project, it also leaves
-the server-managed checkout and Git deploy key in place. Removing either is a
-separate operator deprovisioning action, not a consequence of catalog deletion.
-Active work blocks deletion; settled work and tabs reconcile through the
-existing ownership and Stop rules. The backend publishes the deletion decision
-on the project card, and the Web renders that answer rather than inferring it
-from space kind, paths, or checkout state.
+Deleting a personal or team project first validates every app-owned file target
+without changing it. The SQLite transaction then repeats the active-work check
+and removes the registration plus all project-owned control-plane rows. Only
+after that commit does RCP remove task stages, snapshots, rebuildable caches,
+and registered imported provider history. A cleanup failure is logged with the
+project and path but does not restore the registration or report deletion as
+failed; any leftover app files are inert.
+
+Queued, running, or pausing tasks; non-terminal episodes; and active, pollable,
+or deliverable watchers block deletion. The human must use the existing Pause,
+Stop, or stop-watching action and wait for work to settle. Deletion never edits
+the underlying research repositories or canonical state repository. For a team
+project, it also leaves the server-managed checkout and Git deploy key in place.
+Removing either is a separate operator deprovisioning action. The backend
+publishes the exact confirmation consequence on the project card, and the Web
+renders it verbatim rather than inferring policy from space kind or paths.
 
 ## Verification contracts
 

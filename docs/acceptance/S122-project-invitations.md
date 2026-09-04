@@ -54,6 +54,10 @@ what becomes of an agent that was running on your authorization.
   while preserving the managed checkout and deploy key. Leaving is not allowed
   to imply that deletion. Add another project member before leaving, or use the
   separately governed deletion path in [S26](S26-delete-project.md).
+- **Deletion retires pending invitations atomically.** The invitation and project
+  registration disappear in the same SQLite transaction, and acceptance also
+  requires that live project row. A stale invitation therefore cannot recreate
+  membership after catalog deletion.
 - **Revoking a token and losing membership are deliberately asymmetric.**
   Revocation is about a credential and does not stop already-authorized work —
   rotating after a lost laptop must not kill a week-long episode. Removal from a
@@ -103,6 +107,7 @@ member, with a live Auto-research episode holding several unspent invocations.
 - `revoking_a_token_does_not_fence_running_work`
 - `the_server_derives_membership_and_never_reads_it_from_the_request_body`
 - `no_agent_path_writes_a_membership_row`
+- `a_deleted_projects_pending_invitation_cannot_be_accepted`
 
 ## UI path
 

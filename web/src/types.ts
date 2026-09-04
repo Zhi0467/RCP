@@ -2269,6 +2269,7 @@ export interface ProjectCard {
   error?: string | null;
   can_delete: boolean;
   delete_unavailable_reason: string | null;
+  delete_confirmation: string;
 }
 
 export interface ProjectMember {

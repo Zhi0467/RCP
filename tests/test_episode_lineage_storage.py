@@ -267,6 +267,8 @@ def test_project_deletion_removes_episode_parent_and_child_rows(tmp_path) -> Non
     task = _root_task(store, episode.episode_id, project_id)
     store.create_episode_with_invocation(episode, task)
     store.fail_agent_task(task.operation_id, "settled")
+    store.request_episode_stop(episode.episode_id)
+    store.mark_episode_stop_skipped(episode.episode_id)
 
     counts = store.delete_project_records(project_id)
 

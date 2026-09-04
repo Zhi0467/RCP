@@ -677,14 +677,20 @@ the operator confirms revocation or explicitly preserves the prepared request
 for reuse. Losing the private half is not falsely reported as deleting the
 GitHub grant.
 
-The ordinary member-facing **Delete project** action removes either a personal
-or team project from its current RCP space after project-membership and active-task
-checks. The backend publishes the same deletion decision for both spaces, and
-the Web renders it. Deletion removes RCP database history, stages, snapshots,
-caches, and imported provider histories owned by that registration. It never
-edits or removes the central checkout, canonical `.research/` history, or
-repository deploy key. This is catalog deletion, not machine deprovisioning or
-credential revocation; the confirmation says so before the human commits it.
+The ordinary member-facing **Delete project** action applies to either a personal
+or team project after membership checks. A read-only filesystem preflight runs
+before one SQLite transaction repeats the task, episode, and watcher fence and
+removes the registration plus its project-owned rows. App-owned stages,
+snapshots, caches, and imported provider histories are removed only after that
+commit. A later file-cleanup failure is logged with its concrete path and does
+not make the completed catalog deletion fail.
+
+The backend publishes the exact confirmation text. For a team project it says:
+**The server-managed checkout and repository deploy key remain; credentials are
+not revoked.** The Web renders that answer verbatim. Deletion never edits the
+central checkout or canonical `.research/` history and never removes the deploy
+key. This is catalog deletion, not machine deprovisioning or credential
+revocation.
 
 ## Durable project provisioning
 
@@ -1403,9 +1409,10 @@ captures, recreates them through the owner in temporary verification, and
 owner-validates the immutable payload and restored live root on every rollback
 journal entry. Request-owned cleanup may discard one exact imported inventory
 only for the linked incoming transfer before project registration and target
-activation. Ordinary confirmed project deletion may also discard the exact
-registered project's imported history while preserving its checkout and Git
-credential; neither path is machine deprovisioning.
+activation. After an ordinary confirmed project deletion commits its SQLite
+transition, it attempts to discard the exact registered project's imported
+history while preserving its checkout and Git credential. A failed discard is
+warned and leaves inert app-owned files; neither path is machine deprovisioning.
 The private installed-service control socket exposes probe, provider plan/check,
 project-provision plan/step, online SQLite capture, member-removal, update, and
 root-only restore-activation operations. The current control protocol is version

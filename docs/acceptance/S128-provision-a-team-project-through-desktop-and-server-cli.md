@@ -187,7 +187,8 @@ transport only.
 - `only_final_human_review_appends_the_reserved_project_id_and_canonical_home`
 - `the_backend_marks_confirmed_catalog_delete_available_for_a_team_project`
 - `the_web_renders_the_backend_team_delete_decision`
-- `team_delete_removes_app_state_without_changing_keys_or_checkouts`
+- `team_delete_commits_database_cleanup_without_changing_keys_or_checkouts`
+- `team_delete_confirmation_discloses_that_credentials_are_not_revoked`
 - `interactive_and_structured_cli_modes_publish_the_same_durable_progress`
 - `cancelled_preparation_has_one_explicit_safe_disposition`
 - `cancellation_never_calls_private_key_deletion_github_grant_revocation`
@@ -222,6 +223,7 @@ The CLI may leave a prepared checkout or deploy key after cancellation only
 under an explicit backend-recorded reuse or cleanup disposition. It must not
 guess that an untracked directory is safe to delete. Project creation remains a
 human product action; server privilege proves the machine can prepare it, not
-that the human approved it. Later project deletion removes only the RCP
-registration and app-owned history; it does not reinterpret cancellation or
-authorize machine deprovisioning.
+that the human approved it. Later project deletion atomically removes the RCP
+registration and project-owned database history, then attempts app-file cleanup;
+cleanup warnings do not reinterpret cancellation or authorize machine
+deprovisioning.

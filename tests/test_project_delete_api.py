@@ -24,6 +24,7 @@ def test_delete_project_route_refuses_active_task(manifest, tmp_path) -> None:
     card = app.state.catalog.card(project_id)
     assert card["can_delete"] is True
     assert card["delete_unavailable_reason"] is None
+    assert "server-managed checkout" not in card["delete_confirmation"]
     now = app.state.background_tasks.store.now()
     app.state.background_tasks.store.create_agent_task(
         AgentTaskRecord(

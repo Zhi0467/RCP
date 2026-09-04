@@ -242,9 +242,11 @@ histories through that checkpoint. T4b/T4c preserve only receipt-backed complete
 transfer inbox files and ignore already-consumed uploads, while refusing any
 leftover untyped bytes. P6c now publishes and independently enforces the
 ordinary project-deletion decision through the card, Web, API, and catalog for
-both spaces. Team deletion removes the RCP registration and app-owned history
-while preserving the managed checkout, canonical research, and deploy key; it
-is not deprovisioning.
+both spaces. Team deletion preflights its file targets, atomically removes the
+RCP registration and project-owned database history, then attempts app-file
+cleanup. It preserves the managed checkout, canonical research, and deploy key;
+post-commit cleanup failures warn without failing deletion. It is not
+deprovisioning.
 
 ## Objective
 
@@ -594,11 +596,13 @@ that a record already owns.
   enable **Allow write access** and verifies a real request-scoped
   push/readback/cleanup with each key.
 - The member-facing **Delete project** path removes either a personal or team
-  registration from RCP after confirmation and the active-task check. Team
-  deletion removes app-owned rows, stages, snapshots, caches, and imported
-  provider histories, while leaving the managed checkout, canonical research,
-  and repository deploy key untouched. It is deliberately not machine
-  deprovisioning or GitHub-key revocation.
+  registration from RCP after confirmation and transactional task, episode, and
+  watcher checks. Team deletion removes all project-owned rows, then attempts to
+  remove stages, snapshots, caches, and imported provider histories. Failure of
+  that post-commit file cleanup is warned and may leave inert app files. The
+  managed checkout, canonical research, and repository deploy key remain, and
+  the backend-authored confirmation says credentials are not revoked. This is
+  deliberately not machine deprovisioning or GitHub-key revocation.
 - RCP never asks for or stores a member's personal GitHub token.
 - Remote execution transport uses the ordinary OpenSSH configuration already
   present for the server's `rcp` account. RCP checks the exact configured route

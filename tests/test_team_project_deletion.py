@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -88,6 +89,8 @@ def test_team_delete_removes_rcp_state_and_preserves_checkout_and_key(tmp_path: 
     assert card["id"] == project_id
     assert card["can_delete"] is True
     assert card["delete_unavailable_reason"] is None
+    assert "server-managed checkout and repository deploy key remain" in card["delete_confirmation"]
+    assert "credentials are not revoked" in card["delete_confirmation"]
 
     deleted = client.delete(f"/api/projects/{project_id}")
 
@@ -111,6 +114,158 @@ def test_team_delete_removes_rcp_state_and_preserves_checkout_and_key(tmp_path: 
         )
     )
     assert restarted.get("/api/projects").json() == []
+
+
+def test_team_delete_removes_invitation_transfer_and_provisioning_history(
+    tmp_path: Path,
+) -> None:
+    _app, client, store, people, acting = _team_app(tmp_path, members=2)
+    _creator, invitee = people
+    project_id = _create_project(client, tmp_path / "managed-checkout")
+    invitation = client.post(
+        f"/api/projects/{project_id}/invitations",
+        json={"user_id": invitee.user_id},
+    )
+    assert invitation.status_code == 201, invitation.text
+    invitation_id = invitation.json()["invitation_id"]
+    request_id = str(uuid.uuid4())
+    now = store.now()
+    digest = "a" * 64
+    with store.connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO project_provisioning_requests (
+                request_id, kind, status, target_space_id, authorized_by_json,
+                proposed_project_id, machines_json, repositories_json,
+                provider_checks_json, revision, created_at, updated_at, completed_at
+            ) VALUES (?, 'incoming_transfer', 'completed', ?, '{}', ?, '[]', '[]',
+                      '[]', 1, ?, ?, ?)
+            """,
+            (request_id, store.space_id, project_id, now, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO project_provisioning_step_receipts (
+                request_id, receipt_id, phase, from_status, to_status,
+                transition_sha256, resulting_revision, created_at
+            ) VALUES (?, 'receipt', 'complete', 'ready_for_review', 'completed', ?, 1, ?)
+            """,
+            (request_id, digest, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO project_transfer_requests (
+                request_id, side, phase, project_id, source_space_id,
+                target_space_id, record_json, revision, created_at, updated_at
+            ) VALUES (?, 'target', 'completed', ?, 'source-space', ?, '{}', 1, ?, ?)
+            """,
+            (request_id, project_id, store.space_id, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO project_transfer_imports (
+                request_id, project_id, archive_manifest_sha256,
+                target_manifest_sha256, operational_payload_sha256, status,
+                event_id_map_json, receipt_id_map_json, publication_sha256,
+                created_at, completed_at
+            ) VALUES (?, ?, ?, ?, ?, 'complete', '{}', '{}', ?, ?, ?)
+            """,
+            (request_id, project_id, digest, digest, digest, digest, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO project_transfer_import_configurations (
+                request_id, receipt_json, created_at
+            ) VALUES (?, '{}', ?)
+            """,
+            (request_id, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO project_transfer_proofs (
+                request_id, proof_kind, state, commitment_sha256, secret,
+                acknowledgement_sha256, exposed_at, acknowledged_at, consumed_at
+            ) VALUES (?, 'target_activation', 'consumed', ?, NULL, ?, ?, ?, ?)
+            """,
+            (request_id, digest, digest, now, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO project_transfer_uploads (
+                request_id, project_id, archive_sha256, archive_size_bytes,
+                lease_boundary_sha256, status, receipt_json, created_at, updated_at
+            ) VALUES (?, ?, ?, 1, ?, 'complete', '{}', ?, ?)
+            """,
+            (request_id, project_id, digest, digest, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO project_transfer_activations (
+                target_request_id, project_id, receipt_json, activated_at
+            ) VALUES (?, ?, '{}', ?)
+            """,
+            (request_id, project_id, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO project_transfer_restore_reentries (
+                target_request_id, restored_revision, receipt_json, created_at
+            ) VALUES (?, 1, '{}', ?)
+            """,
+            (request_id, now),
+        )
+        connection.execute(
+            "INSERT INTO _legacy_campaigns_archive(campaign_id, project_id) VALUES ('legacy', ?)",
+            (project_id,),
+        )
+        for table in (
+            "_legacy_campaign_invocations_archive",
+            "_legacy_campaign_messages_archive",
+            "_legacy_campaign_recoveries_archive",
+            "_legacy_campaign_reports_archive",
+        ):
+            connection.execute(f"INSERT INTO {table}(campaign_id) VALUES ('legacy')")
+
+    deleted = client.delete(f"/api/projects/{project_id}")
+
+    assert deleted.status_code == 200, deleted.text
+    acting[0] = invitee.user_id
+    refused = client.post(f"/api/project-invitations/{invitation_id}/accept")
+    assert refused.status_code == 404
+    assert refused.json()["detail"] == "Invitation not found"
+    with store.connection() as connection:
+        table_names = [
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+            )
+        ]
+        for table in table_names:
+            columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+            if "project_id" in columns:
+                remaining = connection.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE project_id = ?", (project_id,)
+                ).fetchone()[0]
+                assert remaining == 0, table
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM project_provisioning_requests WHERE proposed_project_id = ?",
+                (project_id,),
+            ).fetchone()[0]
+            == 0
+        )
+        for table, column in (
+            ("project_provisioning_step_receipts", "request_id"),
+            ("project_transfer_import_configurations", "request_id"),
+            ("project_transfer_proofs", "request_id"),
+            ("project_transfer_restore_reentries", "target_request_id"),
+        ):
+            assert (
+                connection.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", (request_id,)
+                ).fetchone()[0]
+                == 0
+            )
 
 
 def test_team_delete_refuses_an_active_task_before_touching_the_checkout(tmp_path: Path) -> None:

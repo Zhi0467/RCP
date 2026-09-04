@@ -1346,7 +1346,7 @@ def test_project_deletion_preserves_alias_for_canonical_reregistration(tmp_path)
     old_project_id = "derived-project-id"
     canonical_project_id = str(uuid.uuid4())
     home_space_id = store.space_id
-    _seed_project_identity_rows(store, old_project_id, label="source")
+    store.upsert_project(_project(old_project_id))
     store.migrate_project_identity(old_project_id, canonical_project_id, home_space_id)
 
     store.delete_project_records(canonical_project_id)
@@ -1992,12 +1992,18 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
     counts = store.delete_project_records("delete-me")
 
     assert counts == {
+        "project_invitations": 0,
         "project_members": 1,
         "paper_drafts": 1,
         "writing_sessions": 1,
         "chat_session_contexts": 1,
         "watchers": 0,
         "graph_watcher_reconciliation": 0,
+        "_legacy_campaign_invocations_archive": 0,
+        "_legacy_campaign_messages_archive": 0,
+        "_legacy_campaign_recoveries_archive": 0,
+        "_legacy_campaign_reports_archive": 0,
+        "_legacy_campaigns_archive": 0,
         "experiment_episode_state": 0,
         "result_views": 0,
         "artifact_revision_candidates": 0,
@@ -2010,11 +2016,21 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "episode_wrapups": 0,
         "episode_invocations": 0,
         "episodes": 0,
+        "agent_usage": 0,
         "graph_run_outputs": 1,
         "graph_run_events": 1,
         "graph_run_receipts": 2,
         "graph_run_contracts": 1,
         "graph_runs": 1,
+        "project_transfer_import_configurations": 0,
+        "project_transfer_imports": 0,
+        "project_transfer_restore_reentries": 0,
+        "project_transfer_activations": 0,
+        "project_transfer_uploads": 0,
+        "project_transfer_proofs": 0,
+        "project_transfer_requests": 0,
+        "project_provisioning_step_receipts": 0,
+        "project_provisioning_requests": 0,
         "projects": 1,
     }
     with store.connection() as connection:

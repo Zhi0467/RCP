@@ -438,6 +438,10 @@ def _completed_child_project_rows(
     store.complete_agent_task(work_task.operation_id, applied_revision=None, result={})
     store.complete_agent_task(child_task.operation_id, applied_revision=None, result={})
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    store.request_episode_stop(child_id)
+    store.mark_episode_stop_skipped(child_id)
+    store.request_episode_stop(parent.episode_id)
+    store.mark_episode_stop_skipped(parent.episode_id)
     return parent, work_route, experiment_route, admission
 
 
@@ -2190,6 +2194,10 @@ def test_project_deletion_removes_every_auto_research_child_registry(tmp_path) -
         actor_operation_id=root.operation_id,
     )
     assert finish_receipt.disposition == "blocked"
+    store.request_episode_stop(child_id)
+    store.mark_episode_stop_skipped(child_id)
+    store.request_episode_stop(parent.episode_id)
+    store.mark_episode_stop_skipped(parent.episode_id)
 
     counts = store.delete_project_records(parent.project_id)
 
