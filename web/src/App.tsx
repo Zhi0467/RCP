@@ -2643,6 +2643,10 @@ export default function App() {
     },
     [apiBase],
   );
+  const webMcpArtifactSource = useMemo(
+    () => ({ loadEpisode: loadWebMcpEpisode, loadTask: loadWebMcpTask }),
+    [loadWebMcpEpisode, loadWebMcpTask],
+  );
   const createWebMcpConversation = useCallback(
     (kind: ChatKind, node: GraphNode | null) => {
       if (!project) throw new Error("No RCP project is open.");
@@ -3096,7 +3100,7 @@ export default function App() {
           tasks,
           episodes,
           showWebMcpArtifactViewer,
-          loadWebMcpEpisode,
+          webMcpArtifactSource,
         ),
         ...projectConversationToolDefinitions(
           project,
@@ -3138,7 +3142,6 @@ export default function App() {
     episodes,
     experimentStartRequiresSync,
     experimentStopId,
-    loadWebMcpEpisode,
     mutationsDisabled,
     projectIndexWebMcpAvailable,
     projectIndexWebMcpTools,
@@ -3150,6 +3153,7 @@ export default function App() {
     tasks,
     visibleChatSummaries,
     watchers,
+    webMcpArtifactSource,
     webMcpConversationSource,
     webMcpExperimentStartProjectId,
     webMcpProject,
