@@ -465,7 +465,7 @@ As an existing member:
 
 As the person joining, from their own source-built RCP desktop app:
 
-1. On the personal project index, select **Add team space** and **New member**.
+1. On the personal project index, select **Add team space** and **Invitation code**.
 2. Enter their own SSH route, such as `alice@lab-server`, and server port
    `8421`. This SSH account only carries the loopback tunnel.
 3. Enter their display name and paste the bootstrap or invitation code into the

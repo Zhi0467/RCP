@@ -131,7 +131,7 @@ roster and ledger again: an unconsumed invitation says **Waiting for someone to
 join**, while a consumed invitation names the member who joined; expired,
 locked, and revoked invitations say so directly.
 
-In the source-built desktop, **Add team space → New member** collects that
+In the source-built desktop, **Add team space → Invitation code** collects that
 person's SSH target, display name, and bootstrap or invitation code. The SSH
 identity supplies transport only. Enrollment stores the resulting permanent
 member credential in the desktop credential store and never records the raw
