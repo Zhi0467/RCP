@@ -76,23 +76,11 @@ jobs:
           npm --prefix web run build
           UV_MANAGED_PYTHON=1 UV_PYTHON=3.12 uv sync --frozen
 
-      - name: Materialize the protected repository-admin token
-        shell: bash
-        env:
-          RCP_LIVE_GITHUB_ADMIN_TOKEN: ${{ secrets.RCP_LIVE_GITHUB_ADMIN_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$RCP_LIVE_GITHUB_ADMIN_TOKEN"
-          umask 077
-          printf '%s' "$RCP_LIVE_GITHUB_ADMIN_TOKEN" > "$RUNNER_TEMP/rcp-live-github-admin-token"
-
       - name: Drive source installation and forced update rollback
         shell: bash
         env:
           RCP_RUN_SERVER_INSTALL_LIVE: "1"
           RCP_SERVER_INSTALL_LIVE_DISPOSABLE: I_UNDERSTAND_THIS_MUTATES_THE_HOST
-          RCP_LIVE_GITHUB_ADMIN_TOKEN_FILE: ${{ runner.temp }}/rcp-live-github-admin-token
-          RCP_LIVE_DEPLOY_KEY_RECEIPT_FILE: ${{ runner.temp }}/rcp-live-deploy-key-label
           RCP_LIVE_BACKUP_ARCHIVE_RECEIPT_FILE: ${{ runner.temp }}/rcp-live-backup-archive-path
           RCP_LIVE_BACKUP_IDENTITY_FILE: ${{ runner.temp }}/rcp-live-backup-identity
           RCP_LIVE_BACKUP_METADATA_FILE: ${{ runner.temp }}/rcp-live-backup-metadata.json
@@ -132,34 +120,10 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-      - name: Revoke an interrupted test's deploy key
+      - name: Remove temporary backup inputs and receipts
         if: always()
         shell: bash
         run: |
-          set -euo pipefail
-          RCP_TOKEN_FILE="$RUNNER_TEMP/rcp-live-github-admin-token"
-          RCP_RECEIPT_FILE="$RUNNER_TEMP/rcp-live-deploy-key-label"
-          if test -s "$RCP_TOKEN_FILE" && test -s "$RCP_RECEIPT_FILE"; then
-            RCP_DEPLOY_KEY_LABEL="$(cat "$RCP_RECEIPT_FILE")"
-            [[ "$RCP_DEPLOY_KEY_LABEL" =~ ^rcp-source:[0-9a-f-]{36}$ ]]
-            export GH_TOKEN="$(cat "$RCP_TOKEN_FILE")"
-            mapfile -t RCP_DEPLOY_KEY_IDS < <(
-              gh api --paginate "repos/$GITHUB_REPOSITORY/keys" \
-                --jq ".[] | select(.title == \"$RCP_DEPLOY_KEY_LABEL\") | .id"
-            )
-            for RCP_DEPLOY_KEY_ID in "${RCP_DEPLOY_KEY_IDS[@]}"; do
-              [[ "$RCP_DEPLOY_KEY_ID" =~ ^[0-9]+$ ]]
-              gh api --method DELETE "repos/$GITHUB_REPOSITORY/keys/$RCP_DEPLOY_KEY_ID"
-            done
-            unset GH_TOKEN
-          fi
-
-      - name: Remove temporary credential and receipt files
-        if: always()
-        shell: bash
-        run: |
-          rm -f -- "$RUNNER_TEMP/rcp-live-github-admin-token"
-          rm -f -- "$RUNNER_TEMP/rcp-live-deploy-key-label"
           rm -f -- "$RUNNER_TEMP/rcp-live-backup-archive-path"
           rm -f -- "$RUNNER_TEMP/rcp-live-backup-identity"
           rm -f -- "$RUNNER_TEMP/rcp-live-backup-metadata.json"
@@ -268,7 +232,6 @@ jobs:
           RCP_RUN_SERVER_RESTORE_LIVE: "1"
           RCP_SERVER_INSTALL_LIVE_DISPOSABLE: I_UNDERSTAND_THIS_MUTATES_THE_HOST
           RCP_LIVE_GITHUB_ADMIN_TOKEN_FILE: ${{ runner.temp }}/rcp-live-github-admin-token
-          RCP_LIVE_DEPLOY_KEY_RECEIPT_FILE: ${{ runner.temp }}/rcp-live-deploy-key-label
           RCP_LIVE_RESTORE_DEPLOY_KEY_RECEIPT_FILE: ${{ runner.temp }}/rcp-live-restore-deploy-key-label
           RCP_LIVE_RESTORE_ARCHIVE_FILE: ${{ runner.temp }}/rcp-live-restore-inputs/rcp-live-backup.tar.age
           RCP_LIVE_RESTORE_IDENTITY_FILE: ${{ runner.temp }}/rcp-live-restore-inputs/rcp-live-backup-identity
@@ -284,30 +247,26 @@ jobs:
         run: |
           set -euo pipefail
           RCP_TOKEN_FILE="$RUNNER_TEMP/rcp-live-github-admin-token"
-          for RCP_RECEIPT_FILE in \
-            "$RUNNER_TEMP/rcp-live-deploy-key-label" \
-            "$RUNNER_TEMP/rcp-live-restore-deploy-key-label"; do
-            if test -s "$RCP_TOKEN_FILE" && test -s "$RCP_RECEIPT_FILE"; then
-              RCP_DEPLOY_KEY_LABEL="$(cat "$RCP_RECEIPT_FILE")"
-              export GH_TOKEN="$(cat "$RCP_TOKEN_FILE")"
-              mapfile -t RCP_DEPLOY_KEY_IDS < <(
-                gh api --paginate "repos/$GITHUB_REPOSITORY/keys" \
-                  --jq ".[] | select(.title == \"$RCP_DEPLOY_KEY_LABEL\") | .id"
-              )
-              for RCP_DEPLOY_KEY_ID in "${RCP_DEPLOY_KEY_IDS[@]}"; do
-                [[ "$RCP_DEPLOY_KEY_ID" =~ ^[0-9]+$ ]]
-                gh api --method DELETE "repos/$GITHUB_REPOSITORY/keys/$RCP_DEPLOY_KEY_ID"
-              done
-              unset GH_TOKEN
-            fi
-          done
+          RCP_RECEIPT_FILE="$RUNNER_TEMP/rcp-live-restore-deploy-key-label"
+          if test -s "$RCP_TOKEN_FILE" && test -s "$RCP_RECEIPT_FILE"; then
+            RCP_DEPLOY_KEY_LABEL="$(cat "$RCP_RECEIPT_FILE")"
+            export GH_TOKEN="$(cat "$RCP_TOKEN_FILE")"
+            mapfile -t RCP_DEPLOY_KEY_IDS < <(
+              gh api --paginate "repos/$GITHUB_REPOSITORY/keys" \
+                --jq ".[] | select(.title == \"$RCP_DEPLOY_KEY_LABEL\") | .id"
+            )
+            for RCP_DEPLOY_KEY_ID in "${RCP_DEPLOY_KEY_IDS[@]}"; do
+              [[ "$RCP_DEPLOY_KEY_ID" =~ ^[0-9]+$ ]]
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/keys/$RCP_DEPLOY_KEY_ID"
+            done
+            unset GH_TOKEN
+          fi
 
       - name: Remove temporary restore inputs and receipts
         if: always()
         shell: bash
         run: |
           rm -f -- "$RUNNER_TEMP/rcp-live-github-admin-token"
-          rm -f -- "$RUNNER_TEMP/rcp-live-deploy-key-label"
           rm -f -- "$RUNNER_TEMP/rcp-live-restore-deploy-key-label"
           rm -f -- "$RUNNER_TEMP/rcp-live-restore-inputs/rcp-live-backup.tar.age"
           rm -f -- "$RUNNER_TEMP/rcp-live-restore-inputs/rcp-live-backup-identity"
