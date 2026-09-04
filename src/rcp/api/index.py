@@ -171,6 +171,28 @@ def experiment_episodes(
     )
 
 
+@membership_router.get(
+    "/api/projects/{project_id}/experiment-episodes",
+    response_model=list[ExperimentLoopIndexEntryResponse],
+)
+def project_experiment_episodes(
+    project_id: str,
+    mode: Literal["experiment_loop"] = Query(...),
+    *,
+    catalog: CatalogDependency,
+    project_display_cache: DisplayCacheDependency,
+    store: StoreDependency,
+    experiment_operation_lock: ExperimentOperationLockDependency,
+) -> list[ExperimentLoopIndexEntryResponse]:
+    return _experiment_episode_entries(
+        catalog=catalog,
+        project_display_cache=project_display_cache,
+        store=store,
+        experiment_operation_lock=experiment_operation_lock,
+        visible={catalog.resolve_project_id(project_id)},
+    )
+
+
 def _experiment_episode_entries(
     *,
     catalog: ProjectCatalog,

@@ -814,6 +814,7 @@ export default function App() {
     replaceProjects,
     loadProjectIndex,
     refreshExperimentLoops,
+    refreshProjectExperimentLoops,
     applyHashRoute,
     clearProjectRoute,
     openSetup,
@@ -913,7 +914,7 @@ export default function App() {
   const selectedExperimentUsesBranch = selectedExperimentRoute?.graph_target.kind === "branch";
   const selectedBranchExperiment = selectedExperimentUsesBranch ? selectedIndexedExperiment : null;
   useEffect(() => {
-    if (!projectRunsNeedsExperimentIndex(projectId, view)) return;
+    if (!projectId || !projectRunsNeedsExperimentIndex(projectId, view)) return;
     let stopped = false;
     let timer = 0;
     const schedule = () => {
@@ -926,7 +927,7 @@ export default function App() {
         return;
       }
       try {
-        await refreshExperimentLoops();
+        await refreshProjectExperimentLoops(projectId);
       } catch (error) {
         if (!stopped) {
           reportErrorNotice(
@@ -941,7 +942,7 @@ export default function App() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [projectId, refreshExperimentLoops, reportErrorNotice, view]);
+  }, [projectId, refreshProjectExperimentLoops, reportErrorNotice, view]);
   const authoritativeProjectId = useRef<string | null>(null);
   const reloadRef = useRef<(includeTasks?: boolean) => Promise<void>>(async () => undefined);
   const authoritativeReloadInFlight = useRef<{

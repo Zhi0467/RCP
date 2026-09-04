@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, loadExperimentEpisodes, loadSpaceRuns } from "../api";
+import { api, loadExperimentEpisodes, loadProjectExperimentEpisodes, loadSpaceRuns } from "../api";
 import { experimentBoardHref } from "../experimentBoard";
 import {
   adjacentProjectTabId,
@@ -51,6 +51,14 @@ export function cacheProjectTabState<T>(
     if (oldest === undefined) break;
     cache.delete(oldest);
   }
+}
+
+export function mergeProjectExperimentLoops(
+  current: ExperimentLoopIndexEntry[],
+  projectId: string,
+  nextEntries: ExperimentLoopIndexEntry[],
+): ExperimentLoopIndexEntry[] {
+  return [...current.filter((entry) => entry.project_id !== projectId), ...nextEntries];
 }
 
 export function projectTabStateForOpen<T>(
@@ -151,6 +159,13 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const refreshExperimentLoops = useCallback(async () => {
     const nextEntries = await loadExperimentEpisodes();
     setExperimentLoops(nextEntries);
+    return nextEntries;
+  }, []);
+  const refreshProjectExperimentLoops = useCallback(async (requestedProjectId: string) => {
+    const nextEntries = await loadProjectExperimentEpisodes(requestedProjectId);
+    setExperimentLoops((current) =>
+      mergeProjectExperimentLoops(current, requestedProjectId, nextEntries),
+    );
     return nextEntries;
   }, []);
   const loadProjectIndex = useCallback(async () => {
@@ -350,6 +365,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     replaceProjects,
     loadProjectIndex,
     refreshExperimentLoops,
+    refreshProjectExperimentLoops,
     applyHashRoute,
     clearProjectRoute,
     openSetup,

@@ -502,7 +502,9 @@ Episode task rows publish durable actor `role` and lineage `depth`, and episode
 cards consume those fields without interpreting persisted task requests.
 Project Runs refreshes this index while visible, so an Experiment dispatched on
 an Auto-research graph branch appears as its own episode card even before anyone
-opens its exact route. The same child appears once as a linked, subordinate
+opens its exact route. The project-scoped
+`/api/projects/{project_id}/experiment-episodes` path restricts projection work
+to that visible project. The same child appears once as a linked, subordinate
 **Experiment** row in the owning Auto-research card's **Turns** list. That row is
 navigational provenance, not a second lifecycle or budget: its label and status
 consume the indexed node and control, while the child card retains its own

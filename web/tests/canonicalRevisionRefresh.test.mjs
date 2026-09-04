@@ -25,6 +25,7 @@ const {
   OPEN_PROJECT_HEARTBEAT_INTERVAL_MS,
   cacheProjectTabState,
   inactiveProjectTabState,
+  mergeProjectExperimentLoops,
   projectIdsForCacheHeartbeat,
   projectTabStateForOpen,
   singleFlightProjectCacheHeartbeat,
@@ -70,6 +71,17 @@ test("the per-project display cache is bounded and refreshed as an LRU", () => {
 
   assert.deepEqual([...cache.keys()], ["alpha", "gamma"]);
   assert.deepEqual(cache.get("alpha"), { revision: 3 });
+});
+
+test("a scoped Experiment refresh replaces only that project's entries", () => {
+  const alphaOld = { project_id: "alpha", episode: { episode_id: "alpha-old" } };
+  const beta = { project_id: "beta", episode: { episode_id: "beta-current" } };
+  const alphaNew = { project_id: "alpha", episode: { episode_id: "alpha-new" } };
+
+  assert.deepEqual(mergeProjectExperimentLoops([alphaOld, beta], "alpha", [alphaNew]), [
+    beta,
+    alphaNew,
+  ]);
 });
 
 test("a cached response cannot move the rendered project backwards", () => {

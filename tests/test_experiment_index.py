@@ -1707,6 +1707,57 @@ def test_experiment_index_fails_for_malformed_existing_cache(manifest, tmp_path:
     assert response.status_code == 503
 
 
+def test_scoped_experiment_index_ignores_another_projects_missing_cache(
+    manifest, tmp_path: Path
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    healthy_project_id, current_episode = _seed_indexed_project(app)
+    client = TestClient(app)
+    assert client.get(f"/api/projects/{healthy_project_id}").status_code == 200
+
+    store = app.state.background_tasks.store
+    unavailable_project_id = str(uuid.uuid4())
+    store.upsert_project(
+        ProjectRecord(
+            project_id=unavailable_project_id,
+            home_space_id=store.space_id,
+            locator=str(tmp_path / "unavailable" / "manifest.toml"),
+            name="Unavailable project",
+            state_location=str(tmp_path / "unavailable" / ".research"),
+            state_remote=False,
+            added_at=store.now(),
+            revision=1,
+        )
+    )
+    owner = store.local_owner
+    assert owner is not None
+    store.seat_project_member(unavailable_project_id, owner.user_id)
+    _record_loop(
+        store,
+        unavailable_project_id,
+        episode_id=str(uuid.uuid4()),
+        operation_id="unavailable-project-loop",
+        created_at="2026-08-10T00:00:00+00:00",
+    )
+
+    unscoped = client.get("/api/episodes?mode=experiment_loop")
+    scoped = client.get(
+        f"/api/projects/{healthy_project_id}/experiment-episodes",
+        params={"mode": "experiment_loop"},
+    )
+    unknown = client.get(
+        f"/api/projects/{uuid.uuid4()}/experiment-episodes",
+        params={"mode": "experiment_loop"},
+    )
+
+    assert unscoped.status_code == 503
+    assert scoped.status_code == 200, scoped.text
+    assert [entry["project_id"] for entry in scoped.json()] == [healthy_project_id]
+    assert scoped.json()[0]["episode"]["episode_id"] == current_episode
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == "Project not found"
+
+
 def test_experiment_index_reads_pre_identity_display_cache(manifest, tmp_path: Path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id, current_episode = _seed_indexed_project(app)

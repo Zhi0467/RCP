@@ -286,6 +286,14 @@ export function loadExperimentEpisodes(): Promise<ExperimentLoopIndexEntry[]> {
   return api<ExperimentLoopIndexEntry[]>("/api/episodes?mode=experiment_loop");
 }
 
+export function loadProjectExperimentEpisodes(
+  projectId: string,
+): Promise<ExperimentLoopIndexEntry[]> {
+  return api<ExperimentLoopIndexEntry[]>(
+    `/api/projects/${encodeURIComponent(projectId)}/experiment-episodes?mode=experiment_loop`,
+  );
+}
+
 export function loadSpaceRuns(): Promise<SpaceRunIndexEntry[]> {
   return api<SpaceRunIndexEntry[]>("/api/space/runs");
 }
