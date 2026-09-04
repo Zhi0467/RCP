@@ -615,13 +615,16 @@ class BackupCaptureCoordinator:
             sqlite3.Error,
         ) as exc:
             # The receipt keeps one fixed operator-safe reason, so the concrete
-            # cause is only recoverable from this log line.
+            # cause is only recoverable from this log line. Do not attach the
+            # traceback: validation errors repeat their rejected input value.
+            diagnostic = " ".join(redact_server_text(str(exc)).split())
+            if not diagnostic:
+                diagnostic = "no diagnostic detail"
             logger.warning(
                 "Backup capture could not inventory project %s: %s: %s",
                 record.project_id,
                 type(exc).__name__,
-                exc,
-                exc_info=True,
+                diagnostic[:BACKUP_DIAGNOSTIC_MAX_CHARS],
             )
             reason = "The captured project inventory is invalid or unavailable."
         return BackupSnapshotProjectInventory(

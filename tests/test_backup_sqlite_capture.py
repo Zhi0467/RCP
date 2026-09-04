@@ -516,7 +516,30 @@ def test_transient_inventory_failure_logs_its_concrete_cause(
     assert project.project_id in message
     assert "OperationalError" in message
     assert "database is locked" in message
-    assert logged[0].exc_info is not None
+    assert logged[0].exc_info is None
+
+
+def test_inventory_failure_log_redacts_rejected_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    data_dir = tmp_path / "data"
+    store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Concurrent lab")
+    _register_completed_project(store, data_dir, name="Unsafe artifact project")
+    secret = "rcp_member_this_must_not_enter_the_journal"
+
+    def _invalid(self: AppStore, project_id: str) -> list[AgentTaskRecord]:
+        raise ValueError(f"kept filename rejected; input_value='{secret}'")
+
+    monkeypatch.setattr(AppStore, "all_project_agent_tasks", _invalid)
+
+    with caplog.at_level(logging.WARNING, logger="rcp.server_ops.backup_capture"):
+        BackupCaptureCoordinator(store, data_dir, _metadata(data_dir)).capture_sqlite()
+
+    assert secret not in caplog.text
+    assert "[REDACTED RCP CREDENTIAL]" in caplog.text
+    assert caplog.records[0].exc_info is None
 
 
 def test_capture_receipt_rejects_tampering(tmp_path: Path) -> None:
