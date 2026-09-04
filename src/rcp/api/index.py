@@ -646,9 +646,12 @@ def delete_project(
     project_id: str,
     *,
     catalog: CatalogDependency,
+    experiment_operation_lock: ExperimentOperationLockDependency,
 ) -> dict[str, object]:
     try:
-        return catalog.delete(project_id).model_dump(mode="json")
+        canonical = catalog.resolve_project_id(project_id)
+        with experiment_operation_lock(canonical):
+            return catalog.delete(canonical).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except ProjectActiveTaskConflict as exc:

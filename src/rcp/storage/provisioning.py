@@ -207,6 +207,14 @@ class ProjectProvisioningStoreMixin:
 
         canonical_project_id = self._transfer_uuid(project_id, "project identity")
         with self.connection() as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM projects WHERE project_id = ? AND retired_at IS NULL",
+                    (canonical_project_id,),
+                ).fetchone()
+                is None
+            ):
+                raise ValueError("This project is no longer registered and cannot accept new work.")
             self._require_project_accepts_new_work(connection, canonical_project_id)
 
     @staticmethod

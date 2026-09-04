@@ -407,6 +407,8 @@ real instance lock. Verification reads health, startup recovery, the union of
 all enrolled members' visible projects, and representative project/task/watcher
 responses. Captured projects must match current-release graph revisions and
 digests exactly.
+Uncaptured project-card comparison accepts the retired team deletion-unavailable
+fields from a predecessor overlay until no server runs a pre-team-deletion release.
 
 A successful rehearsal publishes one immutable private receipt named by both
 candidate commit and capture UUID and bound to the SQLite and project-file

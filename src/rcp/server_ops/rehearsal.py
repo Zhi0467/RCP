@@ -31,6 +31,7 @@ from rcp.limits import (
     BACKUP_DIAGNOSTIC_MAX_CHARS,
     SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
 )
+from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON
 from rcp.server_ops._local_primitives import (
     PrivateFileReadError,
     canonical_json_bytes,
@@ -1329,7 +1330,18 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                 else:
                     card = cards[project.project_id]
                     comparison = _project_card_comparison(card)
-                    if _canonical_sha256(comparison) != project.expected_card_sha256:
+                    projection_sha256 = _canonical_sha256(comparison)
+                    if (
+                        projection_sha256 != project.expected_card_sha256
+                        and opened.space_kind == "team"
+                    ):
+                        legacy_comparison = {
+                            **comparison,
+                            "can_delete": False,
+                            "delete_unavailable_reason": TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+                        }
+                        projection_sha256 = _canonical_sha256(legacy_comparison)
+                    if projection_sha256 != project.expected_card_sha256:
                         raise CandidateRehearsalRefused(
                             f"Candidate changed unavailable projection {project.project_id}."
                         )
@@ -1338,7 +1350,7 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                             project_id=project.project_id,
                             status="not_replay_verified",
                             revision=None,
-                            projection_sha256=_canonical_sha256(comparison),
+                            projection_sha256=projection_sha256,
                         )
                     )
         if fence.attempted_effects:

@@ -710,6 +710,11 @@ class ProjectDeletionResult(BaseModel):
     removed_paper_snapshot: bool
 
 
+# Retained for candidate rehearsal compatibility with pre-team-deletion releases.
+TEAM_PROJECT_DELETE_UNAVAILABLE_REASON = (
+    "Team projects cannot be deleted here. A server operator must deprovision the "
+    "managed checkout and Git deploy keys."
+)
 PERSONAL_PROJECT_DELETE_CONFIRMATION = (
     "RCP records, task history, and staged run data will be permanently erased. "
     "Repositories and their .research directories remain untouched. Paused, interrupted, "
