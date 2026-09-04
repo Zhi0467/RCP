@@ -36,7 +36,7 @@ const MAX_SESSION_COOKIE_BYTES: usize = 4 * 1024;
 const SESSION_COOKIE_PREFIX: &str = "__Host-rcp_session=";
 const TEAM_SHELL_PROTOCOL_HEADER: &str = "RCP-Team-Shell-Protocol";
 const TEAM_SHELL_PROTOCOL_MINIMUM: u32 = 1;
-const TEAM_SHELL_PROTOCOL_MAXIMUM: u32 = 1;
+const TEAM_SHELL_PROTOCOL_MAXIMUM: u32 = 2;
 const TEAM_ENROLLMENT_PATH: &str = "/api/team/enroll";
 const TEAM_SESSION_EXCHANGE_PATH: &str = "/api/team/session/exchange";
 const TEAM_PROJECT_CARDS_PATH: &str = "/api/projects";
@@ -1582,6 +1582,14 @@ mod tests {
         assert_eq!(highest_common_protocol(1, 3, 2, 4), Some(3));
         assert_eq!(highest_common_protocol(2, 3, 4, 5), None);
 
+        let mut older_server = health();
+        older_server.team_shell_protocol = Some(TeamShellProtocolRange {
+            minimum: 1,
+            maximum: 1,
+        });
+        assert_eq!(select_team_shell_protocol(&older_server).unwrap(), 1);
+        assert_eq!(select_team_shell_protocol(&health()).unwrap(), 2);
+
         let mut stale_desktop = health();
         stale_desktop.team_shell_protocol = Some(TeamShellProtocolRange {
             minimum: TEAM_SHELL_PROTOCOL_MAXIMUM + 1,
@@ -1610,10 +1618,7 @@ mod tests {
         assert_eq!(fixture["protocol_version"], 1);
         assert_eq!(
             fixture["advertised_range"],
-            serde_json::json!({
-                "minimum": TEAM_SHELL_PROTOCOL_MINIMUM,
-                "maximum": TEAM_SHELL_PROTOCOL_MAXIMUM,
-            })
+            serde_json::json!({"minimum": 1, "maximum": 1})
         );
         assert_eq!(fixture["selection_header"], TEAM_SHELL_PROTOCOL_HEADER);
         assert_eq!(fixture["mismatch"]["status"], 426);

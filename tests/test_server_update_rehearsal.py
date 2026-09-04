@@ -25,6 +25,10 @@ from rcp.background import StartupEffectBlocked, StartupEffectFence
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.history import HistoryManager
+from rcp.projects import (
+    TEAM_PROJECT_DELETE_CONFIRMATION,
+    TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+)
 from rcp.server_ops.backup_capture import (
     BackupCaptureCoordinator,
     BackupSnapshotProjectInventory,
@@ -47,6 +51,7 @@ from rcp.server_ops.rehearsal import (
     CandidateRehearsalCoordinator,
     CandidateRehearsalRefused,
     RehearsalOverlay,
+    RehearsalProjectOverlay,
     StartupRecoveryReadModel,
     build_rehearsal_overlay,
     run_candidate_child,
@@ -317,6 +322,190 @@ class _CapturedControl:
     def capture_backup_sqlite(self) -> ServerControlBackupCaptureResult:
         self.calls += 1
         return self.result
+
+
+def _run_unavailable_project_candidate_child(
+    tmp_path: Path,
+    *,
+    expected_updates: dict[str, object] | None = None,
+) -> tuple[int, dict[str, object], str]:
+    operation_root = tmp_path / "operation"
+    overlay_root = operation_root / "overlay"
+    data_dir = overlay_root / "data"
+    data_dir.mkdir(parents=True, mode=0o700)
+    store, bootstrap = AppStore.initialize_team_space(
+        data_dir / "rcp.sqlite3",
+        "Unavailable Project Rehearsal Lab",
+    )
+    member, _token = store.enroll_team_member(bootstrap, "Alice")
+    project_id = str(uuid.uuid4())
+    manifest_path = _write_remote_manifest(
+        overlay_root / "projects" / project_id,
+        project_id=project_id,
+    )
+    manifest = load_manifest(manifest_path)
+    state_location = f"/srv/rcp/projects/{project_id}/repositories/repo/.research"
+    remote_error = "The configured SSH canonical state is currently unreachable."
+    store.upsert_project(
+        ProjectRecord(
+            project_id=project_id,
+            home_space_id=store.space_id,
+            locator=str(manifest.path),
+            name=manifest.name,
+            state_location=state_location,
+            state_remote=True,
+            added_at=store.now(),
+            revision=7,
+            reachable=False,
+            error=remote_error,
+        )
+    )
+    store.seat_project_member(project_id, member.user_id)
+    comparison: dict[str, object] = {
+        "id": project_id,
+        "home_space_id": store.space_id,
+        "name": manifest.name,
+        "locator": str(manifest.path),
+        "state_location": state_location,
+        "remote": True,
+        "last_opened_at": None,
+        "revision": 7,
+        "primary_question": None,
+        "attention_count": 0,
+        "last_refresh_at": None,
+        "reachable": False,
+        "error_sha256": hashlib.sha256(remote_error.encode()).hexdigest(),
+        "can_delete": True,
+        "delete_unavailable_reason": None,
+        "delete_confirmation": TEAM_PROJECT_DELETE_CONFIRMATION,
+    }
+    if expected_updates is not None:
+        comparison.update(expected_updates)
+    if comparison["can_delete"] is False:
+        comparison.pop("delete_confirmation")
+    expected_sha256 = rehearsal_module._canonical_sha256(comparison)
+    overlay = RehearsalOverlay(
+        root=str(overlay_root),
+        data_dir=str(data_dir),
+        database_path=str(data_dir / "rcp.sqlite3"),
+        capture_id=str(uuid.uuid4()),
+        sqlite_receipt_sha256="1" * 64,
+        sqlite_snapshot_sha256="2" * 64,
+        project_receipt_sha256="3" * 64,
+        space_id=store.space_id,
+        expected_startup_recovery=StartupRecoveryReadModel(
+            active_operation_ids=(),
+            stopping_experiment_operation_ids=(),
+            report_episode_ids=(),
+            auto_research_recovery_operation_ids=(),
+            active_watcher_ids=(),
+        ),
+        projects=(
+            RehearsalProjectOverlay(
+                project_id=project_id,
+                name=manifest.name,
+                capture_status="remote_unreachable",
+                overlay_locator=str(manifest.path),
+                original_locator=str(manifest.path),
+                original_state_location=state_location,
+                original_remote=True,
+                original_reachable=False,
+                original_error_sha256=hashlib.sha256(remote_error.encode()).hexdigest(),
+                expected_card_sha256=expected_sha256,
+                expected_graph_sha256=None,
+            ),
+        ),
+        transfer_inbox_entries=(),
+    )
+    overlay_path = operation_root / "overlay.json"
+    result_path = operation_root / "result.json"
+    overlay_path.write_text(overlay.model_dump_json(), encoding="utf-8")
+    overlay_path.chmod(0o600)
+
+    exit_code = run_candidate_child(overlay_path, result_path)
+    return exit_code, json.loads(result_path.read_text(encoding="utf-8")), expected_sha256
+
+
+def test_candidate_child_accepts_retired_team_deletion_card_projection(tmp_path: Path) -> None:
+    exit_code, result, expected_sha256 = _run_unavailable_project_candidate_child(
+        tmp_path,
+        expected_updates={
+            "can_delete": False,
+            "delete_unavailable_reason": TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+        },
+    )
+
+    assert exit_code == 0, result
+    assert result["status"] == "verified"
+    assert result["projects"][0]["projection_sha256"] == expected_sha256
+
+
+def test_candidate_child_refuses_unrelated_retired_card_projection_change(
+    tmp_path: Path,
+) -> None:
+    exit_code, result, _expected_sha256 = _run_unavailable_project_candidate_child(
+        tmp_path,
+        expected_updates={
+            "revision": 8,
+            "can_delete": False,
+            "delete_unavailable_reason": TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+        },
+    )
+
+    assert exit_code == 1
+    assert result["status"] == "failed"
+    assert "changed unavailable projection" in result["diagnostic"]
+
+
+def test_unavailable_card_projection_hash_accepts_only_the_retired_team_shape() -> None:
+    from rcp.projects import TEAM_PROJECT_DELETE_CONFIRMATION
+    from rcp.server_ops.rehearsal import (
+        _canonical_sha256,
+        _project_card_comparison,
+        unavailable_card_projection_sha256,
+    )
+
+    card = {
+        "id": "project-one",
+        "name": "Project one",
+        "revision": 4,
+        "can_delete": True,
+        "delete_unavailable_reason": None,
+        "delete_confirmation": TEAM_PROJECT_DELETE_CONFIRMATION,
+    }
+    current = _canonical_sha256(_project_card_comparison(card))
+    legacy_comparison = _project_card_comparison(card)
+    legacy_comparison.pop("delete_confirmation")
+    legacy_comparison.update(
+        can_delete=False,
+        delete_unavailable_reason=TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+    )
+    legacy = _canonical_sha256(legacy_comparison)
+    unrelated = _canonical_sha256({**legacy_comparison, "revision": 5})
+
+    assert unavailable_card_projection_sha256(card, current, team_space=True) == current
+    assert unavailable_card_projection_sha256(card, legacy, team_space=True) == legacy
+    assert unavailable_card_projection_sha256(card, legacy, team_space=False) == current
+    assert unavailable_card_projection_sha256(card, unrelated, team_space=True) == current
+
+
+def test_candidate_child_accepts_current_team_deletion_card_projection(tmp_path: Path) -> None:
+    exit_code, result, expected_sha256 = _run_unavailable_project_candidate_child(tmp_path)
+
+    assert exit_code == 0, result
+    assert result["status"] == "verified"
+    assert result["projects"][0]["projection_sha256"] == expected_sha256
+
+
+def test_candidate_child_refuses_changed_team_delete_confirmation(tmp_path: Path) -> None:
+    exit_code, result, _expected_sha256 = _run_unavailable_project_candidate_child(
+        tmp_path,
+        expected_updates={"delete_confirmation": "Changed deletion warning."},
+    )
+
+    assert exit_code == 1
+    assert result["status"] == "failed"
+    assert "changed unavailable projection" in result["diagnostic"]
 
 
 def test_candidate_rehearsal_replays_a_copy_without_touching_live_state(

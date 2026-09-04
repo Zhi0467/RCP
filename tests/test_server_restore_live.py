@@ -145,7 +145,7 @@ def test_protected_backup_restores_on_a_fresh_disposable_ubuntu() -> None:
             cookie=surviving_cookie,
             team_shell_protocol=True,
         )
-        assert project_headers.get("RCP-Team-Shell-Protocol") == "1"
+        assert project_headers.get("RCP-Team-Shell-Protocol") == "2"
         if (
             not isinstance(projects, list)
             or not all(isinstance(item, dict) for item in projects)
@@ -312,7 +312,7 @@ def _exchange_token(token: str) -> str:
         {"token": token},
         team_shell_protocol=True,
     )
-    assert headers.get("RCP-Team-Shell-Protocol") == "1"
+    assert headers.get("RCP-Team-Shell-Protocol") == "2"
     cookies = http.cookies.SimpleCookie()
     cookies.load(headers.get("Set-Cookie", ""))
     if len(cookies) != 1:
@@ -332,7 +332,7 @@ def _token_exchange_status(token: str) -> int:
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "RCP-Team-Shell-Protocol": "1",
+            "RCP-Team-Shell-Protocol": "2",
         },
     )
     try:

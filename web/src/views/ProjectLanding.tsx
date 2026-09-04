@@ -113,6 +113,64 @@ export function ProjectActionsMenu({
   );
 }
 
+interface ProjectDeleteDialogProps {
+  project: ProjectCard;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onConfirm: () => void;
+}
+
+export function ProjectDeleteDialog({
+  project,
+  busy,
+  error,
+  onClose,
+  onConfirm,
+}: ProjectDeleteDialogProps) {
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        className="project-delete-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="project-delete-title"
+        aria-describedby="project-delete-warning"
+      >
+        <header>
+          <Trash2 size={18} aria-hidden="true" />
+          <h2 id="project-delete-title">Delete {project.name}?</h2>
+        </header>
+        <p id="project-delete-warning">{project.delete_confirmation}</p>
+        {error && (
+          <div className="project-delete-error" role="alert">
+            {error}
+          </div>
+        )}
+        <footer>
+          <button
+            className="button secondary"
+            type="button"
+            autoFocus
+            disabled={busy}
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button className="button danger" type="button" disabled={busy} onClick={onConfirm}>
+            {busy ? "Deleting…" : "Delete project"}
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
 export function ProjectLanding({
   projects,
   invitations,
@@ -335,54 +393,13 @@ export function ProjectLanding({
       </main>
 
       {deleteProject && (
-        <div
-          className="modal-backdrop"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) closeDeleteConfirmation();
-          }}
-        >
-          <section
-            className="project-delete-dialog"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="project-delete-title"
-            aria-describedby="project-delete-warning"
-          >
-            <header>
-              <Trash2 size={18} aria-hidden="true" />
-              <h2 id="project-delete-title">Delete {deleteProject.name}?</h2>
-            </header>
-            <p id="project-delete-warning">
-              RCP records, task history, and staged run data for {deleteProject.name} will be
-              permanently erased. Repositories and their <code>.research</code> directories remain
-              untouched. Paused, interrupted, failed, and completed history will become unreachable.
-            </p>
-            {deleteError && (
-              <div className="project-delete-error" role="alert">
-                {deleteError}
-              </div>
-            )}
-            <footer>
-              <button
-                className="button secondary"
-                type="button"
-                autoFocus
-                disabled={deleteBusy}
-                onClick={closeDeleteConfirmation}
-              >
-                Cancel
-              </button>
-              <button
-                className="button danger"
-                type="button"
-                disabled={deleteBusy}
-                onClick={confirmDelete}
-              >
-                {deleteBusy ? "Deleting…" : "Delete project"}
-              </button>
-            </footer>
-          </section>
-        </div>
+        <ProjectDeleteDialog
+          project={deleteProject}
+          busy={deleteBusy}
+          error={deleteError}
+          onClose={closeDeleteConfirmation}
+          onConfirm={confirmDelete}
+        />
       )}
     </div>
   );

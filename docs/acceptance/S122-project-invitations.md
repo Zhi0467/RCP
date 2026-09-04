@@ -5,7 +5,7 @@ tier: hermetic
 driver: pytest + browser
 covered_by:
   - tests/test_project_invitations.py
-  - tests/test_team_project_deletion_guard.py
+  - tests/test_team_project_deletion.py
   - web/tests/landingIdentity.test.mjs
   - api 2026-08-15 — a real two-member team space over browser sessions drove
     invite, accept, membership, leaving, and the last-member refusal
@@ -17,9 +17,9 @@ covered_by:
     action; no browser console or application error
 last_passed: >-
   2026-08-29 — invitation without credentials, membership acceptance and
-  decline, loss-of-membership fencing, token-revocation asymmetry, the exact
-  last-member refusal, and the team deletion guard pass their hermetic and
-  browser drives.
+  decline, loss-of-membership fencing, token-revocation asymmetry, and the exact
+  last-member refusal pass their hermetic and browser drives. Confirmed team
+  catalog deletion is covered hermetically and awaits S26's live drive.
 invariants: [1, 3, 10g]
 ---
 
@@ -50,9 +50,14 @@ what becomes of an agent that was running on your authorization.
   never kills a turn mid-flight.
 - **The last member cannot leave.** A memberless project would be invisible to
   everyone with no administrator to recover it. Ordinary team-project deletion
-  is unavailable because it would orphan the managed checkout and deploy key.
-  The only team action named here is to add another project member; personal
-  deletion remains separately governed by [S26](S26-delete-project.md).
+  remains a separate explicit confirmation that removes the RCP registration
+  while preserving the managed checkout and deploy key. Leaving is not allowed
+  to imply that deletion. Add another project member before leaving, or use the
+  separately governed deletion path in [S26](S26-delete-project.md).
+- **Deletion retires pending invitations atomically.** The invitation and project
+  registration disappear in the same SQLite transaction, and acceptance also
+  requires that live project row. A stale invitation therefore cannot recreate
+  membership after catalog deletion.
 - **Revoking a token and losing membership are deliberately asymmetric.**
   Revocation is about a credential and does not stop already-authorized work —
   rotating after a lost laptop must not kill a week-long episode. Removal from a
@@ -79,7 +84,7 @@ member, with a live Auto-research episode holding several unspent invocations.
    turn, then watch for the next watcher wake.
 8. Retry and Resume that episode's task after the fence.
 9. As the sole remaining member, attempt to leave and inspect the exact next
-   action after the team-project deletion guard is active.
+   action. Confirm it does not silently turn leaving into project deletion.
 10. Separately, dispatch work as a member and then revoke that member's token
     while it runs.
 
@@ -98,10 +103,11 @@ member, with a live Auto-research episode holding several unspent invocations.
 - `a_fenced_episode_cannot_be_resumed_or_retried_back_into_running`
 - `the_fence_is_durable_across_a_restart`
 - `the_only_member_cannot_leave_the_project`
-- `the_team_last_member_refusal_says_to_add_a_member_not_delete_the_project`
+- `the_team_last_member_refusal_says_to_add_a_member_before_leaving`
 - `revoking_a_token_does_not_fence_running_work`
 - `the_server_derives_membership_and_never_reads_it_from_the_request_body`
 - `no_agent_path_writes_a_membership_row`
+- `a_deleted_projects_pending_invitation_cannot_be_accepted`
 
 ## UI path
 
@@ -125,8 +131,9 @@ carries no invite control at all rather than a permanently dead one.
 
 **Leaving** is in the same place. When you are the only member it is visibly
 unavailable. The completed team-server target says the project needs another
-member and does not offer ordinary team deletion. This is the one case where
-the refusal has to explain itself, because the control is otherwise identical.
+member; the separately confirmed catalog deletion remains available. This is
+the one case where the refusal has to explain itself, because the control is
+otherwise identical.
 
 **Deliberately not possible:** inviting someone who is not in the space, an
 invitation that carries an enrollment secret, any project role above member, and

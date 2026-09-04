@@ -403,11 +403,35 @@ test("team session exchange sends the raw token once in the JSON body only", asy
   }
 });
 
+test("a project deletion request selects the team shell protocol", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (path, init) => {
+    requests.push({ path, init });
+    return new Response(JSON.stringify({ project_id: "project-1" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    await api("/api/projects/project-1", { method: "DELETE" });
+    await api("/api/projects/project-1/caches/all", { method: "DELETE" });
+    await api("/api/projects/project-1");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  const [deletion, caches, read] = requests.map(({ init }) => new Headers(init.headers));
+  assert.equal(deletion.get(TEAM_SHELL_PROTOCOL_HEADER), String(TEAM_SHELL_PROTOCOL_VERSION));
+  assert.equal(caches.get(TEAM_SHELL_PROTOCOL_HEADER), null);
+  assert.equal(read.get(TEAM_SHELL_PROTOCOL_HEADER), null);
+});
+
 test("team shell protocol one remains the initial thin entrance contract", () => {
   assert.deepEqual(teamShellProtocolOne.advertised_range, {
-    minimum: TEAM_SHELL_PROTOCOL_VERSION,
-    maximum: TEAM_SHELL_PROTOCOL_VERSION,
+    minimum: 1,
+    maximum: 1,
   });
+  assert.equal(TEAM_SHELL_PROTOCOL_VERSION, 2);
   assert.equal(teamShellProtocolOne.selection_header, TEAM_SHELL_PROTOCOL_HEADER);
   assert.deepEqual(teamShellProtocolOne.mismatch, {
     status: 426,

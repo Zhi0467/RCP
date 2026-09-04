@@ -10,7 +10,7 @@ covered_by:
   - tests/test_project_checkout.py
   - tests/test_server_provider_readiness.py
   - tests/test_team_project_provisioning.py
-  - tests/test_team_project_deletion_guard.py
+  - tests/test_team_project_deletion.py
   - web/tests/landingIdentity.test.mjs
   - web/tests/projectProvisioning.test.mjs
   - web/tests/projectSetup.test.mjs
@@ -115,9 +115,10 @@ transport only.
 9. Open the new team project, run one task through the chosen provider profile,
    and inspect the checkout owner, task authorization, launch host/account, and
    Git remote.
-10. Return to the project index and inspect the new card's actions, then attempt
-    the ordinary project-delete API directly. Re-read the project, central
-    checkouts, deploy-key fingerprints and paths, and app records.
+10. Return to the project index and inspect the new card's actions, then delete
+    this disposable project through its ordinary confirmed action. Re-read the
+    catalog, central checkouts, canonical history, deploy-key fingerprints and
+    paths, and app-owned records.
 11. Cancel a second request before confirmation and inspect its prepared files
     and credentials through the CLI's explicit cleanup/reuse disposition. If a
     deploy key was already added to GitHub, leave it once and confirm the request
@@ -184,9 +185,10 @@ transport only.
 - `provider_readiness_uses_existing_native_auth_and_never_stores_or_changes_it`
 - `machine_preparation_alone_never_registers_the_project`
 - `only_final_human_review_appends_the_reserved_project_id_and_canonical_home`
-- `the_backend_marks_ordinary_delete_unavailable_for_a_team_project`
-- `the_web_omits_delete_from_a_team_card_without_deriving_that_decision`
-- `a_direct_delete_request_is_refused_before_records_keys_or_checkouts_change`
+- `the_backend_marks_confirmed_catalog_delete_available_for_a_team_project`
+- `the_web_renders_the_backend_team_delete_decision`
+- `team_delete_commits_database_cleanup_without_changing_keys_or_checkouts`
+- `team_delete_confirmation_discloses_that_credentials_are_not_revoked`
 - `interactive_and_structured_cli_modes_publish_the_same_durable_progress`
 - `cancelled_preparation_has_one_explicit_safe_disposition`
 - `cancellation_never_calls_private_key_deletion_github_grant_revocation`
@@ -221,4 +223,7 @@ The CLI may leave a prepared checkout or deploy key after cancellation only
 under an explicit backend-recorded reuse or cleanup disposition. It must not
 guess that an untracked directory is safe to delete. Project creation remains a
 human product action; server privilege proves the machine can prepare it, not
-that the human approved it.
+that the human approved it. Later project deletion atomically removes the RCP
+registration and project-owned database history, then attempts app-file cleanup;
+cleanup warnings do not reinterpret cancellation or authorize machine
+deprovisioning.

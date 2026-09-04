@@ -234,7 +234,7 @@ def _enroll_live_member(
         {"code": bootstrap_code, "display_name": display_name},
         team_shell_protocol=True,
     )
-    assert enrollment_headers.get("RCP-Team-Shell-Protocol") == "1"
+    assert enrollment_headers.get("RCP-Team-Shell-Protocol") == "2"
     identity = enrolled.get("identity")
     token = enrolled.get("token")
     if not isinstance(identity, dict) or not isinstance(token, str):
@@ -248,7 +248,7 @@ def _enroll_live_member(
         {"token": token},
         team_shell_protocol=True,
     )
-    assert headers.get("RCP-Team-Shell-Protocol") == "1"
+    assert headers.get("RCP-Team-Shell-Protocol") == "2"
     cookies = http.cookies.SimpleCookie()
     cookies.load(headers.get("Set-Cookie", ""))
     if len(cookies) != 1:
@@ -379,7 +379,7 @@ def _http_json(
     if cookie is not None:
         headers["Cookie"] = cookie
     if team_shell_protocol:
-        headers["RCP-Team-Shell-Protocol"] = "1"
+        headers["RCP-Team-Shell-Protocol"] = "2"
     request = urllib.request.Request(
         f"http://127.0.0.1:8421{path}",
         method=method,
@@ -428,7 +428,7 @@ def _authenticated_get_json(path: str, cookie: str) -> list[dict[str, object]]:
         "GET", path, cookie=cookie, team_shell_protocol=path == "/api/projects"
     )
     if path == "/api/projects":
-        assert headers.get("RCP-Team-Shell-Protocol") == "1"
+        assert headers.get("RCP-Team-Shell-Protocol") == "2"
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         pytest.fail("authenticated live read did not return an object list")
     return value

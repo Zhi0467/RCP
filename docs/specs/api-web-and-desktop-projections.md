@@ -157,11 +157,14 @@ until the human explicitly reconnects. An unavailable or incompatible team
 connection leaves personal work usable and shows its cached cards as
 unavailable.
 
-The initial protocol range is `[1, 1]`. Future releases may overlap, such as a
-desktop `[1, 2]` with a server `[1, 1]`; the selected value is then `1`. A
-breaking change adds a new immutable per-version contract before either end
-advertises it. Narrowing a range is explicit retirement, not an automatic
-current-plus-previous or time-based rule. The native handshake ends after
+The current protocol range is `[1, 2]`; a current desktop selects `2` with a
+current server and `1` with an older `[1, 1]` server. Protocol 1 keeps team
+project cards non-deletable. Protocol 2 adds team deletion: cards may advertise
+`can_delete=true` together with the exact `delete_confirmation`, and a team DELETE
+is refused with the protocol-mismatch response unless the caller selected 2. A breaking
+change adds a new immutable per-version contract before either end advertises
+it. Narrowing a range is explicit retirement, not an automatic current-plus-
+previous or time-based rule. The native handshake ends after
 health/source/space identity, enrollment or token exchange, returned member
 identity, bounded project cards, and HTTP-only browser-cookie installation. It
 does not include server operations, project provisioning or transfer, provider

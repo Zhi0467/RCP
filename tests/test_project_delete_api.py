@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from rcp.api.dependencies import get_project_service
+from rcp.api.team_shell_protocol import TEAM_SHELL_PROTOCOL_HEADER
+from rcp.history import ProjectIdentityConflict
+from rcp.keyed_locks import KeyedLocks
 from rcp.storage import AgentTaskRecord
 
 from .helpers import create_named_app as create_app
@@ -24,6 +33,11 @@ def test_delete_project_route_refuses_active_task(manifest, tmp_path) -> None:
     card = app.state.catalog.card(project_id)
     assert card["can_delete"] is True
     assert card["delete_unavailable_reason"] is None
+    assert "server-managed checkout" not in card["delete_confirmation"]
+    [v1_card] = (
+        TestClient(app).get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "1"}).json()
+    )
+    assert v1_card == card
     now = app.state.background_tasks.store.now()
     app.state.background_tasks.store.create_agent_task(
         AgentTaskRecord(
@@ -59,6 +73,23 @@ def test_delete_project_validation_status_does_not_depend_on_exception_wording(
     response = TestClient(app).delete(f"/api/projects/{project_id}")
 
     assert response.status_code == 422
+
+
+def test_register_project_route_reports_deletion_conflict(manifest, tmp_path, monkeypatch) -> None:
+    app = create_app(data_dir=tmp_path / "data")
+
+    def reject_registration(*_args, **_kwargs):
+        raise ProjectIdentityConflict("The project is being deleted. Retry after it finishes.")
+
+    monkeypatch.setattr(app.state.catalog, "register", reject_registration)
+
+    response = TestClient(app).post(
+        "/api/projects",
+        json={"locator": str(manifest.path)},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == ("The project is being deleted. Retry after it finishes.")
 
 
 def test_delete_project_route_disappears_after_restart_without_touching_repository(
@@ -105,3 +136,67 @@ def test_delete_project_route_disappears_after_restart_without_touching_reposito
     restarted = TestClient(create_app(data_dir=data_dir))
     assert all(card["id"] != project_id for card in restarted.get("/api/projects").json())
     assert restarted.get(f"/api/projects/{project_id}").status_code == 404
+
+
+def test_completed_deletion_refuses_cached_paper_writer(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    client = TestClient(app)
+    assert client.post(f"/api/projects/{project_id}/paper/create").status_code == 200
+
+    deleted = client.delete(f"/api/projects/{project_id}")
+    response = client.put(
+        f"/api/projects/{project_id}/paper",
+        json={"content": "# Too late\n", "base_hash": None},
+    )
+
+    assert deleted.status_code == 200
+    assert response.status_code in {404, 409}
+    with pytest.raises(ValueError, match="no longer registered"):
+        app.state.services.store.require_project_accepts_new_work(project_id)
+    with pytest.raises(HTTPException) as caught:
+        get_project_service(app.state.catalog, project_id)
+    assert caught.value.status_code == 404
+    with app.state.services.store.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM paper_drafts WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_delete_waits_for_project_write_admission_lock(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    client = TestClient(app)
+    waiting = threading.Event()
+
+    class ObservedLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        def __enter__(self) -> None:
+            if self._lock.locked():
+                waiting.set()
+            self._lock.acquire()
+
+        def __exit__(self, *_args: object) -> None:
+            self._lock.release()
+
+    observed_lock = ObservedLock()
+    operation_locks = KeyedLocks(lock_factory=lambda: observed_lock)
+    app.state.services = replace(
+        app.state.services,
+        experiment_operation_lock=operation_locks,
+    )
+    project_lock = operation_locks(project_id)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with project_lock:
+            deletion = executor.submit(client.delete, f"/api/projects/{project_id}")
+            assert waiting.wait(timeout=3)
+            assert not deletion.done()
+        response = deletion.result(timeout=3)
+
+    assert response.status_code == 200

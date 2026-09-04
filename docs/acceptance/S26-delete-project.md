@@ -1,43 +1,55 @@
 ---
 id: S26-delete-project
-status: implemented
-tier: hermetic
+status: pending
+tier: live
 driver: pytest + browser
 covered_by:
   - tests/test_project_deletion.py
   - tests/test_project_delete_api.py
-  - tests/test_team_project_deletion_guard.py
+  - tests/test_team_project_deletion.py
   - web/tests/landingIdentity.test.mjs
   - browser 2026-07-31 — personal deletion flow
-  - browser 2026-08-29 — team action omission
+  - browser 2026-08-29 — former team action omission
 last_passed: >-
-  2026-08-29 — personal deletion remains green, while team cards, direct API,
-  catalog, and rendered action-menu guards refuse ordinary deletion before any
-  project or managed-machine state changes.
-invariants: [1, 2, 8]
+  2026-08-29 — personal deletion remains live-verified. Team deletion now has
+  hermetic API, catalog, restart, and rendered-action coverage, while its
+  source-built desktop drive against a disposable transferred project remains.
+invariants: [1, 2, 8, 9, 10g]
 ---
 
-# Delete a personal RCP project without deleting the research project
+# Delete an RCP project without deleting the research project
 
-Deleting a personal project removes it from RCP and erases the app-owned records
-that belong only to that registration. It never deletes or edits the repository,
-canonical `.research/` state, append-only patches, provider conversation logs,
-or any other source material. This implemented scenario predates team projects
-and remains the personal-space contract.
+Deleting a personal or team project removes it from that RCP space and erases
+the app-owned records that belong only to the registration. It never deletes or
+edits the repository, canonical `.research/` state, append-only patches, or any
+other checkout material. For a team project it also leaves the repository
+deploy key in place. That is intentionally catalog deletion, not machine
+deprovisioning. App-owned file cleanup follows the database commit; a cleanup
+failure is warned and may leave inert files without making deletion fail.
 
 ## UI path
 
 Each project cover on the project index has one compact action menu. The menu
 keeps the existing cover choice and adds **Delete project** as a destructive
-action. Selecting it opens a confirmation naming the project and stating the
-exact boundary: RCP records will be erased; repositories and `.research/` will
-not be touched. The final destructive button is also labeled **Delete project**.
+action. Selecting it opens a confirmation naming the project and rendering the
+backend consequence text. Both spaces say RCP records are erased while
+repositories and `.research` remain untouched. A team project additionally
+says: **The server-managed checkout and repository deploy key remain;
+credentials are not revoked.** The final destructive button is also labeled
+**Delete project**.
 
-A queued, running, or pausing task blocks deletion. The confirmation directs
-the human to pause it first, and the API independently refuses the deletion.
-A paused, interrupted, failed, or completed task does not block deletion, but
-the confirmation states that its resumable stage and RCP history will no longer
-be reachable through the app.
+A queued, running, or pausing task; any non-terminal episode; any unfinished
+project transfer; any active watcher; and any degraded or completed watcher with
+an undelivered notification blocks deletion in either space. The API directs
+the human to Pause the task, use episode Stop, or stop watching, then refuses the
+deletion. Settled work does not block deletion, but the confirmation states that
+its resumable stage and RCP history will no longer be reachable through the app.
+
+Before changing SQLite or files, RCP validates all file cleanup boundaries,
+including the complete imported-source project root. The database transaction
+repeats the active-work check and removes all project-owned rows before any file
+is removed. Post-commit file failures are WARNING diagnostics naming the project,
+path, and reason; the missing registration remains the successful outcome.
 
 On success, RCP returns to the project index and the cover is gone. A stale
 deep link reports that the project no longer exists rather than re-registering
@@ -45,25 +57,42 @@ it from a cached snapshot.
 
 ## Drive
 
-1. Register a temporary project, open it once, and create task history, a local
-   paper draft, a writing session, and a display snapshot.
+1. Register a temporary personal project, open it once, and create task history,
+   a local paper draft, a writing session, and a display snapshot.
 2. Return to the project index, open the project's action menu, and choose
    **Delete project**.
 3. Cancel once and confirm that nothing changed.
-4. Start an agent task and confirm deletion is refused while it is active.
-5. Pause the task, confirm deletion, and restart RCP.
+4. Confirm deletion is refused separately for an active task, a live episode,
+   and an active or deliverable watcher. Settle each through its existing control.
+5. Confirm deletion and restart RCP.
 6. Inspect the repository and canonical `.research/` state.
+7. Through the source-built desktop, move a disposable personal project into a
+   team space. Record the managed checkout, canonical history, deploy key, RCP
+   rows, imported provider history, snapshots, caches, and stopped task stage.
+8. Delete it from the team project card, restart both app and server, and inspect
+   every recorded boundary.
 
 ## Assert
 
 - `delete_requires_confirmation`
 - `cancel_preserves_everything`
 - `active_task_blocks_delete`
+- `live_episode_blocks_delete_until_stop_settles`
+- `active_or_deliverable_watcher_blocks_delete_until_stop_watching`
+- `failed_filesystem_preflight_preserves_registration_stages_snapshots_and_caches`
 - `project_disappears_immediately_and_after_restart`
 - `stale_project_link_returns_not_found`
 - `project_database_records_are_removed`
 - `project_display_snapshot_is_removed`
 - `repository_and_research_history_are_byte_identical`
+- `team_project_delete_uses_the_same_confirmed_action`
+- `team_project_disappears_immediately_and_after_server_restart`
+- `team_project_owned_database_rows_are_removed_in_one_transaction`
+- `normal_team_file_cleanup_removes_stages_snapshots_caches_and_imported_history`
+- `post_commit_file_cleanup_failure_warns_without_resurrecting_registration`
+- `deleted_project_invitation_cannot_be_accepted`
+- `team_confirmation_names_checkout_deploy_key_and_non_revocation`
+- `team_managed_checkout_research_history_and_deploy_key_are_byte_identical`
 - `no_console_or_application_request_errors`
 
 ## Failure means
@@ -74,8 +103,8 @@ research history while performing an app-catalog operation.
 
 ## Team boundary
 
-Ordinary deletion is not team-project deprovisioning. The backend publishes team
-deletion unavailable, the Web omits the action, and the API plus catalog reject
-a direct attempt before touching either RCP records or managed machine state. A
-future operator-owned deprovision flow must separately decide checkout
-disposition and Git deploy-key revocation.
+Ordinary team deletion is not deprovisioning. It deliberately leaves the
+server-managed checkout and deploy key untouched, just as personal deletion
+leaves a person's checkout untouched. Removing the checkout or revoking the key
+would be a separate machine/operator action and is not implied by the project
+card's **Delete project** confirmation.

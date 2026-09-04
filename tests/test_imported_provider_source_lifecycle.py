@@ -228,7 +228,7 @@ class _CleanupStore:
         return None
 
 
-def test_only_request_bound_pre_activation_cleanup_can_discard_imported_sources(
+def test_request_bound_pre_activation_cleanup_discards_imported_sources(
     tmp_path: Path,
 ) -> None:
     project_id = str(uuid.uuid4())
@@ -242,8 +242,6 @@ def test_only_request_bound_pre_activation_cleanup_can_discard_imported_sources(
         expected_inventory=inventory,
     )
     assert not os.path.lexists(owner.project_root)
-    with pytest.raises(ValueError, match="Team projects cannot be deleted"):
-        catalog.delete(project_id)
 
     _data_dir, owner, inventory, _payload = _published_source(tmp_path / "activated", project_id)
     activated = ProjectCatalog(

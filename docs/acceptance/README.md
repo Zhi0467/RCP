@@ -72,7 +72,7 @@ This index is checked against frontmatter by `tests/test_documentation.py`.
 | [S17](S17-real-agent-preview.md) | A real provider produces the same preview | implemented | browser |
 | [S18](S18-remote-artifact-preview.md) | A remote preview stays remote and temporary | implemented | api + browser |
 | [S19](S19-nothing-typed-is-lost.md) | Nothing typed is ever lost | implemented | browser |
-| [S26](S26-delete-project.md) | Delete an RCP project without deleting the research project | implemented | pytest + browser |
+| [S26](S26-delete-project.md) | Delete an RCP project without deleting the research project | pending | pytest + browser |
 | [S30](S30-desktop-window-is-not-the-app.md) | Closing the desktop window never cancels agent work | implemented | desktop |
 | [S31](S31-quit-stops-what-it-started.md) | Quit stops what it started, and nothing else | pending | desktop |
 | [S32](S32-artifacts-in-the-desktop-window.md) | A preview opens and a download lands, with stronger desktop isolation | pending | desktop |

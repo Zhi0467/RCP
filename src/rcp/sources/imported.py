@@ -221,6 +221,27 @@ class ImportedProviderSourceStore:
     ) -> bool:
         """Delete only one exact verified project-owned source tree."""
 
+        present = self.validate_discard(expected_inventory=expected_inventory)
+        if not present:
+            return False
+        current = expected_inventory
+        for item in current.files:
+            (self.root / item.provider / item.sha256).unlink()
+        for provider in sorted({item.provider for item in current.files}):
+            (self.root / provider).rmdir()
+        (self.root / _MANIFEST_NAME).unlink()
+        self.root.rmdir()
+        self.project_root.rmdir()
+        _fsync_directory(self.project_root.parent)
+        return True
+
+    def validate_discard(
+        self,
+        *,
+        expected_inventory: ImportedProviderSourceInventory,
+    ) -> bool:
+        """Prove that discard can touch only the expected imported source tree."""
+
         if expected_inventory.project_id != self.project_id:
             raise ValueError("imported provider source cleanup names another project")
         if not os.path.lexists(self.root):
@@ -234,14 +255,6 @@ class ImportedProviderSourceStore:
         project_entries = {entry.name for entry in self.project_root.iterdir()}
         if project_entries != {"provider-history"}:
             raise ValueError("imported provider project root contains unrelated state")
-        for item in current.files:
-            (self.root / item.provider / item.sha256).unlink()
-        for provider in sorted({item.provider for item in current.files}):
-            (self.root / provider).rmdir()
-        (self.root / _MANIFEST_NAME).unlink()
-        self.root.rmdir()
-        self.project_root.rmdir()
-        _fsync_directory(self.project_root.parent)
         return True
 
     def _publish_inventory(

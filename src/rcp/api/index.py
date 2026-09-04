@@ -27,11 +27,15 @@ from rcp.api.episodes import (
 )
 from rcp.api.experiment_controls import ExperimentControlResponse, _experiment_control_response
 from rcp.api.identity import IdentityAccess
-from rcp.api.team_shell_protocol import acknowledge_team_shell_protocol
+from rcp.api.team_shell_protocol import (
+    acknowledge_team_shell_protocol,
+    team_shell_protocol_mismatch,
+)
 from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, Experiment, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
-from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON, ProjectCatalog, ProjectDisplayCache
+from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager, ProjectSetupRequest, SshRepositoryBrowseRequest
@@ -142,9 +146,13 @@ def projects(
     identity_access: IdentityDependency,
     store: StoreDependency,
 ) -> list[dict[str, object]]:
-    acknowledge_team_shell_protocol(request, response)
+    selected_protocol = acknowledge_team_shell_protocol(request, response)
     visible = store.member_project_ids(identity_access.acting_user(request).user_id)
-    return [card for card in catalog.cards() if card["id"] in visible]
+    return [
+        card
+        for card in catalog.cards(team_shell_protocol=selected_protocol)
+        if card["id"] in visible
+    ]
 
 
 @router.get("/api/episodes", response_model=list[ExperimentLoopIndexEntryResponse])
@@ -671,6 +679,8 @@ def register_project(
             body.locator,
             seat_member=identity_access.acting_user(request).user_id,
         )
+    except ProjectIdentityConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return catalog.card(record.project_id)
@@ -679,14 +689,23 @@ def register_project(
 @membership_router.delete("/api/projects/{project_id}")
 def delete_project(
     project_id: str,
+    request: Request,
+    response: Response,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
+    experiment_operation_lock: ExperimentOperationLockDependency,
 ) -> dict[str, object]:
-    if store.space_kind == "team":
-        raise HTTPException(status_code=409, detail=TEAM_PROJECT_DELETE_UNAVAILABLE_REASON)
+    selected_protocol = acknowledge_team_shell_protocol(request, response)
+    if store.space_kind == "team" and selected_protocol != 2:
+        raise team_shell_protocol_mismatch(
+            message="Team project deletion requires team-shell protocol 2.",
+            action="Update and rebuild RCP desktop from current origin/main.",
+        )
     try:
-        return catalog.delete(project_id).model_dump(mode="json")
+        canonical = catalog.resolve_project_id(project_id)
+        with experiment_operation_lock(canonical):
+            return catalog.delete(canonical).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except ProjectActiveTaskConflict as exc:

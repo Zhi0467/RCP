@@ -464,6 +464,7 @@ class TargetTransferActivationCoordinator:
                 return committed
 
             self._require_ready_boundary(request, upload)
+            self.catalog.ensure_registration_available(upload.project_id)
             archive_receipt = verify_target_transfer_archive(
                 self.data_dir,
                 request,

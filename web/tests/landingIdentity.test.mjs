@@ -11,7 +11,7 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { ProjectActionsMenu, ProjectLanding } = await server.ssrLoadModule(
+const { ProjectActionsMenu, ProjectDeleteDialog, ProjectLanding } = await server.ssrLoadModule(
   "/src/views/ProjectLanding.tsx",
 );
 const { IdentityProvenanceSlip, copyIdentityId } = await server.ssrLoadModule(
@@ -91,7 +91,7 @@ test("the project index starts with covers and exposes the named identity with i
   assert.match(html, /data-identity-record="provenance-slip"/);
 });
 
-test("the project menu renders only the actions supplied for that project and space", () => {
+test("the project menu renders backend deletion and personal-only move actions", () => {
   const personal = {
     id: "project-1",
     home_space_id: identity.space_id,
@@ -102,14 +102,17 @@ test("the project menu renders only the actions supplied for that project and sp
     attention_count: 0,
     can_delete: true,
     delete_unavailable_reason: null,
+    delete_confirmation:
+      "RCP records will be erased. Repositories and their .research directories remain untouched.",
   };
   const team = {
     ...personal,
     id: "project-2",
     name: "Team paper",
-    can_delete: false,
-    delete_unavailable_reason:
-      "Team projects cannot be deleted here. A server operator must deprovision the managed checkout and Git deploy keys.",
+    can_delete: true,
+    delete_unavailable_reason: null,
+    delete_confirmation:
+      "RCP records will be erased. The server-managed checkout and repository deploy key remain; credentials are not revoked.",
   };
   const props = {
     cover: "wood",
@@ -131,9 +134,37 @@ test("the project menu renders only the actions supplied for that project and sp
   assert.match(personalMenu, />Move to team space</);
   assert.match(personalMenu, />Delete project</);
   assert.doesNotMatch(teamMenu, /Move to team space/);
-  assert.doesNotMatch(teamMenu, /Delete project/);
+  assert.match(teamMenu, />Delete project</);
   assert.match(teamMenu, />Cover</);
-  assert.doesNotMatch(teamMenu, /server operator|deploy key/i);
+});
+
+test("the delete dialog renders the backend team consequence only for a team project", () => {
+  const personal = {
+    id: "project-1",
+    name: "Personal paper",
+    can_delete: true,
+    delete_confirmation:
+      "RCP records will be erased. Repositories and their .research directories remain untouched.",
+  };
+  const team = {
+    ...personal,
+    id: "project-2",
+    name: "Team paper",
+    delete_confirmation:
+      "RCP records will be erased. The server-managed checkout and repository deploy key remain; credentials are not revoked.",
+  };
+  const props = { busy: false, error: null, onClose() {}, onConfirm() {} };
+
+  const personalDialog = renderToStaticMarkup(
+    React.createElement(ProjectDeleteDialog, { ...props, project: personal }),
+  );
+  const teamDialog = renderToStaticMarkup(
+    React.createElement(ProjectDeleteDialog, { ...props, project: team }),
+  );
+
+  assert.doesNotMatch(personalDialog, /server-managed checkout and repository deploy key remain/);
+  assert.match(teamDialog, /server-managed checkout and repository deploy key remain/);
+  assert.match(teamDialog, /credentials are not revoked/);
 });
 
 test("an unnamed personal identity presents the landing sign-in action", () => {

@@ -414,6 +414,8 @@ real instance lock. Verification reads health, startup recovery, the union of
 all enrolled members' visible projects, and representative project/task/watcher
 responses. Captured projects must match current-release graph revisions and
 digests exactly.
+Uncaptured project-card comparison accepts the retired team deletion-unavailable
+fields from a predecessor overlay until no server runs a pre-team-deletion release.
 
 A successful rehearsal publishes one immutable private receipt named by both
 candidate commit and capture UUID and bound to the SQLite and project-file
@@ -684,14 +686,20 @@ the operator confirms revocation or explicitly preserves the prepared request
 for reuse. Losing the private half is not falsely reported as deleting the
 GitHub grant.
 
-The ordinary member-facing **Delete project** action applies only to personal
-projects. A team project card publishes `can_delete=false`, and the Web omits
-that action rather than deriving safety from checkout state. The API and catalog
-repeat the space-kind check before any deletion work. Removing only RCP's rows
-would leave the server-managed checkout and repository deploy key with no owner,
-so full team-project deprovisioning requires a future operator CLI flow that
-names key revocation and checkout disposition. It is not part of the first
-one-lab server slice.
+The ordinary member-facing **Delete project** action applies to either a personal
+or team project after membership checks. A read-only filesystem preflight runs
+before one SQLite transaction repeats the task, episode, and watcher fence and
+removes the registration plus its project-owned rows. App-owned stages,
+snapshots, caches, and imported provider histories are removed only after that
+commit. A later file-cleanup failure is logged with its concrete path and does
+not make the completed catalog deletion fail.
+
+The backend publishes the exact confirmation text. For a team project it says:
+**The server-managed checkout and repository deploy key remain; credentials are
+not revoked.** The Web renders that answer verbatim. Deletion never edits the
+central checkout or canonical `.research/` history and never removes the deploy
+key. This is catalog deletion, not machine deprovisioning or credential
+revocation.
 
 ## Durable project provisioning
 
@@ -1434,7 +1442,10 @@ captures, recreates them through the owner in temporary verification, and
 owner-validates the immutable payload and restored live root on every rollback
 journal entry. Request-owned cleanup may discard one exact imported inventory
 only for the linked incoming transfer before project registration and target
-activation; it does not enable ordinary team-project deletion or deprovisioning.
+activation. After an ordinary confirmed project deletion commits its SQLite
+transition, it attempts to discard the exact registered project's imported
+history while preserving its checkout and Git credential. A failed discard is
+warned and leaves inert app-owned files; neither path is machine deprovisioning.
 The private installed-service control socket exposes probe, provider plan/check,
 project-provision plan/step, online SQLite capture, member-removal, update, and
 root-only restore-activation operations. The current control protocol is version
@@ -1449,8 +1460,8 @@ exits successfully only after reading back the same request as **ready for
 review**, and it has no project-creation route; only the authenticated final
 review route can append the reserved identity and complete the request.
 
-Machine orchestration, final creation, the team deletion guard, console member
-removal, and replacement activation are
+Machine orchestration, final creation, confirmed team catalog deletion, console
+member removal, and replacement activation are
 hermetically covered, but provisioning has not yet passed S128's complete
 source-built team-service/GitHub/SSH/browser/desktop live drive. Cancellation
 after machine preparation, the unified wizard and desktop operator bridge, the

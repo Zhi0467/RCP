@@ -26,7 +26,7 @@ let identityNameRequiredHandler: IdentityNameRequiredHandler | null = null;
 let pinnedInstanceId: string | null = null;
 
 export const TEAM_SHELL_PROTOCOL_HEADER = "RCP-Team-Shell-Protocol";
-export const TEAM_SHELL_PROTOCOL_VERSION = 1;
+export const TEAM_SHELL_PROTOCOL_VERSION = 2;
 
 export class ApiError extends Error {
   readonly status: number;
@@ -44,7 +44,11 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (!headers.has("Content-Type") && !(init?.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
-  if (path === "/api/projects" || path === "/api/team/session/exchange") {
+  if (
+    path === "/api/projects" ||
+    path === "/api/team/session/exchange" ||
+    (init?.method === "DELETE" && /^\/api\/projects\/[^/]+$/.test(path))
+  ) {
     headers.set(TEAM_SHELL_PROTOCOL_HEADER, String(TEAM_SHELL_PROTOCOL_VERSION));
   }
   if (mutation && pinnedInstanceId) headers.set("X-RCP-Instance-ID", pinnedInstanceId);

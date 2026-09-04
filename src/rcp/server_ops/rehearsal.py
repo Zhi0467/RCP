@@ -31,7 +31,10 @@ from rcp.limits import (
     BACKUP_DIAGNOSTIC_MAX_CHARS,
     SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
 )
-from rcp.projects import TEAM_PROJECT_DELETE_UNAVAILABLE_REASON
+from rcp.projects import (
+    TEAM_PROJECT_DELETE_CONFIRMATION,
+    TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+)
 from rcp.server_ops._local_primitives import (
     PrivateFileReadError,
     canonical_json_bytes,
@@ -900,8 +903,9 @@ def _prepare_overlay_project(
         "last_refresh_at": row["last_refresh_at"],
         "reachable": None if row["reachable"] is None else bool(row["reachable"]),
         "error_sha256": _optional_text_sha256(row["error"]),
-        "can_delete": False,
-        "delete_unavailable_reason": TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+        "can_delete": True,
+        "delete_unavailable_reason": None,
+        "delete_confirmation": TEAM_PROJECT_DELETE_CONFIRMATION,
     }
     return RehearsalProjectOverlay(
         project_id=str(row["project_id"]),
@@ -1329,8 +1333,12 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                     )
                 else:
                     card = cards[project.project_id]
-                    comparison = _project_card_comparison(card)
-                    if _canonical_sha256(comparison) != project.expected_card_sha256:
+                    projection_sha256 = unavailable_card_projection_sha256(
+                        card,
+                        project.expected_card_sha256,
+                        team_space=opened.space_kind == "team",
+                    )
+                    if projection_sha256 != project.expected_card_sha256:
                         raise CandidateRehearsalRefused(
                             f"Candidate changed unavailable projection {project.project_id}."
                         )
@@ -1339,7 +1347,7 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
                             project_id=project.project_id,
                             status="not_replay_verified",
                             revision=None,
-                            projection_sha256=_canonical_sha256(comparison),
+                            projection_sha256=projection_sha256,
                         )
                     )
         if fence.attempted_effects:
@@ -1747,6 +1755,37 @@ def _optional_text_sha256(value: object) -> str | None:
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
 
+def unavailable_card_projection_sha256(
+    card: Mapping[str, object],
+    expected_sha256: str,
+    *,
+    team_space: bool,
+) -> str:
+    """Hash an uncaptured project's card, accepting a predecessor's retired team shape.
+
+    A release before team deletion hashed team cards as non-deletable and without
+    `delete_confirmation`. When the current shape does not match the expectation
+    and the space is a team, the retired shape is tried; if it matches, its digest
+    is returned so both the candidate rehearsal and the live cutover readback agree
+    with the predecessor. Any other mismatch returns the current digest, which the
+    caller refuses. Retire this adapter once no server runs a pre-team-deletion
+    release.
+    """
+
+    comparison = _project_card_comparison(card)
+    digest = _canonical_sha256(comparison)
+    if digest == expected_sha256 or not team_space:
+        return digest
+    legacy_comparison = dict(comparison)
+    legacy_comparison.pop("delete_confirmation", None)
+    legacy_comparison.update(
+        can_delete=False,
+        delete_unavailable_reason=TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
+    )
+    legacy_digest = _canonical_sha256(legacy_comparison)
+    return legacy_digest if legacy_digest == expected_sha256 else digest
+
+
 def _project_card_comparison(card: Mapping[str, object]) -> dict[str, object]:
     return {
         "id": card.get("id"),
@@ -1764,6 +1803,7 @@ def _project_card_comparison(card: Mapping[str, object]) -> dict[str, object]:
         "error_sha256": _optional_text_sha256(card.get("error")),
         "can_delete": card.get("can_delete"),
         "delete_unavailable_reason": card.get("delete_unavailable_reason"),
+        "delete_confirmation": card.get("delete_confirmation"),
     }
 
 

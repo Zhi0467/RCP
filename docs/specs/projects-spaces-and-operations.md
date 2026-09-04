@@ -123,10 +123,11 @@ decline.
 Every member has the same project role. Settings shows membership, **Invite
 member**, and **Leave project**. A person may leave their own project only while
 another member remains; the last member must add another enrolled project
-member first. Ordinary deletion remains available to a personal project, while
-a team project requires the future operator-owned deprovisioning flow. Losing
-membership applies the durable Stop fence to further project work while an
-already-authorized turn settles honestly.
+member first. A last member may instead explicitly delete the project from RCP;
+that confirmed catalog operation is distinct from leaving and does not
+deprovision a team checkout or Git credential. Losing membership applies the
+durable Stop fence to further project work while an already-authorized turn
+settles honestly.
 
 Every project-scoped route checks membership before revealing existence, and
 Apply checks again under the canonical append lock. A nonmember project is
@@ -287,16 +288,27 @@ an exact diagnostic and no instruction to delete them.
 
 ## Deletion
 
-Deleting a personal project removes its RCP catalog/control-plane data and
-rebuildable caches after confirmation. It does not delete the underlying
-research repositories or canonical state repository. Active work and tabs
-reconcile through the existing ownership and Stop rules.
+Deleting a personal or team project first validates every app-owned file target
+without changing it. The SQLite transaction then repeats the active-work check
+and removes the registration plus all project-owned control-plane rows. Only
+after that commit does RCP remove task stages, snapshots, rebuildable caches,
+and registered imported provider history. A cleanup failure is logged with the
+project and path but does not restore the registration or report deletion as
+failed; any leftover app files are inert.
 
-Ordinary deletion is unavailable for a team project. The backend publishes that
-decision on its card and rechecks the team space kind before deleting anything;
-the Web does not infer it from paths or checkout state. A future operator-owned
-deprovision command must decide central-checkout disposition and Git deploy-key
-revocation before team deletion can exist.
+Queued, running, or pausing tasks; non-terminal episodes; unfinished project
+transfers; active watchers; and degraded or completed watchers with an undelivered
+notification block deletion. The human must use the existing Pause,
+Stop, or stop-watching action and wait for work to settle. Deletion never edits
+the underlying research repositories or canonical state repository. For a team
+project, it also leaves the server-managed checkout and Git deploy key in place.
+Removing either is a separate operator deprovisioning action. The backend
+publishes the exact confirmation consequence on the project card, and the Web
+renders it verbatim rather than inferring policy from space kind or paths. For a
+team-shell protocol-1 request, the project-card list preserves the older
+contract: `can_delete=false`, `delete_unavailable_reason` explains operator
+deprovisioning, and `delete_confirmation` is absent. Protocol 2 and callers with
+no protocol header receive the deletable card with `delete_confirmation`.
 
 ## Verification contracts
 

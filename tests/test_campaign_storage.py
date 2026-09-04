@@ -988,6 +988,8 @@ def test_project_deletion_removes_canonical_auto_research_children(tmp_path) -> 
         retry_mode="clean",
         diagnostic="Delete this recovery with its project.",
     )
+    store.request_episode_stop(episode.episode_id)
+    store.mark_episode_stop_skipped(episode.episode_id)
 
     counts = store.delete_project_records(episode.project_id)
 
