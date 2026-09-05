@@ -1,5 +1,9 @@
 # Active implementation handoffs
 
+Discussion draft in this unmerged planning PR:
+[Live provider steering](handoff-2026-09-05-live-provider-steering.md). This is not
+ready implementation work; settle its decisions before merging into the active plan.
+
 Active:
 
 - [Dev team space and source server completion](handoff-2026-08-27-dev-team-space-and-server.md)
