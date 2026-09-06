@@ -70,7 +70,7 @@ def launch_environment(tmp_path, manifest, monkeypatch):
     context = BackendContext(execution_host="", execution_machine=machine.alias, compute=None)
 
     class Backend:
-        id = "launchd"
+        id = "systemd_user"
         is_alive = False
         failure = False
         unknown = False
@@ -88,7 +88,7 @@ def launch_environment(tmp_path, manifest, monkeypatch):
 
     backend = Backend()
     monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, backend))
-    monkeypatch.setitem(jobs.COMPUTE_BACKENDS, "launchd", backend)
+    monkeypatch.setitem(jobs.COMPUTE_BACKENDS, "systemd_user", backend)
 
     def launch(request=None):
         return jobs.launch_compute_job(
@@ -213,8 +213,9 @@ def test_launch_without_backend_names_machine_and_setup_action(
     launch_environment, tmp_path, monkeypatch
 ):
     store, backend, launch = launch_environment
-    monkeypatch.setattr(jobs, "resolve_context", lambda *_: (None, None))
-    with pytest.raises(RuntimeError, match="laptop.*configure a compute backend"):
+    context = BackendContext("", "laptop", None, os_name="Linux")
+    monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, None))
+    with pytest.raises(RuntimeError, match="laptop.*Linux.*systemd.*Slurm"):
         launch()
     assert not (tmp_path / "data" / "jobs").exists()
     assert store.running_compute_jobs() == []
@@ -303,10 +304,10 @@ def test_changed_machine_refresh_uses_recorded_identity(
     "failure",
     [subprocess.TimeoutExpired("launch", 10), ComputeTransportError("connection dropped")],
 )
-def test_launchd_keeps_completed_job_receipts_after_uncertain_bootstrap(
+def test_systemd_keeps_completed_job_receipts_after_uncertain_start(
     launch_environment, tmp_path, manifest, monkeypatch, failure
 ):
-    from rcp.compute_jobs.backends.launchd import LaunchdBackend
+    from rcp.compute_jobs.backends.systemd_user import SystemdUserBackend
 
     store, _, launch = launch_environment
     context, _ = jobs.resolve_context(manifest, "laptop")
@@ -315,14 +316,14 @@ def test_launchd_keeps_completed_job_receipts_after_uncertain_bootstrap(
 
     def runner(command, **kwargs):
         calls.append(command)
-        if command[:2] == ["launchctl", "bootstrap"]:
+        if "systemd-run" in command:
             subprocess.run(["sh", str(Path(command[-1]).with_name("run.sh"))], check=True)
             raise failure
-        assert command[:2] == ["launchctl", "bootout"]
+        assert "systemctl" in command and "stop" in command
         return subprocess.CompletedProcess(command, 0, "", "")
 
     context.runner = runner
-    monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, LaunchdBackend()))
+    monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, SystemdUserBackend()))
     with pytest.raises(ComputeLaunchUncertainError) as error:
         launch()
     assert error.value.__cause__ is failure
@@ -377,7 +378,7 @@ def test_local_backend_oserror_is_not_a_host_outage(
     def alive(handle, context):
         calls.append(handle)
         if len(calls) == 1:
-            raise FileNotFoundError("launchctl")
+            raise FileNotFoundError("systemctl")
         return False
 
     monkeypatch.setattr(backend, "alive", alive)
@@ -417,7 +418,7 @@ def test_startup_reconciliation_does_not_block_health_or_watchers_and_respects_f
     from rcp.background import StartupEffectFence
     from rcp.compute_jobs.models import ComputeJobRecord
 
-    backend = jobs.COMPUTE_BACKENDS["launchd"]
+    backend = jobs.COMPUTE_BACKENDS["systemd_user"]
     observed = []
     entered = threading.Event()
     release = threading.Event()
@@ -449,7 +450,7 @@ def test_startup_reconciliation_does_not_block_health_or_watchers_and_respects_f
         project_id=app.state.default_project_id,
         origin_operation_id="turn",
         execution_machine="laptop",
-        backend_id="launchd",
+        backend_id="systemd_user",
         backend_handle="rcp-job-startup",
         job_root=str(root),
         cwd=str(tmp_path),
@@ -520,9 +521,9 @@ def test_reconcile_row_failure_does_not_skip_other_jobs(
     launch_environment, tmp_path, manifest, monkeypatch, failure
 ):
     store, backend, launch = launch_environment
-    backend.id = "unregistered" if failure == "unregistered" else "launchd"
+    backend.id = "unregistered" if failure == "unregistered" else "systemd_user"
     bad = launch()
-    backend.id = "launchd"
+    backend.id = "systemd_user"
     valid = [launch() for _ in range(3)]
     calls = []
 

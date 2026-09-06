@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
 import time
@@ -14,8 +13,6 @@ def owner_command(backend: str, handle: str, uid: str, *, cancel: bool = False) 
     if backend == "systemd_user":
         arguments = ["stop", handle] if cancel else ["show", "-p", "ActiveState", handle]
         return ["env", f"XDG_RUNTIME_DIR=/run/user/{uid}", "systemctl", "--user", *arguments]
-    if backend == "launchd":
-        return ["launchctl", "bootout" if cancel else "print", f"gui/{uid}/{handle}"]
     raise ValueError(f"Unsupported process owner: {backend}")
 
 
@@ -27,20 +24,12 @@ def owner_alive(backend: str, result: subprocess.CompletedProcess[str]) -> bool 
         if state in {"active", "activating", "reloading", "deactivating", "refreshing"}:
             return True
         return False if state in {"inactive", "failed"} else None
-    if backend == "launchd":
-        if result.returncode:
-            return False if "could not find service" in result.stderr.casefold() else None
-        state = re.search(r"^\s*state\s*=\s*(.+?)\s*$", result.stdout, re.MULTILINE)
-        if state is None:
-            return None
-        return state.group(1) in {"running", "spawn scheduled", "spawning"}
     raise ValueError(f"Unsupported process owner: {backend}")
 
 
 def require_cancel_success(backend: str, result: subprocess.CompletedProcess[str]) -> None:
     absent = {
         "systemd_user": ("not loaded", "could not be found", "does not exist"),
-        "launchd": ("could not find service", "no such process"),
     }[backend]
     if result.returncode and not any(marker in result.stderr.casefold() for marker in absent):
         raise RuntimeError(result.stderr or f"{backend} cancellation failed")

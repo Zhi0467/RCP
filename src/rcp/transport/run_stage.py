@@ -19,6 +19,7 @@ from rcp.artifacts import validate_result_view_id
 from rcp.limits import (
     PROJECT_TRANSFER_MANIFEST_MAX_BYTES,
     REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS,
+    REMOTE_RUN_STAGE_COMMAND_TIMEOUT_SECONDS,
     REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
     RUN_STAGE_RETENTION_DAYS,
 )
@@ -1368,7 +1369,7 @@ finally:
                 ssh_arguments(self.host, command),
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=REMOTE_RUN_STAGE_COMMAND_TIMEOUT_SECONDS,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:

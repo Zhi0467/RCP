@@ -11,19 +11,13 @@ pending in [S136](../acceptance/S136-long-running-compute-outlives-the-agent.md)
 
 An optional `machines[].compute` block contains `job_manager` and `jobs_root`.
 `job_manager = "slurm"` opts into direct scheduler submission. An unset manager
-selects the generic helper automatically: Linux requires a reachable systemd
-user manager; macOS uses launchd. A Linux machine without reliable process
-ownership has no helper route. There is no detached-process or SSH-session
-fallback. A selected scheduler does not silently fall back to the helper.
-
-The current macOS route remains an unresolved merge blocker. Live launchd
-verification found that a descendant which calls `setsid` escapes the process
-group: the owner can disappear and Cancel can return while that child continues.
-A passing short probe does not establish reliable descendant ownership. The
-user has not yet decided whether macOS helper launches must be refused or an
-explicit exception is acceptable; the code still offers launchd. The
-[active handoff](../handoffs/handoff-2026-09-06-external-job-simplification.md)
-records the audit and decision boundary.
+selects the generic helper automatically on Linux with a reachable systemd
+user manager. macOS and Linux machines without a user manager refuse helper
+launches before creating job files. There is no detached-process, launchd, or
+SSH-session fallback: launchd cannot retain descendants that create a new
+session, so it cannot meet the reliable-ownership requirement. The diagnostic
+points to a supported Linux execution machine or direct scheduler submission.
+A selected scheduler does not silently fall back to the helper.
 
 Slurm submission belongs to the agent. RCP supplies no account, partition, GPU,
 memory, time-limit, or other submission arguments, and never creates scheduler
@@ -82,11 +76,8 @@ be surfaced as blockers rather than worked around by repeated polling.
 
 `compute_jobs.backends` contains the generic OS owners. `systemd_user` uses
 transient `rcp-job-<id>` units with `--collect`, explicit log paths, and
-`XDG_RUNTIME_DIR=/run/user/<uid>`. `launchd` bootstraps a job-root plist into
-`gui/<uid>` with `RunAtLoad=true`, `KeepAlive=false`, and same-process-group
-cleanup. That cleanup does not retain descendants which enter another session.
-Remote commands use ordinary SSH transport; executable remote helpers ship from
-their source modules.
+`XDG_RUNTIME_DIR=/run/user/<uid>`. Remote commands use ordinary SSH transport;
+executable remote helpers ship from their source modules.
 
 A helper job's root is `<data_dir>/jobs/<id>` locally. Remotely it is
 `<jobs_root>/<id>`, defaulting to the execution account's `~/.rcp/jobs`.
@@ -125,10 +116,14 @@ retains an uncertain-outcome diagnostic. These operational effects create no
 new graph-change channel. Discuss, graph merge, Seed/Refresh, Paper, and the
 Auto-research root do not gain helper launch authority.
 
-The staged helper client's 120-second wait has not been shown to cover the
-combined remote resolution, probe, and launch timeouts. A slow valid operation
-may outlast it. Keyed receipts preserve replay safety; they do not prove deadline
-coverage. This remains an open review item in the active handoff.
+The staged helper client and broker share a response allowance derived from the
+existing per-operation timeouts. It covers remote cwd resolution and mailbox
+transfers, both containment probes, one stale-binding reprobe, and launch with
+receipt or cleanup. Responses return as soon as the operation finishes; the
+allowance does not delay normal launches. A scaled slow-transport integration
+check exercises that sequence and replays the same key without a second launch.
+Per-operation transport and probe limits remain bounded; an interrupted result
+still retains its uncertain receipt.
 
 ## One watcher and human Cancel contract
 

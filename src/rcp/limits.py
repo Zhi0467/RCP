@@ -98,9 +98,26 @@ COMPUTE_JOB_LABEL_MAX_CHARS = 80
 COMPUTE_JOBS_PER_PROJECT_LIST_LIMIT = 100
 COMPUTE_JOB_DIAGNOSTIC_MAX_CHARS = 600
 COMPUTE_JOB_POLL_INTERVAL_SECONDS = 0.05
-# A launch resolves the machine (several status-timeout calls), may run one probe,
-# and then starts the job; the client must outwait that whole sequence.
-COMPUTE_COMMAND_TIMEOUT_SECONDS = 120
+REMOTE_RUN_STAGE_COMMAND_TIMEOUT_SECONDS = 60
+# A probe resolves identity/facility, then may try mirrored and cooperative jobs.
+# Each job includes root setup, launch, polling (including one in-flight pair
+# of status/file reads past the poll deadline), log read, cancel and cleanup.
+_COMPUTE_PROBE_RESPONSE_TIMEOUT_SECONDS = 4 * COMPUTE_JOB_STATUS_TIMEOUT_SECONDS + 2 * (
+    7 * COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
+    + COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS
+    + COMPUTE_PROBE_TIMEOUT_SECONDS
+    + COMPUTE_JOB_POLL_INTERVAL_SECONDS
+)
+# Outwait cwd resolution, two mailbox listings, request read and response write;
+# two probes if the first binding goes stale; both launch resolutions and the
+# final launch/receipt or cleanup. The existing client/broker share this budget.
+COMPUTE_COMMAND_TIMEOUT_SECONDS = (
+    5 * REMOTE_RUN_STAGE_COMMAND_TIMEOUT_SECONDS
+    + 2 * _COMPUTE_PROBE_RESPONSE_TIMEOUT_SECONDS
+    + 10 * COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
+    + COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS
+    + COMMAND_BROKER_RESPONSE_GRACE_SECONDS
+)
 SSH_REPOSITORY_BROWSER_MAX_ENTRIES = 200
 SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS = 20
 

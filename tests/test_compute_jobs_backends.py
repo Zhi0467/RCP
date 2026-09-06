@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import plistlib
 import shlex
 import subprocess
-from pathlib import Path
 from typing import get_args
 
 import pytest
@@ -39,14 +37,15 @@ def request():
 
 
 def test_registry_and_resolution():
-    assert set(get_args(ComputeBackendId)) == set(COMPUTE_BACKENDS) == {"systemd_user", "launchd"}
+    assert set(get_args(ComputeBackendId)) == set(COMPUTE_BACKENDS) == {"systemd_user"}
     for os_name, remote, manager, expected in [
         ("Linux", False, True, "systemd_user"),
         ("Linux", True, True, "systemd_user"),
         ("Linux", True, False, None),
         ("Linux", False, False, None),
-        ("Darwin", False, False, "launchd"),
-        ("Darwin", True, False, "launchd"),
+        ("Darwin", False, False, None),
+        ("Darwin", True, False, None),
+        ("macOS", False, True, None),
         ("FreeBSD", True, False, None),
     ]:
         backend = resolve_backend(None, os_name, remote, manager)
@@ -145,34 +144,10 @@ def test_systemd_cooperative_start_omits_protected_paths():
         ("systemd_user", (0, "ActiveState=inactive", ""), False),
         ("systemd_user", (1, "", "Unit rcp-job-x.service could not be found."), False),
         ("systemd_user", (1, "", "Failed to connect to bus"), None),
-        ("launchd", (0, "\tstate = running\n", ""), True),
-        ("launchd", (0, "\tstate = not running\n", ""), False),
-        ("launchd", (1, "", "Could not find service rcp-job-x"), False),
-        ("launchd", (1, "", "Operation not permitted"), None),
     ],
 )
 def test_backend_observation_states(backend_id, response, expected):
     assert COMPUTE_BACKENDS[backend_id].alive("42", context(Runner(response))) is expected
-
-
-def test_launchd_plist_and_commands(tmp_path):
-    backend = COMPUTE_BACKENDS["launchd"]
-    runner = Runner()
-    ctx = context(runner)
-    root = str(tmp_path / "abc")
-    Path(root).mkdir()
-    assert backend.start(root, f"{root}/run.sh", request(), ctx) == "rcp-job-abc"
-    assert plistlib.loads((Path(root) / "job.plist").read_bytes()) == {
-        "Label": "rcp-job-abc",
-        "ProgramArguments": ["/bin/sh", f"{root}/run.sh"],
-        "RunAtLoad": True,
-        "KeepAlive": False,
-        "StandardOutPath": f"{root}/log",
-        "StandardErrorPath": f"{root}/log",
-    }
-    assert runner.calls[0][0] == ["launchctl", "bootstrap", "gui/501", f"{root}/job.plist"]
-    backend.cancel("rcp-job-abc", ctx)
-    assert runner.calls[1][0] == ["launchctl", "bootout", "gui/501/rcp-job-abc"]
 
 
 @pytest.mark.parametrize(
@@ -182,7 +157,6 @@ def test_launchd_plist_and_commands(tmp_path):
             "systemd_user",
             (5, "", "Failed to stop rcp-job-x.service: Unit rcp-job-x.service not loaded."),
         ),
-        ("launchd", (3, "", "Boot-out failed: 3: No such process")),
     ],
 )
 def test_cancellation_is_idempotent_for_gone_jobs(backend_id, response):
@@ -251,17 +225,16 @@ def test_runner_exit_255_is_transport_failure_only_over_ssh(check, remote):
         assert ctx.run(["command"], check=check).returncode == 255
 
 
-@pytest.mark.parametrize("backend_id", ["systemd_user", "launchd"])
 @pytest.mark.parametrize(
     "failure",
     [subprocess.TimeoutExpired("launch", 10), ComputeTransportError("connection dropped")],
 )
-def test_uncertain_start_stops_the_stable_unit(backend_id, failure, tmp_path):
+def test_uncertain_start_stops_the_stable_unit(failure, tmp_path):
     calls = []
 
     def runner(command, **kwargs):
         calls.append(command)
-        if "systemd-run" in command or "bootstrap" in command:
+        if "systemd-run" in command:
             raise failure
         return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -269,15 +242,18 @@ def test_uncertain_start_stops_the_stable_unit(backend_id, failure, tmp_path):
     root.mkdir()
     # The manager may have already run the job, even when cleanup succeeds.
     with pytest.raises(ComputeLaunchUncertainError) as error:
-        COMPUTE_BACKENDS[backend_id].start(
+        COMPUTE_BACKENDS["systemd_user"].start(
             str(root), str(root / "run.sh"), request(), context(runner)
         )
     assert error.value.__cause__ is failure
-    assert calls[-1] == (
-        ["env", "XDG_RUNTIME_DIR=/run/user/501", "systemctl", "--user", "stop", "rcp-job-abc"]
-        if backend_id == "systemd_user"
-        else ["launchctl", "bootout", "gui/501/rcp-job-abc"]
-    )
+    assert calls[-1] == [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/501",
+        "systemctl",
+        "--user",
+        "stop",
+        "rcp-job-abc",
+    ]
 
 
 @pytest.mark.parametrize("cancel_status", [0, 255])

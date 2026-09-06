@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shlex
+import subprocess
+import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -69,7 +72,7 @@ def commands(tmp_path, manifest, monkeypatch):
     context = BackendContext(execution_host="", execution_machine="laptop", compute=None)
 
     class Backend:
-        id = "launchd"
+        id = "systemd_user"
 
         def __init__(self):
             self.starts = []
@@ -94,10 +97,10 @@ def commands(tmp_path, manifest, monkeypatch):
 
     backend = Backend()
     monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, backend))
-    monkeypatch.setitem(jobs.COMPUTE_BACKENDS, "launchd", backend)
+    monkeypatch.setitem(jobs.COMPUTE_BACKENDS, "systemd_user", backend)
     probe = ComputeBackendProbe(
         execution_machine="laptop",
-        backend_id="launchd",
+        backend_id="systemd_user",
         state="ready",
         ready=True,
         diagnostic="Ready",
@@ -189,6 +192,174 @@ def test_helper_launch_replays_its_shell_handoff_after_store_reopen(commands):
     assert retry.result == first.result
     assert len(commands.backend.starts) == len(commands.probe_calls) == 1
     assert commands.launch(argv=["false"]).status == "invalid"
+
+
+@pytest.mark.asyncio
+async def test_slow_remote_launch_returns_before_client_deadline_and_replays(commands, monkeypatch):
+    from rcp import limits
+    from rcp.compute_jobs import backend_context
+    from rcp.compute_jobs import probe as probe_module
+    from rcp.compute_jobs.backends.systemd_user import SystemdUserBackend
+    from rcp.config import MachineComputeConfig
+    from rcp.runs import patch_validator
+    from rcp.transport.remote_job_files import operate
+    from rcp.transport.workspace_mailbox import RunStageMailbox
+
+    # Exercise the real sequential helper and staged-client path at 50x speed.
+    # Only SSH latency/OS responses are simulated; job files and receipts are real.
+    speed = 50
+    elapsed = 0.0
+    calls = []
+    launches = []
+    probe_roots = {}
+    original_monotonic = time.monotonic
+
+    def delay(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+        time.sleep(seconds / speed)
+
+    def runner(command, *, timeout, **_kwargs):
+        argv = shlex.split(command[-1])
+        calls.append(argv)
+        polling = "ActiveState" in argv or (
+            argv[:2] == ["python3", "-c"] and argv[-3] == "read" and argv[-2].endswith("/exit")
+        )
+        delay(min(1, timeout * 0.8) if polling else timeout * 0.8)
+        code, output, error = 0, "", ""
+        if argv == ["uname", "-s"]:
+            output = "Linux"
+        elif argv == ["id", "-u"]:
+            output = "501"
+        elif argv[:2] == ["python3", "-c"]:
+            output = json.dumps(operate(*argv[-3:]))
+        elif "systemd-run" in argv:
+            root = Path(argv[-1]).parent
+            if root.name.startswith("probe-"):
+                probe_roots["rcp-job-" + root.name] = (root, 0)
+                if "PrivateUsers=yes" in argv:
+                    code, error = 1, "Unsupported PrivateUsers"
+            else:
+                launches.append(root)
+                (root / "log").write_text("launched exactly once\n")
+        elif "ActiveState" in argv:
+            root, polls = probe_roots[argv[-1]]
+            probe_roots[argv[-1]] = (root, polls + 1)
+            output = "ActiveState=active" if polls == 0 else "ActiveState=inactive"
+            if polls:
+                (root / "exit").write_text("0 12345\n")
+                (root / "log").write_text("rcp-probe\n")
+        return subprocess.CompletedProcess(command, code, output, error)
+
+    machine = commands.handler.manifest.machines[0]
+    machine.host = "rcp@slow-compute.example"
+    machine.compute = MachineComputeConfig(jobs_root=str(commands.workspace / "jobs"))
+    monkeypatch.setattr(
+        probe_module,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: original_monotonic() * speed,
+            sleep=lambda seconds: time.sleep(seconds / speed),
+        ),
+    )
+    monkeypatch.setattr(
+        compute_commands,
+        "probe_compute_backend",
+        lambda manifest, alias, **kwargs: probe_module.probe_compute_backend(
+            manifest, alias, runner=runner, **kwargs
+        ),
+    )
+    resolutions = 0
+
+    def resolve_launch_context(manifest, alias):
+        nonlocal resolutions
+        resolutions += 1
+        context, backend = backend_context.resolve_context(manifest, alias, runner)
+        # Exercise the existing fresh-probe retry before any real launch is attempted.
+        return context, SimpleNamespace(id="changed-owner") if resolutions == 1 else backend
+
+    monkeypatch.setattr(jobs, "resolve_context", resolve_launch_context)
+    monkeypatch.setitem(jobs.COMPUTE_BACKENDS, "systemd_user", SystemdUserBackend())
+
+    def canonical_directories(paths, *, require_writable):
+        assert require_writable
+        delay(limits.REMOTE_RUN_STAGE_COMMAND_TIMEOUT_SECONDS * 0.8)
+        return {path: str(Path(path).resolve()) for path in paths}, str(commands.workspace)
+
+    handler = replace(
+        commands.handler,
+        remote_stage=SimpleNamespace(canonical_directories=canonical_directories),
+    )
+    monkeypatch.setattr(
+        patch_validator,
+        "COMPUTE_COMMAND_TIMEOUT_SECONDS",
+        limits.COMPUTE_COMMAND_TIMEOUT_SECONDS / speed,
+    )
+    staged = patch_validator.stage_patch_validation_mailbox(
+        local_stage=commands.workspace,
+        remote_stage=None,
+        task_id=handler.execution.operation_id,
+        turn_id="slow-remote-launch",
+        timeout_seconds=0.1,
+        authority="broker",
+    )
+    assert staged.invocation_gate is not None
+    assert staged.invocation_gate.response_timeout_seconds > staged.timeout_seconds
+    # Remote delivery includes a workspace listing and request/response transfers.
+    for name in ("entry_names", "read_text", "write_text"):
+        original = getattr(RunStageMailbox, name)
+
+        def remote_io(mailbox, *args, _original=original, **kwargs):
+            if mailbox is staged.mailbox:
+                delay(limits.REMOTE_RUN_STAGE_COMMAND_TIMEOUT_SECONDS * 0.8)
+            return _original(mailbox, *args, **kwargs)
+
+        monkeypatch.setattr(RunStageMailbox, name, remote_io)
+
+    stop = asyncio.Event()
+    async with staged.invocation_gate.serve_current_session():
+        server = asyncio.create_task(
+            patch_validator.serve_patch_validation_mailbox(
+                staged=staged,
+                execution=handler.execution,
+                validate=lambda _document: None,
+                stop=stop,
+                budget=patch_validator.PatchValidationBudget(),
+                command_handler=handler,
+            )
+        )
+        try:
+            responses = []
+            for _attempt in range(2):
+                process = await asyncio.create_subprocess_exec(
+                    *staged.client_argv(
+                        "launch",
+                        "--key",
+                        "slow-launch",
+                        "--cwd",
+                        str(commands.workspace),
+                        "--",
+                        "true",
+                    ),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                output, _ = await process.communicate()
+                assert process.returncode == 0, output.decode()
+                responses.append(json.loads(output))
+                if len(responses) == 1:
+                    assert elapsed > 120
+                    assert elapsed < limits.COMPUTE_COMMAND_TIMEOUT_SECONDS
+                    first_call_count = len(calls)
+            assert responses[0]["result"] == responses[1]["result"]
+            assert len(calls) == first_call_count
+            assert len(launches) == 1
+            assert resolutions == 2
+            assert len(probe_roots) == 4
+        finally:
+            stop.set()
+            await server
+    staged.cleanup()
 
 
 def test_compute_launch_key_survives_diagnostic_retention(commands):

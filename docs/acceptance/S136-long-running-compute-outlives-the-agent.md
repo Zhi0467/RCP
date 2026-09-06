@@ -26,13 +26,14 @@ last_checked: >-
   2026-09-06 — human confirmed direct Slurm submission, prerequisite checks,
   one shell-watcher contract, and human Cancel supplied by the watcher. The
   six-PR integration implements that scope. The complete backend suite passed
-  (4,536 tests, 11 skipped), web checks passed, and a disposable browser/API
+  (4,522 tests, 11 skipped), web checks passed, and a disposable browser/API
   drive verified Stop, Cancel, natural completion, and Slurm setup diagnostics.
-  A live macOS audit proved a setsid child escapes launchd Cancel. The user has
-  not decided macOS refusal versus an explicit exception, so that policy and
-  implementation block merge. The helper's 120-second response deadline also
-  lacks slow remote-path coverage. The real team-server/Codex and Slurm drive
-  has not run.
+  The live Mac check now proves helper readiness/admission/launch refuse before
+  creating job state. The served UI shows the refusal. A slow remote regression
+  reproduces the former response timeout and passes after correction, including
+  same-key replay. On the team server, actual rcp-account Slurm tool availability,
+  queue access, and Codex authentication pass. The isolated PR-code server drive
+  is prepared; explicit source-transfer approval is pending.
 ---
 
 # Long-running compute outlives the agent and wakes it
@@ -42,19 +43,16 @@ records the human-confirmed scope. The [compute jobs spec](../specs/compute-jobs
 owns execution routes and human actions; existing watcher delivery rules retain
 target, coalescing, session, budget, and Stop authority.
 
-## Unresolved acceptance boundary
+## Ownership and response boundary
 
-The live macOS audit at
-`/private/tmp/rcp-ownership-check-whqtv7_m/result.json` found the launchd owner
-stopped while a child in a new session continued its heartbeat after Cancel.
-The audit cleaned up its processes. The current implementation still offers
-launchd, and a human decision between refusing that route and an explicit
-ownership exception is pending. Do not mark the ownership promise passed for
-macOS. Record the decision and test its resulting behavior before merging.
+Generic helper launches require the Linux systemd user manager. macOS launches
+refuse before job state is created; local and SSH Darwin regressions and a live
+Mac check cover that refusal. There is no launchd ownership exception.
 
-The staged helper's 120-second response wait also has no verified shared
-deadline across slow remote resolution, probe, and launch. Idempotent replay
-alone does not close that review item.
+The staged client/broker response allowance covers the existing remote call
+bounds. A scaled slow sequence exercises both containment attempts, stale
+binding retry, launch, response delivery, and keyed replay without another job.
+The real server journey below remains a separate acceptance requirement.
 
 ## Setup
 
@@ -92,8 +90,8 @@ the human's live project data or stop unrelated work.
    handoff obligation. A job that already finished needs no watcher.
 8. Select a Linux execution machine without reliable helper ownership. Launch
    is refused with setup guidance; no detached SSH-session fallback is offered.
-   Add the macOS expectation only after the pending human decision, then drive
-   the setsid-descendant case against that explicit policy.
+   Verify macOS refuses before creating a job or running the supplied command.
+   On Linux, Cancel also stops descendants that create a new session.
 9. Human Cancel a running job through its watcher. Verify the saved command
    runs only on that click, with the saved host/cwd and human attribution.
    Concurrent clicks execute once. A command failure shows its diagnostic and
@@ -126,7 +124,7 @@ the human's live project data or stop unrelated work.
 - `child_work_wake_is_budgeted_waits_the_root_and_is_fenced_by_stop`
 - `unobserved_helper_is_corrected_without_relaunch_or_invocation_spend`
 - `linux_without_reliable_process_ownership_refuses_launch`
-- `macos_behavior_matches_the_pending_explicit_ownership_decision`
+- `macos_without_reliable_process_ownership_refuses_launch`
 - `slow_remote_helper_deadline_and_retry_are_verified`
 - `human_cancel_is_attributed_bounded_and_not_completion_by_itself`
 - `stopped_watcher_can_cancel_without_reopening_delivery`
@@ -135,6 +133,6 @@ the human's live project data or stop unrelated work.
 - `short_jobs_need_no_duration_gate_or_watcher`
 - `patch_json_remains_the_only_graph_change_channel`
 
-Keep this scenario pending until the ownership decision and deadline review
-are resolved and the real team-server drive passes with Codex and Slurm. Fake backends, local shells, and component tests support it but cannot
+Keep this scenario pending until the real team-server drive passes with Codex
+and Slurm. Fake backends, local shells, and component tests support it but cannot
 prove survival outside the provider sandbox or the production service.

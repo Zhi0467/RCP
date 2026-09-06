@@ -29,7 +29,7 @@ def test_compute_probe_route_stores_and_updates_cached_project(compute_api, monk
     app, client, url = compute_api
     before = client.get(url).json()
     assert before["machines"][0]["compute_probe"] is None
-    probe = _result("laptop", "launchd", "ready", "Passed.")
+    probe = _result("laptop", "systemd_user", "ready", "Passed.")
     calls = []
 
     def run(manifest, machine, *, data_dir):
@@ -56,7 +56,7 @@ def test_machine_compute_settings_write_invalidate_and_preserve_omitted(compute_
     store = app.state.services.store
     project_id = app.state.default_project_id
     body = settings_body(client.get(url).json())
-    probe = _result("laptop", "launchd", "ready", "Passed.")
+    probe = _result("laptop", "systemd_user", "ready", "Passed.")
     store.record_compute_backend_probe(project_id, probe)
     compute = {
         "job_manager": "slurm",

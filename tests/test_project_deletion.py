@@ -507,7 +507,7 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(manifest
     other = store.create_compute_job(job_record("other", project_id="other-project"))
     probe = ComputeBackendProbe(
         execution_machine="laptop",
-        backend_id="launchd",
+        backend_id="systemd_user",
         state="ready",
         ready=True,
         diagnostic="ok",

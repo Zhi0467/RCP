@@ -27,7 +27,7 @@ def test_probe_storage_is_latest_per_project_and_machine(tmp_path):
     store = AppStore(tmp_path / "app.sqlite")
     probe = ComputeBackendProbe(
         execution_machine="local",
-        backend_id="launchd",
+        backend_id="systemd_user",
         state="ready",
         ready=True,
         diagnostic="Ready",

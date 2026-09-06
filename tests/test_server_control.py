@@ -1201,7 +1201,9 @@ def test_compute_probe_control_envelope(tmp_path, control_root, mismatch):
         control_socket=control_root / "control.sock",
     )
     project_id = str(uuid.uuid4())
-    probe = _result("other" if mismatch == "machine" else "laptop", "launchd", "ready", "Passed.")
+    probe = _result(
+        "other" if mismatch == "machine" else "laptop", "systemd_user", "ready", "Passed."
+    )
     result = ServerControlComputeProbeResult(
         instance_id=str(uuid.uuid4()) if mismatch == "instance" else metadata.instance_id,
         pid=os.getpid() + 1 if mismatch == "pid" else os.getpid(),
@@ -1250,7 +1252,7 @@ def test_compute_probe_client_rejects_another_machine(tmp_path, monkeypatch):
         selector_kind="project",
         selector_id=project_id,
         machine_alias="other",
-        probe=_result("other", "launchd", "ready", "Passed."),
+        probe=_result("other", "systemd_user", "ready", "Passed."),
     )
     client = ServerControlClient(metadata, expected_server_uid=os.geteuid())
     monkeypatch.setattr(client, "_exchange", lambda _: result)

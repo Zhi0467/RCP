@@ -12,6 +12,7 @@ from rcp.compute_jobs.backend_context import (
     ComputeLaunchUncertainError,
     resolve_context,
 )
+from rcp.compute_jobs.backends import UNAVAILABLE_BACKEND_GUIDANCE
 from rcp.compute_jobs.files import (
     prepare_job_root,
     read_job_file,
@@ -53,7 +54,7 @@ def _result(
         required_action=(
             None
             if state == "ready"
-            else "configure a compute backend for this machine"
+            else UNAVAILABLE_BACKEND_GUIDANCE
             if state == "unavailable"
             else "Repair the compute backend on this machine and probe again."
         ),
@@ -169,7 +170,12 @@ def probe_compute_backend(
             return probe_slurm_access(machine_alias, machine.host)
         context, profile = resolve_context(manifest, machine_alias, runner)
         if profile is None:
-            result = _result(machine_alias, "", "unavailable", "No compute backend is available.")
+            result = _result(
+                machine_alias,
+                "",
+                "unavailable",
+                f"No reliable compute process owner is available on {context.os_name}.",
+            )
         else:
             backend_id = profile.id
             if not profile.supports(context.os_name, bool(context.execution_host)):
@@ -182,21 +188,18 @@ def probe_compute_backend(
             else:
                 diagnostic = "Probe observed a running job, exit 0, and its log marker."
                 containment = "cooperative"
-                if profile.id == "systemd_user":
-                    try:
-                        isolated = _run_probe_job(
-                            replace(context, containment="mirrored"), profile, data_dir
-                        )
-                    except _ProbeCleanupError:
-                        raise
-                    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
-                        diagnostic = f"Mirrored containment probe failed: {exc}. " + diagnostic
-                        isolated = _run_probe_job(context, profile, data_dir)
-                        diagnostic += " Cooperative containment only."
-                    else:
-                        containment = "mirrored"
-                else:
+                try:
+                    isolated = _run_probe_job(
+                        replace(context, containment="mirrored"), profile, data_dir
+                    )
+                except _ProbeCleanupError:
+                    raise
+                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+                    diagnostic = f"Mirrored containment probe failed: {exc}. " + diagnostic
                     isolated = _run_probe_job(context, profile, data_dir)
+                    diagnostic += " Cooperative containment only."
+                else:
+                    containment = "mirrored"
                 result = _result(
                     machine_alias,
                     backend_id,

@@ -1,19 +1,20 @@
 # External job and watcher simplification
 
 Date: 2026-09-06
-Status: active integration on `codex/compute-runner-simplify`. The six compute
-PRs are combined locally. The single shell-watcher contract, human Cancel API,
-watcher-based job UI, generic helper, and route-specific prompt changes are
-implemented. The complete backend suite passes (4,536 tests, 11 skipped); the
-web suite, build, and disposable browser/API drive also pass. Merge is blocked on the unresolved macOS
-ownership policy and matching implementation: live launchd testing found a
-child that escaped Cancel through `setsid`. The 120-second staged helper
-response deadline also needs review against slow sequential remote operations.
-The real team-server/Codex acceptance drive remains.
-The user confirmed direct scheduler submission, watcher-supplied Cancel, and
-the settled scope below; no macOS ownership exception has been approved. Close
-this handoff only after those review items and S136's live journey are resolved,
-with explicit human merge; servers consume merged main.
+Status: active verification on `codex/compute-runner-simplify`, published as
+[draft PR #83](https://github.com/Zhi0467/RCP/pull/83). The six compute PRs are
+integrated with one shell-watcher contract, human Cancel, watcher-based job UI,
+generic Linux helper, and route-specific prompts. The ownership fix removes
+launchd and refuses macOS helper launches; the slow remote response-budget
+regression reproduces the former failure and passes after correction. Ordinary
+episode tests now isolate readiness at the admission boundary instead of
+launching real OS probes. Full follow-up verification passed: 4,522 backend
+tests, 11 skipped, plus formatting and documentation checks.
+The service account's Slurm tools, queue access, and native Codex authentication
+have been checked on the reachable team server through its operator tmux
+session. The isolated PR-code server drive is prepared and awaits explicit
+source-transfer approval. No merge or installed-service update is authorized.
+Close this handoff after S136's remaining live journey is resolved.
 
 The former compute-runner plan is
 [archived](../archive/handoffs/handoff-2026-09-06-compute-runner.md). It is evidence
@@ -28,10 +29,9 @@ belongs to the [compute jobs spec](../specs/compute-jobs.md) and
   actual execution account and guides an administrator; it never configures
   Slurm users, associations, accounts, partitions, or resources.
 - Generic processes that must outlive the turn need reliable process ownership.
-  Linux requires the systemd user manager; the SSH-session fallback and
-  scheduler wrapper are removed. The current macOS launchd implementation does
-  not meet the descendant-ownership requirement; its disposition is unresolved
-  below.
+  Linux requires the systemd user manager. macOS helper launches are refused
+  because launchd cannot retain detached descendants. The SSH-session fallback,
+  launchd backend, and scheduler wrapper are removed.
 - Every external job uses the existing shell watcher: required `check_command`,
   `log_path`, and `cwd`, plus optional `cancel_command`. No job-id watcher form,
   no second job-list API, and no scheduler job interpretation in RCP.
@@ -50,26 +50,23 @@ belongs to the [compute jobs spec](../specs/compute-jobs.md) and
   is enforced. A still-running helper needs its shell handoff when the turn
   ends, including when recovered through a retry/resume lineage.
 
-## Unresolved review items
+## Resolved review findings
 
-- **macOS ownership blocks merge.** The live audit at
-  `/private/tmp/rcp-ownership-check-whqtv7_m/result.json` observed the launchd
-  owner gone after Cancel while a child that called `setsid` continued writing
-  its heartbeat. The audit cleaned up that child. The local
-  `/usr/share/man/man5/launchd.plist.5`, lines 609–614, documents cleanup of the
-  job's process group, which does not include that new session. The code still
-  offers launchd. The user has been asked whether to refuse macOS helper
-  launches too or authorize an explicit documented exception; no answer has
-  arrived. Do not infer approval from silence or describe launchd as reliable
-  ownership. Apply the user's decision to resolution, readiness, prompts, UI,
-  and the live acceptance expectations before merging.
-- **Helper deadline coverage remains unproved.** The staged client waits 120
-  seconds, while remote machine resolution, probing, and actual launch run
-  sequentially with their own timeouts. The total may exceed the client wait;
-  no shared deadline has been tested. Retained receipts and keyed replay avoid
-  a duplicate launch but do not establish that a slow valid first launch gets
-  its response. Review the full timing path and verify its chosen deadline
-  behavior before claiming this issue is fixed.
+- macOS helper launches refuse before any job root, command, or record is
+  created, even with a stale ready probe. Actual Mac readiness, admission, and
+  launch checks passed; the served Settings UI displays the refusal and
+  supported-machine guidance. Evidence is in
+  `/private/tmp/rcp-macos-helper-refusal-x7m8sq9o/result.json` and
+  `/private/tmp/rcp-pr83-macos-ui-20260906b/results.json`.
+- The shared client/broker response allowance derives from the existing finite
+  remote call bounds. The former 120-second allowance fails the scaled slow
+  sequence; the corrected allowance returns the launch result and replays it
+  without a duplicate. Focused command/runtime checks passed (86 tests).
+  Evidence is in `/private/tmp/rcp-helper-deadline-old-budget.log` and
+  `/private/tmp/rcp-helper-deadline-focused.log`.
+- Episode admission tests no longer depend on OS facilities or a real SSH
+  server. The retry regression uses a reserved example hostname and still
+  proves that a fresh provider check gates retry before mutation.
 
 ## Verification and remaining release work
 
@@ -77,7 +74,7 @@ belongs to the [compute jobs spec](../specs/compute-jobs.md) and
    probe checks tool availability and queue connectivity, and never submits a
    readiness job or assumes default resource arguments. Slurm validates actual
    submission permission and resource choices when the agent submits its job.
-2. Completed combined verification: 4,536 backend tests passed and 11 skipped;
+2. Completed follow-up verification: 4,522 backend tests passed and 11 skipped;
    schema upgrades, restore inventory, retained-session prompts, and transfer
    identity are covered. All 653 web tests passed; after the final control-state
    changes, the build and 51 affected browser/UI tests passed again.
@@ -110,6 +107,5 @@ sequence replaces the obsolete job-observer migration, preserves worker
 identity, and has one current restore fingerprint. Do not add compatibility
 paths for a contract that never shipped, or modify production data to fit tests.
 
-The human requested finishing this scoped simplification without unrelated implementation.
-The outstanding ownership and timing findings stay review items; do not add a new backend or
-timeout framework without resolving their scope with the human. No push or merge is authorized.
+Keep further implementation limited to defects demonstrated by these checks.
+Do not add scheduler submission logic, another backend, or a timeout framework.

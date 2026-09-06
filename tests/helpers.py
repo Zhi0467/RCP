@@ -57,7 +57,10 @@ _RCP_OWNED_ITEM_FIELDS = {
 
 
 def create_named_app(*args: Any, compute_ready: bool = True, **kwargs: Any):
-    """Create a named test app with compute readiness independent of the test host."""
+    """Create a named test app and optionally seed its stored readiness projection.
+
+    The pytest admission fixture isolates fresh episode probes separately.
+    """
 
     app = create_app(*args, **kwargs)
     store = app.state.background_tasks.store

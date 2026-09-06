@@ -21,7 +21,7 @@ def test_compute_backend_type_is_registry_derived() -> None:
     [
         {"job_manager": "unknown"},
         {"backend": "subprocess"},
-        {"backend": "launchd", "slurm_account": "lab"},
+        {"backend": "systemd_user", "slurm_account": "lab"},
         {"slurm_partition": "gpu"},
         {"slurm_submit_args": ["--time=1"]},
         {"jobs_root": "relative/jobs"},
@@ -100,7 +100,7 @@ def test_launch_request_is_strict(values) -> None:
 def test_probe_and_record_redact_diagnostics() -> None:
     probe = ComputeBackendProbe(
         execution_machine="laptop",
-        backend_id="launchd",
+        backend_id="systemd_user",
         state="failed",
         ready=False,
         diagnostic="token=secret\nfailed",
@@ -117,7 +117,7 @@ def test_probe_and_record_redact_diagnostics() -> None:
         project_id="project",
         origin_operation_id="operation",
         execution_machine="laptop",
-        backend_id="launchd",
+        backend_id="systemd_user",
         backend_handle="label",
         job_root="/jobs/job",
         cwd="/project",

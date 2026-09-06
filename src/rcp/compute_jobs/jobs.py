@@ -17,7 +17,7 @@ from rcp.compute_jobs.backend_context import (
     recorded_job_context,
     resolve_context,
 )
-from rcp.compute_jobs.backends import COMPUTE_BACKENDS
+from rcp.compute_jobs.backends import COMPUTE_BACKENDS, UNAVAILABLE_BACKEND_GUIDANCE
 from rcp.compute_jobs.files import (
     prepare_job_root,
     read_job_file,
@@ -54,8 +54,8 @@ def launch_compute_job(
     context, backend = resolve_context(manifest, execution_machine)
     if backend is None:
         raise RuntimeError(
-            f"No compute backend is available for machine {execution_machine!r}; "
-            "configure a compute backend for this machine."
+            f"No reliable compute process owner is available for machine {execution_machine!r} "
+            f"({context.os_name}). {UNAVAILABLE_BACKEND_GUIDANCE}"
         )
     job_id = uuid.uuid4().hex
     if probe is not None:
