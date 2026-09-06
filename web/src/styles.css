@@ -6236,6 +6236,22 @@ button.relation-map-node:hover {
   flex-direction: column;
   gap: 6px;
 }
+/* The message is the subject of the composer, so it takes its own full-width row
+   and every control sits together on the row beneath it. */
+.chat-composer textarea {
+  flex-basis: 100%;
+}
+.chat-composer .chat-send {
+  align-items: center;
+  flex-basis: 100%;
+  flex-direction: row;
+  justify-content: space-between;
+}
+.chat-composer-tools {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+}
 .chat-send-actions {
   align-items: center;
   display: flex;
