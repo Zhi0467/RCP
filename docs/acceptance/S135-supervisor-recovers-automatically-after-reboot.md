@@ -14,10 +14,12 @@ invariants: [6, 7, 8, 9]
 last_checked: >-
   2026-09-06 — human confirmed automatic recovery and an actual reboot proof.
   The supervisor implementation and disposable Ubuntu reboot harness are coded.
-  Local regression and fixture checks pass. Hosted run 34055148444 completed
-  fresh installation on Ubuntu 22.04/24.04, then refused an incomplete backup in
-  its first recovery case before the armed interruption. No recovery case has
-  passed; this scenario remains pending.
+  Hosted run 34056860042 passed 16 online update/reboot recovery cases on each
+  Ubuntu version, including checkpoint rollback and guarded startup ordering.
+  The repeated-rollback case reached its second intended pause, then the
+  controller timed out waiting for cloud-init instead of driving the next reboot.
+  Restore, offline update recovery, and accepted-work cases remain unqualified.
+  Both separate source-adoption/offline-reboot jobs passed. This scenario remains pending.
 ---
 
 # A reboot cannot bypass deployment recovery

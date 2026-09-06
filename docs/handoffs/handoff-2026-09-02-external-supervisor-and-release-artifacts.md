@@ -7,7 +7,8 @@ Independent deployment and restore journals, closed admission, generic
 checkpoints, automatic boot recovery, artifact installation, source adoption,
 operator delegation, and retirement of the old deployment owners are implemented.
 The disposable reboot and historical-source adoption harnesses are implemented;
-drive-found fixes use subsequent PRs. Actual Ubuntu qualification, qualified
+source adoption and offline reboot passed on both Ubuntu versions. Drive-found
+fixes use subsequent PRs. Interrupted-update/restore qualification, qualified
 release promotion, and the Phase 6 production drive remain outstanding.
 
 Human clarification, 2026-09-06: finish the remaining coding in one PR, then drive
@@ -20,8 +21,9 @@ The [team-server handoff is archived](../archive/handoffs/handoff-2026-08-27-dev
 its former surface freeze is closed.
 
 Human authorization, 2026-09-06: for this deployment drive, the agent may fix and
-merge drive-found PRs, then promote the latest complete prerelease whose CI and
-hosted recovery/adoption drives pass on both Ubuntu versions. Production must
+merge drive-found PRs and promote a complete prerelease with passing CI.
+The later production-priority decision below accepts the executed core Ubuntu
+proofs while the remaining controller/qualification work continues. Production must
 consume the application and supervisor from that same promoted tag. This is
 explicit authorization for this release; it does not establish automatic promotion.
 
@@ -30,13 +32,26 @@ replacement-key qualification work. Full machine-loss reconstruction and GitHub
 access repair may remain manual. Complete verified data backups remain required;
 this closure is a deliberate scope decision, not an executed recovery proof.
 
+Human scope decision, 2026-09-06: the final production drive is a verified
+backup, normal supervisor adoption/update, and data/health checks. Deliberate
+failure and rollback testing belong only in the disposable VMs. The earlier
+production rollback rehearsal is closed, not an executed rollback proof.
+
+Human production-priority decision, 2026-09-06: proceed with the normal production
+deployment when no fatal application error is observed, without waiting for more
+nonfatal test-controller iterations. Build 484 at `7d6546f` has green CI, complete
+verified paired assets, source adoption/offline reboot on both Ubuntu versions,
+and 16 real online update/reboot cases on each. This evidence is accepted for the
+production drive despite the repeated-rollback controller timeout. The unfinished
+recovery cases remain explicit follow-up work, not passed qualification.
+
 Closure condition, all of it:
 
 1. Phase 5 deletions are verified: `create_app` reads no deployment journal,
    release coordination belongs to the supervisor, and the full suite is green.
    The private CLI connection and non-deployment operations remain functional.
 2. Phase 6 is recorded: the persistent lab server updated once through the
-   supervisor and rehearsed one rollback, with the receipt in this file.
+   supervisor, with complete backup and data/health receipts in this file.
 3. `docs/server.md`, [`docs/release.md`](../release.md), and the operations spec
    describe only the supervisor path.
 
@@ -84,11 +99,12 @@ When those hold, archive this handoff.
 
 1. Integration PR #65 merged as `94f37f4`; PR and merged-main CI passed, and
    `build/460` published all five assets. Drive-found fixes use separate PRs.
-2. Drive `.github/workflows/supervisor-recovery-live.yml` on disposable hosted
+2. Continue `.github/workflows/supervisor-recovery-live.yml` on disposable hosted
    Ubuntu 22.04/24.04. It preflights QEMU/KVM and refuses qualification when the
    environment cannot prove real reboots. Exercise source adoption in the
-   independent historical-source guest jobs.
-3. Under that explicit human authorization, promote a complete qualified build
+   independent historical-source guest jobs. The remaining cases do not block
+   this production drive under the later human decision above.
+3. Under that explicit human authorization, promote the complete selected build
    containing the maintenance contract and both wheels/locks. An older `stable`
    must fail with its missing requirement; never silently substitute `main` or a
    prerelease.
@@ -166,6 +182,33 @@ fixture now retains its healthy configured timer and exports bounded doctor
 problems plus verified committed-selection evidence if later checks fail. A
 hosted rerun must establish the complete result. This run completed no recovery
 case or offline changed-boot adoption proof.
+
+Run [34056860042](https://github.com/Zhi0467/RCP/actions/runs/34056860042)
+at `7d6546f30d958451080cce3d28818eb5297b7f4b` passed both historical-source
+adoption jobs. Each installed source `203ad6a`, adopted the synthetic paired
+release with supervisor `0.1.3`, verified a complete encrypted backup by
+decryption and inventory, and retained canonical history, stages, attachments,
+and member reconnection. Doctor was healthy with an active/enabled backup timer
+before and after an offline real reboot. Ubuntu 22.04 boot IDs changed from
+`12c13f49-8731-4523-9c8f-1d1e306af844` to
+`0fc15437-8024-4c63-9e1d-3fd8686dfcc0`; Ubuntu 24.04 changed from
+`619a686e-71ad-47c3-823c-d9a384b9d2ce` to
+`a477bf5f-4992-4d01-b823-78b8cb7d98af`. These are executed source-adoption
+and offline-startup proofs using synthetic release fixtures from that merged
+commit. They do not establish release promotion or production qualification.
+
+Both recovery jobs in that run passed the first 16 online update/reboot cases,
+including forward migration, checkpoint rollback, exact canonical/stage/attachment
+checks, member reconnection, and recovery-before-application-start ordering. The
+next repeated-rollback case reached `root_quarantined:0` during startup recovery
+after its first real reboot. The controller then timed out waiting for
+`cloud-init status --wait` while the supervisor was deliberately paused, so it
+never drove the second interruption. Cloud-init completion is now required only
+for initial provisioning; every later boot still requires SSH, the controller's
+disposable identity, exact Ubuntu version, and a changed boot ID. Case start and
+verified completion are also printed in the hosted log. These controller fixes
+require a rerun. Restore, offline update/restore, repeated rollback completion,
+and accepted-work preservation remain unqualified; S135 stays pending.
 
 ## Phases
 
@@ -385,8 +428,9 @@ separate packaged-desktop updater scenario.
 ### Phase 6 — the lab
 
 Lands: the persistent lab server moves to the supervisor path: install the
-supervisor, update once to a promoted release, force one rollback rehearsal,
-and record both receipts here with dates and release names.
+supervisor, update once to a promoted release, and verify complete protected
+backup plus preserved data and healthy service. Record receipts here with dates
+and release names. Deliberate failure and rollback drives remain disposable-only.
 
 Exit proof: the receipts, and `server doctor` on the lab host reporting the
 followed release. Then archive this handoff.

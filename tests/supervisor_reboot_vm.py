@@ -388,7 +388,10 @@ class Guest:
             interval=2,
             detail="The guest did not boot within the qualification deadline.",
         )
-        self.ssh(["cloud-init", "status", "--wait"], timeout=BOOT_TIMEOUT)
+        # Provisioning must finish once. Later boots intentionally pause the
+        # startup guard, so waiting for all boot services would deadlock the drive.
+        if not self.boot_ids:
+            self.ssh(["cloud-init", "status", "--wait"], timeout=BOOT_TIMEOUT)
         marker = self.ssh(["sudo", "-n", "cat", GUEST_MARKER]).stdout
         if marker != self.token:
             raise RuntimeError(
