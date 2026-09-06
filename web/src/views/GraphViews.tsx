@@ -14,6 +14,7 @@ import {
   Pin,
   PinOff,
   RotateCcw,
+  Scan,
   Search,
   Workflow,
   X,
@@ -41,7 +42,12 @@ import {
   relationFocus,
   type DagOntologyProjection,
 } from "../graphProjection";
-import { zoomDagAtPoint, type DagViewport, type DagZoomResult } from "../hooks/dagZoom";
+import {
+  fitDagToViewport,
+  zoomDagAtPoint,
+  type DagViewport,
+  type DagZoomResult,
+} from "../hooks/dagZoom";
 import {
   DAG_NODE_HEIGHT,
   DAG_NODE_WIDTH,
@@ -360,6 +366,55 @@ export function DagView({
     };
   }, [projection.nodes.length, viewportRef]);
 
+  const fitToView = useCallback(() => {
+    const scroller = scrollRef.current;
+    const canvas = canvasRef.current;
+    if (!scroller || !canvas) return;
+    const next = fitDagToViewport({
+      nodes: [...canvas.querySelectorAll<HTMLElement>(".dag-node")].map((node) => ({
+        left: node.offsetLeft,
+        top: node.offsetTop,
+        width: node.offsetWidth,
+        height: node.offsetHeight,
+      })),
+      viewportWidth: scroller.clientWidth,
+      viewportHeight: scroller.clientHeight,
+    });
+    if (!next) return;
+    viewportRef.current = next;
+    if (next.zoom === zoomRef.current) {
+      scroller.scrollLeft = next.scrollLeft;
+      scroller.scrollTop = next.scrollTop;
+      return;
+    }
+    // Scroll lands in the layout effect once the canvas has re-scaled.
+    pendingZoomScrollRef.current = next;
+    zoomRef.current = next.zoom;
+    setZoom(next.zoom);
+  }, [viewportRef]);
+
+  // Frame the whole graph on open. A relation focus and a remembered viewport
+  // both outrank this: each already states where the human wants to look.
+  useEffect(() => {
+    if (!layoutReady || focusNodeId) return;
+    const frameKey = `fit:${layoutMode}:${projection.nodes.length}:${projection.edges.length}`;
+    if (framedLayoutRef.current === frameKey) return;
+    framedLayoutRef.current = frameKey;
+    if (restoringViewportRef.current) {
+      restoringViewportRef.current = null;
+      return;
+    }
+    const timer = window.setTimeout(fitToView, layoutMode === "force" ? 550 : 80);
+    return () => window.clearTimeout(timer);
+  }, [
+    fitToView,
+    focusNodeId,
+    layoutMode,
+    layoutReady,
+    projection.edges.length,
+    projection.nodes.length,
+  ]);
+
   useEffect(() => {
     if (!layoutReady || !focusNodeId) return;
     const frameKey = `${layoutMode}:${focusNodeId}:${projection.nodes.length}:${projection.edges.length}`;
@@ -657,6 +712,9 @@ export function DagView({
                 }}
               >
                 <RotateCcw size={13} /> Reset layout
+              </button>
+              <button className="dag-tool-button" type="button" onClick={fitToView}>
+                <Scan size={13} /> Fit
               </button>
               {fullscreenSupported && (
                 <button
