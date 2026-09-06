@@ -78,6 +78,16 @@ test("direct preview drags require confirmation, preserve text, and keep working
       await drag(page, origin, [origin[0] + 2, origin[1] + 2]);
       assert.equal(await pending.isVisible(), true, "clicks do not dismiss confirmation");
       assert.deepEqual(await outline.boundingBox(), originalOutline);
+      const gestureSurface =
+        kind === "html" ? page.frameLocator("iframe").locator("body") : page.locator("#image");
+      // Native touch scrolling cancels its pointer; that ignored pointer does
+      // not own the already pending mouse selection.
+      await gestureSurface.dispatchEvent("pointercancel", {
+        pointerId: 1234,
+        pointerType: "touch",
+      });
+      assert.equal(await pending.isVisible(), true);
+      assert.deepEqual(await outline.boundingBox(), originalOutline);
       if (kind === "html") {
         const content = page.frameLocator("iframe");
         const artifactFrame = page.frames().find((frame) => frame.parentFrame());

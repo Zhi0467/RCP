@@ -206,13 +206,16 @@ function installArtifactSelection(surface, publish) {
           : range.commonAncestorContainer.parentElement;
       publish({ kind: "text", text, surrounding_text: bounded(container?.textContent, 6144) });
     });
-  listen(surface, "pointercancel", clear, true);
-  listen(capture, "lostpointercapture", () => {
-    if (drag) clear();
-  });
-  listen(view, "blur", () => {
-    if (drag) clear();
-  });
+  function abortDrag(event) {
+    if (!drag || (event?.pointerId !== undefined && event.pointerId !== drag.id)) return;
+    if (drag.started) {
+      clear();
+      publish(null);
+    } else endDrag();
+  }
+  listen(surface, "pointercancel", abortDrag, true);
+  listen(capture, "lostpointercapture", abortDrag);
+  listen(view, "blur", abortDrag);
   listen(
     view,
     "scroll",
