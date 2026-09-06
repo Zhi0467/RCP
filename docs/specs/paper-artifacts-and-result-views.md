@@ -83,6 +83,15 @@ The report is retrospective only. It has no Patch, watcher, command, Proposal,
 or graph channel and never determines the episode verdict. A final generation
 error remains visible and nonblocking.
 
+The report viewer offers **Save copy**, including when its originating chat is
+unavailable. It writes the captured HTML into the state repository's `artifacts/`
+directory through the existing artifact publication path, requires project write
+admission, and shows the repository-relative saved path. Each explicit save
+creates a collision-free copy and preserves existing files. A failed save is
+visible and retryable. The stored report, its preview, and the episode lifecycle
+remain unchanged; saving does not create a graph Patch. The viewer labels these
+durably stored reports as **report**, rather than **temporary**.
+
 ## Unified artifact viewer
 
 There is no separate result-view kind. A task that draws a custom HTML result

@@ -982,6 +982,9 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert "rcp-artifact-context" in viewer.text
     assert '"source": "episode_report"' in viewer.text
     assert 'id="keep"' not in viewer.text
+    assert ">Save copy</button>" in viewer.text
+    assert f"/episodes/{episode.episode_id}/report/save" in viewer.text
+    assert ">report</span>" in viewer.text
     assert legacy_preview.status_code == 200
     assert "rcp-artifact-context" in legacy_preview.text
     assert url in legacy_preview.text
@@ -990,3 +993,80 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert ">Comment</button>" in viewer.text
     assert ">Cancel</button>" in viewer.text
     assert 'id="box"' not in viewer.text
+
+
+def test_save_episode_report_copies_immutable_bytes_without_overwriting(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    service = app.state.catalog.open(project_id)
+    episode, _, report = create_terminal_auto_episode(
+        store,
+        service.history,
+        project_id,
+        episode_id="save-report",
+        report_html="<h1>Retrospective — results</h1>",
+    )
+    assert report is not None
+    repository = manifest.path.parent.parent
+    graph_before = service.history.current_materialization().state
+    url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/save"
+    with TestClient(app) as client:
+        saved = client.post(url)
+        assert saved.status_code == 200
+        first_path = repository / saved.json()["path"]
+        assert first_path.parent == repository / "artifacts"
+        assert first_path.read_bytes() == report.html.encode("utf-8")
+        first_path.write_text("Human edited copy", encoding="utf-8")
+        again = client.post(url)
+        assert again.status_code == 200
+        second_path = repository / again.json()["path"]
+        assert second_path != first_path
+        assert second_path.read_bytes() == report.html.encode("utf-8")
+        assert first_path.read_text() == "Human edited copy"
+        assert store.episode_report(episode.episode_id) == report
+        assert store.episode(episode.episode_id) == episode
+        assert service.history.current_materialization().state == graph_before
+
+
+def test_save_episode_report_failure_is_visible_and_retryable(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    episode, _, report = create_terminal_auto_episode(
+        store,
+        app.state.catalog.open(project_id).history,
+        project_id,
+        episode_id="save-report",
+        report_html="<h1>Retrospective</h1>",
+    )
+    artifact_dir = manifest.path.parent.parent / "artifacts"
+    artifact_dir.write_text("Existing file", encoding="utf-8")
+    url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/save"
+    with TestClient(app) as client:
+        failed = client.post(url)
+        assert failed.status_code == 503
+        assert failed.json()["detail"] == "Episode report save unavailable"
+        assert artifact_dir.read_text() == "Existing file"
+        assert store.episode_report(episode.episode_id) == report
+        artifact_dir.unlink()
+        assert client.post(url).status_code == 200
+
+
+def test_save_episode_report_rejects_missing_report(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    episode, _, _ = create_terminal_auto_episode(
+        store,
+        app.state.catalog.open(project_id).history,
+        project_id,
+        episode_id="no-report",
+        report_error="Report generation failed",
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/save"
+        )
+    assert response.status_code == 404
+    assert not (manifest.path.parent.parent / "artifacts").exists()
