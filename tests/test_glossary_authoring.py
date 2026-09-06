@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 import pytest
 
@@ -11,8 +12,9 @@ from rcp.core.authority import (
     AgentTaskAuthority,
     require_apply,
 )
-from rcp.core.models import Experiment, GraphState
-from rcp.core.transition_models import GraphTargetRef
+from rcp.core.materialize import apply_valid_patch
+from rcp.core.models import Experiment, GraphBranchMetadata, GraphState, Patch
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.validation.patch import validate_patch
 from rcp.history import HistoryManager
 from tests.helpers import fabricated_authorizer, seated_on_every_project
@@ -104,3 +106,56 @@ def test_glossary_operation_does_not_grant_discuss_an_apply_channel() -> None:
             _definition_patch("Elastic weight consolidation."),
             is_project_member=seated_on_every_project,
         )
+
+
+def test_branch_glossary_upsert_is_isolated_and_replays_its_own_state(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(_definition_patch("Main definition."))
+    before = {
+        path.relative_to(history.root): path.read_bytes() for path in history.root.rglob("*.json")
+    }
+    base = history.head_ref()
+    branch_id = str(uuid.uuid4())
+    target = GraphTargetRef(kind="branch", branch_id=branch_id)
+    branch = history.create_auto_research_branch(
+        GraphBranchMetadata(
+            branch_id=branch_id,
+            episode_id=branch_id,
+            project_id="project",
+            base_head=base,
+            head=GraphHeadRef(
+                target=target, revision=base.revision, transition_id=base.transition_id
+            ),
+            authorized_by=fabricated_authorizer("Researcher"),
+        )
+    )
+    _, result = branch.append(_definition_patch("Branch definition."))
+    assert result.state.glossary["EWC"].plain_definition == "Branch definition."
+    assert branch.materialize().state.glossary == result.state.glossary
+    assert history.state().glossary["EWC"].plain_definition == "Main definition."
+    assert history.head_ref() == base
+    for relative, contents in before.items():
+        assert (history.root / relative).read_bytes() == contents
+
+
+def test_failed_apply_after_glossary_upsert_preserves_shared_previous_term() -> None:
+    state = GraphState(
+        glossary={"EWC": {"term": "EWC", "plain_definition": "Original definition."}}
+    )
+    term = state.glossary["EWC"]
+    patch = Patch(
+        kind="work",
+        author="agent",
+        summary="Attempt to revise a definition and a missing node.",
+        ops=[
+            {
+                "op": "upsert_glossary",
+                "terms": [{"term": "EWC", "plain_definition": "Candidate definition."}],
+            },
+            {"op": "update_nodes", "nodes": [{"id": "hyp/missing", "changes": {"title": "New"}}]},
+        ],
+    )
+    with pytest.raises(KeyError):
+        apply_valid_patch(state, patch)
+    assert state.glossary["EWC"] is term
+    assert term.plain_definition == "Original definition."

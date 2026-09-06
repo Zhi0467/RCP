@@ -20,6 +20,14 @@ test("human graph controls create built-in nodes, stage connections, undo, and h
     await page.route("**/api/projects/fixture/graph-edit-options", (route) =>
       route.fulfill({
         json: {
+          node_prefixes: {
+            research_question: "rq",
+            hypothesis: "hyp",
+            experiment: "exp",
+            evidence: "ev",
+            decision: "dec",
+            blocker: "blk",
+          },
           relations: [
             {
               name: "supports",
@@ -42,6 +50,15 @@ test("human graph controls create built-in nodes, stage connections, undo, and h
     const request = async () => JSON.parse(await page.getByLabel("Staged request").textContent());
     assert.equal((await request()).custom_nodes[0].type, "research_question");
     assert.equal((await request()).custom_nodes[0].extension_type, null);
+    assert.equal("created_rev" in (await request()).custom_nodes[0], false);
+    // The fixture intentionally leaves the node awaiting backend completion.
+    // Its ID must still be reserved so reopening the form cannot overwrite it.
+    await page.getByRole("button", { name: "New node", exact: true }).click();
+    await page.getByLabel("ID slug").fill("new-question");
+    await page.getByLabel("Title", { exact: true }).fill("Replacement question");
+    await page.getByLabel("Question", { exact: true }).fill("Would overwrite the first draft?");
+    assert.equal(await page.getByRole("button", { name: "Stage", exact: true }).isDisabled(), true);
+    await page.getByRole("button", { name: "Close new node" }).click();
     await page.getByRole("button", { name: "Connections", exact: true }).click();
     await page.getByLabel("From", { exact: true }).selectOption("ev/second");
     await page.getByLabel("To", { exact: true }).selectOption("hyp/first");
@@ -55,6 +72,23 @@ test("human graph controls create built-in nodes, stage connections, undo, and h
     assert.equal(edge.target, "hyp/first");
     assert.equal(edge.relation, "supports");
     assert.equal(edge.explanation, "Measured comparison");
+    assert.equal("layer" in edge, false);
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Remove relates_to connection from hyp/first to ev/second" })
+        .count(),
+      0,
+    );
+    await page
+      .getByRole("button", { name: "Remove contradicts connection from hyp/first to ev/second" })
+      .click();
+    assert.deepEqual((await request()).removed_edge_ids, ["edge/canonical"]);
+    await page
+      .getByRole("button", {
+        name: "Undo removal of contradicts connection from hyp/first to ev/second",
+      })
+      .click();
+    assert.deepEqual((await request()).removed_edge_ids, []);
     assert.deepEqual(edge.assessment, {
       relevance: "direct",
       weight: "moderate",
@@ -84,6 +118,12 @@ test("human graph controls create built-in nodes, stage connections, undo, and h
     await page.getByLabel("Relevance", { exact: true }).selectOption("direct");
     await page.getByLabel("Weight", { exact: true }).selectOption("limited");
     assert.equal(await page.getByRole("button", { name: "Stage connection" }).isDisabled(), false);
+    await page.getByRole("button", { name: "Stage target removal" }).click();
+    assert.equal(
+      await page.locator('select[aria-label="To"] option[value="hyp/first"]').count(),
+      0,
+    );
+    assert.equal(await page.getByRole("button", { name: "Stage connection" }).isDisabled(), true);
     await page.getByRole("button", { name: "Remove source from fixture" }).click();
     assert.equal(await page.getByRole("button", { name: "Stage connection" }).isDisabled(), true);
     await page.getByRole("button", { name: "Toggle read-only" }).click();

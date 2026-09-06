@@ -62,6 +62,9 @@ function draft(fields = {}) {
     proposals: {},
     ontology: null,
     custom_nodes: {},
+    added_edges: [],
+    removed_edge_ids: [],
+    edge_base_revision: null,
     ...fields,
   };
 }

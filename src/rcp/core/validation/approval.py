@@ -81,7 +81,11 @@ def validate_approval_shape(
                     revision,
                 )
             return
-        if names in (["create_edges"], ["remove_edges"], ["remove_edges", "create_edges"]):
+        if (
+            names
+            and set(names) <= {"create_edges", "remove_edges"}
+            and len(names) == len(set(names))
+        ):
             # Sync stages one connection edit; normal edge rules still validate its graph.
             return
         if names and set(names) <= {"update_nodes", "set_standing"}:

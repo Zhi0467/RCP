@@ -1,3 +1,4 @@
+import type { GraphEditingProps } from "./components/GraphEditingControls";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -3599,6 +3600,21 @@ export default function App() {
       </Suspense>
     ) : undefined;
 
+  const graphEditingProps: GraphEditingProps = {
+    projectId: project.id,
+    mutationsDisabled,
+    onStageCustomNode: (node) => updateHumanDraft((draft) => stageCustomNode(draft, node)),
+    onStageEdge: (edge) => updateHumanDraft((draft) => stageEdgeAddition(draft, graph, edge)),
+    onRemoveEdge: (edgeId) => updateHumanDraft((draft) => stageEdgeRemoval(draft, graph, edgeId)),
+    onUndoRemoveEdge: (edgeId) =>
+      updateHumanDraft((draft) => unstageEdgeRemoval(draft, graph, edgeId)),
+    draftAddedNodeIds: Object.keys(humanDraft?.custom_nodes ?? {}),
+    draftAddedEdges: humanDraft?.added_edges,
+    draftRemovedEdgeIds: humanDraft?.removed_edge_ids,
+    draftRemovedNodeIds: humanDraft?.removed_node_ids,
+    canonicalEdges: graph.edges,
+  };
+
   return (
     <div className="app-shell overview-shell">
       {acceptanceAgentSurface}
@@ -4022,45 +4038,17 @@ export default function App() {
           )}
           {view === "scientific" && (
             <ScientificView
-              projectId={project.id}
+              {...graphEditingProps}
               graph={presentedGraph}
               trustView={trustView}
-              mutationsDisabled={mutationsDisabled}
               onSelectNode={openNode}
-              onStageCustomNode={(node) =>
-                updateHumanDraft((draft) => stageCustomNode(draft, node))
-              }
-              onStageEdge={(edge) => updateHumanDraft((draft) => stageEdgeAddition(draft, edge))}
-              onRemoveEdge={(edgeId) =>
-                updateHumanDraft((draft) => stageEdgeRemoval(draft, edgeId))
-              }
-              onUndoRemoveEdge={(edgeId) =>
-                updateHumanDraft((draft) => unstageEdgeRemoval(draft, edgeId))
-              }
-              draftAddedEdges={humanDraft?.added_edges}
-              draftRemovedEdgeIds={humanDraft?.removed_edge_ids}
-              canonicalEdges={graph.edges}
             />
           )}
           {view === "dag" && (
             <DagView
-              mutationsDisabled={mutationsDisabled}
-              onStageCustomNode={(node) =>
-                updateHumanDraft((draft) => stageCustomNode(draft, node))
-              }
-              onStageEdge={(edge) => updateHumanDraft((draft) => stageEdgeAddition(draft, edge))}
-              onRemoveEdge={(edgeId) =>
-                updateHumanDraft((draft) => stageEdgeRemoval(draft, edgeId))
-              }
-              onUndoRemoveEdge={(edgeId) =>
-                updateHumanDraft((draft) => unstageEdgeRemoval(draft, edgeId))
-              }
-              draftAddedEdges={humanDraft?.added_edges}
-              draftRemovedEdgeIds={humanDraft?.removed_edge_ids}
-              canonicalEdges={graph.edges}
+              {...graphEditingProps}
               graph={presentedGraph}
               trustView={trustView}
-              projectId={project.id}
               viewportRef={activeDagViewportRef!}
               relationFocusNodeId={dagRelationFocusId}
               onClearRelationFocus={clearDagRelationFocus}
@@ -4249,7 +4237,7 @@ export default function App() {
               humanDraft?.nodes[node.id]?.changes.status === "decided",
             )}
             onUnstage={() => {
-              updateHumanDraft((draft) => unstageCustomNode(draft, node.id));
+              updateHumanDraft((draft) => unstageCustomNode(draft, graph, node.id));
               closeDetailSlot(slot);
             }}
             onRemove={() =>

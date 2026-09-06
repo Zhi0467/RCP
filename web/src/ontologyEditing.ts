@@ -1,6 +1,8 @@
 import type {
   BaseNodeType,
   GraphNode,
+  GraphEditOptions,
+  NewNode,
   OntologyFieldDefinition,
   OntologyRelationDefinition,
   OntologyState,
@@ -175,96 +177,41 @@ export function removeOntologyRelation(ontology: OntologyState, name: string): O
   return { ...ontology, relations: ontology.relations.filter((item) => item.name !== name) };
 }
 
-export function makeCustomNode(
-  ontology: OntologyState,
-  extensionType: string,
-  slug: string,
-  title: string,
-  primaryText: string,
-  origin: GraphNode["origin"],
-  extensionFields: GraphNode["extension_fields"],
-): GraphNode {
-  return makeHumanNode(ontology, extensionType, slug, title, primaryText, origin, extensionFields);
-}
-
 export function makeHumanNode(
-  ontology: OntologyState,
-  typeName: string,
+  definition: { name: string; base_type: BaseNodeType },
+  prefixes: GraphEditOptions["node_prefixes"],
   slug: string,
   title: string,
   primaryText: string,
   origin: GraphNode["origin"],
   extensionFields: GraphNode["extension_fields"],
-): GraphNode {
-  const extensionType = typeName;
-  const definition = ontology.types.find((item) => item.name === extensionType && !item.deprecated);
-  const base = baseOntologyTypes.find((item) => item.name === (definition?.base_type ?? typeName));
-  if (!base) throw new Error(`Ontology type ${typeName} is not active.`);
-  const node: GraphNode = {
-    id: humanNodeId(ontology, typeName, slug),
+): NewNode {
+  const base = baseOntologyTypes.find((item) => item.name === definition.base_type)!;
+  return {
+    id: humanNodeId(definition, prefixes, slug),
     type: base.name,
-    extension_type: definition ? extensionType : null,
+    extension_type: definition.name === base.name ? null : definition.name,
     extension_fields: extensionFields,
     title: title.trim(),
-    standing: "asserted",
-    created_rev: 0,
-    updated_rev: 0,
-    source_refs: [],
     [base.primaryField]: primaryText.trim(),
+    ...(base.name === "evidence" && origin ? { origin } : {}),
   };
-  const defaults: Record<BaseNodeType, Record<string, unknown>> = {
-    research_question: { motivation: "", scope: "", status: "open" },
-    hypothesis: { rationale: "", predictions: [], scope: "", status: "proposed" },
-    decision: {
-      options: [],
-      selected_option: null,
-      rationale: null,
-      consequences: [],
-      status: "open",
-    },
-    experiment: {
-      design: "",
-      expected_outcomes: [],
-      interpretation_rules: [],
-      completion_criteria: [],
-      status: "proposed",
-      attempts: [],
-      current_summary: "",
-      next_action: null,
-    },
-    evidence: {
-      interpretation: "",
-      role: "result",
-      validity: "valid",
-      origin: origin ?? "unknown",
-      artifact_refs: [],
-    },
-    blocker: {
-      blocker_type: "unknown",
-      status: "open",
-      resolution_condition: "",
-      recommended_action: null,
-    },
-  };
-  return { ...node, ...defaults[base.name] };
 }
 
-export function humanNodeId(ontology: OntologyState, typeName: string, slug: string): string {
-  const prefixes: Record<string, string> = {
-    research_question: "rq",
-    hypothesis: "hyp",
-    experiment: "exp",
-    evidence: "ev",
-    decision: "dec",
-    blocker: "blk",
-  };
-  const prefix = ontology.types.some((item) => item.name === typeName && !item.deprecated)
-    ? typeName
-    : prefixes[typeName];
-  if (!prefix) throw new Error(`Ontology type ${typeName} is not active.`);
-  return `${prefix}/${slug
+export function humanNodeId(
+  definition: { name: string; base_type: BaseNodeType },
+  prefixes: GraphEditOptions["node_prefixes"],
+  slug: string,
+): string {
+  const prefix =
+    definition.name === definition.base_type ? prefixes[definition.base_type] : definition.name;
+  return `${prefix}/${normalizeSlug(slug)}`;
+}
+
+export function normalizeSlug(slug: string): string {
+  return slug
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")}`;
+    .replace(/^-|-$/g, "");
 }

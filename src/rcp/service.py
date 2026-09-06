@@ -56,7 +56,6 @@ from rcp.core.models import (
     HUMAN_EDITABLE_NODE_FIELDS,
     AuthorizedHuman,
     Decision,
-    Edge,
     ExperimentDecisionPin,
     GraphState,
     OntologyState,
@@ -66,6 +65,7 @@ from rcp.core.models import (
     Standing,
 )
 from rcp.core.operations import (
+    NewEdge,
     ProposalContentChangeOperation,
     ProposalMergeOperation,
     ProposalProtectedRelationOperation,
@@ -687,7 +687,7 @@ class GraphSyncRequest(BaseModel):
     ontology: OntologyState | None = None
     custom_nodes: list[ProjectNode] = Field(default_factory=list)
     removed_node_ids: list[str] = Field(default_factory=list)
-    added_edges: list[Edge] = Field(default_factory=list)
+    added_edges: list[NewEdge] = Field(default_factory=list)
     removed_edge_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -697,7 +697,13 @@ class GraphSyncRequest(BaseModel):
             ("proposal", [item.proposal_id for item in self.proposals]),
             ("custom node", [item.id for item in self.custom_nodes]),
             ("removed node", self.removed_node_ids),
-            ("added edge", [item.id for item in self.added_edges]),
+            (
+                "added edge",
+                [
+                    item.id or f"{item.source}::{item.relation}::{item.target}"
+                    for item in self.added_edges
+                ],
+            ),
             ("removed edge", self.removed_edge_ids),
         ):
             if len(values) != len(set(values)):
@@ -1932,7 +1938,12 @@ class ProjectService:
                     kind="approval",
                     author="human",
                     summary=f"Created “{node.title}”.",
-                    ops=[{"op": "create_nodes", "nodes": [prepared.model_dump(mode="json")]}],
+                    ops=[
+                        {
+                            "op": "create_nodes",
+                            "nodes": [prepared.model_dump(mode="json", exclude_unset=True)],
+                        }
+                    ],
                     change_summary=[
                         f"Created “{node.title}” as a {(extension_type or node.type).replace('_', ' ')}."
                     ],
@@ -1951,7 +1962,7 @@ class ProjectService:
                     {
                         "op": "create_edges",
                         "edges": [
-                            edge.model_dump(mode="json", exclude={"created_rev", "layer"})
+                            edge.model_dump(mode="json", exclude_none=True)
                             for edge in request.added_edges
                         ],
                     }

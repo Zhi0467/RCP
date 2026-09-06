@@ -51,11 +51,10 @@ test("connection additions and removals retain intent through storage and Sync, 
     source: "a",
     target: "b",
     relation: "supports",
-    layer: "epistemic",
     explanation: "Comparison",
   };
-  let draft = stageEdgeAddition(emptyHumanDraft(4), edge);
-  draft = stageEdgeRemoval(draft, "edge/existing");
+  let draft = stageEdgeAddition(emptyHumanDraft(4), graph, edge);
+  draft = stageEdgeRemoval(draft, graph, "edge/existing");
   assert.equal(humanDraftChangeCount(draft), 2);
   assert.deepEqual(
     toHumanSyncRequest(deserializeHumanDraft(serializeHumanDraft(draft)), graph),
@@ -63,10 +62,10 @@ test("connection additions and removals retain intent through storage and Sync, 
   );
   assert.deepEqual(toHumanSyncRequest(draft, graph).added_edges, [edge]);
   assert.deepEqual(toHumanSyncRequest(draft, graph).removed_edge_ids, ["edge/existing"]);
-  draft = stageEdgeRemoval(draft, edge.id);
+  draft = stageEdgeRemoval(draft, graph, edge.id);
   assert.deepEqual(draft.added_edges, []);
   assert.deepEqual(draft.removed_edge_ids, ["edge/existing"]);
-  draft = unstageEdgeRemoval(draft, "edge/existing");
+  draft = unstageEdgeRemoval(draft, graph, "edge/existing");
   assert.equal(humanDraftChangeCount(draft), 0);
 });
 
@@ -76,22 +75,157 @@ test("connection intent never silently rebases across a canonical revision", () 
     source: "a",
     target: "b",
     relation: "supports",
-    layer: "epistemic",
   };
   const newerGraph = { ...graph, revision: 5 };
-  let draft = stageEdgeAddition(emptyHumanDraft(4), edge);
+  let draft = stageEdgeAddition(emptyHumanDraft(4), graph, edge);
   draft = reconcileHumanDraft(draft, newerGraph).draft;
   assert.equal(draft.base_revision, 5);
   assert.equal(toHumanSyncRequest(draft, newerGraph).base_revision, 4);
   draft = deserializeHumanDraft(serializeHumanDraft(draft));
   assert.equal(toHumanSyncRequest(draft, newerGraph).base_revision, 4);
-  draft = stageEdgeRemoval(draft, edge.id);
-  draft = stageEdgeAddition(draft, edge);
+  draft = stageEdgeRemoval(draft, newerGraph, edge.id);
+  draft = stageEdgeAddition(draft, newerGraph, edge);
   assert.equal(toHumanSyncRequest(draft, newerGraph).base_revision, 5);
-  draft = stageEdgeRemoval(draft, edge.id);
-  draft = stageEdgeRemoval(draft, "edge/existing");
+  draft = stageEdgeRemoval(draft, newerGraph, edge.id);
+  draft = stageEdgeRemoval(draft, newerGraph, "edge/existing");
   draft = reconcileHumanDraft(draft, { ...graph, revision: 6 }).draft;
   assert.equal(toHumanSyncRequest(draft, { ...graph, revision: 6 }).base_revision, 5);
+});
+
+test("draft clones isolate connection arrays and assessment values", () => {
+  const edge = {
+    id: "edge/new",
+    source: "hyp/example",
+    target: "ev/result",
+    relation: "supports",
+    explanation: "Measured",
+    assessment: { relevance: "direct", weight: "limited", qualifications: ["One run"] },
+  };
+  const original = stageEdgeRemoval(
+    stageEdgeAddition(emptyHumanDraft(4), graph, edge),
+    graph,
+    "edge/old",
+  );
+  const changed = stageNodeEditStart(original, graph, "hyp/example");
+  changed.added_edges[0].assessment.qualifications.push("Changed");
+  changed.added_edges.push({ ...edge, id: "edge/second" });
+  changed.removed_edge_ids.push("edge/another");
+  assert.equal(original.added_edges.length, 1);
+  assert.deepEqual(original.added_edges[0].assessment.qualifications, ["One run"]);
+  assert.deepEqual(original.removed_edge_ids, ["edge/old"]);
+});
+
+test("old persisted materialized edges decode into exact NewEdge payloads without rebasing", () => {
+  const stored = {
+    ...emptyHumanDraft(4),
+    added_edges: [
+      {
+        id: "edge/old",
+        source: "a",
+        target: "b",
+        relation: "supports",
+        explanation: "Original",
+        layer: "meta",
+        created_rev: 0,
+      },
+    ],
+  };
+  delete stored.edge_base_revision;
+  const decoded = deserializeHumanDraft(JSON.stringify(stored));
+  const request = toHumanSyncRequest(decoded, { ...graph, revision: 7 });
+  assert.equal(request.base_revision, 4);
+  assert.deepEqual(request.added_edges, [
+    { id: "edge/old", source: "a", target: "b", relation: "supports", explanation: "Original" },
+  ]);
+  const oldEmpty = { ...emptyHumanDraft(4) };
+  delete oldEmpty.added_edges;
+  delete oldEmpty.removed_edge_ids;
+  delete oldEmpty.edge_base_revision;
+  const empty = deserializeHumanDraft(JSON.stringify(oldEmpty));
+  assert.deepEqual(empty.added_edges, []);
+  assert.deepEqual(empty.removed_edge_ids, []);
+  assert.equal(empty.edge_base_revision, null);
+});
+
+test("draft overlay retains backend-completed nodes and replacement edge layers with reversible removal", () => {
+  const oldEdge = {
+    id: "edge/old",
+    source: "hyp/example",
+    target: "ev/result",
+    relation: "supports",
+    explanation: "Old",
+    layer: "epistemic",
+  };
+  const replacement = {
+    id: oldEdge.id,
+    source: oldEdge.source,
+    target: oldEdge.target,
+    relation: "contradicts",
+    explanation: "Reassessed",
+  };
+  const backendPreview = {
+    ...graph,
+    edges: { [replacement.id]: { ...replacement, layer: "epistemic" } },
+  };
+  let draft = stageEdgeRemoval(emptyHumanDraft(4), graph, oldEdge.id);
+  assert.deepEqual(
+    applyHumanDraft({ ...graph, edges: { [oldEdge.id]: oldEdge } }, draft).edges,
+    {},
+  );
+  draft = stageEdgeAddition(draft, graph, replacement);
+  assert.deepEqual(applyHumanDraft(backendPreview, draft).edges, backendPreview.edges);
+  draft = stageEdgeRemoval(draft, graph, replacement.id);
+  assert.deepEqual(applyHumanDraft(backendPreview, draft).edges, {});
+  draft = unstageEdgeRemoval(draft, graph, oldEdge.id);
+  assert.equal(draft.edge_base_revision, null);
+  const node = {
+    id: "rq/new",
+    type: "research_question",
+    title: "Question",
+    question: "Why?",
+    extension_fields: {},
+  };
+  draft = stageCustomNode(draft, node);
+  assert.equal(applyHumanDraft(graph, draft).nodes[node.id], undefined);
+  const completed = {
+    ...node,
+    status: "open",
+    standing: "asserted",
+    created_rev: 5,
+    updated_rev: 5,
+    source_refs: [],
+  };
+  assert.deepEqual(
+    applyHumanDraft({ ...graph, nodes: { ...graph.nodes, [node.id]: completed } }, draft).nodes[
+      node.id
+    ],
+    { ...completed, draft_touched: true },
+  );
+});
+
+test("canceling a new node clears its final connection pin and permits a fresh later draft", () => {
+  const node = {
+    id: "rq/new",
+    type: "research_question",
+    title: "Question",
+    question: "Why?",
+    extension_fields: {},
+  };
+  const edge = {
+    id: "edge/new",
+    source: node.id,
+    target: "hyp/example",
+    relation: "motivates",
+    explanation: "Context",
+  };
+  let draft = stageEdgeAddition(stageCustomNode(emptyHumanDraft(4), node), graph, edge);
+  const newerGraph = { ...graph, revision: 5 };
+  draft = reconcileHumanDraft(draft, newerGraph).draft;
+  draft = unstageCustomNode(draft, newerGraph, node.id);
+  assert.deepEqual(draft.added_edges, []);
+  assert.equal(draft.edge_base_revision, null);
+  draft = stageEdgeAddition(draft, newerGraph, edge);
+  assert.equal(toHumanSyncRequest(draft, newerGraph).base_revision, 5);
 });
 
 const graph = {
@@ -641,7 +775,10 @@ test("ontology and custom nodes round trip, count, present, and serialize throug
   draft = stageCustomNode(draft, customNode);
   assert.equal(humanDraftChangeCount(draft), 2);
   assert.deepEqual(deserializeHumanDraft(serializeHumanDraft(draft)), draft);
-  const presented = applyHumanDraft(graph, draft);
+  const presented = applyHumanDraft(
+    { ...graph, nodes: { ...graph.nodes, [customNode.id]: customNode } },
+    draft,
+  );
   assert.deepEqual(presented.ontology, ontology);
   assert.equal(presented.nodes[customNode.id].draft_touched, true);
   assert.deepEqual(toHumanSyncRequest(draft, graph), {
@@ -654,7 +791,7 @@ test("ontology and custom nodes round trip, count, present, and serialize throug
     added_edges: [],
     removed_edge_ids: [],
   });
-  const ontologyOnly = unstageCustomNode(draft, customNode.id);
+  const ontologyOnly = unstageCustomNode(draft, graph, customNode.id);
   assert.equal(humanDraftChangeCount(ontologyOnly), 1);
   assert.deepEqual(toHumanSyncRequest(ontologyOnly, graph).custom_nodes, []);
 });

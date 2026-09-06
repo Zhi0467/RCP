@@ -1,22 +1,36 @@
 import { Check, Link2, RotateCcw, Trash2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { Edge, EvidenceAssessment, GraphEditOptions, GraphNode, GraphState } from "../types";
+import type {
+  Edge,
+  EvidenceAssessment,
+  GraphEditOptions,
+  NewNode,
+  NewEdge,
+  GraphState,
+} from "../types";
+import { humanize } from "../nodePresentation";
 import { NewCustomNode } from "./NewCustomNode";
 
 export interface GraphEditingProps {
   projectId: string;
   mutationsDisabled?: boolean;
-  onStageCustomNode: (node: GraphNode) => void;
-  onStageEdge: (edge: Edge) => void;
+  onStageCustomNode: (node: NewNode) => void;
+  onStageEdge: (edge: NewEdge) => void;
   onRemoveEdge: (edgeId: string) => void;
   onUndoRemoveEdge: (edgeId: string) => void;
-  draftAddedEdges?: Edge[];
+  draftAddedEdges?: NewEdge[];
   draftRemovedEdgeIds?: string[];
+  draftRemovedNodeIds?: string[];
+  draftAddedNodeIds?: string[];
   canonicalEdges?: Record<string, Edge>;
 }
 
-export function GraphEditingControls({
+const NO_EDGES: NewEdge[] = [];
+const NO_IDS: string[] = [];
+const NO_CANONICAL_EDGES: Record<string, Edge> = {};
+
+export const GraphEditingControls = memo(function GraphEditingControls({
   graph,
   projectId,
   mutationsDisabled = false,
@@ -24,9 +38,11 @@ export function GraphEditingControls({
   onStageEdge,
   onRemoveEdge,
   onUndoRemoveEdge,
-  draftAddedEdges = [],
-  draftRemovedEdgeIds = [],
-  canonicalEdges = {},
+  draftAddedEdges = NO_EDGES,
+  draftRemovedEdgeIds = NO_IDS,
+  draftRemovedNodeIds = NO_IDS,
+  draftAddedNodeIds = NO_IDS,
+  canonicalEdges = NO_CANONICAL_EDGES,
   connection,
 }: GraphEditingProps & {
   graph: GraphState;
@@ -37,7 +53,7 @@ export function GraphEditingControls({
   const [target, setTarget] = useState("");
   const [relation, setRelation] = useState("");
   const [explanation, setExplanation] = useState("");
-  const [relations, setRelations] = useState<GraphEditOptions["relations"]>([]);
+  const [options, setOptions] = useState<GraphEditOptions | null>(null);
   const [relevance, setRelevance] = useState<EvidenceAssessment["relevance"] | "">("");
   const [weight, setWeight] = useState<EvidenceAssessment["weight"] | "">("");
   const [qualifications, setQualifications] = useState("");
@@ -54,13 +70,12 @@ export function GraphEditingControls({
     setOpen(true);
   }, [connection]);
   useEffect(() => {
-    if (!open) return;
     let cancelled = false;
     setError(null);
-    setRelations([]);
+    setOptions(null);
     void api<GraphEditOptions>(`/api/projects/${projectId}/graph-edit-options`).then(
       (options) => {
-        if (!cancelled) setRelations(options.relations);
+        if (!cancelled) setOptions(options);
       },
       (failure) => {
         if (!cancelled) setError(String(failure));
@@ -69,9 +84,55 @@ export function GraphEditingControls({
     return () => {
       cancelled = true;
     };
-  }, [open, projectId, graph.revision]);
-  const nodes = Object.values(graph.nodes);
-  const hasEndpoints = Boolean(graph.nodes[source] && graph.nodes[target]);
+  }, [projectId]);
+  const removedNodeIds = useMemo(() => new Set(draftRemovedNodeIds), [draftRemovedNodeIds]);
+  const removedEdgeIds = useMemo(() => new Set(draftRemovedEdgeIds), [draftRemovedEdgeIds]);
+  const existingNodeIds = useMemo(
+    () => new Set([...Object.keys(graph.nodes), ...draftAddedNodeIds]),
+    [graph.nodes, draftAddedNodeIds],
+  );
+  const addedEdgeIds = useMemo(
+    () => new Set(draftAddedEdges.map((edge) => edge.id)),
+    [draftAddedEdges],
+  );
+  const nodes = useMemo(
+    () => (open ? Object.values(graph.nodes).filter((node) => !removedNodeIds.has(node.id)) : []),
+    [open, graph.nodes, removedNodeIds],
+  );
+  const nodeOptions = useMemo(
+    () =>
+      nodes.map((node) => (
+        <option key={node.id} value={node.id}>
+          {node.title} · {node.id}
+        </option>
+      )),
+    [nodes],
+  );
+  const relations = useMemo(
+    () => [
+      ...(options?.relations ?? []),
+      ...graph.ontology.relations
+        .filter((item) => !item.deprecated)
+        .map((item) => ({
+          name: item.name,
+          assessment_required_for: [],
+        })),
+    ],
+    [options, graph.ontology.relations],
+  );
+  const relationOptions = useMemo(
+    () =>
+      relations.map(({ name }) => (
+        <option key={name} value={name}>
+          {humanize(name)}
+        </option>
+      )),
+    [relations],
+  );
+  const hasEndpoints =
+    Boolean(graph.nodes[source] && graph.nodes[target]) &&
+    !removedNodeIds.has(source) &&
+    !removedNodeIds.has(target);
   const selectedRelation = relations.find((item) => item.name === relation);
   const needsAssessment =
     selectedRelation?.assessment_required_for.some(
@@ -79,19 +140,38 @@ export function GraphEditingControls({
         graph.nodes[source]?.type === pair.source_type &&
         graph.nodes[target]?.type === pair.target_type,
     ) ?? false;
-  const edges = Object.values({
-    ...canonicalEdges,
-    ...graph.edges,
-    ...Object.fromEntries(draftAddedEdges.map((edge) => [edge.id, edge])),
-  });
+  const canStage =
+    !mutationsDisabled &&
+    !error &&
+    options !== null &&
+    hasEndpoints &&
+    Boolean(selectedRelation) &&
+    (!needsAssessment || Boolean(relevance && weight));
+  const edges = useMemo(() => {
+    if (!open || (!source && !target)) return [];
+    // Only canonical edges and this human's additions can be removed. Keep
+    // removed canonical entries here so undo remains available after preview.
+    return Object.values({
+      ...canonicalEdges,
+      ...Object.fromEntries(draftAddedEdges.map((edge) => [edge.id, edge])),
+    }).filter(
+      (edge) =>
+        edge.source === source ||
+        edge.target === source ||
+        edge.source === target ||
+        edge.target === target,
+    );
+  }, [open, source, target, canonicalEdges, draftAddedEdges]);
   return (
     <div className="graph-editing-controls">
       <NewCustomNode
         ontology={graph.ontology}
+        nodePrefixes={options?.node_prefixes ?? null}
         disabled={mutationsDisabled}
-        existingNodeIds={new Set(Object.keys(graph.nodes))}
+        existingNodeIds={existingNodeIds}
         onStage={onStageCustomNode}
       />
+      {error && <p role="alert">Could not load graph editing options: {error}</p>}
       {!open ? (
         <button
           className="button secondary compact"
@@ -117,20 +197,12 @@ export function GraphEditingControls({
           <form
             onSubmit={(event) => {
               event.preventDefault();
-              if (
-                mutationsDisabled ||
-                !hasEndpoints ||
-                !selectedRelation ||
-                (needsAssessment && (!relevance || !weight))
-              )
-                return;
-              // The backend resolves the actual relation layer during preview and Sync.
+              if (!canStage) return;
               onStageEdge({
                 id: `edge/${crypto.randomUUID()}`,
                 source,
                 target,
                 relation,
-                layer: "meta",
                 explanation: explanation.trim(),
                 ...(needsAssessment && relevance && weight
                   ? {
@@ -163,11 +235,7 @@ export function GraphEditingControls({
                   required
                 >
                   <option value="">Choose node</option>
-                  {nodes.map((node) => (
-                    <option key={node.id} value={node.id}>
-                      {node.title} · {node.id}
-                    </option>
-                  ))}
+                  {nodeOptions}
                 </select>
               </label>
               <label>
@@ -180,11 +248,7 @@ export function GraphEditingControls({
                   required
                 >
                   <option value="">Choose relation</option>
-                  {relations.map(({ name }) => (
-                    <option key={name} value={name}>
-                      {name.replaceAll("_", " ")}
-                    </option>
-                  ))}
+                  {relationOptions}
                 </select>
               </label>
               <label>
@@ -197,11 +261,7 @@ export function GraphEditingControls({
                   required
                 >
                   <option value="">Choose node</option>
-                  {nodes.map((node) => (
-                    <option key={node.id} value={node.id}>
-                      {node.title} · {node.id}
-                    </option>
-                  ))}
+                  {nodeOptions}
                 </select>
               </label>
               <label className="wide">
@@ -261,30 +321,19 @@ export function GraphEditingControls({
                   </label>
                 </>
               )}
-              <button
-                className="button primary compact"
-                type="submit"
-                disabled={
-                  mutationsDisabled ||
-                  Boolean(error) ||
-                  !hasEndpoints ||
-                  !selectedRelation ||
-                  (needsAssessment && (!relevance || !weight))
-                }
-              >
+              <button className="button primary compact" type="submit" disabled={!canStage}>
                 <Check size={14} /> Stage connection
               </button>
             </div>
           </form>
-          {error && <p role="alert">Could not load relations: {error}</p>}
           <ul className="graph-connection-list">
             {edges.map((edge) => {
-              const removed = draftRemovedEdgeIds.includes(edge.id);
+              const removed = removedEdgeIds.has(edge.id) && !addedEdgeIds.has(edge.id);
               return (
                 <li key={edge.id} className={removed ? "is-removed" : ""}>
                   <span>
                     {graph.nodes[edge.source]?.title ?? edge.source} →{" "}
-                    <strong>{edge.relation.replaceAll("_", " ")}</strong> →{" "}
+                    <strong>{humanize(edge.relation)}</strong> →{" "}
                     {graph.nodes[edge.target]?.title ?? edge.target}
                   </span>
                   <button
@@ -305,4 +354,4 @@ export function GraphEditingControls({
       )}
     </div>
   );
-}
+});

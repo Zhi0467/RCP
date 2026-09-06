@@ -672,6 +672,22 @@ export interface GraphNode {
   [key: string]: unknown;
 }
 
+/** Human-entered node fields; preview supplies materialized defaults and revisions. */
+export type NewNode = Pick<
+  GraphNode,
+  | "id"
+  | "type"
+  | "title"
+  | "extension_type"
+  | "extension_fields"
+  | "question"
+  | "statement"
+  | "objective"
+  | "observation"
+  | "description"
+  | "origin"
+>;
+
 export type ExtensionFieldValue = string | number | boolean | string[];
 
 export interface ExperimentAttempt {
@@ -900,22 +916,23 @@ export interface GraphWatcherRecord extends WatcherDeliveryRecord {
 
 export type WatcherRecord = ExternalWatcherRecord | GraphWatcherRecord;
 
-export interface Edge {
+export interface NewEdge {
   id: string;
   source: string;
   target: string;
   relation: string;
-  layer: "epistemic" | "action" | "seam" | "meta";
   explanation: string;
   assessment?: EvidenceAssessment | null;
 }
 
+export interface Edge extends NewEdge {
+  layer: "epistemic" | "action" | "seam" | "meta";
+}
+
 export interface GraphEditOptions {
+  node_prefixes: Record<BaseNodeType, string>;
   relations: Array<{
     name: string;
-    source_types: string[];
-    target_types: string[];
-    same_type: boolean;
     assessment_required_for: Array<{ source_type: string; target_type: string }>;
   }>;
 }

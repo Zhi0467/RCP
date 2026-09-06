@@ -11,7 +11,7 @@ _CREATE = {"op": "create_edges", "edges": []}
 _REMOVE = {"op": "remove_edges", "edge_ids": []}
 
 
-@pytest.mark.parametrize("ops", [[_CREATE], [_REMOVE], [_REMOVE, _CREATE]])
+@pytest.mark.parametrize("ops", [[_CREATE], [_REMOVE], [_REMOVE, _CREATE], [_CREATE, _REMOVE]])
 def test_direct_connection_edit_has_one_named_source_patch(ops) -> None:
     patch = Patch(kind="approval", author="human", summary="Edited connections.", ops=ops)
     report = ValidationReport()
@@ -22,7 +22,6 @@ def test_direct_connection_edit_has_one_named_source_patch(ops) -> None:
 @pytest.mark.parametrize(
     "ops",
     [
-        [_CREATE, _REMOVE],
         [_CREATE, _CREATE],
         [_REMOVE, _REMOVE],
         [_CREATE, {"op": "set_standing", "node_id": "hyp/example", "standing": "accepted"}],

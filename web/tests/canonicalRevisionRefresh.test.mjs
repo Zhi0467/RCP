@@ -319,6 +319,9 @@ test("inactive advancement rebases only snapshot and draft while retaining the t
     proposals: {},
     ontology: null,
     custom_nodes: {},
+    added_edges: [],
+    removed_edge_ids: [],
+    edge_base_revision: null,
   };
   const retained = {
     ...projectSessionCacheFields({ id: "alpha", graph }, draft),
@@ -438,6 +441,9 @@ test("authoritative inactive snapshots prune resolved choices and clear missing 
     },
     ontology: null,
     custom_nodes: {},
+    added_edges: [],
+    removed_edge_ids: [],
+    edge_base_revision: null,
   };
   const retained = {
     ...projectSessionCacheFields({ id: "alpha", graph: oldGraph }, draft),

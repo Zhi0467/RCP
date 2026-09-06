@@ -31,6 +31,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type Ref,
   type ReactNode,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
   buildNodeProjectionEmphasis,
@@ -398,6 +399,11 @@ export function DagView({
 
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>, nodeId: string) => {
     if (event.button !== 0) return;
+    if ((event.target as Element).closest(".dag-connect-handle")) {
+      connectionDrag.current = { source: nodeId, pointerId: event.pointerId };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
     if (dragWatchdogRef.current !== null) window.clearTimeout(dragWatchdogRef.current);
     dragRef.current = {
       nodeId,
@@ -449,7 +455,27 @@ export function DagView({
   };
 
   const pointerEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const connection = connectionDrag.current;
+    if (connection?.pointerId === event.pointerId) {
+      connectionDrag.current = null;
+      if (event.type === "pointerup") {
+        const target = document
+          .elementFromPoint(event.clientX, event.clientY)
+          ?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
+        setConnection({
+          source: connection.source,
+          target: target && target !== connection.source ? target : "",
+        });
+      }
+      return;
+    }
     finishDrag(event.pointerId);
+  };
+
+  const connectionClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.detail !== 0 || !(event.target as Element).closest(".dag-connect-handle")) return;
+    const source = event.currentTarget.dataset.nodeId;
+    if (source) setConnection({ source, target: "" });
   };
 
   const inspectNode = (node: GraphNode) => {
@@ -721,6 +747,7 @@ export function DagView({
                       onPointerUp={pointerEnd}
                       onPointerCancel={pointerEnd}
                       onLostPointerCapture={pointerEnd}
+                      onClick={connectionClick}
                     >
                       <button
                         aria-label={`${node.title}. Inspect node. Drag this card to pin it.`}
@@ -741,36 +768,6 @@ export function DagView({
                           type="button"
                           aria-label={`Connect from ${node.title}`}
                           title="Drag to another node, or click to choose a connection"
-                          onPointerDown={(event) => {
-                            event.stopPropagation();
-                            if (event.button !== 0) return;
-                            connectionDrag.current = {
-                              source: node.id,
-                              pointerId: event.pointerId,
-                            };
-                            event.currentTarget.setPointerCapture(event.pointerId);
-                          }}
-                          onPointerUp={(event) => {
-                            event.stopPropagation();
-                            const drag = connectionDrag.current;
-                            connectionDrag.current = null;
-                            if (!drag || drag.pointerId !== event.pointerId) return;
-                            const target = document
-                              .elementFromPoint(event.clientX, event.clientY)
-                              ?.closest<HTMLElement>("[data-node-id]")?.dataset.nodeId;
-                            setConnection({
-                              source: drag.source,
-                              target: target && target !== drag.source ? target : "",
-                            });
-                          }}
-                          onPointerCancel={() => {
-                            connectionDrag.current = null;
-                          }}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            // Keyboard activation has no pointer-up event.
-                            if (event.detail === 0) setConnection({ source: node.id, target: "" });
-                          }}
                         >
                           <Link2 size={14} />
                         </button>

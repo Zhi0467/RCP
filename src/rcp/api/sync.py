@@ -18,7 +18,8 @@ from rcp.api.identity import IdentityAccess
 from rcp.core.models import RELATION_SPEC
 from rcp.core.transition_models import GraphTargetRef
 from rcp.core.transitions import current_project_projection
-from rcp.core.validation.ops import EVIDENCE_HYPOTHESIS_RELATIONS
+from rcp.core.validation.constants import NODE_PREFIXES
+from rcp.core.validation.ops import ASSESSMENT_REQUIRED_FOR
 from rcp.history import PatchRejected, RevisionConflict
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.service import GraphSyncRequest, NodeEditConflict
@@ -35,34 +36,20 @@ WatcherDeliveryDependency = Annotated[WatcherDelivery, Depends(get_watcher_deliv
 
 
 @router.get("/api/projects/{project_id}/graph-edit-options")
-def graph_edit_options(project_id: str, *, catalog: CatalogDependency):
-    state = get_project_service(catalog, project_id).history.current_materialization().state
-    relations = [
-        {
-            "name": name,
-            "source_types": sorted(spec.source_types),
-            "target_types": sorted(spec.target_types),
-            "same_type": spec.same_type,
-            "assessment_required_for": (
-                [{"source_type": "evidence", "target_type": "hypothesis"}]
-                if name in EVIDENCE_HYPOTHESIS_RELATIONS
-                else []
-            ),
-        }
-        for name, spec in RELATION_SPEC.items()
-    ]
-    relations.extend(
-        {
-            "name": relation.name,
-            "source_types": relation.source_types,
-            "target_types": relation.target_types,
-            "same_type": False,
-            "assessment_required_for": [],
-        }
-        for relation in state.ontology.relations
-        if not relation.deprecated
-    )
-    return {"relations": relations}
+def graph_edit_options(project_id: str):
+    return {
+        "node_prefixes": NODE_PREFIXES,
+        "relations": [
+            {
+                "name": name,
+                "assessment_required_for": [
+                    {"source_type": source, "target_type": target}
+                    for source, target in sorted(ASSESSMENT_REQUIRED_FOR.get(name, ()))
+                ],
+            }
+            for name in RELATION_SPEC
+        ],
+    }
 
 
 @router.post("/api/projects/{project_id}/sync")

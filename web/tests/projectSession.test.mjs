@@ -105,6 +105,9 @@ function humanDraft(revision, title = "My staged title") {
     proposals: {},
     ontology: null,
     custom_nodes: {},
+    added_edges: [],
+    removed_edge_ids: [],
+    edge_base_revision: null,
   };
 }
 
@@ -183,6 +186,9 @@ test("snapshot movement invalidates the manifest and rebases the draft in one tr
       proposals: {},
       ontology: null,
       custom_nodes: {},
+      added_edges: [],
+      removed_edge_ids: [],
+      edge_base_revision: null,
     },
   });
   state = projectSessionReducer(state, {
@@ -251,6 +257,9 @@ test("a committed transition replaces the canonical session in one transition", 
       proposals: {},
       ontology: null,
       custom_nodes: {},
+      added_edges: [],
+      removed_edge_ids: [],
+      edge_base_revision: null,
     },
   });
 
@@ -423,6 +432,9 @@ test("a populated project session survives tab serialization and restoration", (
       proposals: { "proposal/one": { decision: "rejected" } },
       ontology: null,
       custom_nodes: {},
+      added_edges: [],
+      removed_edge_ids: [],
+      edge_base_revision: null,
     },
   });
   populated = projectSessionReducer(populated, {
