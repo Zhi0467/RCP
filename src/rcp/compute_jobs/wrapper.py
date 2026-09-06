@@ -14,6 +14,7 @@ def render_wrapper(job_root: str, request: ComputeLaunchRequest) -> str:
     quote = shlex.quote
     return f"""#!/bin/sh
 umask 077
+cd {quote(str(root))} || exit 1
 date +%s > {quote(str(root / "started"))}
 if [ -r /proc/self/cgroup ]; then
     cat /proc/self/cgroup > {quote(str(root / "cgroup"))}

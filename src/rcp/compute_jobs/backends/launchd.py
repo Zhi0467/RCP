@@ -40,7 +40,6 @@ class LaunchdBackend:
                 "ProgramArguments": ["/bin/sh", wrapper_path],
                 "RunAtLoad": True,
                 "KeepAlive": False,
-                "WorkingDirectory": request.cwd,
                 "StandardOutPath": f"{job_root}/log",
                 "StandardErrorPath": f"{job_root}/log",
             }

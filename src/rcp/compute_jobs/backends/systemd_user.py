@@ -40,8 +40,6 @@ class SystemdUserBackend:
             handle,
             "--collect",
             "-p",
-            f"WorkingDirectory={request.cwd}",
-            "-p",
             f"StandardOutput=file:{job_root}/log",
             "-p",
             f"StandardError=file:{job_root}/log",

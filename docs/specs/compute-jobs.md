@@ -14,7 +14,7 @@ remote commands use RCP's ordinary SSH argument construction. Shipped remote
 helpers are stdlib-only source modules.
 
 - `systemd_user` uses transient `rcp-job-<job_id>` user units with `--collect`,
-  explicit working directory and log paths. Every user-manager command sets
+  explicit log paths. Every user-manager command sets
   `XDG_RUNTIME_DIR=/run/user/<target uid>` even from a session-less service.
 - `launchd` bootstraps a job-root plist into `gui/<uid>`, with `RunAtLoad=true`
   and `KeepAlive=false`. It never uses `launchctl submit`.
@@ -51,13 +51,16 @@ Project transfer excludes machine-bound compute rows and job directories; it
 does not relocate or cancel OS-owned work. Whole-database backups retain job
 rows, while their filesystem payload excludes local `jobs` directories. Job
 outputs remain on the execution machine and need their own retention or backup;
-restoring the database does not recreate them.
+restoring the database does not recreate them. Project deletion refuses while
+compute jobs are running and removes terminal job rows in its database
+transaction; job directories on disk are not removed.
 
 ## Wrapper and receipts
 
-One RCP-authored POSIX `run.sh` writes `started` as epoch seconds, changes to the
-absolute requested working directory, and runs the shell-quoted argv with both
-output streams appended to `log`. A failed directory change also records failure.
+One RCP-authored POSIX `run.sh` starts from the job root, writes `started` as
+epoch seconds, changes to the absolute requested working directory, and runs
+the shell-quoted argv with both output streams appended to `log`. A failed
+directory change also records failure.
 It atomically publishes `exit` as `<status> <epoch>`; scheduler accounting is not
 an exit-status source. On Linux it captures its cgroup for probe verification.
 `command.json` preserves argv, cwd, optional label, and requester lineage.
@@ -101,8 +104,10 @@ hostile same-account isolation claims.
 
 SQLite records requester lineage, execution alias and host, backend id and opaque
 handle, paths, argv, containment, lifecycle, timestamps, cancellation attribution,
-and diagnostics. Startup reconciles running rows before watcher polling; failures
-are logged and do not prevent startup. Reconciliation uses the saved backend and
+and diagnostics. Reconciliation runs in background maintenance after startup;
+failures are logged and never block startup. After a backend is unreachable, the
+same diagnostic is recorded on remaining rows for that execution host in the
+pass without contacting it again. Reconciliation uses the saved backend and
 execution identity rather than retargeting old jobs after configuration changes.
 
 Alive remains `running`. Unknown also remains `running`, with a diagnostic even

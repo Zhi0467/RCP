@@ -20,11 +20,25 @@ def reconcile_compute_jobs(
     project_id: str,
     data_dir: Path,
 ) -> None:
+    unavailable_hosts: dict[str, str] = {}
     for record in store.running_compute_jobs():
         if record.project_id != project_id:
             continue
         try:
-            refreshed = refresh_compute_job(store, manifest, record.job_id, data_dir=data_dir)
+            if record.execution_host in unavailable_hosts:
+                refreshed = store.record_compute_job_refresh(
+                    record.job_id,
+                    status="running",
+                    diagnostic=unavailable_hosts[record.execution_host],
+                )
+            else:
+                refreshed = refresh_compute_job(
+                    store,
+                    manifest,
+                    record.job_id,
+                    data_dir=data_dir,
+                    unavailable_hosts=unavailable_hosts,
+                )
             if refreshed.diagnostic:
                 logger.warning("Compute job %s: %s", record.job_id, refreshed.diagnostic)
         except Exception as exc:

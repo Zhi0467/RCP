@@ -35,8 +35,6 @@ class SlurmBackend:
             "--parsable",
             "--job-name",
             f"rcp-job-{PurePosixPath(job_root).name}",
-            "--chdir",
-            request.cwd,
             "--output",
             f"{job_root}/log",
             "--error",

@@ -2000,6 +2000,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "writing_sessions": 1,
         "chat_session_contexts": 1,
         "conversation_worktrees": 0,
+        "compute_jobs": 0,
         "watchers": 0,
         "graph_watcher_reconciliation": 0,
         "_legacy_campaign_invocations_archive": 0,

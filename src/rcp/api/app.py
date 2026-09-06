@@ -1299,6 +1299,20 @@ def create_app(
             # availability when the project's remote machine is unavailable.
             logger.warning("Could not sweep remote run stages: %s", exc)
 
+    async def reconcile_running_compute_jobs() -> None:
+        for project_id in {job.project_id for job in store.running_compute_jobs()}:
+            try:
+                service = await asyncio.to_thread(catalog.open, project_id)
+                await asyncio.to_thread(
+                    reconcile_compute_jobs,
+                    store,
+                    service.manifest,
+                    project_id=project_id,
+                    data_dir=app_data,
+                )
+            except Exception:
+                logger.exception("Could not reconcile compute jobs for project %s", project_id)
+
     startup_maintenance: list[asyncio.Task[None]] = []
     runtime_loop: list[asyncio.AbstractEventLoop | None] = [None]
 
@@ -1482,20 +1496,7 @@ def create_app(
                 startup_maintenance.append(asyncio.create_task(warm_provider_capabilities()))
                 if default_state_host:
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
-                for project_id in {job.project_id for job in store.running_compute_jobs()}:
-                    try:
-                        service = await asyncio.to_thread(catalog.open, project_id)
-                        await asyncio.to_thread(
-                            reconcile_compute_jobs,
-                            store,
-                            service.manifest,
-                            project_id=project_id,
-                            data_dir=app_data,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Could not reconcile compute jobs for project %s", project_id
-                        )
+                startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
                 await asyncio.to_thread(sweep_graph_conditions_at_startup)
                 graph_watcher_retry_worker.start()
                 watcher_poller.start()

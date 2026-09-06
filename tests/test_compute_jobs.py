@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.compute_jobs.wrapper import render_wrapper
 from rcp.storage import AppStore
+from tests.helpers import wait_until
 
 
 @pytest.mark.parametrize("status", [0, 7])
@@ -49,7 +51,9 @@ def test_wrapper_records_failed_cd(tmp_path):
     wrapper.write_text(render_wrapper(str(tmp_path), request))
     result = subprocess.run(["sh", str(wrapper)], check=False)
     assert result.returncode != 0
-    assert (tmp_path / "exit").read_text().split()[0] != "0"
+    assert int((tmp_path / "exit").read_text().split()[0]) == result.returncode
+    assert not (tmp_path / "should-not-exist").exists()
+    assert "absent" in (tmp_path / "log").read_text()
 
 
 @pytest.fixture
@@ -223,7 +227,7 @@ def test_uncertain_launch_retains_intent(launch_environment, tmp_path):
 
 
 @pytest.mark.parametrize("fenced", [True, False])
-def test_startup_reconciles_before_watcher_polling_and_respects_fence(
+def test_startup_reconciliation_does_not_block_health_or_watchers_and_respects_fence(
     tmp_path,
     fenced,
     manifest,
@@ -237,10 +241,13 @@ def test_startup_reconciles_before_watcher_polling_and_respects_fence(
 
     backend = jobs.COMPUTE_BACKENDS["launchd"]
     observed = []
+    entered = threading.Event()
+    release = threading.Event()
 
     def alive(handle, context):
-        assert not app.state.watcher_poller.is_running()
         observed.append(handle)
+        entered.set()
+        assert release.wait(10), "startup waited for compute reconciliation"
         return False
 
     monkeypatch.setattr(backend, "alive", alive)
@@ -270,8 +277,16 @@ def test_startup_reconciles_before_watcher_polling_and_respects_fence(
     )
     store.create_compute_job(record)
     with TestClient(app) as client:
-        assert client.get("/api/health").status_code == 200
-        assert store.compute_job("startup").status == ("running" if fenced else "exited")
+        try:
+            assert client.get("/api/health").status_code == 200
+            assert store.compute_job("startup").status == "running"
+            if not fenced:
+                assert entered.wait(5)
+                assert app.state.watcher_poller.is_running()
+        finally:
+            release.set()
+        if not fenced:
+            wait_until(lambda: store.compute_job("startup").status == "exited")
     assert observed == ([] if fenced else ["rcp-job-startup"])
 
 
@@ -315,3 +330,30 @@ def test_shipped_file_operations_use_execution_machine(tmp_path, monkeypatch):
     remove_job_root(context, str(root))
     assert not root.exists()
     assert all(command[1] == "-c" for command in calls)
+
+
+def test_reconcile_contacts_unreachable_host_once_per_pass(
+    launch_environment, tmp_path, manifest, monkeypatch
+):
+    store, backend, launch = launch_environment
+    records = [launch() for _ in range(4)]
+    calls = []
+
+    def unreachable(handle, context):
+        calls.append(handle)
+        if len(calls) > 1:
+            pytest.fail("reconciliation retried an unreachable host")
+        raise subprocess.TimeoutExpired("backend status", 10)
+
+    monkeypatch.setattr(backend, "alive", unreachable)
+    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+    assert len(calls) == 1
+    refreshed = [store.compute_job(record.job_id) for record in records]
+    assert all(record.status == "running" for record in refreshed)
+    assert all(record.diagnostic == refreshed[0].diagnostic for record in refreshed)
+    assert "timed out" in refreshed[0].diagnostic
+
+    backend.is_alive = False
+    monkeypatch.setattr(backend, "alive", lambda *_: False)
+    reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+    assert all(store.compute_job(record.job_id).status == "exited" for record in records)
