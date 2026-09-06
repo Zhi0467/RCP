@@ -40,7 +40,10 @@ def start_branch_merge(
         or episode.graph_target.branch_id != episode.episode_id
     ):
         raise ValueError("branch merge requires its exact Auto-research episode branch")
-    if episode.ending is None or not tasks.store.auto_research_is_quiescent(episode.episode_id):
+    end_paused = tasks.store.auto_research_can_end_for_merge(episode.episode_id)
+    if not end_paused and (
+        episode.ending is None or not tasks.store.auto_research_is_quiescent(episode.episode_id)
+    ):
         raise ValueError("the Auto-research branch is not ended and quiescent")
     active_branch_writers = [
         item
@@ -50,7 +53,7 @@ def start_branch_merge(
         )
         if item.kind != "branch_merge" and task_graph_capable(item.kind, item.request)
     ]
-    if active_branch_writers:
+    if active_branch_writers and not end_paused:
         raise ValueError("the Auto-research branch still has an active graph writer")
     if not authorized_by.display_name.strip():
         raise ValueError("branch merge requires a named human authorizer snapshot")

@@ -192,9 +192,6 @@ class AgentTaskStoreMixin:
         ):
             raise ValueError("a branch merge requires exact graph-only orchestrator authority")
         require_dispatch(authority)
-        if not self.auto_research_is_quiescent(record.episode_id):
-            raise ValueError("an Auto-research branch must be quiescent before merge")
-
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -221,11 +218,18 @@ class AgentTaskStoreMixin:
                     stored_episode.mode != "auto_research"
                     or stored_episode.project_id != record.project_id
                     or stored_episode.graph_target != record.graph_target
-                    or stored_episode.ending is None
-                    or stored_episode.status
-                    not in {"needs_action", "completed", "stopped", "failed"}
                 ):
+                    raise ValueError("branch merge requires its exact Auto-research episode")
+                if stored_episode.ending is None:
+                    stored_episode = self._end_paused_auto_research_for_merge_in_connection(
+                        connection, stored_episode, now=self.now()
+                    )
+                if stored_episode.status not in {"needs_action", "completed", "stopped", "failed"}:
                     raise ValueError("only an ended Auto-research branch is merge eligible")
+                if not self._auto_research_is_quiescent_in_connection(
+                    connection, record.episode_id
+                ):
+                    raise ValueError("an Auto-research branch must be quiescent before merge")
                 if any(
                     task.kind not in {"branch_merge", "episode_report"}
                     for task in self._unsettled_graph_target_tasks_in_connection(

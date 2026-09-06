@@ -358,11 +358,11 @@ def test_branch_merge_task_requires_ended_quiescent_branch_and_exact_authority(
     store = _store(tmp_path)
     episode, root = _create_auto_episode(store)
 
-    with pytest.raises(ValueError, match="quiescent"):
+    with pytest.raises(ValueError, match="not paused with all child work settled"):
         store.create_branch_merge_task(_merge_task(store, episode, "merge-active"))
 
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
-    with pytest.raises(ValueError, match="ended Auto-research branch"):
+    with pytest.raises(ValueError, match="not paused with all child work settled"):
         store.create_branch_merge_task(_merge_task(store, episode, "merge-not-ended"))
 
     store.mark_episode_stop_skipped(episode.episode_id)
@@ -373,7 +373,7 @@ def test_branch_merge_task_requires_ended_quiescent_branch_and_exact_authority(
         )
 
     other_target = GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
-    with pytest.raises(ValueError, match="ended Auto-research branch"):
+    with pytest.raises(ValueError, match="exact Auto-research episode"):
         store.create_branch_merge_task(
             _merge_task(store, episode, "merge-cross-target", graph_target=other_target)
         )
