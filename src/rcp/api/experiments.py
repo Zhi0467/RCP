@@ -20,6 +20,7 @@ from rcp.api.episodes import _episode_for_http
 from rcp.api.experiment_controls import _experiment_control, _experiment_control_for_target
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
+from rcp.compute_jobs.admission import require_episode_compute_backend
 from rcp.control import ExperimentControlState
 from rcp.core.models import Experiment
 from rcp.core.transition_models import GraphTargetRef
@@ -120,6 +121,10 @@ def run_experiment(
                 }
             )
             experiment_request = resolve_experiment_node_work_request(service, experiment_request)
+            assert experiment_request.run_on is not None
+            require_episode_compute_backend(
+                store, project_id, service.manifest, experiment_request.run_on
+            )
             record = start_watcher_notification(
                 background_tasks,
                 project_id,
@@ -141,6 +146,10 @@ def run_experiment(
             state_revision=state.revision,
             control=control,
             episode_id=episode_id,
+        )
+        assert experiment_request.run_on is not None
+        require_episode_compute_backend(
+            store, project_id, service.manifest, experiment_request.run_on
         )
         record = background_tasks.start(
             project_id,

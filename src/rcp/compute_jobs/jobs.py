@@ -66,6 +66,7 @@ def launch_compute_job(
         job_id=job_id,
         project_id=project_id,
         origin_operation_id=origin_operation_id,
+        label=request.label,
         episode_id=episode_id,
         execution_machine=execution_machine,
         execution_host=context.execution_host,

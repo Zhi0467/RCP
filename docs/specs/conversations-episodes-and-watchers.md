@@ -209,6 +209,13 @@ episode's pinned operational ceiling. Historical episodes retain their pinned
 used/ceiling values while the current node value remains separately visible as
 **Next episode limit**.
 
+Human Experiment-loop episode admission checks the resolved execution machine's
+stored compute backend probe before launch, including a completed-watcher start.
+When no probe exists it runs and stores one first. A non-ready result refuses
+with 422 naming the machine, diagnostic, and required action. Ordinary human
+Work is not gated; Stop and pause do not cancel jobs. The [compute jobs
+spec](compute-jobs.md) owns setup and explicit Cancel.
+
 Starting an episode does not create an ExperimentAttempt. Attempts are semantic
 agent-authored bookkeeping and never control budget, watcher identity, or
 episode admission. A nonblank human initial goal is retained exactly; only blank

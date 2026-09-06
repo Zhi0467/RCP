@@ -11,6 +11,13 @@ one project-owned orchestrator profile and one live Auto-research episode exist
 per project. The optional human instruction guides the first paid invocation but
 grants no authority.
 
+Human start and reauthorization resolve the execution machine and require its
+stored compute backend probe to be ready before reserving an episode or branch.
+If no probe exists, admission runs and stores it first. A non-ready result
+refuses with 422 naming the machine, diagnostic, and required action; ordinary
+human Work is not gated. Setup and explicit job Cancel follow the [compute jobs
+spec](compute-jobs.md).
+
 The episode has two brakes:
 
 - operational invocation budget **B**, set by the human and defaulted from

@@ -21,6 +21,9 @@ from rcp.api.dependencies import (
 )
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
+from rcp.compute_jobs.jobs import cancel_compute_job, refresh_compute_job
+from rcp.compute_jobs.models import ComputeBackendProbe, ComputeJobRecord
+from rcp.compute_jobs.probe import probe_compute_backend
 from rcp.config import load_manifest
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import profile_for
@@ -328,6 +331,68 @@ def resolve_project_provider_path(
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return result
+
+
+@router.post(
+    "/api/projects/{project_id}/machines/{machine_alias}/compute/probe",
+    dependencies=[Depends(require_project_write_admission)],
+    response_model=ComputeBackendProbe,
+)
+def probe_project_compute_backend(
+    project_id: str,
+    machine_alias: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> ComputeBackendProbe:
+    project_id = catalog.resolve_project_id(project_id)
+    service = get_project_service(catalog, project_id)
+    if machine_alias not in service.manifest.machine_map:
+        raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_alias}")
+    probe = probe_compute_backend(service.manifest, machine_alias, data_dir=catalog.data_dir)
+    return store.record_compute_backend_probe(project_id, probe)
+
+
+@router.get("/api/projects/{project_id}/compute-jobs", response_model=list[ComputeJobRecord])
+def project_compute_jobs(
+    project_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> list[ComputeJobRecord]:
+    project_id = catalog.resolve_project_id(project_id)
+    service = get_project_service(catalog, project_id)
+    for job in store.running_compute_jobs():
+        if job.project_id == project_id:
+            refresh_compute_job(store, service.manifest, job.job_id, data_dir=catalog.data_dir)
+    return store.compute_jobs(project_id)
+
+
+@router.post(
+    "/api/projects/{project_id}/compute-jobs/{job_id}/cancel",
+    dependencies=[Depends(require_project_write_admission)],
+    response_model=ComputeJobRecord,
+)
+def cancel_project_compute_job(
+    project_id: str,
+    job_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ComputeJobRecord:
+    human = identity_access.require_patch_capable_identity(request)
+    project_id = catalog.resolve_project_id(project_id)
+    job = store.compute_job(job_id)
+    if job is None or job.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Compute job not found")
+    if job.status != "running":
+        return job
+    service = get_project_service(catalog, project_id)
+    return cancel_compute_job(
+        store, service.manifest, job_id, human.user_id, data_dir=catalog.data_dir
+    )
 
 
 @router.get("/api/projects/{project_id}/sources")

@@ -73,6 +73,7 @@ _SERVICE_COMMANDS: frozenset[ServerCommandName] = frozenset(
     {
         "server doctor",
         "server provider check",
+        "server compute probe",
         "server project provision",
         "server project transfer-import",
         "server backup run",
@@ -152,6 +153,13 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
         metavar="{codex,claude}",
     )
     provider_update.set_defaults(server_operation="server provider update")
+
+    compute = server_commands.add_parser("compute", help="Inspect compute backend readiness")
+    compute_commands = compute.add_subparsers(dest="compute_command", required=True)
+    compute_probe = _leaf(compute_commands, "probe", "Probe one project's compute machine")
+    compute_probe.add_argument("--project", dest="project_id", required=True, type=_project_id)
+    compute_probe.add_argument("machine_alias")
+    compute_probe.set_defaults(server_operation="server compute probe")
 
     project = server_commands.add_parser("project", help="Prepare or import a team project")
     project_commands = project.add_subparsers(dest="project_command", required=True)
@@ -292,7 +300,7 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
         supervisor_commands, "update", "Install the supervisor from the followed release"
     )
     supervisor_update.set_defaults(server_operation="server supervisor update")
-    for parser in (server, backup, project, provider, member, supervisor):
+    for parser in (server, backup, project, provider, compute, member, supervisor):
         parser.add_argument(
             "--machine-readable",
             action="store_true",
@@ -424,6 +432,7 @@ def request_from_namespace(args: argparse.Namespace) -> ServerCommandRequest:
             team_name=getattr(args, "team_name", None),
             request_id=getattr(args, "request_id", None),
             project_id=getattr(args, "project_id", None),
+            machine_alias=getattr(args, "machine_alias", None),
             provider_update_provider=getattr(args, "provider_update_provider", None),
             member_id=getattr(args, "member_id", None),
             member_confirmed_boundary=getattr(args, "member_confirmed_boundary", None),
@@ -617,6 +626,10 @@ def _dispatch_server_command(
             from rcp.server_ops.provider_readiness import prepare_provider_check_command
 
             return prepare_provider_check_command(request, identity)
+        case "server compute probe":
+            from rcp.server_ops.compute import prepare_compute_probe_command
+
+            return prepare_compute_probe_command(request, identity)
         case "server provider update":
             from rcp.server_ops.provider_update import prepare_provider_update_command
 

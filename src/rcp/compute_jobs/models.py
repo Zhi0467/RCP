@@ -20,6 +20,7 @@ class ComputeJobRecord(BaseModel):
     job_id: str
     project_id: str
     origin_operation_id: str
+    label: str | None = None
     episode_id: str | None = None
     execution_machine: str
     execution_host: str = ""

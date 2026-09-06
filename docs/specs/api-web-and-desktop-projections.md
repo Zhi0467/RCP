@@ -65,6 +65,29 @@ episode. A branch id alone never grants lookup. Task, watcher, episode, and
 Experiment detail APIs preserve exact `main` versus `branch:<id>` target
 identity.
 
+## Compute setup and job APIs
+
+Project machine entries expose the manifest `compute` block and a live
+`compute_probe`, serialized as `ComputeBackendProbe` or null. The latter is
+read from storage even when the graph snapshot is cached. Settings updates
+accept `machine_compute`, a partial alias-to-`MachineComputeConfig` map; null
+removes a block, omission preserves it. Validation and TOML persistence belong
+to the machine configuration owner. A changed block invalidates its stored probe.
+`POST /api/projects/{project_id}/machines/{machine_alias}/compute/probe` uses
+project write admission, stores a fresh probe, and returns that same model with
+its backend-owned label and tone.
+
+`GET /api/projects/{project_id}/compute-jobs` refreshes running project jobs,
+then returns the bounded newest-first list of `ComputeJobRecord` rows. Fields
+include job id, optional label, status, exit status, created/start/end timestamps,
+backend id, execution machine, log path, origin operation id, episode id,
+cancellation requester and timestamp, and diagnostic.
+`POST /api/projects/{project_id}/compute-jobs/{job_id}/cancel` uses project write
+admission and Stop's named human identity, records that user's id, and calls the
+compute owner. Repeating Cancel for a terminal row returns it unchanged with 200;
+a missing or foreign-project job returns 404. These APIs add no background poller.
+Web compute settings and job controls are the separate D2 change.
+
 ## Atomic client project snapshots
 
 The Web client stores a bounded project snapshot keyed by project id and exact

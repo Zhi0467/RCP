@@ -8,6 +8,7 @@ import os
 import platform
 import pwd
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -151,6 +152,7 @@ class LinuxInstallMachine:
             "age-keygen",
             "curl",
             "git",
+            "loginctl",
             "runuser",
             "ssh",
             "ssh-keygen",
@@ -186,6 +188,22 @@ class LinuxInstallMachine:
 
     def converge_account_and_layout(self) -> None:
         account = self._converge_account()
+        for argv in (
+            ("loginctl", "enable-linger", account.pw_name),
+            ("loginctl", "show-user", account.pw_name, "--property=Linger"),
+        ):
+            result = _run_process(argv, timeout=SERVER_INSTALL_SERVICE_TIMEOUT_SECONDS)
+            if result.returncode != 0:
+                raise InstallRefused(
+                    f"{shlex.join(argv)} failed: {' '.join(result.stderr.split())}. "
+                    "Repair service-account linger and rerun install."
+                )
+        if result.stdout.strip() != "Linger=yes":
+            raise InstallRefused(
+                f"{shlex.join(argv)} did not report Linger=yes: "
+                f"{' '.join(result.stdout.split())}; {' '.join(result.stderr.split())}. "
+                "Repair service-account linger and rerun install."
+            )
         self._service_uid = account.pw_uid
         self._service_gid = account.pw_gid
         _converge_directory(

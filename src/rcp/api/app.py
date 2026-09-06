@@ -73,7 +73,10 @@ from rcp.background import (
     BackgroundAgentTasks,
     StartupEffectFence,
 )
+from rcp.compute_jobs.models import ComputeBackendProbe
+from rcp.compute_jobs.probe import probe_compute_backend
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
+from rcp.config import load_manifest
 from rcp.control import admit_experiment_watcher_invocation
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
@@ -392,6 +395,7 @@ def create_app(
             | ServerControlProjectTransferUploadResult
             | ServerControlBackupCaptureResult
             | ServerControlMaintenanceResult
+            | ComputeBackendProbe
         ):
             root_operations = {
                 "maintenance_enter",
@@ -437,7 +441,11 @@ def create_app(
                         operations=tuple(
                             operation
                             for operation in SERVER_CONTROL_OPERATIONS
-                            if request.protocol_version == 10 or operation not in root_operations
+                            if (request.protocol_version >= 10 or operation not in root_operations)
+                            and (
+                                request.protocol_version >= 11
+                                or operation != "compute_backend_probe"
+                            )
                         ),
                         pending_member_removals=(
                             member_removal_coordinator.pending_snapshots()
@@ -457,6 +465,21 @@ def create_app(
                         request.selector_id,
                         boundary_sha256=request.boundary_sha256,
                     )
+                case "compute_backend_probe":
+                    assert request.selector_id is not None and request.machine_alias is not None
+                    record = store.project(request.selector_id)
+                    if record is None or record.home_space_id != store.space_id:
+                        raise ServerControlError("operation_refused", "Project not found.")
+                    try:
+                        manifest = load_manifest(record.locator)
+                        if request.machine_alias not in manifest.machine_map:
+                            raise ValueError(f"unknown execution machine: {request.machine_alias}")
+                    except (OSError, ValueError) as exc:
+                        raise ServerControlError("operation_refused", str(exc)) from exc
+                    probe = probe_compute_backend(
+                        manifest, request.machine_alias, data_dir=app_data
+                    )
+                    return store.record_compute_backend_probe(record.project_id, probe)
                 case "provider_readiness_plan":
                     assert provider_readiness_coordinator is not None
                     assert request.selector_kind is not None and request.selector_id is not None

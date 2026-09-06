@@ -39,6 +39,7 @@ ServerCommandName = Literal[
     "server install",
     "server doctor",
     "server provider check",
+    "server compute probe",
     "server provider update",
     "server project provision",
     "server project transfer-import",
@@ -157,6 +158,7 @@ class ServerCommandRequest(_StrictModel):
     team_name: ShortText | None = None
     request_id: str | None = None
     project_id: str | None = None
+    machine_alias: ShortText | None = Field(default=None, exclude_if=lambda value: value is None)
     provider_update_provider: Literal["codex", "claude"] | None = None
     member_id: str | None = None
     member_confirmed_boundary: str | None = None
@@ -260,6 +262,7 @@ class ServerCommandRequest(_StrictModel):
             "team_name": self.team_name,
             "request_id": self.request_id,
             "project_id": self.project_id,
+            "machine_alias": self.machine_alias,
             "provider_update_provider": self.provider_update_provider,
             "member_id": self.member_id,
             "member_confirmed_boundary": self.member_confirmed_boundary,
@@ -284,6 +287,8 @@ class ServerCommandRequest(_StrictModel):
             if (self.request_id is None) == (self.project_id is None):
                 raise ValueError("provider check requires exactly one request or project selector")
             expected = {"request_id" if self.request_id is not None else "project_id"}
+        elif self.command == "server compute probe":
+            expected = {"project_id", "machine_alias"}
         elif self.command == "server provider update":
             expected = {"provider_update_provider"}
         elif self.command in {

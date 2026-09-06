@@ -4,6 +4,9 @@ status: pending
 tier: live
 driver: pytest + ssh + real Codex
 covered_by:
+  - tests/test_api_compute_jobs.py
+  - tests/test_api_compute_admission.py
+  - tests/test_server_cli_compute.py
   - tests/test_compute_jobs_commands.py
   - tests/test_compute_jobs_settlement.py
   - tests/test_compute_jobs_observers.py
@@ -16,7 +19,8 @@ invariants: [4, 4b, 5, 8, 9, 10g]
 last_checked: >-
   2026-09-06 — human confirmed the compute-runner journey. PR B implements
   Work and Experiment-loop command and observer paths. The real team-server
-  drive, operator surfaces, and prompt instructions remain pending.
+  drive, web controls, and prompt instructions remain pending. PR D1 implements
+  backend operator surfaces, human Cancel API, and episode-start gating.
 ---
 
 # Long-running compute outlives the agent and wakes it

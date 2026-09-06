@@ -12,9 +12,16 @@ observers, settlement correction, and wake payload on
 `codex/compute-runner-channel`. Broker, fake-backend command/observer, settlement,
 migration, and restore regressions pass, as do Ruff, pre-commit, and a throwaway
 HTTP startup check. The focused and full suites fail only the two existing `ps`
-sandbox checks; Chromium console inspection is also sandbox-blocked. PRs C–E
+sandbox checks; Chromium console inspection is also sandbox-blocked.
+
+PR D1 is implemented on `codex/compute-runner-setup`: install linger, server CLI
+probe, machine compute settings/probe APIs, job list and human Cancel, and
+episode-start gating. Focused tests, Ruff, pre-commit, and an isolated served HTTP
+check pass. The final full suite fails only the two known watcher `ps` permission
+checks; the launcher terminal-event test passes on that run. Chromium console
+inspection and the real Linux/remote drive remain unavailable here. PRs C, D2, E
 and the real-host acceptance drive remain. The decisions below are settled. Closure:
-all five PRs merged, the S136 drive passes on the team server with a real Codex
+all six PRs merged, the S136 drive passes on the team server with a real Codex
 Work turn, and this file is archived in the same change.
 
 ## What this is
@@ -145,10 +152,11 @@ previous branch until that branch merges.
 - **C `codex/compute-runner-child-wake`.** Child Work gets the three verbs and
   its watcher continuation together: route state, wake, budget spend, Stop
   fence, finish guard, root status. No child can launch before its wake exists.
-- **D `codex/compute-runner-setup`.** Install linger. Server CLI probe. API for
-  machine probe, job list, and Cancel. Settings backend block and probe status.
-  Job rows with Cancel in chat and Runs. Episode-start gating. Web types and
-  spec updates.
+- **D1 `codex/compute-runner-setup`.** Implemented: install linger, server CLI
+  probe, machine compute settings API, probe API, job list and human Cancel API,
+  episode-start gating, and specs. No web changes.
+- **D2 `codex/compute-runner-ui`.** Web types, Settings compute block and probe
+  status, and job rows with Cancel in chat and Runs.
 - **E `codex/compute-runner-prompts`.** Work, Experiment-loop, and child Work
   prompts: use `launch`, one bounded status check at most, finish; `unavailable`
   is a Blocker naming the setup failure, never a cue to run attached; remove the
