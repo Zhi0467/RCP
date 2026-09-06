@@ -45,6 +45,52 @@
   --body: var(--ui);
   --editorial: var(--display);
   --chat-user-message-preview-height: 12em;
+
+  /* Cast shadows and scrims from one warm dark, so dark mode can deepen them
+     in one place instead of in the fifty rules that draw them. */
+  --shadow-rgb: 58 39 25;
+  /* Text and glyphs printed on a solid accent fill. The accent brightens in
+     dark mode, so what reads on it inverts with the theme. */
+  --accent-ink: #fffaf0;
+}
+
+/* Dark mode.
+ *
+ * `data-theme` is stamped on the root before first paint and maintained by
+ * useTheme, so an explicit Light or Dark choice wins over the OS in both
+ * directions. Only the base palette is restated here: every alias and every
+ * `color-mix` above is late-bound and follows on its own. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #191512;
+  --paper-deep: #221d19;
+  --sheet: #24201b;
+  --walnut: #ece3d5;
+  --ink-soft: #a99e8e;
+  --oxblood: #d97b68;
+  /* Hover brightens on a dark ground rather than darkening, which also keeps
+     --accent-ink readable on the hover fill and --cobalt-dark on its soft tint. */
+  --oxblood-dark: #e89482;
+  --teal: #6fb3ad;
+  --mustard: #e0b95e;
+  --coral: #e08a76;
+  --indigo: #8b9bd4;
+  --plum: #c98bb4;
+  --forest: #7fb894;
+  --moss: #a8b571;
+  --slate: #8fabc4;
+  --rose-paper: #3a2723;
+  --rule: #3a332c;
+  --shadow: 0 18px 52px rgb(0 0 0 / 55%);
+  --shadow-rgb: 0 0 0;
+  --accent-ink: #191512;
+  /* The soft tints read as washes of the accent over paper, not over the
+     raised sheet, which would lift them off the surface they sit on. */
+  --faint: color-mix(in srgb, var(--ink-soft) 62%, var(--paper));
+  --line-strong: color-mix(in srgb, var(--rule) 62%, var(--walnut));
+  --forest-soft: color-mix(in srgb, var(--paper) 82%, var(--forest));
+  --amber-soft: color-mix(in srgb, var(--paper) 80%, var(--mustard));
+  --green-soft: color-mix(in srgb, var(--paper) 80%, var(--teal));
 }
 
 * {
@@ -104,7 +150,7 @@ button:disabled {
   border-left: 5px solid var(--mustard);
   border-radius: 2px 7px 7px 2px;
   bottom: 12px;
-  box-shadow: 0 8px 24px rgb(43 37 31 / 22%);
+  box-shadow: 0 8px 24px rgb(var(--shadow-rgb) / 22%);
   color: var(--paper);
   display: grid;
   gap: 1px;
@@ -204,7 +250,7 @@ button:disabled {
 .icon-button.primary {
   background: var(--oxblood);
   border-color: var(--oxblood);
-  color: white;
+  color: var(--accent-ink);
 }
 .button.primary:hover:not(:disabled),
 .icon-button.primary:hover:not(:disabled) {
@@ -292,7 +338,7 @@ button:disabled {
   background: var(--landing-accent);
   border-radius: 2px 7px 7px 2px;
   box-shadow: inset 4px 0 rgb(255 250 240 / 13%);
-  color: #fffaf0;
+  color: var(--accent-ink);
   display: inline-flex;
   flex: none;
   font-family: var(--editorial);
@@ -342,7 +388,7 @@ button:disabled {
 .landing-identity-panel {
   background: color-mix(in srgb, var(--landing-paper) 94%, var(--landing-sheet));
   border: 1px solid color-mix(in srgb, var(--landing-rule) 76%, var(--landing-ink));
-  box-shadow: 0 20px 46px rgb(57 38 23 / 18%);
+  box-shadow: 0 20px 46px rgb(var(--shadow-rgb) / 18%);
   position: absolute;
   right: 0;
   top: calc(100% + 10px);
@@ -353,7 +399,11 @@ button:disabled {
 }
 .landing-identity-slip {
   background:
-    linear-gradient(90deg, rgb(135 59 48 / 5%) 0 20px, transparent 20px),
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--oxblood) 5%, transparent) 0 20px,
+      transparent 20px
+    ),
     repeating-linear-gradient(
       0deg,
       transparent 0 27px,
@@ -605,7 +655,7 @@ button:disabled {
   align-items: center;
   background: var(--landing-accent);
   border: 1px solid var(--landing-accent);
-  color: #fffaf0;
+  color: var(--accent-ink);
   display: inline-flex;
   font-size: 11px;
   font-weight: 700;
@@ -621,7 +671,12 @@ button:disabled {
 }
 .landing-team-invitation-code {
   background:
-    linear-gradient(90deg, rgb(135 59 48 / 7%) 0 16px, transparent 16px), var(--landing-sheet);
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--oxblood) 7%, transparent) 0 16px,
+      transparent 16px
+    ),
+    var(--landing-sheet);
   border: 1px solid color-mix(in srgb, var(--landing-rule) 72%, var(--landing-accent));
   display: grid;
   gap: 9px;
@@ -717,9 +772,9 @@ button:disabled {
   background: var(--landing-accent, var(--oxblood));
   border-radius: 10px 10px 10px 2px;
   box-shadow:
-    0 4px 12px rgba(65, 46, 29, 0.12),
+    0 4px 12px rgb(var(--shadow-rgb) / 12%),
     inset 5px 0 rgba(255, 250, 240, 0.08);
-  color: #fffaf0;
+  color: var(--accent-ink);
   display: inline-flex;
   font-family: var(--editorial);
   font-size: 19px;
@@ -896,7 +951,7 @@ button:disabled {
   background: var(--paper);
   border: 1px solid var(--landing-rule);
   border-radius: 6px 16px 16px 6px;
-  box-shadow: 0 28px 72px rgba(43, 37, 31, 0.32);
+  box-shadow: 0 28px 72px rgb(var(--shadow-rgb) / 32%);
   max-height: calc(100vh - 64px);
   overflow: auto;
   padding: 24px;
@@ -939,7 +994,7 @@ button:disabled {
 .add-team-mode button[aria-pressed="true"] {
   background: var(--teal);
   border-color: var(--teal);
-  color: white;
+  color: var(--accent-ink);
 }
 .add-team-dialog form {
   display: grid;
@@ -992,7 +1047,7 @@ button:disabled {
   border: 0;
   border-radius: 4px 12px 12px 4px;
   box-shadow:
-    0 15px 30px rgba(58, 39, 25, 0.18),
+    0 15px 30px rgb(var(--shadow-rgb) / 18%),
     inset -1px 0 rgba(255, 255, 255, 0.16);
   color: var(--project-cover-ink);
   display: flex;
@@ -1020,7 +1075,7 @@ button:disabled {
 .project-material-dye::before {
   background:
     repeating-linear-gradient(0deg, rgb(255 250 240 / 14%) 0 1px, transparent 1px 4px),
-    repeating-linear-gradient(90deg, rgb(43 37 31 / 12%) 0 1px, transparent 1px 5px);
+    repeating-linear-gradient(90deg, rgb(var(--shadow-rgb) / 12%) 0 1px, transparent 1px 5px);
   filter: none;
   inset: 0;
   opacity: 0.3;
@@ -1031,7 +1086,7 @@ button:disabled {
 .project-material-mosaic::before {
   background:
     repeating-linear-gradient(45deg, rgb(255 250 240 / 11%) 0 1px, transparent 1px 7px),
-    repeating-linear-gradient(-45deg, rgb(43 37 31 / 9%) 0 1px, transparent 1px 7px);
+    repeating-linear-gradient(-45deg, rgb(var(--shadow-rgb) / 9%) 0 1px, transparent 1px 7px);
   filter: none;
   inset: 0;
   opacity: 0.3;
@@ -1042,7 +1097,7 @@ button:disabled {
 .project-material-wood::before {
   background:
     repeating-linear-gradient(88deg, rgb(255 250 240 / 12%) 0 1px, transparent 1px 3px),
-    repeating-linear-gradient(2deg, rgb(43 37 31 / 10%) 0 1px, transparent 1px 4px);
+    repeating-linear-gradient(2deg, rgb(var(--shadow-rgb) / 10%) 0 1px, transparent 1px 4px);
   filter: none;
   inset: 0;
   opacity: 0.3;
@@ -1064,7 +1119,7 @@ button:disabled {
 .project-material-diffusion::before {
   background:
     radial-gradient(circle at 22% 18%, rgb(255 250 240 / 18%) 0 1px, transparent 2px),
-    radial-gradient(circle at 71% 63%, rgb(43 37 31 / 16%) 0 1px, transparent 2px);
+    radial-gradient(circle at 71% 63%, rgb(var(--shadow-rgb) / 16%) 0 1px, transparent 2px);
   background-size:
     17px 19px,
     23px 21px;
@@ -1084,7 +1139,7 @@ button:disabled {
 }
 .project-cover:hover {
   box-shadow:
-    0 23px 42px rgba(58, 39, 25, 0.24),
+    0 23px 42px rgb(var(--shadow-rgb) / 24%),
     inset -1px 0 rgba(255, 255, 255, 0.16);
   transform: translateY(-5px) rotate(-0.4deg);
 }
@@ -1124,12 +1179,12 @@ button:disabled {
 }
 .project-cover-shell:hover .project-cover {
   box-shadow:
-    0 23px 42px rgba(58, 39, 25, 0.24),
+    0 23px 42px rgb(var(--shadow-rgb) / 24%),
     inset -1px 0 rgba(255, 255, 255, 0.16);
 }
 .project-cover-trigger {
   align-items: center;
-  background: rgba(43, 37, 31, 0.7);
+  background: rgb(var(--shadow-rgb) / 70%);
   border: 1px solid rgba(255, 255, 255, 0.46);
   border-radius: 5px 5px 5px 2px;
   color: #fffaf0;
@@ -1158,9 +1213,9 @@ button:disabled {
 }
 .project-cover-menu {
   background: var(--landing-sheet);
-  border: 1px solid #d4c5b3;
+  border: 1px solid var(--line);
   border-radius: 5px 12px 12px 5px;
-  box-shadow: 0 18px 44px rgba(43, 37, 31, 0.28);
+  box-shadow: 0 18px 44px rgb(var(--shadow-rgb) / 28%);
   display: block;
   padding: 12px 14px 9px;
   position: absolute;
@@ -1200,7 +1255,7 @@ button:disabled {
 }
 .project-cover-swatch {
   border-radius: 2px 5px 5px 2px;
-  box-shadow: 0 4px 10px rgba(58, 39, 25, 0.24);
+  box-shadow: 0 4px 10px rgb(var(--shadow-rgb) / 24%);
   display: block;
   height: 46px;
   overflow: hidden;
@@ -1217,7 +1272,7 @@ button:disabled {
   box-shadow:
     0 0 0 2px var(--paper),
     0 0 0 3.5px var(--walnut),
-    0 4px 10px rgba(58, 39, 25, 0.24);
+    0 4px 10px rgb(var(--shadow-rgb) / 24%);
 }
 .project-cover-option[aria-checked="true"] .project-cover-option-label {
   color: var(--landing-ink);
@@ -1226,7 +1281,7 @@ button:disabled {
   align-items: center;
   background: transparent;
   border: 0;
-  border-top: 1px solid #ddd0c0;
+  border-top: 1px solid var(--line);
   color: var(--landing-ink);
   display: flex;
   font-size: 10px;
@@ -1327,18 +1382,18 @@ button:disabled {
 .new-project-cover {
   --project-cover-ink: var(--walnut);
   background:
-    repeating-linear-gradient(0deg, transparent 0 31px, rgba(107, 98, 88, 0.08) 31px 32px),
+    repeating-linear-gradient(0deg, transparent 0 31px, rgb(var(--shadow-rgb) / 8%) 31px 32px),
     color-mix(in srgb, var(--sheet) 72%, var(--paper-deep));
-  border: 1px solid #cfc0ad;
+  border: 1px solid var(--line-strong);
   box-shadow:
-    0 12px 28px rgba(58, 39, 25, 0.08),
-    inset 12px 0 rgba(135, 59, 48, 0.06);
+    0 12px 28px rgb(var(--shadow-rgb) / 8%),
+    inset 12px 0 color-mix(in srgb, var(--oxblood) 6%, transparent);
 }
 .new-project-cover::before {
   background: none;
 }
 .new-project-cover::after {
-  background: rgba(135, 59, 48, 0.16);
+  background: color-mix(in srgb, var(--oxblood) 16%, transparent);
   border: 0;
   height: calc(100% - 48px);
   right: 18px;
@@ -1347,12 +1402,12 @@ button:disabled {
 }
 .new-project-cover:hover {
   box-shadow:
-    0 20px 36px rgba(58, 39, 25, 0.14),
-    inset 12px 0 rgba(135, 59, 48, 0.08);
+    0 20px 36px rgb(var(--shadow-rgb) / 14%),
+    inset 12px 0 color-mix(in srgb, var(--oxblood) 8%, transparent);
 }
 .new-project-plus {
   align-items: center;
-  border: 1px solid rgba(135, 59, 48, 0.38);
+  border: 1px solid color-mix(in srgb, var(--oxblood) 38%, transparent);
   border-radius: 50%;
   color: var(--oxblood);
   display: flex;
@@ -1371,7 +1426,7 @@ button:disabled {
   background: color-mix(in srgb, var(--landing-sheet) 76%, var(--landing-paper));
   border: 1px solid var(--landing-rule);
   border-radius: 3px;
-  box-shadow: 0 12px 32px rgb(58 39 25 / 7%);
+  box-shadow: 0 12px 32px rgb(var(--shadow-rgb) / 7%);
   margin-top: 72px;
   overflow: hidden;
 }
@@ -2115,7 +2170,7 @@ button:disabled {
 .setup-step.active > span:first-child {
   background: var(--cobalt);
   border-color: var(--cobalt);
-  color: white;
+  color: var(--accent-ink);
 }
 .setup-step.active strong {
   color: var(--cobalt-dark);
@@ -2671,7 +2726,7 @@ button:disabled {
 }
 .location-toggle button.active {
   background: var(--sheet);
-  box-shadow: 0 1px 3px rgba(65, 46, 29, 0.12);
+  box-shadow: 0 1px 3px rgb(var(--shadow-rgb) / 12%);
   color: var(--oxblood-dark);
 }
 .repository-editor > footer {
@@ -3217,7 +3272,7 @@ button:disabled {
 .checkbox.checked {
   background: var(--cobalt);
   border-color: var(--cobalt);
-  color: white;
+  color: var(--accent-ink);
 }
 
 .coverage-banner {
@@ -4428,7 +4483,7 @@ button:disabled {
   background: var(--sheet);
   border: 1px solid var(--line-strong);
   border-radius: 9px;
-  box-shadow: 0 4px 15px rgba(65, 46, 29, 0.08);
+  box-shadow: 0 4px 15px rgb(var(--shadow-rgb) / 8%);
   margin-bottom: 12px;
   overflow: hidden;
 }
@@ -4538,7 +4593,7 @@ button:disabled {
 
 .drawer-scrim {
   align-items: stretch;
-  background: rgba(43, 37, 31, 0.32);
+  background: rgb(var(--shadow-rgb) / 32%);
   display: flex;
   inset: 0;
   justify-content: flex-end;
@@ -4847,7 +4902,7 @@ button:disabled {
   border: 1px solid color-mix(in srgb, var(--paper) 18%, transparent);
   border-radius: 5px;
   bottom: calc(100% + 7px);
-  box-shadow: 0 7px 18px rgb(37 30 24 / 20%);
+  box-shadow: 0 7px 18px rgb(var(--shadow-rgb) / 20%);
   color: var(--paper);
   content: attr(data-definition);
   font-family: var(--ui);
@@ -5526,7 +5581,7 @@ button.relation-map-node:hover {
 .run-history > button.active {
   background: var(--sheet);
   border-color: var(--line-strong);
-  box-shadow: 0 3px 10px rgba(65, 46, 29, 0.08);
+  box-shadow: 0 3px 10px rgb(var(--shadow-rgb) / 8%);
 }
 .run-history strong,
 .run-history-meta {
@@ -6652,7 +6707,7 @@ button.relation-map-node:hover {
 .chat-artifact-actions .review-revision:hover {
   background: var(--cobalt-dark);
   border-color: var(--cobalt-dark);
-  color: white;
+  color: var(--accent-ink);
 }
 .artifact-revision-backdrop {
   align-items: center;
@@ -6935,7 +6990,7 @@ button.relation-map-node:hover {
   background: color-mix(in srgb, var(--sheet) 94%, var(--paper));
   border: 1px solid var(--line-strong);
   border-radius: 16px;
-  box-shadow: 0 8px 24px rgb(58 39 25 / 8%);
+  box-shadow: 0 8px 24px rgb(var(--shadow-rgb) / 8%);
   margin: 0 18px 18px;
   padding: 9px 10px;
   position: relative;
@@ -7062,7 +7117,7 @@ button.relation-map-node:hover {
   background: var(--surface);
   border: 1px solid color-mix(in srgb, var(--plum) 65%, var(--line));
   border-radius: 9px;
-  box-shadow: 0 16px 42px rgb(50 36 32 / 22%);
+  box-shadow: 0 16px 42px rgb(var(--shadow-rgb) / 22%);
   display: grid;
   gap: 8px;
   max-height: max(0px, calc(var(--chat-annotation-viewport-height, 100dvh) - 24px));
@@ -7342,7 +7397,7 @@ button.relation-map-node:hover {
   border-color: var(--chat-mode-accent);
   box-shadow:
     0 0 0 2px color-mix(in srgb, var(--chat-mode-accent) 18%, transparent),
-    0 8px 24px rgb(58 39 25 / 8%);
+    0 8px 24px rgb(var(--shadow-rgb) / 8%);
 }
 .chat-skill-menu {
   background: var(--surface);
@@ -7432,11 +7487,11 @@ button.relation-map-node:hover {
 }
 .chat-mode-toggle button.discuss[aria-pressed="true"] {
   background: var(--plum);
-  color: white;
+  color: var(--accent-ink);
 }
 .chat-mode-toggle button.work[aria-pressed="true"] {
   background: var(--forest);
-  color: white;
+  color: var(--accent-ink);
 }
 .chat-dock[data-mode="discuss"] .chat-send-button {
   background: var(--plum);
@@ -7838,7 +7893,7 @@ button.relation-map-node:hover {
   background: var(--oxblood);
   border-color: var(--oxblood);
   box-shadow: 0 0 0 3px var(--rose-paper);
-  color: white;
+  color: var(--accent-ink);
 }
 .draft-sync.active:hover:not(:disabled) {
   background: var(--oxblood-dark);
@@ -8260,7 +8315,7 @@ button.relation-map-node:hover {
 .button.judgment.selected.agree {
   background: var(--forest);
   border-color: var(--forest);
-  color: white;
+  color: var(--accent-ink);
 }
 .button.judgment.selected.disagree {
   background: var(--red-soft);
@@ -8500,7 +8555,7 @@ button.relation-map-node:hover {
 }
 .dag-layout-switch button.is-active {
   background: var(--sheet);
-  box-shadow: 0 1px 4px rgba(65, 46, 29, 0.18);
+  box-shadow: 0 1px 4px rgb(var(--shadow-rgb) / 18%);
   color: var(--oxblood-dark);
 }
 .dag-projection-label {
@@ -8680,7 +8735,7 @@ button.relation-map-node:hover {
   background: color-mix(in srgb, var(--sheet) 96%, transparent);
   border: 1px solid var(--rule);
   border-radius: 7px;
-  box-shadow: 0 7px 20px rgba(65, 46, 29, 0.1);
+  box-shadow: 0 7px 20px rgb(var(--shadow-rgb) / 10%);
   cursor: grab;
   height: 96px;
   overflow: hidden;
@@ -8706,7 +8761,7 @@ button.relation-map-node:hover {
 }
 .dag-node:hover {
   border-color: var(--node-accent);
-  box-shadow: 0 10px 28px rgba(65, 46, 29, 0.17);
+  box-shadow: 0 10px 28px rgb(var(--shadow-rgb) / 17%);
   transform: translateY(-1px) scale(1.008);
   z-index: 3;
 }
@@ -8725,7 +8780,7 @@ button.relation-map-node:hover {
   border-color: color-mix(in srgb, var(--node-accent) 64%, var(--rule));
 }
 .dag-node.is-dragging {
-  box-shadow: 0 15px 38px rgba(65, 46, 29, 0.24);
+  box-shadow: 0 15px 38px rgb(var(--shadow-rgb) / 24%);
   cursor: grabbing;
   filter: none;
   opacity: 1;
@@ -8838,7 +8893,7 @@ button.relation-map-node:hover {
 
 .modal-backdrop {
   align-items: center;
-  background: rgb(34 29 23 / 35%);
+  background: rgb(var(--shadow-rgb) / 35%);
   display: flex;
   inset: 0;
   justify-content: center;
@@ -9067,7 +9122,7 @@ button.relation-map-node:hover {
   background: color-mix(in srgb, var(--red) 82%, black);
 }
 .desktop-access-backdrop {
-  background: rgb(34 29 23 / 46%);
+  background: rgb(var(--shadow-rgb) / 46%);
 }
 .desktop-access-dialog {
   background: var(--surface);
@@ -9112,7 +9167,7 @@ button.relation-map-node:hover {
   padding: 14px 24px;
 }
 .identity-name-backdrop {
-  background: rgb(34 29 23 / 46%);
+  background: rgb(var(--shadow-rgb) / 46%);
   z-index: 180;
 }
 .identity-name-dialog {
@@ -9181,7 +9236,11 @@ button.relation-map-node:hover {
 .team-login-boundary {
   align-items: center;
   background:
-    radial-gradient(circle at 50% 18%, rgb(255 253 247 / 92%), transparent 42%),
+    radial-gradient(
+      circle at 50% 18%,
+      color-mix(in srgb, var(--sheet) 92%, transparent),
+      transparent 42%
+    ),
     repeating-linear-gradient(
       0deg,
       transparent 0 31px,
@@ -9197,7 +9256,7 @@ button.relation-map-node:hover {
 .team-login-card {
   background: var(--sheet);
   border: 1px solid color-mix(in srgb, var(--rule) 68%, var(--walnut));
-  box-shadow: 0 24px 60px rgb(57 38 23 / 18%);
+  box-shadow: 0 24px 60px rgb(var(--shadow-rgb) / 18%);
   width: min(440px, 100%);
 }
 .team-login-card > header {
@@ -9212,7 +9271,7 @@ button.relation-map-node:hover {
   align-items: center;
   background: var(--oxblood);
   border-radius: 8px 8px 8px 2px;
-  color: #fffaf0;
+  color: var(--accent-ink);
   display: inline-flex;
   font-family: var(--editorial);
   font-size: 14px;
@@ -9230,7 +9289,11 @@ button.relation-map-node:hover {
 }
 .team-login-card-body {
   background:
-    linear-gradient(90deg, rgb(135 59 48 / 6%) 0 24px, transparent 24px),
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--oxblood) 6%, transparent) 0 24px,
+      transparent 24px
+    ),
     repeating-linear-gradient(
       0deg,
       transparent 0 31px,
@@ -9704,6 +9767,33 @@ button.relation-map-node:hover {
   font-size: 21px;
   font-weight: 550;
   margin: 0;
+}
+.appearance-controls {
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+}
+.appearance-controls button {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--ui);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 11px;
+}
+.appearance-controls button:hover {
+  color: var(--ink);
+}
+.appearance-controls button.is-selected {
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgb(var(--shadow-rgb) / 14%);
+  color: var(--ink);
 }
 .text-scale-controls {
   align-items: center;
@@ -10720,7 +10810,7 @@ button.relation-map-node:hover {
 .ontology-sync-state.staged {
   background: var(--oxblood);
   border-color: var(--oxblood);
-  color: white;
+  color: var(--accent-ink);
 }
 .ontology-block {
   padding: 17px 20px;
@@ -12342,7 +12432,7 @@ button.relation-map-node:hover {
 
 /* S122 — a pending project invitation, shelved beside the projects you have. */
 .project-invitation-shell {
-  --project-cover: var(--paper-2, #f3ece0);
+  --project-cover: var(--paper-2, var(--paper-deep));
   --project-cover-ink: var(--walnut);
 }
 .project-invitation {

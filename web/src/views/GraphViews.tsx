@@ -109,13 +109,15 @@ const scienceOrder: GraphNode["type"][] = [
   "blocker",
 ];
 const dagTypes = scienceOrder;
+// These feed CSS custom properties, so naming the palette tokens rather than
+// their light values keeps the graph legible in both themes.
 const dagTypeMeta: Record<GraphNode["type"], { label: string; color: string }> = {
-  research_question: { label: "Questions", color: "#54718c" },
-  hypothesis: { label: "Hypotheses", color: "#7a4166" },
-  decision: { label: "Decisions", color: "#d7ae48" },
-  experiment: { label: "Experiments", color: "#2f6f70" },
-  evidence: { label: "Evidence", color: "#616b3d" },
-  blocker: { label: "Blockers", color: "#bc5545" },
+  research_question: { label: "Questions", color: "var(--slate)" },
+  hypothesis: { label: "Hypotheses", color: "var(--plum)" },
+  decision: { label: "Decisions", color: "var(--mustard)" },
+  experiment: { label: "Experiments", color: "var(--teal)" },
+  evidence: { label: "Evidence", color: "var(--moss)" },
+  blocker: { label: "Blockers", color: "var(--coral)" },
 };
 
 export function ScientificView({ graph, trustView, onSelectNode, ...editing }: ScientificProps) {

@@ -92,21 +92,20 @@ test("space Runs always names every section and its empty count", () => {
   assert.match(html, /No completed runs in the last 7 days\./);
 });
 
-test("every space lifecycle badge color pair meets WCAG AA contrast", () => {
-  assert.deepEqual(Object.keys(SPACE_RUN_BADGE_PALETTE).sort(), [
-    "actionable",
-    "completed",
-    "degraded",
-    "running",
-    "stopped",
-    "stopping",
-    "waiting",
-  ]);
-  for (const [tone, colors] of Object.entries(SPACE_RUN_BADGE_PALETTE)) {
-    assert.ok(
-      contrastRatio(colors.foreground, colors.background) >= 4.5,
-      `${tone} badge contrast is below 4.5:1`,
+test("every space lifecycle badge color pair meets WCAG AA contrast in both themes", () => {
+  assert.deepEqual(Object.keys(SPACE_RUN_BADGE_PALETTE).sort(), ["dark", "light"]);
+  for (const [theme, palette] of Object.entries(SPACE_RUN_BADGE_PALETTE)) {
+    assert.deepEqual(
+      Object.keys(palette).sort(),
+      ["actionable", "completed", "degraded", "running", "stopped", "stopping", "waiting"],
+      `${theme} palette is missing a lifecycle tone`,
     );
+    for (const [tone, colors] of Object.entries(palette)) {
+      assert.ok(
+        contrastRatio(colors.foreground, colors.background) >= 4.5,
+        `${theme} ${tone} badge contrast is below 4.5:1`,
+      );
+    }
   }
 });
 
@@ -142,6 +141,7 @@ test("a completed non-first Auto-research row opens its exact episode", () => {
   const opened = [];
   const row = SpaceRunRow({
     entry,
+    theme: "light",
     onOpen(projectId, selection) {
       opened.push([projectId, selection]);
     },
