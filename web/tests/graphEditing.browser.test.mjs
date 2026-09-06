@@ -138,3 +138,41 @@ test("human graph controls create built-in nodes, stage connections, undo, and h
     await server.close();
   }
 });
+
+test("a failed graph-edit-options load says what is unavailable instead of promising free entry", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ reducedMotion: "reduce" });
+    const failures = [];
+    page.on("pageerror", (error) => failures.push(error.message));
+    await page.route("**/api/projects/fixture/graph-edit-options", (route) =>
+      route.fulfill({ status: 503, json: { detail: "Graph edit options unavailable" } }),
+    );
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/graphEditing.html`,
+    );
+
+    const notice = page.getByRole("alert");
+    await notice.waitFor();
+    // Node ids are derived from the backend prefixes, so there is no free-entry
+    // path to offer: the form would fill in and never stage.
+    assert.doesNotMatch(await notice.textContent(), /free entry/);
+    assert.match(await notice.textContent(), /unavailable until this loads/);
+    assert.equal(
+      await page.getByRole("button", { name: "New node", exact: true }).isDisabled(),
+      true,
+    );
+    assert.equal(await page.getByRole("button", { name: "Retry" }).isDisabled(), false);
+    assert.deepEqual(failures, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
