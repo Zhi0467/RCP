@@ -70,6 +70,7 @@ import type {
   Edge,
   Episode,
   EpisodeMessage,
+  EpisodeRunSection,
   ExperimentControlState,
   ExperimentLoopIndexEntry,
   GraphNode,
@@ -980,9 +981,16 @@ export function ExecutionView({
     (episode) => episode.episode_id === selectedAutoResearchEpisodeId,
   );
   const needsAction = orderedEpisodes.filter(
-    (episode) => episodeRunSection(episode) === "needs_action",
+    (episode) => episodeRunSection(episode) === "actionable",
   );
+  const inProgress = orderedEpisodes.filter((episode) => episodeRunSection(episode) === "running");
   const completed = orderedEpisodes.filter((episode) => episodeRunSection(episode) === "completed");
+  // Expand one card by default: the selection when there is one, else the first
+  // row a human is expected to read, which is the first section carrying work.
+  const expandedEpisodeId =
+    selectedAutoResearchEpisodeId ??
+    (needsAction.length > 0 ? needsAction : inProgress)[0]?.episode_id ??
+    null;
   const completedGroups = [
     {
       mode: "experiment_loop" as const,
@@ -1038,19 +1046,33 @@ export function ExecutionView({
         <div className="operating-sections episode-ledger-sections">
           <section className="operating-section episode-ledger-section needs-action">
             <header>
-              <h2>Needs Action</h2>
+              <h2>Needs action</h2>
               <span>{needsAction.length}</span>
             </header>
-            <div className="campaign-run-list">
-              {needsAction.map((episode, index) =>
-                renderEpisodeCard(
-                  episode,
-                  selectedAutoResearchEpisodeId
-                    ? episode.episode_id === selectedAutoResearchEpisodeId
-                    : index === 0,
-                ),
-              )}
-            </div>
+            {needsAction.length === 0 ? (
+              <p className="episode-ledger-empty">Nothing needs you right now.</p>
+            ) : (
+              <div className="campaign-run-list">
+                {needsAction.map((episode) =>
+                  renderEpisodeCard(episode, episode.episode_id === expandedEpisodeId),
+                )}
+              </div>
+            )}
+          </section>
+          <section className="operating-section episode-ledger-section in-progress">
+            <header>
+              <h2>In progress</h2>
+              <span>{inProgress.length}</span>
+            </header>
+            {inProgress.length === 0 ? (
+              <p className="episode-ledger-empty">No run is in flight.</p>
+            ) : (
+              <div className="campaign-run-list">
+                {inProgress.map((episode) =>
+                  renderEpisodeCard(episode, episode.episode_id === expandedEpisodeId),
+                )}
+              </div>
+            )}
           </section>
           <section className="operating-section episode-ledger-section completed">
             <header>
@@ -1177,7 +1199,7 @@ export function ExecutionView({
     );
   }
 
-  function episodeRunSection(episode: Episode): "needs_action" | "completed" {
+  function episodeRunSection(episode: Episode): EpisodeRunSection {
     if (episode.mode === "auto_research") return episode.run_section;
     const run = experimentRuns.get(episode.episode_id);
     if (!run) {
@@ -1185,7 +1207,7 @@ export function ExecutionView({
         `Experiment episode ${episode.episode_id} is missing its backend control projection.`,
       );
     }
-    return run.control.run_section === "completed" ? "completed" : "needs_action";
+    return run.control.run_section;
   }
 }
 

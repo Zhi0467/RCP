@@ -106,7 +106,7 @@ class ExperimentLoopIndexEntryResponse(BaseModel):
 
 SPACE_RUNS_COMPLETED_TTL = timedelta(days=7)
 SpaceRunMode = Literal["experiment_loop", "auto_research"]
-SpaceRunSection = Literal["needs_action", "completed"]
+SpaceRunSection = Literal["actionable", "running", "completed"]
 SpaceRunTone = Literal[
     "running",
     "waiting",
@@ -512,7 +512,7 @@ def _space_experiment_run(
         ),
         health_label=health_labels[control.health],
         health_tone=health_tones[control.health],
-        run_section="completed" if control.run_section == "completed" else "needs_action",
+        run_section=control.run_section,
     )
 
 
@@ -565,7 +565,7 @@ def _space_auto_research_run(
 
 
 def _space_run_is_visible(entry: SpaceRunIndexEntryResponse, *, as_of: datetime) -> bool:
-    if entry.run_section == "needs_action":
+    if entry.run_section != "completed":
         return True
     completed_at = datetime.fromisoformat(entry.last_activity_at).astimezone(UTC)
     return completed_at >= as_of - SPACE_RUNS_COMPLETED_TTL

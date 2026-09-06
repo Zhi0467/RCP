@@ -3446,6 +3446,15 @@ button:disabled {
 .episode-ledger-section.needs-action > header {
   border-bottom-color: color-mix(in srgb, var(--mustard) 46%, var(--line));
 }
+.episode-ledger-section.in-progress > header {
+  border-bottom-color: color-mix(in srgb, var(--teal) 42%, var(--line));
+}
+.episode-ledger-empty {
+  color: var(--muted);
+  font: 12px/1.5 var(--ui);
+  margin: 0;
+  padding: 12px 2px;
+}
 .episode-type-groups {
   display: grid;
   gap: 8px;

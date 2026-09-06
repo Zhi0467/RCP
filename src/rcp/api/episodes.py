@@ -214,7 +214,7 @@ EpisodeRecommendationKind = Literal[
     "none",
 ]
 EpisodeTaskControlKind = Literal["pause", "resume", "retry"]
-EpisodeRunSection = Literal["needs_action", "completed"]
+EpisodeRunSection = Literal["actionable", "running", "completed"]
 
 
 class AutoResearchRecoverySummary(BaseModel):
@@ -571,9 +571,19 @@ def _episode_projection(
 
 
 def _episode_run_section(health: EpisodeHealth) -> EpisodeRunSection:
-    """Keep active or actionable parents prominent; archive settled history below."""
+    """Separate what only a human can move from what is still moving on its own.
 
-    return "completed" if health in {"completed", "stopped"} else "needs_action"
+    ``actionable`` is reserved for a run that has stopped making progress and
+    stays stopped until a human acts, so a queue count means work is owed. A run
+    that is still advancing is ``running`` however slowly, and settled history is
+    archived below.
+    """
+
+    if health in {"completed", "stopped"}:
+        return "completed"
+    if health in {"needs_action", "failed"}:
+        return "actionable"
+    return "running"
 
 
 def _serialize_task(

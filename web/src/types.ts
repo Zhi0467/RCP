@@ -830,7 +830,7 @@ export interface ExperimentLoopIndexEntry {
   episode: Episode;
 }
 
-export type SpaceRunSection = "needs_action" | "completed";
+export type SpaceRunSection = "actionable" | "running" | "completed";
 export type SpaceRunMode = "experiment_loop" | "auto_research";
 export type SpaceRunHealthTone =
   "running" | "waiting" | "degraded" | "stopping" | "stopped" | "actionable" | "completed";
@@ -2018,7 +2018,7 @@ export type EpisodeHealth =
 export type EpisodeRecommendationKind =
   "continue" | "wait" | "resume" | "retry" | "reauthorize" | "open_report" | "review" | "none";
 export type EpisodeTaskControlKind = "pause" | "resume" | "retry";
-export type EpisodeRunSection = "needs_action" | "completed";
+export type EpisodeRunSection = "actionable" | "running" | "completed";
 export type EpisodeMode = "auto_research" | "experiment_loop";
 
 /**

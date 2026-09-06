@@ -23,10 +23,12 @@ export const SPACE_RUN_BADGE_PALETTE: Record<
 
 export function SpaceRuns({ entries, onOpen }: Props) {
   const groups = useMemo(() => {
-    const needsAction = entries.filter((entry) => entry.run_section === "needs_action");
+    const needsAction = entries.filter((entry) => entry.run_section === "actionable");
+    const inProgress = entries.filter((entry) => entry.run_section === "running");
     const completed = entries.filter((entry) => entry.run_section === "completed");
     return {
       needsAction,
+      inProgress,
       completed,
       completedByMode: [
         {
@@ -47,11 +49,24 @@ export function SpaceRuns({ entries, onOpen }: Props) {
     <section className="space-runs" aria-labelledby="space-runs-title">
       <header className="space-runs-header">
         <h2 id="space-runs-title">Runs</h2>
-        <span>{groups.needsAction.length} needs action</span>
+        <span>
+          {groups.needsAction.length} needs action · {groups.inProgress.length} in progress
+        </span>
       </header>
 
       <div className="space-runs-sections">
-        <RunSection title="Needs Action" entries={groups.needsAction} onOpen={onOpen} />
+        <RunSection
+          title="Needs action"
+          empty="Nothing needs you right now."
+          entries={groups.needsAction}
+          onOpen={onOpen}
+        />
+        <RunSection
+          title="In progress"
+          empty="No run is in flight."
+          entries={groups.inProgress}
+          onOpen={onOpen}
+        />
         <section className="space-runs-completed" aria-label="Completed runs">
           <header>
             <h3>Completed</h3>
@@ -72,10 +87,12 @@ export function SpaceRuns({ entries, onOpen }: Props) {
 
 function RunSection({
   title,
+  empty,
   entries,
   onOpen,
 }: {
   title: string;
+  empty: string;
   entries: SpaceRunIndexEntry[];
   onOpen: Props["onOpen"];
 }) {
@@ -86,7 +103,7 @@ function RunSection({
         <span>{entries.length}</span>
       </header>
       {entries.length === 0 ? (
-        <p className="space-runs-empty">Nothing needs action.</p>
+        <p className="space-runs-empty">{empty}</p>
       ) : (
         <RunRows entries={entries} onOpen={onOpen} />
       )}
