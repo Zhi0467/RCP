@@ -300,20 +300,25 @@ class Guest:
     def ssh(
         self, argv: list[str], *, timeout: int = COMMAND_TIMEOUT, check: bool = True
     ) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            [
-                "ssh",
-                *self._ssh_options(),
-                "-p",
-                str(self.port),
-                "qualifier@127.0.0.1",
-                shlex.join(argv),
-            ],
-            check=check,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        try:
+            return subprocess.run(
+                [
+                    "ssh",
+                    *self._ssh_options(),
+                    "-p",
+                    str(self.port),
+                    "qualifier@127.0.0.1",
+                    shlex.join(argv),
+                ],
+                check=check,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.CalledProcessError as exc:
+            if exc.stderr:
+                exc.add_note("Guest SSH stderr:\n" + exc.stderr[-20000:])
+            raise
 
     def copy(self, source: Path, destination: str) -> None:
         if (
@@ -330,6 +335,25 @@ class Guest:
                 str(self.port),
                 str(source),
                 f"qualifier@127.0.0.1:{destination}",
+            ]
+        )
+
+    def install_payload(self, source: Path) -> None:
+        self.copy(source, "/home/qualifier/payload.tar.gz")
+        self.ssh(["sudo", "-n", "mkdir", "-m", "0755", GUEST_ROOT])
+        self.ssh(
+            [
+                "sudo",
+                "-n",
+                "tar",
+                "--extract",
+                "--gzip",
+                "--file",
+                "/home/qualifier/payload.tar.gz",
+                "--directory",
+                GUEST_ROOT,
+                "--no-same-owner",
+                "--no-same-permissions",
             ]
         )
 

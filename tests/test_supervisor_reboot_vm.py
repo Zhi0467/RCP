@@ -192,3 +192,19 @@ def test_guest_upload_cannot_address_another_machine(tmp_path: Path) -> None:
     ):
         with pytest.raises(ValueError, match="plain path"):
             guest.copy(tmp_path / "unused", destination)
+
+
+def test_failed_guest_ssh_retains_bounded_stderr(tmp_path, monkeypatch):
+    guest = object.__new__(Guest)
+    guest.directory = tmp_path
+    guest.key = tmp_path / "key"
+    guest.port = 23456
+    diagnostic = "x" * 30000 + "last guest failure"
+
+    def failure(argv, **kwargs):
+        raise subprocess.CalledProcessError(1, argv, stderr=diagnostic)
+
+    monkeypatch.setattr(subprocess, "run", failure)
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        guest.ssh(["qualification-command"])
+    assert error.value.__notes__ == ["Guest SSH stderr:\n" + diagnostic[-20000:]]
