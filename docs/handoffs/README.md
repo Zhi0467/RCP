@@ -3,9 +3,9 @@
 Active:
 
 - [Live provider steering](handoff-2026-09-05-live-provider-steering.md)
-  — human-confirmed 2026-09-05; nothing implemented. Send a message into the
-  running chat turn you are watching, through the provider process RCP already
-  owns for that turn; two behavior probes precede implementation.
+  — human-confirmed 2026-09-05; Phase 1 local probes recorded, implementation
+  pending. Send a message into the running chat turn you are watching through
+  the provider process RCP already owns; SSH verification remains open.
 
 - [Dev team space and source server completion](handoff-2026-08-27-dev-team-space-and-server.md)
   — human-confirmed implementation through one genuinely usable lab/server
