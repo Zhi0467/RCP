@@ -32,7 +32,8 @@ def alive(handle: str) -> bool:
     except FileNotFoundError:
         return _group_alive(pid)
     if actual != expected:
-        return _group_alive(pid)
+        # A recycled leader pid is proof this is not the recorded job.
+        return False
     return state not in {"Z", "X"} or _group_alive(pid)
 
 
@@ -67,7 +68,8 @@ def _group_alive(pid: int) -> bool:
             fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
         except FileNotFoundError:
             continue
-        if fields[2] == str(pid) and fields[0] not in {"Z", "X"}:
+        # Group and session both equal the leader pid: launch() used setsid.
+        if fields[2] == str(pid) and fields[3] == str(pid) and fields[0] not in {"Z", "X"}:
             return True
     return False
 

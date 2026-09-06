@@ -19,11 +19,11 @@ helpers are stdlib-only source modules.
 - `launchd` bootstraps a job-root plist into `gui/<uid>`, with `RunAtLoad=true`
   and `KeepAlive=false`. It never uses `launchctl submit`.
 - `ssh_session` is offered only remotely on Linux. The shipped launcher creates
-  a separate session and records PID plus `/proc/<pid>/stat` start time. Liveness
-  tracks the process group while checking the leader's identity when present;
-  a recycled leader PID that becomes a new group leader can read as alive for
-  one interval, and the next check corrects it. Cancellation terminates the
-  owned process group, escalating from SIGTERM to SIGKILL.
+  a separate session and records PID plus `/proc/<pid>/stat` start time. While
+  the leader exists its start time must match; a recycled leader PID reads as
+  gone and is never signalled. Once the leader is absent or a zombie, liveness
+  is any process whose group and session are both the leader PID. Cancellation
+  terminates that group, escalating from SIGTERM to SIGKILL.
 - `slurm` submits through `sbatch --parsable`, with machine-owned account,
   partition, and extra submission arguments. Liveness tests membership in the
   whole `squeue -h -o %A` active set; a scheduler command failure is unknown,

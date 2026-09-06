@@ -249,7 +249,7 @@ def test_process_identity_handles_parentheses_and_pid_reuse(monkeypatch):
     assert alive("123:986") is False
 
 
-def test_session_liveness_tracks_group_when_leader_identity_mismatches(monkeypatch):
+def test_session_liveness_reports_gone_when_leader_identity_mismatches(monkeypatch):
     if not Path("/proc/self/stat").is_file():
         pytest.skip("SSH session process groups require Linux /proc")
     with subprocess.Popen(
@@ -263,7 +263,8 @@ def test_session_liveness_tracks_group_when_leader_identity_mismatches(monkeypat
             leader.wait(timeout=5)
             assert process_identity(child)[1] not in {"Z", "X"}
             monkeypatch.setattr(remote_job_launch, "process_identity", lambda pid: ("988", "S"))
-            assert alive(f"{leader.pid}:987") is True
+            # A live group under a recycled leader pid is not this job and is never signalled.
+            assert alive(f"{leader.pid}:987") is False
         finally:
             os.killpg(leader.pid, signal.SIGKILL)
 
