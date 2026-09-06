@@ -145,7 +145,7 @@ function episode(fields = {}) {
     health: "wrapping_up",
     recommendation: "wait",
     task_control: null,
-    run_section: "needs_action",
+    run_section: "running",
     ...fields,
   };
 }
@@ -343,7 +343,7 @@ test("project Runs shows a dispatched child as a nested turn and its own run car
     live: true,
     health: "active",
     recommendation: "wait",
-    run_section: "needs_action",
+    run_section: "running",
     tasks: [childTask],
   });
   const childControl = control(
@@ -415,7 +415,7 @@ test("project Runs shows a dispatched child as a nested turn and its own run car
     live: true,
     health: "active",
     recommendation: "continue",
-    run_section: "needs_action",
+    run_section: "running",
     tasks: [parentAfter, parentBefore],
   });
   const html = renderToStaticMarkup(
@@ -484,7 +484,8 @@ test("project Runs shows a dispatched child as a nested turn and its own run car
     }),
   );
 
-  assert.match(html, /Needs Action<\/h2><span>2<\/span>/);
+  // Both the parent and its dispatched child are active, so both are in flight.
+  assert.match(html, /In progress<\/h2><span>2<\/span>/);
   assert.match(html, /campaign-task depth-1/);
   assert.match(html, /campaign-task-role experiment">Experiment/);
   const parentBeforeIndex = html.indexOf("Parent turn before child.");
@@ -746,7 +747,7 @@ test("a stale main index entry cannot duplicate the current Experiment card", ()
     }),
   );
 
-  assert.match(html, /<h2>Needs Action<\/h2><span>1<\/span>/);
+  assert.match(html, /<h2>Needs action<\/h2><span>1<\/span>/);
   assert.match(html, />episode-current<\/dd>/);
   assert.doesNotMatch(html, /episode-previous/);
 });
@@ -875,7 +876,7 @@ test("branch-created Runs detail uses index truth and never offers a main Start 
     live: true,
     health: "active",
     recommendation: "continue",
-    run_section: "needs_action",
+    run_section: "running",
   });
   const indexed = {
     ...entry(

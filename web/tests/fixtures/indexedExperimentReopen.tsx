@@ -47,7 +47,7 @@ const episode = {
   health: "needs_action",
   recommendation: "review",
   task_control: null,
-  run_section: "needs_action",
+  run_section: "actionable",
 };
 const control = {
   ready: true,
@@ -65,7 +65,7 @@ const control = {
   decision_drift: [],
   health: "needs_action",
   recommendation: "review",
-  run_section: "needs_action",
+  run_section: "actionable",
   live: false,
   can_start: false,
   can_stop: false,
@@ -179,7 +179,7 @@ const parentEpisode = {
   health: "needs_action",
   recommendation: "review",
   task_control: null,
-  run_section: "needs_action",
+  run_section: "actionable",
 };
 
 function Fixture() {
