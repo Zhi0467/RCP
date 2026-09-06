@@ -58,6 +58,11 @@ jobs:
       - name: Verify the build manifest
         run: uv run --no-project python packaging/release_build.py verify-manifest build-assets --manifest manifest.sha256
 
+      # Historical builds have only the RCP wheel and lock; new builds must
+      # carry both supervisor assets. A partial supervisor release is invalid.
+      - name: Check the complete release asset set
+        run: uv run --no-project python packaging/release_build.py check-assets build-assets
+
       - name: Check the promotion version
         run: uv run --no-project python packaging/release_build.py check-promotion --wheel build-assets/rcp-*.whl --tag "$RELEASE_TAG"
 

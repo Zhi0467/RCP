@@ -24,6 +24,8 @@ _VERSION_ASSIGNMENT = re.compile(
 _TAG = re.compile(r"^v\d+\.\d+\.\d+$")
 _BUILD_TAG = re.compile(r"^build/\d+$")
 _BUILD_VERSION = re.compile(r"\+build\.(?P<run>\d+)\.g[0-9a-f]{7}$")
+_RCP_WHEEL = re.compile(r"^rcp-\d+\.\d+\.\d+\+build\.\d+\.g[0-9a-f]{7}-py3-none-any\.whl$")
+_SUPERVISOR_WHEEL = re.compile(r"^rcp_supervisor-\d+\.\d+\.\d+-py3-none-any\.whl$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -135,12 +137,37 @@ def verify_manifest(directory: Path, manifest_value: Path) -> None:
         raise ReleaseBuildError(f"asset {name} is not listed in manifest")
 
 
+def check_assets(directory: Path, *, require_supervisor: bool) -> None:
+    """Accept complete current builds, or complete historical builds at promotion."""
+    names = {asset.name for asset in _assets(directory, "manifest.sha256")}
+    wheels = {name for name in names if _RCP_WHEEL.fullmatch(name)}
+    if len(wheels) != 1:
+        raise ReleaseBuildError("release requires exactly one stamped RCP wheel")
+    expected = wheels | {"requirements.lock.txt"}
+    supervisor_wheels = {name for name in names if _SUPERVISOR_WHEEL.fullmatch(name)}
+    has_supervisor_assets = any(
+        name.startswith(("rcp_supervisor", "supervisor-")) for name in names
+    )
+    if require_supervisor or has_supervisor_assets:
+        if len(supervisor_wheels) != 1:
+            raise ReleaseBuildError(
+                "release requires exactly one independently versioned supervisor wheel"
+            )
+        expected |= supervisor_wheels | {"supervisor-requirements.lock.txt"}
+    missing = expected - names
+    if missing:
+        raise ReleaseBuildError(f"release is missing required assets: {', '.join(sorted(missing))}")
+    unexpected = names - expected
+    if unexpected:
+        raise ReleaseBuildError(f"release has unexpected assets: {', '.join(sorted(unexpected))}")
+
+
 def check_promotion(wheel: Path, tag: str) -> None:
     if not _TAG.fullmatch(tag):
         raise ReleaseBuildError(f"invalid release tag {tag}; expected vX.Y.Z")
 
     components = wheel.name.split("-")
-    if len(components) < 5 or wheel.suffix != ".whl":
+    if len(components) < 5 or wheel.suffix != ".whl" or components[0] != "rcp":
         raise ReleaseBuildError(f"invalid wheel filename: {wheel.name}")
     version = components[1]
     build = _BUILD_VERSION.search(version)
@@ -211,6 +238,10 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
     verify.add_argument("directory", type=Path)
     verify.add_argument("--manifest", type=Path, required=True)
 
+    assets = subparsers.add_parser("check-assets")
+    assets.add_argument("directory", type=Path)
+    assets.add_argument("--require-supervisor", action="store_true")
+
     promotion = subparsers.add_parser("check-promotion")
     promotion.add_argument("--wheel", type=Path, required=True)
     promotion.add_argument("--tag", required=True)
@@ -231,6 +262,8 @@ def main(argv: list[str] | None = None) -> int:
             write_manifest(arguments.directory, arguments.output)
         elif arguments.command == "verify-manifest":
             verify_manifest(arguments.directory, arguments.manifest)
+        elif arguments.command == "check-assets":
+            check_assets(arguments.directory, require_supervisor=arguments.require_supervisor)
         elif arguments.command == "check-promotion":
             check_promotion(arguments.wheel, arguments.tag)
         elif arguments.command == "select-stale-builds":
