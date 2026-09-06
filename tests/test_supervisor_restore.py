@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import stat
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,82 @@ from rcp_supervisor.errors import SupervisorError
 from rcp_supervisor.events import EventEmitter
 
 from rcp.server_ops.models import ServerStepEvent
+
+
+def test_new_restore_storage_has_service_traversal_under_private_wrapper_umask(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "preparation"
+    original_lstat = Path.lstat
+    ownership = {}
+
+    def chown(item, uid, gid):
+        assert item not in ownership
+        ownership[item] = (uid, gid)
+
+    def metadata(item):
+        info = original_lstat(item)
+        if item in ownership:
+            return SimpleNamespace(
+                st_mode=info.st_mode, st_uid=ownership[item][0], st_gid=ownership[item][1]
+            )
+        return info
+
+    monkeypatch.setattr(os, "chown", chown)
+    monkeypatch.setattr(Path, "lstat", metadata)
+    previous = os.umask(0o077)
+    try:
+        restore._directory(path, 123)
+        assert stat.S_IMODE(original_lstat(path).st_mode) == 0o710
+        assert ownership[path] == (0, 123)
+        restore._directory(path, 123)
+        assert os.umask(0o077) == 0o077
+    finally:
+        os.umask(previous)
+
+
+@pytest.mark.parametrize("unsafe", ["mode", "writable_mode", "uid", "gid", "symlink", "file"])
+def test_existing_unsafe_restore_storage_is_refused_without_normalizing_it(
+    tmp_path, monkeypatch, unsafe
+):
+    path = tmp_path / "preparation"
+    if unsafe == "file":
+        path.write_text("retain existing file")
+    elif unsafe == "symlink":
+        target = tmp_path / "target"
+        target.mkdir(mode=0o700)
+        path.symlink_to(target, target_is_directory=True)
+    else:
+        path.mkdir(mode=0o710)
+        path.chmod({"mode": 0o700, "writable_mode": 0o770}.get(unsafe, 0o710))
+    original_lstat = Path.lstat
+    before = original_lstat(path)
+
+    def metadata(item):
+        info = original_lstat(item)
+        if item == path:
+            return SimpleNamespace(
+                st_mode=info.st_mode,
+                st_uid=1 if unsafe == "uid" else 0,
+                st_gid=124 if unsafe == "gid" else 123,
+            )
+        return info
+
+    monkeypatch.setattr(Path, "lstat", metadata)
+    monkeypatch.setattr(os, "chown", lambda *_: pytest.fail("existing storage ownership changed"))
+    with pytest.raises(SupervisorError, match="unsafe ownership or mode"):
+        restore._directory(path, 123)
+    after = original_lstat(path)
+    assert (after.st_ino, after.st_mode, after.st_uid, after.st_gid) == (
+        before.st_ino,
+        before.st_mode,
+        before.st_uid,
+        before.st_gid,
+    )
+    if unsafe == "symlink":
+        assert path.is_symlink() and stat.S_IMODE(target.stat().st_mode) == 0o700
+    if unsafe == "file":
+        assert path.read_text() == "retain existing file"
 
 
 @pytest.fixture

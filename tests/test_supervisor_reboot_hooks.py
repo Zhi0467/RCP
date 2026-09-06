@@ -109,6 +109,11 @@ def test_bootstrap_checks_production_doctor_before_qualification_dropin(tmp_path
     def run(argv, **kwargs):
         if argv[-1] == "setup":
             calls.append("setup")
+            return SimpleNamespace(stdout='{"status": "installed"}')
+        if argv[-1] == "setup-data":
+            assert argv == [guest.SUPERVISOR_PYTHON, str(guest.SCRIPT), "setup-data"]
+            assert not bootstrap.exists()
+            calls.append("installed setup")
             return SimpleNamespace(stdout='{"status": "ready"}')
         if argv == ["systemctl", "daemon-reload"]:
             assert (dropin / "qualification.conf").is_file()
@@ -124,7 +129,7 @@ def test_bootstrap_checks_production_doctor_before_qualification_dropin(tmp_path
     monkeypatch.setattr(guest, "run", run)
     monkeypatch.setattr(guest, "service", service)
     assert guest.bootstrap()["temporary_bootstrap_removed"] is True
-    assert calls == ["setup", "doctor", "dropin"]
+    assert calls == ["setup", "installed setup", "doctor", "dropin"]
 
 
 def test_fresh_restore_preparation_stops_and_disables_unit(tmp_path, monkeypatch):

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +13,66 @@ from rcp_supervisor.events import EventEmitter
 from rcp_supervisor.operations import OperationBusy
 
 from rcp.server_ops.models import ServerPlanEvent, ServerStepEvent
+
+
+@pytest.mark.parametrize("mode", [0o700, 0o755])
+def test_new_root_storage_has_exact_mode_under_private_wrapper_umask(tmp_path, monkeypatch, mode):
+    path = tmp_path / "storage"
+    original_lstat = Path.lstat
+
+    def root_owned_metadata(item):
+        info = original_lstat(item)
+        return SimpleNamespace(st_mode=info.st_mode, st_uid=0) if item == path else info
+
+    # Ordinary test users cannot chown to root; permission creation and reads
+    # remain real, with only this directory's expected root identity supplied.
+    monkeypatch.setattr(Path, "lstat", root_owned_metadata)
+    previous = os.umask(0o077)
+    try:
+        driver._root_directory(path, mode=mode)
+        assert stat.S_IMODE(original_lstat(path).st_mode) == mode
+        driver._root_directory(path, mode=mode)
+        assert os.umask(0o077) == 0o077
+    finally:
+        os.umask(previous)
+
+
+@pytest.mark.parametrize("unsafe", ["private_mode", "writable_mode", "owner", "symlink", "file"])
+def test_existing_unsafe_root_storage_is_refused_without_normalizing_it(
+    tmp_path, monkeypatch, unsafe
+):
+    path = tmp_path / "storage"
+    if unsafe == "file":
+        path.write_text("retain existing file")
+    elif unsafe == "symlink":
+        target = tmp_path / "target"
+        target.mkdir(mode=0o700)
+        path.symlink_to(target, target_is_directory=True)
+    else:
+        path.mkdir(mode=0o755)
+        path.chmod({"private_mode": 0o700, "writable_mode": 0o775, "owner": 0o755}[unsafe])
+    original_lstat = Path.lstat
+    before = original_lstat(path)
+
+    def metadata(item):
+        info = original_lstat(item)
+        if item == path:
+            return SimpleNamespace(st_mode=info.st_mode, st_uid=1 if unsafe == "owner" else 0)
+        return info
+
+    monkeypatch.setattr(Path, "lstat", metadata)
+    with pytest.raises(SupervisorError, match="unsafe ownership or permissions"):
+        driver._root_directory(path, mode=0o755)
+    after = original_lstat(path)
+    assert (after.st_ino, after.st_mode, after.st_uid) == (
+        before.st_ino,
+        before.st_mode,
+        before.st_uid,
+    )
+    if unsafe == "symlink":
+        assert path.is_symlink() and stat.S_IMODE(target.stat().st_mode) == 0o700
+    if unsafe == "file":
+        assert path.read_text() == "retain existing file"
 
 
 @pytest.mark.parametrize(

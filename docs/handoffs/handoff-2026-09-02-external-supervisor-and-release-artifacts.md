@@ -8,8 +8,8 @@ checkpoints, automatic boot recovery, artifact installation, source adoption,
 operator delegation, and retirement of the old deployment owners are implemented.
 The disposable reboot and historical-source adoption harnesses are implemented;
 drive-found fixes use subsequent PRs. Actual Ubuntu qualification, fresh-host
-GitHub checkout/key reconstruction evidence, human promotion, and the Phase 6
-production drive remain outstanding.
+GitHub checkout/key reconstruction evidence, qualified release promotion, and the
+Phase 6 production drive remain outstanding.
 
 Human clarification, 2026-09-06: finish the remaining coding in one PR, then drive
 the system; bugs found by that drive belong in subsequent PRs. Earlier phases
@@ -19,6 +19,12 @@ restore the retired source deployment path. The accepted authority remains
 and the [operations spec](../specs/server-and-machine-operations.md).
 The [team-server handoff is archived](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server.md);
 its former surface freeze is closed.
+
+Human authorization, 2026-09-06: for this deployment drive, the agent may fix and
+merge drive-found PRs, then promote the latest complete prerelease whose CI and
+hosted recovery/adoption drives pass on both Ubuntu versions. Production must
+consume the application and supervisor from that same promoted tag. This is
+explicit authorization for this release; it does not establish automatic promotion.
 
 Closure condition, all of it:
 
@@ -79,9 +85,10 @@ When those hold, archive this handoff.
    environment cannot prove real reboots. Exercise source adoption and fresh-host
    GitHub checkout reconstruction separately where synthetic fixtures do not
    establish those operational promises.
-3. Human-promote a complete build containing the maintenance contract and both
-   wheels/locks. An older `stable` must fail with its missing requirement; never
-   silently substitute `main` or a prerelease.
+3. Under that explicit human authorization, promote a complete qualified build
+   containing the maintenance contract and both wheels/locks. An older `stable`
+   must fail with its missing requirement; never silently substitute `main` or a
+   prerelease.
 4. With complete protected backup verified, perform Phase 6 on production and
    record redacted receipts here. Archive this handoff only after all closure
    conditions hold.
@@ -124,6 +131,20 @@ Both independent adoption jobs failed at paired bootstrap, but the previous
 helper swallowed its concrete CLI step message; those failures must not be
 assigned the same cause without the new diagnostic receipt. No recovery case,
 complete adoption, or production cutover is proved by this run.
+
+Run [34054020695](https://github.com/Zhi0467/RCP/actions/runs/34054020695)
+at `94b2c72` passed the managed-Python metadata boundary. Recovery reached
+protected-backup setup, then its test helper failed because the temporary root
+bootstrap interpreter was inaccessible to a service-account child. The helper
+now removes that temporary environment and continues setup through the installed
+supervisor. Both adoption jobs retained proof of a running historical source
+installation at `203ad6a`, then failed with `Supervisor storage has unsafe
+ownership or permissions.` The installed wrapper's private umask reduced newly
+created shared directory modes before their exact-mode check. New directories
+now receive their intended permissions explicitly; unsafe existing paths still
+refuse. The same private-umask defect in restore preparation is covered by a
+focused filesystem regression. These fixes require a hosted rerun. This run
+completed no recovery case, adopted installation, or changed-boot proof.
 
 ## Phases
 

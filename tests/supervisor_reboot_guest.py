@@ -239,8 +239,11 @@ def bootstrap() -> dict:
         ["uv", "pip", "install", "--python", str(python), "--no-deps", str(supervisor_wheel)],
         timeout=600,
     )
-    result = json.loads(run([str(python), str(SCRIPT), "setup"], timeout=1200).stdout)
+    run([str(python), str(SCRIPT), "setup"], timeout=1200)
     shutil.rmtree(python.parent.parent)
+    # Service-account children must use the installed interpreter. The temporary
+    # root bootstrap may resolve into /root's private managed-Python directory.
+    result = json.loads(run([SUPERVISOR_PYTHON, str(SCRIPT), "setup-data"], timeout=1200).stdout)
     service(["/usr/local/bin/rcp", "server", "doctor", "--machine-readable"])
     dropin = Path("/etc/systemd/system/rcp.service.d")
     dropin.mkdir()
@@ -289,7 +292,6 @@ def release_receipt(bundle: Path) -> dict:
 
 def setup() -> dict:
     from rcp_supervisor.releases import verify_release
-    from rcp_supervisor.runtime import SystemRuntime
 
     from rcp.server_ops.config import create_installed_server_config, write_installed_server_config
     from rcp.server_ops.install import LinuxInstallMachine
@@ -307,6 +309,13 @@ def setup() -> dict:
     STATE.mkdir(mode=0o700)
     os.chown(STATE, account.pw_uid, account.pw_gid)
     machine.converge_supervisor_integration()
+    return {"status": "installed"}
+
+
+def setup_data() -> dict:
+    from rcp_supervisor.runtime import SystemRuntime
+
+    account = pwd.getpwnam("rcp")
     first = json.loads(
         run([SUPERVISOR_PYTHON, str(SCRIPT), "qualified-install"], timeout=600).stdout
     )
@@ -818,6 +827,8 @@ def main() -> int:
         result = bootstrap()
     elif action == "setup":
         result = setup()
+    elif action == "setup-data":
+        result = setup_data()
     elif action == "install-release":
         from rcp_supervisor.install import install_release
 

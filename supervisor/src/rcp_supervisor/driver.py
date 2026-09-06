@@ -103,7 +103,14 @@ def recover(
 
 
 def _root_directory(path: Path, *, mode: int) -> None:
-    path.mkdir(mode=mode, exist_ok=True)
+    try:
+        path.mkdir(mode=mode)
+    except FileExistsError:
+        pass
+    else:
+        # The installed wrapper uses umask 077; newly created shared metadata
+        # directories still need their exact service-readable mode.
+        path.chmod(mode)
     info = path.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != mode:
         raise SupervisorError("Supervisor storage has unsafe ownership or permissions.")

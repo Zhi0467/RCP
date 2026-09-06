@@ -14,8 +14,9 @@ invariants: [6, 7, 8, 9]
 last_checked: >-
   2026-09-06 — human confirmed automatic recovery and an actual reboot proof.
   The supervisor implementation and disposable Ubuntu reboot harness are coded.
-  Local regression and fixture checks pass; the actual Ubuntu 22.04/24.04 reboot
-  drives have not run. Process-crash tests do not satisfy this scenario.
+  Local regression and fixture checks pass. Hosted run 34054020695 booted real
+  Ubuntu 22.04/24.04 guests but failed during installation/fixture setup before
+  any recovery case or changed-boot proof. This scenario remains pending.
 ---
 
 # A reboot cannot bypass deployment recovery
