@@ -2,7 +2,7 @@
 
 Date: 2026-09-06
 Status: active. Supervisor implementation and the normal production deployment
-are complete. The controller fix is isolated in PR #77; completing the remaining
+are complete. The controller fix merged in PR #77; completing the remaining
 Ubuntu reboot/restore cases is follow-up work. No production action is required
 by this handoff. Archive it when the remaining drives pass or the human closes
 their scope, recording that distinction explicitly.
@@ -33,6 +33,17 @@ identity, Ubuntu version, and changed-boot checks on subsequent boots. Its
 focused regressions and PR CI passed; the changed controller has not yet been
 qualified by another full hosted drive.
 
+The rerun [34061040236](https://github.com/Zhi0467/RCP/actions/runs/34061040236)
+used merged `0ed2d707276d70704017af7157b0ca801a399e3e`. Both adoption/offline
+reboot jobs passed again. Ubuntu 22.04 recovery began its first update before
+the baseline service had finished booting: the journal records the deployment
+at 17.77 seconds, missing control socket at 20.95 seconds, and application
+startup completion at 22.69 seconds. No recovery case passed in that job.
+Case preparation now waits for baseline HTTP health before arming any faults;
+actual interrupted recovery boots still use the pause-aware controller path.
+This correction needs its own hosted verification. Ubuntu 24.04 recovery is
+still running at this checkpoint; do not infer its result from Ubuntu 22.04.
+
 Production was separately adopted under supervisor `0.1.3` using promoted
 `v0.3.5`, build 484. Both projects are protected with zero backup omissions;
 doctor and the idempotent update check passed, and the local desktop reconnected.
@@ -41,7 +52,7 @@ production deployment without waiting for additional controller iterations.
 
 ## Remaining work
 
-1. Merge the controller follow-up through normal PR checks. Run
+1. Merge the baseline-readiness follow-up through normal PR checks. Run
    `.github/workflows/supervisor-recovery-live.yml` from merged main using only
    disposable GitHub-hosted Ubuntu 22.04/24.04 guests.
 2. Complete repeated rollback, protected restore, offline update/restore,

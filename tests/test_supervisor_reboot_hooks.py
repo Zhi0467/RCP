@@ -153,11 +153,38 @@ def test_fresh_restore_preparation_stops_and_disables_unit(tmp_path, monkeypatch
         guest, "write_json", lambda path, value, **kwargs: path.write_text(json.dumps(value))
     )
     commands = []
+    monkeypatch.setattr(guest, "wait_health", lambda: commands.append("healthy"))
     monkeypatch.setattr(guest, "run", lambda argv: commands.append(argv))
     assert guest.prepare_case(plan) == {"status": "prepared"}
     assert commands == [
+        "healthy",
         ["systemctl", "stop", "rcp.service"],
         ["systemctl", "disable", "rcp.service"],
     ]
     assert not list(data.iterdir())
     assert (state / "fresh-original-data/old").read_text() == "retained"
+
+
+@pytest.mark.parametrize("kind", ["update", "restore", "fresh_restore", "invalid"])
+def test_case_does_not_arm_faults_before_baseline_application_is_healthy(
+    tmp_path, monkeypatch, kind
+):
+    plan = tmp_path / "source.json"
+    plan.write_text(json.dumps({"kind": kind}))
+    state = tmp_path / "state"
+    state.mkdir()
+    retained = state / "events.jsonl"
+    retained.write_text("baseline startup still running\n")
+    armed = tmp_path / "armed.json"
+    monkeypatch.setattr(guest, "STATE", state)
+    monkeypatch.setattr(guest, "PLAN", armed)
+
+    def unavailable():
+        raise RuntimeError("The guest application never returned healthy HTTP.")
+
+    monkeypatch.setattr(guest, "wait_health", unavailable)
+    with pytest.raises(RuntimeError, match="never returned healthy"):
+        guest.prepare_case(plan)
+    assert not armed.exists()
+    assert not (state / "state.json").exists()
+    assert retained.read_text() == "baseline startup still running\n"

@@ -483,6 +483,10 @@ def prepare_restore_request(archive: Path, base: dict) -> None:
 def prepare_case(source: Path) -> dict:
     from rcp_supervisor.runtime import Paths
 
+    # Baseline reset observes SSH before systemd necessarily finishes RCP startup.
+    # Wait before arming faults; interrupted recovery boots must remain observable
+    # while their startup guard is deliberately paused.
+    wait_health()
     plan = read_json(source)
     write_json(PLAN, plan)
     PLAN.chmod(0o644)
