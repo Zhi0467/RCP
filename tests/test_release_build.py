@@ -153,3 +153,71 @@ def test_select_stale_builds_selects_only_expired_prerelease_builds(tmp_path: Pa
     assert release_build.select_stale_builds(
         releases_file, "2026-09-02T00:00:00Z", release_build.STALE_BUILD_DAYS
     ) == ["build/412"]
+
+
+RCP_WHEEL = "rcp-0.3.2+build.412.gfe06636-py3-none-any.whl"
+SUPERVISOR_WHEEL = "rcp_supervisor-0.1.0-py3-none-any.whl"
+
+
+@pytest.mark.parametrize("supervisor", [False, True])
+def test_promotion_asset_contract_accepts_complete_generations(
+    tmp_path: Path, supervisor: bool
+) -> None:
+    names = [RCP_WHEEL, "requirements.lock.txt"]
+    if supervisor:
+        names += [SUPERVISOR_WHEEL, "supervisor-requirements.lock.txt"]
+    for name in names:
+        (tmp_path / name).write_bytes(name.encode())
+    release_build.write_manifest(tmp_path, Path("manifest.sha256"))
+
+    release_build.verify_manifest(tmp_path, Path("manifest.sha256"))
+    release_build.check_assets(tmp_path, require_supervisor=False)
+    release_build.check_promotion(tmp_path / RCP_WHEEL, "v0.3.2")
+    if supervisor:
+        release_build.check_assets(tmp_path, require_supervisor=True)
+    else:
+        with pytest.raises(release_build.ReleaseBuildError, match="supervisor wheel"):
+            release_build.check_assets(tmp_path, require_supervisor=True)
+
+
+@pytest.mark.parametrize(
+    ("names", "message"),
+    [
+        ([RCP_WHEEL, "requirements.lock.txt", SUPERVISOR_WHEEL], "supervisor-requirements"),
+        (
+            [RCP_WHEEL, "requirements.lock.txt", "supervisor-requirements.lock.txt"],
+            "supervisor wheel",
+        ),
+        ([RCP_WHEEL], "requirements.lock.txt"),
+        (["requirements.lock.txt"], "RCP wheel"),
+        ([RCP_WHEEL, "requirements.lock.txt", "other.whl"], "unexpected assets"),
+        (
+            [RCP_WHEEL, "requirements.lock.txt", "rcp_supervisor-0.1.0+build.2-py3-none-any.whl"],
+            "supervisor wheel",
+        ),
+        (
+            [
+                RCP_WHEEL,
+                "requirements.lock.txt",
+                SUPERVISOR_WHEEL,
+                "rcp_supervisor-0.2.0-py3-none-any.whl",
+            ],
+            "supervisor wheel",
+        ),
+    ],
+)
+def test_asset_contract_refuses_incomplete_or_unrecognized_release(
+    tmp_path: Path, names: list[str], message: str
+) -> None:
+    for name in names:
+        (tmp_path / name).touch()
+    release_build.write_manifest(tmp_path, Path("manifest.sha256"))
+    release_build.verify_manifest(tmp_path, Path("manifest.sha256"))
+
+    with pytest.raises(release_build.ReleaseBuildError, match=message):
+        release_build.check_assets(tmp_path, require_supervisor=False)
+
+
+def test_promotion_rejects_supervisor_wheel_as_rcp_version() -> None:
+    with pytest.raises(release_build.ReleaseBuildError, match="invalid wheel filename"):
+        release_build.check_promotion(Path(SUPERVISOR_WHEEL), "v0.1.0")

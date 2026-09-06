@@ -13,9 +13,10 @@ covered_by:
   - web/tests/runDialog.test.mjs
 invariants: [3, 4, 4b, 10, 10b, 10e, 10g]
 last_checked: >-
-  2026-09-04 — read-only production inspection confirmed a repeated branch
-  Patch attribution failure after watcher handoff; diagnosis and repair remain
-  open below. Earlier 2026-08-24 verification: the backend publishes the complete Experiment lifecycle and
+  2026-09-05 — branch context and child Patch attribution fixes pass a real
+  staged validator and child dispatch/Apply regression, an isolated served-app
+  drive, and remote pointer verification. Recovery of the existing production
+  invocation remains unverified below. Earlier 2026-08-24 verification: the backend publishes the complete Experiment lifecycle and
   action projection consumed by Runs, including health, recommendation, section,
   and Start, Stop, report, Resume, Retry, and provider-switch availability. The
   full backend and web suites pass, and an isolated served-browser drive showed
@@ -42,12 +43,17 @@ watcher wakes inside one episode. Semantic `ExperimentAttempt` records neither
 spend nor reset that budget. The ceiling counts operational loop invocations
 only; the shared hidden episode wrap-up never spends or appears in that count.
 
-## Open live failure — 2026-09-04
+## Production recovery verification remains open — 2026-09-05
 
-Status: unresolved; diagnosis and repair belong to this Experiment lifecycle
-work item, not the team-server deployment handoff. This is a real project;
-investigate read-only before proposing a repair, and do not manually alter its
-canonical Patch history or infer permission to rerun scientific work.
+Status: the branch admission defect is fixed in source. Canonical task authority
+checks the exact graph target while retaining the child Experiment episode id,
+and file pointers now resolve to that branch.
+`tests/test_child_experiment_branch_integration.py` exercises dispatch, the real
+staged validator, and Apply with the external provider replaced. An isolated
+served-app drive completed a child without correction or changes to main.
+Recovery of the production invocation below has not been exercised. Do not
+manually alter its canonical Patch history or infer permission to rerun
+scientific work.
 
 Production project `1c2e93b5-7639-4206-afee-8d582e7f993c` has episode
 `c1054666-2311-59db-bbbe-d4a1fbe4fe8d`. Reopening after the authorized server
@@ -59,12 +65,10 @@ branch Patch attribution does not match its owning episode`.
 
 Read-only receipts are on `tianhaowang-gpu0.ucsd.edu` in
 `/tmp/rcp-transfer-7b003fb4.k35zMG/resumed-task.json` and
-`resumed-task-error.json`. The server-update drive did not diagnose the mismatch
-or modify the real project's research state. Next inspect the retained staged
-Patch, owning episode/branch binding, and prior accepted handoff to identify
-which attribution diverged. A fix needs focused regression coverage and a
-verified same-invocation recovery without duplicated work or watcher delivery;
-the existing error is not evidence that any particular repair is safe.
+`resumed-task-error.json`. The server-update drive did not modify the real
+project's research state. A verified same-invocation recovery without duplicated
+work or watcher delivery is still required before closing this live verification
+gap.
 
 ## UI path
 

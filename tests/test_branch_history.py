@@ -244,6 +244,108 @@ def test_branch_replays_immutable_main_prefix_after_main_moves(manifest) -> None
     assert history.create_auto_research_branch(metadata).head_ref() == branch.head_ref()
 
 
+def test_child_experiment_patch_keeps_its_episode_and_exact_branch_authority(manifest) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    metadata = _branch_metadata(history)
+    branch = history.create_auto_research_branch(metadata)
+    branch.append(
+        Patch(
+            kind="work",
+            author="agent",
+            summary="Create a branch-only Experiment.",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "create_nodes",
+                    "nodes": [
+                        {
+                            "id": "exp/child",
+                            "type": "experiment",
+                            "title": "Child Experiment",
+                            "objective": "Measure the branch-only result.",
+                        }
+                    ],
+                }
+            ],
+        )
+    )
+    child_id = str(uuid.uuid4())
+    authority = AgentTaskAuthority(
+        operation_id="child-turn",
+        project_id=metadata.project_id,
+        apply_target=branch.graph_target,
+        authorized_by=metadata.authorized_by,
+        episode_id=child_id,
+        dispatch_authority=AgentDispatchAuthority(
+            profile="ordinary",
+            task_contract="work_auto",
+            scope=AgentDispatchScope(
+                run_truth_scope=["repo-a"],
+                chat_scope="node",
+                chat_id="child-chat",
+                node_id="exp/child",
+                patch_kind="experiment_loop",
+                control_node_id="exp/child",
+                control_episode_id=child_id,
+            ),
+        ),
+    )
+    history.project_id = metadata.project_id
+    history.require_attribution = True
+    history.project_membership_check = seated_on_every_project
+    history.agent_authority_resolver = lambda _project, _operation: authority
+    patch = Patch(
+        kind="experiment_loop",
+        author="agent",
+        summary="Complete the branch-only Experiment.",
+        source_operation_id=authority.operation_id,
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        experiment_control_node_id="exp/child",
+        ops=[
+            {
+                "op": "update_nodes",
+                "nodes": [{"id": "exp/child", "changes": {"status": "completed"}}],
+            }
+        ],
+    )
+    branch_head = branch.head_ref()
+    main_head = history.head_ref()
+    for wrong_target in (
+        GraphTargetRef(),
+        GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4())),
+    ):
+        authority = authority.model_copy(update={"apply_target": wrong_target})
+        with pytest.raises(ValueError, match="authorized to Apply to"):
+            branch.append(patch)
+        assert branch.head_ref() == branch_head
+    authority = authority.model_copy(update={"apply_target": branch.graph_target})
+    with pytest.raises(ValueError, match="canonical task attribution"):
+        branch.append(patch.model_copy(update={"episode_id": metadata.episode_id}))
+    with pytest.raises(ValueError, match="authorized to Apply to"):
+        history.append(patch)
+    assert branch.head_ref() == branch_head
+    authority = authority.model_copy(update={"episode_id": None})
+    with pytest.raises(ValueError, match="require canonical episode attribution"):
+        branch.append(patch)
+    assert branch.head_ref() == branch_head
+    authority = authority.model_copy(update={"episode_id": child_id})
+
+    accepted, _result = branch.append(patch)
+    assert accepted.episode_id == child_id
+    assert accepted.task_id == authority.operation_id
+    assert accepted.transition.pre_head.target == branch.graph_target
+    assert history.head_ref() == main_head
+    assert "exp/child" not in history.state().nodes
+    # Replay relies on the committed transition, not live operational lineage.
+    history.agent_authority_resolver = None
+    replayed = history.branch(metadata.branch_id).state()
+    assert replayed.nodes["exp/child"].status == "completed"
+    assert replayed.replay_status == "complete"
+
+
 def test_branch_base_state_fails_closed_when_accepted_main_prefix_is_tampered(manifest) -> None:
     history = HistoryManager(manifest)
     appended, _result = history.append(seed_patch())

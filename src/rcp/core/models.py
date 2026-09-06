@@ -778,6 +778,7 @@ class GraphBranchSummary(BaseModel):
     base_head: GraphHeadRef
     head: GraphHeadRef
     merge_eligible: bool
+    merge_requires_end: bool = False
     merge_state: Literal["unmerged", "running", "merged", "needs_action", "failed"]
     latest_successful_merge: BranchMergeReceipt | None = None
     active_merge_task_id: str | None = Field(default=None, min_length=1)

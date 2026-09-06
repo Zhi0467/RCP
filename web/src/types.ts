@@ -1510,6 +1510,7 @@ export interface GraphBranchSummary {
   base_head: GraphHeadRef;
   head: GraphHeadRef;
   merge_eligible: boolean;
+  merge_requires_end: boolean;
   merge_state: "unmerged" | "running" | "merged" | "needs_action" | "failed";
   latest_successful_merge: BranchMergeReceipt | null;
   active_merge_task_id: string | null;

@@ -1034,7 +1034,7 @@ def _auto_research_context(
         for alias in selected
         if alias in service.manifest.repository_map
     }
-    context = ContextAssembler(service.manifest).chat_context(
+    context = ContextAssembler(service.manifest, graph_root=service.history.root).chat_context(
         state,
         node_id=None,
         run_truth_scope=request.run_truth_scope,

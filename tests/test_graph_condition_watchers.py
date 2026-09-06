@@ -5,6 +5,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -44,6 +45,7 @@ from rcp.watchers import (
     WatcherCheckResult,
     WatcherInitialCheckError,
     WatcherPoller,
+    WatcherRetryGeneration,
     WatcherRetryWorker,
     WatchSpec,
     arm_watchers,
@@ -1123,6 +1125,99 @@ def test_remote_refresh_failure_never_evaluates_the_stale_graph_mirror(
     assert stored.status == "active"
     assert stored.last_evaluated_at is None
     app.state.background_tasks.shutdown()
+
+
+@pytest.mark.parametrize("failure", ["degraded", "unavailable", "invalid"])
+def test_startup_reconciles_healthy_target_after_another_target_fails(
+    manifest, tmp_path, monkeypatch, failure
+):
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    delivery = app.state.services.watcher_delivery
+    _, initial = append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
+    append_fixture_patch(service, _blocker_status_patch("resolved"))
+    branch = GraphTargetRef(kind="branch", branch_id="branch-owner")
+    origin = _notification_task(store, "branch-origin", []).model_copy(
+        update={"project_id": project_id}
+    )
+    store.create_agent_task(origin)
+    # Keep this reconciliation fixture independent of Auto-research admission.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET graph_target_json = ? WHERE operation_id = ?",
+            (branch.model_dump_json(), origin.operation_id),
+        )
+    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
+    for watcher_id, target, origin_id in (
+        ("a-branch", branch, origin.operation_id),
+        ("z-main", GraphTargetRef(), "origin"),
+    ):
+        store.create_watchers(
+            [
+                _graph_record(watcher_id, condition).model_copy(
+                    update={
+                        "project_id": project_id,
+                        "graph_target": target,
+                        "origin_operation_id": origin_id,
+                        "armed_revision": initial.state.revision,
+                    }
+                )
+            ]
+        )
+    failed = True
+
+    def branch_boundaries():
+        if failed:
+            if failure == "unavailable":
+                raise StateUnavailable("temporary failure")
+            if failure == "invalid":
+                raise ValueError("invalid branch metadata")
+            return SimpleNamespace(
+                state=initial.state.model_copy(update={"replay_status": "degraded"})
+            ), []
+        resolved = initial.state.model_copy(
+            update={
+                "revision": initial.state.revision + 1,
+                "nodes": {**initial.state.nodes, "blk/foo": _blocker("resolved")},
+            }
+        )
+        return SimpleNamespace(state=resolved), [resolved]
+
+    branch_service = SimpleNamespace(
+        history=SimpleNamespace(accepted_boundary_states=branch_boundaries)
+    )
+    monkeypatch.setattr(
+        delivery,
+        "_graph_project_service",
+        lambda _pid, target: branch_service if target == branch else service,
+    )
+    delivered = []
+    monkeypatch.setattr(
+        delivery,
+        "deliver_watcher_group",
+        lambda group, **_kwargs: delivered.append([item.watcher_id for item in group]),
+    )
+    try:
+        delivery.sweep_graph_conditions_at_startup()
+        assert store.watcher("z-main").status == "completed"
+        assert store.watcher("a-branch").status == "active"
+        assert delivered == [["z-main"]]
+        assert store.graph_watcher_reconciliation_head(project_id, branch) is None
+        if failure == "unavailable":
+            # A successful main-only callback must not erase the branch retry.
+            delivery.evaluate_graph_wake_boundary(
+                project_id, None, graph_target=GraphTargetRef(), source="main callback"
+            )
+            failed = False
+            generation = WatcherRetryGeneration(
+                lambda: True, lambda callback: (callback(), True)[1]
+            )
+            delivery.retry_graph_wakes_after_poll(generation)
+            assert store.watcher("a-branch").status == "completed"
+    finally:
+        app.state.background_tasks.shutdown()
 
 
 @pytest.mark.parametrize(

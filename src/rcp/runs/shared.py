@@ -46,6 +46,7 @@ _STATE_PATH_FIELDS = (
     "introduction_path",
     "glossary_path",
     "coverage_path",
+    "facts_dir",
 )
 _NON_PROMPT_CONTRACT_ROLES = {
     "chat_prompt_state",
@@ -910,8 +911,8 @@ def _stage_context_paths(
     for field in _STATE_PATH_FIELDS:
         raw_path = getattr(context, field)
         if raw_path:
-            updates[field] = str(canonical / Path(raw_path).name)
-    updates["facts_dir"] = str(canonical / "facts")
+            relative_path = Path(raw_path).relative_to(service.manifest.research_dir)
+            updates[field] = str(canonical / relative_path)
     return updates
 
 

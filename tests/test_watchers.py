@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
 import shlex
+import signal
 import sqlite3
 import subprocess
+import sys
 import threading
 import uuid
+from contextlib import suppress
 from datetime import datetime, timedelta
 
 import pytest
@@ -35,6 +39,8 @@ from rcp.watchers import (
     parse_watch_json,
     run_watcher_check,
 )
+
+from .helpers import wait_until
 
 
 def _continuation() -> WatcherContinuation:
@@ -1128,7 +1134,7 @@ def test_remote_check_uses_existing_ssh_login_shell(monkeypatch) -> None:
         seen["kwargs"] = kwargs
         return subprocess.CompletedProcess(command, 1, "", "")
 
-    monkeypatch.setattr("rcp.watchers.subprocess.run", fake_run)
+    monkeypatch.setattr("rcp.watchers.run_check_process", fake_run)
 
     result = run_watcher_check(
         WatchSpec(check_command="squeue -h -j 4471", log_path="/logs/job", cwd="/work/a b"),
@@ -1139,13 +1145,67 @@ def test_remote_check_uses_existing_ssh_login_shell(monkeypatch) -> None:
     assert isinstance(command, list)
     assert command[0] == "ssh"
     assert command[-2] == "gpu.example"
-    assert shlex.split(command[-1]) == [
-        "bash",
-        "-lic",
-        "cd '/work/a b' && squeue -h -j 4471",
-    ]
+    remote_command = shlex.split(command[-1])
+    assert remote_command[:2] == ["python3", "-c"]
+    assert remote_command[3:] == ["/work/a b", "15", "squeue -h -j 4471"]
     assert seen["kwargs"]["cwd"] is None
     assert result.state == "active"
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_timeout_kills_check_children_without_stopping_observed_job(tmp_path, monkeypatch, remote):
+    if remote:
+        # Execute the exact shipped SSH payload on this machine. The remote
+        # watchdog must clean up even after the transport client times out.
+        def ssh_bridge(_host, command):
+            return [
+                sys.executable,
+                "-c",
+                "import subprocess, sys; "
+                f"child = subprocess.Popen({shlex.split(command)!r}, start_new_session=True); "
+                "sys.exit(child.wait())",
+            ]
+
+        monkeypatch.setattr("rcp.watchers.ssh_arguments", ssh_bridge)
+    child_pid_path = tmp_path / "check-child.pid"
+    child_code = (
+        "import os, time; from pathlib import Path; "
+        f"Path({str(child_pid_path)!r}).write_text(str(os.getpid())); time.sleep(60)"
+    )
+    check_command = shlex.join([sys.executable, "-c", child_code]) + " & wait"
+    child_pid = None
+    with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]) as observed:
+        try:
+            result = run_watcher_check(
+                WatchSpec(
+                    check_command=check_command, log_path=str(tmp_path / "log"), cwd=str(tmp_path)
+                ),
+                "fixture-host" if remote else "",
+                timeout=2,
+            )
+            assert result.state == "error"
+            assert "timed out" in result.error
+            child_pid = int(child_pid_path.read_text())
+
+            def child_stopped():
+                status = subprocess.run(
+                    ["ps", "-p", str(child_pid), "-o", "stat="],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ).stdout.strip()
+                return not status or status.startswith("Z")
+
+            wait_until(child_stopped, detail="the timed-out check left its child running")
+            assert observed.poll() is None
+        finally:
+            observed.kill()
+            observed.wait()
+            if child_pid is None and child_pid_path.exists():
+                child_pid = int(child_pid_path.read_text())
+            if child_pid is not None:
+                with suppress(ProcessLookupError):
+                    os.kill(child_pid, signal.SIGKILL)
 
 
 def test_initial_error_arms_none_then_corrected_list_persists_atomically(tmp_path) -> None:

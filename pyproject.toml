@@ -54,6 +54,7 @@ path = "src/rcp/__init__.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["supervisor/src"]
 # The suite is setup-bound rather than assertion-bound: roughly 3,400 tests each
 # build their own SQLite store, data directory, and TestClient app, so wall time
 # scales with worker count. `--dist loadfile` keeps one file's tests on one

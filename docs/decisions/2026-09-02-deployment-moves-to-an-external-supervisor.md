@@ -1,7 +1,8 @@
 # Servers install promoted release artifacts through an external supervisor
 
 **Status:** accepted by the human on 2026-09-02; clarified on 2026-09-05 to
-retain the private CLI connection for non-deployment operations. Amends
+retain the private CLI connection for non-deployment operations, and on
+2026-09-06 to require automatic recovery after interruption or reboot. Amends
 [the update-channel decision](2026-08-27-main-is-the-server-update-channel.md)
 and [the install-and-update privilege decision](2026-08-27-source-server-install-and-update-privilege.md)
 as stated at the end of this file. Implementation is planned in
@@ -77,6 +78,24 @@ silent. A forward migration that ran before the failure is undone by the
 checkpoint, not by the old release reading migrated data. Re-entry after a
 crash keeps the service stopped and completes whatever the journal says was in
 progress.
+
+**Automatic recovery**, confirmed by the human on 2026-09-06: systemd invokes
+the supervisor's recovery path before allowing RCP to start after a reboot.
+Recovery resumes an already-authorized operation from its local journal,
+checkpoint, and installed artifacts; it does not select a newer release or
+require GitHub access. Unknown or inconsistent recovery state keeps RCP stopped
+and reports the required operator action. Once admission has reopened, recovery
+must never restore the pre-deployment checkpoint and discard subsequently
+accepted work. The supervisor owns this startup guard; RCP does not interpret
+deployment journals.
+
+Qualification must interrupt update and restore at durable journal boundaries
+and actually reboot disposable Ubuntu 22.04 and 24.04 machines. A changed Linux
+boot ID, unattended recovery, selected release/data verification, and proof that
+admission remained closed until verification are required receipts. Include a
+forward migration, interrupted rollback, network-unavailable recovery, invalid
+journal refusal, and preservation of work accepted after reopening. Process
+restart tests alone do not prove this contract.
 
 **Restore** unpacks a protected archive into a candidate data directory beside
 the live one and runs the release's `rcp migrate --check` on it. It then stops

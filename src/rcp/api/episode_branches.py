@@ -139,14 +139,11 @@ def graph_branch_summary_from_snapshot(
     latest_task = merge_tasks[-1] if merge_tasks else None
     active_branch_writers = [
         item
-        for item in store.graph_target_tasks(
+        for item in store.unsettled_graph_target_tasks(
             episode.project_id,
             episode.graph_target,
-            include_hidden=True,
         )
-        if item.kind != "branch_merge"
-        and item.status in {*ACTIVE_AGENT_TASK_STATUSES, "paused"}
-        and task_graph_capable(item.kind, item.request)
+        if item.kind != "branch_merge" and task_graph_capable(item.kind, item.request)
     ]
     if active_task is not None:
         merge_state: Literal["unmerged", "running", "merged", "needs_action", "failed"] = "running"
@@ -163,12 +160,18 @@ def graph_branch_summary_from_snapshot(
         if merge_state in {"needs_action", "failed"} and latest_task is not None
         else None
     )
+    end_paused = store.auto_research_can_end_for_merge(episode.episode_id)
     merge_eligible = (
-        episode.ending is not None
-        and metadata.head.revision > metadata.base_head.revision
-        and store.auto_research_is_quiescent(episode.episode_id)
+        metadata.head.revision > metadata.base_head.revision
+        and (
+            end_paused
+            or (
+                episode.ending is not None
+                and store.auto_research_is_quiescent(episode.episode_id)
+                and not active_branch_writers
+            )
+        )
         and active_task is None
-        and not active_branch_writers
         and current_receipt is None
     )
     return GraphBranchSummary(
@@ -177,6 +180,7 @@ def graph_branch_summary_from_snapshot(
         base_head=metadata.base_head,
         head=metadata.head,
         merge_eligible=merge_eligible,
+        merge_requires_end=merge_eligible and end_paused,
         merge_state=merge_state,
         latest_successful_merge=receipts[-1] if receipts else None,
         active_merge_task_id=(active_task.operation_id if active_task is not None else None),

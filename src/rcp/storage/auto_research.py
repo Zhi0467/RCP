@@ -1661,6 +1661,113 @@ class AutoResearchStoreMixin:
         with self.connection() as connection:
             return self._auto_research_is_quiescent_in_connection(connection, episode_id)
 
+    def auto_research_can_end_for_merge(self, episode_id: str) -> bool:
+        """Whether a human may retire the paused orchestrator and merge its branch."""
+
+        with self.connection() as connection:
+            episode = self._load_auto_research_episode(connection, episode_id)
+            return bool(self._paused_auto_research_merge_tasks(connection, episode))
+
+    def _paused_auto_research_merge_tasks(
+        self,
+        connection: sqlite3.Connection,
+        episode: EpisodeRecord,
+    ) -> list[AgentTaskRecord]:
+        if (
+            episode.status not in {"running", "stopping"}
+            or episode.ending is not None
+            or episode.root_operation_id is None
+            or episode.graph_target.branch_id != episode.episode_id
+        ):
+            return []
+        orchestrator = self._auto_research_actor_latest_row(
+            connection, episode.episode_id, episode.root_operation_id
+        )
+        if orchestrator is None or orchestrator["status"] != "paused":
+            return []
+        tasks = self._unsettled_graph_target_tasks_in_connection(
+            connection, episode.project_id, episode.graph_target
+        )
+        if not any(task.operation_id == orchestrator["operation_id"] for task in tasks):
+            return []
+        if any(
+            task.status != "paused"
+            or task.kind != "auto_research"
+            or task.episode_id != episode.episode_id
+            for task in tasks
+        ):
+            return []
+        if (
+            connection.execute(
+                """
+            SELECT 1 FROM auto_research_child_work AS route
+            JOIN graph_runs AS task ON task.operation_id = route.current_operation_id
+            WHERE route.episode_id = ? AND route.stop_requested_at IS NULL
+              AND task.status IN ('paused', 'failed', 'interrupted')
+            LIMIT 1
+            """,
+                (episode.episode_id,),
+            ).fetchone()
+            is not None
+        ):
+            return []
+        # Reuse the child owners' durable unfinished-work inventory; mail notices
+        # do not block this explicit human ending.
+        if any(
+            blocker.kind in {"experiment_episode", "experiment_replacement", "child_admission"}
+            for blocker in self._auto_research_finish_blockers(connection, episode.episode_id)
+        ):
+            return []
+        if (
+            connection.execute(
+                """
+            SELECT 1 FROM graph_runs AS run
+            WHERE run.episode_id = ? AND run.kind = 'auto_research'
+              AND run.status IN ('failed', 'interrupted')
+              AND NOT EXISTS (
+                SELECT 1 FROM graph_runs AS child
+                WHERE child.parent_operation_id = run.operation_id
+                  AND child.episode_id = run.episode_id AND child.attempt = run.attempt + 1
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM graph_run_receipts AS receipt
+                WHERE receipt.operation_id = run.operation_id
+                  AND receipt.category IN (
+                    'auto_research_recovery_abandoned', 'auto_research_orchestrator_failure'
+                  )
+              )
+            LIMIT 1
+            """,
+                (episode.episode_id,),
+            ).fetchone()
+            is not None
+        ):
+            return []
+        return tasks
+
+    def _end_paused_auto_research_for_merge_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        episode: EpisodeRecord,
+        *,
+        now: str,
+    ) -> EpisodeRecord:
+        tasks = self._paused_auto_research_merge_tasks(connection, episode)
+        if not tasks:
+            raise ValueError("the Auto-research branch is not paused with all child work settled")
+        diagnostic = "The human ended this paused episode to merge its graph branch to main."
+        self._request_episode_stop_in_connection(connection, episode.episode_id, now=now)
+        for task in tasks:
+            self._abandon_auto_research_recovery_in_connection(
+                connection, task.operation_id, diagnostic=diagnostic, now=now
+            )
+        self._settle_auto_research_watchers_in_connection(
+            connection, episode_id=episode.episode_id, now=now
+        )
+        return self._mark_episode_stop_skipped_in_connection(
+            connection, episode.episode_id, diagnostic=diagnostic, now=now
+        )
+
     @staticmethod
     def _auto_research_is_quiescent_in_connection(
         connection: sqlite3.Connection,
