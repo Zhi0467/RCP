@@ -207,7 +207,8 @@ winner by timestamp or silently implement around it.
 RCP has no general graph-branching product, branch editor, conflict viewer,
 repository rollback, orchestrator self-merge, frontend transition-rule engine,
 user-authored rule language, provider-neutral hostile-process sandbox, direct
-graph manipulation canvas, live output watcher, live provider interruption, or
-peer-to-peer agent mail. Confirmed but unimplemented product journeys remain
-explicitly `pending` in the active acceptance suite rather than being described
-as current behavior here.
+graph manipulation canvas, live output watcher, hard provider interruption,
+persistent provider daemon, or peer-to-peer agent mail. Human steering of an
+ordinary running chat uses only RCP's existing process for that exact attempt.
+Confirmed but unimplemented product journeys remain explicitly `pending` in the
+active acceptance suite rather than being described as current behavior here.

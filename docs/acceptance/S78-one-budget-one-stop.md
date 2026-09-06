@@ -203,5 +203,5 @@ and should not be re-asserted here.
 The report renders through the existing sandboxed HTML boundary; an episode
 document is not a reason to invent an unrestricted one.
 
-Real-time streaming and worker-to-worker mail are out of scope, deferred as
-[Q8 and Q9](../open-questions.md).
+Live steering of episode workers and worker-to-worker mail are out of scope,
+deferred as [Q8 and Q9](../open-questions.md).

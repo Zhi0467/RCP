@@ -76,6 +76,14 @@ whole user config file and its execpolicy `.rules` files with `--ignore-user-con
 and `--ignore-rules`. `app-server` accepts neither flag, so RCP names each
 capability-bearing config key instead, and cannot disable `.rules` at all.
 
+The recorded actual runtime also decides live human steering support. Codex
+app-server accepts `turn/steer` against the recorded thread and active turn id;
+`expectedTurnId` is the provider's precondition. Claude stream-json keeps stdin
+open and launches with `--replay-user-messages`; each steer is a user message
+with a unique UUID. Codex exec has no inbound channel, including when it was
+selected by the pre-prompt fallback. The backend publishes the disabled reason
+for an unsupported runtime instead of offering a send that cannot be delivered.
+
 ## Cooperative project write containment
 
 Work-like provider launches are guarded against accidental writes into another
@@ -228,6 +236,42 @@ instruction.
 Unrelated tasks may run concurrently. Turns in the same conversation and native
 stage do not overlap. Canonical append remains serialized by the graph target's
 state workspace.
+
+### Live human steering
+
+A human may steer the ordinary Discuss or Work turn they are watching only
+through RCP's live provider process for that exact task attempt. The route
+rechecks the addressed attempt and its live runtime; it cannot select a newer
+attempt, start a turn, wake a sleeping agent, or target an episode worker.
+Agent mail and lifecycle notices do not use this channel.
+
+Delivery has three receipts: **delivered** means the provider acknowledged the
+input; **refused** names why delivery was rejected; **unknown** means the write
+began or may have begun but no acknowledgment established its outcome. Codex
+acknowledges through the matching `turn/steer` response and rejects a stale or
+completed turn. Claude acknowledges only through a replayed user echo carrying
+the steer's UUID. RCP
+writes to Claude only while no `result` event has been observed, stops the
+process at the first `result`, and refuses a steer whose echo did not precede
+that result as completed before delivery. This completion fence prevents a
+racing input from starting a new Claude turn.
+
+A transport drop or process exit after a write began leaves an unacknowledged
+steer unknown, except for Claude's explicit result fence above. The durable
+message reservation immediately precedes the external write; those two effects
+cannot commit atomically. If RCP restarts before the acknowledgment is recorded,
+the reservation remains unknown: delivery acknowledgment was not recorded, and
+the write may have begun. A live refusal proved before writing remains refused.
+RCP never automatically retries or resends a steer, and never queues a refused
+steer as the next turn. SSH uses the same existing stdin pipe and receipt rules.
+
+The message and receipt belong to the
+[human chat record](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input).
+Steering changes no mode, scope, graph target, budget, or permission. It creates
+no persistent provider daemon and wires no hard interrupt. Each provider process
+still ends with its turn; Pause, Resume, Retry, graceful Stop, and restart
+recovery keep their existing attempt and durable-state contracts. A restart
+does not recover or resend an in-flight steer through a replacement process.
 
 ## Local and SSH execution
 

@@ -264,73 +264,38 @@ videos fall on the array side.
 
 ---
 
-## Q8 — Should RCP hold live provider sessions so a running turn can be interrupted?
+## Q8 — Should provider sessions persist between turns or support hard interruption?
 
-**Status:** open. Raised 2026-08-07. Deliberately deferred, not ruled out.
-**Governing section:** [Durable task lifecycle](specs/providers-and-containment.md#durable-task-lifecycle).
-**Related work:** [orchestrator handoff](archive/handoffs/handoff-2026-08-07-orchestrator.md).
+**Status:** open only for lifecycle changes beyond live human steering. The
+ordinary human-steering channel was decided on 2026-09-05 and is specified in
+[Durable task lifecycle](specs/providers-and-containment.md#live-human-steering).
 
-### The question
+### Decided boundary
 
-RCP's agents terminate and resume. Nothing can reach a turn while it is running.
-The human decided not to change that now, but the constraint turned out to be
-RCP's, not the providers'.
+A human may send input to the ordinary Discuss or Work turn they are watching,
+through the provider process RCP already owns for that exact attempt. Codex
+app-server uses its active-turn precondition; Claude stream-json uses replayed
+user UUID acknowledgments and a first-result completion fence. Exec cannot
+receive live input. Delivery receipts persist with the human message, and RCP
+never resends an uncertain or refused steer as a later turn.
 
-### Evidence gathered so far
+This modest channel needs no persistent daemon and does not change capability,
+graph target, scope, budget, graceful Stop, or the recovery ladder. Every agent
+is still either running a turn or asleep with durable state. The former
+deferral of all input to a running turn no longer applies.
 
-Both installed CLIs expose a real-time inbound channel. Verified by probing the
-binaries on 2026-08-07, not from memory:
+### What remains open
 
-- **Claude Code** — `--input-format stream-json` is documented as *"realtime
-  streaming input"*, paired with `--output-format stream-json`. Also `--bg`
-  background agents with `claude agents --json` for scripting, and
-  `--forward-subagent-text`, which surfaces subagent text with
-  `parent_tool_use_id`.
-- **Codex** — the installed build exposes a JSON-RPC app-server over stdio with
-  persisted `thread/start` / `thread/resume` and `turn/start` lifecycles. RCP now
-  uses one fresh app-server process per provider turn. That proves a richer wire
-  protocol and Desktop-visible persisted threads; it does not keep a process
-  alive between turns or make an in-flight human interruption channel.
+Whether RCP should ever retain a provider process between turns or expose a hard
+interrupt. Those changes would need their own ownership and recovery contract,
+including SSH connection loss, process death, and interaction with Pause,
+Resume, Retry, and Stop. The per-turn steering channel does not authorize them.
 
-So "the CLI has no bidirectional turn protocol" is false. Re-probe before
-relying on specifics because app-server remains experimental. The open question
-is still whether RCP should expose input to a running turn, not whether RCP can
-select app-server as its per-turn transport.
-
-### What blocks a decision
-
-**The cost is RCP's lifecycle model, not the provider.** Everything RCP owns is
-built on terminating subprocesses with durable resume: the recovery ladder,
-Pause/Resume/Retry, restart safety, SSH PID wrappers, locks that release on
-process death. A live session daemon inverts that. Over SSH especially, a
-dropped connection is survivable today precisely because state is durable and
-the lock releases; with a live bidirectional stream it becomes lost session
-state.
-
-The property that would be traded away: *every agent is either running a turn or
-asleep with durable state.* That is what makes RCP restart-safe, and it is worth
-more than responsiveness for research work where turns are minutes or hours
-apart.
-
-### The use case, if it is ever built
-
-Live messaging is not for coordination — turn-based handoff serves that fine,
-and the [graph-condition wake](archive/handoffs/handoff-2026-08-07-graph-condition-wake.md)
-covers the responsive cases through canonical state. It is for **interruption**:
-"stop, wrong approach," "the cluster died," "I changed the framing." Mail cannot
-do that, because it arrives at the next wake, and for a long turn that is an
-hour of burned work.
-
-Note the most valuable sender is the **human**, not another agent. If this is
-ever built, the first version should be one live channel, human→agent, on the
-turn the human is watching — a far smaller blast radius than agent-to-agent
-streaming, and the only version whose value is obvious.
-
-### Do not do in the meantime
-
-Do not add a partial live channel "just for the orchestrator." A second
-lifecycle model is the expensive part, and it is not less expensive for having
-one caller.
+Human steering of episode workers is a separate follow-up: any such input would
+need to be retained in episode lineage and surfaced to the orchestrator as a
+notice. Today the human messages the orchestrator, not a child. Agent-to-agent
+live steering remains excluded; the unresolved peer-mail design is
+[Q9](#q9--how-does-peer-to-peer-agent-mail-work-once-rcp-is-multiplayer).
 
 ---
 

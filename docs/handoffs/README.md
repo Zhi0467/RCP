@@ -2,10 +2,7 @@
 
 Active:
 
-- [Live provider steering](handoff-2026-09-05-live-provider-steering.md)
-  — human-confirmed 2026-09-05; Phase 1 local probes recorded, implementation
-  pending. Send a message into the running chat turn you are watching through
-  the provider process RCP already owns; SSH verification remains open.
+- [Live provider steering](handoff-2026-09-05-live-provider-steering.md) — Phase 2 implemented; local Codex API receipts verified; browser, Claude live and SSH verification open.
 
 - [Dev team space and source server completion](handoff-2026-08-27-dev-team-space-and-server.md)
   — human-confirmed implementation through one genuinely usable lab/server
