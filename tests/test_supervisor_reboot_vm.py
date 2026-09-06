@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import io
+import json
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +32,87 @@ def test_vm_preflight_never_uses_a_personal_or_production_host(
     monkeypatch.setenv("RUNNER_ENVIRONMENT", environment)
     with pytest.raises(QualificationUnavailable, match="GitHub-hosted"):
         preflight(tmp_path, DISPOSABLE_CONFIRMATION)
+
+
+@pytest.mark.parametrize("kvm_available", [True, False])
+def test_preflight_requires_actual_qemu_kvm_initialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kvm_available: bool
+) -> None:
+    from tests import supervisor_reboot_vm as vm
+
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    monkeypatch.setattr(vm.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(vm.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(vm.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(vm.os, "cpu_count", lambda: 2)
+    monkeypatch.setattr(vm.shutil, "disk_usage", lambda _: SimpleNamespace(free=20 * 1024**3))
+    original_read = Path.read_text
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda path, *args, **kwargs: (
+            "MemAvailable: 8388608 kB\n"
+            if str(path) == "/proc/meminfo"
+            else original_read(path, *args, **kwargs)
+        ),
+    )
+    # An advisory Python access check must neither reject a working QEMU nor
+    # admit an unusable accelerator. The exact QEMU child proves KVM support.
+    monkeypatch.setattr(vm.os, "access", lambda *args, **kwargs: not kvm_available)
+    probes = []
+
+    def run(argv, **kwargs):
+        if "-machine" in argv:
+            assert argv[argv.index("-machine") + 1] == "accel=kvm"
+            assert kwargs["input"] == "quit\n"
+            probes.append(argv)
+            if not kvm_available:
+                raise subprocess.CalledProcessError(
+                    1, argv, stderr="Could not access KVM kernel module: Permission denied\n"
+                )
+        return subprocess.CompletedProcess(argv, 0, "QEMU qualification test\n", "")
+
+    monkeypatch.setattr(vm, "run", run)
+    if kvm_available:
+        assert preflight(tmp_path, DISPOSABLE_CONFIRMATION)["accelerator"] == "kvm"
+    else:
+        with pytest.raises(QualificationUnavailable, match="Permission denied"):
+            preflight(tmp_path, DISPOSABLE_CONFIRMATION)
+    assert len(probes) == 1
+
+
+def test_drive_preflight_failure_retains_initial_preflight_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests import supervisor_reboot_live as live
+
+    initial = {"status": "supported", "accelerator": "kvm", "probe_exit": 0}
+    live.write_receipt(tmp_path / "preflight.json", initial)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "qualification",
+            "drive",
+            "--ubuntu",
+            "22.04",
+            "--bundles",
+            "unused",
+            "--output",
+            str(tmp_path),
+        ],
+    )
+
+    def unavailable(*args):
+        raise QualificationUnavailable("KVM device became unavailable")
+
+    monkeypatch.setattr(live, "drive", unavailable)
+    assert live.main() == 2
+    assert json.loads((tmp_path / "preflight.json").read_text()) == initial
+    failure = json.loads((tmp_path / "drive-preflight.json").read_text())
+    assert failure["status"] == "qualification-unavailable"
+    assert failure["actual_reboot_proven"] is False
+    assert failure["reason"] == "KVM device became unavailable"
 
 
 def test_guest_network_keeps_only_loopback_ssh_when_offline(tmp_path: Path) -> None:
