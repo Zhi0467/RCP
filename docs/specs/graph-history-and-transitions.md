@@ -105,6 +105,11 @@ graph nodes. A graph-writing agent may create or revise them in the same Patch
 as its ordinary graph work. Inline rendering looks up these stored definitions;
 it does not generate text on hover. Definitions follow the exact graph target
 of the Patch, so branch authoring does not mutate main before its normal merge.
+Term identity is case-insensitive, matching inline lookup. Admission preserves
+the existing spelling in the recorded operation (or the first new spelling in
+that Patch); historical operations still replay exactly as recorded. If old
+history contains cased duplicates, a revision updates the first sorted spelling
+used by inline lookup without deleting the historical entries.
 
 Admission also emits nonblocking quality flags for newly introduced internal-run
 Evidence without a producing Experiment, isolated operational nodes (Experiment,

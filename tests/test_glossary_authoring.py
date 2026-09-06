@@ -12,7 +12,7 @@ from rcp.core.authority import (
     AgentTaskAuthority,
     require_apply,
 )
-from rcp.core.materialize import apply_valid_patch
+from rcp.core.materialize import apply_valid_patch, prepare_patch_bookkeeping
 from rcp.core.models import Experiment, GraphBranchMetadata, GraphState, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.validation.patch import validate_patch
@@ -20,7 +20,7 @@ from rcp.history import HistoryManager
 from tests.helpers import fabricated_authorizer, seated_on_every_project
 
 
-def _definition_patch(definition, *, kind="work", profile="ordinary"):
+def _definition_patch(definition, *, kind="work", profile="ordinary", term="EWC"):
     draft = parse_agent_patch_json(
         json.dumps(
             {
@@ -28,7 +28,7 @@ def _definition_patch(definition, *, kind="work", profile="ordinary"):
                 "ops": [
                     {
                         "op": "upsert_glossary",
-                        "terms": [{"term": "EWC", "plain_definition": definition}],
+                        "terms": [{"term": term, "plain_definition": definition}],
                     }
                 ],
             }
@@ -51,7 +51,9 @@ def test_project_glossary_can_be_added_revised_and_replayed(manifest, kind, prof
     original_bytes = original_path.read_bytes()
     updated, second = history.append(
         _definition_patch(
-            "A penalty for changing parameters important to earlier tasks.", profile=profile
+            "A penalty for changing parameters important to earlier tasks.",
+            profile=profile,
+            term="ewc",
         )
     )
 
@@ -65,6 +67,7 @@ def test_project_glossary_can_be_added_revised_and_replayed(manifest, kind, prof
         != first.state.glossary["EWC"].plain_definition
     )
     assert original_path.read_bytes() == original_bytes
+    assert updated.ops[0].terms[0].term == "EWC"
     assert HistoryManager(manifest).materialize().state.glossary == second.state.glossary
     assert (
         json.loads((history.root / "glossary.json").read_text())["EWC"]["updated_rev"]
@@ -129,7 +132,7 @@ def test_branch_glossary_upsert_is_isolated_and_replays_its_own_state(manifest) 
             authorized_by=fabricated_authorizer("Researcher"),
         )
     )
-    _, result = branch.append(_definition_patch("Branch definition."))
+    _, result = branch.append(_definition_patch("Branch definition.", term="ewc"))
     assert result.state.glossary["EWC"].plain_definition == "Branch definition."
     assert branch.materialize().state.glossary == result.state.glossary
     assert history.state().glossary["EWC"].plain_definition == "Main definition."
@@ -159,3 +162,34 @@ def test_failed_apply_after_glossary_upsert_preserves_shared_previous_term() -> 
         apply_valid_patch(state, patch)
     assert state.glossary["EWC"] is term
     assert term.plain_definition == "Original definition."
+
+
+def test_same_patch_cased_glossary_upserts_share_first_spelling(manifest) -> None:
+    patch = _definition_patch("First definition.", term="Ewc")
+    patch.ops[0].terms.append(
+        patch.ops[0].terms[0].model_copy(update={"term": "EWC", "plain_definition": "Second."})
+    )
+    patch.ops.extend(_definition_patch("Last definition.", term="ewc").ops)
+    history = HistoryManager(manifest)
+    recorded, result = history.append(patch)
+    assert list(result.state.glossary) == ["Ewc"]
+    assert result.state.glossary["Ewc"].plain_definition == "Last definition."
+    assert all(term.term == "Ewc" for op in recorded.ops for term in op.terms)
+    assert history.materialize().state.glossary == result.state.glossary
+
+
+def test_legacy_cased_glossary_replay_is_unchanged_but_revision_updates_visible_term() -> None:
+    state = GraphState()
+    for revision, spelling in enumerate(("EWC", "ewc"), 1):
+        historical = _definition_patch(f"Old {spelling}.", term=spelling).model_copy(
+            update={"revision": revision}
+        )
+        state = apply_valid_patch(state, historical)
+    assert list(state.glossary) == ["EWC", "ewc"]
+    patch = _definition_patch("Current definition.", term="eWc").model_copy(update={"revision": 3})
+    prepared = prepare_patch_bookkeeping(state, patch)
+    updated = apply_valid_patch(state, prepared)
+    assert prepared.ops[0].terms[0].term == "EWC"
+    assert updated.glossary["EWC"].plain_definition == "Current definition."
+    assert updated.glossary["ewc"].plain_definition == "Old ewc."
+    assert state.glossary["EWC"].plain_definition == "Old EWC."
