@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import html
+import importlib.resources
 import json
 import os
 import re
@@ -359,7 +360,10 @@ def html_preview_document(data: bytes, *, result_view_gestures: bool = False) ->
     sanitizer = _ArtifactHTMLSanitizer()
     sanitizer.feed(source)
     sanitizer.close()
-    bootstrap = """<script>(()=>{
+    bootstrap = (
+        "<script>(()=>{\n"
+        + _selection_script()
+        + """
 const channel=new MessageChannel();
 const privatePort=channel.port1;
 const outwardPort=channel.port2;
@@ -368,17 +372,6 @@ const portStart=Function.prototype.call.bind(MessagePort.prototype.start);
 const listen=Function.prototype.call.bind(EventTarget.prototype.addEventListener);
 const parentPost=window.parent.postMessage.bind(window.parent);
 const closest=Function.prototype.call.bind(Element.prototype.closest);
-const utf8=new TextEncoder();
-const bounded=(value,limit)=>{
-  const text=String(value||'').replace(/\\s+/g,' ').trim();
-  if(utf8.encode(text).byteLength<=limit) return text;
-  let result='';
-  for(const character of text){
-    if(utf8.encode(result+character).byteLength>limit) break;
-    result+=character;
-  }
-  return result;
-};
 const send=(value)=>portPost(privatePort,value);
 listen(window,'click',(event)=>{
   if(!event.isTrusted || !(event.target instanceof Element)) return;
@@ -387,68 +380,15 @@ listen(window,'click',(event)=>{
   event.preventDefault(); event.stopImmediatePropagation();
   send({kind:'rcp-reference',url:anchor.getAttribute('data-rcp-href')});
 },true);
-listen(document,'mouseup',()=>{
-  const selection=document.getSelection();
-  const text=bounded(selection?.toString(),4096);
-  if(!text || !selection?.rangeCount){send({kind:'rcp-artifact-selection',selection:null});return;}
-  const range=selection.getRangeAt(0);
-  const container=range.commonAncestorContainer.nodeType===Node.ELEMENT_NODE
-    ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
-  const surrounding=bounded(container?.textContent,6144);
-  send({kind:'rcp-artifact-selection',selection:{kind:'text',text,surrounding_text:surrounding}});
-});
-let boxing=false,startX=0,startY=0,box=null;
+const clearSelection=installArtifactSelection(document,(selection)=>send({kind:'rcp-artifact-selection',selection}));
 listen(privatePort,'message',(event)=>{
-  if(!event.data || event.data.kind!=='rcp-artifact-box-start') return;
-  boxing=true;
-  document.documentElement.style.cursor='crosshair';
+  if(event.data?.kind==='rcp-artifact-selection-clear') clearSelection();
 });
 portStart(privatePort);
-listen(document,'pointerdown',(event)=>{
-  if(!boxing || event.button!==0) return;
-  event.preventDefault(); event.stopImmediatePropagation();
-  startX=event.clientX; startY=event.clientY;
-  box=document.createElement('div');
-  Object.assign(box.style,{position:'fixed',zIndex:'2147483647',pointerEvents:'none',
-    border:'2px solid #bd5b36',background:'rgba(189,91,54,.12)',left:`${startX}px`,top:`${startY}px`});
-  document.documentElement.appendChild(box);
-},true);
-listen(document,'pointermove',(event)=>{
-  if(!box) return;
-  const left=Math.min(startX,event.clientX),top=Math.min(startY,event.clientY);
-  Object.assign(box.style,{left:`${left}px`,top:`${top}px`,
-    width:`${Math.abs(event.clientX-startX)}px`,height:`${Math.abs(event.clientY-startY)}px`});
-},true);
-listen(document,'pointerup',(event)=>{
-  if(!box) return;
-  event.preventDefault(); event.stopImmediatePropagation();
-  const left=Math.max(0,Math.min(startX,event.clientX));
-  const top=Math.max(0,Math.min(startY,event.clientY));
-  const right=Math.min(innerWidth,Math.max(startX,event.clientX));
-  const bottom=Math.min(innerHeight,Math.max(startY,event.clientY));
-  box.remove(); box=null; boxing=false; document.documentElement.style.cursor='';
-  const boxWidth=right-left,boxHeight=bottom-top;
-  if(boxWidth<=0||boxHeight<=0) return;
-  const labels=[];
-  const seen=new Set();
-  const steps=5;
-  for(let xi=0;xi<=steps;xi++) for(let yi=0;yi<=steps;yi++){
-    const x=left+(right-left)*xi/steps,y=top+(bottom-top)*yi/steps;
-    let element=document.elementFromPoint(x,y);
-    for(let depth=0;element&&depth<3;depth++,element=element.parentElement){
-      const tag=element.tagName?.toLowerCase();
-      if(tag==='html'||tag==='body'||tag==='head'||tag==='style'||tag==='script') continue;
-      const value=bounded(element.getAttribute?.('aria-label') || element.textContent,512);
-      if(value){if(!seen.has(value)){seen.add(value);labels.push(value);}break;}
-    }
-  }
-  send({kind:'rcp-artifact-selection',selection:{kind:'box',
-    rect:{x:left/innerWidth,y:top/innerHeight,width:boxWidth/innerWidth,height:boxHeight/innerHeight},
-    viewport:{width:innerWidth,height:innerHeight},labels:bounded(labels.join(' | '),4096)}});
-},true);
 parentPost({kind:'rcp-artifact-channel',version:1},'*',[outwardPort]);
 document.currentScript?.remove();
 })();</script>"""
+    )
     # Chromium does not currently enforce ``navigate-to``. The opaque sandbox is
     # the boundary that prevents this document from navigating the RCP parent;
     # inline scripts may still navigate their own isolated child frame. Keep the
@@ -497,9 +437,8 @@ listen(window,'message',(event)=>{
   portStart(artifactPort);
 },true);
 listen(window,'message',(event)=>{
-  if(event.source!==window.parent || !event.data ||
-     event.data.type!=='rcp-artifact-box-start') return;
-  if(artifactPort) portPost(artifactPort,{kind:'rcp-artifact-box-start'});
+  if(event.source===window.parent && event.data?.type==='rcp-artifact-selection-clear' && artifactPort)
+    portPost(artifactPort,{kind:'rcp-artifact-selection-clear'});
 });
 })();</script>"""
     result_view_script = ""
@@ -540,6 +479,10 @@ window.addEventListener('message',(event)=>{
         "frame-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
     )
     return document, wrapper_csp
+
+
+def _selection_script() -> str:
+    return importlib.resources.files("rcp").joinpath("artifact_selection.js").read_text("utf-8")
 
 
 def artifact_viewer_document(
@@ -629,39 +572,43 @@ button{{border:1px solid var(--rule);background:transparent;color:var(--ink);pad
 button:hover{{border-color:var(--accent);color:var(--accent)}}button:disabled{{opacity:.45;cursor:default}}
 .spacer{{flex:1}}main{{display:grid;grid-template-columns:minmax(0,1fr) 300px;min-height:0}}
 .canvas{{position:relative;min-width:0;background:white;border-right:1px solid var(--rule)}}
-iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:block;width:100%;height:100%;object-fit:contain}}#boxLayer{{display:none;position:absolute;inset:0;cursor:crosshair}}#boxLayer.active{{display:block}}#boxLayer div{{position:absolute;border:2px solid var(--accent);background:rgba(169,79,49,.12)}}aside{{padding:14px;overflow:auto;background:var(--panel)}}
-aside h2{{margin:0 0 12px;font:600 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}}.capture{{width:100%;margin-bottom:12px}}
-.empty{{color:var(--muted);font-family:Georgia,serif;font-style:italic}}.selection{{border-top:1px solid var(--rule);padding:12px 0}}
+iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:block;width:100%;height:100%;object-fit:contain}}#boxLayer{{position:absolute;inset:0;cursor:crosshair}}aside{{padding:14px;overflow:auto;background:var(--panel)}}
+aside h2{{margin:0 0 12px;font:600 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}}#pending{{border:1px solid var(--accent);padding:12px;margin-bottom:12px}}#pending button{{margin-top:10px}}#pending [data-confirm]{{background:var(--accent);color:white;border-color:var(--accent)}}
+.empty{{color:var(--muted);font-family:Georgia,serif;font-style:italic}}#pending:not([hidden]) + #empty{{display:none}}.selection{{border-top:1px solid var(--rule);padding:12px 0}}
 .selection b{{display:block;margin-bottom:5px;color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.08em}}
 .excerpt{{max-height:90px;overflow:auto;font-family:Georgia,serif;font-size:13px}}
 textarea{{width:100%;min-height:62px;margin-top:8px;resize:vertical;border:1px solid var(--rule);background:white;padding:8px;color:var(--ink);font:13px/1.4 Georgia,serif}}
 .add{{width:100%;margin-top:12px;background:var(--ink);color:var(--paper);border-color:var(--ink)}}.add:hover{{background:var(--accent);color:white}}
 .notice{{margin-top:10px;color:var(--accent);font-size:12px}}@media(max-width:760px){{main{{grid-template-columns:1fr;grid-template-rows:minmax(360px,1fr) auto}}.canvas{{border-right:0;border-bottom:1px solid var(--rule)}}aside{{max-height:42vh}}}}
 </style></head><body>
-<header><strong>{html.escape(descriptor.name)}</strong><span id="state" class="state">{"kept" if descriptor.kept_filename else "temporary"}</span><span class="spacer"></span><button id="box" type="button">Box</button>{'<button id="keep" type="button">Keep</button>' if keep_url and descriptor.kept_filename is None else ""}</header>
+<header><strong>{html.escape(descriptor.name)}</strong><span id="state" class="state">{"kept" if descriptor.kept_filename else "temporary"}</span><span class="spacer"></span>{'<button id="keep" type="button">Keep</button>' if keep_url and descriptor.kept_filename is None else ""}</header>
 <main><div class="canvas">{preview_markup}</div>
-<aside><h2>Selections</h2><button id="captureText" class="capture" type="button" disabled>Add highlighted text</button><div id="empty" class="empty">Highlight text and add it, or draw a box.</div><div id="items"></div><button id="add" class="add" type="button" disabled>Add to chat</button><div id="notice" class="notice" role="status"></div></aside></main>
+<aside><h2>Selections</h2><section id="pending" aria-label="Confirm selection" hidden><div class="excerpt"></div><button data-confirm type="button">Comment</button> <button data-cancel type="button">Cancel</button></section><div id="empty" class="empty">Select text or drag an area, then choose Comment.</div><div id="items"></div><button id="add" class="add" type="button" disabled>Add to chat</button><div id="notice" class="notice" role="status"></div></aside></main>
 <script>(()=>{{
+{_selection_script()}
 const config={js(config)};const selections=[];const frame=document.getElementById('preview'),boxLayer=document.getElementById('boxLayer');
-const items=document.getElementById('items'),empty=document.getElementById('empty'),captureText=document.getElementById('captureText'),add=document.getElementById('add'),notice=document.getElementById('notice');let pendingText=null;
+const items=document.getElementById('items'),empty=document.getElementById('empty'),add=document.getElementById('add'),notice=document.getElementById('notice');
 const bounded=(value,limit)=>String(value||'').replace(/\\s+/g,' ').trim().slice(0,limit);
-function render(){{items.replaceChildren();empty.hidden=selections.length>0;captureText.disabled=!pendingText;add.disabled=selections.length===0||!config.chatAvailable;
+function render(){{items.replaceChildren();empty.hidden=selections.length>0;add.disabled=selections.length===0||!config.chatAvailable;
   selections.forEach((selection,index)=>{{const card=document.createElement('section');card.className='selection';
     const label=document.createElement('b');label.textContent=`${{index+1}} · ${{selection.kind}}`;
     const excerpt=document.createElement('div');excerpt.className='excerpt';excerpt.textContent=selection.kind==='text'?selection.text:(selection.labels||`Box ${{Math.round(selection.rect.x*100)}}–${{Math.round((selection.rect.x+selection.rect.width)*100)}}%`);
     const comment=document.createElement('textarea');comment.placeholder='Comment or question';comment.value=selection.comment||'';comment.addEventListener('input',()=>selection.comment=bounded(comment.value,2048));
     card.append(label,excerpt,comment);items.append(card);}});
 }}
-function appendSelection(selection){{if(selections.length>=12){{notice.textContent='A prompt can include at most 12 selections.';return;}}selections.push(selection);render();}}
+function appendSelection(selection){{if(selections.length>=12){{notice.textContent='A prompt can include at most 12 selections.';return;}}selections.push(selection);render();items.lastElementChild?.querySelector('textarea')?.focus();}}
+let clearImageSelection=null;
+const offerSelection=installSelectionConfirmation(document.getElementById('pending'),appendSelection,()=>{{
+  if(frame) frame.contentWindow?.postMessage({{type:'rcp-artifact-selection-clear'}},'*');
+  else clearImageSelection?.();
+}});
 window.addEventListener('message',(event)=>{{if(!frame||event.source!==frame.contentWindow) return;const value=event.data;
   if(!value||value.type!=='rcp-artifact-selection'||value.version!==1||!('selection' in value)) return;
-  const raw=value.selection;if(raw===null){{pendingText=null;render();return;}}
-  if(raw.kind==='text'&&typeof raw.text==='string'){{pendingText={{kind:'text',text:bounded(raw.text,4096),surrounding_text:bounded(raw.surrounding_text,6144),comment:''}};render();}}
-  else if(raw.kind==='box'&&raw.rect&&raw.viewport) appendSelection({{kind:'box',rect:raw.rect,viewport:raw.viewport,labels:bounded(raw.labels,4096),comment:''}});
+  const raw=value.selection;if(raw===null){{offerSelection(null);return;}}
+  if(raw.kind==='text'&&typeof raw.text==='string') offerSelection({{kind:'text',text:bounded(raw.text,4096),surrounding_text:bounded(raw.surrounding_text,6144),comment:''}});
+  else if(raw.kind==='box'&&raw.rect&&raw.viewport) offerSelection({{kind:'box',rect:raw.rect,viewport:raw.viewport,labels:bounded(raw.labels,4096),comment:''}});
 }});
-captureText.addEventListener('click',()=>{{if(!pendingText)return;appendSelection(pendingText);pendingText=null;render();}});
-document.getElementById('box').addEventListener('click',()=>{{if(frame) frame.contentWindow?.postMessage({{type:'rcp-artifact-box-start'}},'*');else boxLayer?.classList.add('active');}});
-if(boxLayer){{let start=null,mark=null;boxLayer.addEventListener('pointerdown',(event)=>{{start={{x:event.offsetX,y:event.offsetY}};mark=document.createElement('div');boxLayer.append(mark);}});boxLayer.addEventListener('pointermove',(event)=>{{if(!start||!mark)return;const left=Math.min(start.x,event.offsetX),top=Math.min(start.y,event.offsetY);Object.assign(mark.style,{{left:`${{left}}px`,top:`${{top}}px`,width:`${{Math.abs(event.offsetX-start.x)}}px`,height:`${{Math.abs(event.offsetY-start.y)}}px`}});}});boxLayer.addEventListener('pointerup',(event)=>{{if(!start||!mark)return;const width=boxLayer.clientWidth,height=boxLayer.clientHeight,left=Math.min(start.x,event.offsetX),top=Math.min(start.y,event.offsetY),right=Math.max(start.x,event.offsetX),bottom=Math.max(start.y,event.offsetY),boxWidth=right-left,boxHeight=bottom-top;mark.remove();mark=null;start=null;boxLayer.classList.remove('active');if(boxWidth<=0||boxHeight<=0)return;appendSelection({{kind:'box',rect:{{x:left/width,y:top/height,width:boxWidth/width,height:boxHeight/height}},viewport:{{width,height}},labels:'',comment:''}});}});}}
+if(boxLayer) clearImageSelection=installArtifactSelection(boxLayer,offerSelection);
 add.addEventListener('click',()=>{{if(!config.chatAvailable){{notice.textContent='The originating chat is unavailable.';return;}}const payload={{type:'rcp-artifact-context',version:1,project_id:config.projectId,chat_id:config.chatId,operation_id:config.operationId,artifact_id:config.artifactId,artifact_name:config.artifactName,media_type:config.mediaType,selections}};
   payload.source=config.source;payload.episode_id=config.episodeId;const key=`rcp:artifact-context:${{encodeURIComponent(config.projectId)}}:${{encodeURIComponent(config.chatId)}}`;localStorage.setItem(key,JSON.stringify(payload));
   try{{const channel=new BroadcastChannel('rcp-artifact-context');channel.postMessage(payload);channel.close();}}catch{{}}

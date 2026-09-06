@@ -120,10 +120,13 @@ image request; ordinary navigation to that URL receives the shell.
 ### Selection-to-prompt, not annotation
 
 Selections are temporary prompt inputs, not persistent annotations. Highlighting
-text remains an ordinary browser selection until the human explicitly adds that
-highlight to the selection rail; changing a highlight never creates prompt
-context by itself. Drawing a box is already an explicit capture action. The
-human may add one comment or question per captured selection, review the
+text remains an ordinary browser selection. Dragging from a figure or blank
+space draws an area immediately, without a separate Box mode; starting on text
+preserves native highlighting, and ordinary controls keep their own gestures.
+Both text and area selections are pending until the human chooses **Comment**;
+**Cancel** or Escape discards the pending selection. Clicking or dragging alone
+never adds prompt context. The human may add one comment or question per
+confirmed selection, review the
 assembled draft, and add it to the ordinary chat composer. Nothing is sent until
 the human sends that composer turn.
 

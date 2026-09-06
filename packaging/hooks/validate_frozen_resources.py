@@ -1,9 +1,13 @@
 """Fail the packaged backend early when required source data was omitted."""
 
 from rcp.agents.command_protocol import staged_command_broker_source, staged_command_client_source
+from rcp.artifacts import _selection_script
 from rcp.skill_registry import official_registry
 from rcp.sources.indexer import _record_parsing_source
 from rcp.transport.state import _remote_script
+
+if "function installArtifactSelection" not in _selection_script():
+    raise RuntimeError("The packaged artifact selection script is invalid.")
 
 parser_source = _record_parsing_source()
 if "def normalize_record" not in parser_source:
