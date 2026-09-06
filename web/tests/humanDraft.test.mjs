@@ -34,6 +34,9 @@ const {
   stageNodeStanding,
   stageProposalDecision,
   stageCustomNode,
+  stageEdgeAddition,
+  stageEdgeRemoval,
+  unstageEdgeRemoval,
   stageOntology,
   unstageCustomNode,
   unstageNodeRemoval,
@@ -41,6 +44,55 @@ const {
 } = await server.ssrLoadModule("/src/humanDraft.ts");
 
 after(() => server.close());
+
+test("connection additions and removals retain intent through storage and Sync, with undo", () => {
+  const edge = {
+    id: "edge/new",
+    source: "a",
+    target: "b",
+    relation: "supports",
+    layer: "epistemic",
+    explanation: "Comparison",
+  };
+  let draft = stageEdgeAddition(emptyHumanDraft(4), edge);
+  draft = stageEdgeRemoval(draft, "edge/existing");
+  assert.equal(humanDraftChangeCount(draft), 2);
+  assert.deepEqual(
+    toHumanSyncRequest(deserializeHumanDraft(serializeHumanDraft(draft)), graph),
+    toHumanSyncRequest(draft, graph),
+  );
+  assert.deepEqual(toHumanSyncRequest(draft, graph).added_edges, [edge]);
+  assert.deepEqual(toHumanSyncRequest(draft, graph).removed_edge_ids, ["edge/existing"]);
+  draft = stageEdgeRemoval(draft, edge.id);
+  assert.deepEqual(draft.added_edges, []);
+  assert.deepEqual(draft.removed_edge_ids, ["edge/existing"]);
+  draft = unstageEdgeRemoval(draft, "edge/existing");
+  assert.equal(humanDraftChangeCount(draft), 0);
+});
+
+test("connection intent never silently rebases across a canonical revision", () => {
+  const edge = {
+    id: "edge/new",
+    source: "a",
+    target: "b",
+    relation: "supports",
+    layer: "epistemic",
+  };
+  const newerGraph = { ...graph, revision: 5 };
+  let draft = stageEdgeAddition(emptyHumanDraft(4), edge);
+  draft = reconcileHumanDraft(draft, newerGraph).draft;
+  assert.equal(draft.base_revision, 5);
+  assert.equal(toHumanSyncRequest(draft, newerGraph).base_revision, 4);
+  draft = deserializeHumanDraft(serializeHumanDraft(draft));
+  assert.equal(toHumanSyncRequest(draft, newerGraph).base_revision, 4);
+  draft = stageEdgeRemoval(draft, edge.id);
+  draft = stageEdgeAddition(draft, edge);
+  assert.equal(toHumanSyncRequest(draft, newerGraph).base_revision, 5);
+  draft = stageEdgeRemoval(draft, edge.id);
+  draft = stageEdgeRemoval(draft, "edge/existing");
+  draft = reconcileHumanDraft(draft, { ...graph, revision: 6 }).draft;
+  assert.equal(toHumanSyncRequest(draft, { ...graph, revision: 6 }).base_revision, 5);
+});
 
 const graph = {
   revision: 4,
@@ -459,6 +511,8 @@ test("direct Decision choices merge with wording edits and supersede targeted pr
     proposals: [{ proposal_id: relatedOnly.id, decision: "rejected" }],
     ontology: null,
     custom_nodes: [],
+    added_edges: [],
+    removed_edge_ids: [],
   });
 
   const revisedMedium = "Medium, with more time for validation";
@@ -542,6 +596,8 @@ test("serialization survives localStorage round trips and request conversion str
     proposals: [{ proposal_id: "proposal/1", decision: "rejected" }],
     ontology: null,
     custom_nodes: [],
+    added_edges: [],
+    removed_edge_ids: [],
   });
 });
 
@@ -595,6 +651,8 @@ test("ontology and custom nodes round trip, count, present, and serialize throug
     proposals: [],
     ontology,
     custom_nodes: [customNode],
+    added_edges: [],
+    removed_edge_ids: [],
   });
   const ontologyOnly = unstageCustomNode(draft, customNode.id);
   assert.equal(humanDraftChangeCount(ontologyOnly), 1);

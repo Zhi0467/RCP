@@ -56,6 +56,7 @@ from rcp.core.models import (
     HUMAN_EDITABLE_NODE_FIELDS,
     AuthorizedHuman,
     Decision,
+    Edge,
     ExperimentDecisionPin,
     GraphState,
     OntologyState,
@@ -686,6 +687,8 @@ class GraphSyncRequest(BaseModel):
     ontology: OntologyState | None = None
     custom_nodes: list[ProjectNode] = Field(default_factory=list)
     removed_node_ids: list[str] = Field(default_factory=list)
+    added_edges: list[Edge] = Field(default_factory=list)
+    removed_edge_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def require_unique_targets(self) -> GraphSyncRequest:
@@ -694,6 +697,8 @@ class GraphSyncRequest(BaseModel):
             ("proposal", [item.proposal_id for item in self.proposals]),
             ("custom node", [item.id for item in self.custom_nodes]),
             ("removed node", self.removed_node_ids),
+            ("added edge", [item.id for item in self.added_edges]),
+            ("removed edge", self.removed_edge_ids),
         ):
             if len(values) != len(set(values)):
                 raise ValueError(f"a graph sync cannot contain duplicate {label} targets")
@@ -705,6 +710,14 @@ class GraphSyncRequest(BaseModel):
                 "a graph sync cannot both change and remove the same node: "
                 f"{', '.join(conflicting_node_ids)}"
             )
+        created_node_ids = {item.id for item in self.custom_nodes}
+        if created_node_ids & (staged_node_ids | removed_node_ids):
+            raise ValueError("a graph sync cannot create and change or remove the same node")
+        if any(
+            edge.source in removed_node_ids or edge.target in removed_node_ids
+            for edge in self.added_edges
+        ):
+            raise ValueError("a graph sync cannot connect a node it removes")
         return self
 
 
@@ -1760,6 +1773,8 @@ class ProjectService:
                     request.proposals,
                     request.custom_nodes,
                     request.removed_node_ids,
+                    request.added_edges,
+                    request.removed_edge_ids,
                 )
             )
             or request.ontology is not None
@@ -1811,6 +1826,8 @@ class ProjectService:
                     request.proposals,
                     request.custom_nodes,
                     request.removed_node_ids,
+                    request.added_edges,
+                    request.removed_edge_ids,
                 )
             )
             and not ontology_changed
@@ -1891,18 +1908,13 @@ class ProjectService:
         active_types = {item.name: item for item in effective_ontology.types if not item.deprecated}
         for node in request.custom_nodes:
             extension_type = node.extension_type
-            if extension_type is None:
-                raise ValueError(
-                    "Human-created graph nodes must use an active custom ontology type; "
-                    "base-node authoring is not available."
-                )
             definition = active_types.get(extension_type)
-            if definition is None:
+            if extension_type is not None and definition is None:
                 raise ValueError(
                     f"Custom node {node.id} uses inactive or unknown ontology type "
                     f"{extension_type!r}."
                 )
-            if node.type != definition.base_type:
+            if definition is not None and node.type != definition.base_type:
                 raise ValueError(
                     f"Custom node {node.id} must use base type {definition.base_type!r} "
                     f"for ontology type {extension_type!r}."
@@ -1922,8 +1934,35 @@ class ProjectService:
                     summary=f"Created “{node.title}”.",
                     ops=[{"op": "create_nodes", "nodes": [prepared.model_dump(mode="json")]}],
                     change_summary=[
-                        f"Created “{node.title}” as a {extension_type.replace('_', ' ')}."
+                        f"Created “{node.title}” as a {(extension_type or node.type).replace('_', ' ')}."
                     ],
+                )
+            )
+
+        if request.removed_edge_ids or request.added_edges:
+            for edge_id in request.removed_edge_ids:
+                if edge_id not in state.edges:
+                    raise KeyError(edge_id)
+            edge_ops: list[dict[str, Any]] = []
+            if request.removed_edge_ids:
+                edge_ops.append({"op": "remove_edges", "edge_ids": request.removed_edge_ids})
+            if request.added_edges:
+                edge_ops.append(
+                    {
+                        "op": "create_edges",
+                        "edges": [
+                            edge.model_dump(mode="json", exclude={"created_rev", "layer"})
+                            for edge in request.added_edges
+                        ],
+                    }
+                )
+            patches.append(
+                Patch(
+                    kind="approval",
+                    author="human",
+                    summary="Edited graph connections.",
+                    ops=edge_ops,
+                    change_summary=["Edited graph connections."],
                 )
             )
 

@@ -1,5 +1,9 @@
 # Active decision records
 
+- [Graph authoring and product boundaries](2026-09-05-graph-authoring-and-product-boundaries.md)
+  records glossary authoring, validator advice, human graph editing and the
+  explicit exclusions replacing the retired open-question register.
+
 - [Backend structural refactor closure](2026-08-20-backend-structural-refactor-closure.md)
   records the deliberately retained engine/owner coupling, ordinary-Work fallback
   for an unproven child route, and the decision not to extract more control layers

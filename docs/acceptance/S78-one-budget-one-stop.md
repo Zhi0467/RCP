@@ -203,5 +203,6 @@ and should not be re-asserted here.
 The report renders through the existing sandboxed HTML boundary; an episode
 document is not a reason to invent an unrestricted one.
 
-Real-time streaming and worker-to-worker mail are out of scope, deferred as
-[Q8 and Q9](../open-questions.md).
+Worker-to-worker mail is excluded. Live human provider steering is separately
+proposed in [draft PR #49](https://github.com/Zhi0467/RCP/pull/49), not implemented
+or promised by this scenario.

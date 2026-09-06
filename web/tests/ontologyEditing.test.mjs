@@ -6,9 +6,44 @@ import {
   activeFieldsForNode,
   canRemoveOntologyType,
   makeCustomNode,
+  makeHumanNode,
   removeOntologyType,
   upsertOntologyType,
 } from "../src/ontologyEditing.ts";
+
+test("human creation supports every built-in node type without an extension ontology", () => {
+  for (const type of [
+    "research_question",
+    "hypothesis",
+    "decision",
+    "experiment",
+    "evidence",
+    "blocker",
+  ]) {
+    const node = makeHumanNode(
+      { types: [], fields: [], relations: [] },
+      type,
+      "A title",
+      "Title",
+      "Content",
+      "analytic",
+      {},
+    );
+    assert.equal(node.type, type);
+    assert.equal(node.extension_type, null);
+    const prefix = {
+      research_question: "rq",
+      hypothesis: "hyp",
+      decision: "dec",
+      experiment: "exp",
+      evidence: "ev",
+      blocker: "blk",
+    }[type];
+    assert.equal(node.id, `${prefix}/a-title`);
+    assert.equal(node.standing, "asserted");
+    assert.equal(node.created_rev, 0);
+  }
+});
 
 const ontology = {
   types: [

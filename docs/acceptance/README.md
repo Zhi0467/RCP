@@ -82,7 +82,6 @@ This index is checked against frontmatter by `tests/test_documentation.py`.
 | [S41](S41-bounded-experiment-control.md) | Run an Experiment through a bounded control loop | pending | pytest + browser |
 | [S42](S42-watchers-wake-conversations.md) | Watch external work and wake its conversation | implemented | pytest + browser |
 | [S53](S53-truthful-attention-and-run-surfaces.md) | Attention and Runs tell one truthful story | implemented | browser |
-| [S59](S59-staged-graph-audit-skills.md) | An agent audits the graph Patch it will finish | pending — not human-confirmed | pytest + browser |
 | [S60](S60-plain-language-project-setup.md) | Add a project with plain-language setup steps | pending — not human-confirmed | browser |
 | [S62](S62-direct-provider-log-ingestion.md) | Seed and Refresh read provider logs in place | implemented | pytest + browser |
 | [S63](S63-agent-run-lock-recovery.md) | RCP recovers run ownership; humans never remove locks | implemented | pytest + api |

@@ -100,6 +100,21 @@ migration.
 
 ## Typed graph operations
 
+Glossary entries are thin project-wide definitions, not node-local fields or
+graph nodes. A graph-writing agent may create or revise them in the same Patch
+as its ordinary graph work. Inline rendering looks up these stored definitions;
+it does not generate text on hover. Definitions follow the exact graph target
+of the Patch, so branch authoring does not mutate main before its normal merge.
+
+Admission also emits nonblocking quality flags for newly introduced internal-run
+Evidence without a producing Experiment, isolated operational nodes (Experiment,
+Evidence, Decision, Blocker), and identical normalized titles on same-type nodes.
+Checks use the complete candidate graph, including later edges, and compare with
+the initial graph rather than repeating existing issues. Losing a final relevant
+connection can introduce an issue too. ResearchQuestions and Hypotheses are not
+subject to the isolation warning. Advice neither proves scientific equivalence
+nor merges nodes; replay does not re-run these authoring checks.
+
 `Patch.ops` is an ordered list of the strict discriminated `GraphOperation`
 union. The existing top-level `op` discriminator and persisted payload keys are
 stable. Current operation families are:

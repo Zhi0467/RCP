@@ -78,6 +78,17 @@ the backend. A preview conflict retains the invalid edit and last valid draft
 separately. Sync revalidates the complete batch against live canonical main and
 commits once or not at all.
 
+Human Sync accepts built-in and active custom nodes through the existing
+`custom_nodes` collection, plus `added_edges` and `removed_edge_ids`. Preview and
+commit share the same backend owner and exact base revision. Edge replacements
+remove the old edge before creating its replacement in the same transition;
+layers are resolved by the backend. The membership-protected `graph-edit-options`
+endpoint publishes the current relation vocabulary and Evidence-assessment
+requirements from the backend ontology and validation rules. A draft with edge
+changes retains its original edge-edit revision across refresh/reload; it cannot
+silently rebase connection edits onto a newer graph.
+These controls remain human-only and add no WebMCP graph-writing tool.
+
 Resolved/superseded Blockers remain canonical but are omitted from active
 Research-flow and attention projections. Stale Experiment summaries and next
 actions are labelled historical and never rendered as current guidance.

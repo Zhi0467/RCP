@@ -4,6 +4,7 @@ import {
   type GraphState,
   type OntologyState,
   type Standing,
+  type Edge,
 } from "./types";
 
 export type DraftNodeValue =
@@ -32,6 +33,9 @@ export interface HumanDraft {
   proposals: Record<string, { decision: ProposalDecision; reason?: string }>;
   ontology: OntologyState | null;
   custom_nodes: Record<string, GraphNode>;
+  added_edges?: Edge[];
+  removed_edge_ids?: string[];
+  edge_base_revision?: number;
 }
 
 export interface HumanSyncRequest {
@@ -47,6 +51,8 @@ export interface HumanSyncRequest {
   proposals: Array<{ proposal_id: string; decision: ProposalDecision; reason?: string }>;
   ontology: OntologyState | null;
   custom_nodes: GraphNode[];
+  added_edges: Edge[];
+  removed_edge_ids: string[];
 }
 
 export interface HumanDraftReconciliation {
@@ -362,7 +368,40 @@ export function stageCustomNode(draft: HumanDraft, node: GraphNode): HumanDraft 
 export function unstageCustomNode(draft: HumanDraft, nodeId: string): HumanDraft {
   const next = cloneDraft(draft);
   delete next.custom_nodes[nodeId];
+  next.added_edges = next.added_edges?.filter(
+    (edge) => edge.source !== nodeId && edge.target !== nodeId,
+  );
   return next;
+}
+
+export function stageEdgeAddition(draft: HumanDraft, edge: Edge): HumanDraft {
+  return {
+    ...cloneDraft(draft),
+    edge_base_revision:
+      draft.added_edges?.length || draft.removed_edge_ids?.length
+        ? (draft.edge_base_revision ?? draft.base_revision)
+        : draft.base_revision,
+    added_edges: [...(draft.added_edges ?? []), edge],
+  };
+}
+
+export function stageEdgeRemoval(draft: HumanDraft, edgeId: string): HumanDraft {
+  const next = cloneDraft(draft);
+  if (next.added_edges?.some((edge) => edge.id === edgeId)) {
+    next.added_edges = next.added_edges.filter((edge) => edge.id !== edgeId);
+  } else {
+    if (!next.added_edges?.length && !next.removed_edge_ids?.length)
+      next.edge_base_revision = draft.base_revision;
+    next.removed_edge_ids = [...new Set([...(next.removed_edge_ids ?? []), edgeId])];
+  }
+  return next;
+}
+
+export function unstageEdgeRemoval(draft: HumanDraft, edgeId: string): HumanDraft {
+  return {
+    ...cloneDraft(draft),
+    removed_edge_ids: (draft.removed_edge_ids ?? []).filter((id) => id !== edgeId),
+  };
 }
 
 export function applyHumanDraft(graph: GraphState, draft: HumanDraft | null): GraphState {
@@ -403,7 +442,9 @@ export function humanDraftChangeCount(draft: HumanDraft | null): number {
     draft.removed_node_ids.length +
     Object.keys(draft.proposals).length +
     (draft.ontology ? 1 : 0) +
-    Object.keys(draft.custom_nodes).length
+    Object.keys(draft.custom_nodes).length +
+    (draft.added_edges?.length ?? 0) +
+    (draft.removed_edge_ids?.length ?? 0)
   );
 }
 
@@ -459,7 +500,10 @@ export function draftNodeIsBehind(
 
 export function toHumanSyncRequest(draft: HumanDraft, graph: GraphState): HumanSyncRequest {
   return {
-    base_revision: graph.revision,
+    base_revision:
+      draft.added_edges?.length || draft.removed_edge_ids?.length
+        ? (draft.edge_base_revision ?? draft.base_revision)
+        : graph.revision,
     removed_node_ids: [...draft.removed_node_ids],
     nodes: Object.entries(draft.nodes).flatMap(([nodeId, entry]) =>
       draftNodeIsBehind(entry, graph.nodes[nodeId])
@@ -482,6 +526,8 @@ export function toHumanSyncRequest(draft: HumanDraft, graph: GraphState): HumanS
     })),
     ontology: draft.ontology,
     custom_nodes: Object.values(draft.custom_nodes),
+    added_edges: draft.added_edges ?? [],
+    removed_edge_ids: draft.removed_edge_ids ?? [],
   };
 }
 
@@ -534,6 +580,17 @@ export function deserializeHumanDraft(value: string | null): HumanDraft | null {
       custom_nodes: isRecord(parsed.custom_nodes)
         ? (parsed.custom_nodes as Record<string, GraphNode>)
         : {},
+      ...(Array.isArray(parsed.added_edges) ? { added_edges: parsed.added_edges as Edge[] } : {}),
+      ...(Array.isArray(parsed.removed_edge_ids)
+        ? {
+            removed_edge_ids: parsed.removed_edge_ids.filter(
+              (id): id is string => typeof id === "string",
+            ),
+          }
+        : {}),
+      ...(Number.isInteger(parsed.edge_base_revision)
+        ? { edge_base_revision: parsed.edge_base_revision as number }
+        : {}),
     };
   } catch {
     return null;

@@ -1,6 +1,6 @@
 ---
 id: S59-staged-graph-audit-skills
-status: pending — not human-confirmed
+status: rejected
 tier: hermetic
 driver: pytest + browser
 covered_by: none
@@ -10,13 +10,17 @@ reported_by: human, 2026-08-03
 
 # An agent audits the graph patch it is about to finish
 
+Archived 2026-09-05: the human rejected the separate scanner package. Quality
+advice uses the existing validator instead. The following proposal is retained
+only as historical evidence, not pending implementation.
+
 This scenario is a proposal and is **not yet human-confirmed**. It does not
 authorize implementation until the human resolves
-[Q5](../open-questions.md#q5--should-graph-writing-agents-be-required-to-run-an-executable-scanner).
+[Q5](../open-questions-2026-09-05.md#q5--should-graph-writing-agents-be-required-to-run-an-executable-scanner).
 The behavioral choices below remain proposed rather than settled.
 
 The registry, versioning, and per-run staging this scenario originally proposed
-the [official skills and workflows contract](../specs/providers-and-containment.md#official-skills-and-workflows),
+the [official skills and workflows contract](../../specs/providers-and-containment.md#official-skills-and-workflows),
 which settled two of its
 premises differently: packages are staged because a **human selected them**, not
 automatically per graph-writing launch, and the registry records no "permitted

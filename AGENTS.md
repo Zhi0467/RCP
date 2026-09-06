@@ -18,8 +18,8 @@ Current authority, highest first:
 5. Active handoffs for human-confirmed work that is not yet complete.
 6. [`docs/archive/`](docs/archive/) for history only.
 
-Read [`docs/open-questions.md`](docs/open-questions.md) before deciding an issue it
-covers. Report contradictions instead of silently choosing a source.
+Read the applicable current spec and active handoff before deciding an issue.
+Report contradictions instead of silently choosing a source.
 
 ## Working loop
 

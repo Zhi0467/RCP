@@ -74,18 +74,15 @@ def validate_approval_shape(
                 )
                 return
             node = nodes[0]
-            if not isinstance(node.extension_type, str):
-                report.reject(
-                    "invalid-direct-node-create",
-                    "The standalone New-node path creates exactly one custom ontology node.",
-                    revision,
-                )
             if node.standing != "asserted" or node.source_refs:
                 report.reject(
                     "invalid-direct-node-create",
-                    "A human-created custom node starts asserted and cannot claim source records.",
+                    "A human-created node starts asserted and cannot claim source records.",
                     revision,
                 )
+            return
+        if names in (["create_edges"], ["remove_edges"], ["remove_edges", "create_edges"]):
+            # Sync stages one connection edit; normal edge rules still validate its graph.
             return
         if names and set(names) <= {"update_nodes", "set_standing"}:
             update_ops = [op for op in patch.ops if isinstance(op, UpdateNodesOperation)]

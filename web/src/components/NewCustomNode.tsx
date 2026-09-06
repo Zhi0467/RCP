@@ -4,7 +4,8 @@ import {
   activeCustomTypes,
   activeFieldsForNode,
   baseOntologyTypes,
-  makeCustomNode,
+  makeHumanNode,
+  humanNodeId,
 } from "../ontologyEditing";
 import type {
   ExtensionFieldValue,
@@ -21,7 +22,10 @@ interface Props {
 }
 
 export function NewCustomNode({ ontology, disabled = false, existingNodeIds, onStage }: Props) {
-  const types = activeCustomTypes(ontology);
+  const types = [
+    ...baseOntologyTypes.map((item) => ({ name: item.name, base_type: item.name })),
+    ...activeCustomTypes(ontology),
+  ];
   const [open, setOpen] = useState(false);
   const [extensionType, setExtensionType] = useState(types[0]?.name ?? "");
   const [slug, setSlug] = useState("");
@@ -41,7 +45,8 @@ export function NewCustomNode({ ontology, disabled = false, existingNodeIds, onS
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
-  const nodeId = definition && normalizedSlug ? `${definition.name}/${normalizedSlug}` : "";
+  const nodeId =
+    definition && normalizedSlug ? humanNodeId(ontology, definition.name, normalizedSlug) : "";
   const requiredFieldsPresent = fields
     .filter((item) => item.required)
     .every((item) => hasFieldValue(values[item.name], item));
@@ -71,7 +76,7 @@ export function NewCustomNode({ ontology, disabled = false, existingNodeIds, onS
       }),
     );
     onStage(
-      makeCustomNode(
+      makeHumanNode(
         ontology,
         definition.name,
         normalizedSlug,
@@ -126,6 +131,7 @@ export function NewCustomNode({ ontology, disabled = false, existingNodeIds, onS
         <label>
           <span>Type</span>
           <select
+            aria-label="Type"
             value={definition?.name ?? ""}
             disabled={disabled}
             onChange={(event) => {
@@ -172,6 +178,7 @@ export function NewCustomNode({ ontology, disabled = false, existingNodeIds, onS
           <label>
             <span>Origin</span>
             <select
+              aria-label="Origin"
               value={origin}
               disabled={disabled}
               onChange={(event) => setOrigin(event.target.value as GraphNode["origin"])}

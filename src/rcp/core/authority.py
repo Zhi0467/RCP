@@ -415,6 +415,7 @@ ORDINARY_AGENT_GRAPH_ACTIONS: frozenset[GraphAction] = frozenset(
         REMOVE_EDGE,
         CREATE_PROPOSAL,
         WITHDRAW_PROPOSAL,
+        UPSERT_GLOSSARY,
     }
 )
 
@@ -442,6 +443,7 @@ _AGENT_GRAPH_AUTHORITY_BODY = """Assert directly:
 - Legal edges are direct except `has_subquestion`, `has_hypothesis`, `supersedes`, or `duplicate_of`
   restructuring an existing belief. Same-Patch nodes and Evidence/Experiment relations stay direct.
 - Agents may remove, supersede, or merge ordinary nodes.
+- Add or revise thin project-wide definitions with `upsert_glossary`; terms explain prose, not claims.
 Proposal-only changes:
 - Any edit, removal, supersede, merge, or protected relation change involving an existing
   ResearchQuestion or Hypothesis waits for a human. Put exactly one semantic operation in the

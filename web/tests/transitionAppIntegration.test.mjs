@@ -142,6 +142,19 @@ test("Experiment ceiling edits and custom Experiment creation always request coh
   );
 });
 
+test("every new node and connection edit requests backend preview", () => {
+  for (const changes of [
+    { custom_nodes: { question: { id: "rq/new", type: "research_question", title: "Question" } } },
+    { added_edges: [{ id: "edge/new", source: "a", target: "b", relation: "supports" }] },
+    { removed_edge_ids: ["edge/old"] },
+  ]) {
+    assert.deepEqual(
+      humanDraftTransitionRouting(draft(changes), graph, manifest, "rcp.lifecycle.v1"),
+      { route: "backend_preview", reason: "possible_trigger" },
+    );
+  }
+});
+
 test("a missing manifest fails every staged edit to backend preview", () => {
   assert.deepEqual(
     humanDraftTransitionRouting(
