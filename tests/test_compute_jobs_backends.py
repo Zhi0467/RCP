@@ -437,8 +437,9 @@ def test_uncertain_start_stops_the_stable_unit(backend_id, tmp_path):
 def test_systemd_transport_failure_attempts_cancel(cancel_status):
     runner = Runner((255, "", "connection dropped"), (cancel_status, "", "connection dropped"))
     ctx = BackendContext("worker", "remote", None, runner=runner, uid="501")
-    expected_error = ComputeLaunchUncertainError if cancel_status else ComputeTransportError
-    with pytest.raises(expected_error):
+    # Contact was lost after the manager may have accepted and collected the unit, so the
+    # launch is uncertain whether or not the stop attempt reached the host.
+    with pytest.raises(ComputeLaunchUncertainError):
         COMPUTE_BACKENDS["systemd_user"].start("/jobs/abc", "/jobs/abc/run.sh", request(), ctx)
     assert len(runner.calls) == 2
     assert shlex.split(runner.calls[-1][0][-1]) == [
