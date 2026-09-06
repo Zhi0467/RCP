@@ -1,5 +1,7 @@
 import type {
   ChatAttachmentDescriptor,
+  ChatMessage,
+  SteerRequest,
   ArtifactRevisionCandidate,
   Episode,
   EpisodeMessage,
@@ -38,7 +40,11 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+export async function api<T>(
+  path: string,
+  init?: RequestInit,
+  options: { retryIdentity?: boolean } = {},
+): Promise<T> {
   const mutation = isMutationRequest(init);
   const headers = new Headers(init?.headers);
   if (!headers.has("Content-Type") && !(init?.body instanceof FormData)) {
@@ -66,7 +72,12 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }));
-    if (mutation && identityNameIsRequired(response.status, body) && identityNameRequiredHandler) {
+    if (
+      mutation &&
+      options.retryIdentity !== false &&
+      identityNameIsRequired(response.status, body) &&
+      identityNameRequiredHandler
+    ) {
       const originalError = apiError(response.status, body);
       if (!(await identityNameRequiredHandler())) throw originalError;
       try {
@@ -345,4 +356,16 @@ export function sendEpisodeMessage(
     method: "POST",
     body: JSON.stringify({ body }),
   });
+}
+
+export function steerChatTurn(
+  projectId: string,
+  operationId: string,
+  request: SteerRequest,
+): Promise<ChatMessage> {
+  return api<ChatMessage>(
+    `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(operationId)}/steer`,
+    { method: "POST", body: JSON.stringify(request) },
+    { retryIdentity: false },
+  );
 }

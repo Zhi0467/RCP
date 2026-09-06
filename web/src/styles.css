@@ -6183,6 +6183,44 @@ button.relation-map-node:hover {
   padding: 8px 5px;
 }
 
+/* Live input belongs to the running attempt; the ordinary composer remains a draft. */
+.chat-live-steering {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: grid;
+  flex: none;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 9px;
+}
+.chat-live-steering label,
+.chat-live-steering > strong {
+  font-size: 12px;
+  grid-column: 1 / -1;
+}
+.chat-live-steering textarea {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: 14px;
+  min-width: 0;
+  padding: 8px;
+  resize: vertical;
+}
+.chat-live-steering button {
+  gap: 6px;
+}
+.chat-live-steering > strong {
+  color: var(--oxblood);
+}
+.chat-steering-receipt {
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 4px 8px;
+  margin-top: 8px;
+}
+
 .chat-send {
   align-items: flex-end;
   display: flex;
