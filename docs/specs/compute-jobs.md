@@ -3,7 +3,7 @@
 RCP owns launch and durable observation; the execution machine's process owner
 owns the computation. Work and Experiment-loop turns can launch, inspect, and
 cancel jobs through the staged command client, then hand observation to RCP.
-Child Work continuation, web Cancel availability, and agent prompt
+Child Work continuation and agent prompt
 instructions remain in the [compute runner handoff](../handoffs/handoff-2026-09-06-compute-runner.md).
 
 ## Backend profiles

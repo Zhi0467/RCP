@@ -1561,7 +1561,12 @@ export function NodeChat({
             return (
               <div className={`chat-watcher-row ${watcher.status}`} key={watcher.watcher_id}>
                 {external && watcher.job_id ? (
-                  <ComputeJobRow jobId={watcher.job_id} jobs={computeJobs.jobs} />
+                  <ComputeJobRow
+                    jobId={watcher.job_id}
+                    jobs={computeJobs.jobs}
+                    onCancel={readOnly ? undefined : computeJobs.cancel}
+                    cancelling={computeJobs.cancelling}
+                  />
                 ) : (
                   <strong>
                     {external

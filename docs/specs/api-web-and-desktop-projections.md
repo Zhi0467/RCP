@@ -98,9 +98,8 @@ refreshes, with no new timer. Job observers match records by `job_id` and show
 label or id, literal status, exit status, backend, diagnostics, and cancellation
 requester/time. Shell observers retain their existing presentation. The job status
 is opaque in `web/src/types.ts`; display conversion does not decide lifecycle.
-The current record lacks a backend-owned `can_cancel` projection. Web Cancel
-availability remains pending that field; the client API supports the existing
-Cancel route without deriving availability from status.
+Each row carries a backend-owned `can_cancel`; the Cancel control follows it,
+calls the cancel route, and replaces the row from the response.
 
 ## Atomic client project snapshots
 

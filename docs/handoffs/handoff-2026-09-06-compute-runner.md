@@ -21,14 +21,12 @@ check pass. The final full suite fails only the two known watcher `ps` permissio
 checks; the launcher terminal-event test passes on that run. Chromium console
 inspection and the real Linux/remote drive remain unavailable here.
 
-PR D2 is partially implemented on `codex/compute-runner-ui`: web contracts,
-Settings machine compute drafts/probes, and chat/Experiment job observer rows.
-Human Cancel availability remains blocked on the backend record's missing
-`can_cancel` projection; no frontend lifecycle derivation or backend change was
-added. Non-browser tests, typecheck, build, documentation tests, and an isolated
-served HTTP smoke check pass; browser interaction and the real-host drive remain
-unverified. PRs C, E, D2 Cancel, and the real-host acceptance drive
-remain. The decisions below are settled. Closure:
+PR D2 is implemented on `codex/compute-runner-ui`: web contracts, Settings
+machine compute drafts/probes, chat/Experiment job observer rows, and the human
+Cancel control driven by the backend-owned `can_cancel` that D1 exports. Web
+typecheck, unit and browser tests, build, documentation tests, and an isolated
+served HTTP smoke check pass; the real-host drive remains unverified. PRs C, E,
+and the real-host acceptance drive remain. The decisions below are settled. Closure:
 all six PRs merged, the S136 drive passes on the team server with a real Codex
 Work turn, and this file is archived in the same change.
 
@@ -164,9 +162,8 @@ previous branch until that branch merges.
   probe, machine compute settings API, probe API, job list and human Cancel API,
   episode-start gating, and specs. No web changes.
 - **D2 `codex/compute-runner-ui`.** Implemented: web types, Settings compute block
-  and probe status, and job rows in chat and Runs. Pending: a backend-owned
-  `can_cancel` field and the human Cancel control that consumes it. The typed
-  Cancel API client and response/refresh path are prepared; status stays opaque.
+  and probe status, job rows in chat and Runs, and the human Cancel control that
+  follows the backend-owned `can_cancel`; job status stays opaque in the browser.
 - **E `codex/compute-runner-prompts`.** Work, Experiment-loop, and child Work
   prompts: use `launch`, one bounded status check at most, finish; `unavailable`
   is a Blocker naming the setup failure, never a cue to run attached; remove the

@@ -180,8 +180,9 @@ observers. A job row carries its label or id, status, exit status, and backend,
 with Cancel requester and timestamp when recorded. Missing list entries retain
 the job id and show **Job details unavailable**. Shell observers keep their log
 and check presentation. **Stop watching** retains its existing meaning and never
-cancels compute. The human **Cancel** control is pending a backend availability
-projection; the browser does not infer it from job status.
+cancels compute. A **Cancel** control appears on a job row only while the
+backend's `can_cancel` says so; it calls the cancel route and replaces the row
+with the response. The browser never infers it from job status.
 
 ## Paper
 

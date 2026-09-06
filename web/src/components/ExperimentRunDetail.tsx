@@ -656,7 +656,12 @@ function WatcherDetail({
     <li className={`experiment-run-watcher ${watcher.status}`}>
       {external && watcher.job_id && (
         <div className="chat-watcher-row">
-          <ComputeJobRow jobId={watcher.job_id} jobs={computeJobs.jobs} />
+          <ComputeJobRow
+            jobId={watcher.job_id}
+            jobs={computeJobs.jobs}
+            onCancel={actionsDisabled ? undefined : computeJobs.cancel}
+            cancelling={computeJobs.cancelling}
+          />
         </div>
       )}
       <details>

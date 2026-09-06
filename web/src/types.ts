@@ -1676,6 +1676,8 @@ export interface ComputeJobRecord {
   cancel_requested_by: string | null;
   cancel_requested_at: string | null;
   diagnostic: string | null;
+  /** Backend-owned control decision; the browser never derives it from status. */
+  can_cancel: boolean;
 }
 
 export interface ComputeConnection {
