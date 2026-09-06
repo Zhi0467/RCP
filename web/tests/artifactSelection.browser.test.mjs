@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { chromium, webkit } from "playwright";
+import { createServer } from "vite";
 
 const script = await readFile(
   new URL("../../src/rcp/artifact_selection.js", import.meta.url),
@@ -93,12 +94,22 @@ test("only a confirmation-shell parent can enable HTML selection across opaque f
 
 test("direct preview drags require confirmation, preserve text, and keep working after cancel", async () => {
   const browser = await browserType.launch();
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    configFile: false,
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false },
+    optimizeDeps: { noDiscovery: true },
+  });
   try {
+    const { parseArtifactContextPayload } = await server.ssrLoadModule(
+      "/src/components/NodeChat.tsx",
+    );
     for (const kind of ["html", "image"]) {
       const page = await browser.newPage({ viewport: { width: 1040, height: 760 } });
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.setContent(`<style>body{margin:0}iframe,#image{width:700px;height:600px;border:0}#image{background:#edf2f5}aside{position:absolute;left:720px;top:10px}</style>
+      await page.setContent(`<style>body{margin:0}iframe,#image{width:700px;height:600px;border:0}#image{width:700.5px;height:600.25px;background:#edf2f5}aside{position:absolute;left:720px;top:10px}</style>
         ${kind === "html" ? '<iframe sandbox="allow-scripts"></iframe>' : '<div id="image"></div>'}
         <aside><section id="pending" hidden><div class="excerpt"></div><button data-confirm>Comment</button><button data-cancel>Cancel</button></section><div id="items"></div></aside>`);
       await page.addScriptTag({ content: script });
@@ -200,6 +211,25 @@ test("direct preview drags require confirmation, preserve text, and keep working
       assert.ok(selection.rect.width > 0 && selection.rect.height > 0);
       assert.ok(selection.rect.x >= 0 && selection.rect.x + selection.rect.width <= 1);
       assert.ok(selection.rect.y >= 0 && selection.rect.y + selection.rect.height <= 1);
+      if (kind === "image") {
+        const area = await page.locator("#image").boundingBox();
+        assert.equal(Number.isInteger(area.width), false);
+        assert.equal(Number.isInteger(area.height), false);
+        assert.equal(selection.rect.width, Math.abs(destination[0] - origin[0]) / area.width);
+        assert.equal(selection.rect.height, Math.abs(destination[1] - origin[1]) / area.height);
+        const payload = {
+          type: "rcp-artifact-context",
+          version: 1,
+          project_id: "project",
+          chat_id: "chat",
+          operation_id: "operation",
+          artifact_id: "0123456789abcdef01234567",
+          artifact_name: "plot.png",
+          media_type: "image/png",
+          selections: [{ ...selection, comment: "Compare this region." }],
+        };
+        assert.deepEqual(parseArtifactContextPayload(payload), payload);
+      }
 
       // A later area needs no re-arming, and Escape cancels without a stale box.
       await drag(page, origin, destination);
@@ -263,6 +293,7 @@ test("direct preview drags require confirmation, preserve text, and keep working
       await page.close();
     }
   } finally {
+    await server.close();
     await browser.close();
   }
 });
