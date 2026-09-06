@@ -1,10 +1,12 @@
 # Active implementation handoffs
 
-Discussion draft in this unmerged planning PR:
-[Worktree execution](handoff-2026-09-05-worktree-execution.md). This is not ready
-implementation work; settle its decisions before merging it into the active plan.
-
 Active:
+
+- [Worktree execution](handoff-2026-09-05-worktree-execution.md)
+  — human-confirmed 2026-09-05; nothing implemented. A conversation may work in
+  its own Git worktree of one registered repository, chosen by a composer tick;
+  integration is a human-chosen follow-up turn that opens a pull request or
+  merges into the starting or default branch.
 
 - [Dev team space and source server completion](handoff-2026-08-27-dev-team-space-and-server.md)
   — human-confirmed implementation through one genuinely usable lab/server
