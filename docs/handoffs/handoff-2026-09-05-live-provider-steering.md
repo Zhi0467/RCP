@@ -8,13 +8,13 @@ backend eligibility and disabled reasons, and the web control. Local provider
 and API regressions pass. A served Codex Discuss turn verified delivered and
 post-completion refused receipts; exec's disabled state was verified through
 the API. Restart preserved those receipts and recovered an active exec turn as
-paused with Resume/Retry available. S133, current specs, and Q8 are updated.
+paused with Resume/Retry available. S134, current specs, and Q8 are updated.
 Remaining verification includes the browser interaction/console drive, an integrated live Claude turn, Work
 under a non-nested sandbox, restart with an unacknowledged steer, and all SSH
 behavior. Probe (c) and SSH remain explicit gaps because this brief prohibits SSH. The
 settled decisions below remain the contract; no persistent provider daemon or
-hard interrupt is implemented. Phase 2 changes await the human's commits and
-this handoff remains active pending its incomplete acceptance drive.
+hard interrupt is implemented. Phase 2 is committed on the PR branch; this
+handoff remains active pending its incomplete acceptance drive.
 
 ## Evidence
 
@@ -95,7 +95,7 @@ real data directory or running work. Record results in this section.
 Executed only in `$SCRATCH/steering-probes/project`, where:
 
 ```sh
-SCRATCH=/private/tmp/claude-501/-Users-zhiwang-research-RCP/24a19e4a-5908-4790-90c1-1740a6637057/scratchpad/codex-runs
+SCRATCH=<disposable session scratch directory, not retained>
 PROBES=$SCRATCH/steering-probes
 codex --version  # codex-cli 0.153.2
 claude --version # 2.1.260 (Claude Code)
@@ -306,7 +306,7 @@ after cleanup.
 
 ## Acceptance
 
-[S133](../acceptance/S134-steer-the-running-human-chat.md) is the single new,
+[S134](../acceptance/S134-steer-the-running-human-chat.md) is the single new,
 human-confirmed acceptance scenario. It covers app-server locally and over SSH,
 completion refusal, unknown delivery with no resend, exec disabled state,
 durable human receipts, Claude completion fencing, and unchanged restart
