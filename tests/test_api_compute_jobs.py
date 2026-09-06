@@ -106,10 +106,15 @@ def test_compute_job_list_refreshes_running_project_rows_and_orders(compute_api,
         )
     )
     store.create_compute_job(job_record("other", project_id="another-project"))
+    store.create_compute_job(
+        job_record("live", project_id=project_id, created_at="2026-09-06T00:00:02Z")
+    )
     calls = []
 
     def refresh(store, manifest, job_id, *, data_dir, **_reconcile_kwargs):
         calls.append(job_id)
+        if job_id == "live":
+            return store.compute_job(job_id)
         return store.record_compute_job_refresh(
             job_id, status="exited", exit_status=0, ended_at=store.now()
         )
@@ -117,11 +122,13 @@ def test_compute_job_list_refreshes_running_project_rows_and_orders(compute_api,
     monkeypatch.setattr("rcp.compute_jobs.reconcile.refresh_compute_job", refresh)
     response = client.get(f"{url}/compute-jobs")
     assert response.status_code == 200
-    assert calls == ["older"]
-    assert [row["job_id"] for row in response.json()] == ["newer", "older"]
-    assert response.json()[1]["status"] == "exited"
-    assert response.json()[1]["exit_status"] == 0
-    assert response.json()[1]["label"] == "Training"
+    assert sorted(calls) == ["live", "older"]
+    assert [row["job_id"] for row in response.json()] == ["live", "newer", "older"]
+    # The control decision is backend-owned: only the running row may be cancelled.
+    assert [row["can_cancel"] for row in response.json()] == [True, False, False]
+    assert response.json()[2]["status"] == "exited"
+    assert response.json()[2]["exit_status"] == 0
+    assert response.json()[2]["label"] == "Training"
 
 
 def test_human_compute_cancel_is_attributed_idempotent_and_project_scoped(compute_api, monkeypatch):
@@ -145,6 +152,7 @@ def test_human_compute_cancel_is_attributed_idempotent_and_project_scoped(comput
     first = client.post(f"{url}/compute-jobs/job-1/cancel")
     assert first.status_code == 200, first.text
     assert first.json()["status"] == "cancelled"
+    assert first.json()["can_cancel"] is False
     assert first.json()["cancel_requested_by"] == store.local_owner.user_id
     assert first.json()["cancel_requested_at"]
     assert client.post(f"{url}/compute-jobs/job-1/cancel").json() == first.json()

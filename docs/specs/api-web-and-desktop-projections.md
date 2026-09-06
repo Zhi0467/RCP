@@ -78,7 +78,8 @@ project write admission, stores a fresh probe, and returns that same model with
 its backend-owned label and tone.
 
 `GET /api/projects/{project_id}/compute-jobs` refreshes running project jobs,
-then returns the bounded newest-first list of `ComputeJobRecord` rows. Fields
+then returns the bounded newest-first list of `ComputeJobRecord` rows, each
+with a backend-owned `can_cancel` that the web layer never derives. Fields
 include job id, optional label, status, exit status, created/start/end timestamps,
 backend id, execution machine, log path, origin operation id, episode id,
 cancellation requester and timestamp, and diagnostic.
