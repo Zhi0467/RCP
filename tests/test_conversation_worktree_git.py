@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -164,6 +167,37 @@ def test_shipped_source_has_same_behavior_without_package_imports(repository: Pa
         text=True,
     )
     assert json.loads(result.stdout) == conversation_worktree.execute(payload)
+
+
+def test_remote_worktree_loads_package_resource_without_module_source_path(
+    repository: Path, monkeypatch
+) -> None:
+    from rcp import conversation_worktrees
+    from rcp.transport.state import _remote_script
+
+    # Frozen modules have importable code, but their __file__ is not a source
+    # file. Exercise the actual remote command path through an owned local pipe.
+    monkeypatch.setattr(conversation_worktree, "__file__", "/not-a-source-file/worktree.pyc")
+    commands = []
+
+    def local_pipe(host, command):
+        assert host == "fixture-only"
+        arguments = shlex.split(command)
+        assert arguments[:2] == ["python3", "-c"]
+        assert arguments[2] == _remote_script("conversation_worktree.py")
+        commands.append(arguments)
+        return [sys.executable, "-I", *arguments[1:]]
+
+    monkeypatch.setattr(conversation_worktrees, "ssh_arguments", local_pipe)
+    result = conversation_worktrees.worktree_command(
+        SimpleNamespace(space_kind="personal"),
+        host="fixture-only",
+        operation="plan",
+        shared_path=str(repository),
+        chat_id="packaged-resource",
+    )
+    assert result["starting_branch"] == "research"
+    assert len(commands) == 1
 
 
 def test_removal_reconciles_only_persisted_removal_intent(repository: Path) -> None:

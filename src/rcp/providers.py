@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
@@ -136,6 +137,19 @@ class ProviderTurnRequest:
 
 
 @dataclass(frozen=True)
+class ProviderSteerReceipt:
+    status: Literal["delivered", "refused", "unknown"]
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ProviderSteeringState:
+    can_steer: bool
+    reason: str | None = None
+    turn_id: str | None = None
+
+
+@dataclass(frozen=True)
 class ProviderRuntimeStep:
     """One provider protocol input line normalized for the shared launcher."""
 
@@ -144,6 +158,8 @@ class ProviderRuntimeStep:
     complete: bool = False
     explicit_terminal: bool = False
     delivers_prompt: bool = False
+    steer_receipts: tuple[tuple[str, ProviderSteerReceipt], ...] = ()
+    stop_process: bool = False
 
 
 class ProviderTurn:
@@ -160,11 +176,18 @@ class ProviderTurn:
     def receive_line(self, line: str) -> ProviderRuntimeStep:
         raise NotImplementedError
 
+    def steering_state(self) -> ProviderSteeringState:
+        return ProviderSteeringState(False, "This runtime does not support live steering.")
+
+    def render_steer(self, expected_turn_id: str, message_id: str, text: str) -> bytes:
+        raise ValueError(self.steering_state().reason)
+
 
 class ProviderRuntime:
     """Provider-owned command and wire protocol hidden behind one RCP boundary."""
 
     id: str
+    supports_steering: bool = False
 
     def turn(self, request: ProviderTurnRequest) -> ProviderTurn:
         raise NotImplementedError
@@ -195,6 +218,12 @@ class _JsonlProviderTurn(ProviderTurn):
     def initial_input(self) -> bytes:
         return self._prompt.encode("utf-8")
 
+    def steering_state(self) -> ProviderSteeringState:
+        return ProviderSteeringState(
+            False,
+            f"{self._profile.label} {self._profile.default_runtime} does not support live steering.",
+        )
+
     def receive_line(self, line: str) -> ProviderRuntimeStep:
         try:
             value = json.loads(line)
@@ -207,6 +236,103 @@ class _JsonlProviderTurn(ProviderTurn):
             and value.get("type") in {"turn.completed", "turn.failed", "result"}
         )
         return ProviderRuntimeStep(events=(event,), explicit_terminal=terminal)
+
+
+class _ClaudeStreamTurn(_JsonlProviderTurn):
+    close_input_after_initial = False
+    requires_protocol_completion = True
+
+    def __init__(self, profile: ProviderProfile, request: ProviderTurnRequest) -> None:
+        super().__init__(profile, request)
+        self.command.extend(["--input-format", "stream-json", "--replay-user-messages"])
+        # Claude has no native per-turn precondition. This token identifies only
+        # this fresh process's initial input, never a resumable provider session.
+        self._turn_id = str(uuid.uuid4())
+        self._ready = False
+        self._completed = False
+        self._pending: set[str] = set()
+
+    @staticmethod
+    def _user_input(message_id: str, text: str) -> bytes:
+        return (
+            json.dumps(
+                {
+                    "type": "user",
+                    "uuid": message_id,
+                    "message": {"role": "user", "content": text},
+                    "parent_tool_use_id": None,
+                    "session_id": "",
+                },
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+
+    def initial_input(self) -> bytes:
+        return self._user_input(self._turn_id, self._prompt)
+
+    def steering_state(self) -> ProviderSteeringState:
+        if self._completed:
+            return ProviderSteeringState(False, "The provider turn has completed.")
+        if not self._ready:
+            return ProviderSteeringState(
+                False, "Waiting for the provider to acknowledge this turn."
+            )
+        return ProviderSteeringState(True, turn_id=self._turn_id)
+
+    def render_steer(self, expected_turn_id: str, message_id: str, text: str) -> bytes:
+        state = self.steering_state()
+        if not state.can_steer:
+            raise ValueError(state.reason)
+        if expected_turn_id != self._turn_id:
+            raise ValueError("The addressed provider turn is no longer active.")
+        if message_id in self._pending or message_id == self._turn_id:
+            raise ValueError("This message was already sent to the provider.")
+        self._pending.add(message_id)
+        return self._user_input(message_id, text)
+
+    def receive_line(self, line: str) -> ProviderRuntimeStep:
+        if self._completed:
+            return ProviderRuntimeStep()
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            return super().receive_line(line)
+        if isinstance(value, dict):
+            if value.get("type") == "user" and value.get("isReplay") is True:
+                message_id = value.get("uuid")
+                if message_id == self._turn_id:
+                    self._ready = True
+                if isinstance(message_id, str) and message_id in self._pending:
+                    self._pending.remove(message_id)
+                    return ProviderRuntimeStep(
+                        steer_receipts=((message_id, ProviderSteerReceipt("delivered")),)
+                    )
+                return ProviderRuntimeStep()
+            if value.get("type") == "result":
+                self._completed = True
+                event = self._profile.decode_event(value, line)
+                receipts = tuple(
+                    (message_id, ProviderSteerReceipt("refused", "Turn completed before delivery."))
+                    for message_id in self._pending
+                )
+                self._pending.clear()
+                return ProviderRuntimeStep(
+                    events=(event,),
+                    complete=True,
+                    explicit_terminal=True,
+                    stop_process=True,
+                    steer_receipts=receipts,
+                )
+        return super().receive_line(line)
+
+
+class _ClaudeStreamRuntime(ProviderRuntime):
+    id = "claude.stream-json.v1"
+    supports_steering = True
+
+    def turn(self, request: ProviderTurnRequest) -> ProviderTurn:
+        return _ClaudeStreamTurn(ClaudeProfile(), request)
 
 
 class _JsonlProviderRuntime(ProviderRuntime):
@@ -656,6 +782,11 @@ class ClaudeProfile(ProviderProfile):
     work_like_minimum_version = (2, 1, 233)
     declared_against = "2.1.233"
     declared = _CLAUDE_MODELS
+
+    def runtime(self, runtime_id: str) -> ProviderRuntime:
+        if runtime_id == self.legacy_runtime_id:
+            return _ClaudeStreamRuntime()
+        return super().runtime(runtime_id)
 
     def auth_command(self, binary: str) -> list[str]:
         return [binary, "auth", "status"]

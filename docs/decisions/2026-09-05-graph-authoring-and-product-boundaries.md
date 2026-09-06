@@ -26,10 +26,12 @@ reopened accidentally, not a second backlog or a claim that proposed features sh
   domain connectors may be future extensions. Do not impose a research-field
   allowlist or claim supported domains from speculative rankings; describe actual
   capabilities and complement external specialized tools.
-- **Live steering:** desirable if it is a modest extension of the provider-call
-  model. [Draft PR #49](https://github.com/Zhi0467/RCP/pull/49) owns feasibility and
-  further discussion, including local/SSH delivery and recovery. Inbound messages
-  during a turn do not inherently require a persistent session daemon.
+- **Live steering:** retain the modest provider-call extension settled in
+  [the steering handoff](../handoffs/handoff-2026-09-05-live-provider-steering.md),
+  not a persistent session daemon. The
+  [current provider contract](../specs/providers-and-containment.md#live-human-steering)
+  bounds delivery to one ordinary human chat attempt and preserves authority and
+  recovery. Its handoff and S134 retain the unverified live acceptance work.
 - **Peer mail:** no cross-episode/worker-to-worker mail. Preserve the existing
   orchestrator/worker star topology and recipient budget/authority boundaries.
 - **Restore:** add no client rollback detector. Preserve the existing restore

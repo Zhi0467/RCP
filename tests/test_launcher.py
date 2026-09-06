@@ -1,6 +1,7 @@
 import asyncio
 import json
 import shlex
+import signal
 import socket
 import sys
 import threading
@@ -533,11 +534,10 @@ async def test_stream_records_explicit_terminal_provider_event(
     ]
 
     evidence = json.loads(next(event.text for event in events if event.event == "provider_exit"))
-    assert evidence == {
-        "event_counts": {"answer": 1},
-        "explicit_terminal_event": True,
-        "return_code": 0,
-    }
+    assert evidence["event_counts"] == {"answer": 1}
+    assert evidence["explicit_terminal_event"] is True
+    assert evidence["stopped_at_result"] is True
+    assert evidence["return_code"] in (0, -signal.SIGTERM)
     assert events[-1].event == "done"
 
 
