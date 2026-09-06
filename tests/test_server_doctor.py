@@ -22,7 +22,7 @@ from rcp.server_ops import backup as backup_owner
 from rcp.server_ops import doctor as server_doctor
 from rcp.server_ops.backup import BackupArchiveReceipt, BackupRunOutcome
 from rcp.server_ops.cli import CallerIdentity, run_server_command
-from rcp.server_ops.config import ServerBackupConfig, ServerSourceConfig
+from rcp.server_ops.config import ServerBackupConfig, ServerReleaseConfig, ServerSourceConfig
 from rcp.server_ops.control import SERVER_CONTROL_OPERATIONS, ServerControlMemberSnapshot
 from rcp.server_ops.doctor import (
     LinuxServerDoctorMachine,
@@ -32,7 +32,6 @@ from rcp.server_ops.doctor import (
     release_relationship,
 )
 from rcp.server_ops.layout import ServerLayout, server_service_unit_text
-from rcp.server_ops.update_cutover import new_update_operation, publish_update_operation
 from rcp.server_runtime import (
     ServerMetadata,
     ServerMetadataError,
@@ -228,140 +227,6 @@ def test_doctor_reports_the_exact_last_protected_backup(
     assert receipt_calls[0]["expected_receipt_sha256"] == "d" * 64
 
 
-def test_doctor_reports_an_unfinished_source_update_as_a_problem(tmp_path: Path) -> None:
-    layout = _layout(tmp_path)
-    layout.update_checkpoints_root.mkdir(parents=True, mode=0o700)
-    built = layout.update_checkpoints_root / f"built-candidate-{OTHER_COMMIT}.json"
-    preflight = layout.update_checkpoints_root / "preflight.json"
-    for path in (built, preflight):
-        path.write_text("receipt\n", encoding="utf-8")
-        path.chmod(0o600)
-    operation = new_update_operation(
-        operation_id=str(uuid.uuid4()),
-        installation_id=INSTALLATION_ID,
-        space_id=SPACE_ID,
-        base_commit=COMMIT,
-        candidate_commit=OTHER_COMMIT,
-        base_instance_id=str(uuid.uuid4()),
-        base_process_pid=421,
-        built_receipt_path=built,
-        built_receipt_sha256="a" * 64,
-        preflight_receipt_path=preflight,
-        preflight_receipt_sha256="b" * 64,
-        update_root=layout.update_checkpoints_root,
-    )
-    publish_update_operation(
-        operation,
-        expected_uid=os.geteuid(),
-        expected_gid=os.getegid(),
-    )
-    problems: list[str] = []
-
-    summary = LinuxServerDoctorMachine(layout)._inspect_update(
-        service_uid=os.geteuid(),
-        installation_id=INSTALLATION_ID,
-        add_problem=problems.append,
-    )
-
-    assert summary.state == "maintenance_closing"
-    assert summary.candidate_commit == OTHER_COMMIT
-    assert summary.restored_commit is None
-    assert problems == ["unfinished source update requires sudo rcp server update re-entry"]
-
-
-def test_doctor_selects_an_older_active_receipt_over_the_latest_terminal_summary(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    layout = _layout(tmp_path)
-    active = SimpleNamespace(
-        updated_at=datetime(2026, 8, 29, 12, 0, tzinfo=UTC),
-        operation_id=str(uuid.uuid4()),
-        installation_id=INSTALLATION_ID,
-        terminal=False,
-        state="checkpoint_ready",
-        candidate_commit=OTHER_COMMIT,
-        base_commit=COMMIT,
-        failure=None,
-        runtime_failure=None,
-    )
-    latest = SimpleNamespace(
-        updated_at=datetime(2026, 8, 29, 13, 0, tzinfo=UTC),
-        operation_id=str(uuid.uuid4()),
-        installation_id=INSTALLATION_ID,
-        terminal=True,
-        state="committed",
-        candidate_commit="c" * 40,
-        base_commit=OTHER_COMMIT,
-        failure=None,
-        runtime_failure=None,
-    )
-    receipts = (
-        (Path("/active"), active, "a" * 64),
-        (Path("/latest"), latest, "b" * 64),
-    )
-    monkeypatch.setattr(
-        "rcp.server_ops.update_cutover.update_operation_receipts",
-        lambda _root, *, expected_uid: receipts,
-    )
-    monkeypatch.setattr(
-        "rcp.server_ops.update_checkpoint.unfinished_rollback_journals",
-        lambda _root, *, expected_uid: (),
-    )
-    problems: list[str] = []
-
-    summary = LinuxServerDoctorMachine(layout)._inspect_update(
-        service_uid=os.geteuid(),
-        installation_id=INSTALLATION_ID,
-        add_problem=problems.append,
-    )
-
-    assert summary.state == "checkpoint_ready"
-    assert summary.candidate_commit == OTHER_COMMIT
-    assert problems == ["unfinished source update requires sudo rcp server update re-entry"]
-
-
-@pytest.mark.parametrize("state", ["committed", "rolled_back"])
-def test_doctor_reports_a_selected_release_that_needs_runtime_restart(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    state: str,
-) -> None:
-    layout = _layout(tmp_path)
-    latest = SimpleNamespace(
-        updated_at=datetime(2026, 8, 29, 12, 0, tzinfo=UTC),
-        operation_id=str(uuid.uuid4()),
-        installation_id=INSTALLATION_ID,
-        terminal=True,
-        state=state,
-        candidate_commit=OTHER_COMMIT,
-        base_commit=COMMIT,
-        failure="candidate verification failed" if state == "rolled_back" else None,
-        runtime_failure="deferred runtime restart failed",
-    )
-    monkeypatch.setattr(
-        "rcp.server_ops.update_cutover.update_operation_receipts",
-        lambda _root, *, expected_uid: ((Path("/receipt"), latest, "a" * 64),),
-    )
-    monkeypatch.setattr(
-        "rcp.server_ops.update_checkpoint.unfinished_rollback_journals",
-        lambda _root, *, expected_uid: (),
-    )
-    problems: list[str] = []
-
-    summary = LinuxServerDoctorMachine(layout)._inspect_update(
-        service_uid=os.geteuid(),
-        installation_id=INSTALLATION_ID,
-        add_problem=problems.append,
-    )
-
-    assert summary.state == state
-    assert summary.failure == "deferred runtime restart failed"
-    assert problems == [
-        "selected source release needs safe runtime restart via sudo rcp server update"
-    ]
-
-
 def test_doctor_update_inspection_does_not_load_the_rehearsal_test_client() -> None:
     result = subprocess.run(
         (
@@ -369,7 +234,7 @@ def test_doctor_update_inspection_does_not_load_the_rehearsal_test_client() -> N
             "-W",
             "error",
             "-c",
-            "import sys; import rcp.server_ops.update_checkpoint; "
+            "import sys; import rcp.server_ops.doctor; "
             "assert 'rcp.server_ops.rehearsal' not in sys.modules; "
             "assert 'fastapi.testclient' not in sys.modules",
         ),
@@ -499,7 +364,9 @@ def test_doctor_does_not_traverse_an_unsafe_release_directory(tmp_path: Path) ->
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 0, COMMIT + "\n", "")
 
-    result = LinuxServerDoctorMachine(layout, runner=runner)._inspect_release(
+    machine = LinuxServerDoctorMachine(layout, runner=runner)
+    machine._selected = {"commit": COMMIT, "release_directory": str(layout.release_dir(COMMIT))}
+    result = machine._inspect_release(
         COMMIT,
         label="current",
         service_uid=os.getuid(),
@@ -614,7 +481,7 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
     gid = os.getgid()
     _prepare_layout(layout, uid=uid, gid=gid)
     release = _prepare_release(layout, COMMIT)
-    web_identity = web_build_identity(release / "web" / "dist")
+    web_identity = web_build_identity(release / ".venv/lib/python3.12/site-packages/rcp/web_dist")
     metadata = ServerMetadata.create(
         layout.data_dir,
         host="127.0.0.1",
@@ -648,6 +515,7 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
         ),
         paths=SimpleNamespace(model_dump=lambda: layout.recorded_paths()),
         backup=None,
+        release=ServerReleaseConfig(),
     )
 
     def config_loader(_path: Path):
@@ -677,7 +545,11 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
             runner=runner,
             service_identity=(uid, gid),
             root_identity=(uid, gid),
-        ).inspect()
+        )
+        # Root ancestry is exercised by projection-reader tests; this temporary
+        # complete workflow deliberately uses an unprivileged test-owned tree.
+        report._read_root_document = lambda path: json.loads(path.read_text())
+        report = report.inspect()
     finally:
         listener.close()
 
@@ -815,13 +687,42 @@ def _prepare_layout(layout: ServerLayout, *, uid: int, gid: int) -> None:
 
 
 def _prepare_release(layout: ServerLayout, commit: str) -> Path:
-    release = layout.release_dir(commit)
-    for path in (release / ".venv" / "bin", release / "web" / "dist"):
+    release = layout.releases_root / "412"
+    layout.supervisor_root.mkdir(mode=0o755)
+    selected = {
+        "version": 1,
+        "release_tag": "v0.3.2",
+        "version_string": "0.3.2+build.412.g" + commit[:7],
+        "build": 412,
+        "commit": commit,
+        "manifest_sha256": "a" * 64,
+        "release_directory": str(release),
+        "supervisor_version": "0.1.1",
+    }
+    layout.selected_release_receipt.write_text(json.dumps(selected))
+    status = {
+        "version": 1,
+        "operation_id": None,
+        "kind": "install",
+        "phase": "committed",
+        "previous_build": None,
+        "target_build": 412,
+        "error": None,
+        "active": False,
+    }
+    (layout.supervisor_root / "status.json").write_text(json.dumps(status))
+    for path in (
+        release / ".venv" / "bin",
+        release / ".venv/lib/python3.12/site-packages/rcp/web_dist",
+    ):
         path.mkdir(parents=True)
     for path, content in (
         (release / ".venv" / "bin" / "rcp", "#!/bin/sh\n"),
         (release / ".venv" / "bin" / "python", "python\n"),
-        (release / "web" / "dist" / "index.html", "<main>ready</main>\n"),
+        (
+            release / ".venv/lib/python3.12/site-packages/rcp/web_dist" / "index.html",
+            "<main>ready</main>\n",
+        ),
     ):
         path.write_text(content, encoding="utf-8")
     return release

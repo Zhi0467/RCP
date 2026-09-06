@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import tomlkit
 from pydantic import ValidationError
 
 from rcp.__main__ import build_parser
@@ -280,7 +281,7 @@ def test_backup_section_round_trips_and_legacy_v1_loads_unconfigured() -> None:
     rendered = render_installed_server_config(configured)
 
     assert parse_installed_server_config(rendered) == configured
-    assert "schema_version = 2" in rendered
+    assert f"schema_version = {SERVER_CONFIG_SCHEMA_VERSION}" in rendered
     assert "[backup]" in rendered
     assert 'schedule = "03:17"' in rendered
     assert "retention = 45" in rendered
@@ -292,14 +293,18 @@ def test_backup_section_round_trips_and_legacy_v1_loads_unconfigured() -> None:
     }
     assert "AGE-SECRET-KEY" not in rendered
 
-    legacy = render_installed_server_config(_installed()).replace(
-        "schema_version = 2", "schema_version = 1", 1
-    )
+    def legacy_document(text: str) -> str:
+        document = tomlkit.parse(text)
+        document["schema_version"] = 1
+        del document["release"]
+        return tomlkit.dumps(document)
+
+    legacy = legacy_document(render_installed_server_config(_installed()))
     migrated = parse_installed_server_config(legacy)
     assert migrated.schema_version == SERVER_CONFIG_SCHEMA_VERSION
     assert migrated.backup is None
 
-    legacy_with_backup = rendered.replace("schema_version = 2", "schema_version = 1", 1)
+    legacy_with_backup = legacy_document(rendered)
     with pytest.raises(ValueError, match="legacy.*cannot contain backup"):
         parse_installed_server_config(legacy_with_backup)
 

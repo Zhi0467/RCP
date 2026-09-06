@@ -1,0 +1,96 @@
+name: Supervisor installation and recovery qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supervisor-reboot-qualification
+  cancel-in-progress: false
+
+jobs:
+  reboot:
+    name: actual reboot on Ubuntu ${{ matrix.ubuntu }}
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            ubuntu: "22.04"
+          - runner: ubuntu-24.04
+            ubuntu: "24.04"
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Prepare the disposable runner's virtualization tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test ! -e /etc/rcp
+          sudo apt-get update
+          sudo apt-get install --yes qemu-system-x86 qemu-utils cloud-image-utils openssh-client acl
+          if test -c /dev/kvm; then
+            sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          fi
+
+      - name: Preflight real guest support
+        shell: bash
+        env:
+          RCP_REBOOT_DISPOSABLE: I_UNDERSTAND_THIS_CREATES_DISPOSABLE_VMS
+        run: |
+          set -euo pipefail
+          python3 -m tests.supervisor_reboot_live preflight --output "$RUNNER_TEMP/rcp-reboot-receipts"
+
+      - name: Build the qualification code
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix web ci
+          npm --prefix web run build
+          uv sync --frozen
+
+      - name: Build local qualification release fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run python -m tests.supervisor_reboot_build --output "$RUNNER_TEMP/rcp-reboot-bundles"
+
+      - name: Drive interrupted deployment and actual guest reboots
+        shell: bash
+        env:
+          RCP_REBOOT_DISPOSABLE: I_UNDERSTAND_THIS_CREATES_DISPOSABLE_VMS
+        run: |
+          set -euo pipefail
+          uv run python -m tests.supervisor_reboot_live drive \
+            --ubuntu '${{ matrix.ubuntu }}' \
+            --bundles "$RUNNER_TEMP/rcp-reboot-bundles" \
+            --output "$RUNNER_TEMP/rcp-reboot-receipts"
+
+      - name: Preserve qualification receipts and guest logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: supervisor-reboot-${{ matrix.ubuntu }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/rcp-reboot-receipts/*.json
+            ${{ runner.temp }}/rcp-reboot-receipts/guest/*.log
+            ${{ runner.temp }}/rcp-reboot-receipts/guest/*.json
+          if-no-files-found: error
+          retention-days: 7

@@ -5,9 +5,9 @@ Release artifact preparation from
 is implemented: CI builds the RCP and independent supervisor wheels in one
 prerelease per successful merge to `main`, a
 human can promote that build without rebuilding it, and a daily workflow prunes
-old build prereleases. Servers do not consume these artifacts yet. Until Phase
-4 lands, they still build `origin/main` from source exactly as
-[the team server guide](server.md) describes.
+old build prereleases. The installed supervisor consumes only promoted release
+artifacts through [the team server guide](server.md). Production adoption still
+requires the pending disposable reboot qualification and human promotion.
 
 ## The two events
 
@@ -90,11 +90,14 @@ may tell you which build is green; it does not run the workflow.
 
 ## How servers pick it up
 
-**Not yet in effect.** Phase 4 of
-[the supervisor handoff](handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md)
-will connect server updates to promoted artifacts. Today servers still build
-`origin/main` from source through the commands in
-[the team server guide](server.md); they do not follow GitHub Releases.
+Servers follow the newest non-prerelease release (`stable`) unless the installed
+config pins an explicit `vX.Y.Z`. `sudo rcp server update` reviews and confirms
+the exact promoted manifest, then protects current data, prepares the candidate,
+checks migration and application reads, and switches through the independent
+supervisor. `sudo rcp server supervisor update` separately updates that
+root-owned coordinator. Historical releases without the complete asset set or
+required application maintenance contract refuse; updates never fall back to
+main, a prerelease, or an intermediate source build.
 
 ## Retention
 
@@ -116,12 +119,13 @@ complete historical three-asset build but refuses a partial supervisor pair.
 The supervisor's fetch command refuses historical releases without supervisor
 assets rather than selecting another release.
 
-The package currently provides `fetch`, offline bundle `verify`, and isolated
-RCP `install` preparation. Operational switching, restore/reboot recovery, and
-supervisor self-update remain in
+The package provides preparation, installed operator commands, independent
+self-update and local startup recovery. The durable selection point preserves
+accepted work after admission opens. The actual Ubuntu reboot qualification and
+protected production cutover remain tracked in
 [the supervisor handoff](handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md).
-An initial supervisor wheel is not sufficient qualification for production
-cutover; the complete maintenance/recovery contract must land and pass first.
+A supervisor wheel alone is not qualification: run the disposable recovery drive
+before promoting the first complete deployment release.
 
 ## What to check before promoting
 

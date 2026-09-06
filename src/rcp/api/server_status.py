@@ -212,7 +212,7 @@ def _release_status(report: ServerDoctorReport) -> ServerStatusSummary:
         return ServerStatusSummary(label="Update is not ready", tone="bad")
     if report.source_state == "update_available":
         return ServerStatusSummary(label="Update is available", tone="attention")
-    return ServerStatusSummary(label="Running current source", tone="good")
+    return ServerStatusSummary(label="Running selected release", tone="good")
 
 
 def _backup_status(report: ServerDoctorReport) -> ServerStatusSummary:

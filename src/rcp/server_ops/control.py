@@ -32,19 +32,16 @@ from rcp.limits import (
     SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
 )
-from rcp.server_ops._local_primitives import canonical_json_text
 from rcp.server_ops._local_primitives import canonical_uuid4 as _canonical_uuid4
 from rcp.server_ops.models import SERVER_CLI_MAX_STEPS, ServerStep, redact_server_text
-from rcp.server_ops.update_cutover import TERMINAL_UPDATE_STATES, UpdateOperationState
 from rcp.server_runtime import ServerMetadata, read_server_metadata
 
 logger = logging.getLogger(__name__)
 
-SERVER_CONTROL_PROTOCOL_VERSION = 9
-# Update is coordinated by the previously installed release, so the running
-# service must retain one deliberately bounded compatibility window.  Keep the
-# values explicit: widening this tuple changes the private machine protocol.
-SERVER_CONTROL_COMPATIBLE_PROTOCOL_VERSIONS = (8, SERVER_CONTROL_PROTOCOL_VERSION)
+SERVER_CONTROL_PROTOCOL_VERSION = 10
+# Existing private console operations retain their explicit wire versions.
+# Maintenance has a new boundary and requires protocol 10.
+SERVER_CONTROL_COMPATIBLE_PROTOCOL_VERSIONS = (8, 9, SERVER_CONTROL_PROTOCOL_VERSION)
 SERVER_CONTROL_MAX_REQUEST_BYTES = 64 * 1024
 SERVER_CONTROL_MAX_RESPONSE_BYTES = 256 * 1024
 SERVER_CONTROL_SOCKET_MODE = 0o600
@@ -65,12 +62,11 @@ ServerControlOperation = Literal[
     "project_transfer_activate",
     "member_removal_plan",
     "member_removal_advance",
-    "restore_activation_commit",
     "backup_sqlite_capture",
-    "update_maintenance_enter",
-    "update_candidate_verify",
-    "update_fence_release",
-    "update_maintenance_abort",
+    "maintenance_enter",
+    "maintenance_status",
+    "maintenance_verify",
+    "maintenance_release",
 ]
 SERVER_CONTROL_OPERATIONS: tuple[ServerControlOperation, ...] = (
     "probe",
@@ -83,12 +79,11 @@ SERVER_CONTROL_OPERATIONS: tuple[ServerControlOperation, ...] = (
     "project_transfer_activate",
     "member_removal_plan",
     "member_removal_advance",
-    "restore_activation_commit",
     "backup_sqlite_capture",
-    "update_maintenance_enter",
-    "update_candidate_verify",
-    "update_fence_release",
-    "update_maintenance_abort",
+    "maintenance_enter",
+    "maintenance_status",
+    "maintenance_verify",
+    "maintenance_release",
 )
 ServerControlProjectStatus = Literal[
     "waiting_for_server_setup",
@@ -123,6 +118,8 @@ class ServerControlRequest(_StrictModel):
     selector_id: str | None = None
     boundary_sha256: str | None = None
     target_id: str | None = None
+    proof_path: str | None = None
+    proof_sha256: str | None = None
 
     @field_validator("protocol_version")
     @classmethod
@@ -133,6 +130,10 @@ class ServerControlRequest(_StrictModel):
 
     @model_validator(mode="after")
     def validate_ids(self) -> ServerControlRequest:
+        if self.operation != "maintenance_verify" and (
+            self.proof_path is not None or self.proof_sha256 is not None
+        ):
+            raise ValueError("only maintenance verification accepts proof fields")
         _canonical_uuid4(self.request_id, label="control request id")
         _canonical_uuid4(self.instance_id, label="control instance id")
         if self.selector_id is not None:
@@ -149,21 +150,29 @@ class ServerControlRequest(_StrictModel):
             ):
                 raise ValueError("selector-free control operations cannot carry selector fields")
         elif self.operation in {
-            "update_maintenance_enter",
-            "update_candidate_verify",
-            "update_fence_release",
-            "update_maintenance_abort",
-            "restore_activation_commit",
+            "maintenance_enter",
+            "maintenance_status",
+            "maintenance_verify",
+            "maintenance_release",
         }:
             if (
-                self.selector_kind is not None
+                self.protocol_version != 10
+                or self.selector_kind is not None
                 or self.selector_id is None
                 or self.boundary_sha256 is None
                 or self.target_id is not None
             ):
-                raise ValueError(
-                    "root control operations require one receipt-bound operation identity"
-                )
+                raise ValueError("maintenance requires protocol 10 and one explicit boundary")
+            if self.operation == "maintenance_verify":
+                if self.proof_path is None or self.proof_sha256 is None:
+                    raise ValueError("verification requires one application proof")
+                path = Path(self.proof_path)
+                if not path.is_absolute() or ".." in path.parts or str(path) != self.proof_path:
+                    raise ValueError("verification proof path must be absolute and normalized")
+                if len(self.proof_sha256) != 64 or any(
+                    c not in _HEX_DIGEST for c in self.proof_sha256
+                ):
+                    raise ValueError("verification proof requires SHA-256")
         elif self.operation in {
             "provider_readiness_plan",
             "project_provision_plan",
@@ -659,103 +668,47 @@ class ServerControlBackupCaptureResult(_StrictModel):
         return self
 
 
-class ServerControlUpdateResult(_StrictModel):
-    """Receipt-bound maintenance, verification, or fence-release readback."""
-
+class ServerControlMaintenanceResult(_StrictModel):
     instance_id: str
     pid: int = Field(gt=0)
     data_dir_id: str
     space_id: str
-    space_kind: Literal["team"] = "team"
-    operation_id: str
-    operation_state: UpdateOperationState
-    receipt_sha256: str
-    running_commit: str
+    maintenance_id: str | None
+    boundary_sha256: str | None
+    closed: bool
+    quiescent: bool
     capture: ServerControlBackupCaptureResult | None = None
     verification_sha256: str | None = None
 
     @model_validator(mode="after")
-    def validate_update(self) -> ServerControlUpdateResult:
-        for value, label in (
-            (self.instance_id, "control instance id"),
-            (self.space_id, "space id"),
-            (self.operation_id, "update operation id"),
+    def validate_boundary(self) -> ServerControlMaintenanceResult:
+        for field in ("instance_id", "space_id"):
+            _canonical_uuid4(getattr(self, field), label=field)
+        if (self.maintenance_id is None) != (self.boundary_sha256 is None):
+            raise ValueError("maintenance identity and digest must be present together")
+        if self.maintenance_id is not None:
+            _canonical_uuid4(self.maintenance_id, label="maintenance_id")
+        elif (
+            self.closed
+            or self.quiescent
+            or self.capture is not None
+            or self.verification_sha256 is not None
         ):
-            _canonical_uuid4(value, label=label)
-        for value, label in (
-            (self.data_dir_id, "data directory identity"),
-            (self.receipt_sha256, "update receipt digest"),
-            (self.verification_sha256, "update verification digest"),
-        ):
-            if value is not None and (
-                len(value) != 64 or any(character not in _HEX_DIGEST for character in value)
+            raise ValueError("a closed maintenance boundary requires its identity")
+        for digest in (self.data_dir_id, self.boundary_sha256, self.verification_sha256):
+            if digest is not None and (
+                len(digest) != 64 or any(c not in _HEX_DIGEST for c in digest)
             ):
-                raise ValueError(f"{label} must be a lowercase SHA-256 digest")
-        if len(self.running_commit) != 40 or any(
-            character not in _HEX_DIGEST for character in self.running_commit
-        ):
-            raise ValueError("update control results require one full lowercase Git commit")
+                raise ValueError("maintenance result digest is invalid")
+        if self.quiescent and not self.closed:
+            raise ValueError("quiescence requires closed admission")
         if self.capture is not None and (
-            self.capture.instance_id != self.instance_id
-            or self.capture.pid != self.pid
-            or self.capture.data_dir_id != self.data_dir_id
-            or self.capture.space_id != self.space_id
-        ):
-            raise ValueError("update capture identity differs from its control process")
-        if self.operation_state == "maintenance_closed" and self.capture is None:
-            raise ValueError("closed maintenance results require their exact capture")
-        if (
-            self.operation_state in {"candidate_verified", "old_release_verified"}
-            and self.verification_sha256 is None
-        ):
-            raise ValueError("release verification results require a read-model digest")
-        if self.operation_state in TERMINAL_UPDATE_STATES and self.capture is not None:
-            raise ValueError("terminal update results cannot repeat a capture boundary")
-        return self
-
-
-class ServerControlRestoreResult(_StrictModel):
-    """The durable readback that opened one replacement restore."""
-
-    instance_id: str
-    pid: int = Field(gt=0)
-    data_dir_id: str
-    space_id: str
-    space_kind: Literal["team"] = "team"
-    operation_id: str
-    restore_phase: Literal["complete"] = "complete"
-    boundary_sha256: str
-    readback: object
-
-    @model_validator(mode="after")
-    def validate_restore(self) -> ServerControlRestoreResult:
-        for value, label in (
-            (self.instance_id, "control instance id"),
-            (self.space_id, "space id"),
-            (self.operation_id, "restore operation id"),
-        ):
-            _canonical_uuid4(value, label=label)
-        for value, label in (
-            (self.data_dir_id, "data directory identity"),
-            (self.boundary_sha256, "restore activation boundary"),
-        ):
-            if len(value) != 64 or any(character not in _HEX_DIGEST for character in value):
-                raise ValueError(f"{label} must be a lowercase SHA-256 digest")
-        from rcp.server_ops.restore import RestoreActivationReadback
-
-        readback = (
-            self.readback
-            if isinstance(self.readback, RestoreActivationReadback)
-            else RestoreActivationReadback.model_validate_json(canonical_json_text(self.readback))
-        )
-        if (
-            readback.instance_id != self.instance_id
-            or readback.pid != self.pid
-            or readback.data_dir_id != self.data_dir_id
-            or readback.space_id != self.space_id
-        ):
-            raise ValueError("restore readback identity differs from its control process")
-        object.__setattr__(self, "readback", readback)
+            self.capture.instance_id,
+            self.capture.pid,
+            self.capture.space_id,
+            self.capture.data_dir_id,
+        ) != (self.instance_id, self.pid, self.space_id, self.data_dir_id):
+            raise ValueError("maintenance capture belongs to another process")
         return self
 
 
@@ -821,8 +774,7 @@ class ServerControlResponse(_StrictModel):
         | ServerControlProjectTransferUploadResult
         | ServerControlProjectTransferActivationResult
         | ServerControlBackupCaptureResult
-        | ServerControlUpdateResult
-        | ServerControlRestoreResult
+        | ServerControlMaintenanceResult
         | None
     ) = None
     error: ServerControlFailure | None = None
@@ -870,8 +822,7 @@ ServerControlHandler = Callable[
     | ServerControlProjectTransferUploadResult
     | ServerControlProjectTransferActivationResult
     | ServerControlBackupCaptureResult
-    | ServerControlUpdateResult
-    | ServerControlRestoreResult,
+    | ServerControlMaintenanceResult,
 ]
 PeerResolver = Callable[[socket.socket], ServerControlPeer]
 
@@ -1153,99 +1104,31 @@ class ServerControlClient:
             )
         return result
 
-    def activate_restore(
-        self,
-        *,
-        operation_id: str,
-        boundary_sha256: str,
-    ) -> ServerControlRestoreResult:
-        request = ServerControlRequest(
-            request_id=str(uuid.uuid4()),
-            instance_id=self.metadata.instance_id,
-            operation="restore_activation_commit",
-            selector_id=operation_id,
-            boundary_sha256=boundary_sha256,
-        )
-        result = self._exchange(request)
-        if not isinstance(result, ServerControlRestoreResult):
-            raise ServerControlError(
-                "invalid_response",
-                "The running RCP process returned the wrong restore activation result.",
-            )
-        return result
-
-    def enter_update_maintenance(
-        self,
-        *,
-        operation_id: str,
-        receipt_sha256: str,
-    ) -> ServerControlUpdateResult:
-        return self._update_operation(
-            "update_maintenance_enter",
-            operation_id=operation_id,
-            receipt_sha256=receipt_sha256,
-        )
-
-    def verify_update_candidate(
-        self,
-        *,
-        operation_id: str,
-        receipt_sha256: str,
-    ) -> ServerControlUpdateResult:
-        return self._update_operation(
-            "update_candidate_verify",
-            operation_id=operation_id,
-            receipt_sha256=receipt_sha256,
-        )
-
-    def release_update_fence(
-        self,
-        *,
-        operation_id: str,
-        receipt_sha256: str,
-    ) -> ServerControlUpdateResult:
-        return self._update_operation(
-            "update_fence_release",
-            operation_id=operation_id,
-            receipt_sha256=receipt_sha256,
-        )
-
-    def abort_update_maintenance(
-        self,
-        *,
-        operation_id: str,
-        receipt_sha256: str,
-    ) -> ServerControlUpdateResult:
-        return self._update_operation(
-            "update_maintenance_abort",
-            operation_id=operation_id,
-            receipt_sha256=receipt_sha256,
-        )
-
-    def _update_operation(
+    def maintenance(
         self,
         operation: Literal[
-            "update_maintenance_enter",
-            "update_candidate_verify",
-            "update_fence_release",
-            "update_maintenance_abort",
+            "maintenance_enter", "maintenance_status", "maintenance_verify", "maintenance_release"
         ],
         *,
-        operation_id: str,
-        receipt_sha256: str,
-    ) -> ServerControlUpdateResult:
-        request = ServerControlRequest(
-            request_id=str(uuid.uuid4()),
-            instance_id=self.metadata.instance_id,
-            operation=operation,
-            selector_id=operation_id,
-            boundary_sha256=receipt_sha256,
+        maintenance_id: str,
+        boundary_sha256: str,
+        proof_path: str | None = None,
+        proof_sha256: str | None = None,
+    ) -> ServerControlMaintenanceResult:
+        result = self._exchange(
+            ServerControlRequest(
+                request_id=str(uuid.uuid4()),
+                instance_id=self.metadata.instance_id,
+                operation=operation,
+                selector_id=maintenance_id,
+                boundary_sha256=boundary_sha256,
+                proof_path=proof_path,
+                proof_sha256=proof_sha256,
+            )
         )
-        result = self._exchange(request)
-        if not isinstance(result, ServerControlUpdateResult):
+        if not isinstance(result, ServerControlMaintenanceResult):
             raise ServerControlError(
-                "invalid_response",
-                "The running RCP process returned the wrong update result.",
+                "invalid_response", "Application returned the wrong maintenance result."
             )
         return result
 
@@ -1263,21 +1146,15 @@ class ServerControlClient:
         | ServerControlProjectTransferUploadResult
         | ServerControlProjectTransferActivationResult
         | ServerControlBackupCaptureResult
-        | ServerControlUpdateResult
-        | ServerControlRestoreResult
+        | ServerControlMaintenanceResult
     ):
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         timeout = SERVER_CONTROL_IO_TIMEOUT_SECONDS
         if request.operation == "backup_sqlite_capture":
             timeout = SERVER_CONTROL_BACKUP_CAPTURE_TIMEOUT_SECONDS
-        elif request.operation == "update_maintenance_enter":
+        elif request.operation == "maintenance_enter":
             timeout = SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS
-        elif request.operation in {
-            "update_candidate_verify",
-            "update_fence_release",
-            "update_maintenance_abort",
-            "restore_activation_commit",
-        }:
+        elif request.operation in {"maintenance_verify", "maintenance_release"}:
             timeout = SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS
         elif request.operation == "provider_readiness_check":
             timeout = SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS
@@ -1472,6 +1349,13 @@ class ServerControlServer:
                     code="unauthorized_peer",
                     message="This operating-system account cannot use the RCP control socket.",
                 )
+                # Keep the peer alive until the client has authenticated us and
+                # sent its frame. On macOS, closing sooner discards the kernel
+                # peer credentials even when our refusal is already queued.
+                # Consume only bounded bytes; unauthorized input never reaches
+                # JSON parsing or operation dispatch.
+                with suppress(OSError, ServerControlError):
+                    _receive_body(connection, maximum=SERVER_CONTROL_MAX_REQUEST_BYTES)
                 return
             raw = _receive_json(connection, maximum=SERVER_CONTROL_MAX_REQUEST_BYTES)
             protocol_version = _requested_protocol_version(raw)
@@ -1662,8 +1546,7 @@ def _validated_control_result(
     | ServerControlProjectTransferUploadResult
     | ServerControlProjectTransferActivationResult
     | ServerControlBackupCaptureResult
-    | ServerControlUpdateResult
-    | ServerControlRestoreResult,
+    | ServerControlMaintenanceResult,
 ) -> (
     ServerControlProbeResult
     | ServerControlMemberPlanResult
@@ -1675,8 +1558,7 @@ def _validated_control_result(
     | ServerControlProjectTransferUploadResult
     | ServerControlProjectTransferActivationResult
     | ServerControlBackupCaptureResult
-    | ServerControlUpdateResult
-    | ServerControlRestoreResult
+    | ServerControlMaintenanceResult
 ):
     if request.operation == "probe":
         if not isinstance(result, ServerControlProbeResult):
@@ -1762,28 +1644,27 @@ def _validated_control_result(
         if not isinstance(result, ServerControlBackupCaptureResult):
             raise ValueError("backup SQLite capture returned another operation's result")
         return ServerControlBackupCaptureResult.model_validate(result)
-    if request.operation == "restore_activation_commit":
-        if not isinstance(result, ServerControlRestoreResult):
-            raise ValueError("restore activation returned another operation's result")
-        validated_restore = ServerControlRestoreResult.model_validate(result)
-        if (
-            validated_restore.operation_id != request.selector_id
-            or validated_restore.boundary_sha256 != request.boundary_sha256
-        ):
-            raise ValueError("restore activation returned another operation boundary")
-        return validated_restore
     if request.operation in {
-        "update_maintenance_enter",
-        "update_candidate_verify",
-        "update_fence_release",
-        "update_maintenance_abort",
+        "maintenance_enter",
+        "maintenance_status",
+        "maintenance_verify",
+        "maintenance_release",
     }:
-        if not isinstance(result, ServerControlUpdateResult):
-            raise ValueError("update control returned another operation's result")
-        validated_update = ServerControlUpdateResult.model_validate(result)
-        if validated_update.operation_id != request.selector_id:
-            raise ValueError("update control returned another operation")
-        return validated_update
+        if not isinstance(result, ServerControlMaintenanceResult):
+            raise ValueError("maintenance returned another operation's result")
+        if (
+            request.operation in {"maintenance_status", "maintenance_release"}
+            and result.closed is False
+            and result.maintenance_id is None
+            and result.boundary_sha256 is None
+        ):
+            return result
+        if (
+            result.maintenance_id != request.selector_id
+            or result.boundary_sha256 != request.boundary_sha256
+        ):
+            raise ValueError("maintenance returned another boundary")
+        return result
     if not isinstance(result, ServerControlProjectStepResult):
         raise ValueError("project provisioning step returned another operation's result")
     validated_step = ServerControlProjectStepResult.model_validate(result)
@@ -1928,9 +1809,8 @@ __all__ = [
     "ServerControlProviderPlanResult",
     "ServerControlProviderTarget",
     "ServerControlRequest",
-    "ServerControlRestoreResult",
     "ServerControlServer",
-    "ServerControlUpdateResult",
+    "ServerControlMaintenanceResult",
     "ServerControlUnavailable",
     "unix_peer_identity",
 ]

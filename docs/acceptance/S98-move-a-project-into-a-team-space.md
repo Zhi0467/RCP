@@ -16,11 +16,11 @@ covered_by:
   - tests/test_imported_provider_sources.py
   - tests/test_imported_provider_source_lifecycle.py
   - tests/test_imported_provider_source_remote_staging.py
-  - tests/test_server_restore_projects.py
+  - tests/test_application_restore.py
   - tests/test_server_cli.py
   - tests/test_server_control.py
-  - tests/test_server_update_checkpoint.py
-  - tests/test_server_update_rehearsal.py
+  - tests/test_supervisor_checkpoint.py
+  - tests/test_application_validation.py
   - tests/test_transfer_project_configuration.py
   - tests/test_transfer_import.py
   - tests/test_transfer_import_storage.py

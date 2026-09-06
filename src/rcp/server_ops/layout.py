@@ -1,4 +1,4 @@
-"""Fixed filesystem layout for the first source-built RCP team server."""
+"""Fixed application and independent supervisor filesystem layout."""
 
 from __future__ import annotations
 
@@ -91,6 +91,38 @@ class ServerLayout:
         if _FULL_GIT_COMMIT.fullmatch(commit) is None:
             raise ValueError("release commit must be a lowercase 40-character Git object id")
         return self.releases_root / commit
+
+    @property
+    def supervisor_root(self) -> Path:
+        return self.config_path.parent / "supervisor"
+
+    @property
+    def supervisor_versions_root(self) -> Path:
+        return self.supervisor_root / "versions"
+
+    @property
+    def supervisor_python_root(self) -> Path:
+        return self.supervisor_root / "python"
+
+    @property
+    def supervisor_current(self) -> Path:
+        return self.supervisor_root / "current"
+
+    @property
+    def supervisor_operations_root(self) -> Path:
+        return self.supervisor_root / "operations"
+
+    @property
+    def supervisor_bundles_root(self) -> Path:
+        return self.supervisor_root / "bundles"
+
+    @property
+    def selected_release_receipt(self) -> Path:
+        return self.supervisor_root / "selected.json"
+
+    @property
+    def supervisor_wrapper(self) -> Path:
+        return self.cli_wrapper.with_name("rcp-supervisor")
 
     def project_repository_dir(self, project_id: str, alias: str) -> Path:
         _project_credential_components(project_id, alias)

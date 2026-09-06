@@ -78,40 +78,6 @@ def _team_app(tmp_path: Path, control_root: Path):
     return data_dir, metadata, create_app(data_dir=data_dir, instance_metadata=metadata)
 
 
-def test_installed_app_refuses_to_open_before_pending_restoration_completes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service_home = tmp_path / "home"
-    server_root = service_home / "server"
-    layout = replace(
-        DEFAULT_SERVER_LAYOUT,
-        service_home=service_home,
-        server_root=server_root,
-        source_checkout=server_root / "source",
-        releases_root=server_root / "releases",
-        data_dir=server_root / "data",
-        projects_root=server_root / "projects",
-        credentials_root=server_root / "credentials",
-        update_checkpoints_root=server_root / "update-checkpoints",
-        restore_operations_root=server_root / "restore-operations",
-        codex_state_root=service_home / ".codex",
-        claude_state_root=service_home / ".claude",
-        ssh_state_root=service_home / ".ssh",
-    )
-    layout.update_checkpoints_root.mkdir(parents=True)
-    journal = layout.update_checkpoints_root / "checkpoint-fixture" / "rollback-journal.json"
-    monkeypatch.setattr(
-        "rcp.api.app._installed_rollback_journals",
-        lambda _root: (journal,),
-    )
-
-    with pytest.raises(RuntimeError, match="restoration is incomplete"):
-        create_app(data_dir=layout.data_dir, server_layout=layout)
-
-    assert not layout.data_dir.exists()
-
-
 def test_team_lifespan_publishes_private_socket_without_opening_a_second_store(
     tmp_path: Path,
     control_root: Path,
@@ -483,7 +449,7 @@ def test_update_maintenance_refuses_an_active_upload_before_closing_admission(
             ServerControlRequest(
                 request_id=str(uuid.uuid4()),
                 instance_id=metadata.instance_id,
-                operation="update_maintenance_enter",
+                operation="maintenance_enter",
                 selector_id=str(uuid.uuid4()),
                 boundary_sha256="a" * 64,
             ),
@@ -580,10 +546,114 @@ def test_update_maintenance_blocks_get_routes_that_can_mutate(tmp_path: Path) ->
         )
 
     assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "server_update_maintenance"
+    assert response.json()["detail"]["code"] == "server_maintenance"
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
     assert disallowed.status_code == 503
     assert "access-control-allow-origin" not in disallowed.headers
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["maintenance_enter", "maintenance_status", "maintenance_verify", "maintenance_release"],
+)
+@pytest.mark.parametrize("closed", [False, True])
+@pytest.mark.parametrize("mismatched_field", ["maintenance_id", "boundary_sha256"])
+def test_maintenance_result_rejects_mismatched_boundary(
+    operation, closed, mismatched_field
+) -> None:
+    maintenance_id = str(uuid.uuid4())
+    request = ServerControlRequest(
+        request_id=str(uuid.uuid4()),
+        instance_id=str(uuid.uuid4()),
+        operation=operation,
+        selector_id=maintenance_id,
+        boundary_sha256="a" * 64,
+        proof_path="/tmp/proof.json" if operation == "maintenance_verify" else None,
+        proof_sha256="b" * 64 if operation == "maintenance_verify" else None,
+    )
+    result = control.ServerControlMaintenanceResult(
+        instance_id=request.instance_id,
+        pid=os.getpid(),
+        data_dir_id="c" * 64,
+        space_id=str(uuid.uuid4()),
+        maintenance_id=str(uuid.uuid4())
+        if mismatched_field == "maintenance_id"
+        else maintenance_id,
+        boundary_sha256="d" * 64 if mismatched_field == "boundary_sha256" else "a" * 64,
+        closed=closed,
+        quiescent=False,
+    )
+    with pytest.raises(ValueError, match="another boundary"):
+        control._validated_control_result(request, result)
+
+
+@pytest.mark.parametrize("operation", ["maintenance_enter", "maintenance_verify"])
+def test_maintenance_enter_and_verify_reject_identity_free_open_result(operation) -> None:
+    request = ServerControlRequest(
+        request_id=str(uuid.uuid4()),
+        instance_id=str(uuid.uuid4()),
+        operation=operation,
+        selector_id=str(uuid.uuid4()),
+        boundary_sha256="a" * 64,
+        proof_path="/tmp/proof.json" if operation == "maintenance_verify" else None,
+        proof_sha256="b" * 64 if operation == "maintenance_verify" else None,
+    )
+    result = control.ServerControlMaintenanceResult(
+        instance_id=request.instance_id,
+        pid=os.getpid(),
+        data_dir_id="c" * 64,
+        space_id=str(uuid.uuid4()),
+        maintenance_id=None,
+        boundary_sha256=None,
+        closed=False,
+        quiescent=False,
+    )
+    with pytest.raises(ValueError, match="another boundary"):
+        control._validated_control_result(request, result)
+
+
+def test_maintenance_enter_release_and_open_status_over_control_socket(
+    tmp_path: Path,
+    control_root: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Control lab")
+    metadata = ServerMetadata.create(
+        data_dir,
+        host="127.0.0.1",
+        port=8421,
+        owner_kind="cli",
+        control_socket=control_root / "control.sock",
+        running_commit="a" * 40,
+        web_build_id="sha256:" + "b" * 64,
+    )
+    app = create_app(data_dir=data_dir, instance_metadata=metadata)
+    app.state.server_control.peer_resolver = lambda _connection: ServerControlPeer(
+        pid=os.getpid(), uid=0, gid=0
+    )
+    maintenance_id = str(uuid.uuid4())
+    boundary_sha256 = "a" * 64
+
+    with published_server_metadata(data_dir, metadata), TestClient(app):
+        client = ServerControlClient.from_data_dir(data_dir, expected_server_uid=os.geteuid())
+        entered = client.maintenance(
+            "maintenance_enter",
+            maintenance_id=maintenance_id,
+            boundary_sha256=boundary_sha256,
+        )
+        assert entered.closed is True
+        assert entered.quiescent is True
+        assert entered.maintenance_id == maintenance_id
+        assert entered.boundary_sha256 == boundary_sha256
+        for operation in ("maintenance_release", "maintenance_status"):
+            result = client.maintenance(
+                operation,
+                maintenance_id=maintenance_id,
+                boundary_sha256=boundary_sha256,
+            )
+            assert result.closed is False
+            assert result.maintenance_id is None
+            assert result.boundary_sha256 is None
 
 
 def test_update_control_operations_require_a_root_peer(
@@ -594,7 +664,7 @@ def test_update_control_operations_require_a_root_peer(
     request = ServerControlRequest(
         request_id=str(uuid.uuid4()),
         instance_id=metadata.instance_id,
-        operation="update_maintenance_enter",
+        operation="maintenance_enter",
         selector_id=str(uuid.uuid4()),
         boundary_sha256="a" * 64,
     )
@@ -659,27 +729,23 @@ def test_provider_check_uses_its_bounded_operation_timeout(
             request_id=str(uuid.uuid4()),
             lease_boundary_sha256="d" * 64,
         )
-    operation_id = str(uuid.uuid4())
-    with pytest.raises(RuntimeError, match="stop after observing"):
-        client.enter_update_maintenance(
-            operation_id=operation_id,
-            receipt_sha256="c" * 64,
-        )
-    with pytest.raises(RuntimeError, match="stop after observing"):
-        client.verify_update_candidate(
-            operation_id=operation_id,
-            receipt_sha256="c" * 64,
-        )
-    with pytest.raises(RuntimeError, match="stop after observing"):
-        client.release_update_fence(
-            operation_id=operation_id,
-            receipt_sha256="c" * 64,
-        )
-    with pytest.raises(RuntimeError, match="stop after observing"):
-        client.abort_update_maintenance(
-            operation_id=operation_id,
-            receipt_sha256="c" * 64,
-        )
+    maintenance_id = str(uuid.uuid4())
+    for operation in (
+        "maintenance_enter",
+        "maintenance_verify",
+        "maintenance_release",
+        "maintenance_status",
+    ):
+        with pytest.raises(RuntimeError, match="stop after observing"):
+            client.maintenance(
+                operation,
+                maintenance_id=maintenance_id,
+                boundary_sha256="c" * 64,
+                proof_path="/private/application-proof.json"
+                if operation == "maintenance_verify"
+                else None,
+                proof_sha256="d" * 64 if operation == "maintenance_verify" else None,
+            )
 
     assert observed == [
         SERVER_CONTROL_IO_TIMEOUT_SECONDS,
@@ -690,7 +756,7 @@ def test_provider_check_uses_its_bounded_operation_timeout(
         SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
         SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
         SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
-        SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
+        SERVER_CONTROL_IO_TIMEOUT_SECONDS,
     ]
 
 
@@ -730,7 +796,9 @@ def test_installed_control_socket_is_discovered_only_for_the_service_account(
         installed_control_socket_path(data_dir)
 
 
-def test_unauthorized_os_peer_is_rejected_before_request_dispatch(control_root: Path) -> None:
+def test_unauthorized_os_peer_is_rejected_before_request_dispatch(
+    control_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     metadata = ServerMetadata.create(
         control_root / "data",
         host="127.0.0.1",
@@ -755,10 +823,28 @@ def test_unauthorized_os_peer_is_rejected_before_request_dispatch(control_root: 
             pid=os.getpid(), uid=os.geteuid() + 1, gid=os.getegid()
         ),
     )
+    refusal_queued = threading.Event()
+    send_error = server._send_error
+
+    def announce_refusal(*args, **kwargs):
+        send_error(*args, **kwargs)
+        refusal_queued.set()
+
+    def resolve_after_refusal(connection):
+        assert refusal_queued.wait(TASK_SETTLE_TIMEOUT)
+        # Use real kernel credentials after the refusal was queued. A server
+        # that closes immediately loses these credentials on macOS.
+        return control.unix_peer_identity(connection)
+
+    monkeypatch.setattr(server, "_send_error", announce_refusal)
     server.start()
     try:
         with pytest.raises(ServerControlError) as caught:
-            ServerControlClient(metadata, expected_server_uid=os.geteuid()).probe()
+            ServerControlClient(
+                metadata,
+                expected_server_uid=os.geteuid(),
+                peer_resolver=resolve_after_refusal,
+            ).probe()
         assert caught.value.code == "unauthorized_peer"
         assert dispatched is False
     finally:
@@ -896,7 +982,13 @@ def test_server_accepts_previous_protocol_and_echoes_it_on_success_and_error(
         )
         unsupported = _raw_request(
             Path(metadata.control_socket or ""),
-            _framed_json({**base, "protocol_version": previous - 1}),
+            _framed_json(
+                {
+                    **base,
+                    "protocol_version": min(control.SERVER_CONTROL_COMPATIBLE_PROTOCOL_VERSIONS)
+                    - 1,
+                }
+            ),
         )
     finally:
         server.stop()
@@ -907,7 +999,10 @@ def test_server_accepts_previous_protocol_and_echoes_it_on_success_and_error(
     assert refused["protocol_version"] == previous
     assert refused["error"]["code"] == "invalid_request"
     assert unsupported["ok"] is False
-    assert unsupported["protocol_version"] == previous - 1
+    assert (
+        unsupported["protocol_version"]
+        == min(control.SERVER_CONTROL_COMPATIBLE_PROTOCOL_VERSIONS) - 1
+    )
     assert unsupported["error"]["code"] == "invalid_request"
 
 
@@ -1064,3 +1159,31 @@ def _receive_exact(connection: socket.socket, size: int) -> bytes:
             raise AssertionError("control server closed an incomplete response")
         body += chunk
     return body
+
+
+def test_previous_console_protocol_probe_does_not_advertise_unknown_maintenance_operations(
+    tmp_path: Path, control_root: Path
+) -> None:
+    _data_dir, metadata, app = _team_app(tmp_path, control_root)
+    for protocol in (8, 9):
+        result = app.state.server_control.handler(
+            ServerControlRequest(
+                protocol_version=protocol,
+                request_id=str(uuid.uuid4()),
+                instance_id=metadata.instance_id,
+                operation="probe",
+            ),
+            ServerControlPeer(pid=os.getpid(), uid=os.geteuid(), gid=os.getegid()),
+        )
+        assert "backup_sqlite_capture" in result.operations
+        assert "project_provision_step" in result.operations
+        assert not any(operation.startswith("maintenance_") for operation in result.operations)
+        with pytest.raises(ValueError, match="requires protocol 10"):
+            ServerControlRequest(
+                protocol_version=protocol,
+                request_id=str(uuid.uuid4()),
+                instance_id=metadata.instance_id,
+                operation="maintenance_status",
+                selector_id=str(uuid.uuid4()),
+                boundary_sha256="a" * 64,
+            )

@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,6 +34,7 @@ def _metadata(assets: dict[str, bytes], *, tag: str = "v0.3.2") -> dict:
         "tag_name": tag,
         "draft": False,
         "prerelease": False,
+        "target_commitish": "fe06636" + "0" * 33,
         "assets": [
             {
                 "name": name,
@@ -455,3 +458,136 @@ def test_verify_bounds_wheel_metadata(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(limits, "MAX_WHEEL_METADATA_BYTES", 10)
     with pytest.raises(SupervisorError, match="metadata exceeds"):
         releases.verify_release(directory)
+
+
+@pytest.mark.parametrize("commit", [None, "main", "a" * 7, "A" * 40, "b" * 40])
+def test_fetch_requires_full_release_commit_bound_to_wheel(tmp_path, github, commit):
+    github["metadata"]["target_commitish"] = commit
+    with pytest.raises(SupervisorError, match="commit|identity"):
+        releases.fetch_release("stable", tmp_path / "bundle")
+
+
+def test_local_verification_never_invents_a_full_commit(tmp_path):
+    release = releases.verify_release(make_bundle(tmp_path / "bundle"))
+    assert release.full_commit is None
+    assert release.release_tag is None
+
+
+def test_verify_rejects_non_ascii_metadata_name(tmp_path: Path) -> None:
+    assets = bundle_assets()
+    assets[RCP_WHEEL] = wheel_bytes(
+        "rcp",
+        VERSION,
+        raw_metadata=b"Metadata-Version: 2.3\nName: rcp\xff\nVersion: " + VERSION.encode() + b"\n",
+    )
+    refresh_manifest(assets)
+    directory = make_bundle(tmp_path / "release", assets)
+    with pytest.raises(SupervisorError, match="metadata does not match"):
+        releases.verify_release(directory)
+
+
+def test_verify_rejects_fifo_substitution_without_blocking(tmp_path: Path, monkeypatch) -> None:
+    directory = make_bundle(tmp_path / "release")
+    read_regular = releases._read_regular
+    errors = []
+
+    def substitute_fifo(path, maximum):
+        if path.name == RCP_WHEEL:
+            path.unlink()
+            os.mkfifo(path)
+        return read_regular(path, maximum)
+
+    def verify():
+        try:
+            releases.verify_release(directory)
+        except Exception as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(releases, "_read_regular", substitute_fifo)
+    thread = threading.Thread(target=verify, daemon=True)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "verification blocked on a substituted FIFO"
+    assert len(errors) == 1
+    assert isinstance(errors[0], SupervisorError)
+    assert f"release asset {RCP_WHEEL} must be a regular file" in str(errors[0])
+
+
+def test_download_bounds_slow_response_headers(monkeypatch) -> None:
+    stop = threading.Event()
+    started = threading.Event()
+    opened = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.wfile.write(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+            started.set()
+            try:
+                for _ in range(60):
+                    if stop.wait(0.05):
+                        break
+                    self.wfile.write(b"a")
+                self.wfile.write(b"\r\nContent-Length: 0\r\n\r\n")
+            except OSError:
+                pass
+
+        def log_message(self, format, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def open_local(request, timeout):
+        try:
+            response = urllib.request.urlopen(
+                f"http://127.0.0.1:{server.server_port}/", timeout=timeout
+            )
+            response.url = request.full_url
+            return response
+        finally:
+            opened.set()
+
+    monkeypatch.setattr(releases, "_open", open_local)
+    monkeypatch.setattr(limits, "FETCH_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(limits, "HTTP_TIMEOUT_SECONDS", 1)
+    start = time.monotonic()
+    try:
+        with pytest.raises(SupervisorError, match="time limit"):
+            releases._download(
+                "https://release-assets.githubusercontent.com/asset",
+                io.BytesIO(),
+                1024,
+                start + limits.FETCH_TIMEOUT_SECONDS,
+            )
+        assert time.monotonic() - start < 1.5
+        assert started.is_set()
+    finally:
+        stop.set()
+        assert opened.wait(timeout=5)
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def test_download_closes_response_returned_after_deadline(monkeypatch) -> None:
+    finish = threading.Event()
+    closed = threading.Event()
+
+    def open_late(request, timeout):
+        assert finish.wait(timeout=5)
+        return SimpleNamespace(close=closed.set)
+
+    monkeypatch.setattr(releases, "_open", open_late)
+    try:
+        with pytest.raises(SupervisorError, match="time limit"):
+            releases._download(
+                "https://release-assets.githubusercontent.com/asset",
+                io.BytesIO(),
+                1024,
+                time.monotonic() + 0.1,
+            )
+    finally:
+        finish.set()
+    assert closed.wait(timeout=5)

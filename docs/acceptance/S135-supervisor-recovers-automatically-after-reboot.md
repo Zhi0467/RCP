@@ -3,12 +3,19 @@ id: S135-supervisor-recovers-automatically-after-reboot
 status: pending
 tier: live
 driver: pytest + ssh + systemd + vm
-covered_by: []
+covered_by:
+  - tests/test_supervisor_operations.py
+  - tests/test_supervisor_checkpoint.py
+  - tests/test_supervisor_driver.py
+  - tests/test_supervisor_reboot_vm.py
+  - tests/supervisor_reboot_live.py
+  - .github/workflows/supervisor-recovery-live.yml
 invariants: [6, 7, 8, 9]
 last_checked: >-
   2026-09-06 — human confirmed automatic recovery and an actual reboot proof.
-  The supervisor implementation and disposable Ubuntu reboot harness remain
-  incomplete. Existing process-crash tests do not satisfy this scenario.
+  The supervisor implementation and disposable Ubuntu reboot harness are coded.
+  Local regression and fixture checks pass; the actual Ubuntu 22.04/24.04 reboot
+  drives have not run. Process-crash tests do not satisfy this scenario.
 ---
 
 # A reboot cannot bypass deployment recovery

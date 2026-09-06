@@ -180,6 +180,18 @@ class BackupProjectFileCaptureCoordinator:
             expected_sha256=expected_sha256,
         )
         self._validate_capture_boundary(sqlite_receipt_path, sqlite_receipt)
+        return self._capture_verified(sqlite_receipt_path, sqlite_receipt, expected_sha256)
+
+    def capture_offline(self, sqlite_receipt_path: Path, *, expected_sha256: str):
+        """Capture from an app-owned offline receipt outside the live data directory."""
+        sqlite_receipt = read_backup_sqlite_capture_receipt(
+            sqlite_receipt_path, expected_sha256=expected_sha256
+        )
+        if sqlite_receipt.app_data_plan.data_dir != str(self.data_dir):
+            raise BackupCaptureUnavailable("Offline capture names a different live data boundary.")
+        return self._capture_verified(sqlite_receipt_path, sqlite_receipt, expected_sha256)
+
+    def _capture_verified(self, sqlite_receipt_path, sqlite_receipt, expected_sha256):
         validate_backup_sqlite_snapshot(sqlite_receipt)
         capture_root = sqlite_receipt_path.parent
         projects_root = capture_root / "projects"

@@ -10,15 +10,15 @@ covered_by:
   - tests/test_server_install.py
   - tests/test_server_provider_readiness.py
   - tests/test_server_provider_update.py
-  - tests/test_server_update_prepare.py
-  - tests/test_server_update_rehearsal.py
-  - tests/test_server_update_checkpoint.py
-  - tests/test_server_update_cutover.py
-  - tests/test_server_install_live.py
+  - tests/test_supervisor_releases.py
+  - tests/test_application_validation.py
+  - tests/test_supervisor_checkpoint.py
+  - tests/test_supervisor_operations.py
+  - tests/supervisor_reboot_live.py
   - tests/test_team_project_provisioning.py
   - tests/test_server_member_removal_storage.py
   - tests/test_server_member_removal.py
-  - tests/test_server_restore_activation.py
+  - tests/test_supervisor_operations.py
   - tests/test_api_server_status.py
   - web/tests/serverSettings.test.mjs
 invariants: [1, 8]
@@ -62,7 +62,7 @@ Every member has equal space authority and there is no admin role. That only
 works if the operations nobody should perform casually are kept off the product
 surface entirely, rather than guarded by a rank the design refuses to introduce.
 
-Installation, backup, restore, source update, provider CLI update, project
+Installation, backup, restore, release update, provider CLI update, project
 provisioning, and member removal therefore require server operating-system
 authority. Provider login is not an RCP operation at all: the operator performs
 it with the provider's own command as the execution account, while RCP only
@@ -111,24 +111,17 @@ member running a long task plus active Auto-research and Experiment episodes.
    canonical history that member authored.
 7. With the server running, invoke a stateful command and verify it uses the
    private control socket rather than opening SQLite.
-8. Dirty the managed source checkout and run `sudo rcp server update`; then clean
-   it, fast-forward `origin/main`, prepare and rehearse a separate release, enter
-   the final maintenance barrier, restart, and read back the running commit.
-   Fail npm once before the release switch and fail startup once after it.
-   Inspect the rollback checkpoint, both release directories, the current
-   pointer, the installed and loaded service unit, deferred startup-effect
-   owners, every subprocess account, and the operator/service account's sudo
-   and systemd permissions. Interrupt once after the candidate unit is installed
-   but before the pointer changes; prove re-entry reloads the old unit before
-   restarting it. Seed one retained
-   local and remote run stage plus partial and complete transfer-inbox sentinels
-   before rehearsal; prove the candidate touches none of those live paths, then
-   inspect both stages after forced rollback. Kill the root coordinator after
-   every rollback journal phase, inspect the durable failure through doctor,
-   re-enter through update, and inspect the service and exact old data
-   before continuing. Keep a separate configured SSH project unreachable throughout one
-   successful rehearsal and cutover, then inspect its update receipt and
-   unavailable project projection.
+8. Confirm an exact promoted release and run `sudo rcp server update`. Verify
+   manifest and installed identity before admission closes, the complete protected
+   backup and shared backup lock, the maintenance barrier, copied-state validation,
+   and fenced startup. Fail artifact verification before activation and candidate
+   startup after switching. Inspect checkpoint and quarantine roots, current and
+   selected receipts, service ownership, and bounded diagnostics. Seed retained
+   local and remote run stages and transfer-inbox sentinels; prove rehearsal does
+   not touch their live paths and forced rollback preserves them. Interrupt every
+   rollback phase and inspect doctor before recovery. Drive the actual reboot
+   boundaries in S135. A configured unreachable SSH project remains unavailable;
+   its preserved local descriptor must not authorize remote mutation.
 9. Run install and update through a real TTY. Prove normal output rotates one
    bounded current-step line, external and one-time-code boundaries continue in
    the same wizard, every stop prints exact recovery/debug commands, and a fresh
@@ -154,7 +147,7 @@ member running a long task plus active Auto-research and Experiment episodes.
 - `server_settings_shows_backup_and_update_state_as_read_only`
 - `server_operations_require_machine_authority_not_an_rcp_member_role`
 - `each_server_command_rejects_the_wrong_root_or_service_account_entry_identity`
-- `root_coordinators_drop_to_rcp_before_source_git_provider_or_data_work`
+- `root_coordinators_drop_to_rcp_before_project_git_provider_or_data_work`
 - `a_running_server_command_uses_the_private_control_socket_not_sqlite`
 - `removal_reports_the_tasks_and_episodes_it_will_stop_before_acting`
 - `removal_stops_that_members_running_tasks_and_auto_research_and_experiment_episodes`
@@ -174,11 +167,11 @@ member running a long task plus active Auto-research and Experiment episodes.
 - `removal_leaves_authored_canonical_history_and_its_attribution_intact`
 - `self_service_credential_rotation_and_guarded_revocation_remain_product_actions`
 - `console_operations_refuse_without_their_required_machine_entry_privilege`
-- `update_refuses_a_dirty_diverged_or_non_main_source_checkout`
-- `update_fast_forwards_origin_main_builds_syncs_restarts_and_reads_back_the_commit`
-- `update_uses_only_the_dedicated_source_fetch_identity`
-- `update_runs_source_and_build_steps_as_rcp_and_only_restart_coordination_as_root`
-- `update_cutover_and_rollback_load_the_exact_selected_release_service_unit`
+- `update_refuses_unpromoted_or_hash_mismatched_release_assets`
+- `update_selects_the_confirmed_build_and_reads_back_its_full_identity`
+- `update_fetches_public_release_assets_without_a_source_deploy_key`
+- `application_installation_and_data_work_run_as_rcp`
+- `the_independent_root_launcher_executes_only_the_selected_application_as_rcp`
 - `the_rcp_account_has_no_general_sudo_or_systemd_control_permission`
 - `the_named_operator_rule_allows_only_the_documented_service_account_commands`
 - `a_candidate_build_never_changes_the_current_or_running_release`
@@ -197,7 +190,7 @@ member running a long task plus active Auto-research and Experiment episodes.
 - `a_failed_post_switch_start_restores_and_verifies_the_previous_release_loudly`
 - `a_coordinator_crash_cannot_start_a_mixed_or_unrestored_data_tree`
 - `rollback_reentry_idempotently_restores_the_exact_pre_cutover_bytes`
-- `update_never_resets_changes_force_pulls_or_substitutes_a_package`
+- `update_installs_only_the_exact_verified_promoted_artifact`
 - `interactive_and_structured_cli_modes_drive_the_same_command_implementation`
 - `interactive_progress_rotates_one_bounded_current_step_instead_of_dumping_events`
 - `interactive_human_boundaries_continue_inside_one_terminal_wizard`
@@ -209,7 +202,7 @@ member running a long task plus active Auto-research and Experiment episodes.
 ## UI path
 
 Server Settings shows the last successful backup, latest failure, running and
-upstream Git commits, and whether `origin/main` is ahead — as status, with no Web
+selected release identities and deployment state — as status, with no Web
 control that changes any of them. It does not carry a standing catalogue of the
 `rcp server ...` commands: whoever may run them already holds machine authority
 and reads the CLI's own help there, so a second copy in a member-visible panel

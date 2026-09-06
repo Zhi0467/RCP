@@ -197,6 +197,21 @@ def capture_installed_release_identity(
 ) -> RunningReleaseIdentity:
     """Capture the physical immutable release before the service starts."""
 
+    deployed_commit = os.environ.get("RCP_DEPLOYED_COMMIT")
+    if deployed_commit is not None:
+        from rcp import __version__
+        from rcp.web_assets import web_dist_path
+
+        match = re.fullmatch(r"\d+\.\d+\.\d+\+build\.\d+\.g([0-9a-f]{7})", __version__)
+        if (
+            _FULL_GIT_COMMIT.fullmatch(deployed_commit) is None
+            or match is None
+            or not deployed_commit.startswith(match.group(1))
+        ):
+            raise ServerMetadataError("trusted deployed commit does not match this wheel")
+        return RunningReleaseIdentity(
+            commit=deployed_commit, web_build_id=web_build_identity(web_dist_path())
+        )
     try:
         physical = (working_dir or Path.cwd()).resolve(strict=True)
         current = layout.current_release.resolve(strict=True)

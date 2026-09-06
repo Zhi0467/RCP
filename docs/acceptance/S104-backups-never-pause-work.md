@@ -12,12 +12,11 @@ covered_by:
   - tests/test_backup_identity.py
   - tests/test_backup_retention.py
   - tests/test_server_doctor.py
-  - tests/test_server_restore_state.py
-  - tests/test_server_restore_checkouts.py
-  - tests/test_server_restore_projects.py
-  - tests/test_server_restore_activation.py
-  - tests/test_server_install_live.py
-  - tests/test_server_restore_live.py
+  - tests/test_restore_archive_compatibility.py
+  - tests/test_application_restore.py
+  - tests/test_application_restore.py
+  - tests/test_supervisor_operations.py
+  - tests/supervisor_reboot_live.py
 invariants: [1, 2, 7]
 ---
 

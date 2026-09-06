@@ -1,6 +1,6 @@
 # Team server operator guide
 
-This guide is the terminal workflow for one source-built RCP team server. It is
+This guide is the terminal workflow for one artifact-installed RCP team server. It is
 written for the machine operator who has `sudo` on a disposable or dedicated
 Ubuntu host. The supported host is Ubuntu 22.04 LTS or Ubuntu 24.04 LTS on
 x86-64 with systemd.
@@ -22,7 +22,7 @@ Use the numbered sections for a fresh installation. For an existing server,
 jump directly to [member invitations](#invite-another-person-to-the-team-space),
 [provider authentication and updates](#11-provider-authentication),
 [service inspection](#inspect-and-stop-the-service),
-[source updates](#update-the-source-built-server),
+[release updates](#update-the-server-release),
 [backup](#back-up-the-team-server), [restore](#restore-a-protected-archive), or
 [member removal](#remove-a-team-member).
 
@@ -62,42 +62,9 @@ sudo apt-get update
 sudo apt-get install --yes age ca-certificates curl git iproute2 libc-bin openssh-client openssh-server passwd sudo util-linux xz-utils
 ```
 
-Success is an exit status of zero. Then continue with the shared Node.js and
-`uv` commands below.
+Success is an exit status of zero. Then install system-wide `uv` below.
 
-## 4. Install Node.js 24 and system-wide uv
-
-The supported server contract is any system-wide Node.js `24.x`. RCP does not
-use an operator's NVM/asdf installation because production builds run as the
-separate `rcp` account with a clean system PATH. Node 18 is also too old for the
-current Vite dependency, which requires Node 20.19+ or 22.12+.
-
-If `/usr/local/bin/node --version` already reports `v24.x`, keep that installation
-and skip the Node download. Otherwise install the exact patch qualified by the
-two-Ubuntu live matrix from its checksummed upstream archive. The subshell keeps
-the operator's working directory unchanged for the later bootstrap clone:
-
-```bash
-(
-  RCP_NODE_VERSION="v24.20.0"
-  RCP_NODE_ARCHIVE="node-${RCP_NODE_VERSION}-linux-x64.tar.xz"
-  RCP_NODE_DOWNLOAD_DIR="$(mktemp -d)"
-  cd "$RCP_NODE_DOWNLOAD_DIR"
-  curl --fail --show-error --location --remote-name "https://nodejs.org/dist/${RCP_NODE_VERSION}/${RCP_NODE_ARCHIVE}"
-  curl --fail --show-error --location --remote-name "https://nodejs.org/dist/${RCP_NODE_VERSION}/SHASUMS256.txt"
-  grep " ${RCP_NODE_ARCHIVE}$" SHASUMS256.txt | sha256sum --check --strict
-  sudo tar --extract --xz --file "$RCP_NODE_ARCHIVE" --directory /usr/local --strip-components=1 --no-same-owner
-)
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-hash -r
-node --version
-npm --version
-```
-
-The PATH change applies only to this SSH session. It prevents a personal NVM
-version from leaking into the bootstrap build without changing the operator's
-shell profile. Success is Node.js major `24` and a nonempty npm version; the
-documented archive reports `v24.20.0`.
+## 4. Install system-wide uv
 
 Install the selected `uv` release into `/usr/local/bin` without
 changing a user's shell profile. The archive digest is pinned from the immutable
@@ -129,114 +96,69 @@ Finally check every system prerequisite:
 git --version
 ssh -V
 age --version
-command -v age age-keygen curl getent git node npm runuser ssh ssh-keygen sudo systemctl useradd uv
+command -v age age-keygen curl getent git runuser ssh ssh-keygen sudo systemctl useradd uv
 ```
 
-Success is a path for every command, Node.js major 24, and age major 1.
+Success is a path for every command and age major 1. The server installs prebuilt Python and Web assets; Node.js and npm are not server installation prerequisites.
 
-## 5. Build the disposable bootstrap checkout
+## 5. Select the paired promoted release wheels
 
-Clone through the operator's ordinary GitHub access. This credential is used
-only for the disposable bootstrap checkout; the production checkout will not
-inherit it.
+Open the [latest promoted RCP release](https://github.com/Zhi0467/RCP/releases/latest).
+It must contain all five assets: the stamped RCP wheel, `requirements.lock.txt`,
+the independently versioned supervisor wheel, `supervisor-requirements.lock.txt`,
+and `manifest.sha256`. Copy the two wheel download links from that same release.
+A prerelease, build tag, `main`, or older release missing supervisor assets is
+refused explicitly.
+
+## 6. Run the paired-wheel bootstrap
+
+Set the two URLs to the copied public download links, then enter the command as
+root with the intended team name:
 
 ```bash
-git clone git@github.com:Zhi0467/RCP.git rcp-bootstrap
-cd rcp-bootstrap
-export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-hash -r
-node --version
-npm --prefix web ci
-npm --prefix web run build
-UV_MANAGED_PYTHON=1 UV_PYTHON=3.12 uv sync --frozen
+RCP_WHEEL_URL='paste the RCP wheel download link'
+RCP_SUPERVISOR_WHEEL_URL='paste the supervisor wheel download link from the same release'
+sudo /usr/local/bin/uv tool run --from "$RCP_WHEEL_URL" --with "$RCP_SUPERVISOR_WHEEL_URL" rcp server install --team-name "My lab"
 ```
 
-Repeat the PATH assignment here even if Step 4 already set it. This makes the
-bootstrap safe after opening a new shell or tmux session whose NVM/asdf setup
-would otherwise put an older personal Node.js ahead of the qualified system
-Node.js. Continue only when `node --version` reports `v24.x`.
+The two-wheel invocation is the explicit trust boundary for first installation.
+It gives the disposable bootstrap access to the matching supervisor without
+adding a permanent supervisor dependency to RCP. Bootstrap checks that both
+versions still match promoted stable, verifies the full five-asset bundle, and
+creates the dedicated `rcp` account. No source checkout, source deploy key, or
+operator GitHub credential is installed.
 
-If this operator uses GitHub HTTPS instead, use the credential-free repository
-URL and the operator's normal Git credential mechanism. Never put a token in
-the URL. Success is a built `web/dist` and an executable `.venv/bin/rcp`.
+## 7. Independent supervisor and recovery ownership
 
-## 6. Run the installer
+The supervisor owns `/etc/rcp/supervisor`, including its own root-owned Python,
+versioned environments, selected-release receipt, and recovery journal.
+`/usr/local/bin/rcp-supervisor` is the root-owned entry point. Application releases
+live at `/home/rcp/rcp-server/releases/<build>/.venv` and are installed as `rcp`.
+The application data, project, credential, and `/etc/rcp/current` paths remain
+fixed. The `rcp` account receives no general sudo authority.
 
-Still in the bootstrap checkout, enter the first RCP command as root. Replace
-the team name, but keep the executable path absolute:
+The retained privileged `server backup configure` and `server provider update`
+commands run from a separate root-owned operator environment pinned to the
+selected application build. That environment is installed from the same verified
+application wheel and locked dependencies; it does not add application imports
+to the supervisor runtime.
 
-```bash
-sudo /usr/bin/env PYTHONDONTWRITEBYTECODE=1 "$PWD/.venv/bin/rcp" server install --team-name "My lab"
-```
+`rcp.service` still runs as `rcp`. Its root `ExecStartPre` recovery guard finishes
+an interrupted transaction before the application starts. It needs no release
+network request during reboot recovery. The root-owned `selected.json` binds
+the promoted tag, build, full Git commit, manifest digest, and release path.
+The launcher exports that identity for application and backup metadata.
 
-The fixed environment flag prevents a root invocation from leaving root-owned
-Python cache files in the operator-owned disposable checkout.
+An initialized source installation uses an explicit one-time adoption journal.
+It retains the original launch files, installs the reboot guard, stops the old
+service, and preserves opaque original bytes before current application code
+interprets copied data. Candidate admission requires a complete protected backup
+and current application verification. A failure restores original data and
+launch authority before old source code can run again; a durable committed
+selection resumes only the chosen release.
 
-Leave this command running. RCP shows one current step while it validates the
-host, creates or checks the dedicated unprivileged `rcp` account, installs its
-managed Python 3.12, and prepares isolated source access.
-
-For a public source repository, RCP continues without a GitHub credential and
-does not stop for a source deploy key.
-
-## 7. Private source only: grant read access in the running wizard
-
-The RCP repository has been public since 2026-09-02, so new installations never
-see this step. An installation that still records a deploy-key source converges
-to the public HTTPS origin on its next `rcp server update`, or if
-`rcp server install` is rerun; the wizard then identifies the retired GitHub
-deploy key for the operator to revoke after the command completes and
-`server doctor` shows the public origin.
-
-If the transition fires unexpectedly, its probe ran with credential helpers,
-askpass, and global Git configuration disabled, so `ready` means the repository
-was readable anonymously. The next install or update finishes an interrupted
-transition by removing leftover source-key files, rewriting a matching SSH
-checkout, and repeating the deploy-key revocation instruction. If the repository
-is later made private again, follow the teardown and reinstall procedure and run
-`sudo rcp server install ...` to create a fresh deploy-key identity; the new
-`installation_id` will differ.
-
-While the RCP source repository is private, the running wizard pauses and shows:
-
-- the exact GitHub deploy-key settings page;
-- the title `rcp-source:<installation-id>`;
-- the generated public key and fingerprint;
-- an SSH host-trust command to run as `rcp`;
-- the requirement to leave **Allow write access** unchecked; and
-- the exact command that can continue later if this terminal is closed.
-
-Add only that public key as a read-only deploy key. Before accepting the SSH
-host key, compare the displayed Ed25519 fingerprint with [GitHub's published
-fingerprints](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints).
-After adding the key in GitHub, return to the still-running wizard and press
-Enter. RCP runs the displayed SSH trust command as `rcp`. When SSH asks `Are you
-sure you want to continue connecting?`, compare the fingerprint first, then type
-`yes` in that same terminal and press Enter. GitHub's successful authentication
-message still has SSH exit status 1 because GitHub does not provide shell
-access; the wizard understands that result and continues by rechecking source
-access. Do not copy or reconstruct another installer command.
-
-If you intentionally type `q` or close the terminal, no later installation step
-runs. Return later with the exact Continue command the wizard printed. Success
-after the wizard continues is a separate clean checkout under
-`/home/rcp/rcp-server/source`, an immutable built release, a stable
-`/usr/local/bin/rcp`, and a fresh service that is still stopped and disabled.
-
-This read-only source key is unrelated to the write-enabled deploy key each team
-project receives. After every existing installation has migrated and its retired
-source key has been revoked, a later pull request removes the source-key pause,
-key handling, and this entire step together.
-
-For structured output, place `--machine-readable` after `install`:
-
-```bash
-sudo /usr/bin/env PYTHONDONTWRITEBYTECODE=1 "$PWD/.venv/bin/rcp" server install --team-name "My lab" --machine-readable
-```
-
-Every line is one validated JSON event. Exit status 3 means the final event is
-an intentional human-action boundary for an external driver; no prompt or
-action runs in this mode. Exit status 0 means final service readback succeeded.
+`--machine-readable` emits the sealed noninteractive event stream. Exit status
+3 marks an operator action; it never reads terminal input or runs that action.
 
 ## 8. Save the code when the running wizard asks
 
@@ -266,18 +188,14 @@ sudo -u rcp -H /usr/local/bin/rcp server doctor
 Health must identify `status` as `ok`, `space_kind` as `team`, and the
 expected `space_name`; doctor must report a healthy installed release.
 
-After that final success, remove the bootstrap checkout. The installed checkout
-and release are separate:
+After success, confirm ordinary systemd re-entry:
 
 ```bash
-cd ..
-rm -rf -- rcp-bootstrap
 sudo systemctl restart rcp.service
 curl --fail --silent http://127.0.0.1:8421/api/health
 ```
 
-Only remove the exact disposable directory you just created. Do not use a home
-directory, workspace root, variable, or wildcard as the removal target.
+The independent supervisor recovers locally before systemd admits the service.
 
 ## 10. Configure one operator route
 
@@ -532,7 +450,7 @@ sudo -u rcp -H /usr/local/bin/rcp server project provision <request-id>
 Leave the wizard running. For each repository, GitHub setup pauses for a
 repository-scoped public deploy key. Add it to that repository with **Allow
 write access** enabled, return to the terminal, and press Enter. The server does
-not log in to a GitHub user or reuse the read-only RCP source key.
+not log in to a GitHub user. Each project keeps its own write-enabled key.
 
 If GitHub reports that the repository is empty, push the intended codebase or a
 visible first commit through the ordinary human Git workflow, then press Enter
@@ -556,36 +474,37 @@ sudo systemctl start rcp.service
 The listener is intentionally loopback-only. Team desktops reach it through an
 SSH tunnel; opening port 8421 publicly is not a supported deployment.
 
-## Update the source-built server
-
-Run one command and leave it open:
+## Update the server release
 
 ```bash
 sudo /usr/local/bin/rcp server update
 ```
 
-If the installed configuration still names the retired deploy-key SSH source,
-this command first converges it to the public HTTPS origin; rerunning
-`rcp server install` performs the same transition. The wizard names the retired
-GitHub deploy key to revoke after this update and a public-origin `server doctor`
-readback.
+The supervisor resolves promoted stable, shows the exact release tag, build,
+full commit, and manifest digest, and asks for confirmation of
+`vX.Y.Z:<manifest-sha256>`. It installs a separate verified release as `rcp`,
+requires a complete protected backup, closes application admission, and verifies
+copied state before changing live data. A fenced candidate probe must pass before
+the durable selected-release decision allows ordinary systemd startup.
 
-RCP fetches `origin/main` with the installed source identity, shows the exact
-current and target commits, and waits for review. Press Enter to bind that exact
-target and continue in the same wizard. RCP then builds a separate release,
-rehearses it against copied server state with external effects closed, performs
-the guarded switch, and reads back the running commit. A team space that has
-been initialized but has no enrolled member yet is valid; rehearsal proves that
-unauthenticated project access is still closed instead of rejecting that empty
-membership state.
+Before that decision, interruption chooses verified rollback. Afterwards,
+recovery completes the selected release. Both paths retain failed preparation,
+checkpoints, and quarantined roots for inspection. Reboot follows the same
+root-owned journal without fetching a release or consulting `main`.
 
-If any step fails, the old release remains serving or is restored before the
-wizard reports failure. Read the displayed cause. The wizard prints a complete
-`--machine-readable` diagnostic rerun and a normal Continue command. A copied-
-state rehearsal failure also prints the exact retained `candidate-result.json`,
-a bounded inspection command, and the exact failed rehearsal/capture paths that
-may be deleted after the cause is fixed. Never delete a broader checkpoint or
-data directory.
+The installed `[release]` table defaults to `followed = "stable"`. An operator
+may set `pin = "vX.Y.Z"` in `/etc/rcp/server.toml` to hold an exact promoted release;
+removing the pin follows stable again. Prereleases and build tags are refused.
+Supervisor self-update is a separate explicit command:
+
+```bash
+sudo /usr/local/bin/rcp server supervisor update
+sudo -u rcp -H /usr/local/bin/rcp server doctor
+```
+
+Doctor reads the public root-owned `status.json` projection, selected receipt,
+current pointer, and authenticated process metadata. It does not read the private
+journal or require sudo. Missing or invalid projections are reported as unavailable.
 
 ## Back up the team server
 
@@ -602,7 +521,7 @@ sudo /usr/local/bin/rcp server backup configure \
 
 On first setup, RCP creates one recovery identity at
 `/etc/rcp/backup-recovery.agekey`, keeps it root-owned with mode `0600`, and
-stores only its public recipient in the unchanged schema-v2 backup table in
+stores only its public recipient in the unchanged backup table in
 `server.toml`. It also stores that public recipient in the root-owned mode-`0644`
 `/etc/rcp/backup-recovery.agekey.pub` sidecar, which lets RCP recognize a missing
 server-managed identity without adding a config key. Later configuration reuses
@@ -632,8 +551,10 @@ RCP.
 
 ## Restore a protected archive
 
-Restore requires a fresh installed server whose configured data directory is
-empty. On the same server, RCP uses its fixed root-only identity by default:
+Restore runs on an installed server, either into a fresh uninitialized data
+directory or over an existing initialized team after you confirm the exact data
+directory the wizard prints. On the same server, RCP uses its fixed root-only
+identity by default:
 
 ```bash
 sudo /usr/local/bin/rcp server restore /absolute/path/lab.tar.age
@@ -659,13 +580,19 @@ For a member credential known to have been revoked after the archive was
 captured, use the printed `--remove-stale-member <member-id>` command. This is
 the ordinary member-removal transaction running offline: another active member
 must remain, no project may be orphaned, and the changed roster must be reviewed
-again. The root-only final activation starts the still-disabled systemd unit
-behind closed admission, proves detached work cannot recover, persists exact
-space/commit/project readback, and only then opens HTTP and enables the unit. If
-the root command disappears first, the fenced process exits cleanly after its
-bounded timeout and stays stopped. Any other failure stops and disables the
-service; rerun the same archive-bound operation rather than editing SQLite or
-systemd.
+again. The root-only final activation runs behind closed admission. Over an
+initialized team the supervisor first takes a complete protected backup, closes
+new work, stops the service, and retains a rollback checkpoint of the current
+data before the archive replaces it. The candidate then starts as a fenced
+service-account probe, proves detached work cannot recover, and persists exact
+space/commit/project readback. Only after that durable choice does the unit
+start, open HTTP, and become enabled. If the root command disappears first, the
+fenced process exits cleanly after its bounded timeout. A failure before the
+choice restores the previous bytes and launch authority: an initialized server
+returns to serving its previous data, and a fresh target stays stopped and
+uninitialized. After the choice, recovery keeps the restored data and never
+reapplies the old checkpoint. Rerun the same archive-bound command rather than
+editing SQLite or systemd.
 
 ## Remove a team member
 
@@ -687,57 +614,30 @@ restoring access.
 
 ## Maintainer live qualification
 
-The guarded **Team server install qualification** GitHub Actions workflow drives
-this install on separate `ubuntu-22.04` and `ubuntu-24.04` x86-64 hosts. It runs
-only by manual dispatch from `main`, because the production installer itself is
-fixed to GitHub `main`.
+One manually dispatched workflow, `supervisor-recovery-live.yml`, qualifies
+installation and recovery. It runs only on GitHub-hosted disposable Ubuntu 22.04
+and 24.04 x86-64 runners, refuses to start anywhere it cannot prove real guest
+virtualization, builds explicitly synthetic local release bundles from the
+checkout, and drives them in a disposable VM. It cuts VM power at durable
+transaction boundaries, boots the same disk without release network access,
+checks that the boot identity changed, and verifies the exact chosen release and
+application records. Process-interruption tests alone do not establish reboot or
+power-loss recovery. Never point these fixtures at real lab data or a production
+host.
 
-The fresh-host restore job requires one repository Actions secret named
-`RCP_LIVE_GITHUB_ADMIN_TOKEN`. Use a fine-grained token scoped only to
-`Zhi0467/RCP` with repository **Administration: write**, which is the GitHub
-permission required to create and remove its temporary write-enabled project
-deploy key. The workflow writes it to a mode-0600 temporary file only in that
-job. A protected receipt records the generated key's nonsecret label before the
-API call, so unconditional cleanup can revoke it even if pytest is interrupted.
-The public-source install job needs no GitHub credential. The token never enters
-RCP CLI argv, event output, or the installed service environment.
-
-The live test refuses a reused host, requires an explicit destructive-test
-confirmation, removes its disposable bootstrap checkout, and checks the
-installed account, files, process, loopback listener, HTTP health, journal,
-password refusal, direct public-key route, and narrow named-operator sudo route.
-It bounds every subprocess stream and removes the temporary direct-login key,
-sudoers rule, and named test operator after checking them. Do not point it at a
-real lab server.
-
-Exact-head run
-[33456906376](https://github.com/Zhi0467/RCP/actions/runs/33456906376)
-passed on Ubuntu 22.04 and 24.04. Its install jobs exercised source installation,
-service/SSH/doctor readback, forced update rollback, protected backup, and
-member removal. Separate fresh hosts then installed from source, reconstructed
-the captured repository using fresh write deploy keys, resumed the protected
-restore through old-authority and member-roster review, activated the service,
-and completed health/project/member and cleanup readback. This is automated
-disposable-host evidence, not the complete desktop/provider/collaboration lab
-drill.
+Two operational promises are not covered by that workflow and remain open gates
+in the deployment handoff: installing from promoted GitHub release assets rather
+than synthetic bundles, and fresh-host restore that reconstructs project
+checkouts and deploy keys through GitHub. The fixture restore reuses an existing
+local Git checkout and proves neither.
 
 ## Current implementation boundary
 
-The terminal owners for install, doctor, provider readiness, project
-provisioning, backup, restore, update, and member removal are concrete. Their
-live qualification status is tracked in the acceptance scenarios and
-[archived lab closure receipt](archive/handoffs/handoff-2026-08-27-dev-team-space-and-server.md).
-The unified desktop wizard, fixed operator bridge,
-personal-to-team transfer import, native archive relay, and crash-recovery
-coordinator are implemented and hermetically verified. The disposable two-
-release server lifecycle and fresh-host restore drive pass. One-lab closure now
-includes production provider maintenance, backup during active work, and a
-backed-up real-project desktop transfer with explicit manual operator import,
-verified history, and source retirement. Existing two-member use was accepted
-by the human; separate disposable-host SSH qualification was skipped. Broader
-interruption and isolation fixtures remain pending where their acceptance
-records lack evidence.
-
-The next deployment work is the [external supervisor plan](handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md),
-not an installed capability yet. Continue using the current CLI owners; do not
-substitute manual Git pulls, service-file edits, or direct database access.
+The independent supervisor, artifact bootstrap, guarded source adoption,
+application maintenance protocol, protected recovery, operator delegation, and
+reboot qualification harness are implemented together. Local tests establish
+bounded parsing and transaction behavior. Acceptance records and the deployment
+handoff distinguish completed live drives from checks still requiring a promoted
+release or a disposable host. Production adoption and recovery must be driven
+against the merged promoted release, with any resulting defects fixed in separate
+reviewed changes.

@@ -5,10 +5,12 @@ retain the private CLI connection for non-deployment operations, and on
 2026-09-06 to require automatic recovery after interruption or reboot. Amends
 [the update-channel decision](2026-08-27-main-is-the-server-update-channel.md)
 and [the install-and-update privilege decision](2026-08-27-source-server-install-and-update-privilege.md)
-as stated at the end of this file. Implementation is planned in
+as stated at the end of this file. Implementation and outstanding operational
+qualification are tracked in
 [the supervisor handoff](../handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md).
-Until its phases land, servers still build `origin/main` as the
-[operations spec](../specs/server-and-machine-operations.md) describes.
+The [operations spec](../specs/server-and-machine-operations.md) describes the
+implemented supervisor path. Production cutover requires qualification and human
+promotion of a complete build.
 
 ## Decision
 
@@ -62,22 +64,23 @@ Node.js and npm leave RCP's source-build prerequisites once the source path is
 deleted. Git remains necessary for research-project checkouts, provisioning,
 and repository restore; individual providers may still require Node.js.
 
-**Update sequence.** Download the release manifest and assets. Verify every
-hash. Create `releases/<build>/` with an isolated environment installed from
-the wheel and the hashed lock. Run `rcp migrate --check` against a copy of the
-data directory. Take the protected backup. Close admission and stop the
-service. With nothing able to mutate, take a crash-safe local checkpoint of the
-data directory and every RCP-owned local state root, with a phase journal
-fsynced beside it; this is the same pre-switch checkpoint the current
-coordinator takes, and it is distinct from the protected backup. Switch the
-current-release pointer. Start. Poll health until the reported build matches,
-or a timeout passes. On any failure: stop, restore the checkpoint from its
-journal, switch back, start the previous release, verify it, and report both
-the failed target and the restored release. That is rollback, and it is never
-silent. A forward migration that ran before the failure is undone by the
-checkpoint, not by the old release reading migrated data. Re-entry after a
-crash keeps the service stopped and completes whatever the journal says was in
-progress.
+**Update sequence.** Download and verify the promoted manifest and assets, then
+prepare an isolated release as `rcp`. Take a complete protected backup. Close
+admission, drain application owners, and stop the service while holding the
+backup job's coordination lock. Application-owned commands check consistent
+copies of SQLite, canonical graph history, and retained files at this closed
+boundary. Seal crash-safe local checkpoints before publishing any candidate
+bytes or moving the release pointer. This final-boundary validation is required;
+a prior read-only migration check cannot replace it.
+
+Start the candidate behind closed admission and verify its exact build and
+application read model. Before reopening ordinary service, fsync the durable
+candidate choice. Before that choice, failure restores the checkpoint and
+previous pointer and verifies the previous application. After that choice,
+recovery preserves potentially accepted work. A forward migration is undone by
+the checkpoint; old code never opens migrated data. Rollback and retained
+diagnostics are explicit. The same journal owns existing-data and fresh-data
+protected restore, with a durable previous choice before reopening on rollback.
 
 **Automatic recovery**, confirmed by the human on 2026-09-06: systemd invokes
 the supervisor's recovery path before allowing RCP to start after a reboot.

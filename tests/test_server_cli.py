@@ -291,9 +291,9 @@ def _operator_execution() -> ServerCommandExecution:
         ),
         (("server", "update"), "server update", {}),
         (
-            ("server", "update", "--confirm-target", UPDATE_COMMIT),
+            ("server", "update", "--confirm-target", "v0.3.2:" + "a" * 64),
             "server update",
-            {"update_confirmed_commit": UPDATE_COMMIT},
+            {"update_confirmed_target": "v0.3.2:" + "a" * 64},
         ),
     ],
 )
@@ -303,6 +303,28 @@ def test_server_command_tree_builds_one_strict_request(argv, command, fields) ->
     assert request.command == command
     for name, value in fields.items():
         assert getattr(request, name) == value
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ("server", "backup", "run"),
+        ("server", "project", "provision", REQUEST_ID),
+        ("server", "provider", "update", "codex"),
+        ("server", "supervisor", "update"),
+        ("server", "member", "remove", REQUEST_ID),
+    ],
+)
+@pytest.mark.parametrize("flag_depth", [None, 1, 2, 3])
+def test_machine_readable_at_each_server_command_depth(command, flag_depth) -> None:
+    baseline = _parse(*command)
+    argv = list(command)
+    if flag_depth is not None:
+        argv.insert(flag_depth, "--machine-readable")
+    parsed = _parse(*argv)
+
+    assert bool(getattr(parsed, "machine_readable", False)) is (flag_depth is not None)
+    assert request_from_namespace(parsed) == request_from_namespace(baseline)
 
 
 def test_machine_readable_is_a_renderer_choice_before_or_after_the_leaf() -> None:
@@ -1154,3 +1176,45 @@ def test_top_level_main_routes_server_commands_before_personal_data_resolution(
 
     assert len(calls) == 1
     assert calls[0].server_operation == "server doctor"
+
+
+def test_outer_wizard_refuses_to_run_mutually_exclusive_restore_actions():
+    from rcp.server_ops.cli import _continue_interactive_wizard
+
+    original = _operator_execution()
+    plan = original.events[0]
+    paused = original.events[-1]
+    commands = tuple(
+        CommandAction(
+            argv=(
+                "sudo",
+                "rcp",
+                "server",
+                "restore",
+                "/backup/archive.age",
+                "--old-authority-disposition",
+                value,
+            )
+        )
+        for value in ("old-machine-destroyed", "old-machine-fenced-and-credentials-revoked")
+    )
+    planned = plan.steps[0].model_copy(update={"phase": "supervisor_restore"})
+    final = paused.step.model_copy(update={"phase": "supervisor_restore", "actions": commands})
+    execution = original.model_copy(
+        update={
+            "events": (
+                plan.model_copy(update={"steps": (planned,)}),
+                paused.model_copy(update={"step": final}),
+            )
+        }
+    )
+    output = StringIO()
+    code = _continue_interactive_wizard(
+        execution,
+        identity=CallerIdentity(uid=0, username="root", host="host"),
+        input_stream=StringIO("\n"),
+        output_stream=output,
+        runner=lambda argv: pytest.fail("mutually exclusive restore commands were executed"),
+    )
+    assert code == SERVER_CLI_EXIT_OPERATOR_ACTION
+    assert "exactly one" in output.getvalue()

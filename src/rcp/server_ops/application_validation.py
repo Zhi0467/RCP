@@ -1,21 +1,14 @@
-"""Rehearse one built server candidate against a path-safe copy of live state."""
+"""Application-owned copied-state migration, path fencing, and graph/read verification."""
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import os
 import re
-import shutil
 import sqlite3
 import stat
-import subprocess
-import sys
-import tempfile
-import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import Mapping
 from contextlib import suppress
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, Protocol
 
@@ -29,17 +22,14 @@ from rcp.history import HistoryManager
 from rcp.limits import (
     BACKUP_COPY_BUFFER_BYTES,
     BACKUP_DIAGNOSTIC_MAX_CHARS,
-    SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
 )
 from rcp.projects import (
     TEAM_PROJECT_DELETE_CONFIRMATION,
     TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
 )
 from rcp.server_ops._local_primitives import (
-    PrivateFileReadError,
     canonical_json_bytes,
     canonical_json_line,
-    read_stable_private_file,
 )
 from rcp.server_ops._local_primitives import (
     canonical_uuid4 as _canonical_uuid4,
@@ -53,36 +43,23 @@ from rcp.server_ops._local_primitives import (
 from rcp.server_ops._local_primitives import (
     normalized_absolute_path as _absolute_path,
 )
-from rcp.server_ops.backup import BackupRunRefused, discard_backup_capture_root
 from rcp.server_ops.backup_capture import (
-    BackupCaptureUnavailable,
     BackupSQLiteCaptureReceipt,
-    read_backup_sqlite_capture_receipt,
 )
 from rcp.server_ops.backup_models import BackupManifestConfiguration, BackupProjectCapture
 from rcp.server_ops.backup_project_files import (
-    BackupProjectFileCaptureCoordinator,
     BackupProjectFileCaptureReceipt,
 )
-from rcp.server_ops.control import ServerControlBackupCaptureResult, ServerControlClient
 from rcp.server_ops.models import redact_server_text
-from rcp.server_ops.update import BuiltCandidateReceipt
-from rcp.server_runtime import data_dir_identity
 from rcp.sources.imported import (
     ImportedProviderSourceInventory,
     ImportedProviderSourceStore,
 )
 
 REHEARSAL_OVERLAY_SCHEMA_VERSION = 1
-CANDIDATE_MIGRATION_RESULT_SCHEMA_VERSION = 1
 CANDIDATE_REHEARSAL_RESULT_SCHEMA_VERSION = 1
-VERIFIED_CANDIDATE_RECEIPT_SCHEMA_VERSION = 1
 
-_FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-_VERIFIED_RECEIPT_NAME = re.compile(r"verified-candidate-([0-9a-f]{40})-([0-9a-f-]{36})\.json")
-_REHEARSAL_ROOT_NAME = re.compile(r"rehearsal-([0-9a-f]{40})-([0-9a-f]{32})")
-_RECEIPT_MODE = 0o600
 _DIRECTORY_MODE = 0o700
 _FILE_MODE = 0o600
 _MAX_RECEIPT_BYTES = 4 * 1024 * 1024
@@ -110,7 +87,7 @@ class StartupRecoveryReadModel(_StrictModel):
 class RehearsalProjectOverlay(_StrictModel):
     project_id: str
     name: Annotated[str, StringConstraints(min_length=1, max_length=120)]
-    capture_status: Literal["captured", "remote_unreachable"]
+    capture_status: Literal["captured", "remote_unreachable", "archive_uncaptured"]
     overlay_locator: str
     original_locator: str
     original_state_location: str
@@ -225,20 +202,6 @@ class RehearsalOverlay(_StrictModel):
         return self
 
 
-class CandidateMigrationResult(_StrictModel):
-    schema_version: Literal[1] = CANDIDATE_MIGRATION_RESULT_SCHEMA_VERSION
-    status: Literal["migrated", "failed"]
-    diagnostic: Annotated[str, StringConstraints(max_length=BACKUP_DIAGNOSTIC_MAX_CHARS)] | None = (
-        None
-    )
-
-    @model_validator(mode="after")
-    def validate_result(self) -> CandidateMigrationResult:
-        if (self.status == "failed") != (self.diagnostic is not None):
-            raise ValueError("candidate migration result and diagnostic disagree")
-        return self
-
-
 class CandidateProjectVerification(_StrictModel):
     project_id: str
     status: Literal["verified", "not_replay_verified"]
@@ -292,390 +255,8 @@ class CandidateRehearsalResult(_StrictModel):
         return self
 
 
-class VerifiedCandidateReceipt(_StrictModel):
-    schema_version: Literal[1] = VERIFIED_CANDIDATE_RECEIPT_SCHEMA_VERSION
-    installation_id: str
-    candidate_commit: str
-    base_current_commit: str
-    base_running_commit: str
-    base_instance_id: str
-    base_process_pid: int
-    release_path: str
-    built_receipt_path: str
-    built_receipt_sha256: str
-    receipt_path: str
-    web_build_id: str
-    capture_id: str
-    sqlite_snapshot_sha256: str
-    project_capture_sha256: str
-    space_id: str
-    projects: tuple[CandidateProjectVerification, ...]
-    startup_recovery: StartupRecoveryReadModel
-    reads: tuple[str, ...]
-    verified_at: datetime
-
-    @field_validator("candidate_commit", "base_current_commit", "base_running_commit")
-    @classmethod
-    def validate_commit(cls, value: str) -> str:
-        if _FULL_GIT_COMMIT.fullmatch(value) is None:
-            raise ValueError("verified candidate receipts require full Git commits")
-        return value
-
-    @field_validator("release_path", "built_receipt_path", "receipt_path")
-    @classmethod
-    def validate_path(cls, value: str, info) -> str:
-        return _absolute_path(value, label=info.field_name.replace("_", " "))
-
-    @field_validator("built_receipt_sha256", "sqlite_snapshot_sha256", "project_capture_sha256")
-    @classmethod
-    def validate_digest(cls, value: str) -> str:
-        if _SHA256.fullmatch(value) is None:
-            raise ValueError("verified candidate digests must be lowercase SHA-256")
-        return value
-
-    @field_validator("capture_id", "space_id")
-    @classmethod
-    def validate_id(cls, value: str, info) -> str:
-        return _canonical_uuid4(value, label=info.field_name.replace("_", " "))
-
-    @field_validator("verified_at")
-    @classmethod
-    def validate_time(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("verified candidate time requires a UTC offset")
-        return value
-
-    @model_validator(mode="after")
-    def validate_relationship(self) -> VerifiedCandidateReceipt:
-        if self.base_current_commit != self.base_running_commit:
-            raise ValueError("verified candidate base must name one running release")
-        if self.candidate_commit == self.base_running_commit or self.base_process_pid <= 0:
-            raise ValueError("verified candidate must differ from one live positive-pid base")
-        return self
-
-
-class RehearsalCaptureControl(Protocol):
-    def capture_backup_sqlite(self) -> ServerControlBackupCaptureResult: ...
-
-
-class CandidateProcessRunner(Protocol):
-    def __call__(
-        self,
-        argv: tuple[str, ...],
-        *,
-        cwd: Path,
-        environment: Mapping[str, str],
-        timeout: float,
-    ) -> subprocess.CompletedProcess[str]: ...
-
-
 class CandidateDatabaseMigrator(Protocol):
     def __call__(self, database_path: Path) -> None: ...
-
-
-def verified_candidate_receipt_path(commit: str, capture_id: str, update_root: Path) -> Path:
-    if _FULL_GIT_COMMIT.fullmatch(commit) is None:
-        raise ValueError("candidate commit must be one full lowercase Git object id")
-    _canonical_uuid4(capture_id, label="candidate capture identity")
-    return update_root / f"verified-candidate-{commit}-{capture_id}.json"
-
-
-class CandidateRehearsalCoordinator:
-    """Compose the existing online capture with one fenced candidate child."""
-
-    def __init__(
-        self,
-        *,
-        data_dir: Path,
-        update_root: Path,
-        built_receipt: BuiltCandidateReceipt,
-        built_receipt_sha256: str,
-        control: RehearsalCaptureControl | None = None,
-        runner: CandidateProcessRunner | None = None,
-        candidate_python: Path | None = None,
-        capture_result: ServerControlBackupCaptureResult | None = None,
-        retain_capture: bool = False,
-    ) -> None:
-        self.data_dir = data_dir.resolve()
-        self.update_root = update_root.resolve()
-        self.built_receipt = built_receipt
-        self.built_receipt_sha256 = built_receipt_sha256
-        self.control = control
-        self.runner = runner or _run_candidate_process
-        self.candidate_python = candidate_python or (
-            Path(built_receipt.release_path) / ".venv" / "bin" / "python"
-        )
-        self.capture_result = capture_result
-        self.retain_capture = retain_capture
-
-    def run(self) -> VerifiedCandidateReceipt:
-        self._validate_boundary()
-        operation_root = self.update_root / (
-            f"rehearsal-{self.built_receipt.candidate_commit}-{uuid.uuid4().hex}"
-        )
-        capture_result = self.capture_result
-        try:
-            operation_root.mkdir(mode=_DIRECTORY_MODE)
-            if capture_result is None:
-                control = self.control or ServerControlClient.from_data_dir(
-                    self.data_dir,
-                    expected_server_uid=os.geteuid(),
-                )
-                capture_result = control.capture_backup_sqlite()
-            self._validate_live_capture(capture_result)
-            project_publication = BackupProjectFileCaptureCoordinator(self.data_dir).capture(
-                Path(capture_result.receipt_path),
-                expected_sha256=capture_result.receipt_sha256,
-            )
-            sqlite_receipt = read_backup_sqlite_capture_receipt(
-                Path(capture_result.receipt_path),
-                expected_sha256=capture_result.receipt_sha256,
-            )
-            if (
-                sqlite_receipt.rcp_source_commit != self.built_receipt.base_running_commit
-                or sqlite_receipt.space_id != capture_result.space_id
-            ):
-                raise CandidateRehearsalRefused(
-                    "The copied state does not belong to the running release and space."
-                )
-            if (
-                sqlite_receipt.app_data_plan.deferred_entries
-                or sqlite_receipt.app_data_plan.unclassified_entries
-            ):
-                raise CandidateRehearsalRefused(
-                    "The live app-data capture has deferred or unknown durable entries. "
-                    "Classify them before updating."
-                )
-            overlay = build_rehearsal_overlay(
-                operation_root,
-                sqlite_receipt=sqlite_receipt,
-                sqlite_receipt_sha256=capture_result.receipt_sha256,
-                project_receipt=project_publication.receipt,
-                project_receipt_sha256=project_publication.receipt_sha256,
-                capture_root=Path(capture_result.receipt_path).parent,
-                candidate_migrator=self._migrate_candidate,
-            )
-            overlay_path = operation_root / "overlay.json"
-            _write_private_json(overlay_path, overlay)
-            result_path = operation_root / "candidate-result.json"
-            completed = self.runner(
-                (
-                    str(self.candidate_python),
-                    "-m",
-                    "rcp.server_ops.rehearsal",
-                    "--candidate-child",
-                    str(overlay_path),
-                    str(result_path),
-                ),
-                cwd=Path(self.built_receipt.release_path),
-                environment={
-                    "LANG": "C.UTF-8",
-                    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                    "PYTHONDONTWRITEBYTECODE": "1",
-                },
-                timeout=SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
-            )
-            result = _read_candidate_result(result_path)
-            if completed.returncode != 0 or result.status != "verified":
-                raise CandidateRehearsalRefused(
-                    result.diagnostic
-                    or "The candidate process failed copied-state startup verification."
-                )
-            self._validate_candidate_result(overlay, result)
-            assert result.space_id is not None and result.startup_recovery is not None
-            receipt_path = verified_candidate_receipt_path(
-                self.built_receipt.candidate_commit,
-                overlay.capture_id,
-                self.update_root,
-            )
-            receipt = VerifiedCandidateReceipt(
-                installation_id=self.built_receipt.installation_id,
-                candidate_commit=self.built_receipt.candidate_commit,
-                base_current_commit=self.built_receipt.base_current_commit,
-                base_running_commit=self.built_receipt.base_running_commit,
-                base_instance_id=self.built_receipt.base_instance_id,
-                base_process_pid=self.built_receipt.base_process_pid,
-                release_path=self.built_receipt.release_path,
-                built_receipt_path=self.built_receipt.receipt_path,
-                built_receipt_sha256=self.built_receipt_sha256,
-                receipt_path=str(receipt_path),
-                web_build_id=self.built_receipt.web_build_id,
-                capture_id=overlay.capture_id,
-                sqlite_snapshot_sha256=overlay.sqlite_snapshot_sha256,
-                project_capture_sha256=overlay.project_receipt_sha256,
-                space_id=result.space_id,
-                projects=result.projects,
-                startup_recovery=result.startup_recovery,
-                reads=result.reads,
-                verified_at=datetime.now(UTC),
-            )
-            _publish_private_json(receipt_path, receipt)
-            published = read_verified_candidate_receipt(
-                receipt_path,
-                expected_uid=os.geteuid(),
-            )
-            self._validate_existing(published)
-            # Publish the durable proof before deleting either evidence root. If
-            # publication/readback fails, both the capture and overlay remain.
-            # If cleanup itself fails, the receipt plus the remaining exact root
-            # make that failure explicit to the next maintenance inspection.
-            if not self.retain_capture:
-                discard_backup_capture_root(
-                    Path(capture_result.receipt_path).parent,
-                    data_dir=self.data_dir,
-                    capture_id=capture_result.capture_id,
-                )
-            _discard_operation_root(operation_root, update_root=self.update_root)
-            return published
-        except CandidateRehearsalRefused:
-            raise
-        except (BackupCaptureUnavailable, BackupRunRefused, OSError, ValueError) as exc:
-            raise CandidateRehearsalRefused(
-                "Candidate rehearsal could not prove its copied-state boundary. "
-                "The old release is still serving; inspect the retained rehearsal and capture."
-            ) from exc
-
-    def _migrate_candidate(self, database_path: Path) -> None:
-        operation_root = database_path.parents[2]
-        if database_path != operation_root / "overlay" / "data" / "rcp.sqlite3":
-            raise CandidateRehearsalRefused(
-                "The candidate migration database escaped its rehearsal operation."
-            )
-        for attempt in (1, 2):
-            result_path = operation_root / f"candidate-migration-{attempt}.json"
-            completed = self.runner(
-                (
-                    str(self.candidate_python),
-                    "-m",
-                    "rcp.server_ops.rehearsal",
-                    "--candidate-migrate",
-                    str(database_path),
-                    str(result_path),
-                ),
-                cwd=Path(self.built_receipt.release_path),
-                environment={
-                    "LANG": "C.UTF-8",
-                    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                    "PYTHONDONTWRITEBYTECODE": "1",
-                },
-                timeout=SERVER_UPDATE_REHEARSAL_TIMEOUT_SECONDS,
-            )
-            result = _read_candidate_migration_result(result_path)
-            if completed.returncode != 0 or result.status != "migrated":
-                raise CandidateRehearsalRefused(
-                    result.diagnostic or "The candidate could not migrate the copied database."
-                )
-            result_path.unlink()
-
-    def _validate_candidate_result(
-        self,
-        overlay: RehearsalOverlay,
-        result: CandidateRehearsalResult,
-    ) -> None:
-        if (
-            result.space_id != overlay.space_id
-            or result.startup_recovery != overlay.expected_startup_recovery
-            or result.reads != _expected_candidate_reads(overlay.projects)
-            or result.attempted_effects
-        ):
-            raise CandidateRehearsalRefused(
-                "The candidate changed copied space, recovery, read, or effect-fence semantics."
-            )
-        expected = {project.project_id: project for project in overlay.projects}
-        observed = {project.project_id: project for project in result.projects}
-        if set(observed) != set(expected):
-            raise CandidateRehearsalRefused(
-                "The candidate result omitted or substituted a captured project."
-            )
-        for project_id, overlay_project in expected.items():
-            candidate_project = observed[project_id]
-            if overlay_project.capture_status == "captured":
-                if (
-                    candidate_project.status != "verified"
-                    or candidate_project.revision != overlay_project.expected_revision
-                    or candidate_project.projection_sha256 != overlay_project.expected_graph_sha256
-                ):
-                    raise CandidateRehearsalRefused(
-                        f"The candidate changed replay semantics for project {project_id}."
-                    )
-            elif (
-                candidate_project.status != "not_replay_verified"
-                or candidate_project.revision is not None
-                or candidate_project.projection_sha256 != overlay_project.expected_card_sha256
-            ):
-                raise CandidateRehearsalRefused(
-                    f"The candidate changed unavailable semantics for project {project_id}."
-                )
-
-    def _validate_boundary(self) -> None:
-        for path, label in (
-            (self.data_dir, "live data directory"),
-            (self.update_root, "update checkpoint root"),
-        ):
-            _require_private_directory(path, label=label)
-        if (
-            _SHA256.fullmatch(self.built_receipt_sha256) is None
-            or Path(self.built_receipt.receipt_path).parent != self.update_root
-            or Path(self.built_receipt.release_path).name != self.built_receipt.candidate_commit
-        ):
-            raise CandidateRehearsalRefused(
-                "The built-candidate receipt is not bound to this update root and release."
-            )
-        built_bytes = _read_private_file(
-            Path(self.built_receipt.receipt_path),
-            expected_uid=os.geteuid(),
-            expected_mode=_RECEIPT_MODE,
-        )
-        try:
-            observed = BuiltCandidateReceipt.model_validate_json(built_bytes)
-        except ValueError as exc:
-            raise CandidateRehearsalRefused(
-                "The built-candidate receipt cannot be decoded by the candidate."
-            ) from exc
-        if (
-            observed != self.built_receipt
-            or hashlib.sha256(built_bytes).hexdigest() != self.built_receipt_sha256
-        ):
-            raise CandidateRehearsalRefused(
-                "The built-candidate receipt bytes changed before rehearsal."
-            )
-
-    def _validate_live_capture(self, result: ServerControlBackupCaptureResult) -> None:
-        if (
-            result.instance_id != self.built_receipt.base_instance_id
-            or result.pid != self.built_receipt.base_process_pid
-            or result.data_dir_id != data_dir_identity(self.data_dir)
-            or result.receipt_path
-            != str(
-                self.data_dir / "run-stage" / f"backup-{result.capture_id}" / "sqlite-capture.json"
-            )
-        ):
-            raise CandidateRehearsalRefused(
-                "The copied state came from a different process or data boundary."
-            )
-
-    def _validate_existing(self, receipt: VerifiedCandidateReceipt) -> None:
-        if (
-            receipt.installation_id != self.built_receipt.installation_id
-            or receipt.candidate_commit != self.built_receipt.candidate_commit
-            or receipt.base_current_commit != self.built_receipt.base_current_commit
-            or receipt.base_running_commit != self.built_receipt.base_running_commit
-            or receipt.base_instance_id != self.built_receipt.base_instance_id
-            or receipt.base_process_pid != self.built_receipt.base_process_pid
-            or receipt.release_path != self.built_receipt.release_path
-            or receipt.built_receipt_path != self.built_receipt.receipt_path
-            or receipt.built_receipt_sha256 != self.built_receipt_sha256
-            or receipt.web_build_id != self.built_receipt.web_build_id
-            or Path(receipt.receipt_path)
-            != verified_candidate_receipt_path(
-                receipt.candidate_commit,
-                receipt.capture_id,
-                self.update_root,
-            )
-        ):
-            raise CandidateRehearsalRefused(
-                "The existing verified-candidate receipt belongs to another live base or build."
-            )
 
 
 def build_rehearsal_overlay(
@@ -821,6 +402,12 @@ def _prepare_overlay_project(
     project_root: Path,
     capture_root: Path,
 ) -> RehearsalProjectOverlay:
+    if (
+        capture.status == "uncaptured"
+        and row["reachable"] == 0
+        and str(row["error"]).startswith("Not captured by the replacement archive: ")
+    ):
+        return _prepare_uncaptured_archive_overlay(row, project_root)
     if capture.recovery is None:
         raise CandidateRehearsalRefused(
             "A copied project has no typed configuration for path-safe rehearsal."
@@ -836,7 +423,9 @@ def _prepare_overlay_project(
             raise CandidateRehearsalRefused(
                 "A project capture failed without an already-unreachable SSH proof."
             )
-        capture_status: Literal["captured", "remote_unreachable"] = "remote_unreachable"
+        capture_status: Literal["captured", "remote_unreachable", "archive_uncaptured"] = (
+            "remote_unreachable"
+        )
         expected_revision = None
         expected_graph_sha256 = None
     else:
@@ -923,9 +512,43 @@ def _prepare_overlay_project(
     )
 
 
-async def _unused_rehearsal_stream(*_args, **_kwargs) -> AsyncIterator[object]:
-    if False:  # pragma: no cover - type-correct effect tripwire
-        yield object()
+def _prepare_uncaptured_archive_overlay(row: sqlite3.Row, root: Path) -> RehearsalProjectOverlay:
+    """Preserve the explicit protected-archive omission without opening any locator."""
+    locator = root / "known-absent" / "manifest.toml"
+    state_location = (
+        str(row["state_location"]) if bool(row["state_remote"]) else str(locator.parent)
+    )
+    card = {
+        "id": str(row["project_id"]),
+        "home_space_id": row["home_space_id"],
+        "name": str(row["name"]),
+        "locator": str(locator),
+        "state_location": state_location,
+        "remote": bool(row["state_remote"]),
+        "last_opened_at": row["last_opened_at"],
+        "revision": row["revision"],
+        "primary_question": row["primary_question"],
+        "attention_count": row["attention_count"],
+        "last_refresh_at": row["last_refresh_at"],
+        "reachable": False,
+        "error_sha256": _optional_text_sha256(row["error"]),
+        "can_delete": True,
+        "delete_unavailable_reason": None,
+        "delete_confirmation": TEAM_PROJECT_DELETE_CONFIRMATION,
+    }
+    return RehearsalProjectOverlay(
+        project_id=str(row["project_id"]),
+        name=str(row["name"]),
+        capture_status="archive_uncaptured",
+        overlay_locator=str(locator),
+        original_locator=str(row["locator"]),
+        original_state_location=str(row["state_location"]),
+        original_remote=bool(row["state_remote"]),
+        original_reachable=False,
+        original_error_sha256=_optional_text_sha256(row["error"]),
+        expected_card_sha256=_canonical_sha256(card),
+        expected_graph_sha256=None,
+    )
 
 
 def _expected_startup_recovery(database_path: Path) -> StartupRecoveryReadModel:
@@ -1383,165 +1006,6 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
             lock_context.__exit__(None, None, None)
 
 
-def run_candidate_migration(database_path: Path, result_path: Path) -> int:
-    try:
-        if database_path.name != "rcp.sqlite3" or database_path.parent.name != "data":
-            raise CandidateRehearsalRefused(
-                "The candidate migration target is not one rehearsal database."
-            )
-        from rcp.storage import AppStore
-
-        AppStore(database_path)
-        _write_private_json(result_path, CandidateMigrationResult(status="migrated"))
-        return 0
-    except BaseException as exc:
-        diagnostic = redact_server_text(str(exc)).strip()
-        if not diagnostic or len(diagnostic) > BACKUP_DIAGNOSTIC_MAX_CHARS:
-            diagnostic = "Candidate copied-state migration failed."
-        with suppress(OSError, ValueError):
-            _write_private_json(
-                result_path,
-                CandidateMigrationResult(status="failed", diagnostic=diagnostic),
-            )
-        return 1
-
-
-def run_rehearsal_orchestrator(
-    built_receipt_path: Path,
-    data_dir: Path,
-    update_root: Path,
-    *,
-    operation_receipt_path: Path | None = None,
-    operation_receipt_sha256: str | None = None,
-) -> int:
-    """Service-account entrypoint invoked by the narrow root update coordinator."""
-
-    try:
-        content = _read_private_file(
-            built_receipt_path,
-            expected_uid=os.geteuid(),
-            expected_mode=_RECEIPT_MODE,
-        )
-        built = BuiltCandidateReceipt.model_validate_json(content)
-        if built.receipt_path != str(built_receipt_path):
-            raise CandidateRehearsalRefused(
-                "The built-candidate receipt does not name its exact path."
-            )
-        if (operation_receipt_path is None) != (operation_receipt_sha256 is None):
-            raise CandidateRehearsalRefused(
-                "Final rehearsal requires both the update receipt and its digest."
-            )
-        capture_result = None
-        retain_capture = False
-        if operation_receipt_path is not None:
-            from rcp.server_ops.update_cutover import (
-                control_capture_from_boundary,
-                read_update_operation,
-            )
-
-            operation, _digest = read_update_operation(
-                operation_receipt_path,
-                expected_uid=os.geteuid(),
-                expected_sha256=operation_receipt_sha256,
-            )
-            if operation.state != "maintenance_closed" or operation.capture is None:
-                raise CandidateRehearsalRefused(
-                    "Final rehearsal requires one closed-admission capture boundary."
-                )
-            built_sha256 = hashlib.sha256(content).hexdigest()
-            if (
-                operation.base_instance_id != built.base_instance_id
-                or operation.base_process_pid != built.base_process_pid
-                or operation.built_receipt_path != built.receipt_path
-                or operation.built_receipt_sha256 != built_sha256
-            ):
-                raise CandidateRehearsalRefused(
-                    "The update maintenance receipt differs from its built candidate."
-                )
-            capture_result = control_capture_from_boundary(operation.capture)
-            retain_capture = True
-        receipt = CandidateRehearsalCoordinator(
-            data_dir=data_dir,
-            update_root=update_root,
-            built_receipt=built,
-            built_receipt_sha256=hashlib.sha256(content).hexdigest(),
-            capture_result=capture_result,
-            retain_capture=retain_capture,
-        ).run()
-        print(receipt.receipt_path, flush=True)
-        return 0
-    except (CandidateRehearsalRefused, OSError, ValueError) as exc:
-        diagnostic = redact_server_text(str(exc)).strip()
-        print(
-            diagnostic or "Candidate copied-state rehearsal failed safely.",
-            file=sys.stderr,
-        )
-        return 1
-
-
-def read_verified_candidate_receipt(
-    path: Path,
-    *,
-    expected_uid: int,
-) -> VerifiedCandidateReceipt:
-    payload = _read_private_file(path, expected_uid=expected_uid, expected_mode=_RECEIPT_MODE)
-    try:
-        receipt = VerifiedCandidateReceipt.model_validate_json(payload)
-    except ValueError as exc:
-        raise CandidateRehearsalRefused("The verified-candidate receipt is invalid.") from exc
-    matched = _VERIFIED_RECEIPT_NAME.fullmatch(path.name)
-    if (
-        matched is None
-        or matched.group(1) != receipt.candidate_commit
-        or matched.group(2) != receipt.capture_id
-        or receipt.receipt_path != str(path)
-    ):
-        raise CandidateRehearsalRefused("The verified-candidate receipt path and commit disagree.")
-    return receipt
-
-
-def _read_candidate_result(path: Path) -> CandidateRehearsalResult:
-    try:
-        return CandidateRehearsalResult.model_validate_json(_read_bounded_file(path))
-    except (OSError, ValueError) as exc:
-        raise CandidateRehearsalRefused(
-            "The candidate did not publish one valid copied-state result."
-        ) from exc
-
-
-def _read_candidate_migration_result(path: Path) -> CandidateMigrationResult:
-    try:
-        return CandidateMigrationResult.model_validate_json(_read_bounded_file(path))
-    except (OSError, ValueError) as exc:
-        raise CandidateRehearsalRefused(
-            "The candidate did not publish one valid migration result."
-        ) from exc
-
-
-def _run_candidate_process(
-    argv: tuple[str, ...],
-    *,
-    cwd: Path,
-    environment: Mapping[str, str],
-    timeout: float,
-) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            argv,
-            cwd=cwd,
-            env=dict(environment),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise CandidateRehearsalRefused(
-            "The isolated candidate process could not complete."
-        ) from exc
-
-
 def _copy_verified_file(
     source: Path,
     destination: Path,
@@ -1663,53 +1127,11 @@ def _write_private_bytes(path: Path, content: bytes) -> None:
     _fsync_directory(path.parent)
 
 
-def _publish_private_json(path: Path, model: BaseModel) -> None:
-    content = _model_bytes(model)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        os.fchmod(descriptor, _RECEIPT_MODE)
-        with os.fdopen(descriptor, "wb") as stream:
-            descriptor = -1
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.link(temporary, path, follow_symlinks=False)
-        _fsync_directory(path.parent)
-    except FileExistsError as exc:
-        raise CandidateRehearsalRefused(
-            "Another verified-candidate receipt appeared during publication."
-        ) from exc
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        temporary.unlink(missing_ok=True)
-
-
 def _model_bytes(model: BaseModel) -> bytes:
     content = canonical_json_line(model.model_dump(mode="json"))
     if len(content) > _MAX_RECEIPT_BYTES:
         raise CandidateRehearsalRefused("A rehearsal receipt exceeds its fixed size bound.")
     return content
-
-
-def _read_private_file(path: Path, *, expected_uid: int, expected_mode: int) -> bytes:
-    try:
-        return read_stable_private_file(
-            path,
-            expected_uid=expected_uid,
-            expected_mode=expected_mode,
-            maximum=_MAX_RECEIPT_BYTES,
-            chunk_size=BACKUP_COPY_BUFFER_BYTES,
-        )
-    except PrivateFileReadError as exc:
-        if exc.failure == "unsafe":
-            message = "A rehearsal receipt has unsafe metadata."
-        elif exc.failure == "incomplete":
-            message = "A rehearsal receipt is oversized or incomplete."
-        else:
-            message = "A rehearsal receipt changed or could not be read."
-        raise CandidateRehearsalRefused(message) from exc
 
 
 def _read_bounded_file(path: Path) -> bytes:
@@ -1723,30 +1145,6 @@ def _read_bounded_file(path: Path) -> bytes:
     if len(content) > _MAX_RECEIPT_BYTES:
         raise CandidateRehearsalRefused("A rehearsal handoff file is oversized.")
     return content
-
-
-def _require_private_directory(path: Path, *, label: str) -> None:
-    try:
-        info = path.lstat()
-    except OSError as exc:
-        raise CandidateRehearsalRefused(f"The {label} is unavailable.") from exc
-    if (
-        not stat.S_ISDIR(info.st_mode)
-        or info.st_uid != os.geteuid()
-        or stat.S_IMODE(info.st_mode) & 0o077
-    ):
-        raise CandidateRehearsalRefused(f"The {label} has unsafe ownership or mode.")
-
-
-def _discard_operation_root(operation_root: Path, *, update_root: Path) -> None:
-    if (
-        operation_root.parent != update_root
-        or _REHEARSAL_ROOT_NAME.fullmatch(operation_root.name) is None
-    ):
-        raise CandidateRehearsalRefused("The rehearsal operation root is not canonical.")
-    _require_private_directory(operation_root, label="rehearsal operation root")
-    shutil.rmtree(operation_root)
-    _fsync_directory(update_root)
 
 
 def _optional_text_sha256(value: object) -> str | None:
@@ -1827,71 +1225,6 @@ def _canonical_sha256(value: object) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
-def _main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(add_help=False)
-    modes = parser.add_mutually_exclusive_group(required=True)
-    modes.add_argument("--candidate-child", nargs=2, metavar=("OVERLAY", "RESULT"))
-    modes.add_argument(
-        "--candidate-migrate",
-        nargs=2,
-        metavar=("DATABASE", "RESULT"),
-    )
-    modes.add_argument(
-        "--orchestrate",
-        nargs=3,
-        metavar=("BUILT_RECEIPT", "DATA_DIR", "UPDATE_ROOT"),
-    )
-    modes.add_argument(
-        "--orchestrate-maintenance",
-        nargs=5,
-        metavar=(
-            "BUILT_RECEIPT",
-            "DATA_DIR",
-            "UPDATE_ROOT",
-            "OPERATION_RECEIPT",
-            "OPERATION_SHA256",
-        ),
-    )
-    arguments = parser.parse_args(argv)
-    if arguments.candidate_child is not None:
-        overlay, result = (Path(value) for value in arguments.candidate_child)
-        return run_candidate_child(overlay, result)
-    if arguments.candidate_migrate is not None:
-        database, result = (Path(value) for value in arguments.candidate_migrate)
-        return run_candidate_migration(database, result)
-    if arguments.orchestrate is not None:
-        built_receipt, data_dir, update_root = (Path(value) for value in arguments.orchestrate)
-        return run_rehearsal_orchestrator(built_receipt, data_dir, update_root)
-    built_receipt, data_dir, update_root, operation_receipt, operation_sha256 = (
-        arguments.orchestrate_maintenance
-    )
-    return run_rehearsal_orchestrator(
-        Path(built_receipt),
-        Path(data_dir),
-        Path(update_root),
-        operation_receipt_path=Path(operation_receipt),
-        operation_receipt_sha256=operation_sha256,
-    )
-
-
-if __name__ == "__main__":  # pragma: no cover - exercised through the candidate subprocess
-    raise SystemExit(_main(sys.argv[1:]))
-
-
-__all__ = [
-    "CandidateProjectVerification",
-    "CandidateMigrationResult",
-    "CandidateRehearsalCoordinator",
-    "CandidateRehearsalRefused",
-    "CandidateRehearsalResult",
-    "RehearsalOverlay",
-    "RehearsalProjectOverlay",
-    "StartupRecoveryReadModel",
-    "VerifiedCandidateReceipt",
-    "build_rehearsal_overlay",
-    "read_verified_candidate_receipt",
-    "run_candidate_child",
-    "run_candidate_migration",
-    "run_rehearsal_orchestrator",
-    "verified_candidate_receipt_path",
-]
+async def _unused_rehearsal_stream(*_args, **_kwargs):
+    if False:  # pragma: no cover - type-correct effect tripwire
+        yield object()

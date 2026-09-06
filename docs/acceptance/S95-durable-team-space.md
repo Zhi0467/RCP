@@ -9,7 +9,7 @@ covered_by:
   - tests/test_server_control.py
   - tests/test_server_cli.py
   - tests/test_api_server_status.py
-  - tests/test_server_install_live.py
+  - tests/supervisor_reboot_live.py
 invariants: [6, 8]
 ---
 
@@ -31,19 +31,19 @@ operating-system account, so a member with an ordinary shell on the lab machine
 cannot read the control plane, append to canonical history directly, or take the
 singleton lock and become the authority themselves.
 
-The first deployment is one source-built Ubuntu 22.04 or 24.04 LTS x86-64
+The first deployment is one Ubuntu 22.04 or 24.04 LTS x86-64
 server running systemd. A dedicated `rcp` account owns the service, data, and
 server-local central checkouts; an explicit remote execution account owns any
 checkout on its SSH machine. Humans remain distinct members and do not share
-either execution login. The installed RCP version is the server checkout's exact
-GitHub `main` commit, served without source reload.
+either execution login. The installed RCP version is an exact human-promoted build, served without
+source reload.
 
 ## Implemented substrate
 
 F1 through F6d are implemented as of 2026-09-01. The server CLI command and
 event contract, Linux service layout, idempotent installer and unit, private
-control socket, commit identity and `server doctor`, and the complete update
-source/rehearsal/checkpoint/cutover path all have focused coverage. A first
+control socket, commit identity and `server doctor`, and the supervisor
+artifact/validation/checkpoint/cutover path have focused coverage. A first
 manual install on Ubuntu 22.04 x86-64 created the dedicated `rcp` account,
 managed checkout, immutable release, and an initialized team space, then passed
 HTTP health and `server doctor`. This scenario remains pending because the

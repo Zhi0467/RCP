@@ -1,35 +1,25 @@
 # External supervisor and release artifacts handoff
 
 Date: 2026-09-02
-Status: active, human-confirmed on 2026-09-02. Phase 0 is implemented: health
-reports build, commit, and the storage ledger head, and `rcp --version` and
-`rcp migrate --check` exist. Phase 1 is implemented and its GitHub exit proof was
-observed on 2026-09-03 (receipts below). Phase 2's public-origin transition is
-implemented on main and the lab
-server completed the deploy-key-to-public transition on 2026-09-03, with the
-deploy key revoked and one key-free update proven (receipts below); the later
-private-source cleanup and legacy-archive restore proof remain. Public fresh
-installation passed hosted Ubuntu 22.04/24.04 run 33919068513 at 276a2bb. The
-decisions are settled in
-[the supervisor decision](../decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md)
-and repeated in the next section so this file stands alone. Phase 3 release
-preparation is implemented: the independent package, complete build assets,
-bounded release fetch/verification, and isolated RCP installation. Migration
-checks, checkpoints, switch/restore recovery, self-update, CLI delegation, and
-reboot qualification remain. On 2026-09-06 the human chose to proceed with the
-supervisor; retain the Phase 2 cleanup as unfinished work before cutover.
-**Ready to dispatch:** checkpoint/recovery and the application maintenance
-contract, then the remaining integration and qualification. The predecessor
-gate is satisfied: the [team-server handoff is archived](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server.md).
+Status: active. Phases 0 and 1 and the Phase 2 public-origin transition are
+merged. The remaining Phase 2 cleanup and Phase 3–5 implementation are collected
+in one supervisor integration PR: independent deployment and restore journals,
+closed admission, generic checkpoints, boot recovery, artifact installation,
+source adoption, operator delegation, and removal of the old deployment owners.
+The disposable reboot harness is implemented. The integration closeout of
+2026-09-06 below finished the supervisor's terminal wizard and failure
+breakpoints, fixed every confirmed finding of the final integration review, and
+passed the full local baselines. Actual Ubuntu reboot qualification, human
+promotion, and the Phase 6 production drive remain outstanding.
 
-On 2026-09-05 the human accepted existing two-member production use and skipped
-separate disposable-host SSH qualification. The backed-up CoT project then
-completed desktop transfer to WTH UCSD, target import, activation-proof return,
-source retirement, and canonical/provider-history verification. Its source-only
-paused-attempt/recovery fixes are in the closure PR and must pass CI and human
-merge normally. The temporary surface freeze is closed. This handoff prepares
-supervisor implementation; its operational cutover and recovery are not yet
-implemented.
+Human clarification, 2026-09-06: finish the remaining coding in one PR, then drive
+the system; bugs found by that drive belong in subsequent PRs. Earlier phases
+and preparation receipts below are historical evidence, not instructions to
+restore the retired source deployment path. The accepted authority remains
+[the supervisor decision](../decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md)
+and the [operations spec](../specs/server-and-machine-operations.md).
+The [team-server handoff is archived](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server.md);
+its former surface freeze is closed.
 
 Closure condition, all of it:
 
@@ -48,8 +38,7 @@ When those hold, archive this handoff.
 - Every server follows `stable`, the newest non-prerelease GitHub Release. A
   human promotes a build to `stable` when they choose. No cadence.
 - CI publishes one build per merge to `main` as prerelease `build/<N>`: the
-  `rcp` wheel, the hashed lock export, a SHA-256 manifest, and, once Phase 3
-  creates it, the supervisor wheel. A later merge never cancels an earlier
+  `rcp` wheel, the hashed lock export, a SHA-256 manifest, the supervisor wheel, and its hashed lock. A later merge never cancels an earlier
   `main` run. Builds are pruned after thirty days; releases never.
 - Promotion re-attaches the build's assets under `vX.Y.Z` and never rebuilds.
   The build's base version must equal the tag.
@@ -82,53 +71,22 @@ When those hold, archive this handoff.
   subsequently accepted work. Prove this with actual disposable-host reboots,
   not only process crashes or operator-driven re-entry.
 
-## Ordering and gates
+## Remaining gates
 
-```
-Phases 0–1 complete; Phase 2 public transition complete, cleanup remains
-        │  first-lab gate satisfied on 2026-09-05
-        ▼
-Phase 3 (package/preparation implemented; recovery remains) → Phase 4 (cutover)
-        → Phase 5 (deletion) → Phase 6 (lab)
-```
-
-The migration ledger and its read-only validator are already on main; there is
-no outstanding concurrent-audit dependency. Phase 2's public transition depended
-on Phase 1, so the public repository could serve builds immediately. Phases 3
-and later are sequential. The former first-lab freeze no longer blocks them;
-the documented package, cutover, deletion, and qualification checks still apply.
-
-Sequence any two phases that touch `src/rcp/api/app.py`,
-`src/rcp/server_ops/cli.py`, `src/rcp/server_ops/install.py`, or
-`.github/workflows/`; these are composition seams, not parallel lanes.
-
-## Dispatch order
-
-Stay with small, coherent file/module assignments rather than assigning an
-entire phase to one worker. The integrator owns the full diff and workflow
-verification. Suggested short-PR order:
-
-1. Phase 2 cleanup: source access/config and legacy-label compatibility tests.
-2. Independent supervisor packaging and wheel/lock/promotion contracts.
-3. Release resolution, bounded downloads, hashes, and isolated installation.
-4. Checkpoint/journal owner and crash-safe switch with fake-service failures.
-5. Restore candidate validation/publication under that same journal.
-6. CLI delegation, maintenance admission, doctor/config, and hosted Ubuntu drive.
-7. Delete replaced in-app deployment owners; prove every retained console
-   operation and direct old-data upgrade still works.
-8. Promote the first complete supervisor-bearing release and perform the
-   protected lab cutover, then archive this handoff.
-
-Do not run the new installer against an older `stable` lacking supervisor assets
-or the required maintenance contract. Refuse with the exact missing requirement;
-human promotion of a qualified complete build precedes lab installation. Do not
-silently install from main or another prerelease instead.
+1. Complete this integration PR's local checks and PR CI, then human merge.
+2. Drive `.github/workflows/supervisor-recovery-live.yml` on disposable hosted
+   Ubuntu 22.04/24.04. It preflights QEMU/KVM and refuses qualification when the
+   environment cannot prove real reboots. Exercise source adoption and fresh-host
+   GitHub checkout reconstruction separately where synthetic fixtures do not
+   establish those operational promises.
+3. Human-promote a complete build containing the maintenance contract and both
+   wheels/locks. An older `stable` must fail with its missing requirement; never
+   silently substitute `main` or a prerelease.
+4. With complete protected backup verified, perform Phase 6 on production and
+   record redacted receipts here. Archive this handoff only after all closure
+   conditions hold.
 
 ## Phases
-
-Each phase is one or more pull requests. Each names its owner files, the
-behavior it must not change, and the proof that closes it. "Green" means the
-baseline checks in `AGENTS.md` plus the phase's own checks.
 
 ### Phase 0 — contract the supervisor will rely on
 
@@ -202,8 +160,9 @@ GitHub exit proof, observed 2026-09-03 (UTC):
 
 ### Phase 2 — public repository and protected `main`
 
-Code status: public-origin transition implemented on main; removal of the
-retired private-source creation path is still open.
+Code status: public-origin transition is merged. The integration PR removes
+private-source key creation and label emission while retaining shipped config
+and archive decoding and explicit old-key revocation information.
 
 Lands: the bundled transition already designed in the 2026-08-27 update-channel
 decision, in this order. Repository public. Branch protection on `main`
@@ -268,161 +227,79 @@ This proves the public-install path, not a restore fixture carrying an old
 `rcp-source:<id>` label. Do not push directly to protected main merely to retest
 its refusal.
 
-Remaining steps, in order:
+Phase 2 cleanup is implemented in `server_ops/install.py`, `config.py`, and
+backup/restore policy. New installations never generate an RCP-source deploy key.
+Research-project keys remain supported. Compatibility tests restore an archive
+carrying the retired source label and a legacy main-head record with no transition
+ID; a recorded, incorrect transition ID still fails closed. The current publisher
+records the actual main transition. Hosted public-install qualification must be
+repeated through the supervisor entrance before production cutover.
 
-1. Remove new private-source key generation/grant pauses and new legacy-label
-   emission. Preserve decoding of shipped configurations/archives and explicit
-   revocation instructions for an old source key. Do not remove research-project
-   deploy keys; those still support private project repositories.
-2. Prove an old archive carrying the source label still restores; rerun the
-   public-install qualification after that cleanup changes the installer.
+### Phase 3 — independent deployment and recovery
 
-Owner files: `src/rcp/server_ops/install.py`, `src/rcp/server_ops/config.py`,
-`src/rcp/server_ops/backup*.py`, `src/rcp/server_ops/restore.py` (label
-handling only), `docs/server.md` step 7,
-`docs/specs/server-and-machine-operations.md`.
+Implemented in `supervisor/src/rcp_supervisor/`: verified release preparation,
+root-selected receipts, separate pinned root runtime and operator console,
+service-account byte workers, strict operation journals, generic checkpoint
+creation/publication, release switching, fenced probes, restore coordination,
+and independent supervisor update. The package imports no `rcp` modules.
+Application data decoding, canonical replay, baseline comparison, and restore
+policy remain in bounded application commands in the selected wheel.
 
-Must not change: install behavior on a host that never had a private origin;
-backup archive compatibility for archives that carry the old label; any origin
-other than the one deliberate deploy-key-to-public transition.
+The coordinator takes a complete protected backup, then owns the existing backup
+job lock through maintenance and publication. It stops the quiescent application,
+checks consistent copies, seals every rollback root, and starts the candidate
+behind closed admission. Durable `candidate_chosen` and `previous_chosen` phases
+precede ordinary service admission. Recovery after either decision verifies the
+chosen current data without restoring an old checkpoint over accepted work.
+Failures retain checkpoints, quarantines, journals, and bounded diagnostics.
 
-Exit proof: the recorded protection settings and required-check enforcement;
-the lab server's `server doctor` showing the
-public HTTPS origin and a successful update from it before the key is revoked;
-a fresh install on a disposable host with no deploy-key step; an old archive
-with the label still restores.
+Supporting checks cover real filesystem/SQLite rollback, process interruption
+at journal and per-root publication boundaries, fresh-data restore, exact release
+and proof binding, subprocess deadlines, wrong identities, and strict journal
+refusal. These checks do not prove machine reboot recovery.
 
-### Phase 3 — the supervisor package
+### Phase 4 — installed command and boot integration
 
-Implemented: independent `supervisor/` uv subproject, version `0.1.0`, no runtime
-dependencies or RCP imports; `rcp-supervisor fetch`, `verify`, and `install`.
-Builds contain both wheels and both hashed lock exports. Historical complete
-RCP-only builds remain promotable, but the supervisor refuses them explicitly.
-Fetch accepts only `stable` or a named stable release, verifies hashes and wheel
-identities under resource bounds, and publishes one immutable local bundle.
-Install runs unprivileged into a new `releases/<build>/.venv`, verifies the
-installed version and dependency compatibility, and never moves `current` or
-opens application data. Failed preparation retains the build directory and log;
-an existing build directory is never overwritten. The root integration must
-select the `rcp` account when it delegates this preparation.
+Implemented: the paired wheel bootstrap installs root-owned launchers and the
+systemd startup guard. `rcp server install`, `update`, `restore`, and `supervisor
+update` delegate to the supervisor, preserving the sealed wizard event contract.
+Human restore authority choices are mutually exclusive and require explicit
+selection. Machine-readable commands never execute operator actions.
 
-Remaining: `check`, checkpoint/journal ownership, `switch`, `restore`, and
-`self-update`, including the fake-service and interrupted-migration exit proofs
-below. No command stub claims these operations are available.
+The supervisor's own terminal mode renders the same one-line wizard as the
+application: a live current-step line, bounded fields, and stop guidance. A
+failed operation is a usable breakpoint carrying the bounded cause, the retained
+deployment phase, an exact `--machine-readable` diagnostic rerun, a `server
+doctor` inspection command, and the exact continue command.
 
-Lands: an independently buildable `rcp_supervisor` distribution with separate
-build metadata, version, wheel, and `rcp-supervisor` console script; no import
-from `rcp`. Choose the smallest subproject layout compatible with the existing
-single-package root build; adding a console entry to the RCP wheel is not
-independence. Commands: `fetch`
-(manifest, assets, hash verification, `stable` or a named release), `install`
-(isolated environment under `releases/<build>/` from wheel plus hashed lock, as
-`rcp`), `check` (copy data directory, run the release's `rcp migrate --check`),
-`switch` (protected backup, stop, crash-safe local checkpoint of the data
-directory and every RCP-owned local state root with an fsynced phase journal,
-pointer switch, start, health poll, and on failure restore the checkpoint from
-the journal, switch back, start and verify the previous release), `restore`
-(unpack the archive into a candidate data directory beside the live one, run
-`check` on it, stop, checkpoint the live data directory under the same journal,
-atomically publish the candidate into `RCP_DATA_DIR`, start, verify, and roll
-back by re-publishing the checkpoint), `self-update`. Event stream in the same
-machine-readable shape the CLI uses. The checkpoint is what makes rollback
-after a forward migration possible; the old release never reads migrated data.
+Fresh restore starts from uninitialized app data without creating a temporary
+team. Source adoption first retains a stopped opaque snapshot, requires a complete
+current encrypted backup, and verifies the candidate before replacing launch
+authority. A failed adoption restores the old bytes and integration. After its
+chosen decision, recovery preserves the selected data. Research Git, provisioning,
+provider checks, backup, transfer, and member operations remain supported.
 
-Owner files: the new supervisor package/build metadata,
-`tests/test_supervisor*.py`, `.github/workflows/ci.yml`, and the existing release
-asset/promotion verification code. Publish and hash the supervisor wheel and
-its required dependency lock as part of the same immutable build; preserve
-promotion without rebuilding. Keep normal tests in the existing CI jobs.
+The disposable QEMU harness uses an external controller, real systemd startup,
+changed boot IDs, offline recovery, forward migration, interrupted rollback,
+unknown-journal refusal, and accepted-work preservation. It includes 84 cases per
+Ubuntu version. Local fixture builds and refusal checks pass; actual VM execution
+and the fresh-host GitHub reconstruction drive remain pending. The fixture restore
+uses an existing Git checkout and must not be described as new-host key proof.
 
-Must not change: anything under `src/rcp/`; the server layout from the
-2026-08-27 install decision; systemd unit contents.
+### Phase 5 — retired deployment owners removed
 
-Exit proof: tests against a fake service that fails health checks, hangs, and
-reports a wrong build; tests against a frozen real RCP build installed into a
-temporary layout; a test that the package imports nothing from `rcp`; a test
-that an interrupted `switch` re-enters and completes rollback from its journal,
-including after a forward migration ran; a test that an interrupted `restore`
-re-enters and finishes either the publication or the rollback, never leaving a
-mixed data directory.
+Deleted `server_ops/update.py`, `update_checkpoint.py`, `update_cutover.py`, and
+`rehearsal.py`. `create_app` does not decode deployment journals; it owns only the
+application maintenance boundary and its normal startup recovery. Restore policy
+is extracted from the old in-app coordinator. Non-deployment authenticated control
+operations remain. The old source-install/restore live drivers are replaced by
+the supervisor workflow and guest driver.
 
-The boot recovery implementation follows in Phase 4, when systemd integration
-can change. Its qualification must change the machine's Linux boot ID and prove
-unattended recovery before admission, including a forward migration and every
-rollback publication boundary, network-unavailable recovery, invalid-journal
-refusal, and preservation of work accepted after reopening. Process-only
-re-entry remains a focused regression, not the reboot exit proof.
-
-### Phase 4 — cutover: operator commands delegate
-
-Lands: `rcp server install` installs the supervisor and installs the first
-release from `stable` instead of building the managed checkout; `rcp server
-update` and `rcp server restore` delegate to the supervisor and keep their
-wizard presentation; `rcp server supervisor update`; server config gains the
-followed release (default `stable`) and an optional pin; `docs/server.md`
-rewritten for the new prerequisites and commands.
-
-Settle inside this phase, with these defaults: the one-time bootstrap entry
-becomes `uv tool run --from <stable wheel URL> rcp server install`, so the
-operator uses `uv` for the bootstrap, alongside the existing OS, systemd, SSH,
-Git, age, and privilege prerequisites; restore validation that today lives in
-`server_ops/restore.py` moves to the supervisor's `restore` where it concerns
-layout and to `rcp migrate --check` where it concerns data. Replace
-`restore.py:_git_commit_is_supported`'s RCP-source `git merge-base` dependency
-with explicit release/archive and schema compatibility checks. Unknown formats
-and schemas still fail closed; preserving project Git does not justify keeping
-an RCP source checkout solely for ancestry validation.
-
-The current migration check proves SQLite ledger compatibility, not canonical
-graph replay or retained project-file integrity. Preserve those application-owned
-checks through an explicit bounded offline CLI entry as needed; do not duplicate
-RCP's graph/schema logic in the supervisor or mistake a schema-only check for a
-full copied-state rehearsal. Copy/snapshot capture must be consistent, and the
-final fenced checkpoint must match the checked boundary or be checked again.
-
-The integration also proves the maintenance handshake from the settled
-decisions: no new task or mutation can race the final checkpoint or cutover,
-watcher/recovery owners cannot publish during it, and admission stays closed
-after a failed or interrupted activation until the supervisor verifies recovery.
-
-Owner files: `src/rcp/server_ops/cli.py`, `install.py`, `config.py`,
-`layout.py`, `doctor.py`, `docs/server.md`,
-`docs/specs/server-and-machine-operations.md`.
-
-Must not change: the operator-visible command names; the data directory and
-credentials layout; backup format.
-
-Exit proof: on disposable Ubuntu 22.04 and 24.04 hosts, install from `stable`,
-update to a newer release, force a failing health check and observe automatic
-rollback, and restore a protected archive; `server doctor` reports the followed
-release and installed supervisor version; no RCP source checkout or JavaScript
-build tools are required. Git remains installed for the project/restore drive.
-
-### Phase 5 — delete in-app deployment coordination, retain console operations
-
-Lands: removal of `src/rcp/server_ops/update.py`, `update_checkpoint.py`,
-`update_cutover.py`, and `rehearsal.py` once their responsibilities have moved;
-remove release-specific control messages, activation-journal commits, and
-deployment-journal recovery from `src/rcp/api/app.py`. Keep the private control
-server and `control.py` operations for provisioning, transfer, provider checks,
-backup capture, and member removal. Keep the narrow admission safety owner, not
-the old release coordinator behind a renamed facade. Replace obsolete tests
-with supervisor/integration coverage before deleting them; rewrite specs to
-describe only the new deployment path.
-
-Owner files: the files above, `tests/test_server_*`, `tests/test_app_*`,
-`docs/specs/server-and-machine-operations.md`, `docs/design.md` where it names
-the control protocol.
-
-Must not change: backup, provisioning, provider readiness, member removal,
-transfer; startup order for everything that is not update or restore.
-
-Exit proof: `create_app` reads no deployment journal; non-deployment CLI
-operations still pass through their authenticated connection; the full suite
-and old-data job are green. Re-drive the server lifecycle promise in
-[S103](../acceptance/S103-server-operations-are-console-operations.md) and the
-hosted server-install harness. S36 covers signed packaged-desktop updates and
-must not be rewritten as a server-supervisor scenario.
+Current behavior is documented in `docs/server.md`, `docs/release.md`, and the
+operations spec. The full backend, web, lint, documentation, and old-data checks
+must pass for the completed integration commit. S103/S104/S135 remain pending
+where actual hosted or production drives are still required; S36 remains the
+separate packaged-desktop updater scenario.
 
 ### Phase 6 — the lab
 
@@ -446,9 +323,8 @@ followed release. Then archive this handoff.
 
 Phases 1 and 2 use GitHub metadata/workflow evidence. Phase 3 starts with local
 temporary layouts and fake services, with real frozen-release integration.
-Phase 4 reuses `.github/workflows/server-install-live.yml` and
-`tests/test_server_install_live.py` on hosted disposable Ubuntu 22.04/24.04
-runners. No personally supplied disposable VM is required. Phase 6 is
+Phase 4 uses `.github/workflows/supervisor-recovery-live.yml` and
+`tests/supervisor_reboot_live.py` on hosted disposable Ubuntu 22.04/24.04 runners. No personally supplied disposable VM is required. Phase 6 is
 proven on the persistent lab server only after Phases 3 through 5 are green on
 disposable hosts. Never test against the lab server's real data directory
 first.
@@ -493,7 +369,49 @@ the host. Production was not updated, restarted, or rebooted during these checks
 
 Read-only diagnosis narrowed the coverage defect to a configured default machine
 that owns no repository and therefore has no resolved checkout root. The backup
-descriptor currently insists that every configured machine has a checkout
-recovery record. Prepare that correction separately, preserving unused machine
-configuration through restore; do not edit the production manifest or
-provisioning records to satisfy the validator.
+descriptor incorrectly required every configured machine to have a checkout
+recovery record. PR #62 merged the correction, preserving unused machine
+configuration through restore. The production backup must be repeated after
+adoption can use that correction; no production manifests or provisioning records
+were edited to satisfy the validator.
+
+### Integration closeout, 2026-09-06
+
+Remaining coding for this handoff was finished in one integration PR. Besides
+the wizard rendering above, the final read-only integration review confirmed
+and this PR fixed: the control transport rejecting a successful
+`maintenance_release` or an open `maintenance_status` because the open result
+carries no boundary identity; `server install` re-entry skipping an unfinished
+source adoption and publishing selected authority that blocked its rollback; a
+concurrent update entering deployment with a stale previous release, now
+refused under the coordinator lock; restore never enabling the unit after its
+durable activation; the guest fixture writing its qualification drop-in before
+the production doctor check it must pass; `--machine-readable` refused at
+intermediate application parsers; and guide text describing the retired
+empty-target restore and deleted install workflow. Confirmed findings from the
+review of PR #61 were fixed in the same files: the releases root's writable
+ancestors, wheel metadata that crashed verification, an unmapped UID crashing
+the machine-readable stream, a success receipt surviving a failed durability
+sync, slow response headers escaping the fetch deadline, FIFO substitution
+blocking verification, and packaging version rules that disagreed with the
+supervisor's. The DAG zoom findings are unrelated to deployment and shipped
+separately as PR #64.
+
+Verification on the final tree: `uv run pytest` 4,184 passed, 10 skipped; Ruff
+check and format clean over `src tests packaging supervisor/src`; pre-commit
+clean over every modified and untracked path; Web build and 643 Web tests
+passed. One earlier full run failed
+`test_launcher.py::test_stream_records_explicit_terminal_provider_event` once
+under eight workers and passed alone and in the final run; it is outside this
+change. The two synthetic qualification bundles were rebuilt from the final
+code at `/private/tmp/rcp-supervisor-qualification-bundles-20260906` and
+verified by `rcp-supervisor verify` (base manifest `3e9976ad…`, target manifest
+`772ff7e6…`, target ledger head 9); they are not promoted releases.
+
+Coverage boundaries that stay open gates: the Linux parent-death test skips on
+macOS and runs only in Linux CI; the fixture restore reuses an existing Git
+checkout and proves no fresh-host GitHub key or checkout reconstruction; source
+adoption has local recovery regressions but no actual old-source drive;
+installation from promoted GitHub assets is not exercised by the synthetic
+workflow; and no actual reboot has run, so S135 stays pending. No production
+update, restart, reboot, or app-data mutation occurred.

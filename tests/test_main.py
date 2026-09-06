@@ -32,7 +32,6 @@ from rcp.__main__ import (
     instance_lock,
     main,
 )
-from rcp.api.app import inspect_installed_replacement_startup
 from rcp.server_ops.models import ServerStepEvent
 from rcp.server_runtime import (
     ServerMetadata,
@@ -135,76 +134,31 @@ def test_instance_lock_rejects_a_second_server_for_the_same_data(tmp_path) -> No
         pass
 
 
-def test_main_checks_installed_replacement_before_touching_the_data_root(
-    tmp_path, monkeypatch
-) -> None:
-    data_dir = tmp_path / "missing-data"
-    calls = []
-
-    def refuse(path):
-        calls.append(path)
-        raise RuntimeError("Installed rollback restoration is incomplete")
-
-    monkeypatch.setattr("rcp.__main__.default_data_dir", lambda: data_dir)
-    monkeypatch.setattr("rcp.__main__.inspect_installed_replacement_startup", refuse)
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--maintenance-id", "invalid"],
+        ["--maintenance-id", "invalid", "--maintenance-boundary", "b" * 64],
+        [
+            "--maintenance-id",
+            "14875297-eef3-45f8-a07b-ec5c381fc2fe",
+            "--maintenance-boundary",
+            "b" * 64,
+            "--force",
+        ],
+    ],
+)
+def test_invalid_maintenance_start_refuses_before_opening_data(tmp_path, monkeypatch, arguments):
+    data = tmp_path / "must-not-exist"
+    monkeypatch.setattr("rcp.__main__.default_data_dir", lambda: data)
     monkeypatch.setattr(
         "rcp.__main__.instance_lock",
-        lambda *_args, **_kwargs: pytest.fail("startup touched the data-directory lock"),
+        lambda *_args, **_kwargs: pytest.fail("invalid maintenance took the data lock"),
     )
-    monkeypatch.setattr(sys, "argv", ["rcp", "serve"])
-
-    with pytest.raises(SystemExit, match="rollback restoration is incomplete"):
+    monkeypatch.setattr(sys, "argv", ["rcp", "serve", *arguments])
+    with pytest.raises(SystemExit):
         main()
-
-    assert calls == [data_dir.resolve()]
-    assert not data_dir.exists()
-
-
-def test_installed_replacement_check_finds_rollback_without_creating_data(
-    tmp_path, monkeypatch
-) -> None:
-    data_dir = tmp_path / "missing-data"
-    update_root = tmp_path / "update-checkpoints"
-    update_root.mkdir()
-    journal = update_root / "operation" / "rollback-journal.json"
-    layout = Namespace(
-        data_dir=data_dir,
-        restore_operations_root=tmp_path / "restore-operations",
-        update_checkpoints_root=update_root,
-    )
-    monkeypatch.setattr(
-        "rcp.api.app._installed_rollback_journals",
-        lambda path: (journal,) if path == update_root else (),
-    )
-
-    with pytest.raises(RuntimeError, match="rollback restoration is incomplete"):
-        inspect_installed_replacement_startup(data_dir, layout)
-
-    assert not data_dir.exists()
-
-
-def test_installed_replacement_check_keeps_completed_restore_stopped_until_cutover(
-    tmp_path, monkeypatch
-) -> None:
-    data_dir = tmp_path / "restored-data"
-    update_root = tmp_path / "update-checkpoints"
-    update_root.mkdir()
-    operation = Namespace(state="rollback_restoring")
-    layout = Namespace(
-        data_dir=data_dir,
-        restore_operations_root=tmp_path / "restore-operations",
-        update_checkpoints_root=update_root,
-    )
-    monkeypatch.setattr("rcp.api.app._installed_rollback_journals", lambda _path: ())
-    monkeypatch.setattr(
-        "rcp.server_ops.update_cutover.update_operation_needing_recovery",
-        lambda _path, *, expected_uid: (update_root / "operation.json", operation, "a" * 64),
-    )
-
-    with pytest.raises(RuntimeError, match="rollback cutover is incomplete"):
-        inspect_installed_replacement_startup(data_dir, layout)
-
-    assert not data_dir.exists()
+    assert not data.exists()
 
 
 def test_space_init_creates_a_named_team_without_locking_or_serving(

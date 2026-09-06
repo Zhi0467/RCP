@@ -21,11 +21,16 @@ _VERSION_ASSIGNMENT = re.compile(
     r'^(?P<prefix>__version__\s*=\s*["\'])(?P<version>[^"\']+)(?P<suffix>["\']\s*)$',
     re.MULTILINE,
 )
-_TAG = re.compile(r"^v\d+\.\d+\.\d+$")
-_BUILD_TAG = re.compile(r"^build/\d+$")
-_BUILD_VERSION = re.compile(r"\+build\.(?P<run>\d+)\.g[0-9a-f]{7}$")
-_RCP_WHEEL = re.compile(r"^rcp-\d+\.\d+\.\d+\+build\.\d+\.g[0-9a-f]{7}-py3-none-any\.whl$")
-_SUPERVISOR_WHEEL = re.compile(r"^rcp_supervisor-\d+\.\d+\.\d+-py3-none-any\.whl$")
+# These identity rules must stay identical to the supervisor's release verifier:
+# no leading zeros, build numbers from one, ASCII digits only.
+_STABLE = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+_TAG = re.compile(rf"^v{_STABLE}$", re.ASCII)
+_BUILD_TAG = re.compile(r"^build/[1-9][0-9]*$", re.ASCII)
+_BUILD_VERSION = re.compile(r"\+build\.(?P<run>[1-9][0-9]*)\.g[0-9a-f]{7}$", re.ASCII)
+_RCP_WHEEL = re.compile(
+    rf"^rcp-{_STABLE}\+build\.[1-9][0-9]*\.g[0-9a-f]{{7}}-py3-none-any\.whl$", re.ASCII
+)
+_SUPERVISOR_WHEEL = re.compile(rf"^rcp_supervisor-{_STABLE}-py3-none-any\.whl$", re.ASCII)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
