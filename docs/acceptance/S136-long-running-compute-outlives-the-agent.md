@@ -16,7 +16,8 @@ invariants: [4, 4b, 5, 8, 9, 10g]
 last_checked: >-
   2026-09-06 — human confirmed the compute-runner journey. PR B implements
   Work and Experiment-loop command and observer paths. The real team-server
-  drive, operator surfaces, and prompt instructions remain pending.
+  drive and operator surfaces remain pending. PR E teaches the launch and job
+  observer handoff in Work, Experiment-loop, and child Work prompts.
 ---
 
 # Long-running compute outlives the agent and wakes it

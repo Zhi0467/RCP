@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import shlex
 import threading
 from pathlib import Path
 
@@ -40,6 +41,35 @@ class _RecordingLauncher:
         self.launch_kwargs: list[dict[str, object]] = []
 
     async def stream(self, _provider, prompt, **kwargs):
+        if "This is a Work turn." in prompt:
+            tooling_path = next(
+                line.removeprefix(
+                    "Read RCP launch tooling relative to this turn's cwd: `"
+                ).removesuffix("`")
+                for line in prompt.splitlines()
+                if line.startswith("Read RCP launch tooling relative to this turn's cwd: `")
+            )
+            command = (
+                (Path(kwargs["cwd"]) / tooling_path)
+                .read_text()
+                .strip()
+                .removeprefix("RCP launch command for this turn: `")
+                .removesuffix("`")
+            )
+            argv = shlex.split(command)
+            gate = kwargs["invocation_gate"]
+            authority = list(gate.client_arguments())
+            assert argv[2 : 2 + len(authority)] == authority
+            assert argv[argv.index("--workspace") + 1] == str(kwargs["cwd"])
+            assert argv[argv.index("launch") :] == [
+                "launch",
+                "--key",
+                "<idempotency-key>",
+                "--cwd",
+                "<working-directory>",
+                "--",
+                "<argv...>",
+            ]
         self.prompts.append(prompt)
         self.workspaces.append(Path(kwargs["cwd"]))
         self.sessions.append(kwargs.get("session_id"))

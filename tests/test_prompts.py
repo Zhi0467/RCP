@@ -28,8 +28,61 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.providers import ProviderSkillReference
 from rcp.runs.chat import _chat_context_delta
 from rcp.runs.experiment_loop import stage_experiment_loop_context
+from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.service import RunRequest
 from tests.helpers import seed_patch
+
+
+@pytest.fixture
+def launch_command(tmp_path):
+    (tmp_path / "stage with spaces").mkdir()
+    staged = stage_patch_validation_mailbox(
+        local_stage=tmp_path / "stage with spaces",
+        remote_stage=None,
+        task_id="prompt-test",
+        turn_id="work-turn",
+        timeout_seconds=30,
+        authority="broker",
+    )
+    try:
+        yield staged.client_command(
+            "launch",
+            "--key",
+            "<idempotency-key>",
+            "--cwd",
+            "<working-directory>",
+            "--",
+            "<argv...>",
+        )
+    finally:
+        staged.cleanup()
+
+
+def _assert_compute_handoff(contract: str) -> None:
+    compact = " ".join(contract.split())
+    assert "whether the work must outlive the turn does" in compact
+    assert "Short commands still run inline" in compact
+    assert "Never detach work yourself (`nohup`, `setsid`, `&`, double fork)" in compact
+    assert "a PID seen inside it means nothing to RCP" in compact
+    assert "At most one `job-status` check in the same turn" in compact
+    assert "startup or read an early failure; never poll" in compact
+    assert "Blocker naming the setup failure and required action from the response" in compact
+    assert "Do not run the work attached, look for another execution path, or retry" in compact
+    assert "A job that already exited needs no observer" in compact
+    assert "handoff defect RCP sends back for correction" in compact
+    assert "external work RCP did not launch" in compact
+    assert '"job_id"' in contract
+    assert "ps -axo pid=" not in contract
+    assert "Verify the detached work" not in contract
+    assert "verify the exact check from a fresh login shell" not in contract
+    assert "run the exact check from a fresh login shell" not in contract
+    assert "observe it as detached work" not in contract
+
+
+def test_work_compute_handoff_uses_the_staged_launch_command(launch_command):
+    contract = _work_contract(watch_path="/stage/watch.json", launch_command=launch_command)
+    assert launch_command in contract
+    _assert_compute_handoff(contract)
 
 
 def _assert_pointer_envelope(prompt: str, contract_path: str) -> None:
@@ -181,6 +234,7 @@ def test_chat_master_context_contains_both_exclusive_mode_contracts() -> None:
     assert master.count("Instruction and trust boundary:") == 1
     assert "This task cannot produce a Patch" in master
     assert "Live graph validator:" in master
+    _assert_compute_handoff(master.split("## Work contract", 1)[1])
     work = " ".join(master.split("## Work contract", 1)[1].split())
     assert "exactly `external` and `graph` lists" in work
     assert '"status_in":["resolved"]' in work
@@ -770,9 +824,12 @@ async def test_watcher_wake_context_keeps_every_delivered_group_member(tmp_path)
     } == {"watcher/completed", "watcher/agent-stopped"}
 
 
-def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() -> None:
+def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff(
+    launch_command,
+) -> None:
     validator_command = "python /stage/validator.py /stage/patch.json"
     contract = experiment_loop_task_contract(
+        launch_command=launch_command,
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
         ontology_extensions=True,
@@ -809,7 +866,9 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     assert "unexpected process exit (including SIGTERM)" in compact
     assert "not by itself a graph Blocker, a human-authority pause" in compact
     assert "Two similar failures do not prove an external cause" in compact
-    assert "launch it and arm a real external observer" in compact
+    assert "use `launch` and arm a job observer" in compact
+    assert launch_command in contract
+    _assert_compute_handoff(contract)
     assert "exact next action needed to clear it is unavailable" in compact
     assert "plausibly transient failure is uncertainty, not a Blocker" in compact
     assert "attempts, status, `current_summary`, and `next_action`" in compact
@@ -863,8 +922,8 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     )
     assert "create a Hypothesis Proposal" in compact
     assert "Decision `selected_option`/`status`" not in contract
-    # The loop is the surface that submits scheduler jobs, so it carries the
-    # set-membership Slurm check outright: a direct `squeue -j` lookup cannot tell a
+    # The shell observer remains for externally submitted scheduler jobs.
+    # A direct `squeue -j` lookup cannot tell a
     # finished job from an unreachable scheduler and would degrade the watcher.
     assert "grep -Fxq 4471" in compact
     assert "squeue -h -j" not in contract
@@ -873,8 +932,11 @@ def test_experiment_work_contract_explains_the_bound_loop_and_watcher_handoff() 
     _assert_local_causal_check(contract)
 
 
-def test_provider_switch_recovery_keeps_full_loop_contract_and_exact_diagnostics() -> None:
+def test_provider_switch_recovery_keeps_full_loop_contract_and_exact_diagnostics(
+    launch_command,
+) -> None:
     contract = experiment_loop_task_contract(
+        launch_command=launch_command,
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
         ontology_extensions=False,
@@ -1104,7 +1166,7 @@ def test_experiment_loop_corrections_retain_the_local_causal_check() -> None:
     assert "must pass the retained `Local causal check for this Patch`" in " ".join(watcher.split())
 
 
-def test_loop_contract_treats_capacity_contention_as_a_queue_to_submit_into() -> None:
+def test_loop_contract_treats_capacity_contention_as_a_queue_to_submit_into(launch_command) -> None:
     """A busy scheduler is a queue to submit into, not a fault and not a finding.
 
     Contention used to sit inside the list of mechanical faults to diagnose, which
@@ -1114,6 +1176,7 @@ def test_loop_contract_treats_capacity_contention_as_a_queue_to_submit_into() ->
     """
     loop = " ".join(
         experiment_loop_task_contract(
+            launch_command=launch_command,
             project_name="Example",
             ontology_path="/state/graph.json#ontology",
             ontology_extensions=False,
@@ -1135,7 +1198,9 @@ def test_loop_contract_treats_capacity_contention_as_a_queue_to_submit_into() ->
 
     # The loop owns external observers, so it submits and then observes the queued job.
     assert "Capacity contention is not a fault and not a finding" in loop
-    assert "Submit and let the job wait in the queue rather than waiting for an idle" in loop
+    assert "Submit through `launch` and let the job wait in the queue" in loop
+    assert "missing account or partition" in loop
+    assert "Do not find another execution path, run attached, or retry a rejected launch" in loop
     assert "Never report contention as a limit you could not act on" in loop
     assert "command failure, resource contention, or similar infrastructure symptom" not in loop
 

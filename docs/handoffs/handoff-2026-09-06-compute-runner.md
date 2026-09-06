@@ -21,7 +21,10 @@ pre-commit, and a throwaway HTTP startup check. The focused suite fails only the
 two known watcher `ps` permission tests. The full suite also hits the two-second
 remote-stage probe wait in `test_retry_stop_during_missing_remote_stage_probe_abandons_and_settles`;
 that test and the complete episode API test file pass separately. Chromium console
-inspection remains sandbox-blocked. PRs D–E and the real-host acceptance drive remain. The decisions below are settled. Closure:
+inspection remains sandbox-blocked. PR E implements Work, Experiment-loop, and
+child Work launch/job-observer prompts on `codex/compute-runner-prompts`, including
+bounded status checks and setup-failure Blockers. PR D and the real-host acceptance
+drive remain. The decisions below are settled. Closure:
 all five PRs merged, the S136 drive passes on the team server with a real Codex
 Work turn, and this file is archived in the same change.
 
@@ -32,9 +35,10 @@ whose lifetime is independent of the agent's turn, end its turn, and be woken by
 RCP when the computation is done. If that handoff is unavailable, the agent must
 stop with a concrete setup failure instead of polling.
 
-Today the agent is told to detach work itself and write a shell check into
-`watch.json`. That contract cannot be met in the production runtime, and it
-produced the expensive polling episodes that motivated this work.
+The former prompt told the agent to detach work itself and write a shell check
+into `watch.json`. That contract could not be met in the production runtime and
+produced the expensive polling episodes that motivated this work. PR E replaces it
+with the RCP launch and job-observer contract.
 
 ## Evidence (2026-09-06)
 
@@ -157,7 +161,7 @@ previous branch until that branch merges.
   machine probe, job list, and Cancel. Settings backend block and probe status.
   Job rows with Cancel in chat and Runs. Episode-start gating. Web types and
   spec updates.
-- **E `codex/compute-runner-prompts`.** Work, Experiment-loop, and child Work
+- **E `codex/compute-runner-prompts` — implemented.** Work, Experiment-loop, and child Work
   prompts: use `launch`, one bounded status check at most, finish; `unavailable`
   is a Blocker naming the setup failure, never a cue to run attached; remove the
   local-PID example; child Work reports back when it cannot finish; rewrite the

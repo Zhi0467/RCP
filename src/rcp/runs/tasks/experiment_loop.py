@@ -590,6 +590,15 @@ def _compose_wake_prompt(
         raise ValueError("Experiment-loop wake inputs are incomplete after staging.")
     experiment_contract_path = _experiment_session_contract_path(turn)
     contract = experiment_loop_wake_message(
+        launch_command=turn.patch_inputs.validator_staged.client_command(
+            "launch",
+            "--key",
+            "<idempotency-key>",
+            "--cwd",
+            "<working-directory>",
+            "--",
+            "<argv...>",
+        ),
         focused_experiment_id=turn.request.control_node_id,
         experiment_contract_path=experiment_contract_path,
         invocation=turn.request.control_invocation,
@@ -681,6 +690,15 @@ def _compose_fresh_prompt(
         turn.request.message,
     )
     contract = experiment_loop_task_contract(
+        launch_command=turn.patch_inputs.validator_staged.client_command(
+            "launch",
+            "--key",
+            "<idempotency-key>",
+            "--cwd",
+            "<working-directory>",
+            "--",
+            "<argv...>",
+        ),
         project_name=turn.context.project_name,
         ontology_path=f"{turn.context.graph_path}#ontology",
         ontology_extensions=turn.context.ontology_extensions,

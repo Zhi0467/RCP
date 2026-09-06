@@ -716,7 +716,9 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert "Do not invoke `apply`, `status`, `spawn`" in initial_master
     assert "`watch-graph`" in initial_master
     assert "`watch_graph`" not in initial_master
-    assert "A valid `watch.json` arms a continuation on this child route" in initial_master
+    assert "RCP wakes this same child route and native session" in initial_master
+    assert "outside your tools or authority, reply to the orchestrator" in initial_master
+    assert "RCP ignores child watcher output" not in initial_master
     assert launcher.launch_kwargs[0]["invocation_gate"] is not None
     workspace = launcher.workspaces[0]
     stage = workspace.parent

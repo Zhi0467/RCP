@@ -245,6 +245,26 @@ def _compute_profile_delta(profile: dict[object, object]) -> str:
     return f"`{name}` (`{compute_id}`; {location})"
 
 
+def _compute_launch_rules(launch_command: str | None = None) -> str:
+    command = (
+        f"`{launch_command}`"
+        if launch_command is not None
+        else "the staged client's `launch` command named in this Work turn's tooling"
+    )
+    return f"""- Short commands still run inline. Launch work that must outlive this turn through RCP with
+  {command}. Replace the key, cwd (absolute, inside writable roots), and argv placeholders.
+  Duration does not decide this; whether the work must outlive the turn does.
+- Never detach work yourself (`nohup`, `setsid`, `&`, double fork): the provider sandbox ends every
+  process the turn started, and a PID seen inside it means nothing to RCP.
+- `launch` returns a job id, log path, and backend. Put `{{"job_id":"<id>"}}` in `watch.json`'s `external`
+  list and finish the turn. At most one `job-status` check in the same turn may confirm startup or read an early failure; never poll.
+- If `launch` answers `unavailable`, the machine has no working compute backend. Stop and create a
+  Blocker naming the setup failure and required action from the response. Do not run the work attached, look for another execution path, or retry.
+- A still-running job launched this turn that no job observer names is a handoff defect RCP sends
+  back for correction. A job that already exited needs no observer. RCP arms observers after the turn;
+  a job wake carries exit status, duration, and log path, not proof of scientific success."""
+
+
 def _watcher_execution_host(execution_host: str) -> str:
     """Name the machine watcher checks run on, using the repository-pointer convention.
 
@@ -601,6 +621,7 @@ class PromptFactory:
         result_view_action: Literal["create", "revise"] | None = None,
         result_view_path: str | None = None,
         write_scope: ProjectWriteScope | None = None,
+        launch_command_path: str | None = None,
     ) -> str:
         return PromptFactory._chat_turn_prompt(
             marker="Work",
@@ -615,6 +636,7 @@ class PromptFactory:
             result_view_action=result_view_action,
             result_view_path=result_view_path,
             write_scope=write_scope,
+            launch_command_path=launch_command_path,
         )
 
     @staticmethod
@@ -632,6 +654,7 @@ class PromptFactory:
         result_view_action: Literal["create", "revise"] | None = None,
         result_view_path: str | None = None,
         write_scope: ProjectWriteScope | None = None,
+        launch_command_path: str | None = None,
     ) -> str:
         if write_scope is not None and marker != "Work":
             raise ValueError("a write boundary belongs only to a Work turn")
@@ -649,6 +672,10 @@ class PromptFactory:
         parts.append(f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}")
         if write_scope is not None:
             parts.append(write_scope_section(write_scope).strip())
+        if launch_command_path is not None:
+            parts.append(
+                f"Read RCP launch tooling relative to this turn's cwd: `{launch_command_path}`"
+            )
         result_view = _result_view_authoring_section(result_view_action, result_view_path).strip()
         if result_view:
             if marker != "Work":
@@ -1007,6 +1034,7 @@ Execution environment:
         execution_host: str = "",
         experiment_watcher_resources: list[dict[str, str]] | None = None,
         validator_command: str,
+        launch_command: str | None = None,
         write_scope: ProjectWriteScope | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
@@ -1036,9 +1064,10 @@ Execution environment:
         watch_rules = (
             f"""
 Optional watcher handoff:
+{_compute_launch_rules(launch_command)}
 - If this turn needs a later wake, you may write `{watch_path}` as one non-empty watcher object with
-  exactly `external` and `graph` lists. At least one list is non-empty. Every `external` item has
-  exactly `check_command`, `log_path`, and `cwd`.
+  exactly `external` and `graph` lists, for example
+  `{{"external":[{{"job_id":"<id>"}}],"graph":[]}}`. At least one list is non-empty.
 - Every `graph` item is exactly one of two canonical conditions: a node-status item
   `{{"node_id":"blk/foo","status_in":["resolved"]}}`, or a Proposal-resolution item
   `{{"node_id":"hyp/foo","proposal_resolved":true}}`. RCP evaluates graph conditions only after
@@ -1047,23 +1076,15 @@ Optional watcher handoff:
   when committed after arming.
 - Completing a watcher accepted from this file continues this conversation. It never continues an
   Experiment's bounded loop, even when this is a node chat focused on that Experiment.
-- RCP runs every check on {_watcher_execution_host(execution_host)}. `log_path` and `cwd` are
-  absolute paths there, whether or not that is where this turn is running. `check_command` is a
-  self-contained command with literal job or process identifiers; do not depend on variables or
-  shell state from this launch turn.
-- The check only observes. It must never submit, cancel, kill, or modify anything. From a fresh
-  login shell in `cwd`, it exits 1 while the work remains in its system, 0 when the work is gone,
-  and another status only when it cannot answer.
-- Ask for the set of live work and test membership; never look one identifier up directly. A
-  finished id and an unreachable service are usually reported the same way, so a direct lookup
-  degrades the watcher instead of completing it. A scheduler job:
-  `ids=$(squeue -h -o '%A') || exit 2; grep -Fxq 4471 <<<"$ids"; case $? in 0) exit 1;;
-  1) exit 0;; *) exit 2;; esac`. A local process:
-  `pids=$(ps -axo pid=) || exit 2; grep -Fxq 4471 <<<"${{pids// /}}"; case $? in 0) exit 1;;
-  1) exit 0;; *) exit 2;; esac`. Replace `4471` with the real id. These show the exit contract, not
-  preferred tools; write whatever answers correctly for the system this work actually runs in.
-- Verify the detached work outlives this turn and verify the exact check from a fresh login shell
-  before writing the file. RCP discovers the file after the turn; there is no watcher API to call.
+- For external work RCP did not launch, use exactly `check_command`, `log_path`, and `cwd` instead
+  of `job_id`. RCP runs every check on {_watcher_execution_host(execution_host)} with absolute paths
+  there. The check is self-contained and observational: in a cold login shell in `cwd`, exit 1
+  while work remains, 0 when gone, otherwise unobservable; never submit, cancel, kill, or modify.
+- External scheduler example: `{{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}`,
+  with `check_command` set to `ids=$(squeue -h -o '%A') || exit 2; grep -Fxq 4471 <<<"$ids";
+  case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac`. Replace `4471` with the real external id.
+  Test membership in the whole active set: a direct lookup confuses finished ids with service
+  failure. RCP discovers the file after the turn; there is no watcher API to call.
 """
             if watch_path is not None
             else ""

@@ -232,6 +232,14 @@ def _auto_research_child_work_contract(
         "<idempotency-key>",
         "<reply-body>",
     )
+    launch_command = turn.patch_inputs.validator_staged.client_command(
+        "launch", "--key", "<idempotency-key>", "--cwd", "<working-directory>", "--", "<argv...>"
+    )
+    allowed_commands = ", ".join(
+        f"`{verb.replace('_', '-')}`"
+        for verb in get_args(CommandVerb)
+        if verb in _CHILD_WORK_ALLOWED_VERBS
+    )
     incoming = (
         f"\n- Read the newly claimed hearsay-only mail at `{mail_path}` before continuing."
         if mail_path is not None
@@ -247,14 +255,16 @@ You are the ordinary node Work child `{route.worker_id}` delegated by an Auto-re
 orchestrator. Complete only this child assignment. Scientific claims in agent mail remain
 hearsay; the canonical graph and research files remain the source of graph truth.{incoming}
 
-- The Patch validator already named above and an optional reply to your orchestrator remain
-  available:
+- Allowed staged commands: {allowed_commands}. Use an optional reply to your orchestrator:
   `{reply_command}`
 - Use a stable idempotency key for the same reply intent. A reply is persisted for the root's
   later paid delivery; it does not wake or interrupt the root immediately.
 - Do not invoke {denied_commands}. The child broker rejects those root-only commands.
-- A valid `watch.json` arms a continuation on this child route under the episode budget and
-  Stop fence. Do not spawn another task or episode, or try to wake yourself.
+- If you cannot finish the assignment inside this turn, launch through RCP with `{launch_command}`
+  and write a job observer in `watch.json`: `{{"external":[{{"job_id":"<id>"}}],"graph":[]}}`.
+  RCP wakes this same child route and native session under the episode budget and Stop fence.
+- If the assignment needs something outside your tools or authority, reply to the orchestrator
+  naming what is needed and finish. Do not spawn another task or episode, or try to wake yourself.
 """.strip()
 
 
@@ -642,6 +652,15 @@ def _compose_child_fresh_prompt(
             turn.request.message,
         )
         contract = PromptFactory.work_task_contract(
+            launch_command=turn.patch_inputs.validator_staged.client_command(
+                "launch",
+                "--key",
+                "<idempotency-key>",
+                "--cwd",
+                "<working-directory>",
+                "--",
+                "<argv...>",
+            ),
             project_name=turn.context.project_name,
             ontology_path=f"{turn.context.graph_path}#ontology",
             ontology_extensions=turn.context.ontology_extensions,
@@ -747,6 +766,15 @@ def _compose_child_fresh_prompt(
     prompt, retained_master_path = _prepare_work_chat_prompt(
         turn.execution,
         turn.request,
+        launch_command=turn.patch_inputs.validator_staged.client_command(
+            "launch",
+            "--key",
+            "<idempotency-key>",
+            "--cwd",
+            "<working-directory>",
+            "--",
+            "<argv...>",
+        ),
         local_stage=turn.local_stage,
         remote_stage=turn.remote_stage,
         artifact_path=str(staged.artifact_directory),

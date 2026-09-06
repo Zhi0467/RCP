@@ -62,6 +62,25 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
             workspace = Path(kwargs["cwd"])
             assert handler.episode_id == "child-compute"
             assert kwargs["invocation_gate"] is staged.invocation_gate
+            if len(self.calls) == 1:
+                contract = Path(prompt.splitlines()[1]).read_text()
+                assert (
+                    staged.client_command(
+                        "launch",
+                        "--key",
+                        "<idempotency-key>",
+                        "--cwd",
+                        "<working-directory>",
+                        "--",
+                        "<argv...>",
+                    )
+                    in contract
+                )
+                boundary = contract.split("## Auto-research child Work boundary", 1)[1]
+                assert "`launch`" in boundary.split("- Do not invoke", 1)[0]
+                assert "`job-status`" in boundary.split("- Do not invoke", 1)[0]
+                assert "`cancel`" in boundary.split("- Do not invoke", 1)[0]
+                assert "RCP ignores child watcher output" not in boundary
             if len(self.calls) == 1 and state != "nothing":
                 launched = await _command(
                     staged, "launch", "--key", "launch", "--cwd", str(workspace), "--", "true"
