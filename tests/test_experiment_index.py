@@ -427,11 +427,11 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
     assert all(entry["project_name"] == manifest.name for entry in entries)
     experiment = next(entry for entry in entries if entry["episode_id"] == current_episode)
     assert experiment["experiment_id"] == "exp/launched"
-    assert experiment["run_section"] == "needs_action"
+    assert experiment["run_section"] == "actionable"
     auto_research = next(entry for entry in entries if entry["episode_id"] == parent.episode_id)
     assert auto_research["experiment_id"] is None
     assert auto_research["title"] == "Auto-research"
-    assert auto_research["run_section"] == "needs_action"
+    assert auto_research["run_section"] == "running"
 
 
 def test_space_runs_keeps_completed_parents_for_seven_days() -> None:
@@ -462,9 +462,9 @@ def test_space_runs_keeps_completed_parents_for_seven_days() -> None:
         is False
     )
     assert (
-        _space_run_is_visible(entry(cutoff - timedelta(days=30), "needs_action"), as_of=as_of)
-        is True
+        _space_run_is_visible(entry(cutoff - timedelta(days=30), "actionable"), as_of=as_of) is True
     )
+    assert _space_run_is_visible(entry(cutoff - timedelta(days=30), "running"), as_of=as_of) is True
 
 
 def test_space_runs_filters_old_completed_auto_research_before_hydration(

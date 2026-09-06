@@ -338,7 +338,7 @@ def test_stopping_projection_preserves_exact_recovery_control(
     assert (full.health, full.recommendation, full.run_section) == (
         "needs_action",
         expected_control,
-        "needs_action",
+        "actionable",
     )
     assert (compact_health, compact_section) == (full.health, full.run_section)
 
@@ -482,7 +482,7 @@ def test_ready_report_is_singular_and_hidden_report_work_is_not_public(tmp_path)
     assert [task.operation_id for task in response.tasks] == [root.operation_id]
     assert response.budget.invocations_used == 1
     assert response.can_reauthorize
-    assert response.run_section == "needs_action"
+    assert response.run_section == "actionable"
     assert "report_attempts_used" not in payload
     assert "stop_settled_at" not in payload
     assert "reports" not in payload
@@ -512,7 +512,7 @@ def test_failed_report_is_terminal_without_a_report_recovery_surface(tmp_path) -
     assert response.tasks[0].can_resume is False
     assert not response.can_stop
     assert not response.can_reauthorize
-    assert response.run_section == "needs_action"
+    assert response.run_section == "actionable"
     assert not {"report_retry", "report_resume"} & type(response).model_fields.keys()
 
 

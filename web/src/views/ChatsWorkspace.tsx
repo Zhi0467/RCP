@@ -207,6 +207,7 @@ export function ChatsWorkspace({
                 aria-current={selectedConversation ? "page" : undefined}
                 aria-label={`${conversation.title}, ${conversation.kind === "project_chat" ? "project" : "node"} conversation${unread ? ", unread result" : ""}`}
                 className={`${selectedConversation ? "active" : ""}${unread ? " unread" : ""}`}
+                title={conversation.title}
                 onClick={() => onSelect(conversation.chatId)}
                 key={conversation.chatId}
               >

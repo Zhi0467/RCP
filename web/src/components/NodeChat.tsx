@@ -2065,17 +2065,6 @@ export function NodeChat({
               if (files.length) void addFiles(files);
             }}
           />
-          <button
-            className="icon-button chat-add-file"
-            type="button"
-            aria-label="Add files"
-            disabled={
-              attachments.length >= MAX_CHAT_ATTACHMENTS || attachmentsPreparing || submitting
-            }
-            onClick={() => attachmentInputRef.current?.click()}
-          >
-            <Plus size={16} />
-          </button>
           <textarea
             ref={textareaRef}
             aria-label="Message"
@@ -2107,18 +2096,32 @@ export function NodeChat({
             }}
           />
           <div className="chat-send">
-            <div className="chat-mode-toggle" role="group" aria-label="Conversation mode">
-              {(["discuss", "work"] as const).map((option) => (
-                <button
-                  type="button"
-                  className={option}
-                  aria-pressed={mode === option}
-                  onClick={() => selectMode(option)}
-                  key={option}
-                >
-                  {modeLabel(option)}
-                </button>
-              ))}
+            <div className="chat-composer-tools">
+              <button
+                className="icon-button chat-add-file"
+                type="button"
+                aria-label="Add files"
+                disabled={
+                  attachments.length >= MAX_CHAT_ATTACHMENTS || attachmentsPreparing || submitting
+                }
+                onClick={() => attachmentInputRef.current?.click()}
+              >
+                <Plus size={16} />
+              </button>
+              <div className="chat-mode-toggle" role="group" aria-label="Conversation mode">
+                {(["discuss", "work"] as const).map((option) => (
+                  <button
+                    type="button"
+                    className={option}
+                    aria-pressed={mode === option}
+                    title={MODE_HINTS[option]}
+                    onClick={() => selectMode(option)}
+                    key={option}
+                  >
+                    {modeLabel(option)}
+                  </button>
+                ))}
+              </div>
             </div>
             <div className="chat-send-actions">
               {desktop && (
@@ -2503,6 +2506,17 @@ function GraphUpdateReceipt({
 function modeLabel(mode: ConversationMode): "Discuss" | "Work" {
   return mode === "discuss" ? "Discuss" : "Work";
 }
+
+/** Say what each mode is allowed to do, where the human commits to one.
+ *
+ * Capability is fixed in code; this only describes it. Discuss holds no graph or
+ * filesystem authority, so the difference is worth stating at the control rather
+ * than leaving two bare verbs to be learned by consequence.
+ */
+const MODE_HINTS: Record<ConversationMode, string> = {
+  discuss: "Discuss: reads and answers only. Nothing is written to the repository or the graph.",
+  work: "Work: may edit files in the run's write roots and propose a graph patch.",
+};
 
 const MAX_CHAT_ATTACHMENTS = 8;
 const MAX_CHAT_ATTACHMENT_BYTES = 16 * 1024 * 1024;

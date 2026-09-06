@@ -34,7 +34,7 @@ function run(fields = {}) {
     last_activity_at: "2026-09-02T12:10:00Z",
     health_label: "Needs action",
     health_tone: "actionable",
-    run_section: "needs_action",
+    run_section: "actionable",
     ...fields,
   };
 }
@@ -49,6 +49,7 @@ test("space Runs mixes active modes and folds completed groups", () => {
       experiment_id: null,
       health_label: "Active",
       health_tone: "running",
+      run_section: "running",
     }),
     run({
       episode_id: "episode-3",
@@ -70,37 +71,41 @@ test("space Runs mixes active modes and folds completed groups", () => {
   const html = renderToStaticMarkup(React.createElement(SpaceRuns, { entries, onOpen() {} }));
 
   assert.match(html, /<h2 id="space-runs-title">Runs<\/h2>/);
-  assert.match(html, /<h3>Needs Action<\/h3>/);
+  assert.match(html, /<h3>Needs action<\/h3><span>1<\/span>/);
+  assert.match(html, /<h3>In progress<\/h3><span>1<\/span>/);
   assert.match(html, /<h3>Completed<\/h3>/);
+  // An active run is in flight, not work owed to a human.
+  assert.match(html, /1 needs action · 1 in progress/);
   assert.match(html, /<strong>Experiment loop<\/strong>/);
   assert.match(html, /<strong>Auto-research<\/strong>/);
   assert.doesNotMatch(html, /current_summary|Recommended next step/);
 });
 
-test("space Runs always names both sections and their empty counts", () => {
+test("space Runs always names every section and its empty count", () => {
   const html = renderToStaticMarkup(React.createElement(SpaceRuns, { entries: [], onOpen() {} }));
 
-  assert.match(html, /<h3>Needs Action<\/h3><span>0<\/span>/);
-  assert.match(html, /Nothing needs action\./);
+  assert.match(html, /<h3>Needs action<\/h3><span>0<\/span>/);
+  assert.match(html, /Nothing needs you right now\./);
+  assert.match(html, /<h3>In progress<\/h3><span>0<\/span>/);
+  assert.match(html, /No run is in flight\./);
   assert.match(html, /<h3>Completed<\/h3><span>0<\/span>/);
   assert.match(html, /No completed runs in the last 7 days\./);
 });
 
-test("every space lifecycle badge color pair meets WCAG AA contrast", () => {
-  assert.deepEqual(Object.keys(SPACE_RUN_BADGE_PALETTE).sort(), [
-    "actionable",
-    "completed",
-    "degraded",
-    "running",
-    "stopped",
-    "stopping",
-    "waiting",
-  ]);
-  for (const [tone, colors] of Object.entries(SPACE_RUN_BADGE_PALETTE)) {
-    assert.ok(
-      contrastRatio(colors.foreground, colors.background) >= 4.5,
-      `${tone} badge contrast is below 4.5:1`,
+test("every space lifecycle badge color pair meets WCAG AA contrast in both themes", () => {
+  assert.deepEqual(Object.keys(SPACE_RUN_BADGE_PALETTE).sort(), ["dark", "light"]);
+  for (const [theme, palette] of Object.entries(SPACE_RUN_BADGE_PALETTE)) {
+    assert.deepEqual(
+      Object.keys(palette).sort(),
+      ["actionable", "completed", "degraded", "running", "stopped", "stopping", "waiting"],
+      `${theme} palette is missing a lifecycle tone`,
     );
+    for (const [tone, colors] of Object.entries(palette)) {
+      assert.ok(
+        contrastRatio(colors.foreground, colors.background) >= 4.5,
+        `${theme} ${tone} badge contrast is below 4.5:1`,
+      );
+    }
   }
 });
 
@@ -136,6 +141,7 @@ test("a completed non-first Auto-research row opens its exact episode", () => {
   const opened = [];
   const row = SpaceRunRow({
     entry,
+    theme: "light",
     onOpen(projectId, selection) {
       opened.push([projectId, selection]);
     },

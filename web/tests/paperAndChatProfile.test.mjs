@@ -116,6 +116,13 @@ test("chat shows passive provider identity, New session, and a self-labelling sc
   assert.match(resumed, /aria-label="Chat provider: Claude"[^>]*>Claude</);
 });
 
+test("the chat composer marks where to type with field shape, never placeholder copy", () => {
+  const html = renderToStaticMarkup(React.createElement(NodeChat, chatProps));
+
+  assert.match(html, /<textarea[^>]*aria-label="Message"/);
+  assert.doesNotMatch(html, /placeholder=/);
+});
+
 test("paper preview renders unsaved Markdown in the editor pane and keeps status", () => {
   const previousStorage = globalThis.localStorage;
   const storageKeys = [];

@@ -1,6 +1,7 @@
-import { Check, Link2, RotateCcw, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, Link2, RotateCcw, Trash2, X } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { errorMessage } from "../errors";
 import type {
   Edge,
   EvidenceAssessment,
@@ -58,6 +59,7 @@ export const GraphEditingControls = memo(function GraphEditingControls({
   const [weight, setWeight] = useState<EvidenceAssessment["weight"] | "">("");
   const [qualifications, setQualifications] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
   useEffect(() => {
     setRelevance("");
     setWeight("");
@@ -78,13 +80,13 @@ export const GraphEditingControls = memo(function GraphEditingControls({
         if (!cancelled) setOptions(options);
       },
       (failure) => {
-        if (!cancelled) setError(String(failure));
+        if (!cancelled) setError(errorMessage(failure));
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, reloadToken]);
   const removedNodeIds = useMemo(() => new Set(draftRemovedNodeIds), [draftRemovedNodeIds]);
   const removedEdgeIds = useMemo(() => new Set(draftRemovedEdgeIds), [draftRemovedEdgeIds]);
   const existingNodeIds = useMemo(
@@ -171,7 +173,22 @@ export const GraphEditingControls = memo(function GraphEditingControls({
         existingNodeIds={existingNodeIds}
         onStage={onStageCustomNode}
       />
-      {error && <p role="alert">Could not load graph editing options: {error}</p>}
+      {error && (
+        <p className="inline-failure" role="alert">
+          <AlertTriangle size={13} aria-hidden="true" />
+          <span>
+            Connections and node prefixes are unavailable, so new nodes fall back to free entry.{" "}
+            {error}
+          </span>
+          <button
+            className="button secondary compact"
+            type="button"
+            onClick={() => setReloadToken((token) => token + 1)}
+          >
+            Retry
+          </button>
+        </p>
+      )}
       {!open ? (
         <button
           className="button secondary compact"

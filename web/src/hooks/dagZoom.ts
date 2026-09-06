@@ -1,4 +1,6 @@
 export const DAG_ZOOM_MIN = 0.5;
+/** Fit's own floor. Pinch stops at DAG_ZOOM_MIN; framing a whole graph cannot. */
+export const DAG_FIT_ZOOM_MIN = 0.05;
 export const DAG_ZOOM_MAX = 2.5;
 
 export interface DagZoomResult {
@@ -30,6 +32,66 @@ export function zoomDagAtPoint({
     zoom: nextZoom,
     scrollLeft: (scrollLeft + focalX) * ratio - focalX,
     scrollTop: (scrollTop + focalY) * ratio - focalY,
+  };
+}
+
+/** One laid-out node box in unscaled canvas coordinates. */
+export interface DagNodeBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+interface DagFitInput {
+  nodes: DagNodeBox[];
+  viewportWidth: number;
+  viewportHeight: number;
+  padding?: number;
+}
+
+/** Frame the whole graph, so opening the DAG shows what exists rather than a corner of it.
+ *
+ * Returns null when there is nothing to frame yet. The result never magnifies
+ * past 1: a small graph keeps its authored node size instead of ballooning to
+ * fill the pane.
+ *
+ * Fit reaches below the pinch floor on purpose. A large graph needs a scale the
+ * gesture never offers — a 2,090px-tall graph in a 475px pane needs about 0.2 —
+ * and clamping to the gesture floor would frame only part of exactly the graphs
+ * that most need framing.
+ */
+export function fitDagToViewport({
+  nodes,
+  viewportWidth,
+  viewportHeight,
+  padding = 32,
+}: DagFitInput): DagZoomResult | null {
+  if (nodes.length === 0 || viewportWidth <= 0 || viewportHeight <= 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const node of nodes) {
+    minX = Math.min(minX, node.left);
+    minY = Math.min(minY, node.top);
+    maxX = Math.max(maxX, node.left + node.width);
+    maxY = Math.max(maxY, node.top + node.height);
+  }
+  const contentWidth = maxX - minX;
+  const contentHeight = maxY - minY;
+  if (!(contentWidth > 0) || !(contentHeight > 0)) return null;
+  const usableWidth = Math.max(1, viewportWidth - padding * 2);
+  const usableHeight = Math.max(1, viewportHeight - padding * 2);
+  const zoom = clamp(
+    Math.min(usableWidth / contentWidth, usableHeight / contentHeight),
+    DAG_FIT_ZOOM_MIN,
+    1,
+  );
+  return {
+    zoom,
+    scrollLeft: Math.max(0, minX * zoom - (viewportWidth - contentWidth * zoom) / 2),
+    scrollTop: Math.max(0, minY * zoom - (viewportHeight - contentHeight * zoom) / 2),
   };
 }
 

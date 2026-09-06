@@ -417,14 +417,14 @@ test("Runs is episode-first while Experiment placement and status stay control-a
   const newestExperiment = runsEpisode(
     "experiment-newest",
     "experiment_loop",
-    "needs_action",
+    "running",
     "2026-08-03T04:00:00Z",
     "EXP NEWEST",
   );
   const activeAutoResearch = runsEpisode(
     "auto-active",
     "auto_research",
-    "needs_action",
+    "running",
     "2026-08-03T03:00:00Z",
   );
   const completedExperiment = runsEpisode(
@@ -504,8 +504,10 @@ test("Runs is episode-first while Experiment placement and status stay control-a
     }),
   );
 
-  assert.ok(html.indexOf(">Needs Action<") < html.indexOf(">Completed<"));
-  assert.match(html, /Needs Action<\/h2><span>1<\/span>/);
+  assert.ok(html.indexOf(">Needs action<") < html.indexOf(">Completed<"));
+  assert.match(html, /Needs action<\/h2><span>0<\/span>/);
+  // An active auto-research episode is in flight, not work owed to a human.
+  assert.match(html, /In progress<\/h2><span>1<\/span>/);
   assert.match(html, /Completed<\/h2><span>3<\/span>/);
   assert.match(html, /campaign-run-title.*?<span>EXP NEWEST<\/span>/);
   assert.match(html, /<time dateTime="2026-08-03T04:00:00Z">/);

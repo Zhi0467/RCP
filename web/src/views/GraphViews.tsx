@@ -14,6 +14,7 @@ import {
   Pin,
   PinOff,
   RotateCcw,
+  Scan,
   Search,
   Workflow,
   X,
@@ -41,7 +42,12 @@ import {
   relationFocus,
   type DagOntologyProjection,
 } from "../graphProjection";
-import { zoomDagAtPoint, type DagViewport, type DagZoomResult } from "../hooks/dagZoom";
+import {
+  fitDagToViewport,
+  zoomDagAtPoint,
+  type DagViewport,
+  type DagZoomResult,
+} from "../hooks/dagZoom";
 import {
   DAG_NODE_HEIGHT,
   DAG_NODE_WIDTH,
@@ -70,6 +76,7 @@ import type {
   Edge,
   Episode,
   EpisodeMessage,
+  EpisodeRunSection,
   ExperimentControlState,
   ExperimentLoopIndexEntry,
   GraphNode,
@@ -102,13 +109,15 @@ const scienceOrder: GraphNode["type"][] = [
   "blocker",
 ];
 const dagTypes = scienceOrder;
+// These feed CSS custom properties, so naming the palette tokens rather than
+// their light values keeps the graph legible in both themes.
 const dagTypeMeta: Record<GraphNode["type"], { label: string; color: string }> = {
-  research_question: { label: "Questions", color: "#54718c" },
-  hypothesis: { label: "Hypotheses", color: "#7a4166" },
-  decision: { label: "Decisions", color: "#d7ae48" },
-  experiment: { label: "Experiments", color: "#2f6f70" },
-  evidence: { label: "Evidence", color: "#616b3d" },
-  blocker: { label: "Blockers", color: "#bc5545" },
+  research_question: { label: "Questions", color: "var(--slate)" },
+  hypothesis: { label: "Hypotheses", color: "var(--plum)" },
+  decision: { label: "Decisions", color: "var(--mustard)" },
+  experiment: { label: "Experiments", color: "var(--teal)" },
+  evidence: { label: "Evidence", color: "var(--moss)" },
+  blocker: { label: "Blockers", color: "var(--coral)" },
 };
 
 export function ScientificView({ graph, trustView, onSelectNode, ...editing }: ScientificProps) {
@@ -358,6 +367,55 @@ export function DagView({
       };
     };
   }, [projection.nodes.length, viewportRef]);
+
+  const fitToView = useCallback(() => {
+    const scroller = scrollRef.current;
+    const canvas = canvasRef.current;
+    if (!scroller || !canvas) return;
+    const next = fitDagToViewport({
+      nodes: [...canvas.querySelectorAll<HTMLElement>(".dag-node")].map((node) => ({
+        left: node.offsetLeft,
+        top: node.offsetTop,
+        width: node.offsetWidth,
+        height: node.offsetHeight,
+      })),
+      viewportWidth: scroller.clientWidth,
+      viewportHeight: scroller.clientHeight,
+    });
+    if (!next) return;
+    viewportRef.current = next;
+    if (next.zoom === zoomRef.current) {
+      scroller.scrollLeft = next.scrollLeft;
+      scroller.scrollTop = next.scrollTop;
+      return;
+    }
+    // Scroll lands in the layout effect once the canvas has re-scaled.
+    pendingZoomScrollRef.current = next;
+    zoomRef.current = next.zoom;
+    setZoom(next.zoom);
+  }, [viewportRef]);
+
+  // Frame the whole graph on open. A relation focus and a remembered viewport
+  // both outrank this: each already states where the human wants to look.
+  useEffect(() => {
+    if (!layoutReady || focusNodeId) return;
+    const frameKey = `fit:${layoutMode}:${projection.nodes.length}:${projection.edges.length}`;
+    if (framedLayoutRef.current === frameKey) return;
+    framedLayoutRef.current = frameKey;
+    if (restoringViewportRef.current) {
+      restoringViewportRef.current = null;
+      return;
+    }
+    const timer = window.setTimeout(fitToView, layoutMode === "force" ? 550 : 80);
+    return () => window.clearTimeout(timer);
+  }, [
+    fitToView,
+    focusNodeId,
+    layoutMode,
+    layoutReady,
+    projection.edges.length,
+    projection.nodes.length,
+  ]);
 
   useEffect(() => {
     if (!layoutReady || !focusNodeId) return;
@@ -656,6 +714,9 @@ export function DagView({
                 }}
               >
                 <RotateCcw size={13} /> Reset layout
+              </button>
+              <button className="dag-tool-button" type="button" onClick={fitToView}>
+                <Scan size={13} /> Fit
               </button>
               {fullscreenSupported && (
                 <button
@@ -980,9 +1041,16 @@ export function ExecutionView({
     (episode) => episode.episode_id === selectedAutoResearchEpisodeId,
   );
   const needsAction = orderedEpisodes.filter(
-    (episode) => episodeRunSection(episode) === "needs_action",
+    (episode) => episodeRunSection(episode) === "actionable",
   );
+  const inProgress = orderedEpisodes.filter((episode) => episodeRunSection(episode) === "running");
   const completed = orderedEpisodes.filter((episode) => episodeRunSection(episode) === "completed");
+  // Expand one card by default: the selection when there is one, else the first
+  // row a human is expected to read, which is the first section carrying work.
+  const expandedEpisodeId =
+    selectedAutoResearchEpisodeId ??
+    (needsAction.length > 0 ? needsAction : inProgress)[0]?.episode_id ??
+    null;
   const completedGroups = [
     {
       mode: "experiment_loop" as const,
@@ -1038,19 +1106,33 @@ export function ExecutionView({
         <div className="operating-sections episode-ledger-sections">
           <section className="operating-section episode-ledger-section needs-action">
             <header>
-              <h2>Needs Action</h2>
+              <h2>Needs action</h2>
               <span>{needsAction.length}</span>
             </header>
-            <div className="campaign-run-list">
-              {needsAction.map((episode, index) =>
-                renderEpisodeCard(
-                  episode,
-                  selectedAutoResearchEpisodeId
-                    ? episode.episode_id === selectedAutoResearchEpisodeId
-                    : index === 0,
-                ),
-              )}
-            </div>
+            {needsAction.length === 0 ? (
+              <p className="episode-ledger-empty">Nothing needs you right now.</p>
+            ) : (
+              <div className="campaign-run-list">
+                {needsAction.map((episode) =>
+                  renderEpisodeCard(episode, episode.episode_id === expandedEpisodeId),
+                )}
+              </div>
+            )}
+          </section>
+          <section className="operating-section episode-ledger-section in-progress">
+            <header>
+              <h2>In progress</h2>
+              <span>{inProgress.length}</span>
+            </header>
+            {inProgress.length === 0 ? (
+              <p className="episode-ledger-empty">No run is in flight.</p>
+            ) : (
+              <div className="campaign-run-list">
+                {inProgress.map((episode) =>
+                  renderEpisodeCard(episode, episode.episode_id === expandedEpisodeId),
+                )}
+              </div>
+            )}
           </section>
           <section className="operating-section episode-ledger-section completed">
             <header>
@@ -1177,7 +1259,7 @@ export function ExecutionView({
     );
   }
 
-  function episodeRunSection(episode: Episode): "needs_action" | "completed" {
+  function episodeRunSection(episode: Episode): EpisodeRunSection {
     if (episode.mode === "auto_research") return episode.run_section;
     const run = experimentRuns.get(episode.episode_id);
     if (!run) {
@@ -1185,7 +1267,7 @@ export function ExecutionView({
         `Experiment episode ${episode.episode_id} is missing its backend control projection.`,
       );
     }
-    return run.control.run_section === "completed" ? "completed" : "needs_action";
+    return run.control.run_section;
   }
 }
 
@@ -1357,7 +1439,7 @@ export function AttentionOverview({
   return (
     <section className="view-panel">
       <ViewHeading
-        title="Attention view"
+        title="Inbox"
         aside={`${proposals.length + decisions.length + blockers.length} open`}
       />
       <div className="attention-overview-grid">

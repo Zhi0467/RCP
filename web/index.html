@@ -3,9 +3,33 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#f7f0e3" />
     <title>RCP</title>
+    <script>
+      // Stamp the theme before first paint so a dark reader never sees a light flash.
+      // The React hook owns it from mount on; this only has to agree with it.
+      (function () {
+        // Storage and the OS preference are read independently: blocked storage
+        // must not cost a dark reader the preference this script exists to honour.
+        var choice = "system";
+        try {
+          var stored = localStorage.getItem("rcp:theme");
+          if (stored === "light" || stored === "dark") choice = stored;
+        } catch (error) {
+          // An unremembered choice still resolves through the OS below.
+        }
+        var dark = choice === "dark";
+        if (choice === "system") {
+          try {
+            dark = window.matchMedia("(prefers-color-scheme: dark)").matches === true;
+          } catch (error) {
+            dark = false;
+          }
+        }
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

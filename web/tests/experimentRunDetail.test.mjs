@@ -303,7 +303,7 @@ function episode(fields = {}) {
     health: "wrapping_up",
     recommendation: "wait",
     task_control: null,
-    run_section: "needs_action",
+    run_section: "running",
     ...fields,
   };
 }
@@ -1179,7 +1179,7 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
           live: false,
           health: "failed",
           recommendation: "review",
-          run_section: "needs_action",
+          run_section: "actionable",
         }),
       ],
       episodeMessages: {},
