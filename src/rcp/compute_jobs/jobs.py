@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import uuid
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 from rcp.compute_jobs.backend_context import (
     ComputeLaunchUncertainError,
     ComputeProbeStaleError,
+    ComputeTransportError,
     recorded_job_context,
     resolve_context,
 )
@@ -103,7 +106,13 @@ def launch_compute_job(
             )
         raise
     record = record.model_copy(update={"backend_handle": handle})
-    write_job_file(context, str(root / "launch.json"), record.model_dump_json())
+    try:
+        write_job_file(context, str(root / "launch.json"), record.model_dump_json())
+    except Exception as exc:
+        # The backend owns the job now; the row is its durable record even without the receipt.
+        record = record.model_copy(
+            update={"diagnostic": safe_compute_diagnostic(f"Launch receipt not written: {exc}")}
+        )
     return store.create_compute_job(record)
 
 
@@ -126,26 +135,41 @@ def refresh_compute_job(
             alive = COMPUTE_BACKENDS[record.backend_id].alive(record.backend_handle, context)
             if alive is None:
                 raise RuntimeError("compute backend could not determine whether the job is alive")
-        except Exception as exc:
-            if unavailable_hosts is not None:
+        except (ComputeTransportError, subprocess.TimeoutExpired, OSError) as exc:
+            # A local OSError (a missing scheduler binary, say) is this row's problem,
+            # not an outage of the local host.
+            if unavailable_hosts is not None and (
+                record.execution_host or not isinstance(exc, OSError)
+            ):
                 unavailable_hosts[record.execution_host] = safe_compute_diagnostic(str(exc))
             raise
         started = read_job_file(context, str(PurePosixPath(record.job_root) / "started"))
-        started_at = epoch_timestamp(started.strip()) if started else record.started_at
+        started_at = record.started_at
+        if started:
+            # A malformed started receipt never blocks settlement of a gone job.
+            with suppress(ValueError, OverflowError, OSError):
+                started_at = epoch_timestamp(started.strip())
         if alive:
             return store.record_compute_job_refresh(job_id, status="running", started_at=started_at)
         exit_text = read_job_file(context, record.exit_path)
         exit_status = None
         ended_at = store.now()
-        if exit_text:
-            status_text, epoch = exit_text.split()
-            exit_status = int(status_text)
-            if not 0 <= exit_status <= 255:
-                raise ValueError("compute exit file contains an invalid status")
-            ended_at = epoch_timestamp(epoch)
+        status = "lost"
+        diagnostic = "Compute job disappeared without an exit file."
+        if exit_text is not None:
+            try:
+                status_text, epoch = exit_text.split()
+                parsed_status = int(status_text)
+                if not 0 <= parsed_status <= 255:
+                    raise ValueError("compute exit file contains an invalid status")
+                ended_at = epoch_timestamp(epoch)
+            except (ValueError, OverflowError, OSError) as exc:
+                diagnostic = safe_compute_diagnostic(
+                    f"Compute job disappeared with a malformed exit receipt {record.exit_path}: {exc}"
+                )
+            else:
+                status, exit_status, diagnostic = "exited", parsed_status, None
         # Storage resolves any concurrent cancellation intent in this transition.
-        status = "exited" if exit_text else "lost"
-        diagnostic = "Compute job disappeared without an exit file." if status == "lost" else None
         return store.record_compute_job_refresh(
             job_id,
             status=status,

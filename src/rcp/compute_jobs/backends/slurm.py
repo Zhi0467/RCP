@@ -57,13 +57,17 @@ class SlurmBackend:
             ) from exc
         handle = result.stdout.strip().split(";", 1)[0]
         if not re.fullmatch(r"[0-9]+", handle):
-            raise RuntimeError("Slurm submission returned no valid job id")
+            raise ComputeLaunchUncertainError(
+                "Slurm submission succeeded but returned no valid job id"
+            ) from ValueError("Slurm submission returned no valid job id")
         return handle
 
     def alive(self, handle: str, context: BackendContext) -> bool | None:
         try:
             result = context.run(["squeue", "-h", "-o", "%A"])
-        except (OSError, subprocess.SubprocessError):
+        except (ComputeTransportError, subprocess.TimeoutExpired, OSError):
+            raise
+        except subprocess.SubprocessError:
             return None
         if result.returncode:
             return None
