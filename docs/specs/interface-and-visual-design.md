@@ -181,8 +181,10 @@ with Cancel requester and timestamp when recorded. Missing list entries retain
 the job id and show **Job details unavailable**. Shell observers keep their log
 and check presentation. **Stop watching** retains its existing meaning and never
 cancels compute. A **Cancel** control appears on a job row only while the
-backend's `can_cancel` says so; it calls the cancel route and replaces the row
-with the response. The browser never infers it from job status.
+backend's `can_cancel` says so, independent of chat read-only mode or Experiment
+action locks, because the cancel route is project-scoped and enforces its own
+write admission. It calls that route and replaces the row with the response. The
+browser never infers availability from job status.
 
 ## Paper
 

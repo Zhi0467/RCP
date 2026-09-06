@@ -1564,7 +1564,7 @@ export function NodeChat({
                   <ComputeJobRow
                     jobId={watcher.job_id}
                     jobs={computeJobs.jobs}
-                    onCancel={readOnly ? undefined : computeJobs.cancel}
+                    onCancel={computeJobs.cancel}
                     cancelling={computeJobs.cancelling}
                   />
                 ) : (

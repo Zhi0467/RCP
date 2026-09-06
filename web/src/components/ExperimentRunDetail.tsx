@@ -659,7 +659,7 @@ function WatcherDetail({
           <ComputeJobRow
             jobId={watcher.job_id}
             jobs={computeJobs.jobs}
-            onCancel={actionsDisabled ? undefined : computeJobs.cancel}
+            onCancel={computeJobs.cancel}
             cancelling={computeJobs.cancelling}
           />
         </div>

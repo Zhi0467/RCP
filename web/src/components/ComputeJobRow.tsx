@@ -9,7 +9,7 @@ export function ComputeJobRow({
 }: {
   jobId: string;
   jobs: readonly ComputeJobRecord[];
-  /** Absent when the viewer may not act; the button follows the backend's can_cancel. */
+  /** The backend's can_cancel decides visibility; the cancel route enforces write admission. */
   onCancel?: (jobId: string) => void;
   cancelling?: string | null;
 }) {
