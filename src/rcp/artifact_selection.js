@@ -185,7 +185,7 @@ function installArtifactSelection(surface, publish) {
           width: (right - left) / area.width,
           height: (bottom - top) / area.height,
         },
-        viewport: { width: area.width, height: area.height },
+        viewport: { width: Math.round(area.width), height: Math.round(area.height) },
         labels: bounded([...labels].join(" | "), 4096),
       });
     },
