@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import BinaryIO
 
 
 class RepositoryGit:
@@ -189,60 +189,94 @@ def _validated_bundle(
     inspection.require_tree(expected_head)
 
 
+def _copy_bundle(source: BinaryIO, output: BinaryIO, buffer_size: int, deadline: float) -> None:
+    while True:
+        if time.monotonic() >= deadline:
+            raise ValueError("repository Git transfer timed out")
+        content = source.read(buffer_size)
+        if not content:
+            return
+        output.write(content)
+
+
+def run_repository_transfer(
+    operation: str,
+    path: str,
+    expected_head: str,
+    timeout: float,
+    output_limit: int,
+    copy_buffer: int,
+    source: BinaryIO,
+    output: BinaryIO,
+) -> None:
+    """Use the same implementation in-process locally and as shipped SSH source."""
+
+    if operation not in {"probe", "capture", "install"}:
+        raise ValueError("invalid repository Git transfer operation")
+    if operation != "probe" and re.fullmatch(r"[0-9a-f]{40}", expected_head) is None:
+        raise ValueError("repository transfer requires one full Git commit")
+    repository = RepositoryGit(Path(path), time.monotonic() + timeout, output_limit)
+    initial_head = repository.require_checkout()
+    if operation == "probe":
+        output.write(f"{initial_head}\n".encode("ascii"))
+        return
+    if operation == "capture" and initial_head != expected_head:
+        raise ValueError("source repository HEAD changed after transfer review")
+    if operation == "install":
+        repository.require_clean(allow_untracked=initial_head == expected_head)
+    with tempfile.TemporaryDirectory(prefix="rcp-transfer-git-") as temporary_name:
+        temporary = Path(temporary_name)
+        bundle = temporary / "head.bundle"
+        if operation == "capture":
+            repository.git("bundle", "create", "--version=2", str(bundle), "HEAD")
+        else:
+            with bundle.open("xb") as incoming:
+                _copy_bundle(source, incoming, copy_buffer, repository.deadline)
+        inspection = temporary / "inspection"
+        inspection.mkdir()
+        _validated_bundle(repository, bundle, expected_head, inspection)
+        if repository.require_checkout() != initial_head:
+            raise ValueError("repository HEAD changed during transfer")
+        if operation == "capture":
+            with bundle.open("rb") as captured:
+                _copy_bundle(captured, output, copy_buffer, repository.deadline)
+            if repository.revision() != expected_head:
+                raise ValueError("source repository HEAD changed during transfer")
+        elif initial_head == expected_head:
+            # Import may have published kept artifacts before a later step
+            # failed. The exact revision needs no Git mutation on retry,
+            # so untracked files can remain without any overwrite risk.
+            repository.require_clean(allow_untracked=True)
+            if repository.revision() != expected_head:
+                raise ValueError("target repository HEAD changed during transfer")
+            output.write(f"{expected_head}\n".encode("ascii"))
+        else:
+            repository.require_clean()
+            repository.git("bundle", "unbundle", str(bundle))
+            if repository.revision() != initial_head:
+                raise ValueError("target repository HEAD changed during transfer")
+            repository.require_clean()
+            repository.git("checkout", "--detach", "--no-overwrite-ignore", expected_head)
+            if repository.revision() != expected_head:
+                raise ValueError("target repository did not reach the reviewed HEAD")
+            repository.require_clean()
+            output.write(f"{expected_head}\n".encode("ascii"))
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 7 or argv[1] not in {"probe", "capture", "install"}:
         return 2
     try:
-        operation, path, expected_head = argv[1:4]
-        timeout, output_limit, copy_buffer = float(argv[4]), int(argv[5]), int(argv[6])
-        if operation != "probe" and re.fullmatch(r"[0-9a-f]{40}", expected_head) is None:
-            raise ValueError("repository transfer requires one full Git commit")
-        repository = RepositoryGit(Path(path), time.monotonic() + timeout, output_limit)
-        initial_head = repository.require_checkout()
-        if operation == "probe":
-            print(initial_head)
-            return 0
-        if operation == "capture" and initial_head != expected_head:
-            raise ValueError("source repository HEAD changed after transfer review")
-        if operation == "install":
-            repository.require_clean(allow_untracked=initial_head == expected_head)
-        with tempfile.TemporaryDirectory(prefix="rcp-transfer-git-") as temporary_name:
-            temporary = Path(temporary_name)
-            bundle = temporary / "head.bundle"
-            if operation == "capture":
-                repository.git("bundle", "create", "--version=2", str(bundle), "HEAD")
-            else:
-                with bundle.open("xb") as output:
-                    shutil.copyfileobj(sys.stdin.buffer, output, length=copy_buffer)
-            inspection = temporary / "inspection"
-            inspection.mkdir()
-            _validated_bundle(repository, bundle, expected_head, inspection)
-            if repository.require_checkout() != initial_head:
-                raise ValueError("repository HEAD changed during transfer")
-            if operation == "capture":
-                with bundle.open("rb") as source:
-                    shutil.copyfileobj(source, sys.stdout.buffer, length=copy_buffer)
-                if repository.revision() != expected_head:
-                    raise ValueError("source repository HEAD changed during transfer")
-            elif initial_head == expected_head:
-                # Import may have published kept artifacts before a later step
-                # failed. The exact revision needs no Git mutation on retry,
-                # so untracked files can remain without any overwrite risk.
-                repository.require_clean(allow_untracked=True)
-                if repository.revision() != expected_head:
-                    raise ValueError("target repository HEAD changed during transfer")
-                print(expected_head)
-            else:
-                repository.require_clean()
-                repository.git("bundle", "unbundle", str(bundle))
-                if repository.revision() != initial_head:
-                    raise ValueError("target repository HEAD changed during transfer")
-                repository.require_clean()
-                repository.git("checkout", "--detach", "--no-overwrite-ignore", expected_head)
-                if repository.revision() != expected_head:
-                    raise ValueError("target repository did not reach the reviewed HEAD")
-                repository.require_clean()
-                print(expected_head)
+        run_repository_transfer(
+            argv[1],
+            argv[2],
+            argv[3],
+            float(argv[4]),
+            int(argv[5]),
+            int(argv[6]),
+            sys.stdin.buffer,
+            sys.stdout.buffer,
+        )
         return 0
     except (OSError, UnicodeError, ValueError, subprocess.TimeoutExpired) as exc:
         message = str(exc) if isinstance(exc, ValueError) else "repository Git transfer failed"

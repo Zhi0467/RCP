@@ -8,7 +8,6 @@ import re
 import shlex
 import stat
 import subprocess
-import sys
 import tempfile
 from contextlib import ExitStack
 from functools import lru_cache
@@ -21,6 +20,7 @@ from rcp.limits import (
     PROJECT_TRANSFER_GIT_TIMEOUT_SECONDS,
     PROJECT_TRANSFER_SOURCE_PROBE_TIMEOUT_SECONDS,
 )
+from rcp.transport.remote_transfer_git import run_repository_transfer
 from rcp.transport.ssh import ssh_arguments
 
 
@@ -71,22 +71,10 @@ def _run(
         if operation == "probe"
         else PROJECT_TRANSFER_GIT_TIMEOUT_SECONDS
     )
-    command = [
-        "python3" if host else sys.executable,
-        "-c",
-        _remote_source(),
-        operation,
-        path,
-        expected_head,
-        str(timeout),
-        str(PROJECT_TRANSFER_GIT_OUTPUT_MAX_BYTES),
-        str(PROJECT_TRANSFER_COPY_BUFFER_BYTES),
-    ]
-    arguments = ssh_arguments(host, shlex.join(command)) if host else command
     created = False
     try:
         with ExitStack() as stack:
-            source = subprocess.DEVNULL
+            source = stack.enter_context(open(os.devnull, "rb"))
             if bundle is not None:
                 descriptor = os.open(bundle, os.O_RDONLY | os.O_NOFOLLOW)
                 source = stack.enter_context(os.fdopen(descriptor, "rb"))
@@ -99,24 +87,46 @@ def _run(
                 created = True
                 os.fchmod(output.fileno(), 0o600)
             errors = stack.enter_context(tempfile.TemporaryFile())
-            result = subprocess.run(
-                arguments,
-                stdin=source,
-                stdout=output,
-                stderr=errors,
-                timeout=timeout,
-                check=False,
-            )
+            if host:
+                command = [
+                    "python3",
+                    "-c",
+                    _remote_source(),
+                    operation,
+                    path,
+                    expected_head,
+                    str(timeout),
+                    str(PROJECT_TRANSFER_GIT_OUTPUT_MAX_BYTES),
+                    str(PROJECT_TRANSFER_COPY_BUFFER_BYTES),
+                ]
+                result = subprocess.run(
+                    ssh_arguments(host, shlex.join(command)),
+                    stdin=source,
+                    stdout=output,
+                    stderr=errors,
+                    timeout=timeout,
+                    check=False,
+                )
+                returncode = result.returncode
+            else:
+                run_repository_transfer(
+                    operation,
+                    path,
+                    expected_head,
+                    timeout,
+                    PROJECT_TRANSFER_GIT_OUTPUT_MAX_BYTES,
+                    PROJECT_TRANSFER_COPY_BUFFER_BYTES,
+                    source,
+                    output,
+                )
+                returncode = 0
             errors.seek(0)
             diagnostic = errors.read(PROJECT_TRANSFER_GIT_OUTPUT_MAX_BYTES + 1)
-            if result.returncode != 0:
+            if returncode != 0:
                 # The shipped helper emits only its own nonsecret errors; SSH
                 # failures do not get to become an unbounded server diagnostic.
                 detail = diagnostic.decode("utf-8", errors="replace").strip()
-                if (
-                    result.returncode != 3
-                    or len(diagnostic) > PROJECT_TRANSFER_DIAGNOSTIC_MAX_CHARS
-                ):
+                if returncode != 3 or len(diagnostic) > PROJECT_TRANSFER_DIAGNOSTIC_MAX_CHARS:
                     detail = "repository Git transfer could not complete"
                 raise ValueError(detail or "repository Git transfer could not complete")
             if diagnostic:

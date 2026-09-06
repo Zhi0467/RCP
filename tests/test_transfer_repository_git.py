@@ -357,6 +357,31 @@ def test_ssh_transport_executes_the_same_shipped_source_with_streamed_bundle(
     assert calls == ["source-host", "source-host", "target-host"]
 
 
+def test_local_transfer_never_uses_frozen_executable_or_loads_shipped_source(
+    repositories: tuple[Path, Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, target, _origin = repositories
+    monkeypatch.setattr(sys, "executable", "/not-a-python-interpreter/rcp-backend")
+
+    def forbidden_source() -> str:
+        raise AssertionError("local transfer must use the imported implementation")
+
+    monkeypatch.setattr(repository_git, "_remote_source", forbidden_source)
+    bundle, head = _capture(source, tmp_path)
+    install_repository_bundle("", str(target), bundle, head)
+    assert _git(target, "rev-parse", "HEAD") == head
+    assert (target / "code.py").read_text() == "print('reviewed source')\n"
+
+
+def test_frozen_backend_includes_transfer_source() -> None:
+    root = Path(__file__).resolve().parents[1]
+    specification = (root / "packaging/rcp_backend.spec").read_text()
+    hook = (root / "packaging/hooks/validate_frozen_resources.py").read_text()
+    assert 'TRANSPORT_ROOT / "remote_transfer_git.py"' in specification
+    assert '(str(REMOTE_TRANSFER_GIT), "rcp/transport")' in specification
+    assert "_remote_source()" in hook
+
+
 @pytest.mark.skipif(
     not os.environ.get("RCP_LIVE_TRANSFER_GIT_HOST"),
     reason="set RCP_LIVE_TRANSFER_GIT_HOST for disposable real SSH checkout verification",

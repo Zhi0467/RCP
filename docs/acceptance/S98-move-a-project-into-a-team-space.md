@@ -60,6 +60,13 @@ installation, with exact HEAD/origin readback and fixture cleanup. The productio
 desktop opt-in drive remains to be recorded separately. The completed
 September 5 CoT transfer below used v1 and does not prove this new option.
 
+The September 5 PR review also verified a separately built frozen desktop backend
+without developer tools on PATH: startup/resource validation and a real HTTP
+source-request carrying an unpublished local HEAD passed against disposable data.
+Local Git operations call the shared helper in-process; SSH ships its packaged
+source. `RCP_FROZEN_BACKEND` enables that preparation regression in
+`tests/test_transfer_local_commits.py`.
+
 This live scenario remains pending because the complete source-built desktop
 interruption drive against two real spaces and a real SSH operator route has not
 yet passed. The backend transfer, native desktop relay, proof return/source

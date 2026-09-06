@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import socket
 import subprocess
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -26,7 +29,7 @@ from rcp.transfer.source import (
     stage_transfer_archive,
 )
 
-from .helpers import create_named_app
+from .helpers import TASK_SETTLE_TIMEOUT, create_named_app, wait_until
 from .test_project_transfer_request_api import _source_project
 from .test_project_transfer_request_storage import _actor
 from .test_transfer_archive_manifest import _entry, _manifest
@@ -67,6 +70,70 @@ def _source(tmp_path):
     repository = data / "paper"
     base = _commit(repository, "published")
     return app, store, actor, project, repository, base
+
+
+@pytest.mark.skipif(
+    not os.environ.get("RCP_FROZEN_BACKEND"), reason="requires a built desktop backend"
+)
+def test_frozen_backend_prepares_local_unpushed_commits(tmp_path):
+    _app, _store, _actor_value, project, repository, _base = _source(tmp_path)
+    head = _commit(repository, "unpublished frozen-backend revision")
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("RCP_") and key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}
+    }
+    environment.update(RCP_DATA_DIR=str(tmp_path / "personal"), PATH=os.defpath)
+    with (tmp_path / "backend.log").open("wb") as log:
+        process = subprocess.Popen(
+            [
+                os.environ["RCP_FROZEN_BACKEND"],
+                "serve",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--web-assets",
+                "prebuilt",
+            ],
+            env=environment,
+            stdout=log,
+            stderr=log,
+        )
+        try:
+            with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=2.0) as client:
+
+                def healthy():
+                    assert process.poll() is None, (tmp_path / "backend.log").read_text()
+                    try:
+                        return client.get("/api/health").status_code == 200
+                    except httpx.TransportError:
+                        return False
+
+                wait_until(healthy, timeout=TASK_SETTLE_TIMEOUT, detail="frozen backend startup")
+                response = client.post(
+                    "/api/project-transfers/source-requests",
+                    json={
+                        "request_id": str(uuid.uuid4()),
+                        "project_id": project,
+                        "target_space_id": str(uuid.uuid4()),
+                        "include_local_commits": True,
+                    },
+                )
+                assert response.status_code == 201, response.text
+                configuration = response.json()["source_configuration"]
+                assert configuration["repositories"][0]["source_commit"] == head
+                assert configuration["supported_archive_codecs"] == ["rcp-transfer-v2"]
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=TASK_SETTLE_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=TASK_SETTLE_TIMEOUT)
 
 
 @pytest.mark.parametrize("include", [False, True])
