@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from rcp.compute_jobs.backend_context import (
     BackendContext,
     ComputeLaunchUncertainError,
+    ComputeTransportError,
     facility_probe,
 )
 from rcp.limits import COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS
@@ -68,7 +69,7 @@ class SystemdUserBackend:
         command.extend(["--", "sh", wrapper_path])
         try:
             context.run(command, timeout=COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS, check=True)
-        except (OSError, RuntimeError, subprocess.SubprocessError):
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             # A timeout can occur after the manager accepted the unit.
             try:
                 self.cancel(handle, context)
@@ -76,6 +77,11 @@ class SystemdUserBackend:
                 raise ComputeLaunchUncertainError(
                     "Compute launch failed and stopping the possible job could not be confirmed"
                 ) from cleanup_error
+            if isinstance(exc, subprocess.TimeoutExpired):
+                # A short unit may already have run and been collected; keep its receipts.
+                raise ComputeLaunchUncertainError(
+                    "Compute launch timed out after the manager may have run the unit"
+                ) from exc
             raise
         return handle
 
@@ -84,7 +90,9 @@ class SystemdUserBackend:
             result = context.run(
                 self.command(context, "systemctl", "show", "-p", "ActiveState", handle)
             )
-        except (OSError, RuntimeError, subprocess.SubprocessError):
+        except (ComputeTransportError, subprocess.TimeoutExpired, OSError):
+            raise
+        except (RuntimeError, subprocess.SubprocessError):
             return None
         if result.returncode:
             return False if "could not be found" in result.stderr.casefold() else None

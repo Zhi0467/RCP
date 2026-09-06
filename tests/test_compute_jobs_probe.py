@@ -110,6 +110,24 @@ def test_probe_redacts_machine_resolution_failure(manifest, tmp_path):
     assert "\n" not in result.diagnostic
 
 
+@pytest.mark.parametrize("failed_command", ["uname -s", "id -u", "show-environment"])
+def test_probe_reports_ssh_resolution_failure(manifest, tmp_path, failed_command):
+    manifest.machines[0].host = "compute.example"
+
+    def runner(command, **kwargs):
+        remote = command[-1]
+        if failed_command in remote:
+            return subprocess.CompletedProcess(command, 255, "", "connection dropped")
+        return subprocess.CompletedProcess(
+            command, 0, "Linux" if remote == "uname -s" else "501", ""
+        )
+
+    result = probe_compute_backend(manifest, "laptop", runner, data_dir=tmp_path)
+    assert result.state == "failed"
+    assert result.diagnostic == "connection dropped"
+    assert not (tmp_path / "jobs").exists()
+
+
 def test_probe_without_resolvable_backend_is_unavailable(manifest, tmp_path):
     result = probe_compute_backend(
         manifest, "laptop", ProbeRunner(os_name="FreeBSD"), data_dir=tmp_path
