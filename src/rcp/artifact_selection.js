@@ -68,7 +68,7 @@ function installArtifactSelection(surface, publish) {
         event.pointerType === "touch"
       )
         return;
-      clear();
+      endDrag();
       areaGesture = false;
       if (
         event.target.closest(
@@ -79,10 +79,8 @@ function installArtifactSelection(surface, publish) {
         return;
       event.preventDefault();
       areaGesture = true;
-      doc.getSelection()?.removeAllRanges();
-      drag = { id: event.pointerId, x: event.clientX, y: event.clientY };
+      drag = { id: event.pointerId, x: event.clientX, y: event.clientY, started: false };
       capture.setPointerCapture(event.pointerId);
-      publish(null);
     },
     true,
   );
@@ -94,9 +92,13 @@ function installArtifactSelection(surface, publish) {
       if (!event.isTrusted || !drag || event.pointerId !== drag.id) return;
       const width = Math.abs(event.clientX - drag.x),
         height = Math.abs(event.clientY - drag.y);
-      if (!mark && Math.max(width, height) < 4) return;
+      if (!drag.started && Math.min(width, height) < 4) return;
       event.preventDefault();
-      if (!mark) {
+      if (!drag.started) {
+        drag.started = true;
+        mark?.remove();
+        doc.getSelection()?.removeAllRanges();
+        publish(null);
         mark = doc.createElement("div");
         mark.dataset.rcpSelection = "area";
         mark.setAttribute("aria-hidden", "true");
@@ -129,9 +131,10 @@ function installArtifactSelection(surface, publish) {
       const top = Math.max(area.top, Math.min(drag.y, event.clientY));
       const right = Math.min(area.left + area.width, Math.max(drag.x, event.clientX));
       const bottom = Math.min(area.top + area.height, Math.max(drag.y, event.clientY));
-      const drawn = mark !== null;
+      const drawn = drag.started;
       endDrag();
-      if (!drawn || right - left < 4 || bottom - top < 4) {
+      if (!drawn) return;
+      if (right - left < 4 || bottom - top < 4) {
         clear();
         return;
       }
@@ -183,10 +186,8 @@ function installArtifactSelection(surface, publish) {
       }
       const selection = doc.getSelection();
       const text = bounded(selection?.toString(), 4096);
-      if (!text || !selection?.rangeCount) {
-        publish(null);
-        return;
-      }
+      if (!text || !selection?.rangeCount) return;
+      clear();
       const range = selection.getRangeAt(0);
       const container =
         range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE

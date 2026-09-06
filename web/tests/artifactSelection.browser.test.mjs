@@ -73,6 +73,11 @@ test("direct preview drags require confirmation, preserve text, and keep working
       await pending.waitFor({ state: "visible" });
       assert.equal(await outline.count(), 1, "keep the area visible during confirmation");
       assert.deepEqual(await page.evaluate(() => confirmed), [], "a drag is not a capture");
+      const originalOutline = await outline.boundingBox();
+      await page.mouse.click(...origin);
+      await drag(page, origin, [origin[0] + 2, origin[1] + 2]);
+      assert.equal(await pending.isVisible(), true, "clicks do not dismiss confirmation");
+      assert.deepEqual(await outline.boundingBox(), originalOutline);
       await page.getByRole("button", { name: "Cancel", exact: true }).click();
       await outline.waitFor({ state: "detached" });
       assert.equal(await pending.isHidden(), true);
