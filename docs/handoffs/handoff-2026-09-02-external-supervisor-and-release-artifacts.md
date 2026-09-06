@@ -112,6 +112,19 @@ run succeeds. Fresh-host GitHub checkout and replacement deploy-key evidence
 remains a separate external gate; reusing the existing synthetic checkout does
 not prove it.
 
+Run [34052651239](https://github.com/Zhi0467/RCP/actions/runs/34052651239)
+at `8f3471f` reached real guest application bootstrap on both Ubuntu versions.
+Both recovery jobs failed the supervisor managed-Python tree's metadata check.
+A local reproduction identified uv's directory lock retaining mode `0777` as a
+cause of that exact refusal. Protecting that known empty, owned lock as `0600`
+fixes the local reproduction; other writable runtime files remain errors.
+The hosted rerun must verify the correction on both Ubuntu versions. The supervisor
+version advances to `0.1.2` because its installed runtime identity changed.
+Both independent adoption jobs failed at paired bootstrap, but the previous
+helper swallowed its concrete CLI step message; those failures must not be
+assigned the same cause without the new diagnostic receipt. No recovery case,
+complete adoption, or production cutover is proved by this run.
+
 ## Phases
 
 ### Phase 0 — contract the supervisor will rely on
