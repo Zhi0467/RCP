@@ -224,6 +224,7 @@ class WorkComputeCommands:
             episode_id=self.episode_id,
             execution_machine=self.write_scope.execution_machine,
             writable_roots=self.write_scope.writable_roots,
+            protected_paths=self.write_scope.protected_write_paths,
             probe=probe,
         )
         result = {"job_id": job.job_id, "log_path": job.log_path, "backend_id": job.backend_id}

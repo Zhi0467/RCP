@@ -35,6 +35,7 @@ class BackendContext:
     os_name: str = ""
     containment: Literal["mirrored", "cooperative"] = "cooperative"
     writable_roots: tuple[str, ...] = ()
+    protected_paths: tuple[str, ...] = ()
 
     def run(
         self,

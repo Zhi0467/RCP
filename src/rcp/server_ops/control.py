@@ -437,6 +437,30 @@ class ServerControlProviderPlanResult(_StrictModel):
         return self
 
 
+class ServerControlComputeProbeResult(_StrictModel):
+    instance_id: str
+    pid: int = Field(gt=0)
+    data_dir_id: str
+    space_id: str
+    selector_kind: Literal["project"]
+    selector_id: str
+    machine_alias: str
+    probe: ComputeBackendProbe
+
+    @model_validator(mode="after")
+    def validate_probe(self) -> ServerControlComputeProbeResult:
+        _canonical_uuid4(self.instance_id, label="control instance id")
+        _canonical_uuid4(self.space_id, label="control space id")
+        _canonical_uuid4(self.selector_id, label="control project id")
+        if len(self.data_dir_id) != 64 or any(
+            character not in _HEX_DIGEST for character in self.data_dir_id
+        ):
+            raise ValueError("control data directory id must be a lowercase SHA-256 digest")
+        if self.machine_alias != self.probe.execution_machine:
+            raise ValueError("compute backend probe returned another machine")
+        return self
+
+
 class ServerControlProviderCheckResult(_StrictModel):
     instance_id: str
     pid: int = Field(gt=0)
@@ -785,7 +809,7 @@ class ServerControlResponse(_StrictModel):
         | ServerControlMemberAdvanceResult
         | ServerControlProviderPlanResult
         | ServerControlProviderCheckResult
-        | ComputeBackendProbe
+        | ServerControlComputeProbeResult
         | ServerControlProjectPlanResult
         | ServerControlProjectStepResult
         | ServerControlProjectTransferUploadResult
@@ -834,7 +858,7 @@ ServerControlHandler = Callable[
     | ServerControlMemberAdvanceResult
     | ServerControlProviderPlanResult
     | ServerControlProviderCheckResult
-    | ComputeBackendProbe
+    | ServerControlComputeProbeResult
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
     | ServerControlProjectTransferUploadResult
@@ -961,9 +985,12 @@ class ServerControlClient:
             machine_alias=machine_alias,
         )
         result = self._exchange(request)
-        if not isinstance(result, ComputeBackendProbe):
+        if (
+            not isinstance(result, ServerControlComputeProbeResult)
+            or result.machine_alias != machine_alias
+        ):
             raise ServerControlError("invalid_response", "The service returned another probe.")
-        return result
+        return result.probe
 
     def provider_readiness_plan(
         self,
@@ -1173,7 +1200,7 @@ class ServerControlClient:
         | ServerControlMemberAdvanceResult
         | ServerControlProviderPlanResult
         | ServerControlProviderCheckResult
-        | ComputeBackendProbe
+        | ServerControlComputeProbeResult
         | ServerControlProjectPlanResult
         | ServerControlProjectStepResult
         | ServerControlProjectTransferUploadResult
@@ -1261,8 +1288,7 @@ class ServerControlClient:
                 "invalid_response",
                 "The running RCP process returned a mismatched control result.",
             ) from exc
-        result_pid = self.metadata.pid if isinstance(result, ComputeBackendProbe) else result.pid
-        if result_pid != peer.pid:
+        if result.pid != peer.pid:
             raise ServerControlError(
                 "wrong_server_identity",
                 "The control response does not match the kernel-authenticated server process.",
@@ -1417,10 +1443,7 @@ class ServerControlServer:
                 return
             try:
                 result = _validated_control_result(request, self.handler(request, peer))
-                if (
-                    not isinstance(result, ComputeBackendProbe)
-                    and result.instance_id != self.instance_id
-                ):
+                if result.instance_id != self.instance_id:
                     raise ValueError("control handler returned a different process instance")
             except ServerControlError as exc:
                 if exc.code != "operation_refused":
@@ -1578,7 +1601,7 @@ def _validated_control_result(
     | ServerControlMemberAdvanceResult
     | ServerControlProviderPlanResult
     | ServerControlProviderCheckResult
-    | ComputeBackendProbe
+    | ServerControlComputeProbeResult
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
     | ServerControlProjectTransferUploadResult
@@ -1591,7 +1614,7 @@ def _validated_control_result(
     | ServerControlMemberAdvanceResult
     | ServerControlProviderPlanResult
     | ServerControlProviderCheckResult
-    | ComputeBackendProbe
+    | ServerControlComputeProbeResult
     | ServerControlProjectPlanResult
     | ServerControlProjectStepResult
     | ServerControlProjectTransferUploadResult
@@ -1604,10 +1627,15 @@ def _validated_control_result(
             raise ValueError("control probe returned another operation's result")
         return ServerControlProbeResult.model_validate(result)
     if request.operation == "compute_backend_probe":
-        if not isinstance(result, ComputeBackendProbe):
+        if not isinstance(result, ServerControlComputeProbeResult):
             raise ValueError("compute backend probe returned another operation's result")
-        validated_probe = ComputeBackendProbe.model_validate(result)
-        if validated_probe.execution_machine != request.machine_alias:
+        validated_probe = ServerControlComputeProbeResult.model_validate(result)
+        if (
+            validated_probe.selector_kind != request.selector_kind
+            or validated_probe.selector_id != request.selector_id
+        ):
+            raise ValueError("compute backend probe returned another selector")
+        if validated_probe.machine_alias != request.machine_alias:
             raise ValueError("compute backend probe returned another machine")
         return validated_probe
     if request.operation == "provider_readiness_plan":
@@ -1852,6 +1880,7 @@ __all__ = [
     "ServerControlProjectTransferUploadResult",
     "ServerControlProjectTarget",
     "ServerControlProviderCheckResult",
+    "ServerControlComputeProbeResult",
     "ServerControlProviderPlanResult",
     "ServerControlProviderTarget",
     "ServerControlRequest",

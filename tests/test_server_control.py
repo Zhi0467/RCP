@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.api import create_app
+from rcp.compute_jobs.probe import _result
 from rcp.limits import (
     SERVER_CONTROL_BACKUP_CAPTURE_TIMEOUT_SECONDS,
     SERVER_CONTROL_IO_TIMEOUT_SECONDS,
@@ -32,6 +33,7 @@ from rcp.server_ops.control import (
     SERVER_CONTROL_OPERATIONS,
     SERVER_CONTROL_SOCKET_MODE,
     ServerControlClient,
+    ServerControlComputeProbeResult,
     ServerControlError,
     ServerControlPeer,
     ServerControlProbeResult,
@@ -1187,3 +1189,71 @@ def test_previous_console_protocol_probe_does_not_advertise_unknown_maintenance_
                 selector_id=str(uuid.uuid4()),
                 boundary_sha256="a" * 64,
             )
+
+
+@pytest.mark.parametrize("mismatch", [None, "machine", "project", "pid", "instance"])
+def test_compute_probe_control_envelope(tmp_path, control_root, mismatch):
+    metadata = ServerMetadata.create(
+        tmp_path / "data",
+        host="127.0.0.1",
+        port=18423,
+        owner_kind="cli",
+        control_socket=control_root / "control.sock",
+    )
+    project_id = str(uuid.uuid4())
+    probe = _result("other" if mismatch == "machine" else "laptop", "launchd", "ready", "Passed.")
+    result = ServerControlComputeProbeResult(
+        instance_id=str(uuid.uuid4()) if mismatch == "instance" else metadata.instance_id,
+        pid=os.getpid() + 1 if mismatch == "pid" else os.getpid(),
+        data_dir_id=metadata.data_dir_id,
+        space_id=str(uuid.uuid4()),
+        selector_kind="project",
+        selector_id=str(uuid.uuid4()) if mismatch == "project" else project_id,
+        machine_alias=probe.execution_machine,
+        probe=probe,
+    )
+    server = ServerControlServer(
+        Path(metadata.control_socket),
+        instance_id=metadata.instance_id,
+        owner_uid=os.geteuid(),
+        owner_gid=os.getegid(),
+        handler=lambda *_: result,
+    )
+    client = ServerControlClient(metadata, expected_server_uid=os.geteuid())
+    server.start()
+    try:
+        if mismatch is None:
+            assert (
+                client.probe_compute_backend(project_id=project_id, machine_alias="laptop") == probe
+            )
+        else:
+            with pytest.raises(ServerControlError):
+                client.probe_compute_backend(project_id=project_id, machine_alias="laptop")
+    finally:
+        server.stop()
+
+
+def test_compute_probe_client_rejects_another_machine(tmp_path, monkeypatch):
+    metadata = ServerMetadata.create(
+        tmp_path / "data",
+        host="127.0.0.1",
+        port=18423,
+        owner_kind="cli",
+        control_socket=tmp_path / "control.sock",
+    )
+    project_id = str(uuid.uuid4())
+    result = ServerControlComputeProbeResult(
+        instance_id=metadata.instance_id,
+        pid=os.getpid(),
+        data_dir_id=metadata.data_dir_id,
+        space_id=str(uuid.uuid4()),
+        selector_kind="project",
+        selector_id=project_id,
+        machine_alias="other",
+        probe=_result("other", "launchd", "ready", "Passed."),
+    )
+    client = ServerControlClient(metadata, expected_server_uid=os.geteuid())
+    monkeypatch.setattr(client, "_exchange", lambda _: result)
+    with pytest.raises(ServerControlError) as caught:
+        client.probe_compute_backend(project_id=project_id, machine_alias="laptop")
+    assert caught.value.code == "invalid_response"

@@ -73,7 +73,6 @@ from rcp.background import (
     BackgroundAgentTasks,
     StartupEffectFence,
 )
-from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.compute_jobs.probe import probe_compute_backend
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.config import load_manifest
@@ -136,6 +135,7 @@ from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.control import (
     SERVER_CONTROL_OPERATIONS,
     ServerControlBackupCaptureResult,
+    ServerControlComputeProbeResult,
     ServerControlError,
     ServerControlMaintenanceResult,
     ServerControlMemberAdvanceResult,
@@ -395,7 +395,7 @@ def create_app(
             | ServerControlProjectTransferUploadResult
             | ServerControlBackupCaptureResult
             | ServerControlMaintenanceResult
-            | ComputeBackendProbe
+            | ServerControlComputeProbeResult
         ):
             root_operations = {
                 "maintenance_enter",
@@ -479,7 +479,16 @@ def create_app(
                     probe = probe_compute_backend(
                         manifest, request.machine_alias, data_dir=app_data
                     )
-                    return store.record_compute_backend_probe(record.project_id, probe)
+                    return ServerControlComputeProbeResult(
+                        instance_id=identity.instance_id,
+                        pid=identity.pid,
+                        data_dir_id=identity.data_dir_id,
+                        space_id=space_id,
+                        selector_kind="project",
+                        selector_id=record.project_id,
+                        machine_alias=request.machine_alias,
+                        probe=store.record_compute_backend_probe(record.project_id, probe),
+                    )
                 case "provider_readiness_plan":
                     assert provider_readiness_coordinator is not None
                     assert request.selector_kind is not None and request.selector_id is not None
