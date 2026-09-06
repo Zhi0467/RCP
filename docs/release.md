@@ -1,13 +1,11 @@
 # Build, tag, and release
 
-Release artifact preparation from
-[the supervisor handoff](handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md)
-is implemented: CI builds the RCP and independent supervisor wheels in one
-prerelease per successful merge to `main`, a
-human can promote that build without rebuilding it, and a daily workflow prunes
-old build prereleases. The installed supervisor consumes only promoted release
-artifacts through [the team server guide](server.md). Production adoption still
-requires the pending disposable reboot qualification and human promotion.
+CI builds the RCP and independent supervisor wheels in one prerelease per
+successful merge to `main`. A human can promote that build without rebuilding
+it, and a daily workflow prunes old build prereleases. The installed supervisor
+consumes only promoted release artifacts through [the team server guide](server.md).
+Production adoption of `v0.3.5` is complete; remaining disposable recovery
+qualification is tracked [separately](handoffs/handoff-2026-09-06-disposable-supervisor-qualification.md).
 
 ## The two events
 
@@ -121,11 +119,12 @@ assets rather than selecting another release.
 
 The package provides preparation, installed operator commands, independent
 self-update and local startup recovery. The durable selection point preserves
-accepted work after admission opens. The actual Ubuntu reboot qualification and
-protected production cutover remain tracked in
-[the supervisor handoff](handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md).
-A supervisor wheel alone is not qualification: run the disposable recovery drive
-before promoting the first complete deployment release.
+accepted work after admission opens. The remaining Ubuntu reboot qualification
+is tracked in
+[the disposable qualification handoff](handoffs/handoff-2026-09-06-disposable-supervisor-qualification.md).
+A supervisor wheel alone is not qualification. The first production deployment
+used the core executed Ubuntu proofs accepted by the human; unexecuted cases
+remain explicit follow-up evidence.
 
 ## What to check before promoting
 

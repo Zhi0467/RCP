@@ -70,6 +70,7 @@ storage migration. No drive uses the lab server's live data directory.
 - `post_activation_recovery_preserves_subsequently_accepted_work`
 
 Record the guest versions, release identities, boot IDs, injected boundaries,
-systemd ordering, and data-verification results in the active supervisor handoff.
+systemd ordering, and data-verification results in the
+[active qualification handoff](../handoffs/handoff-2026-09-06-disposable-supervisor-qualification.md).
 Leave this scenario pending until the real reboot drives pass on both Ubuntu
 versions; process-restart and fake-service tests are necessary supporting checks.
