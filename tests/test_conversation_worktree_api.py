@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import subprocess
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,7 +14,13 @@ from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.storage import AgentTaskRecord
 
-from .helpers import append_fixture_patch, create_named_app, seed_patch, wait_for_task_response
+from .helpers import (
+    TASK_SETTLE_TIMEOUT,
+    append_fixture_patch,
+    create_named_app,
+    seed_patch,
+    wait_for_task_response,
+)
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -468,3 +476,171 @@ def test_remote_binding_uses_execution_machine_canonical_path_without_ssh(harnes
     resolved = "/relocated/repository"
     with pytest.raises(ValueError, match="registered repository moved"):
         conversation_worktrees.validate_worktree_binding(service, request, binding, harness.store)
+
+
+@pytest.mark.parametrize("recovery", ["resume", "retry", "repair-graph-update"])
+@pytest.mark.parametrize("change", ["shared", "worktree", "missing_target"])
+def test_integration_recovery_rechecks_git_before_admission(harness, monkeypatch, recovery, change):
+    chat = str(uuid.uuid4())
+    harness.turn(chat, worktree=True)
+    result = harness.turn(chat, worktree_integration="default_branch")
+    binding = harness.store.conversation_worktree(harness.project_id, chat)
+    worktree = Path(binding.worktree_path)
+    if change == "missing_target":
+        _git(worktree, "branch", "-D", "release")
+    else:
+        # Recovery may find its own target checked out, but it must still reject
+        # newly dirty files on either side before making the shared root writable.
+        _git(worktree, "checkout", "release")
+        root = harness.repository if change == "shared" else worktree
+        (root / "late-edit.txt").write_text("preserve this edit\n")
+
+    def forbidden_recovery(*_args, **_kwargs):
+        raise AssertionError("recovery must refuse before task admission")
+
+    method = "repair_graph_update" if recovery == "repair-graph-update" else recovery
+    monkeypatch.setattr(harness.app.state.background_tasks, method, forbidden_recovery)
+    response = harness.client.post(
+        f"/api/projects/{harness.project_id}/tasks/{result['operation_id']}/{recovery}", json={}
+    )
+    assert response.status_code == 409, response.text
+    expected = (
+        "target branch does not exist" if change == "missing_target" else "uncommitted changes"
+    )
+    assert expected in response.text
+    assert Path(binding.worktree_path).is_dir()
+    if change != "missing_target":
+        assert (root / "late-edit.txt").read_text() == "preserve this edit\n"
+
+
+@pytest.mark.parametrize("change", ["shared", "worktree", "missing_target"])
+def test_integration_rechecks_git_again_when_the_provider_turn_starts(harness, change):
+    chat = str(uuid.uuid4())
+    harness.turn(chat, worktree=True)
+    binding = harness.store.conversation_worktree(harness.project_id, chat)
+    worktree = Path(binding.worktree_path)
+    original = harness.app.state.background_tasks.stream
+    before = len(harness.launcher.launches)
+
+    async def change_after_admission(project_id, kind, request, execution):
+        if change == "missing_target":
+            _git(worktree, "branch", "-D", "release")
+        else:
+            root = harness.repository if change == "shared" else worktree
+            (root / "late-edit.txt").write_text("arrived while queued\n")
+        async for frame in original(project_id, kind, request, execution):
+            yield frame
+
+    harness.app.state.background_tasks.stream = change_after_admission
+    response = harness.send(chat, worktree_integration="default_branch")
+    assert response.status_code == 202, response.text
+    result = wait_for_task_response(
+        harness.client, harness.project_id, response.json()["operation_id"]
+    )
+    assert result["status"] == "failed", result
+    expected = (
+        "target branch does not exist" if change == "missing_target" else "uncommitted changes"
+    )
+    assert expected in result["error"]
+    assert len(harness.launcher.launches) == before
+    assert Path(binding.worktree_path).is_dir()
+
+
+@pytest.mark.parametrize("recovery", ["resume", "retry", "repair-graph-update"])
+def test_removal_waits_for_recovery_admission_then_refuses_active_task(
+    harness, monkeypatch, recovery
+):
+    from rcp.conversation_worktrees import conversation_worktree_locks
+
+    chat = str(uuid.uuid4())
+    result = harness.turn(chat, worktree=True)
+    binding = harness.store.conversation_worktree(harness.project_id, chat)
+    admitted = Event()
+    release = Event()
+    removal_requested = Event()
+
+    def reserve_recovery(_operation_id, **_kwargs):
+        # Pause at the existing BackgroundAgentTasks admission boundary. The API
+        # must retain its conversation lock until the durable queued row exists.
+        admitted.set()
+        assert release.wait(TASK_SETTLE_TIMEOUT)
+        record = AgentTaskRecord(
+            operation_id=str(uuid.uuid4()),
+            project_id=harness.project_id,
+            kind="project_chat",
+            status="queued",
+            request={"chat_id": chat},
+            created_at=harness.store.now(),
+            updated_at=harness.store.now(),
+            status_message="queued",
+        )
+        harness.store.create_agent_task(record)
+        return record
+
+    def remove():
+        removal_requested.set()
+        return harness.remove(chat)
+
+    method = "repair_graph_update" if recovery == "repair-graph-update" else recovery
+    monkeypatch.setattr(harness.app.state.background_tasks, method, reserve_recovery)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = pool.submit(
+            harness.client.post,
+            f"/api/projects/{harness.project_id}/tasks/{result['operation_id']}/{recovery}",
+            json={},
+        )
+        try:
+            assert admitted.wait(TASK_SETTLE_TIMEOUT)
+            lock = conversation_worktree_locks(f"{harness.store.path}:{harness.project_id}:{chat}")
+            assert lock.locked(), "recovery must own the same lock as removal"
+            deletion = pool.submit(remove)
+            assert removal_requested.wait(TASK_SETTLE_TIMEOUT)
+        finally:
+            release.set()
+        assert pending.result().status_code == 202
+        response = deletion.result()
+    assert response.status_code == 422, response.text
+    assert "active or paused" in response.text
+    assert Path(binding.worktree_path).is_dir()
+
+
+@pytest.mark.parametrize("recovery", ["resume", "retry", "repair-graph-update"])
+def test_recovery_refuses_removed_binding_after_waiting_for_removal(harness, monkeypatch, recovery):
+    from rcp import conversation_worktrees
+
+    chat = str(uuid.uuid4())
+    result = harness.turn(chat, worktree=True)
+    binding = harness.store.conversation_worktree(harness.project_id, chat)
+    deleting = Event()
+    release = Event()
+    original = conversation_worktrees.worktree_command
+
+    def pause_removal(store, *, operation, **kwargs):
+        if operation == "remove":
+            deleting.set()
+            assert release.wait(TASK_SETTLE_TIMEOUT)
+        return original(store, operation=operation, **kwargs)
+
+    def forbidden_admission(*_args, **_kwargs):
+        raise AssertionError("a removed binding cannot admit recovery")
+
+    monkeypatch.setattr(conversation_worktrees, "worktree_command", pause_removal)
+    method = "repair_graph_update" if recovery == "repair-graph-update" else recovery
+    monkeypatch.setattr(harness.app.state.background_tasks, method, forbidden_admission)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        deletion = pool.submit(harness.remove, chat)
+        try:
+            assert deleting.wait(TASK_SETTLE_TIMEOUT)
+            pending = pool.submit(
+                harness.client.post,
+                f"/api/projects/{harness.project_id}/tasks/{result['operation_id']}/{recovery}",
+                json={},
+            )
+        finally:
+            release.set()
+        assert deletion.result().status_code == 200
+        response = pending.result()
+    assert response.status_code == 409, response.text
+    assert "removed" in response.text
+    assert not Path(binding.worktree_path).exists()
+    assert _git(harness.repository, "rev-parse", binding.branch) == binding.starting_commit

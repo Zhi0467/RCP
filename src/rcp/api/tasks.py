@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import threading
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Annotated, Literal, cast
 from urllib.parse import quote
@@ -42,7 +43,11 @@ from rcp.artifacts import (
 )
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskRequest, BackgroundAgentTasks
-from rcp.conversation_worktrees import admit_conversation_worktree, conversation_worktree_locks
+from rcp.conversation_worktrees import (
+    admit_conversation_worktree,
+    conversation_worktree_locks,
+    conversation_worktree_recovery_admission,
+)
 from rcp.core.models import Experiment
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES, STEERING_MESSAGE_MAX_CHARS
@@ -948,11 +953,12 @@ def resume_agent_task(
                 )
         experiment_admission.require_current(service, previous.request)
         skills = _validate_stored_task_request(service, previous.kind, previous.request)
-        return background_tasks.resume(
-            operation_id,
-            skills=skills,
-            authorized_by=authorized_by,
-        ).model_dump(mode="json")
+        with _chat_recovery_admission(service, store, previous):
+            return background_tasks.resume(
+                operation_id,
+                skills=skills,
+                authorized_by=authorized_by,
+            ).model_dump(mode="json")
     except OSError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
@@ -995,10 +1001,11 @@ def repair_agent_task_graph_update(
     service = get_project_service(catalog, project_id)
     try:
         experiment_admission.require_current(service, previous.request)
-        return background_tasks.repair_graph_update(
-            operation_id,
-            authorized_by=authorized_by,
-        ).model_dump(mode="json")
+        with _chat_recovery_admission(service, store, previous):
+            return background_tasks.repair_graph_update(
+                operation_id,
+                authorized_by=authorized_by,
+            ).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Agent task not found") from exc
     except ValueError as exc:
@@ -1097,12 +1104,13 @@ def retry_agent_task(
                 skills=skills,
                 **overrides,
             ).model_dump(mode="json")
-        return background_tasks.retry(
-            operation_id,
-            skills=skills,
-            authorized_by=authorized_by,
-            **overrides,
-        ).model_dump(mode="json")
+        with _chat_recovery_admission(service, store, previous, candidate):
+            return background_tasks.retry(
+                operation_id,
+                skills=skills,
+                authorized_by=authorized_by,
+                **overrides,
+            ).model_dump(mode="json")
     except OSError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1110,6 +1118,21 @@ def retry_agent_task(
     finally:
         if result_view_retry_lock is not None:
             result_view_retry_lock.release()
+
+
+def _chat_recovery_admission(
+    service: ProjectService,
+    store: AppStore,
+    previous: AgentTaskRecord,
+    candidate: RunRequest | CoachRequest | None = None,
+):
+    if previous.kind not in {"node_chat", "project_chat"}:
+        return nullcontext()
+    request = candidate or load_stored_request(
+        RunRequest, previous.request, operation_id=previous.operation_id
+    )
+    assert isinstance(request, RunRequest)
+    return conversation_worktree_recovery_admission(service, store, previous.project_id, request)
 
 
 def _artifact_mutation_key(project_id: str, operation_id: str, artifact_id: str) -> str:

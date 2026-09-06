@@ -324,11 +324,18 @@ def execute(payload: dict) -> dict:
             if not _branch_exists(shared, branch, timeout=timeout):
                 raise ValueError("Removed worktree branch is missing")
             return {"removed": True}
+    allowed_branch = payload.get("allowed_branch")
+    if (
+        operation == "preflight"
+        and allowed_branch is not None
+        and allowed_branch != payload.get("target_branch")
+    ):
+        raise ValueError("Recovery must use its exact admitted integration target")
     result = _inspect(
         binding,
         timeout=timeout,
         require_owner=require_owner,
-        allowed_branch=payload.get("allowed_branch") if operation == "inspect" else None,
+        allowed_branch=allowed_branch if operation in {"inspect", "preflight"} else None,
     )
     if operation in {"preflight", "remove"} and result["dirty_worktree"]:
         raise ValueError(

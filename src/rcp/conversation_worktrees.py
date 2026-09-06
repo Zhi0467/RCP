@@ -10,6 +10,8 @@ import json
 import shlex
 import subprocess
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -348,22 +350,21 @@ def integration_instruction(
     )
 
 
-def conversation_worktree_context(
+def validate_conversation_worktree_execution(
     service: ProjectService,
     store: AppStore,
     project_id: str,
     request: RunRequest,
-    context: ChatContext,
     *,
     resuming_integration: bool = False,
-) -> ChatContext:
+) -> ConversationWorktreeBinding | None:
     if not request.chat_id:
-        return context
+        return None
     binding = store.conversation_worktree(project_id, request.chat_id)
     if binding is None:
         if request.worktree or request.worktree_integration:
             raise ValueError("The conversation worktree binding is unavailable.")
-        return context
+        return None
     if request.patch_kind != "work" or request.control_episode_id:
         raise ValueError("Episodes and workers cannot use conversation worktrees.")
     validate_worktree_binding(service, request, binding, store)
@@ -377,13 +378,48 @@ def conversation_worktree_context(
         )
         else None
     )
+    if (
+        request.worktree_integration in {"starting_branch", "default_branch"}
+        and not request.worktree_integration_target
+    ):
+        raise ValueError("The integration turn has no admitted target branch.")
     worktree_command(
         store,
         host=binding.execution_host,
-        operation="inspect",
+        operation="preflight" if request.worktree_integration else "inspect",
         binding=binding,
         allowed_branch=allowed_branch,
+        target_branch=request.worktree_integration_target,
     )
+    return binding
+
+
+@contextmanager
+def conversation_worktree_recovery_admission(
+    service: ProjectService, store: AppStore, project_id: str, request: RunRequest
+) -> Iterator[None]:
+    """Keep removal out until recovery has durably reserved this conversation."""
+    with conversation_worktree_locks(f"{store.path}:{project_id}:{request.chat_id}"):
+        validate_conversation_worktree_execution(
+            service, store, project_id, request, resuming_integration=True
+        )
+        yield
+
+
+def conversation_worktree_context(
+    service: ProjectService,
+    store: AppStore,
+    project_id: str,
+    request: RunRequest,
+    context: ChatContext,
+    *,
+    resuming_integration: bool = False,
+) -> ChatContext:
+    binding = validate_conversation_worktree_execution(
+        service, store, project_id, request, resuming_integration=resuming_integration
+    )
+    if binding is None:
+        return context
     return context.model_copy(
         update={
             "repositories": [
