@@ -12,13 +12,15 @@ concurrency:
 
 jobs:
   reboot:
-    name: actual reboot on Ubuntu ${{ matrix.ubuntu }}
+    name: ${{ matrix.qualification }} on Ubuntu ${{ matrix.ubuntu }}
     if: github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
+        runner: [ubuntu-22.04, ubuntu-24.04]
+        qualification: [recovery, adoption]
         include:
           - runner: ubuntu-22.04
             ubuntu: "22.04"
@@ -73,6 +75,7 @@ jobs:
           uv run python -m tests.supervisor_reboot_build --output "$RUNNER_TEMP/rcp-reboot-bundles"
 
       - name: Drive interrupted deployment and actual guest reboots
+        if: matrix.qualification == 'recovery'
         shell: bash
         env:
           RCP_REBOOT_DISPOSABLE: I_UNDERSTAND_THIS_CREATES_DISPOSABLE_VMS
@@ -93,12 +96,14 @@ jobs:
           '
 
       - name: Package the historical source adoption fixture
+        if: matrix.qualification == 'adoption'
         shell: bash
         run: |
           set -euo pipefail
           uv run python -m tests.supervisor_adoption_build --output "$RUNNER_TEMP/rcp-adoption-payload"
 
       - name: Drive source adoption and offline startup in a pristine guest
+        if: matrix.qualification == 'adoption'
         shell: bash
         env:
           RCP_REBOOT_DISPOSABLE: I_UNDERSTAND_THIS_CREATES_DISPOSABLE_VMS
@@ -121,7 +126,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: supervisor-reboot-${{ matrix.ubuntu }}-${{ github.run_id }}
+          name: supervisor-${{ matrix.qualification }}-${{ matrix.ubuntu }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/rcp-reboot-receipts/*.json
             ${{ runner.temp }}/rcp-reboot-receipts/guest/*.log

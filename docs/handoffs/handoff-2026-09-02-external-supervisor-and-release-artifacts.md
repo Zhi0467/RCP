@@ -101,7 +101,8 @@ was not retained by the prior controller. The harness now preserves bounded
 guest stderr. Initial guest boot is proved; changed-boot recovery is not.
 
 The workflow also packages exact historical source `203ad6a` and a bounded
-Node.js 24/npm runtime for a separate pristine guest. It runs the historical
+Node.js 24/npm runtime for a separate pristine guest. Recovery and adoption run
+as independent jobs for each Ubuntu version. Adoption runs the historical
 installer, paired-wheel adoption, complete protected archive decryption/inventory
 verification, and an offline reboot using the shipped startup guard. Receipts
 keep the source identity, selected wheel identity, protected archive hashes,

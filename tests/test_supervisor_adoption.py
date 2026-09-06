@@ -40,7 +40,10 @@ def test_source_bundle_preserves_requested_history_without_changing_the_checkout
     assert build.source_bundle(str(source), previous, bundle) == tree
     target = tmp_path / "guest-checkout"
     subprocess.run(
-        ["git", "clone", str(bundle), str(target)], check=True, capture_output=True, timeout=30
+        ["git", "clone", "--branch", "main", str(bundle), str(target)],
+        check=True,
+        capture_output=True,
+        timeout=30,
     )
     assert (target / "version").read_text() == "historical\n"
     assert git("rev-parse", "HEAD") == current
