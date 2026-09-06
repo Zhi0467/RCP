@@ -67,7 +67,8 @@ def _assert_compute_handoff(contract: str) -> None:
     assert "At most one `job-status` check in the same turn" in compact
     assert "startup or read an early failure; never poll" in compact
     assert "Blocker naming the setup failure and required action from the response" in compact
-    assert "Do not run the work attached, look for another execution path, or retry" in compact
+    assert "Do not run the work attached or look for another execution path" in compact
+    assert "Repeat the same command with the same key once" in compact
     assert "A job that already exited needs no observer" in compact
     assert "handoff defect RCP sends back for correction" in compact
     assert "external work RCP did not launch" in compact

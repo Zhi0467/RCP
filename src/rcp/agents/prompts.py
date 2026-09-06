@@ -263,8 +263,13 @@ def _compute_launch_rules(launch_command: str | None = None) -> str:
   process the turn started, and a PID seen inside it means nothing to RCP.
 - `launch` returns a job id, log path, and backend. Put `{{"job_id":"<id>"}}` in `watch.json`'s `external`
   list and finish the turn. At most one `job-status` check in the same turn may confirm startup or read an early failure; never poll.
-- If `launch` answers `unavailable`, the machine has no working compute backend. Stop and create a
-  Blocker naming the setup failure and required action from the response. Do not run the work attached, look for another execution path, or retry.
+- If `launch` answers `unavailable` with a `required_action`, the machine has no working compute
+  backend. Stop and create a Blocker naming the setup failure and required action from the response.
+  Do not run the work attached or look for another execution path.
+- If `launch` answers `unavailable` without a `required_action`, delivery failed, RCP hit an
+  operational error, or an earlier command's outcome is uncertain. Repeat the same command with the
+  same key once; the key makes that repeat safe. If it is still `unavailable`, stop with a Blocker
+  naming the response message.
 - A still-running job launched this turn that no job observer names is a handoff defect RCP sends
   back for correction. A job that already exited needs no observer. RCP arms observers after the turn;
   a job wake carries exit status, duration, and log path, not proof of scientific success."""
@@ -351,8 +356,10 @@ Node-attached Experiment watcher maintenance:
   physical output path selects the Experiment resource; never add a target node, episode, provider,
   session, execution-host, kind, or surface field to the JSON.
 - Each maintenance file is one JSON object with exactly `external` and `graph` lists. `external`
-  contains observer items with `check_command`, `log_path`, and `cwd`, plus an optional non-blank
-  `group`, or stop items with exactly `stop_watcher_id` and a non-blank `reason`. Same-label
+  contains observer items, plus an optional non-blank `group`, or stop items with exactly
+  `stop_watcher_id` and a non-blank `reason`. An observer for a job RCP launched in this Experiment's
+  current episode is exactly `{{"job_id": "<id>"}}`; any other observer uses exactly
+  `check_command`, `log_path`, and `cwd`. Same-label
   observers form an immutable group and each new group needs at least two observers. A stop may
   name only a compatible external observer in the staged current episode, never a graph condition,
   and never requests the human-only **Stop loop** action.
