@@ -41,6 +41,7 @@ def launch_compute_job(
     episode_id: str | None,
     execution_machine: str,
     writable_roots: list[str] | tuple[str, ...],
+    protected_paths: list[str] | tuple[str, ...] = (),
     probe: ComputeBackendProbe | None = None,
 ) -> ComputeJobRecord:
     request = ComputeLaunchRequest.model_validate(request.model_dump())
@@ -61,6 +62,7 @@ def launch_compute_job(
         context.containment = probe.containment
     root = PurePosixPath(resolve_jobs_root(context, data_dir)) / job_id
     context.writable_roots = tuple(dict.fromkeys((*writable_roots, str(root))))
+    context.protected_paths = tuple(protected_paths)
     record = ComputeJobRecord(
         job_id=job_id,
         project_id=project_id,

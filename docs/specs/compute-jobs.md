@@ -108,6 +108,8 @@ cooperative attempt passes, the result explicitly records that limitation. A
 mirrored backend start applies those properties to the supplied writable roots
 and its job root. Agent launch uses mirrored containment when the stored probe
 proved support.
+Mirrored containment also marks the turn's protected write paths read-only inside
+the writable roots; cooperative backends cannot.
 Other backends are cooperative-only. These are accidental-write guardrails for cooperative users, without read secrecy, network confinement, or
 hostile same-account isolation claims.
 
