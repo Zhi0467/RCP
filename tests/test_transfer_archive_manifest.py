@@ -82,6 +82,7 @@ PROJECT_LINKED_TABLES = {
     "auto_research_messages",
     "auto_research_recoveries",
     "chat_session_contexts",
+    "conversation_worktrees",
     "episode_invocations",
     "episode_report_attempts",
     "episode_reports",

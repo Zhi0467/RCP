@@ -4,24 +4,41 @@ import {
   activeCustomTypes,
   activeFieldsForNode,
   baseOntologyTypes,
-  makeCustomNode,
+  makeHumanNode,
+  humanNodeId,
+  normalizeSlug,
 } from "../ontologyEditing";
 import type {
   ExtensionFieldValue,
   GraphNode,
+  GraphEditOptions,
+  NewNode,
   OntologyFieldDefinition,
   OntologyState,
 } from "../types";
 
 interface Props {
   ontology: OntologyState;
+  nodePrefixes: GraphEditOptions["node_prefixes"] | null;
   disabled?: boolean;
   existingNodeIds: Set<string>;
-  onStage: (node: GraphNode) => void;
+  onStage: (node: NewNode) => void;
 }
 
-export function NewCustomNode({ ontology, disabled = false, existingNodeIds, onStage }: Props) {
-  const types = activeCustomTypes(ontology);
+export function NewCustomNode({
+  ontology,
+  nodePrefixes,
+  disabled = false,
+  existingNodeIds,
+  onStage,
+}: Props) {
+  const types = useMemo(
+    () => [
+      ...baseOntologyTypes.map((item) => ({ name: item.name, base_type: item.name })),
+      ...activeCustomTypes(ontology),
+    ],
+    [ontology],
+  );
   const [open, setOpen] = useState(false);
   const [extensionType, setExtensionType] = useState(types[0]?.name ?? "");
   const [slug, setSlug] = useState("");
@@ -36,17 +53,17 @@ export function NewCustomNode({ ontology, disabled = false, existingNodeIds, onS
     () => (definition ? activeFieldsForNode(ontology, definition.base_type, definition.name) : []),
     [definition, ontology],
   );
-  const normalizedSlug = slug
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-  const nodeId = definition && normalizedSlug ? `${definition.name}/${normalizedSlug}` : "";
+  const normalizedSlug = normalizeSlug(slug);
+  const nodeId =
+    definition && nodePrefixes && normalizedSlug
+      ? humanNodeId(definition, nodePrefixes, normalizedSlug)
+      : "";
   const requiredFieldsPresent = fields
     .filter((item) => item.required)
     .every((item) => hasFieldValue(values[item.name], item));
   const valid = Boolean(
     definition &&
+    nodePrefixes &&
     normalizedSlug &&
     title.trim() &&
     primaryText.trim() &&
@@ -63,7 +80,7 @@ export function NewCustomNode({ ontology, disabled = false, existingNodeIds, onS
     setValues({});
   };
   const submit = () => {
-    if (!definition || !valid) return;
+    if (!definition || !nodePrefixes || !valid) return;
     const extensionFields = Object.fromEntries(
       fields.flatMap((field) => {
         const value = values[field.name];
@@ -71,9 +88,9 @@ export function NewCustomNode({ ontology, disabled = false, existingNodeIds, onS
       }),
     );
     onStage(
-      makeCustomNode(
-        ontology,
-        definition.name,
+      makeHumanNode(
+        definition,
+        nodePrefixes,
         normalizedSlug,
         title,
         primaryText,
@@ -126,6 +143,7 @@ export function NewCustomNode({ ontology, disabled = false, existingNodeIds, onS
         <label>
           <span>Type</span>
           <select
+            aria-label="Type"
             value={definition?.name ?? ""}
             disabled={disabled}
             onChange={(event) => {
@@ -172,6 +190,7 @@ export function NewCustomNode({ ontology, disabled = false, existingNodeIds, onS
           <label>
             <span>Origin</span>
             <select
+              aria-label="Origin"
               value={origin}
               disabled={disabled}
               onChange={(event) => setOrigin(event.target.value as GraphNode["origin"])}

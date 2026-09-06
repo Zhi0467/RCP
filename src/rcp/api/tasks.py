@@ -41,6 +41,7 @@ from rcp.artifacts import (
 )
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskRequest, BackgroundAgentTasks
+from rcp.conversation_worktrees import admit_conversation_worktree, conversation_worktree_locks
 from rcp.core.models import Experiment
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
@@ -239,6 +240,7 @@ def start_agent_task(
     authorized_by = identity_access.require_patch_capable_identity(http_request)
     service = get_project_service(catalog, project_id)
     admission_lock: threading.Lock | None = None
+    chat_admission_lock = None
     result_view_stage_host: str | None = None
     result_view_stage_root: str | None = None
     try:
@@ -282,6 +284,13 @@ def start_agent_task(
                         "starting a new turn."
                     ),
                 )
+        if kind in {"node_chat", "project_chat"}:
+            assert isinstance(request, RunRequest)
+            chat_admission_lock = conversation_worktree_locks(
+                f"{store.path}:{project_id}:{request.chat_id}"
+            )
+            chat_admission_lock.__enter__()
+            request = admit_conversation_worktree(service, store, project_id, request)
         operation_id = str(uuid.uuid4())
         claimed_set: tuple[str, str] | None = None
         if kind in {"node_chat", "project_chat"}:
@@ -328,6 +337,8 @@ def start_agent_task(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
+        if chat_admission_lock is not None:
+            chat_admission_lock.__exit__(None, None, None)
         if admission_lock is not None:
             admission_lock.release()
     return record.model_dump(mode="json")
@@ -1393,6 +1404,7 @@ def _validated_task_request(
     # Resolved compute metadata is a server-owned admission snapshot. A client
     # may echo or forge this field, but it never participates in resolution.
     client_request.pop("resolved_compute_context", None)
+    client_request.pop("worktree_integration_target", None)
     request = RunRequest.model_validate(client_request).model_copy(
         update={
             "trigger": "human",
@@ -1415,6 +1427,8 @@ def _validated_task_request(
             "the artifact through the unified viewer."
         )
     if kind in {"seed", "refresh"}:
+        if request.worktree or request.worktree_integration:
+            raise ValueError("Only ordinary conversations can use worktrees.")
         if request.active_compute_ids:
             raise ValueError("Compute connections can be attached only to a chat turn.")
         service.history.require_writable()

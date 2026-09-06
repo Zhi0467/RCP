@@ -172,9 +172,9 @@ def test_orchestrator_action_table_adds_only_decision_and_standing() -> None:
         SET_COVERAGE,
         SET_PROJECT_TRUTH_SCOPE,
         SET_ONTOLOGY,
-        UPSERT_GLOSSARY,
         CREATE_AMBIGUITY,
     }.isdisjoint(ORCHESTRATOR_AGENT_GRAPH_ACTIONS)
+    assert UPSERT_GLOSSARY in ORDINARY_AGENT_GRAPH_ACTIONS
 
 
 def test_orchestrator_directly_decides_and_judges_action_layer_nodes() -> None:

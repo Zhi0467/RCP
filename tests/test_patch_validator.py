@@ -117,6 +117,77 @@ async def test_validator_client_distinguishes_valid_invalid_and_unavailable(tmp_
 
 
 @pytest.mark.asyncio
+async def test_validator_client_receives_nonblocking_quality_advice(
+    manifest, tmp_path: Path
+) -> None:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    service = ProjectService(
+        manifest,
+        history,
+        PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
+        data_dir=tmp_path,
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    patch_path = workspace / "patch.json"
+    patch_path.write_text(
+        json.dumps(
+            {
+                "summary": "Record an observation for review.",
+                "repositories_read": ["repo-a"],
+                "ops": [
+                    {
+                        "op": "create_nodes",
+                        "nodes": [
+                            {
+                                "id": "ev/unlinked-result",
+                                "type": "evidence",
+                                "title": "A new measured result",
+                                "observation": "The measurement improved.",
+                                "origin": "internal_run",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    staged = stage_patch_validation_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        task_id="validator-advice",
+        turn_id="quality-advice",
+        timeout_seconds=2,
+    )
+    stop = asyncio.Event()
+    server = asyncio.create_task(
+        serve_patch_validation_mailbox(
+            staged=staged,
+            execution=None,
+            validate=lambda text: _validate_work_patch_live(
+                service, text, run_truth_scope=["repo-a"]
+            ),
+            stop=stop,
+            budget=PatchValidationBudget(),
+        )
+    )
+    try:
+        result = await _run_client(staged, patch_path)
+    finally:
+        stop.set()
+        await server
+        staged.cleanup()
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0
+    assert payload["status"] == "valid"
+    assert any("no producing Experiment" in message for message in payload["messages"])
+    assert any("no graph connections" in message for message in payload["messages"])
+    assert history.state().revision == 1
+
+
+@pytest.mark.asyncio
 async def test_patch_self_checks_are_bounded_and_each_one_is_a_task_event(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

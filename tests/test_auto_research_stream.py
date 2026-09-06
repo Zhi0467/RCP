@@ -28,7 +28,11 @@ from rcp.agents.command_protocol import MessageCommandRequest
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import load_manifest
-from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
+from rcp.core.authority import (
+    AgentDispatchAuthority,
+    AgentDispatchScope,
+    render_agent_graph_authority_contract,
+)
 from rcp.core.models import Experiment, GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
@@ -287,6 +291,8 @@ def test_the_orchestrator_prefers_apply_while_the_worker_is_never_told_to_apply(
     assert "another invocation wakes you" in orchestrator
     assert preference not in worker
     assert "apply --key" not in worker
+    assert render_agent_graph_authority_contract() in worker
+    assert "upsert_glossary" in worker
 
 
 def test_agent_resolvable_blockers_and_temporary_capacity_do_not_finish_the_episode() -> None:

@@ -123,6 +123,17 @@ exceptions; those exceptions are not general project roots.
 
 ## Provider enforcement
 
+A durable conversation worktree binding replaces exactly one registered alias's
+root with its validated worktree root on the same execution machine and host.
+Catalog ownership and overlap checks validate the registered checkout and
+the planned sibling before creation, and the replacement before launch. The
+binding also pins Git's canonical common metadata directory: it is admitted as
+an exact metadata write root so Git can update the branch and index without
+admitting shared checkout files. The scope prompt renders this same root. The shared checkout is excluded from ordinary Work scope;
+Discuss receives the same worktree pointer as read context only. A
+human-selected local integration turn alone admits both exact roots. Its target
+is backend-resolved and persisted, never taken from a client-supplied path.
+
 ### Codex
 
 Work and orchestrate use Codex's native noninteractive project permission
@@ -164,6 +175,13 @@ fingerprint with the durable binding. A cross-project session/stage, relocated
 repository, incompatible run-scope change, or missing root fails before provider
 launch. Legitimate relocation or scope change starts a fresh task/session; it
 does not widen an existing native session.
+
+Conversation-local merge integration and the following ordinary turn are the
+one explicit root-transition exception: their related-turn fingerprints may be
+the exactly recomputed worktree-only or worktree-plus-shared contracts for that
+same durable binding. An already-bound operation's Resume/Retry still requires
+its original fingerprint. This exception cannot admit a different repository,
+host, stage, or moved root.
 
 The same resolver covers ordinary Work, Auto-research root, child Work, child
 Experiment, watcher wake, and correction paths. There is no permissive fallback
@@ -448,8 +466,11 @@ a per-turn invocation pointer. Packages cannot widen surface capability.
 
 The graph-authoring contract always includes the local causal check. Optional
 `graph-audit`, `experiment-causality`, and `evidence-triage` packages provide
-progressively deeper guidance. Requiring an executable graph scanner remains an
-open question, not current behavior.
+progressively deeper guidance. Programmatic quality advice belongs to the existing
+live Patch validator, not a separate mandatory scanner package or model call.
+Nonblocking flags return in a valid result's `messages` with exit code zero;
+blocking errors take priority while the Patch is invalid. Quality advice does
+not require another provider turn and cannot change acceptance or graph authority.
 
 ## Network behavior
 

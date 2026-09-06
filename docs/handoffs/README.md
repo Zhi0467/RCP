@@ -2,6 +2,10 @@
 
 Active:
 
+- [Worktree execution](handoff-2026-09-05-worktree-execution.md)
+  — implemented and merged in #48; local API/Git, a bounded provider drive and
+  Chromium component interactions passed. Broader provider/SSH/GitHub acceptance remains.
+
 - [External supervisor and release artifacts](handoff-2026-09-02-external-supervisor-and-release-artifacts.md)
   — contract and build/release workflows implemented; public-source transition
   cleanup remains. Moves server

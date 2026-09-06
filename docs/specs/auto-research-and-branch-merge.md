@@ -110,8 +110,10 @@ work uses the real project repositories under exact provider-native write
 containment. Provider sessions, external jobs, artifacts, and files remain in
 their ordinary locations.
 
-There is no Git branch, worktree, repository rollback, branch discard, or
-whole-project sandbox. Merge neither copies nor replays repository files. A
+This graph branch creates no Git branch or worktree and provides no repository
+rollback, branch discard, or whole-project sandbox. Ordinary conversations may
+independently bind a [repository worktree](conversations-episodes-and-watchers.md#conversation-worktrees);
+episodes and workers do not. Graph merge neither copies nor replays repository files. A
 failed or merged graph branch persists as an audit trail even when its operational
 work already changed a repository.
 

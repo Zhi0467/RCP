@@ -3368,6 +3368,7 @@ _PROJECT_ID_TABLES = (
     "paper_drafts",
     "writing_sessions",
     "chat_session_contexts",
+    "conversation_worktrees",
     "result_views",
     "artifact_revision_candidates",
     "graph_runs",

@@ -235,10 +235,23 @@ def apply_transition_generated_operation(
 
 
 def prepare_patch_bookkeeping(state: GraphState, patch: Patch) -> Patch:
-    """Replace RCP-owned Proposal metadata using the graph being appended to."""
+    """Resolve admission metadata and glossary spelling before recording operations."""
 
     operations: list[GraphOperation] = []
+    # Match the inline lookup's case-insensitive identity, preserving its first
+    # sorted spelling even when old history contains multiple cased variants.
+    # Persist this choice in the new Patch; never change historical replay.
+    glossary_spelling: dict[str, str] = {}
+    for term in sorted(state.glossary):
+        glossary_spelling.setdefault(term.lower(), term)
     for operation in patch.ops:
+        if isinstance(operation, UpsertGlossaryOperation):
+            terms = []
+            for term in operation.terms:
+                spelling = glossary_spelling.setdefault(term.term.lower(), term.term)
+                terms.append(term.model_copy(update={"term": spelling}))
+            operations.append(operation.model_copy(update={"terms": terms}))
+            continue
         if not isinstance(operation, CreateProposalsOperation):
             operations.append(operation)
             continue

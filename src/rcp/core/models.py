@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -21,6 +22,48 @@ DISPLAY_NAME_MAX_LENGTH = 120
 EVIDENCE_ASSESSMENT_SCOPE_MAX_LENGTH = 500
 EVIDENCE_ASSESSMENT_QUALIFICATION_MAX_LENGTH = 300
 EVIDENCE_ASSESSMENT_MAX_QUALIFICATIONS = 12
+
+
+class ConversationWorktreeBinding(BaseModel):
+    """Durable, immutable repository identity owned by one ordinary chat."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    project_id: str = Field(min_length=1)
+    chat_id: str
+    chat_scope: Literal["node", "project"]
+    node_id: str | None = None
+    repository_alias: str = Field(min_length=1)
+    machine: str = Field(min_length=1)
+    execution_host: str
+    shared_path: str = Field(min_length=1)
+    worktree_path: str = Field(min_length=1)
+    git_common_dir: str = Field(min_length=1)
+    branch: str = Field(min_length=1)
+    starting_branch: str = Field(min_length=1)
+    starting_commit: str = Field(min_length=1)
+    status: Literal["creating", "ready", "removing", "removed"] = "creating"
+
+    @field_validator("chat_id")
+    @classmethod
+    def canonical_chat_id(cls, value: str) -> str:
+        if str(uuid.UUID(value)) != value:
+            raise ValueError("conversation worktree chat id must be a canonical UUID")
+        return value
+
+    @field_validator("git_common_dir")
+    @classmethod
+    def absolute_git_common_dir(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if not path.is_absolute() or ".." in path.parts or str(path) != value:
+            raise ValueError("conversation Git metadata directory must be absolute and normalized")
+        return value
+
+    @model_validator(mode="after")
+    def validate_chat_scope(self) -> ConversationWorktreeBinding:
+        if (self.chat_scope == "node") != bool(self.node_id):
+            raise ValueError("conversation worktree node id must match its chat scope")
+        return self
 
 
 def normalize_display_name(value: str) -> str:

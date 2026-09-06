@@ -1424,7 +1424,7 @@ def test_graph_sync_refuses_defining_and_using_a_type_in_one_draft(manifest, tmp
     assert service.history.state().revision == 2
 
 
-def test_graph_sync_does_not_offer_direct_base_node_authoring(manifest, tmp_path) -> None:
+def test_graph_sync_creates_direct_base_node_authoring(manifest, tmp_path) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -1439,15 +1439,15 @@ def test_graph_sync_does_not_offer_direct_base_node_authoring(manifest, tmp_path
                     "id": "hyp/human-base-node",
                     "type": "hypothesis",
                     "title": "Human base node",
-                    "statement": "This must not create a new base node.",
+                    "statement": "A human can create a new base node.",
                 }
             ],
         },
     )
 
-    assert response.status_code == 422
-    assert "base-node authoring is not available" in response.json()["detail"]
-    assert service.history.state().revision == 2
+    assert response.status_code == 200, response.text
+    assert service.history.state().revision == 3
+    assert response.json()["nodes"]["hyp/human-base-node"]["standing"] == "asserted"
 
 
 def test_graph_sync_creates_an_asserted_node_of_an_active_custom_type(manifest, tmp_path) -> None:

@@ -5,10 +5,53 @@ import {
   activeCustomTypes,
   activeFieldsForNode,
   canRemoveOntologyType,
-  makeCustomNode,
+  makeHumanNode,
   removeOntologyType,
   upsertOntologyType,
 } from "../src/ontologyEditing.ts";
+
+const prefixes = {
+  research_question: "rq",
+  hypothesis: "hyp",
+  decision: "dec",
+  experiment: "exp",
+  evidence: "ev",
+  blocker: "blk",
+};
+
+test("human creation supports every built-in node type without an extension ontology", () => {
+  for (const type of [
+    "research_question",
+    "hypothesis",
+    "decision",
+    "experiment",
+    "evidence",
+    "blocker",
+  ]) {
+    const node = makeHumanNode(
+      { name: type, base_type: type },
+      prefixes,
+      "A title",
+      "Title",
+      "Content",
+      "analytic",
+      {},
+    );
+    assert.equal(node.type, type);
+    assert.equal(node.extension_type, null);
+    const prefix = {
+      research_question: "rq",
+      hypothesis: "hyp",
+      decision: "dec",
+      experiment: "exp",
+      evidence: "ev",
+      blocker: "blk",
+    }[type];
+    assert.equal(node.id, `${prefix}/a-title`);
+    assert.equal("standing" in node, false);
+    assert.equal("created_rev" in node, false);
+  }
+});
 
 const ontology = {
   types: [
@@ -127,10 +170,10 @@ test("renaming a type updates owned fields and relation endpoints", () => {
   assert.deepEqual(renamed.relations[0].source_types, ["causal_hypothesis"]);
 });
 
-test("custom node payload is full, asserted, slugged, and preserves the base semantic type", () => {
-  const node = makeCustomNode(
-    ontology,
-    "mechanism_hypothesis",
+test("custom node payload contains human input and preserves the base semantic type", () => {
+  const node = makeHumanNode(
+    ontology.types[0],
+    prefixes,
     "Periodic Replanning",
     "Replanning mechanism",
     "Periodic replanning preserves plasticity.",
@@ -140,16 +183,16 @@ test("custom node payload is full, asserted, slugged, and preserves the base sem
   assert.equal(node.id, "mechanism_hypothesis/periodic-replanning");
   assert.equal(node.type, "hypothesis");
   assert.equal(node.extension_type, "mechanism_hypothesis");
-  assert.equal(node.standing, "asserted");
-  assert.equal(node.status, "proposed");
-  assert.deepEqual(node.predictions, []);
+  assert.equal("standing" in node, false);
+  assert.equal("status" in node, false);
+  assert.equal("predictions" in node, false);
   assert.deepEqual(node.extension_fields, {
     prior: 0.4,
     mechanism: "Refreshes update directions.",
   });
 });
 
-test("custom Evidence defaults to a result role without authoring compatibility strength", () => {
+test("custom Evidence sends chosen origin and leaves defaults to backend preview", () => {
   const evidenceOntology = {
     ...ontology,
     types: [
@@ -163,9 +206,9 @@ test("custom Evidence defaults to a result role without authoring compatibility 
       },
     ],
   };
-  const node = makeCustomNode(
-    evidenceOntology,
-    "evaluation_result",
+  const node = makeHumanNode(
+    evidenceOntology.types.at(-1),
+    prefixes,
     "Held-out Gain",
     "Held-out gain",
     "The held-out score increased.",
@@ -174,7 +217,7 @@ test("custom Evidence defaults to a result role without authoring compatibility 
   );
 
   assert.equal(node.type, "evidence");
-  assert.equal(node.role, "result");
+  assert.equal("role" in node, false);
   assert.equal(node.origin, "internal_run");
   assert.equal("strength" in node, false);
   assert.equal("legacy_strength" in node, false);
