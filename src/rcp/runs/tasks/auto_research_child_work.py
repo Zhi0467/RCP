@@ -28,9 +28,9 @@ from rcp.background import AgentTaskContinuation, AgentTaskExecution
 from rcp.history import ReplayHalted
 from rcp.limits import (
     AUTO_RESEARCH_MAIL_MAX_BYTES,
+    COMPUTE_COMMAND_TIMEOUT_SECONDS,
     PATCH_SELF_CHECK_MAX_COUNT,
     PATCH_SELF_CHECK_POLL_SECONDS,
-    PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
 from rcp.runs.auto_research_mail import (
     AUTO_RESEARCH_MAIL_HANDOFF_FILE,
@@ -474,7 +474,8 @@ async def _stage_auto_research_child_work_turn(
             episode_id=route.episode_id,
             task_id=execution.operation_id,
             turn_id=f"{token}:auto-research-child-work",
-            timeout_seconds=PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+            # The child serves compute launches too, which outlast a Patch check.
+            timeout_seconds=COMPUTE_COMMAND_TIMEOUT_SECONDS,
         )
         patch_inputs = _ChatPatchInputs(
             patch_path=patch_inputs.patch_path,

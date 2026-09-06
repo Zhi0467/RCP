@@ -1551,6 +1551,20 @@ async def _apply_experiment_loop_turn(
                     yield frame
             if applied.stop:
                 return
+            # A nested watcher correction may rewrite patch.json; the next iteration
+            # must validate and apply what is on disk, not the earlier correction.
+            try:
+                rewritten = _read_chat_patch(turn.workspace, turn.remote_stage)
+            except (OSError, StateUnavailable, ValueError) as exc:
+                rewritten = None
+                detail = str(exc)
+            else:
+                detail = "patch.json is missing after the watcher correction."
+            if rewritten is None:
+                final_failure = _DeliverableFailure(
+                    f"The corrected loop Patch could not be read: {detail}", correctable=True
+                )
+            final_patch_text = rewritten
 
     # Even rejected graph reflection must retain a complete operational handoff.
     async with aclosing(

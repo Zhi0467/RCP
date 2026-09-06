@@ -23,7 +23,11 @@ from rcp.agents.command_protocol import (
     staged_command_client_source,
 )
 from rcp.background import AgentTaskExecution
-from rcp.limits import PATCH_SELF_CHECK_MAX_COUNT, PATCH_SELF_CHECK_POLL_SECONDS
+from rcp.limits import (
+    COMPUTE_COMMAND_TIMEOUT_SECONDS,
+    PATCH_SELF_CHECK_MAX_COUNT,
+    PATCH_SELF_CHECK_POLL_SECONDS,
+)
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
 
 # Compatibility export for callers that assert which tested source was staged.
@@ -58,6 +62,9 @@ def stage_patch_validation_mailbox(
 ) -> StagedCommandMailbox:
     """Stage the command client with the authority selected by its concrete owner."""
 
+    if authority == "broker":
+        # Broker turns also serve compute launches, which outlast a Patch check.
+        timeout_seconds = max(timeout_seconds, COMPUTE_COMMAND_TIMEOUT_SECONDS)
     return stage_command_mailbox(
         local_stage=local_stage,
         remote_stage=remote_stage,

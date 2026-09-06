@@ -15,6 +15,12 @@ if TYPE_CHECKING:
     from rcp.compute_jobs.models import ComputeBackendProbe, ComputeLaunchRequest
 
 
+def _quote_path(path: str) -> str:
+    # systemd's list-valued property parser needs quotes independently
+    # of the argv/SSH quoting boundary.
+    return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 class SystemdUserBackend:
     id = "systemd_user"
     display_name = "systemd user manager"
@@ -56,10 +62,9 @@ class SystemdUserBackend:
                 ]
             )
             for root in dict.fromkeys((*context.writable_roots, job_root)):
-                # systemd's list-valued property parser needs quotes independently
-                # of the argv/SSH quoting boundary.
-                quoted = '"' + root.replace("\\", "\\\\").replace('"', '\\"') + '"'
-                command.extend(["-p", f"ReadWritePaths={quoted}"])
+                command.extend(["-p", f"ReadWritePaths={_quote_path(root)}"])
+            for path in context.protected_paths:
+                command.extend(["-p", f"ReadOnlyPaths={_quote_path(path)}"])
         command.extend(["--", "sh", wrapper_path])
         try:
             context.run(command, timeout=COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS, check=True)

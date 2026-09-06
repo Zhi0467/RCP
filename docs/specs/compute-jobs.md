@@ -110,6 +110,8 @@ cooperative attempt passes, the result explicitly records that limitation. A
 mirrored backend start applies those properties to the supplied writable roots
 and its job root. Agent launch uses mirrored containment when the stored probe
 proved support.
+Mirrored containment also marks the turn's protected write paths read-only inside
+the writable roots; cooperative backends cannot.
 Other backends are cooperative-only. These are accidental-write guardrails for cooperative users, without read secrecy, network confinement, or
 hostile same-account isolation claims.
 
@@ -133,7 +135,9 @@ turns:
 Execution machine, host, project, operation id, and optional episode id come
 from the turn, never the command. A bad request answers `invalid`; a machine
 without a ready probe answers `unavailable` with its diagnostic and required
-action; success answers `ok`. Each call has a task event; each new keyed command
+action; success answers `ok`. A broker turn's client waits up to the compute
+command timeout, which covers machine resolution, one probe, and a backend
+start in sequence, so a slow remote launch is not misreported as unavailable. Each call has a task event; each new keyed command
 has two protected diagnostic receipts, one for its start and one for its result.
 Commands do not apply a graph Patch.
 
