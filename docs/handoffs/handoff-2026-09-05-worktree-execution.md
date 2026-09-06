@@ -8,11 +8,14 @@ continuation and restart recovery, integration preflights and instructions,
 explicit removal, UI, regression tests, four spec updates, and acceptance S133
 are implemented. Local HTTP and Git verification proved binding and restart,
 isolated fixture edits, dirty refusals, clean preflights, operator-executed local
-push and merges, and removal that retains unmerged commits. Real provider turns
-were launched but could not execute commands inside the implementing session's
-nested sandbox, and Chromium could not launch there, so provider-driven edits,
-Discuss reads, integration outcomes, browser interaction, and real
-Pause/Resume/Retry remain unverified. SSH and GitHub `gh pr create` are explicit
+push and merges, and removal that retains unmerged commits. A later unsandboxed
+drive on the committed branch proved the provider path: a real Codex Work turn
+created and committed a file on the chat's worktree branch while the shared
+checkout stayed untouched, and the human-selected merge-into-starting-branch
+turn fast-forwarded the shared checkout onto that commit with both checkouts
+clean (receipt below). Browser interaction, Discuss reads of the worktree, the
+pull-request option's provider turn, and real Pause/Resume/Retry remain
+unverified. SSH and GitHub `gh pr create` are explicit
 unexercised gaps. S133 remains blocked-external. The settled decisions below
 remain the contract; implementation choices and check receipts follow.
 
@@ -268,11 +271,24 @@ is `trunk`, and initial commit is `24b92c93c0d259a033dce2cf895d12e7880e6155`.
   failed under the sandbox and the computer-use tool reported
   `No browser is available`.
 
+### Unsandboxed provider drive (2026-09-05, committed branch)
+
+Served the committed branch on port 8431 against the disposable fixture project.
+A new project chat sent a Work turn with `worktree: true` asking Codex to create
+`live-check.txt` containing `LIVE_OK` and commit only that file. The task
+succeeded: binding `ready` on branch `rcp/chat-9d36d8632b6fc0a211503044` from
+starting branch `topic`; the worktree held commit `cc2faf4 Add live check` with a
+clean status; the file was absent from the shared checkout, which stayed on
+`topic`. A follow-up turn with `worktree_integration: starting_branch` received
+the RCP-authored instruction; the agent verified both checkouts, fast-forwarded
+`topic` to `cc2faf4`, and both checkouts ended clean with `live-check.txt` present
+in the shared checkout. The server log recorded no errors or 5xx responses.
+
 ### Explicit gaps
 
-Browser UI interaction/console, successful real provider reads/edits/integrations,
-provider-handled merge conflict recovery, and real Pause/Resume/Retry were not
-verified. Regression tests exercise those relevant runtime boundaries with fake
+Browser UI interaction/console, Discuss reads of the worktree, the pull-request
+option's provider turn, provider-handled merge conflict recovery, and real
+Pause/Resume/Retry were not verified. Regression tests exercise those relevant runtime boundaries with fake
 provider events and real disposable Git, which does not replace a live provider
 drive. SSH was not attempted, as instructed. GitHub pull-request creation was not
 attempted, as instructed; PR verification stops at the local bare-origin push.
