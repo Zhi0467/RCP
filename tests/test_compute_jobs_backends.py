@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import plistlib
 import shlex
+import signal
 import subprocess
 from pathlib import Path
 from typing import get_args
@@ -18,6 +19,7 @@ from rcp.compute_jobs.backends import COMPUTE_BACKENDS, ComputeBackendId, resolv
 from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.config import MachineComputeConfig
 from rcp.limits import COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS, COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
+from rcp.transport import remote_job_launch
 from rcp.transport.remote_job_launch import alive, process_identity
 from rcp.transport.state import _remote_script
 
@@ -262,9 +264,69 @@ def test_ssh_session_ships_source_and_checks_identity():
 def test_process_identity_handles_parentheses_and_pid_reuse(monkeypatch):
     stat = "123 (worker (a b)) S 1 123 " + " ".join(["0"] * 16) + " 987 0\n"
     monkeypatch.setattr(Path, "read_text", lambda path: stat)
+    monkeypatch.setattr(remote_job_launch, "_group_alive", lambda pid: False)
     assert process_identity(123) == ("987", "S")
     assert alive("123:987") is True
     assert alive("123:986") is False
+
+
+def test_session_liveness_reports_gone_when_leader_identity_mismatches(monkeypatch):
+    if not Path("/proc/self/stat").is_file():
+        pytest.skip("SSH session process groups require Linux /proc")
+    with subprocess.Popen(
+        ["sh", "-c", "sleep 60 & echo $!"],
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    ) as leader:
+        try:
+            child = int(leader.stdout.readline())
+            leader.wait(timeout=5)
+            assert process_identity(child)[1] not in {"Z", "X"}
+            monkeypatch.setattr(remote_job_launch, "process_identity", lambda pid: ("988", "S"))
+            # A live group under a recycled leader pid is not this job and is never signalled.
+            assert alive(f"{leader.pid}:987") is False
+        finally:
+            os.killpg(leader.pid, signal.SIGKILL)
+
+
+@pytest.mark.parametrize("leader_state", ["missing", "Z", "X"])
+def test_session_liveness_tracks_group_after_leader_exits(monkeypatch, leader_state):
+    def identity(pid):
+        if leader_state == "missing":
+            raise FileNotFoundError
+        return "987", leader_state
+
+    monkeypatch.setattr(remote_job_launch, "process_identity", identity)
+    members = []
+    monkeypatch.setattr(remote_job_launch, "_group_alive", lambda pid: bool(members))
+    assert not alive("123:987")
+    members.append(456)
+    assert alive("123:987")
+
+
+@pytest.mark.parametrize("already_gone", [False, True])
+def test_session_cancel_signals_group_without_leader(monkeypatch, already_gone):
+    def identity(pid):
+        raise FileNotFoundError
+
+    signals = []
+
+    def killpg(pid, requested_signal):
+        assert pid == 123
+        signals.append(requested_signal)
+        if already_gone:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(remote_job_launch, "process_identity", identity)
+    monkeypatch.setattr(
+        remote_job_launch, "_group_alive", lambda pid: signal.SIGKILL not in signals
+    )
+    monkeypatch.setattr(os, "killpg", killpg)
+    clock = iter(range(10))
+    monkeypatch.setattr(remote_job_launch.time, "monotonic", lambda: next(clock))
+    remote_job_launch.cancel("123:987", grace=0.5, poll_interval=0.1)
+    assert signals == ([signal.SIGTERM] if already_gone else [signal.SIGTERM, signal.SIGKILL])
 
 
 @pytest.mark.parametrize(
@@ -283,11 +345,11 @@ def test_cancellation_is_idempotent_for_gone_jobs(backend_id, response):
 
 
 @pytest.mark.parametrize("backend_id", list(COMPUTE_BACKENDS))
-def test_facility_probes_redact_and_report_failure(backend_id):
-    runner = Runner((1, "", "token=secret-value\nbackend denied access"))
+@pytest.mark.parametrize("returncode", [1, 255])
+def test_facility_probes_redact_and_report_failure(backend_id, returncode):
+    runner = Runner((returncode, "", "token=secret-value\nbackend denied access"))
     ctx = context(runner)
-    if backend_id == "ssh_session":
-        ctx.execution_host = "worker"
+    ctx.execution_host = "worker"
     probe = COMPUTE_BACKENDS[backend_id].probe(ctx)
     assert probe.state == "failed"
     assert not probe.ready
@@ -297,14 +359,51 @@ def test_facility_probes_redact_and_report_failure(backend_id):
 
 
 @pytest.mark.parametrize("backend_id", list(COMPUTE_BACKENDS))
-def test_backend_transport_failure_is_unknown(backend_id):
+@pytest.mark.parametrize("error", [subprocess.TimeoutExpired("status", 10), OSError("no ssh")])
+def test_backend_transport_failure_propagates(backend_id, error):
     def unavailable(command, **kwargs):
-        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        raise error
 
     ctx = context(unavailable)
-    if backend_id == "ssh_session":
-        ctx.execution_host = "worker"
+    ctx.execution_host = "worker"
+    with pytest.raises(type(error)):
+        COMPUTE_BACKENDS[backend_id].alive("42", ctx)
+
+
+@pytest.mark.parametrize("backend_id", list(COMPUTE_BACKENDS))
+def test_backend_ssh_exit_255_raises_transport_error(backend_id):
+    ctx = context(Runner((255, "", "connection dropped")))
+    ctx.execution_host = "worker"
+    with pytest.raises(ComputeTransportError, match="connection dropped"):
+        COMPUTE_BACKENDS[backend_id].alive("42", ctx)
+
+
+@pytest.mark.parametrize("backend_id", list(COMPUTE_BACKENDS))
+def test_backend_nontransport_failure_is_unknown(backend_id):
+    ctx = context(Runner((1, "", "observation failed")))
+    ctx.execution_host = "worker"
     assert COMPUTE_BACKENDS[backend_id].alive("42", ctx) is None
+
+
+@pytest.mark.parametrize("backend_id", list(COMPUTE_BACKENDS))
+def test_cancel_ssh_exit_255_raises_transport_error(backend_id):
+    ctx = context(Runner((255, "", "connection dropped")))
+    ctx.execution_host = "worker"
+    with pytest.raises(ComputeTransportError, match="connection dropped"):
+        COMPUTE_BACKENDS[backend_id].cancel("42", ctx)
+
+
+@pytest.mark.parametrize("check", [False, True])
+@pytest.mark.parametrize("remote", [False, True])
+def test_runner_exit_255_is_transport_failure_only_over_ssh(check, remote):
+    ctx = context(Runner((255, "", "command failed")))
+    ctx.execution_host = "worker" if remote else ""
+    if remote or check:
+        with pytest.raises(ComputeTransportError if remote else RuntimeError) as error:
+            ctx.run(["command"], check=check)
+        assert isinstance(error.value, ComputeTransportError) is remote
+    else:
+        assert ctx.run(["command"], check=check).returncode == 255
 
 
 @pytest.mark.parametrize("backend_id", ["systemd_user", "launchd"])
@@ -319,7 +418,11 @@ def test_uncertain_start_stops_the_stable_unit(backend_id, tmp_path):
 
     root = tmp_path / "abc"
     root.mkdir()
-    with pytest.raises(subprocess.TimeoutExpired):
+    # A collected systemd unit may already have run, so its receipts are retained.
+    expected = (
+        ComputeLaunchUncertainError if backend_id == "systemd_user" else subprocess.TimeoutExpired
+    )
+    with pytest.raises(expected):
         COMPUTE_BACKENDS[backend_id].start(
             str(root), str(root / "run.sh"), request(), context(runner)
         )
