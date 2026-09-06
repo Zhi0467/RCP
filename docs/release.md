@@ -1,8 +1,9 @@
 # Build, tag, and release
 
-Phase 1 of
+Release artifact preparation from
 [the supervisor handoff](handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md)
-is implemented: CI builds one prerelease per successful merge to `main`, a
+is implemented: CI builds the RCP and independent supervisor wheels in one
+prerelease per successful merge to `main`, a
 human can promote that build without rebuilding it, and a daily workflow prunes
 old build prereleases. Servers do not consume these artifacts yet. Until Phase
 4 lands, they still build `origin/main` from source exactly as
@@ -18,7 +19,7 @@ so that merging often costs nothing and releasing stays deliberate.
 | Trigger | every merge to `main` | a human promotes one build |
 | Name | `build/<N>`, `<N>` is the CI run number | `vX.Y.Z` |
 | GitHub | prerelease | release; the newest one is `stable` |
-| Contents | `rcp` wheel, hashed lock export, SHA-256 manifest | the same files, re-attached, never rebuilt |
+| Contents | RCP and supervisor wheels, their hashed lock exports, SHA-256 manifest | the same files, re-attached, never rebuilt |
 | Kept | thirty days | forever |
 | Who acts | nobody | a human, never an agent |
 
@@ -29,9 +30,10 @@ so that merging often costs nothing and releasing stays deliberate.
 2. The `build` job builds the wheel once. Its version is
    `<__version__>+build.<N>.g<sha7>`, where `__version__` comes from
    `src/rcp/__init__.py`.
-3. The job exports the locked runtime dependencies with hashes, writes a
-   manifest of SHA-256 sums, and publishes everything as prerelease
-   `build/<N>`.
+3. The job independently builds `supervisor/` without stamping its version,
+   exports each package's locked runtime dependencies with hashes, requires the
+   complete asset set, writes a manifest of SHA-256 sums, and publishes
+   everything as prerelease `build/<N>`.
 4. A later merge never cancels an earlier `main` run. Every merge that passes
    CI gets its own build, however close together they land.
 
@@ -104,11 +106,22 @@ locally and accept that the bytes will not be the tested ones.
 
 ## Supervisor versions
 
-**Not yet in effect.** The supervisor package and its independent version do
-not exist yet. Phase 3 of
-[the supervisor handoff](handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md)
-will add them. Current build and release assets therefore contain only the RCP
-wheel, hashed lock export, and manifest.
+The independently buildable `supervisor/` uv project carries its own version in
+`supervisor/src/rcp_supervisor/__init__.py`. It imports no RCP code and currently
+has no runtime dependencies; its lock export still accompanies its wheel.
+Change this version when supervisor logic changes, independently of the RCP
+build number. Every new build carries both wheels, `requirements.lock.txt`,
+`supervisor-requirements.lock.txt`, and `manifest.sha256`. Promotion accepts a
+complete historical three-asset build but refuses a partial supervisor pair.
+The supervisor's fetch command refuses historical releases without supervisor
+assets rather than selecting another release.
+
+The package currently provides `fetch`, offline bundle `verify`, and isolated
+RCP `install` preparation. Operational switching, restore/reboot recovery, and
+supervisor self-update remain in
+[the supervisor handoff](handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md).
+An initial supervisor wheel is not sufficient qualification for production
+cutover; the complete maintenance/recovery contract must land and pass first.
 
 ## What to check before promoting
 

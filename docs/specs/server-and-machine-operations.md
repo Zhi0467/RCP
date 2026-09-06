@@ -314,6 +314,34 @@ ordinary loss recovery is re-invitation by the other enrolled member.
 
 ## Source version and update
 
+### Independent release preparation
+
+The separate `supervisor/` Python distribution prepares release artifacts without
+importing RCP or owning application state. It currently provides
+`rcp-supervisor fetch <stable|vX.Y.Z> <destination>`,
+`rcp-supervisor verify <bundle>`, and
+`rcp-supervisor install <bundle> --releases-root <absolute-directory>`.
+Its global `--machine-readable` option emits version-1 NDJSON step envelopes;
+operator CLI delegation and decoding of the supervisor command names have not
+landed. No running server delegates to it yet.
+
+Fetch uses the fixed public GitHub repository, refuses drafts, prereleases, and
+missing supervisor assets, bounds HTTPS downloads, verifies every manifest hash
+and wheel identity, and publishes one immutable bundle atomically. Offline verify
+performs those bundle checks without contacting GitHub or importing package code.
+These hashes bind assets within the public release; they are not an independent
+signature. Install refuses root execution and requires an existing normalized,
+account-owned releases directory without writable-by-other-account permissions
+or symlink traversal. It creates a new build directory and managed Python 3.12
+environment, installs the hashed runtime lock and verified wheel, checks installed
+identity and dependencies, and publishes a preparation receipt. An existing build
+directory is never overwritten; failures retain diagnostic files and do not
+publish a success receipt. This command neither opens application data nor
+changes the current-release pointer. Production delegation must invoke it as
+`rcp` under the retained root/service privilege split.
+
+### Current source-built update path
+
 The installed version is the exact commit of the service's current source
 release. `rcp server doctor` reports the managed-main, candidate, current, and
 running commits plus the configured upstream origin and authentication mode. The

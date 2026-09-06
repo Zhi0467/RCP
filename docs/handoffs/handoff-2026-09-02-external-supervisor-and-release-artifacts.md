@@ -12,8 +12,14 @@ private-source cleanup and legacy-archive restore proof remain. Public fresh
 installation passed hosted Ubuntu 22.04/24.04 run 33919068513 at 276a2bb. The
 decisions are settled in
 [the supervisor decision](../decisions/2026-09-02-deployment-moves-to-an-external-supervisor.md)
-and repeated in the next section so this file stands alone. **Ready to dispatch:**
-finish the remaining Phase 2 cleanup, then implement Phases 3–6. The predecessor
+and repeated in the next section so this file stands alone. Phase 3 release
+preparation is implemented: the independent package, complete build assets,
+bounded release fetch/verification, and isolated RCP installation. Migration
+checks, checkpoints, switch/restore recovery, self-update, CLI delegation, and
+reboot qualification remain. On 2026-09-06 the human chose to proceed with the
+supervisor; retain the Phase 2 cleanup as unfinished work before cutover.
+**Ready to dispatch:** checkpoint/recovery and the application maintenance
+contract, then the remaining integration and qualification. The predecessor
 gate is satisfied: the [team-server handoff is archived](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server.md).
 
 On 2026-09-05 the human accepted existing two-member production use and skipped
@@ -22,7 +28,8 @@ completed desktop transfer to WTH UCSD, target import, activation-proof return,
 source retirement, and canonical/provider-history verification. Its source-only
 paused-attempt/recovery fixes are in the closure PR and must pass CI and human
 merge normally. The temporary surface freeze is closed. This handoff prepares
-supervisor implementation; the supervisor itself is not implemented.
+supervisor implementation; its operational cutover and recovery are not yet
+implemented.
 
 Closure condition, all of it:
 
@@ -68,6 +75,12 @@ When those hold, archive this handoff.
 - Forward-only migrations, direct upgrade from every server-era database, the
   old-data CI job, protected backups, systemd, and the operator and service
   privilege split all stay.
+- Human clarification, 2026-09-06: interrupted deployment recovery runs
+  automatically, including after reboot, before RCP can admit work. The
+  supervisor owns the startup guard and uses local artifacts and checkpoints.
+  Unknown journals fail closed. Recovery after admission reopened must preserve
+  subsequently accepted work. Prove this with actual disposable-host reboots,
+  not only process crashes or operator-driven re-entry.
 
 ## Ordering and gates
 
@@ -75,7 +88,8 @@ When those hold, archive this handoff.
 Phases 0–1 complete; Phase 2 public transition complete, cleanup remains
         │  first-lab gate satisfied on 2026-09-05
         ▼
-Phase 3 (supervisor package) → Phase 4 (cutover) → Phase 5 (deletion) → Phase 6 (lab)
+Phase 3 (package/preparation implemented; recovery remains) → Phase 4 (cutover)
+        → Phase 5 (deletion) → Phase 6 (lab)
 ```
 
 The migration ledger and its read-only validator are already on main; there is
@@ -280,6 +294,22 @@ with the label still restores.
 
 ### Phase 3 — the supervisor package
 
+Implemented: independent `supervisor/` uv subproject, version `0.1.0`, no runtime
+dependencies or RCP imports; `rcp-supervisor fetch`, `verify`, and `install`.
+Builds contain both wheels and both hashed lock exports. Historical complete
+RCP-only builds remain promotable, but the supervisor refuses them explicitly.
+Fetch accepts only `stable` or a named stable release, verifies hashes and wheel
+identities under resource bounds, and publishes one immutable local bundle.
+Install runs unprivileged into a new `releases/<build>/.venv`, verifies the
+installed version and dependency compatibility, and never moves `current` or
+opens application data. Failed preparation retains the build directory and log;
+an existing build directory is never overwritten. The root integration must
+select the `rcp` account when it delegates this preparation.
+
+Remaining: `check`, checkpoint/journal ownership, `switch`, `restore`, and
+`self-update`, including the fake-service and interrupted-migration exit proofs
+below. No command stub claims these operations are available.
+
 Lands: an independently buildable `rcp_supervisor` distribution with separate
 build metadata, version, wheel, and `rcp-supervisor` console script; no import
 from `rcp`. Choose the smallest subproject layout compatible with the existing
@@ -315,6 +345,13 @@ that an interrupted `switch` re-enters and completes rollback from its journal,
 including after a forward migration ran; a test that an interrupted `restore`
 re-enters and finishes either the publication or the rollback, never leaving a
 mixed data directory.
+
+The boot recovery implementation follows in Phase 4, when systemd integration
+can change. Its qualification must change the machine's Linux boot ID and prove
+unattended recovery before admission, including a forward migration and every
+rollback publication boundary, network-unavailable recovery, invalid-journal
+refusal, and preservation of work accepted after reopening. Process-only
+re-entry remains a focused regression, not the reboot exit proof.
 
 ### Phase 4 — cutover: operator commands delegate
 
@@ -415,3 +452,48 @@ runners. No personally supplied disposable VM is required. Phase 6 is
 proven on the persistent lab server only after Phases 3 through 5 are green on
 disposable hosts. Never test against the lab server's real data directory
 first.
+
+On 2026-09-06 the human confirmed that `wth-gpu-01` is production and authorized
+using its sudo-ready `rcp-update` tmux session for protected backup, supervisor
+installation, and update. It is not a disposable test host. Use GitHub-hosted
+runners for qualification; the human has no separate disposable VM to provide.
+The reboot harness must preflight guest virtualization there and leave
+[S135](../acceptance/S135-supervisor-recovers-automatically-after-reboot.md)
+pending if an actual reboot cannot be driven. Production cutover still follows
+qualified disposable-host proofs, a verified backup, and a human-promoted
+complete release.
+
+### Preparation evidence, 2026-09-06
+
+The frozen promoted RCP `v0.3.3` assets
+(`0.3.3+build.309.g0d53b1d`) verified against their original manifest. A separate
+local test bundle combined those unchanged RCP bytes with the new supervisor
+wheel/lock; it is not a promoted release. The supervisor installed it into an
+isolated temporary environment. Actual serve startup reported build 309,
+commit `0d53b1d`, and ledger head 7; health, HTML, JavaScript and CSS returned
+HTTP 200, followed by clean shutdown. This is package/startup evidence, not
+cutover or reboot proof.
+
+Verification for this preparation slice: the full backend baseline passed
+(3,980 tests, 11 explicit skips); after review tightened manifest/installed-byte
+binding, the final focused supervisor, release-build, and documentation checks
+passed (96 tests). The Web build and all 626 Web tests passed. Ruff and
+pre-commit passed for existing and newly added paths. The production update,
+supervisor recovery, and reboot exit proofs remain outstanding.
+
+Production doctor and protected backup were driven through the authorized tmux
+session. Doctor reported an active service with aligned source/current/running
+release and healthy control socket. A fresh protected backup passed archive
+readback and decryption, with no retention deletions. Coverage remains partial:
+one project was captured and one was omitted because its checkout-recovery
+machine set differs from canonical configuration. No app-data entries were
+unclassified. Resolve that coverage gap before claiming complete cutover
+protection. Exact production identifiers and backup receipts remain private on
+the host. Production was not updated, restarted, or rebooted during these checks.
+
+Read-only diagnosis narrowed the coverage defect to a configured default machine
+that owns no repository and therefore has no resolved checkout root. The backup
+descriptor currently insists that every configured machine has a checkout
+recovery record. Prepare that correction separately, preserving unused machine
+configuration through restore; do not edit the production manifest or
+provisioning records to satisfy the validator.
