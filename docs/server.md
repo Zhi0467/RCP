@@ -447,6 +447,36 @@ saved server route, and enroll with the one-time bootstrap code from Step 8. The
 unified project wizard can then create a team project from GitHub or move an
 existing personal RCP project into the team space.
 
+### Move a personal project, including unpublished commits if wanted
+
+From the personal project's Settings, choose **Move to team space**, select
+the enrolled team, and review its repository/machine mapping. The same setup
+wizard handles the server checkout and repository-scoped GitHub grants.
+
+**Include local unpushed commits** starts unchecked. Leave it off to use the
+GitHub version of the code; commits that exist only in your personal checkout
+will stay there. Check it to copy each repository's currently saved commit and
+its history directly to the team, without pushing anything to GitHub. Review
+shows the exact commits. Commit any changes you want included first:
+uncommitted files, other local branches, and external data/output directories
+are not included. Keep a separate backup of those files.
+Committed files and reachable history are copied as saved, including any large
+files or secrets already committed there; review what you are sharing.
+
+When this option changes the team checkout's revision, it has **detached HEAD**
+at the reviewed commit. An already-matching checkout is verified and left
+unchanged. Its GitHub origin is unchanged. Create a branch before starting
+new Git commits from detached HEAD. RCP does not overwrite a dirty destination or tracked research
+state to make the transfer pass. If the source HEAD changes, start a fresh
+review; if export/import is interrupted, resume the same saved request/archive.
+Update both source desktop and target server before using this option; an older
+target rejects it before the personal project is released.
+
+This option currently requires ordinary full Git clones, not linked worktrees,
+shallow clones, submodules, or Git LFS/filter-managed contents. Those cases
+refuse explicitly; use a supported clean checkout and start a fresh review,
+or leave the option off and handle that repository's content separately.
+
 ### Invite another person to the team space
 
 The invitation is an RCP membership secret, not an SSH credential. The person
@@ -695,12 +725,19 @@ drill.
 
 The terminal owners for install, doctor, provider readiness, project
 provisioning, backup, restore, update, and member removal are concrete. Their
-live qualification status is tracked in the active team-server handoff and
-acceptance scenarios. The unified desktop wizard, fixed operator bridge,
+live qualification status is tracked in the acceptance scenarios and
+[archived lab closure receipt](archive/handoffs/handoff-2026-08-27-dev-team-space-and-server.md).
+The unified desktop wizard, fixed operator bridge,
 personal-to-team transfer import, native archive relay, and crash-recovery
 coordinator are implemented and hermetically verified. The disposable two-
-release server lifecycle and fresh-host restore drive pass. The remaining work
-is the source-built desktop/SSH drive against real team spaces and the genuine
-one-lab collaboration, provider execution, concurrent/partial backup, and
-transfer qualification. Do not substitute manual Git pulls, service-file edits,
-or direct database access for any owner.
+release server lifecycle and fresh-host restore drive pass. One-lab closure now
+includes production provider maintenance, backup during active work, and a
+backed-up real-project desktop transfer with explicit manual operator import,
+verified history, and source retirement. Existing two-member use was accepted
+by the human; separate disposable-host SSH qualification was skipped. Broader
+interruption and isolation fixtures remain pending where their acceptance
+records lack evidence.
+
+The next deployment work is the [external supervisor plan](handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md),
+not an installed capability yet. Continue using the current CLI owners; do not
+substitute manual Git pulls, service-file edits, or direct database access.

@@ -25,6 +25,8 @@ from rcp.limits import (
 )
 from rcp.project_transfer import capture_project_transfer_source
 from rcp.transfer.archive import (
+    TRANSFER_ARCHIVE_CODEC,
+    TRANSFER_ARCHIVE_GIT_CODEC,
     TransferArchiveActor,
     TransferArchiveAttribution,
     TransferArchiveEntry,
@@ -111,6 +113,7 @@ def advance_source_project_transfer(
     if transfer.phase == "source_released":
         service = catalog.open_transfer_source(request_id)
         _require_reviewed_source_unchanged(service, transfer)
+        store.settle_source_transfer_tasks(request_id)
         attributions = _source_attributions(transfer)
         # This exact projection is the source-of-truth settlement check. It
         # refuses every live task, episode, watcher, report, child, or delivery.
@@ -338,6 +341,31 @@ def _capture_and_seal_source_archive(
             )
         )
         entries.extend(canonical_entries)
+        if transfer.source_configuration.includes_local_commits:
+            from rcp.transfer.repository_git import capture_repository_bundle
+
+            git_root = temporary_root / "git"
+            git_root.mkdir(mode=0o700)
+            source_manifest_model = service.history.manifest
+            for repository in transfer.source_configuration.repositories:
+                declared = source_manifest_model.repository_map[repository.alias]
+                bundle = git_root / f"{repository.alias}.bundle"
+                capture_repository_bundle(
+                    host=source_manifest_model.machine_map[declared.machine].host,
+                    path=declared.path,
+                    expected_head=repository.source_commit,
+                    destination=bundle,
+                )
+                entries.append(
+                    _copy_regular_file(
+                        bundle,
+                        final_root,
+                        f"repositories/{repository.alias}.bundle",
+                        "repository_git",
+                        expected_size=bundle.stat().st_size,
+                    )
+                )
+            _require_reviewed_source_unchanged(service, transfer)
         entries.append(
             _write_capture_bytes(
                 final_root,
@@ -366,6 +394,12 @@ def _capture_and_seal_source_archive(
         if source_manifest.sha256 != configuration.source_manifest_sha256:
             raise ValueError("source manifest changed after the reviewed transfer boundary")
         manifest = TransferArchiveManifest(
+            schema_version=2 if configuration.includes_local_commits else 1,
+            archive_codec=(
+                TRANSFER_ARCHIVE_GIT_CODEC
+                if configuration.includes_local_commits
+                else TRANSFER_ARCHIVE_CODEC
+            ),
             project_id=transfer.project_id,
             source_space_id=transfer.source_space_id,
             target_space_id=transfer.target_space_id,
@@ -432,7 +466,10 @@ def _require_reviewed_source_unchanged(
     service: ProjectService,
     transfer: ProjectTransferRequestRecord,
 ) -> None:
-    current, _head = capture_project_transfer_source(service)
+    current, _head = capture_project_transfer_source(
+        service,
+        include_local_commits=transfer.source_configuration.includes_local_commits,
+    )
     if transfer.source_configuration is None or current != transfer.source_configuration:
         raise ValueError("source configuration changed after the reviewed transfer boundary")
 

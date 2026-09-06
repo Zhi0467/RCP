@@ -217,6 +217,26 @@ function initialProviderChecks(
   });
 }
 
+export function TransferRepositoryPolicy({
+  includeLocalCommits,
+}: {
+  includeLocalCommits: boolean;
+}) {
+  return (
+    <div className="transfer-archive-policy">
+      <p>
+        {includeLocalCommits
+          ? "Committed files and history are copied as saved. Changed team checkouts have a detached HEAD at the saved source commit; a checkout already at that commit is left unchanged."
+          : "Team checkouts are cloned from GitHub. Local unpushed commits stay behind."}
+      </p>
+      <p>
+        Uncommitted files and external data/output directories remain excluded. RCP does not push to
+        GitHub.
+      </p>
+    </div>
+  );
+}
+
 export function TransferProjectSetup({
   route,
   intentChooser,
@@ -235,6 +255,11 @@ export function TransferProjectSetup({
   const [targetProviders, setTargetProviders] = useState<TargetProviderSetupProjection[]>([]);
   const [targetName, setTargetName] = useState("");
   const [targetCeiling, setTargetCeiling] = useState(10);
+  const [includeLocalCommits, setIncludeLocalCommits] = useState(false);
+  const [preparedRequestIds, setPreparedRequestIds] = useState<{
+    sourceRequestId: string;
+    targetRequestId: string;
+  } | null>(null);
   const [machines, setMachines] = useState<TransferMachineDraft[]>([]);
   const [providerChecks, setProviderChecks] = useState<ProjectTransferProviderIntent[]>([]);
   const [bundle, setBundle] = useState<ProjectTransferBundle | null>(null);
@@ -311,6 +336,7 @@ export function TransferProjectSetup({
       .then((loaded) => {
         if (stopped) return;
         setBundle(loaded);
+        setIncludeLocalCommits(loaded.include_local_commits ?? false);
         setTargetProviders(loaded.target_provider_setup);
         setTargetName(loaded.incoming_provisioning.name ?? "");
         setTargetCeiling(loaded.incoming_provisioning.default_auto_research_invocation_ceiling);
@@ -354,6 +380,7 @@ export function TransferProjectSetup({
   const activeWork = source ? transferActiveWorkSummary(source.tasks, source.episodes) : null;
   const providers = asProviderReadiness(targetProviders);
   const complete = transferFinished(bundle);
+  const preparationLocked = busy !== null || preparedRequestIds !== null;
 
   async function chooseTarget(): Promise<void> {
     if (!source || !selectedConnection || !targetReady) {
@@ -418,8 +445,9 @@ export function TransferProjectSetup({
       setError(problem ?? "The transfer configuration is incomplete.");
       return;
     }
-    const sourceRequestId = crypto.randomUUID();
-    const targetRequestId = crypto.randomUUID();
+    const sourceRequestId = preparedRequestIds?.sourceRequestId ?? crypto.randomUUID();
+    const targetRequestId = preparedRequestIds?.targetRequestId ?? crypto.randomUUID();
+    setPreparedRequestIds({ sourceRequestId, targetRequestId });
     const hash = projectMoveSetupHash({
       sourceProjectId: route.sourceProjectId,
       sourceRequestId,
@@ -438,6 +466,7 @@ export function TransferProjectSetup({
         targetRequestId,
         connectionId: selectedConnection.connection_id,
         sourceProjectId: route.sourceProjectId,
+        ...(includeLocalCommits ? { includeLocalCommits: true } : {}),
         targetProvisioning: {
           name: targetName.trim(),
           default_auto_research_invocation_ceiling: targetCeiling,
@@ -660,7 +689,7 @@ export function TransferProjectSetup({
                   : "setup-step"
             }
             type="button"
-            disabled={index > step || bundle !== null}
+            disabled={index > step || bundle !== null || preparedRequestIds !== null}
             key={number}
             onClick={() => index < step && !bundle && setStep(index)}
           >
@@ -779,9 +808,25 @@ export function TransferProjectSetup({
               eyebrow="Team-owned execution"
               title="Review the central machines and provider accounts."
             />
+            <section className="transfer-card">
+              <label className="transfer-target-option">
+                <input
+                  type="checkbox"
+                  checked={includeLocalCommits}
+                  disabled={preparationLocked}
+                  onChange={(event) => setIncludeLocalCommits(event.target.checked)}
+                />
+                <strong>Include local unpushed commits</strong>
+              </label>
+              <TransferRepositoryPolicy includeLocalCommits={includeLocalCommits} />
+            </section>
             <label className="setup-field">
               <span>Team project name</span>
-              <input value={targetName} onChange={(event) => setTargetName(event.target.value)} />
+              <input
+                value={targetName}
+                disabled={preparationLocked}
+                onChange={(event) => setTargetName(event.target.value)}
+              />
             </label>
             <label className="agent-auto-research-default">
               <span>Default auto-research ceiling</span>
@@ -789,6 +834,7 @@ export function TransferProjectSetup({
                 type="number"
                 min={1}
                 value={targetCeiling}
+                disabled={preparationLocked}
                 onChange={(event) => setTargetCeiling(Number(event.target.value))}
               />
             </label>
@@ -804,6 +850,7 @@ export function TransferProjectSetup({
                       Location
                       <select
                         value={machine.location}
+                        disabled={preparationLocked}
                         onChange={(event) =>
                           setMachines((current) =>
                             current.map((item) =>
@@ -829,6 +876,7 @@ export function TransferProjectSetup({
                         SSH host
                         <input
                           value={machine.host ?? ""}
+                          disabled={preparationLocked}
                           onChange={(event) =>
                             setMachines((current) =>
                               current.map((item) =>
@@ -845,7 +893,7 @@ export function TransferProjectSetup({
                       Linux account
                       <input
                         value={machine.os_account}
-                        disabled={machine.location === "local"}
+                        disabled={preparationLocked || machine.location === "local"}
                         onChange={(event) =>
                           setMachines((current) =>
                             current.map((item) =>
@@ -861,6 +909,7 @@ export function TransferProjectSetup({
                       Central root
                       <input
                         value={machine.central_root ?? ""}
+                        disabled={preparationLocked}
                         placeholder={
                           machine.location === "local"
                             ? "/var/lib/rcp/projects"
@@ -898,6 +947,7 @@ export function TransferProjectSetup({
                         Provider
                         <select
                           value={profile.provider}
+                          disabled={preparationLocked}
                           onChange={(event) => {
                             const next = providers.find(
                               (item) => item.provider === event.target.value,
@@ -923,6 +973,7 @@ export function TransferProjectSetup({
                         Runtime
                         <select
                           value={profile.runtime_id}
+                          disabled={preparationLocked}
                           onChange={(event) =>
                             updateProvider(id, { runtime_id: event.target.value })
                           }
@@ -938,6 +989,7 @@ export function TransferProjectSetup({
                         Model
                         <select
                           value={profile.model}
+                          disabled={preparationLocked}
                           onChange={(event) =>
                             updateProvider(
                               id,
@@ -956,6 +1008,7 @@ export function TransferProjectSetup({
                         Reasoning
                         <select
                           value={profile.reasoning}
+                          disabled={preparationLocked}
                           onChange={(event) =>
                             updateProvider(id, { reasoning: event.target.value })
                           }
@@ -1038,8 +1091,9 @@ export function TransferProjectSetup({
               <section className="provisioning-final-review">
                 <h2>Final review</h2>
                 <p>
-                  This one confirmation admits the prepared team copy, makes the personal project
-                  read-only, relays the sealed history, and activates the team project.
+                  This one confirmation closes paused standalone attempts while preserving their
+                  history and source files, admits the prepared team copy, makes the personal
+                  project read-only, relays the sealed history, and activates the team project.
                 </p>
                 <dl>
                   <div>
@@ -1062,6 +1116,25 @@ export function TransferProjectSetup({
             <section className="transfer-card">
               <header>
                 <FolderGit2 size={16} />
+                <h2>Repository contents</h2>
+              </header>
+              <TransferRepositoryPolicy
+                includeLocalCommits={bundle.include_local_commits ?? false}
+              />
+              {bundle.include_local_commits && (
+                <div className="transfer-path-list">
+                  {bundle.source.source_configuration.repositories.map((repository) => (
+                    <div className="transfer-path" key={repository.alias}>
+                      <span>{repository.alias} · saved source commit</span>
+                      <code>{repository.source_commit}</code>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+            <section className="transfer-card">
+              <header>
+                <FolderGit2 size={16} />
                 <h2>Archive boundary</h2>
               </header>
               <div className="transfer-archive-policy">
@@ -1070,9 +1143,9 @@ export function TransferProjectSetup({
                   facts, referenced kept files, and best-effort matched complete provider histories.
                 </p>
                 <p>
-                  <strong>Excluded:</strong> source checkout bytes, credentials, provider
-                  authentication, live work, reusable stages, caches, temporary inputs, and unkept
-                  artifact bytes.
+                  <strong>Excluded:</strong> uncommitted working-tree files, external data/output
+                  directories, RCP/provider credentials and Git configuration, live work, reusable
+                  stages, caches, temporary inputs, and unkept artifact bytes.
                 </p>
               </div>
             </section>
@@ -1245,7 +1318,9 @@ export function TransferProjectSetup({
               className="button secondary"
               type="button"
               disabled={busy !== null}
-              onClick={() => (step === 0 || bundle ? onCancel() : setStep(step - 1))}
+              onClick={() =>
+                step === 0 || bundle || preparedRequestIds ? onCancel() : setStep(step - 1)
+              }
             >
               <ArrowLeft size={15} /> Back
             </button>
@@ -1278,7 +1353,7 @@ export function TransferProjectSetup({
                 ) : (
                   <ShieldCheck size={15} />
                 )}{" "}
-                Prepare team target
+                {preparedRequestIds ? "Retry preparation" : "Prepare team target"}
               </button>
             )}
           </footer>
@@ -1291,7 +1366,15 @@ export function TransferProjectSetup({
           <h2>Ownership after transfer</h2>
           <LedgerItem number="A" label="Personal" value="Original working copies stay put" />
           <LedgerItem number="B" label="Team" value="Project identity and canonical history" />
-          <LedgerItem number="C" label="Git" value="Fresh central checkouts from GitHub" />
+          <LedgerItem
+            number="C"
+            label="Git"
+            value={
+              includeLocalCommits
+                ? "Saved source commits in team checkouts"
+                : "Fresh central checkouts from GitHub"
+            }
+          />
           <LedgerItem number="D" label="Providers" value="Existing auth on target accounts" />
         </aside>
       )}

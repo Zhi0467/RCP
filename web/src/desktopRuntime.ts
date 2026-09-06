@@ -366,6 +366,7 @@ export async function prepareDesktopProjectTransfer(
       target_request_id: request.targetRequestId,
       connection_id: request.connectionId,
       source_project_id: request.sourceProjectId,
+      ...(request.includeLocalCommits ? { include_local_commits: true } : {}),
       target_provisioning: {
         ...request.targetProvisioning,
         machines: request.targetProvisioning.machines.map((machine) => ({

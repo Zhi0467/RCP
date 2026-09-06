@@ -104,12 +104,24 @@ state. After target restore, any old upload lease is invalid and the linked
 request requires a fresh relay of the same source-bound digest; a committed
 source home change remains fenced rather than being reversed.
 
-The archive excludes source repositories and ordinary working-tree files. Only
-kept filenames referenced by captured RCP metadata enter from repository-level
+Source Git history is an explicit human choice, not an assumption that every
+personal commit was published. **Include local unpushed commits** is off by
+default; opt-in binds every declared repository's HEAD at review and carries
+self-contained Git bundles in archive v2. The target restores those exact
+commits with detached HEAD when its revision changes; a checkout already at the
+reviewed commit stays unchanged. Its origin and branch refs are preserved, and
+RCP never pushes to GitHub. Default/v1 transfer uses the prepared GitHub checkout and
+warns that unpublished commits stay at the source. This avoids both unintended
+publication and silently presenting an older code revision as the moved one.
+Uncommitted files, other local branches, external data/output directories,
+Git configuration, credentials, and hooks remain excluded.
+
+Only kept filenames referenced by captured RCP metadata enter from repository-level
 `artifacts/` or legacy `views/`; unrelated human files in those directories do
 not become transfer data. The target provisioning flow has already prepared the
-declared central checkout set through Git. The archive carries only RCP
-canonical and operational project state plus referenced kept bytes. Main and
+declared central checkout set through Git. The archive carries RCP
+canonical and operational project state, referenced kept bytes, and only when
+selected, the reviewed repository commits. Main and
 graph-branch materialized outputs remain excluded and are regenerated from their
 retained immutable histories.
 

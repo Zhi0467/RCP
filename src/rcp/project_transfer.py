@@ -13,6 +13,7 @@ from rcp.server_ops.github import parse_github_repository_ref
 from rcp.service import ProjectService
 from rcp.storage import ProjectTransferRepositorySource, ProjectTransferSourceConfiguration
 from rcp.transfer import TRANSFER_ARCHIVE_CODEC
+from rcp.transfer.archive import TRANSFER_ARCHIVE_GIT_CODEC
 from rcp.transport.ssh import ssh_arguments
 
 PROJECT_TRANSFER_SCHEMA_GENERATION = 1
@@ -21,6 +22,8 @@ PROJECT_TRANSFER_ARCHIVE_CODEC = TRANSFER_ARCHIVE_CODEC
 
 def capture_project_transfer_source(
     service: ProjectService,
+    *,
+    include_local_commits: bool = False,
 ) -> tuple[ProjectTransferSourceConfiguration, GraphHeadRef]:
     """Read the live manifest, repository identities, and canonical main head."""
 
@@ -38,13 +41,23 @@ def capture_project_transfer_source(
                 )
             ),
             machine_alias=repository.machine,
+            source_commit=(
+                _repository_revision(
+                    host=manifest.machine_map[repository.machine].host,
+                    path=repository.path,
+                )
+                if include_local_commits
+                else None
+            ),
         )
         for repository in sorted(manifest.repositories, key=lambda item: item.alias)
     )
     configuration = ProjectTransferSourceConfiguration(
         source_rcp_version=__version__,
         source_schema_generation=PROJECT_TRANSFER_SCHEMA_GENERATION,
-        supported_archive_codecs=(PROJECT_TRANSFER_ARCHIVE_CODEC,),
+        supported_archive_codecs=(
+            TRANSFER_ARCHIVE_GIT_CODEC if include_local_commits else PROJECT_TRANSFER_ARCHIVE_CODEC,
+        ),
         machine_aliases=tuple(sorted(manifest.machine_map)),
         repositories=repositories,
         state_repository=manifest.state.repository,
@@ -53,6 +66,12 @@ def capture_project_transfer_source(
         source_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
     )
     return configuration, head
+
+
+def _repository_revision(*, host: str, path: str) -> str:
+    from rcp.transfer.repository_git import probe_repository_revision
+
+    return probe_repository_revision(host=host, path=path)
 
 
 def _repository_origin(*, host: str, path: str) -> str:

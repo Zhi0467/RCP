@@ -847,6 +847,17 @@ administrator.
 
 ## Personal-to-team transfer archive
 
+After both human confirmations and source-configuration revalidation, the source
+transfer owner closes paused standalone attempts as interrupted, with a
+request-bound event and receipt. It preserves their original output, session
+evidence, finish timestamp, and source scratch. This administrative closure does
+not broaden ordinary worker transitions or restart recovery. It never stops
+queued/running/pausing tasks or episode-owned attempts. Any remaining live task,
+episode, watcher, report, child, or delivery refuses the whole settlement
+transaction; those owners must settle through their normal lifecycle. The final
+desktop confirmation discloses this paused-attempt closure. Read-only history
+export does not mutate task state.
+
 After source work settles, transfer produces one versioned, checksummed project
 archive. It contains the durable project identity, accepted main and graph-branch
 canonical history and exact heads; typed canonical RCP chat transcripts; the
@@ -954,8 +965,38 @@ the same staged fingerprint, while a missing or changed stage takes the existing
 visible clean-retry path. Best-effort applies to selection before the archive is
 sealed; afterward a missing or hash-mismatched imported file is durable
 project-source corruption and blocks Seed/Refresh rather than being silently
-omitted. Source repositories are absent because target
-provisioning prepares the central checkout set through Git.
+omitted.
+
+The transfer wizard offers **Include local unpushed commits**, off by default.
+Without it, target provisioning uses the GitHub checkout and review explicitly
+warns that unpublished source commits stay behind. With it, source preparation
+records the exact HEAD of every declared repository and binds those commits to
+the source configuration and both human confirmations. Export rechecks those
+HEADs and includes one self-contained Git bundle per repository; no push to
+GitHub occurs. Only the saved commit and its reachable history travel, not other
+local branches, uncommitted changes, ignored files, or external output/data
+directories. Native credentials, Git configuration, and hooks are not copied.
+
+Opt-in uses archive schema/codec `2` / `rcp-transfer-v2`; default transfers retain
+the byte-compatible v1 format and omit the new commit fields entirely. A target
+that cannot accept the commit-bearing configuration refuses before source
+release. A changed HEAD or changed choice requires fresh review, never silent
+substitution. Existing v1 request commitments and saved archives remain valid.
+
+Before publishing research history, the target importer validates each bound
+bundle in isolation, imports its objects without remote access, and checks out
+the exact saved commit in **detached HEAD** state when the revision changes.
+An already-matching checkout is verified without changing its branch attachment;
+untracked/ignored files are preserved because no checkout is needed. This also
+allows retries after RCP has published kept artifacts. Tracked changes still
+refuse. The target's origin and existing branch refs stay intact; create a branch
+before making new Git commits from detached HEAD.
+Dirty destinations, repository layouts unsupported by the guarded Git helper,
+and tracked `.research/` or `.recovery/` refuse without overwriting them. RCP
+canonical history still travels exclusively through its existing archive owner.
+An interrupted multi-repository import can be resumed with the same archive;
+already-restored repositories are verified, and the project remains inactive
+until the normal complete-import/activation boundary succeeds.
 
 Source-side provider-history selection and archive capture are implemented. The
 source indexer copies each selected original native transcript byte-for-byte to
@@ -1028,6 +1069,13 @@ workspace transaction, including the remote advisory lease for SSH state.
 Source retirement hides the project from catalogs and
 active membership checks without deleting its retained membership or invitation
 audit rows.
+
+An interruption after release or the home-change fence remains resumable through
+the same source-release action. Backend projection advertises that action until
+archive binding completes; its read-only boundary endpoint returns the original
+confirmed configuration and head, not the later fenced head. Re-entry finishes
+settlement/capture using the existing receipt before the desktop attempts relay.
+It never needs a second transfer request or another ownership confirmation.
 
 The desktop is the transfer-byte relay for this first target. Its final review
 records target admission before source release through the two separate
