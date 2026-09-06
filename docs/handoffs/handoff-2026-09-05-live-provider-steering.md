@@ -9,7 +9,9 @@ and API regressions pass. A served Codex Discuss turn verified delivered and
 post-completion refused receipts; exec's disabled state was verified through
 the API. Restart preserved those receipts and recovered an active exec turn as
 paused with Resume/Retry available. S134, current specs, and Q8 are updated.
-Remaining verification includes the browser interaction/console drive, an integrated live Claude turn, Work
+The Chromium chat-component interaction drive also passes; its steer responses
+are fixtures, not a live provider. Remaining verification includes the full
+served-app browser/console drive, an integrated live Claude turn, Work
 under a non-nested sandbox, restart with an unacknowledged steer, and all SSH
 behavior. Probe (c) and SSH remain explicit gaps because this brief prohibits SSH. The
 settled decisions below remain the contract; no persistent provider daemon or
@@ -308,6 +310,23 @@ The restarted disposable server shut down cleanly; port 8432 had no listener
 after cleanup.
 
 ## Acceptance
+
+Review verification on 2026-09-06 UTC (unchanged implementation `bc2e536`):
+
+- `uv run pytest tests/test_api_steering.py tests/test_provider_steering.py
+  tests/test_remote_terminate_provider.py tests/test_launcher.py -q` passed all
+  96 tests. An initial parallel run failed one SIGTERM-ignoring process-group
+  absence check; all 15 helper tests passed serially and the complete unchanged
+  focused rerun passed. No production timeout was changed to hide this transient.
+- `node --test web/tests/liveSteering.browser.test.mjs` passed outside the
+  sandbox. It serves the real `NodeChat` component through Vite and drives
+  Chromium: exact attempt/UUID, preserved next-turn draft, delivered and refused
+  receipts, disconnected response without resend, and disabled exec all pass
+  with no page errors. The endpoint responses are fixtures; this closes the
+  component interaction gap, not the served-app/live-provider browser drive.
+- PR CI for that head passed lint/format, Python 3.11 and 3.12, old-data upgrade,
+  and web typecheck/tests. No SSH host, provider credentials, or production data
+  was used in this review.
 
 [S134](../acceptance/S134-steer-the-running-human-chat.md) is the single new,
 human-confirmed acceptance scenario. It covers app-server locally and over SSH,
