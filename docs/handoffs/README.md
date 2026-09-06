@@ -3,10 +3,7 @@
 Active:
 
 - [Worktree execution](handoff-2026-09-05-worktree-execution.md)
-  — human-confirmed 2026-09-05; nothing implemented. A conversation may work in
-  its own Git worktree of one registered repository, chosen by a composer tick;
-  integration is a human-chosen follow-up turn that opens a pull request or
-  merges into the starting or default branch.
+  — implemented, uncommitted; local API/Git verified, browser/provider/SSH/GitHub verification remains.
 
 - [Dev team space and source server completion](handoff-2026-08-27-dev-team-space-and-server.md)
   — human-confirmed implementation through one genuinely usable lab/server

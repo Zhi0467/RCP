@@ -1,11 +1,22 @@
 # Worktree execution handoff
 
 Date: 2026-09-05
-Status: active, human-confirmed on 2026-09-05. Nothing is implemented. The
-decisions below were settled in discussion on 2026-09-05 and are repeated here so
-this file stands alone. Implementation is authorized through the existing
-repository-scope, chat-binding, and provider owners named below, in its own PR,
-separate from glossary and graph-editing work.
+Status: implemented in this worktree and uncommitted, per the human's revised
+Git instruction. Durable chat binding, local/shipped-remote Git operations,
+Work/Discuss path resolution, exact provider write scopes, continuation and
+restart recovery, integration preflights/instructions, explicit removal, UI,
+regression tests, four spec updates, and acceptance S133 are implemented. Local
+HTTP/Git verification proved binding/restart, isolated fixture edits, dirty
+refusals, clean preflights, operator-executed local push/merges, and removal that
+retains unmerged commits. Real provider turns were launched but could not execute
+commands (`sandbox_apply: Operation not permitted`); Chromium could not launch
+under this sandbox. Provider-driven edits/Discuss reads/integration outcomes,
+browser interaction/console inspection, and real Pause/Resume/Retry therefore
+remain unverified. SSH and GitHub `gh pr create` are explicit unexercised gaps,
+as required by the brief. S133 remains blocked-external. The settled decisions
+below remain the contract; implementation choices and check receipts follow.
+No commits or pushes were made; the human will commit the ordered groups in the
+scratch commit plan. Keep this handoff active and unarchived as instructed.
 
 ## What this is
 
@@ -86,8 +97,9 @@ before touching code.
 
 ## Owners and file scope
 
-- Binding record and run-scope check: `src/rcp/config.py`, `src/rcp/core/models.py`,
-  chat binding storage.
+- Binding record and run-scope check: `src/rcp/core/models.py`,
+  `src/rcp/conversation_worktrees.py`, and chat binding storage. Existing manifest
+  configuration already supplies the needed scope; no configuration change was needed.
 - Scope: the `ProjectWriteScope` resolver and continuation binding.
 - Git operations: one new module for create, preflight, and remove, used locally
   and shipped remote; never a hand-copied command string.
@@ -108,10 +120,164 @@ session continuation and app restart finding the same worktree; the same path
 over SSH; each Integrate option's preflight refusal and success; a rejected
 integration and Remove without losing unmerged work.
 
-## Closure condition, all of it
+## Remaining verification and closure
 
-1. The acceptance scenario is confirmed and passing, and the specs above
-   describe the shipped behavior.
-2. All three Integrate options were exercised on a real repository locally and
-   over SSH, with receipts recorded in this file.
-3. This handoff is archived in the same PR that completes item 2.
+S133 is the single new acceptance scenario authorized by the brief. Its complete
+journey still needs a browser and a provider environment that can execute the
+existing containment contract, followed by separately authorized SSH and GitHub
+PR verification. The current brief forbids those external operations and handoff
+archival. Leave this file active; do not treat the local partial drive or provider
+task completion as acceptance success.
+
+## Implementation choices where the handoff was silent
+
+- Durable `creating`/`ready`/`removing`/`removed` states make creation and removal
+  recoverable. An intact failed removal returns to ready; a removed tombstone
+  refuses future turns. An orphan branch without its registered checkout fails
+  closed for explicit repair. Project deletion never performs Git cleanup.
+- The sibling path and branch use the first 24 hexadecimal digits of SHA-256 of
+  the canonical chat UUID. Detached starting HEAD is refused. The default branch
+  comes from local `origin/HEAD`; unknown defaults are disabled rather than guessed.
+- A binding pins the canonical Git common directory as an exact metadata write
+  root, required for branch/index updates from a linked checkout. Ordinary Work
+  still excludes shared checkout files. Catalog ownership/overlap validation
+  precedes creation and launch, including the metadata directory. Unbound scope
+  fingerprints retain their previous serialization.
+- Related native turns may transition only between recomputed worktree-only and
+  local-merge scopes for the same binding. A bound operation keeps its original
+  fingerprint. An interrupted integration may resume on its saved exact target
+  branch and restore the bound branch; ordinary turns still require that branch.
+- Integration uses the existing task endpoint with a choice enum. The backend
+  resolves and persists the target and authors the instruction; injected target
+  values are discarded. Integration preserves unsent composer drafts.
+- Removal's remote evidence uses an actual `git ls-remote` only when the human
+  opens confirmation, never on background polling. Failure is unknown with a
+  reason. Ahead count is relative to the current starting branch, or unknown if
+  that branch is missing. Git operations use the limits owner's 30-second timeout.
+- Executable bindings remain host-local and are excluded from project transfer,
+  like native session bindings. Project rekey updates their embedded project id.
+  Schema migration 8 and the restore compatibility digest register the new table.
+- A local filesystem origin is pushed without invoking GitHub. This makes the
+  brief's local-only PR verification boundary explicit in the authored turn.
+
+## Verification receipts (2026-09-05 local date)
+
+All paths below are under
+`/private/tmp/claude-501/-Users-zhiwang-research-RCP/24a19e4a-5908-4790-90c1-1740a6637057/scratchpad/codex-runs`
+(`$SCRATCH`). Repository source baseline is
+`043aff4a7b3b7ecb5aea1cdb67a3d31953aaf1d5`. There are no implementation commit
+SHAs: the revised instruction prohibits repository Git writes. The ordered file
+inventory and proposed messages are in `$SCRATCH/worktree-commit-plan.md`.
+
+### Checks
+
+Fresh setup ran in the prescribed order, each exit 0:
+`npm --prefix web ci`, `npm --prefix web exec playwright -- install chromium`,
+`npm --prefix web run build`, `uv sync`.
+
+| Command | Exit | Observed result / log under `$SCRATCH` |
+| --- | --- | --- |
+| `uv run pytest` | 1 | 3,712 passed, 9 skipped, 1 failed; `worktree-pytest-final.log` |
+| `uv run pytest tests/test_documentation.py` | 0 | 8 passed after the handoff update; `worktree-documentation-check.log` |
+| `uv run ruff check src tests packaging web/src-tauri/scripts` | 0 | All checks passed |
+| `uv run pre-commit run --all-files` | 0 | All hooks passed on the final rerun; `worktree-precommit.log` |
+| `uv run pre-commit run --files <all 12 untracked new paths>` | 0 | All applicable hooks passed; `worktree-precommit-new-files.log` |
+| `npm --prefix web run build` | 0 | TypeScript and Vite passed; existing large-chunk advisory; `worktree-build.log` |
+| `npm --prefix web test` | 1 | 605 passed, 3 failed out of 608; `worktree-web-test.log` |
+| `grep -l "^status: \(pending\|blocked-external\)" docs/acceptance/S*.md` | 0 | 22 files, including S133; reviewed for affected promises |
+
+The remaining pytest failure is
+`test_pty_runner_supplies_controlling_terminal_for_host_confirmation`:
+
+```text
+PermissionError: [Errno 1] Operation not permitted: '/dev/tty'
+assert 1 == 0
+```
+
+This existing test invokes a local dummy Python prompt, not an SSH host. The
+three browser-test failures (wide annotation composer, indexed Experiment reopen,
+and the new worktree composer test) all occur before page load:
+
+```text
+bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.<pid>:
+Permission denied (1100)
+process did exit: exitCode=null, signal=SIGTRAP
+```
+
+The first final formatting pass corrected one extra blank line at the handoff's
+EOF (exit 1); no source behavior was changed by that correction. New files were
+checked explicitly because `--all-files` sees only tracked paths and the human
+prohibited `git add`.
+
+The first full pytest run had 31 failures (3,679 passed, 9 skipped): new schema,
+route, acceptance-index, and request-serialization expectations needed updating,
+plus the existing PTY environment failure. The subsequent run had two failures
+(3,711 passed, 9 skipped): that PTY failure and a new remote-canonicalization test
+fixture missing its service history. The fixture was corrected before the final
+run; no production fallback or test skip was introduced.
+
+### Local live drive
+
+The app was served only with `RCP_DATA_DIR=$SCRATCH/worktree-data` and
+`uv run rcp serve --host 127.0.0.1 --port 8431`. All servers started for this task
+were stopped via their owning terminal session. The final log records orderly
+shutdown; a subsequent curl failed to connect (exit 7). Port 8421, its lock, and
+the default app data directory were not used.
+
+The registered project `53c70e1d-bb4c-4f26-9f61-243dc72cb970` points to
+`$SCRATCH/worktree-fixture/shared`, with local bare origin
+`$SCRATCH/worktree-fixture/origin.git`. Starting branch is `topic`, default branch
+is `trunk`, and initial commit is `24b92c93c0d259a033dce2cf895d12e7880e6155`.
+
+- GET chooser reported eligible. A first Work request with `worktree=true` was
+  accepted (202), creating and binding chat `6f610db4-e31a-46cb-a5e2-897ee70fe184`
+  to `shared-rcp-039e537949c521cc092201bd`, branch
+  `rcp/chat-039e537949c521cc092201bd`. During implementation the disposable
+  binding was supplemented with its independently verified Git common directory
+  after that field was introduced; its original JSON is retained in
+  `worktree-initial-binding.json`. A subsequent restart on the stable schema
+  found the exact unchanged binding (`worktree-binding-before-restart.json`).
+- Exactly three real Codex turns were launched: initial Work
+  `c8f11d1f-fb3f-45b1-821d-f4d532d7eb82`, Discuss
+  `b67638c2-b7b6-4d17-a0fe-7b6780c99fd1`, and independent shared Work
+  `5690c657-1dc7-40a6-bc8e-a3c684ae3aee`. Discuss and shared Work were submitted
+  concurrently. Discuss reused native session
+  `01a0742e-9e59-7072-8934-6cb23c44adbf`; shared Work used another session and its
+  own shared-checkout scope. All answers reported
+  `sandbox-exec: sandbox_apply: Operation not permitted` before command effects.
+  These completed provider turns prove launch/session routing, not successful
+  reads, edits, commits, or concurrent editing. Full task receipts are in
+  `worktree-live-tasks.json` and `worktree-live-continuations.json`.
+- Operator-created fixture files proved checkout independence: `worktree-note.txt`
+  appeared only in the worktree and `shared-note.txt` only in the shared checkout.
+  With both dirty, all three Integrate POSTs returned 422. After committing only
+  the worktree, PR was eligible while both merge POSTs still returned 422. After
+  both fixture commits, all three clean preflights were eligible.
+- The operator then executed the authored Git recipes, each exit 0: push the
+  worktree branch to the local bare origin; merge into checked-out `topic` in
+  the shared checkout; switch to `trunk` inside the worktree, merge, and restore
+  the worktree branch. The shared checkout stayed on `topic`. These are real
+  local Git successes, not provider-driven Integrate successes. No `gh pr create`
+  or other GitHub creation was exercised. Commands, outputs, and HTTP responses
+  are in `worktree-live-api.json`.
+- After an additional worktree commit, removal preview reported ahead 1 and
+  actual origin branch presence. Dirty DELETE returned 422 and preserved the
+  file. Clean DELETE returned 200, removed the checkout, and retained branch
+  commit `eb16335381f3124714b752af17c5249c1c0f6a6d`; `git show` still read
+  `unmerged.txt` as `RETAIN_THIS_COMMIT`. A later Work POST returned 422 rather
+  than falling back. Receipts are in `worktree-live-removal.json`.
+- Server HTTP logs were inspected: expected 422 refusals, no ERROR, traceback,
+  HTTP 500, or HTTP 503 matches. Logs are `worktree-server.log`,
+  `worktree-server-restart.log`, and `worktree-server-final.log`. Browser console
+  and browser network inspection were unavailable: Playwright Chromium launch
+  failed under the sandbox and the computer-use tool reported
+  `No browser is available`.
+
+### Explicit gaps
+
+Browser UI interaction/console, successful real provider reads/edits/integrations,
+provider-handled merge conflict recovery, and real Pause/Resume/Retry were not
+verified. Regression tests exercise those relevant runtime boundaries with fake
+provider events and real disposable Git, which does not replace a live provider
+drive. SSH was not attempted, as instructed. GitHub pull-request creation was not
+attempted, as instructed; PR verification stops at the local bare-origin push.
