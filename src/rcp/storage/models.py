@@ -16,6 +16,7 @@ from pydantic import (
     Field,
     ValidationInfo,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -926,6 +927,15 @@ class ProjectTransferRepositorySource(_StrictProvisioningModel):
     alias: str
     repository: GitHubRepositoryRef
     machine_alias: str
+    source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+
+    @model_serializer(mode="wrap")
+    def serialize_provenance(self, handler):
+        payload = handler(self)
+        # Preserve byte-for-byte commitments for existing v1 requests.
+        if self.source_commit is None:
+            payload.pop("source_commit", None)
+        return payload
 
     @field_validator("alias", "machine_alias")
     @classmethod
@@ -1003,6 +1013,12 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
 
     @model_validator(mode="after")
     def validate_repository_provenance(self) -> ProjectTransferSourceConfiguration:
+        commits = [repository.source_commit for repository in self.repositories]
+        if any(commits):
+            if not all(commits) or self.supported_archive_codecs != ("rcp-transfer-v2",):
+                raise ValueError("local-commit transfer requires every reviewed HEAD and v2")
+        elif "rcp-transfer-v2" in self.supported_archive_codecs:
+            raise ValueError("v2 transfer requires reviewed repository commits")
         aliases = [repository.alias for repository in self.repositories]
         identities = [repository.repository.identity for repository in self.repositories]
         if len(aliases) != len(set(aliases)):
@@ -1023,6 +1039,10 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
         if not set(self.default_run_truth_scope).issubset(self.project_truth_scope):
             raise ValueError("transfer default run truth scope must be a project subset")
         return self
+
+    @property
+    def includes_local_commits(self) -> bool:
+        return any(repository.source_commit for repository in self.repositories)
 
 
 class ProjectTransferResolvedPath(_StrictProvisioningModel):

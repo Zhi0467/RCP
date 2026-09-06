@@ -26,6 +26,7 @@ from rcp.server_ops.models import redact_server_text
 
 TRANSFER_ARCHIVE_SCHEMA_VERSION = 1
 TRANSFER_ARCHIVE_CODEC = "rcp-transfer-v1"
+TRANSFER_ARCHIVE_GIT_CODEC = "rcp-transfer-v2"
 
 # These are transfer-specific classifications, not a generic file-root registry.
 # Their tests compare them with the concrete backup/root owners so a new durable
@@ -92,6 +93,7 @@ _LEGACY_PROJECT_ARCHIVE_TABLES = frozenset(
 )
 
 TransferArchiveGroup = Literal[
+    "repository_git",
     "source_manifest_provenance",
     "canonical_history",
     "operational_records",
@@ -239,7 +241,13 @@ class TransferArchiveEntry(_StrictTransferModel):
         path = PurePosixPath(self.archive_path)
         parts = path.parts
         valid = False
-        if self.group == "source_manifest_provenance":
+        if self.group == "repository_git":
+            valid = (
+                len(parts) == 2
+                and parts[0] == "repositories"
+                and re.fullmatch(r"[a-z][a-z0-9-]{0,47}\.bundle", parts[1]) is not None
+            )
+        elif self.group == "source_manifest_provenance":
             valid = path == PurePosixPath("provenance/manifest.toml")
         elif self.group == "canonical_history":
             valid = _canonical_history_path(path)
@@ -360,8 +368,8 @@ class TransferArchiveDiagnostic(_StrictTransferModel):
 
 
 class TransferArchiveManifest(_StrictTransferModel):
-    schema_version: Literal[TRANSFER_ARCHIVE_SCHEMA_VERSION] = TRANSFER_ARCHIVE_SCHEMA_VERSION
-    archive_codec: Literal[TRANSFER_ARCHIVE_CODEC] = TRANSFER_ARCHIVE_CODEC
+    schema_version: Literal[1, 2] = TRANSFER_ARCHIVE_SCHEMA_VERSION
+    archive_codec: Literal["rcp-transfer-v1", "rcp-transfer-v2"] = TRANSFER_ARCHIVE_CODEC
     project_id: str
     source_space_id: str
     target_space_id: str
@@ -418,6 +426,11 @@ class TransferArchiveManifest(_StrictTransferModel):
 
     @model_validator(mode="after")
     def validate_manifest(self) -> TransferArchiveManifest:
+        git_entries = [entry for entry in self.entries if entry.group == "repository_git"]
+        if self.archive_codec != f"rcp-transfer-v{self.schema_version}":
+            raise ValueError("transfer codec and schema version disagree")
+        if bool(git_entries) != (self.schema_version == 2):
+            raise ValueError("only v2 transfer archives carry repository Git bundles")
         if self.source_space_id == self.target_space_id:
             raise ValueError("transfer archive must cross spaces")
         if self.main_head.target.kind != "main":
@@ -517,7 +530,7 @@ class TransferArchiveManifest(_StrictTransferModel):
 class TransferArchiveEnvelope(_StrictTransferModel):
     """External seal receipt for the exact encoded archive bytes."""
 
-    archive_codec: Literal[TRANSFER_ARCHIVE_CODEC] = TRANSFER_ARCHIVE_CODEC
+    archive_codec: Literal["rcp-transfer-v1", "rcp-transfer-v2"] = TRANSFER_ARCHIVE_CODEC
     manifest_sha256: str
     manifest_size_bytes: int = Field(ge=1)
     payload_size_bytes: int = Field(ge=0)
@@ -541,6 +554,7 @@ class TransferArchiveEnvelope(_StrictTransferModel):
     ) -> TransferArchiveEnvelope:
         manifest_bytes = manifest.canonical_bytes()
         return cls(
+            archive_codec=manifest.archive_codec,
             manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
             manifest_size_bytes=len(manifest_bytes),
             payload_size_bytes=manifest.payload_size_bytes,
@@ -551,7 +565,8 @@ class TransferArchiveEnvelope(_StrictTransferModel):
     def verify_manifest(self, manifest: TransferArchiveManifest) -> None:
         manifest_bytes = manifest.canonical_bytes()
         if (
-            self.manifest_sha256 != hashlib.sha256(manifest_bytes).hexdigest()
+            self.archive_codec != manifest.archive_codec
+            or self.manifest_sha256 != hashlib.sha256(manifest_bytes).hexdigest()
             or self.manifest_size_bytes != len(manifest_bytes)
             or self.payload_size_bytes != manifest.payload_size_bytes
         ):

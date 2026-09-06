@@ -112,6 +112,8 @@ pub struct ProjectTransferPrepareRequest {
     pub target_request_id: String,
     pub connection_id: String,
     pub source_project_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_local_commits: bool,
     pub target_provisioning: ProjectTransferTargetProvisioningIntent,
 }
 
@@ -125,6 +127,8 @@ struct ProjectTransferCoordinatorRecord {
     target_request_id: String,
     connection_id: String,
     source_project_id: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    include_local_commits: bool,
     target_space_id: String,
     target_provisioning: ProjectTransferTargetProvisioningIntent,
 }
@@ -181,6 +185,7 @@ impl ProjectTransferCoordinatorState {
             target_request_id: request.target_request_id.clone(),
             connection_id: request.connection_id.clone(),
             source_project_id: request.source_project_id.clone(),
+            include_local_commits: request.include_local_commits,
             target_space_id: target_space_id.to_string(),
             target_provisioning: request.target_provisioning.clone(),
         };
@@ -193,7 +198,7 @@ impl ProjectTransferCoordinatorState {
         {
             if existing != &candidate {
                 return Err(
-                    "an interrupted transfer already binds this source request to another target intent"
+                    "an interrupted transfer already binds this source request to another transfer intent"
                         .into(),
                 );
             }
@@ -229,6 +234,7 @@ impl ProjectTransferCoordinatorState {
             target_request_id: request.target_request_id.clone(),
             connection_id: request.connection_id.clone(),
             source_project_id: request.source_project_id.clone(),
+            include_local_commits: request.include_local_commits,
             target_space_id: target_space_id.to_string(),
             target_provisioning: request.target_provisioning.clone(),
         };
@@ -354,6 +360,7 @@ impl ProjectTransferCoordinatorRecord {
             target_request_id: self.target_request_id.clone(),
             connection_id: self.connection_id.clone(),
             source_project_id: self.source_project_id.clone(),
+            include_local_commits: self.include_local_commits,
             target_provisioning: self.target_provisioning.clone(),
         }
     }
@@ -383,6 +390,8 @@ pub struct ProjectTransferRepositorySource {
     pub alias: String,
     pub repository: ProjectTransferRepositoryIdentity,
     pub machine_alias: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_commit: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -531,6 +540,8 @@ pub struct ProjectTransferBundle {
     pub target: ProjectTransferProjection,
     pub incoming_provisioning: ProjectProvisioningProjection,
     pub target_provider_setup: Vec<TargetProviderSetupProjection>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub include_local_commits: bool,
     /// Aggregate decisions are computed only from the backend-published
     /// `can_*` answers.  They let the browser render one final-review action
     /// without interpreting transfer phases.
@@ -882,6 +893,8 @@ struct SourceCreateBody<'a> {
     request_id: &'a str,
     project_id: &'a str,
     target_space_id: &'a str,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    include_local_commits: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -1698,6 +1711,14 @@ fn validate_source_for_prepare(
         .as_ref()
         .ok_or_else(|| "the source transfer omitted its public configuration".to_string())?;
     validate_source_configuration(configuration)?;
+    if configuration
+        .repositories
+        .iter()
+        .all(|repository| repository.source_commit.is_some())
+        != request.include_local_commits
+    {
+        return Err("the source transfer changed the local-commit inclusion choice".into());
+    }
     let configuration_digest = source
         .source_configuration_sha256
         .as_deref()
@@ -1797,6 +1818,7 @@ async fn create_source_request(
         request_id: &request.source_request_id,
         project_id: &request.source_project_id,
         target_space_id,
+        include_local_commits: request.include_local_commits,
     };
     let response = client
         .post(format!("{}{SOURCE_CREATE_PATH}", pinned.base_url))
@@ -1982,11 +2004,18 @@ fn assemble_bundle(
     let route_capable = operator_route_available;
     let (can_advance, advance_label, finished) =
         aggregate_transfer_decisions(source, target, route_capable);
+    let source_projection = source.to_projection()?;
+    let include_local_commits = source_projection
+        .source_configuration
+        .repositories
+        .iter()
+        .all(|repository| repository.source_commit.is_some());
     Ok(ProjectTransferBundle {
-        source: source.to_projection()?,
+        source: source_projection,
         target: target.to_projection()?,
         incoming_provisioning: incoming.clone(),
         target_provider_setup,
+        include_local_commits,
         can_advance,
         advance_label,
         can_manual_relay: route_capable && (source.can_relay || target.can_relay),
@@ -2414,11 +2443,28 @@ fn validate_source_configuration(
             return Err("source repository aliases must be unique".into());
         }
         validate_repository_identity(&repository.repository.identity)?;
+        if let Some(commit) = &repository.source_commit {
+            if commit.len() != 40
+                || !commit
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err("the source repository commit must be a lowercase SHA-1".into());
+            }
+        }
         if identities.contains(&repository.repository.identity) {
             return Err("source repository identities must be unique".into());
         }
         aliases.push(repository.alias.clone());
         identities.push(repository.repository.identity.clone());
+    }
+    let commit_count = configuration
+        .repositories
+        .iter()
+        .filter(|repository| repository.source_commit.is_some())
+        .count();
+    if commit_count != 0 && commit_count != configuration.repositories.len() {
+        return Err("the source transfer must include a saved commit for every repository".into());
     }
     validate_scopes(
         &configuration.state_repository,
@@ -4136,6 +4182,7 @@ mod tests {
             target_request_id: TARGET_ID.into(),
             connection_id: "66666666-6666-4666-8666-666666666666".into(),
             source_project_id: PROJECT_ID.into(),
+            include_local_commits: false,
             target_provisioning: ProjectTransferTargetProvisioningIntent {
                 name: "Moved project".into(),
                 default_auto_research_invocation_ceiling: 3,
@@ -4171,6 +4218,107 @@ mod tests {
     }
 
     #[test]
+    fn local_commit_option_preserves_legacy_prepare_and_source_create_shapes() {
+        for include_local_commits in [false, true] {
+            let mut request = prepare_request();
+            request.include_local_commits = include_local_commits;
+            let prepare_value = serde_json::to_value(&request).unwrap();
+            assert_eq!(
+                prepare_value.get("include_local_commits").is_some(),
+                include_local_commits
+            );
+            assert_eq!(
+                serde_json::from_value::<ProjectTransferPrepareRequest>(prepare_value).unwrap(),
+                request
+            );
+            let source_body = SourceCreateBody {
+                request_id: &request.source_request_id,
+                project_id: &request.source_project_id,
+                target_space_id: TARGET_SPACE_ID,
+                include_local_commits: request.include_local_commits,
+            };
+            let value = serde_json::to_value(source_body).unwrap();
+            assert_eq!(
+                value.get("include_local_commits").is_some(),
+                include_local_commits
+            );
+            if include_local_commits {
+                assert_eq!(value["include_local_commits"], true);
+            }
+        }
+    }
+
+    #[test]
+    fn source_commit_extension_round_trips_without_changing_legacy_configuration() {
+        let legacy = safe_transfer_payload()["source_configuration"].clone();
+        let parsed: ProjectTransferSourceConfiguration =
+            serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), legacy);
+        let mut included = legacy;
+        included["repositories"][0]["source_commit"] = Value::String("a".repeat(40));
+        included["supported_archive_codecs"] = serde_json::json!(["rcp-transfer-v2"]);
+        let parsed: ProjectTransferSourceConfiguration =
+            serde_json::from_value(included.clone()).unwrap();
+        validate_source_configuration(&parsed).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), included);
+        for invalid in ["A".repeat(40), "a".repeat(39), "g".repeat(40)] {
+            included["repositories"][0]["source_commit"] = Value::String(invalid);
+            let parsed = serde_json::from_value(included.clone()).unwrap();
+            assert!(validate_source_configuration(&parsed).is_err());
+        }
+    }
+
+    #[test]
+    fn preparation_refuses_a_source_that_changes_local_commit_inclusion() {
+        let mut request = prepare_request();
+        let mut source = decision_record("source", REQUEST_ID);
+        validate_source_for_prepare(&source, &request, TARGET_SPACE_ID).unwrap();
+        request.include_local_commits = true;
+        assert!(validate_source_for_prepare(&source, &request, TARGET_SPACE_ID).is_err());
+        let configuration = source.source_configuration.as_mut().unwrap();
+        configuration.repositories[0].source_commit = Some("a".repeat(40));
+        configuration.supported_archive_codecs = vec!["rcp-transfer-v2".into()];
+        validate_source_for_prepare(&source, &request, TARGET_SPACE_ID).unwrap();
+        request.include_local_commits = false;
+        assert!(validate_source_for_prepare(&source, &request, TARGET_SPACE_ID).is_err());
+        let configuration = source.source_configuration.as_mut().unwrap();
+        let mut second = configuration.repositories[0].clone();
+        second.alias = "analysis".into();
+        second.repository.identity = "example/analysis".into();
+        second.source_commit = None;
+        configuration.repositories.push(second);
+        assert!(validate_source_configuration(configuration).is_err());
+    }
+
+    #[test]
+    fn bundle_projects_the_bound_commit_choice_without_changing_legacy_output() {
+        for include_local_commits in [false, true] {
+            let mut source = decision_record("source", REQUEST_ID);
+            let mut target = decision_record("target", TARGET_ID);
+            if include_local_commits {
+                for record in [&mut source, &mut target] {
+                    let configuration = record.source_configuration.as_mut().unwrap();
+                    configuration.repositories[0].source_commit = Some("a".repeat(40));
+                    configuration.supported_archive_codecs = vec!["rcp-transfer-v2".into()];
+                }
+            }
+            let incoming = parse_project_provisioning_projection(
+                &incoming_projection_payload("ready_for_review", Value::Null, Value::Null),
+                TARGET_ID,
+                TARGET_SPACE_ID,
+            )
+            .unwrap();
+            let bundle = assemble_bundle(&source, &target, &incoming, Vec::new(), false).unwrap();
+            assert_eq!(bundle.include_local_commits, include_local_commits);
+            let value = serde_json::to_value(bundle).unwrap();
+            assert_eq!(
+                value.get("include_local_commits").is_some(),
+                include_local_commits
+            );
+        }
+    }
+
+    #[test]
     fn archive_codec_selection_follows_the_source_configuration() {
         let configuration = ProjectTransferSourceConfiguration {
             source_rcp_version: "0.3.2".into(),
@@ -4183,6 +4331,7 @@ mod tests {
                     identity: "example/state".into(),
                 },
                 machine_alias: "server".into(),
+                source_commit: None,
             }],
             state_repository: "state".into(),
             project_truth_scope: vec!["state".into()],
@@ -4296,6 +4445,7 @@ mod tests {
                     identity: "example/state".into(),
                 },
                 machine_alias: "server".into(),
+                source_commit: None,
             }],
             state_repository: "state".into(),
             project_truth_scope: vec!["state".into()],
@@ -4465,6 +4615,7 @@ mod tests {
             )
             .unwrap(),
             target_provider_setup: Vec::new(),
+            include_local_commits: false,
             can_advance: true,
             advance_label: Some("Continue".into()),
             can_manual_relay: false,
@@ -4563,6 +4714,39 @@ mod tests {
             state.load(REQUEST_ID).unwrap().unwrap().as_request(),
             request
         );
+    }
+
+    #[test]
+    fn coordinator_restores_the_saved_commit_choice_and_rejects_changed_retries() {
+        for include_local_commits in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let coordinator_path = directory.path().join(COORDINATOR_FILENAME);
+            let state = ProjectTransferCoordinatorState::new(coordinator_path.clone());
+            let mut request = prepare_request();
+            request.include_local_commits = include_local_commits;
+            state.save_or_validate(&request, TARGET_SPACE_ID).unwrap();
+            let stored: Value =
+                serde_json::from_slice(&fs::read(&coordinator_path).unwrap()).unwrap();
+            assert_eq!(
+                stored["records"][0].get("include_local_commits").is_some(),
+                include_local_commits
+            );
+            // Off writes the exact legacy shape; a fresh coordinator must supply false.
+            let reopened = ProjectTransferCoordinatorState::new(coordinator_path);
+            assert_eq!(
+                reopened.load(REQUEST_ID).unwrap().unwrap().as_request(),
+                request
+            );
+            let mut changed = request.clone();
+            changed.include_local_commits = !include_local_commits;
+            assert!(reopened
+                .save_or_validate(&changed, TARGET_SPACE_ID)
+                .is_err());
+            assert_eq!(
+                reopened.load(REQUEST_ID).unwrap().unwrap().as_request(),
+                request
+            );
+        }
     }
 
     fn incoming_projection_payload(

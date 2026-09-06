@@ -25,6 +25,8 @@ covered_by:
   - tests/test_transfer_import.py
   - tests/test_transfer_import_storage.py
   - tests/test_transfer_source.py
+  - tests/test_transfer_local_commits.py
+  - tests/test_transfer_repository_git.py
   - tests/test_transfer_source_archive.py
   - tests/test_transfer_catalog_finalizer.py
   - tests/test_transfer_target.py
@@ -37,6 +39,26 @@ invariants: [1, 3, 6, 11]
 ---
 
 # Hand a personal project over to the lab, once
+
+The human-confirmed unpublished-commit extension offers an off-by-default
+**Include local unpushed commits** checkbox. Its acceptance adds two cases:
+
+1. With the checkbox off, the team uses GitHub's revision, review warns that
+   unpublished commits stay behind, and old v1 request/archive bytes still work.
+2. With it on, review binds every source repository HEAD. A source-only commit
+   absent from the target's GitHub clone reaches the team at that exact revision
+   via the archive, without a GitHub push. Source uncommitted files are preserved
+   and excluded, the team origin/branch refs remain intact, and a changed target
+   checkout becomes detached; an already-matching checkout stays unchanged.
+   A changed source, dirty tracked target, mismatched
+   bundle, or incompatible target refuses; an identical retry is safe.
+
+Local/SSH helper and full archive import regressions cover the extension. A live
+SSH round trip on `tianhaowang-gpu0.ucsd.edu` passed using disposable repositories:
+local export to remote installation and retry, then remote export to local
+installation, with exact HEAD/origin readback and fixture cleanup. The production
+desktop opt-in drive remains to be recorded separately. The completed
+September 5 CoT transfer below used v1 and does not prove this new option.
 
 This live scenario remains pending because the complete source-built desktop
 interruption drive against two real spaces and a real SSH operator route has not

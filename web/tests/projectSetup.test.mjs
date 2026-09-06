@@ -35,6 +35,7 @@ const { ProjectSetup, RepositoryEditor } = await server.ssrLoadModule(
 const { ProjectSettings } = await server.ssrLoadModule("/src/views/ProjectSettings.tsx");
 const {
   TransferProjectSetup,
+  TransferRepositoryPolicy,
   transferActiveWorkSummary,
   transferFinished,
   transferRelayFailure,
@@ -489,6 +490,26 @@ test("move active-work counts use backend active and live booleans", () => {
     ),
     { activeTaskCount: 1, liveEpisodeCount: 1, totalCount: 2 },
   );
+});
+
+test("transfer repository review explains the selected commit boundary", () => {
+  for (const includeLocalCommits of [false, true]) {
+    const html = renderToStaticMarkup(
+      React.createElement(TransferRepositoryPolicy, { includeLocalCommits }),
+    );
+    assert.match(html, /Uncommitted files and external data\/output directories remain excluded/);
+    assert.match(html, /RCP does not push to GitHub/);
+    if (includeLocalCommits) {
+      assert.match(html, /Committed files and history are copied as saved/);
+      assert.match(html, /detached HEAD at the saved source commit/);
+      assert.match(html, /a checkout already at that commit is left unchanged/);
+      assert.doesNotMatch(html, /unpushed commits stay behind/);
+    } else {
+      assert.match(html, /Team checkouts are cloned from GitHub/);
+      assert.match(html, /Local unpushed commits stay behind/);
+      assert.doesNotMatch(html, /detached HEAD/);
+    }
+  }
 });
 
 test("move target readiness requires a saved origin and operator route", () => {

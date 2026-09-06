@@ -199,6 +199,7 @@ export interface ProjectTransferPrepareRequest {
   targetRequestId: string;
   connectionId: string;
   sourceProjectId: string;
+  includeLocalCommits?: boolean;
   targetProvisioning: ProjectTransferTargetProvisioningIntent;
 }
 
@@ -379,6 +380,7 @@ export interface ProjectTransferRepositorySource {
   alias: string;
   repository: GitHubRepositoryRef;
   machine_alias: string;
+  source_commit?: string;
 }
 
 export interface ProjectTransferSourceConfiguration {
@@ -573,6 +575,7 @@ export interface ProjectTransferBundle {
   target: ProjectTransferProjection;
   incoming_provisioning: ProjectTransferIncomingProvisioningProjection;
   target_provider_setup: TargetProviderSetupProjection[];
+  include_local_commits?: boolean;
   can_advance: boolean;
   advance_label: string | null;
   can_manual_relay: boolean;

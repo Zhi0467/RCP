@@ -219,6 +219,7 @@ class ProjectTransferRepositorySourceRequest(_StrictModel):
     alias: str
     repository: GitHubRepositoryRef
     machine_alias: str
+    source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
 
 
 class ProjectTransferSourceConfigurationRequest(_StrictModel):
@@ -243,6 +244,7 @@ class ProjectTransferSourceCreateRequest(_StrictModel):
     request_id: str
     project_id: str
     target_space_id: str
+    include_local_commits: bool = False
     expected_source_configuration_sha256: str | None = Field(
         default=None,
         pattern=r"^[0-9a-f]{64}$",
@@ -584,9 +586,14 @@ def create_source_project_transfer_request(
         existing = store.project_transfer_request(body.request_id)
         if existing is None:
             service = catalog.open(body.project_id)
-            configuration, _head = capture_project_transfer_source(service)
+            configuration, _head = capture_project_transfer_source(
+                service,
+                include_local_commits=body.include_local_commits,
+            )
         else:
             configuration = existing.source_configuration
+            if configuration.includes_local_commits != body.include_local_commits:
+                raise ValueError("transfer already binds a different local-commit choice")
         actual_digest = project_transfer_source_configuration_sha256(configuration)
         if body.expected_source_configuration_sha256 not in {None, actual_digest}:
             raise ValueError("source configuration changed before transfer creation")
@@ -777,7 +784,10 @@ def read_source_project_transfer_release_boundary(
             if current.phase != "target_admitted":
                 raise ValueError("source transfer is not awaiting its release boundary")
             service = catalog.open(current.project_id)
-            configuration, source_head = capture_project_transfer_source(service)
+            configuration, source_head = capture_project_transfer_source(
+                service,
+                include_local_commits=current.source_configuration.includes_local_commits,
+            )
     except HTTPException:
         raise
     except (KeyError, OSError, StateUnavailable, ValueError) as exc:
@@ -814,7 +824,10 @@ def release_source_project_transfer_request(
                 if not store.is_project_member(transfer.project_id, actor.user_id):
                     raise ValueError("source release requires current project membership")
                 service = catalog.open(transfer.project_id)
-                configuration, source_head = capture_project_transfer_source(service)
+                configuration, source_head = capture_project_transfer_source(
+                    service,
+                    include_local_commits=transfer.source_configuration.includes_local_commits,
+                )
                 if (
                     project_transfer_source_configuration_sha256(configuration)
                     != body.expected_source_configuration_sha256
