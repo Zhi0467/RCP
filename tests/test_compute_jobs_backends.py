@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import plistlib
 import shlex
+import signal
 import subprocess
 from pathlib import Path
 from typing import get_args
@@ -18,6 +19,7 @@ from rcp.compute_jobs.backends import COMPUTE_BACKENDS, ComputeBackendId, resolv
 from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.config import MachineComputeConfig
 from rcp.limits import COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS, COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
+from rcp.transport import remote_job_launch
 from rcp.transport.remote_job_launch import alive, process_identity
 from rcp.transport.state import _remote_script
 
@@ -244,6 +246,45 @@ def test_process_identity_handles_parentheses_and_pid_reuse(monkeypatch):
     assert process_identity(123) == ("987", "S")
     assert alive("123:987") is True
     assert alive("123:986") is False
+
+
+@pytest.mark.parametrize("leader_state", ["missing", "Z", "X"])
+def test_session_liveness_tracks_group_after_leader_exits(monkeypatch, leader_state):
+    def identity(pid):
+        if leader_state == "missing":
+            raise FileNotFoundError
+        return "987", leader_state
+
+    monkeypatch.setattr(remote_job_launch, "process_identity", identity)
+    members = []
+    monkeypatch.setattr(remote_job_launch, "_group_alive", lambda pid: bool(members))
+    assert not alive("123:987")
+    members.append(456)
+    assert alive("123:987")
+
+
+@pytest.mark.parametrize("already_gone", [False, True])
+def test_session_cancel_signals_group_without_leader(monkeypatch, already_gone):
+    def identity(pid):
+        raise FileNotFoundError
+
+    signals = []
+
+    def killpg(pid, requested_signal):
+        assert pid == 123
+        signals.append(requested_signal)
+        if already_gone:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(remote_job_launch, "process_identity", identity)
+    monkeypatch.setattr(
+        remote_job_launch, "_group_alive", lambda pid: signal.SIGKILL not in signals
+    )
+    monkeypatch.setattr(os, "killpg", killpg)
+    clock = iter(range(10))
+    monkeypatch.setattr(remote_job_launch.time, "monotonic", lambda: next(clock))
+    remote_job_launch.cancel("123:987", grace=0.5, poll_interval=0.1)
+    assert signals == ([signal.SIGTERM] if already_gone else [signal.SIGTERM, signal.SIGKILL])
 
 
 @pytest.mark.parametrize(

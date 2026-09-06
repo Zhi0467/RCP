@@ -20,8 +20,10 @@ helpers are stdlib-only source modules.
   and `KeepAlive=false`. It never uses `launchctl submit`.
 - `ssh_session` is offered only remotely on Linux. The shipped launcher creates
   a separate session and records PID plus `/proc/<pid>/stat` start time. Liveness
-  checks both values; cancellation terminates the owned process group, escalating
-  from SIGTERM to SIGKILL. PID reuse cannot identify a different job as this job.
+  tracks the process group while checking the leader's identity when present;
+  a recycled leader PID that becomes a new group leader can read as alive for
+  one interval, and the next check corrects it. Cancellation terminates the
+  owned process group, escalating from SIGTERM to SIGKILL.
 - `slurm` submits through `sbatch --parsable`, with machine-owned account,
   partition, and extra submission arguments. Liveness tests membership in the
   whole `squeue -h -o %A` active set; a scheduler command failure is unknown,
@@ -74,6 +76,7 @@ failed post-start receipt or database write
 retains evidence for operator repair. Automatic orphan-directory adoption is not
 implemented. Log-tail reads have a fixed byte ceiling.
 A remote transport failure at launch is uncertain and retains the job root.
+A successful launch response with an unparseable handle also retains the job root.
 
 ## Probe and containment
 
@@ -112,9 +115,10 @@ pass without contacting it again. Reconciliation uses the saved backend and
 execution identity rather than retargeting old jobs after configuration changes.
 
 Alive remains `running`. Unknown also remains `running`, with a diagnostic even
-when an exit file exists. Once gone, a valid exit file yields `exited`; its absence
-yields `lost`. A job with a recorded cancellation request becomes `cancelled`
-once gone. Cancellation preserves the first requester and time and is idempotent
-for terminal jobs. Stop and pause do not call it. Terminal records stay terminal.
+when an exit file exists. Once gone, a valid exit file yields `exited`; an absent
+or malformed exit receipt yields `lost` with a diagnostic. A job with a recorded
+cancellation request becomes `cancelled` once gone. Cancellation preserves the
+first requester and time and is idempotent for terminal jobs. Stop and pause do
+not call it. Terminal records stay terminal.
 Restore rehearsal rebinds local job paths to known-absent overlay locations, as
 it does watcher paths; remote paths retain their execution-host qualification.

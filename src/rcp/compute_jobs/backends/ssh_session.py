@@ -54,7 +54,9 @@ class SSHSessionBackend:
             ) from exc
         handle = result.stdout.strip()
         if not re.fullmatch(r"[1-9][0-9]*:[0-9]+", handle):
-            raise RuntimeError("SSH launcher returned an invalid process identity")
+            raise ComputeLaunchUncertainError(
+                "SSH launch succeeded but returned an invalid process identity"
+            ) from ValueError("SSH launcher returned an invalid process identity")
         return handle
 
     def alive(self, handle: str, context: BackendContext) -> bool | None:

@@ -30,8 +30,10 @@ def alive(handle: str) -> bool:
     try:
         actual, state = process_identity(pid)
     except FileNotFoundError:
+        return _group_alive(pid)
+    if actual != expected:
         return False
-    return actual == expected and state not in {"Z", "X"}
+    return state not in {"Z", "X"} or _group_alive(pid)
 
 
 def launch(job_root: str, wrapper: str) -> str:
@@ -74,8 +76,6 @@ def cancel(handle: str, grace: float, poll_interval: float) -> None:
     if not alive(handle):
         return
     pid, _ = parse_handle(handle)
-    if os.getpgid(pid) != pid:
-        raise ValueError("Compute process is not its recorded session leader")
     for requested_signal in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(pid, requested_signal)

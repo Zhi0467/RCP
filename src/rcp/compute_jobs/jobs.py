@@ -127,15 +127,22 @@ def refresh_compute_job(
         exit_text = read_job_file(context, record.exit_path)
         exit_status = None
         ended_at = store.now()
-        if exit_text:
-            status_text, epoch = exit_text.split()
-            exit_status = int(status_text)
-            if not 0 <= exit_status <= 255:
-                raise ValueError("compute exit file contains an invalid status")
-            ended_at = epoch_timestamp(epoch)
+        status = "lost"
+        diagnostic = "Compute job disappeared without an exit file."
+        if exit_text is not None:
+            try:
+                status_text, epoch = exit_text.split()
+                parsed_status = int(status_text)
+                if not 0 <= parsed_status <= 255:
+                    raise ValueError("compute exit file contains an invalid status")
+                ended_at = epoch_timestamp(epoch)
+            except (ValueError, OverflowError, OSError) as exc:
+                diagnostic = safe_compute_diagnostic(
+                    f"Compute job disappeared with a malformed exit receipt {record.exit_path}: {exc}"
+                )
+            else:
+                status, exit_status, diagnostic = "exited", parsed_status, None
         # Storage resolves any concurrent cancellation intent in this transition.
-        status = "exited" if exit_text else "lost"
-        diagnostic = "Compute job disappeared without an exit file." if status == "lost" else None
         return store.record_compute_job_refresh(
             job_id,
             status=status,
