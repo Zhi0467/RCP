@@ -41,8 +41,10 @@ at 17.77 seconds, missing control socket at 20.95 seconds, and application
 startup completion at 22.69 seconds. No recovery case passed in that job.
 Case preparation now waits for baseline HTTP health before arming any faults;
 actual interrupted recovery boots still use the pause-aware controller path.
-This correction needs its own hosted verification. Ubuntu 24.04 recovery is
-still running at this checkpoint; do not infer its result from Ubuntu 22.04.
+This correction needs its own hosted verification. Ubuntu 24.04 verified nine
+online update/rollback cases, then GitHub canceled its job while the tenth was
+running. Its partial receipt still says `running`; job cancellation is not a
+supervisor failure or a completed drive. All four job artifacts are retained.
 
 Production was separately adopted under supervisor `0.1.3` using promoted
 `v0.3.5`, build 484. Both projects are protected with zero backup omissions;

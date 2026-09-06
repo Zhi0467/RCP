@@ -19,7 +19,11 @@ last_checked: >-
   The repeated-rollback case reached its second intended pause, then the
   controller timed out waiting for cloud-init instead of driving the next reboot.
   Restore, offline update recovery, and accepted-work cases remain unqualified.
-  Both separate source-adoption/offline-reboot jobs passed. This scenario remains pending.
+  Both separate source-adoption/offline-reboot jobs passed. Rerun 34061040236
+  at merged PR #77 passed both adoption jobs again; Ubuntu 22.04 exposed baseline
+  startup racing the first update, while Ubuntu 24.04 was canceled after nine
+  verified recovery cases. The baseline readiness correction still requires
+  a hosted rerun. This scenario remains pending.
 ---
 
 # A reboot cannot bypass deployment recovery
