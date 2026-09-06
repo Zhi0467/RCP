@@ -73,6 +73,7 @@ A known failed start removes its root; an ambiguous submission timeout or a
 failed post-start receipt or database write
 retains evidence for operator repair. Automatic orphan-directory adoption is not
 implemented. Log-tail reads have a fixed byte ceiling.
+A remote transport failure at launch is uncertain and retains the job root.
 
 ## Probe and containment
 

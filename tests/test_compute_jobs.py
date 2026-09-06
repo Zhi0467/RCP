@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
 import pytest
 
 from rcp.compute_jobs import jobs
-from rcp.compute_jobs.backend_context import BackendContext
+from rcp.compute_jobs.backend_context import (
+    BackendContext,
+    ComputeLaunchUncertainError,
+    ComputeTransportError,
+)
 from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.compute_jobs.wrapper import render_wrapper
+from rcp.config import MachineComputeConfig
 from rcp.storage import AppStore
 from tests.helpers import wait_until
 
@@ -200,13 +207,109 @@ def test_insert_failure_retains_backend_receipt(launch_environment, tmp_path, mo
     assert json.loads((roots[0] / "launch.json").read_text())["backend_handle"] == "rcp-job-test"
 
 
-def test_machine_identity_change_is_unobservable(launch_environment, tmp_path, manifest):
+@pytest.mark.parametrize("change", ["removed", "repointed"])
+@pytest.mark.parametrize("reconcile", [False, True])
+def test_changed_machine_refresh_and_cancel_use_recorded_identity(
+    launch_environment, tmp_path, manifest, monkeypatch, change, reconcile
+):
     store, backend, launch = launch_environment
+    context, _ = jobs.resolve_context(manifest, "laptop")
+    context.execution_host = "recorded-host"
+    context.compute = MachineComputeConfig(jobs_root=str(tmp_path / "remote-jobs"))
+    context.containment = "mirrored"
+    machine = manifest.machine_map[context.execution_machine]
+    machine.host = context.execution_host
+    machine.compute = context.compute
+
+    def ssh_bridge(host, command):
+        assert host == "recorded-host"
+        return [sys.executable, *shlex.split(command)[1:]]
+
+    monkeypatch.setattr("rcp.transport.ssh.ssh_arguments", ssh_bridge)
     record = launch()
-    manifest.machine_map[record.execution_machine].host = "other-host"
-    result = jobs.refresh_compute_job(store, manifest, record.job_id, data_dir=tmp_path / "data")
+    if change == "removed":
+        manifest.machines.remove(machine)
+    else:
+        machine.host = "other-host"
+
+    observed = []
+
+    def alive(handle, context):
+        observed.append(context)
+        assert handle == record.backend_handle
+        return backend.is_alive
+
+    def cancel(handle, context):
+        observed.append(context)
+        assert handle == record.backend_handle
+        backend.is_alive = False
+
+    monkeypatch.setattr(backend, "alive", alive)
+    monkeypatch.setattr(backend, "cancel", cancel)
+    backend.is_alive = True
+    if reconcile:
+        reconcile_compute_jobs(store, manifest, project_id="project", data_dir=tmp_path / "data")
+        result = store.compute_job(record.job_id)
+    else:
+        result = jobs.refresh_compute_job(
+            store, manifest, record.job_id, data_dir=tmp_path / "data"
+        )
     assert result.status == "running"
-    assert "no longer configured" in result.diagnostic
+    assert result.diagnostic is None
+    result = jobs.cancel_compute_job(
+        store, manifest, record.job_id, "human", data_dir=tmp_path / "data"
+    )
+    assert result.status == "cancelled"
+    assert len(observed) == 3
+    for context in observed:
+        assert context.execution_host == record.execution_host
+        assert context.execution_machine == record.execution_machine
+        assert context.containment == record.containment
+        assert context.compute is None
+
+
+@pytest.mark.parametrize(
+    "backend_id, remote", [("ssh_session", True), ("slurm", True), ("slurm", False)]
+)
+def test_launch_exit_255_retains_root_only_for_remote_transport_failure(
+    launch_environment, tmp_path, manifest, monkeypatch, backend_id, remote
+):
+    from rcp.transport.state import _remote_script
+
+    store, _, launch = launch_environment
+    context, _ = jobs.resolve_context(manifest, "laptop")
+    context.execution_host = "worker" if remote else ""
+    context.compute = MachineComputeConfig(jobs_root=str(tmp_path / "remote-jobs"))
+    calls = []
+
+    def runner(command, **kwargs):
+        if remote:
+            assert command[-2] == "worker"
+            command = shlex.split(command[-1])
+            if command[:3] == ["python3", "-c", _remote_script("remote_job_files.py")]:
+                return subprocess.run([sys.executable, *command[1:]], **kwargs)
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 255, "", "connection dropped")
+
+    context.runner = runner
+    monkeypatch.setattr(
+        jobs, "resolve_context", lambda *_: (context, jobs.COMPUTE_BACKENDS[backend_id])
+    )
+    expected_error = ComputeLaunchUncertainError if remote else RuntimeError
+    with pytest.raises(expected_error) as error:
+        launch()
+    assert len(calls) == 1
+    roots = list((tmp_path / "remote-jobs" if remote else tmp_path / "data" / "jobs").iterdir())
+    if remote:
+        assert isinstance(error.value.__cause__, ComputeTransportError)
+        assert len(roots) == 1
+        assert (roots[0] / "run.sh").is_file()
+        assert json.loads((roots[0] / "command.json").read_text())["origin_operation_id"] == "turn"
+        assert not (roots[0] / "launch.json").exists()
+    else:
+        assert type(error.value) is RuntimeError
+        assert roots == []
+    assert store.running_compute_jobs() == []
 
 
 def test_uncertain_launch_retains_intent(launch_environment, tmp_path):

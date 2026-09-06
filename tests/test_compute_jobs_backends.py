@@ -9,7 +9,11 @@ from typing import get_args
 
 import pytest
 
-from rcp.compute_jobs.backend_context import BackendContext
+from rcp.compute_jobs.backend_context import (
+    BackendContext,
+    ComputeLaunchUncertainError,
+    ComputeTransportError,
+)
 from rcp.compute_jobs.backends import COMPUTE_BACKENDS, ComputeBackendId, resolve_backend
 from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.config import MachineComputeConfig
@@ -303,6 +307,24 @@ def test_uncertain_start_stops_the_stable_unit(backend_id, tmp_path):
         if backend_id == "systemd_user"
         else ["launchctl", "bootout", "gui/501/rcp-job-abc"]
     )
+
+
+@pytest.mark.parametrize("cancel_status", [0, 255])
+def test_systemd_transport_failure_attempts_cancel(cancel_status):
+    runner = Runner((255, "", "connection dropped"), (cancel_status, "", "connection dropped"))
+    ctx = BackendContext("worker", "remote", None, runner=runner, uid="501")
+    expected_error = ComputeLaunchUncertainError if cancel_status else ComputeTransportError
+    with pytest.raises(expected_error):
+        COMPUTE_BACKENDS["systemd_user"].start("/jobs/abc", "/jobs/abc/run.sh", request(), ctx)
+    assert len(runner.calls) == 2
+    assert shlex.split(runner.calls[-1][0][-1]) == [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/501",
+        "systemctl",
+        "--user",
+        "stop",
+        "rcp-job-abc",
+    ]
 
 
 @pytest.mark.parametrize("backend_id", list(COMPUTE_BACKENDS))

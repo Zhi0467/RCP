@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from rcp.compute_jobs.backend_context import (
     BackendContext,
     ComputeLaunchUncertainError,
+    ComputeTransportError,
     facility_probe,
 )
 from rcp.limits import COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS
@@ -50,9 +51,9 @@ class SlurmBackend:
         command.append(wrapper_path)
         try:
             result = context.run(command, timeout=COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS, check=True)
-        except subprocess.TimeoutExpired as exc:
+        except (subprocess.TimeoutExpired, ComputeTransportError) as exc:
             raise ComputeLaunchUncertainError(
-                "Compute launch timed out; backend acceptance is unknown"
+                "Compute launch response unavailable; backend acceptance is unknown"
             ) from exc
         handle = result.stdout.strip().split(";", 1)[0]
         if not re.fullmatch(r"[0-9]+", handle):
