@@ -78,6 +78,14 @@ jobs:
           RCP_REBOOT_DISPOSABLE: I_UNDERSTAND_THIS_CREATES_DISPOSABLE_VMS
         run: |
           set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test ! -e /etc/rcp
+          id
+          if test -c /dev/kvm; then
+            getfacl /dev/kvm
+            sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+            getfacl /dev/kvm
+          fi
           uv run python -m tests.supervisor_reboot_live drive \
             --ubuntu '${{ matrix.ubuntu }}' \
             --bundles "$RUNNER_TEMP/rcp-reboot-bundles" \

@@ -445,3 +445,12 @@ separate receipts. This does not establish why the two original preflights
 disagreed; the corrected workflow must still run successfully on both hosts.
 No emulation fallback or relaxed reboot requirement is introduced. Production
 was inspected read-only and remains on its previous healthy source release.
+
+[Run 34050003292](https://github.com/Zhi0467/RCP/actions/runs/34050003292)
+used merged follow-up #67 (`44b0e73`) and retained the actual QEMU refusal:
+`failed to initialize kvm: Permission denied`. The first preflight succeeded,
+so this is lost device access between preparation and the drive. The next
+workflow change reapplies the same named-runner ACL immediately before the
+drive, recording identity and before/after ACLs. The controller still requires
+actual KVM initialization and changed guest boot IDs. Production remains behind
+the qualification gate.
