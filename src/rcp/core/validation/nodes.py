@@ -186,9 +186,9 @@ def validate_extension_update(
 def _validate_grounded_scope(
     raw: dict[str, Any], report: ValidationReport, revision: int | None
 ) -> None:
-    scope = _normalize_grounding_text(str(raw.get("scope", "")))
+    scope = normalize_authoring_text(str(raw.get("scope", "")))
     excerpts = [
-        _normalize_grounding_text(str(item.get("excerpt", "")))
+        normalize_authoring_text(str(item.get("excerpt", "")))
         for item in raw.get("source_refs", [])
         if isinstance(item, dict)
     ]
@@ -202,7 +202,7 @@ def _validate_grounded_scope(
         )
 
 
-def _normalize_grounding_text(value: str) -> str:
+def normalize_authoring_text(value: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 

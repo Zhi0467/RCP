@@ -46,7 +46,8 @@ Group the header semantically — labeled **Sync / Ask** together, then icon-onl
 **History / Refresh** together. Do not space all four as unrelated peers.
 
 Glossary definitions appear inline where terms are read. Glossary has no
-navigation destination, and glossary authoring remains an open question.
+navigation destination. Graph-writing agents add or revise the definitions through
+`upsert_glossary` Patches.
 
 A previously opened project feels immediate even when canonical state is remote:
 render one rebuildable durable display snapshot first and refresh the
@@ -97,6 +98,16 @@ Node wording correction is a literal human edit, not an agent request. A direct
 prose editor stages the change in the project draft and clears the draft standing
 to asserted; node chat is never started merely to rewrite text. Canonical history
 changes only when the human presses Sync.
+
+**New node** creates any of the six built-in node types or an active custom type
+in the same project draft. Graph connection controls select source, target and
+relation; a node-to-node connection gesture opens the same editor. Explicit
+select controls provide a keyboard alternative. Connections can be removed or
+replaced through that draft. Backend preview validates the full batch before
+Sync; the UI does not derive lifecycle effects or imply that staging committed.
+Removing a node removes its current incident edges, not its history. Existing
+accepted-node and active-Experiment safeguards still apply. Artifact selections
+remain chat context, not graph-editing controls or Evidence creation shortcuts.
 
 ## DAG controls
 

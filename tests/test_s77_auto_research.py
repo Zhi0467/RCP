@@ -595,7 +595,7 @@ async def test_s77_blocked_child_answer_is_preserved_without_graph_change(
     def inspect_contract(contract: str, _workspace: Path) -> None:
         compact = " ".join(contract.split())
         assert "existing ResearchQuestion or Hypothesis" in compact
-        assert "human judgment; never apply it directly" in compact
+        assert "ResearchQuestion or Hypothesis waits for a human" in compact
         assert "what failed" in compact
 
     class DifficultyLauncher(_WorkerLauncher):

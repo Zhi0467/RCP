@@ -1,8 +1,13 @@
-# Open questions
+# Retired open questions — historical snapshot
+
+Archived 2026-09-05. All statuses and instructions below are historical, not
+active questions or implementation authority. The human settled these items in
+[the closure decision](../decisions/2026-09-05-graph-authoring-and-product-boundaries.md).
+Worktree execution and live steering continue only in their separate draft PRs.
 
 Design questions that are **raised and evidenced but not decided**. Current
-product authority lives in [`design.md`](design.md) and [`specs/`](specs/);
-[`acceptance/`](acceptance/README.md) records selected observable promises. This
+product authority lives in [`design.md`](../design.md) and [`specs/`](../specs/);
+[`acceptance/`](../acceptance/README.md) records selected observable promises. This
 file is deliberately non-normative.
 
 An entry stays here until it is decided and incorporated into the applicable
@@ -30,7 +35,7 @@ editing, or deletion path.
 
 **Status:** open. Raised 2026-08-01. V1 boundary decided; output-streaming and
 other v2 details are not.
-**Governing section:** [Watcher resources](specs/conversations-episodes-and-watchers.md#watcher-resources).
+**Governing section:** [Watcher resources](../specs/conversations-episodes-and-watchers.md#watcher-resources).
 
 ### Decided boundary
 
@@ -66,7 +71,7 @@ already treats human corrections as literal edits rather than agent requests.
 
 Keep it separate from Experiment belief acceptance. Direct manipulation is UI
 authority; belief acceptance is the settled Proposal path described in the
-[authority specification](specs/authority-and-proposals.md). Building the first
+[authority specification](../specs/authority-and-proposals.md). Building the first
 must not silently alter the second.
 
 ### Secondary v2 lifecycle questions
@@ -80,7 +85,7 @@ must not silently alter the second.
   either way.
 
 Graph-level scheduling across the research frontier is **no longer deferred**.
-It is the bounded [Auto-research episode](specs/auto-research-and-branch-merge.md#episode-scope-budget-and-authority)
+It is the bounded [Auto-research episode](../specs/auto-research-and-branch-merge.md#episode-scope-budget-and-authority)
 and remains outside this question—the two features share only the word
 "control."
 
@@ -91,7 +96,7 @@ and remains outside this question—the two features share only the word
 **Status:** open. Raised 2026-08-03. No decision.
 **Governing scenario:** [S59](acceptance/S59-staged-graph-audit-skills.md).
 The implemented package boundary is in
-[Official skills and workflows](specs/providers-and-containment.md#official-skills-and-workflows).
+[Official skills and workflows](../specs/providers-and-containment.md#official-skills-and-workflows).
 
 Settings-owned package selection, immutable staging, compact context pointers,
 and package receipts already ship under S64. What remains undecided is whether
@@ -117,8 +122,8 @@ question is decided.
 **Status:** open, and much narrower than when raised. The parent question —
 whether RCP shows the researcher their own data, and in what shape — was decided
 and now lives under
-[Unified artifact viewer](specs/paper-artifacts-and-result-views.md#unified-artifact-viewer), driven by
-[S114](acceptance/S114-see-your-results-without-leaving.md).
+[Unified artifact viewer](../specs/paper-artifacts-and-result-views.md#unified-artifact-viewer), driven by
+[S114](../acceptance/S114-see-your-results-without-leaving.md).
 **Related:** [Q7](#q7--which-domains-can-rcp-serve-and-where-must-it-link-instead-of-host)
 decides *for whom* this is worth building.
 
@@ -167,7 +172,7 @@ Do not build an action bar into a view before S114 has been used on real work.
 
 **Status:** open. Raised 2026-08-06. No decision.
 **Related:** the shape boundary this predicate leans on is now decided under
-[Unified artifact viewer](specs/paper-artifacts-and-result-views.md#unified-artifact-viewer);
+[Unified artifact viewer](../specs/paper-artifacts-and-result-views.md#unified-artifact-viewer);
 [Q6](#q6--may-an-artifact-selection-emit-a-research-action) is what remains open there.
 
 ### The question
@@ -264,46 +269,81 @@ videos fall on the array side.
 
 ---
 
-## Q8 — Should provider sessions persist between turns or support hard interruption?
+## Q8 — Should RCP hold live provider sessions so a running turn can be interrupted?
 
-**Status:** open only for lifecycle changes beyond live human steering. The
-ordinary human-steering channel was decided on 2026-09-05 and is specified in
-[Durable task lifecycle](specs/providers-and-containment.md#live-human-steering).
+**Status:** open. Raised 2026-08-07. Deliberately deferred, not ruled out.
+**Governing section:** [Durable task lifecycle](../specs/providers-and-containment.md#durable-task-lifecycle).
+**Related work:** [orchestrator handoff](handoffs/handoff-2026-08-07-orchestrator.md).
 
-### Decided boundary
+### The question
 
-A human may send input to the ordinary Discuss or Work turn they are watching,
-through the provider process RCP already owns for that exact attempt. Codex
-app-server uses its active-turn precondition; Claude stream-json uses replayed
-user UUID acknowledgments and a first-result completion fence. Exec cannot
-receive live input. Delivery receipts persist with the human message, and RCP
-never resends an uncertain or refused steer as a later turn.
+RCP's agents terminate and resume. Nothing can reach a turn while it is running.
+The human decided not to change that now, but the constraint turned out to be
+RCP's, not the providers'.
 
-This modest channel needs no persistent daemon and does not change capability,
-graph target, scope, budget, graceful Stop, or the recovery ladder. Every agent
-is still either running a turn or asleep with durable state. The former
-deferral of all input to a running turn no longer applies.
+### Evidence gathered so far
 
-### What remains open
+Both installed CLIs expose a real-time inbound channel. Verified by probing the
+binaries on 2026-08-07, not from memory:
 
-Whether RCP should ever retain a provider process between turns or expose a hard
-interrupt. Those changes would need their own ownership and recovery contract,
-including SSH connection loss, process death, and interaction with Pause,
-Resume, Retry, and Stop. The per-turn steering channel does not authorize them.
+- **Claude Code** — `--input-format stream-json` is documented as *"realtime
+  streaming input"*, paired with `--output-format stream-json`. Also `--bg`
+  background agents with `claude agents --json` for scripting, and
+  `--forward-subagent-text`, which surfaces subagent text with
+  `parent_tool_use_id`.
+- **Codex** — the installed build exposes a JSON-RPC app-server over stdio with
+  persisted `thread/start` / `thread/resume` and `turn/start` lifecycles. RCP now
+  uses one fresh app-server process per provider turn. That proves a richer wire
+  protocol and Desktop-visible persisted threads; it does not keep a process
+  alive between turns or make an in-flight human interruption channel.
 
-Human steering of episode workers is a separate follow-up: any such input would
-need to be retained in episode lineage and surfaced to the orchestrator as a
-notice. Today the human messages the orchestrator, not a child. Agent-to-agent
-live steering remains excluded; the unresolved peer-mail design is
-[Q9](#q9--how-does-peer-to-peer-agent-mail-work-once-rcp-is-multiplayer).
+So "the CLI has no bidirectional turn protocol" is false. Re-probe before
+relying on specifics because app-server remains experimental. The open question
+is still whether RCP should expose input to a running turn, not whether RCP can
+select app-server as its per-turn transport.
+
+### What blocks a decision
+
+**The cost is RCP's lifecycle model, not the provider.** Everything RCP owns is
+built on terminating subprocesses with durable resume: the recovery ladder,
+Pause/Resume/Retry, restart safety, SSH PID wrappers, locks that release on
+process death. A live session daemon inverts that. Over SSH especially, a
+dropped connection is survivable today precisely because state is durable and
+the lock releases; with a live bidirectional stream it becomes lost session
+state.
+
+The property that would be traded away: *every agent is either running a turn or
+asleep with durable state.* That is what makes RCP restart-safe, and it is worth
+more than responsiveness for research work where turns are minutes or hours
+apart.
+
+### The use case, if it is ever built
+
+Live messaging is not for coordination — turn-based handoff serves that fine,
+and the [graph-condition wake](handoffs/handoff-2026-08-07-graph-condition-wake.md)
+covers the responsive cases through canonical state. It is for **interruption**:
+"stop, wrong approach," "the cluster died," "I changed the framing." Mail cannot
+do that, because it arrives at the next wake, and for a long turn that is an
+hour of burned work.
+
+Note the most valuable sender is the **human**, not another agent. If this is
+ever built, the first version should be one live channel, human→agent, on the
+turn the human is watching — a far smaller blast radius than agent-to-agent
+streaming, and the only version whose value is obvious.
+
+### Do not do in the meantime
+
+Do not add a partial live channel "just for the orchestrator." A second
+lifecycle model is the expensive part, and it is not less expensive for having
+one caller.
 
 ---
 
 ## Q9 — How does peer-to-peer agent mail work once RCP is multiplayer?
 
 **Status:** open. Raised 2026-08-07. Deferred until team spaces and orchestration land.
-**Governing section:** [Watcher resources](specs/conversations-episodes-and-watchers.md#watcher-resources).
-**Related work:** [orchestrator handoff](archive/handoffs/handoff-2026-08-07-orchestrator.md).
+**Governing section:** [Watcher resources](../specs/conversations-episodes-and-watchers.md#watcher-resources).
+**Related work:** [orchestrator handoff](handoffs/handoff-2026-08-07-orchestrator.md).
 
 The confirmed team-space design has no user-owned agent actors. Concrete tasks,
 workers, and episodes are addressable execution records; the ordinary and
@@ -369,8 +409,8 @@ consent questions above are the reason to wait.
 
 **Status:** open. Raised 2026-08-28. Explicitly outside the first team-server
 restore contract.
-**Governing scenarios:** [S95](acceptance/S95-durable-team-space.md) and
-[S104](acceptance/S104-backups-never-pause-work.md).
+**Governing scenarios:** [S95](../acceptance/S95-durable-team-space.md) and
+[S104](../acceptance/S104-backups-never-pause-work.md).
 
 ### Decided boundary
 

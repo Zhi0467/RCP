@@ -315,7 +315,7 @@ one above it, and takes precedence over it.
 | `set_coverage` | Ingestion bookkeeping. | Seed/Refresh only | no | no |
 | `set_project_truth_scope` | Change which repositories are project truth. | no | no | yes |
 | `set_ontology` | Extend or deprecate type vocabulary. | no | no | yes |
-| `upsert_glossary` | Author a glossary term. | no | no | no — see [Q4](../open-questions.md) |
+| `upsert_glossary` | Author a glossary term. | no | no | no — see [Q4](../open-questions-2026-09-05.md) |
 
 `create_ambiguity` and `resolve_ambiguity` remain in the operation set for wire
 compatibility and replay of historical patches. No profile permits either.
@@ -543,7 +543,7 @@ acceptance passes. Those passes still need to specify:
   boundary 10 below and the one part of this module nothing has built — proposed
   as [S121](../acceptance/S121-a-refusal-explains-itself.md); and
 - how future human or peer-agent messaging consumes budget and authorization,
-  which is [Q9](../open-questions.md) rather than a detail of this module.
+  which is [Q9](../open-questions-2026-09-05.md) rather than a detail of this module.
 
 Settled since this list was written, and no longer open here: the Proposal
 operation shapes for modifying an existing ResearchQuestion or Hypothesis, and

@@ -8,7 +8,8 @@ backend eligibility and disabled reasons, and the web control. Local provider
 and API regressions pass. A served Codex Discuss turn verified delivered and
 post-completion refused receipts; exec's disabled state was verified through
 the API. Restart preserved those receipts and recovered an active exec turn as
-paused with Resume/Retry available. S134, current specs, and Q8 are updated.
+paused with Resume/Retry available. S134 and current specs record the settled
+steering contract; the retired open-questions document remains historical only.
 The Chromium chat-component interaction drive also passes; its steer responses
 are fixtures, not a live provider. Remaining verification includes the full
 served-app browser/console drive, an integrated live Claude turn, Work
@@ -44,7 +45,7 @@ because app-server remains experimental.
    says the human messages the orchestrator, not a child, and steering a worker
    would need the steer recorded in episode lineage and surfaced to the
    orchestrator as a notice. That is the named follow-up. Agent-to-agent
-   steering stays ruled out (Q8, Q9).
+   steering stays ruled out by the current provider and orchestration specs.
 2. **No persistent session.** Delivery is possible only while RCP's own provider
    process for that exact task attempt is alive. Every agent is still either
    running a turn or asleep with durable state; the recovery ladder, Pause,
@@ -218,7 +219,7 @@ that gap.
 - Specs in the same PR: durable task lifecycle and runtime selection gain the
   steer channel; conversation human input gains the record; the mail section's
   "nothing is injected into a live provider process" is narrowed to notices and
-  mail; retire the Q8 deferral wherever current docs still state it.
+  mail; retire the former live-input deferral wherever current docs still state it.
 
 
 ## Phase 2: local verification receipts

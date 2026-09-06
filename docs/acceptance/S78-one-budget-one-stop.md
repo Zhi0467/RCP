@@ -204,4 +204,6 @@ The report renders through the existing sandboxed HTML boundary; an episode
 document is not a reason to invent an unrestricted one.
 
 Live steering of episode workers and worker-to-worker mail are out of scope,
-deferred as [Q8 and Q9](../open-questions.md).
+not promised by this scenario. The separate
+[live human steering](../specs/providers-and-containment.md#live-human-steering)
+channel addresses only ordinary human-triggered Discuss or Work turns.
