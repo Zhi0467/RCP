@@ -668,6 +668,33 @@ def rename_space(name: str) -> dict:
     return value
 
 
+def backup_inventory(data_dir: Path) -> dict:
+    """Read current typed omissions after failure; never export data or credentials."""
+    from datetime import UTC, datetime
+
+    from rcp.server_ops.backup_capture import inspect_snapshot_project_inventory
+    from rcp.server_ops.backup_models import inspect_app_data_capture_plan
+    from rcp.storage import AppStore
+
+    plan = inspect_app_data_capture_plan(data_dir)
+    store = AppStore.open_read_only(data_dir / "rcp.sqlite3")
+    projects = [
+        inspect_snapshot_project_inventory(
+            store, project, data_dir=data_dir, captured_at=datetime.now(UTC)
+        )
+        for project in store.projects()
+    ]
+    return {
+        "observation": "current_inventory_after_failure",
+        "app_data_complete": plan.complete,
+        "unclassified_app_data": list(plan.unclassified_entries),
+        "deferred_app_data": list(plan.deferred_entries),
+        "projects": [
+            {"status": project.status, "reason": project.unavailable_reason} for project in projects
+        ],
+    }
+
+
 def accept_work() -> dict:
     value = rename_space("Work accepted after activation")
     write_json(STATE / "accepted.json", value, service_owned=True)
@@ -821,7 +848,8 @@ def verify_case() -> dict:
 def main() -> int:
     action, *arguments = sys.argv[1:]
     require_guest(
-        root=action not in ("install-release", "prepare-data", "application", "filesystem")
+        root=action
+        not in ("install-release", "prepare-data", "application", "filesystem", "backup-inventory")
     )
     if action == "bootstrap":
         result = bootstrap()
@@ -898,6 +926,22 @@ def main() -> int:
         )
     elif action == "accept-work":
         result = accept_work()
+    elif action == "backup-inventory":
+        result = backup_inventory(Path("/home/rcp/rcp-server/data"))
+    elif action == "diagnostics":
+        from rcp_supervisor.launch import read_selected_receipt
+
+        selected = read_selected_receipt()
+        result = json.loads(
+            service(
+                [
+                    str(Path(selected["release_directory"]) / ".venv/bin/python"),
+                    str(SCRIPT),
+                    "backup-inventory",
+                ],
+                timeout=60,
+            ).stdout
+        )
     elif action == "verify-case":
         result = verify_case()
     else:
