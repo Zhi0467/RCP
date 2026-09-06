@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DAG viewport regression</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      import React, { useRef, useState } from "react";
+      import { createRoot } from "react-dom/client";
+      import { DagView } from "/src/views/GraphViews.tsx";
+      import "/src/styles.css";
+
+      const graph = {
+        revision: 1,
+        nodes: Object.fromEntries(
+          ["first", "second"].map((name) => {
+            const id = `hyp/${name}`;
+            return [
+              id,
+              {
+                id,
+                type: "hypothesis",
+                title: name,
+                statement: name,
+                standing: "asserted",
+                created_rev: 1,
+                updated_rev: 1,
+                source_refs: [],
+                extension_fields: {},
+              },
+            ];
+          }),
+        ),
+        edges: {},
+        ontology: { types: [], fields: [], relations: [] },
+        proposals: {},
+        glossary: {},
+        ambiguities: {},
+        validation_messages: [],
+        belief_transitions: [],
+        replay_status: "complete",
+        replay_failure: null,
+      };
+
+      function Fixture() {
+        const viewport = useRef(null);
+        const [visible, setVisible] = useState(true);
+        return React.createElement(
+          React.Fragment,
+          null,
+          React.createElement("button", { onClick: () => setVisible(!visible) }, "Toggle DAG"),
+          visible &&
+            React.createElement(DagView, {
+              projectId: "fixture",
+              graph,
+              trustView: "working",
+              viewportRef: viewport,
+              onSelectNode: () => {},
+            }),
+        );
+      }
+      createRoot(document.getElementById("root")).render(React.createElement(Fixture));
+    </script>
+  </body>
+</html>

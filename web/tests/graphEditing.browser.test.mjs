@@ -177,6 +177,80 @@ test("a failed graph-edit-options load says what is unavailable instead of promi
   }
 });
 
+test("a fitted gesture floor survives DagView unmount and remount after zooming in", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ reducedMotion: "reduce" });
+    const failures = [];
+    page.on("pageerror", (error) => failures.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") failures.push(message.text());
+    });
+    page.on("requestfailed", (request) => failures.push(request.url()));
+    await page.route("**/api/projects/fixture/graph-edit-options", (route) =>
+      route.fulfill({ json: { node_prefixes: {}, relations: [] } }),
+    );
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/dagViewport.html`,
+    );
+    await page.locator(".dag-node").first().waitFor();
+    await page.locator(".dag-node").evaluateAll((nodes) => {
+      nodes.forEach((node, index) => {
+        node.style.left = `${index * 100_000}px`;
+        node.style.top = "0px";
+      });
+    });
+    const readZoom = () =>
+      page.locator(".dag-canvas").evaluate((canvas) => Number(canvas.style.transform.slice(6, -1)));
+    const waitForZoom = (zoom) =>
+      page.waitForFunction(
+        (zoom) => document.querySelector(".dag-canvas")?.style.transform === `scale(${zoom})`,
+        zoom,
+      );
+    await page.getByRole("button", { name: "Fit", exact: true }).click();
+    await page.waitForFunction(
+      () => Number(document.querySelector(".dag-canvas").style.transform.slice(6, -1)) < 0.5,
+    );
+    const fittedZoom = await readZoom();
+    assert.ok(fittedZoom > 0 && fittedZoom < 0.5);
+    await page.locator(".dag-scroll").dispatchEvent("wheel", {
+      ctrlKey: true,
+      deltaY: -2_000,
+      clientX: 400,
+      clientY: 250,
+    });
+    await page.waitForFunction(
+      () => Number(document.querySelector(".dag-canvas").style.transform.slice(6, -1)) > 0.5,
+    );
+    const zoomedIn = await readZoom();
+    await page.getByRole("button", { name: "Toggle DAG", exact: true }).click();
+    await page.locator(".dag-canvas").waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "Toggle DAG", exact: true }).click();
+    await page.locator(".dag-node").first().waitFor();
+    await waitForZoom(zoomedIn);
+    // Do not Fit again: only the shared viewport can restore the original floor.
+    await page.locator(".dag-scroll").dispatchEvent("wheel", {
+      ctrlKey: true,
+      deltaY: 100_000,
+      clientX: 400,
+      clientY: 250,
+    });
+    await waitForZoom(fittedZoom);
+    assert.equal(await readZoom(), fittedZoom);
+    assert.deepEqual(failures, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
 test("Fit replaces a sprawling layout's gesture floor when the layout becomes compact", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
