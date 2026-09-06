@@ -26,6 +26,7 @@ from rcp.limits import (
     MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
     SERVER_CONTROL_ACCEPT_POLL_INTERVAL_SECONDS,
     SERVER_CONTROL_BACKUP_CAPTURE_TIMEOUT_SECONDS,
+    SERVER_CONTROL_COMPUTE_PROBE_TIMEOUT_SECONDS,
     SERVER_CONTROL_IO_TIMEOUT_SECONDS,
     SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS,
     SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS,
@@ -1216,8 +1217,10 @@ class ServerControlClient:
             timeout = SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS
         elif request.operation in {"maintenance_verify", "maintenance_release"}:
             timeout = SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS
-        elif request.operation in {"provider_readiness_check", "compute_backend_probe"}:
+        elif request.operation == "provider_readiness_check":
             timeout = SERVER_CONTROL_PROVIDER_CHECK_TIMEOUT_SECONDS
+        elif request.operation == "compute_backend_probe":
+            timeout = SERVER_CONTROL_COMPUTE_PROBE_TIMEOUT_SECONDS
         elif request.operation == "project_provision_step":
             timeout = SERVER_CONTROL_PROJECT_PROVISION_TIMEOUT_SECONDS
         elif request.operation in {
