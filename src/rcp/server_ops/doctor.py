@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pwd
 import re
@@ -15,7 +16,7 @@ from typing import BinaryIO, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from rcp.limits import SERVER_INSTALL_PROBE_TIMEOUT_SECONDS
+from rcp.limits import SERVER_INSTALL_PROBE_TIMEOUT_SECONDS, SERVER_SUPERVISOR_PROJECTION_MAX_BYTES
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.config import InstalledServerConfig, load_installed_server_config
 from rcp.server_ops.control import (
@@ -135,6 +136,10 @@ class ServerDoctorReport(_StrictModel):
     last_backup_protected_projects: int | None = None
     last_backup_uncaptured_projects: int | None = None
     last_backup_failure: str | None = None
+    followed_release: str = "stable"
+    release_pin: str | None = None
+    selected_release_tag: str | None = None
+    supervisor_version: str | None = None
     update_operation_state: str = "none"
     update_candidate_commit: str | None = None
     update_restored_commit: str | None = None
@@ -194,22 +199,19 @@ class ServerDoctorReport(_StrictModel):
     def fields(self) -> tuple[NonsecretField, ...]:
         return (
             NonsecretField(name="overall_state", value=self.overall_state),
+            NonsecretField(name="followed_release", value=self.followed_release),
+            NonsecretField(name="release_pin", value=_shown(self.release_pin)),
+            NonsecretField(name="selected_release_tag", value=_shown(self.selected_release_tag)),
+            NonsecretField(name="supervisor_version", value=_shown(self.supervisor_version)),
             NonsecretField(name="installation_id", value=_shown(self.installation_id)),
             NonsecretField(name="service_account", value=self.service_account),
             NonsecretField(name="data_dir", value=self.data_dir),
-            NonsecretField(name="source_root", value=self.source_root),
             NonsecretField(name="releases_root", value=self.releases_root),
             NonsecretField(name="configured_origin", value=_shown(self.configured_origin)),
             NonsecretField(
                 name="configured_authentication",
                 value=_shown(self.configured_authentication),
             ),
-            NonsecretField(name="configured_branch", value=_shown(self.configured_branch)),
-            NonsecretField(
-                name="source_public_key_fingerprint",
-                value=_shown(self.source_public_key_fingerprint),
-            ),
-            NonsecretField(name="managed_main_head", value=_shown(self.managed_main_head)),
             NonsecretField(name="upstream_head", value=_shown(self.upstream_head)),
             NonsecretField(name="candidate_commit", value=_shown(self.candidate_commit)),
             NonsecretField(name="current_commit", value=_shown(self.current_commit)),
@@ -401,6 +403,7 @@ class LinuxServerDoctorMachine:
         self._runner = runner or _run_read_only
         self._service_identity = service_identity
         self._root_identity = root_identity
+        self._selected: dict | None = None
 
     def inspect(self) -> ServerDoctorReport:
         problems: list[str] = []
@@ -518,20 +521,22 @@ class LinuxServerDoctorMachine:
             source_state=source_state,
         )
         return ServerDoctorReport(
+            followed_release=config.release.followed if config else "stable",
+            release_pin=config.release.pin if config else None,
+            selected_release_tag=self._selected["release_tag"] if self._selected else None,
+            supervisor_version=self._selected["supervisor_version"] if self._selected else None,
             overall_state=overall_state,
             installation_id=config.installation_id if config is not None else None,
             service_account=self.layout.service_account,
             data_dir=str(self.layout.data_dir),
             source_root=str(self.layout.source_checkout),
             releases_root=str(self.layout.releases_root),
-            configured_origin=config.source.origin if config is not None else None,
-            configured_authentication=(
-                config.source.authentication if config is not None else None
-            ),
-            configured_branch=config.source.branch if config is not None else None,
-            source_public_key_fingerprint=(
-                config.source.public_key_fingerprint if config is not None else None
-            ),
+            configured_origin="https://github.com/Zhi0467/RCP/releases"
+            if config is not None
+            else None,
+            configured_authentication=("public" if config is not None else None),
+            configured_branch=None,
+            source_public_key_fingerprint=(None),
             managed_main_head=managed_head,
             upstream_head=upstream_head,
             candidate_commit=candidate_commit,
@@ -573,86 +578,88 @@ class LinuxServerDoctorMachine:
             problems=tuple(problems),
         )
 
-    def _inspect_restore(
-        self,
-        *,
-        service_uid: int,
-        add_problem: Callable[[str], None],
-    ) -> bool:
-        from rcp.server_ops.restore import RestoreRefused, unfinished_restore_operation
-
-        try:
-            operation = unfinished_restore_operation(
-                self.layout,
-                expected_uid=service_uid,
-            )
-        except (OSError, RestoreRefused):
-            add_problem("restore operation state is unsafe; preserve it and rerun server restore")
-            return True
-        if operation is None:
-            return False
-        add_problem("unfinished replacement restore requires sudo rcp server restore re-entry")
-        return True
+    def _inspect_restore(self, *, service_uid: int, add_problem: Callable[[str], None]) -> bool:
+        # The supervisor projection below includes both update and restore work.
+        return False
 
     def _inspect_update(
-        self,
-        *,
-        service_uid: int,
-        installation_id: str | None,
-        add_problem: Callable[[str], None],
+        self, *, service_uid: int, installation_id: str | None, add_problem: Callable[[str], None]
     ) -> _DoctorUpdateSummary:
-        from rcp.server_ops.update_checkpoint import (
-            UpdateCheckpointRefused,
-            unfinished_rollback_journals,
-        )
-        from rcp.server_ops.update_cutover import (
-            UpdateCutoverRefused,
-            update_operation_needing_recovery,
-            update_operation_receipts,
-        )
-
         try:
-            operations = update_operation_receipts(
-                self.layout.update_checkpoints_root,
-                expected_uid=service_uid,
-            )
-            recovery = update_operation_needing_recovery(
-                self.layout.update_checkpoints_root,
-                expected_uid=service_uid,
-                receipts=operations,
-            )
-            journals = unfinished_rollback_journals(
-                self.layout.update_checkpoints_root,
-                expected_uid=service_uid,
-            )
-        except (OSError, UpdateCheckpointRefused, UpdateCutoverRefused):
-            add_problem("update maintenance receipts or rollback journals are unsafe")
+            status = self._read_root_document(self.layout.supervisor_root / "status.json")
+            required = {
+                "version",
+                "operation_id",
+                "kind",
+                "phase",
+                "previous_build",
+                "target_build",
+                "error",
+                "active",
+            }
+            if (
+                status.keys() != required
+                or type(status["version"]) is not int
+                or status["version"] != 1
+                or type(status["active"]) is not bool
+            ):
+                raise ValueError("invalid status")
+            if (
+                not isinstance(status["phase"], str)
+                or re.fullmatch(r"[a-z_]{1,80}", status["phase"]) is None
+            ):
+                raise ValueError("invalid phase")
+            if status["active"]:
+                add_problem(
+                    "supervisor operation remains active; inspect sudo rcp-supervisor server doctor"
+                )
+            failure = status["error"]
+            if failure is not None and (
+                not isinstance(failure, str)
+                or len(failure) > 500
+                or any(ord(c) < 32 for c in failure)
+            ):
+                raise ValueError("invalid error")
+            return _DoctorUpdateSummary(state=status["phase"], failure=failure)
+        except (OSError, ValueError):
+            add_problem("root-owned supervisor status projection is unavailable or invalid")
             return _DoctorUpdateSummary(state="unavailable")
-        if journals:
-            add_problem("unfinished update rollback requires sudo rcp server update re-entry")
-        if not operations:
-            return _DoctorUpdateSummary(state="none")
-        selected = recovery or max(
-            operations,
-            key=lambda item: (item[1].updated_at, item[1].operation_id),
-        )
-        _path, receipt, _digest = selected
-        qualifier = "unfinished" if recovery is not None else "latest"
-        if installation_id is not None and receipt.installation_id != installation_id:
-            add_problem(f"{qualifier} update receipt belongs to another server installation")
-        runtime_failure = getattr(receipt, "runtime_failure", None)
-        if not receipt.terminal:
-            add_problem("unfinished source update requires sudo rcp server update re-entry")
-        elif receipt.state in {"committed", "rolled_back"} and runtime_failure is not None:
-            add_problem(
-                "selected source release needs safe runtime restart via sudo rcp server update"
-            )
-        return _DoctorUpdateSummary(
-            state=receipt.state,
-            candidate_commit=receipt.candidate_commit,
-            restored_commit=(receipt.base_commit if receipt.state == "rolled_back" else None),
-            failure=runtime_failure or receipt.failure,
-        )
+
+    def _read_root_document(self, path: Path) -> dict:
+        for parent in reversed(path.parents):
+            info = parent.lstat()
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != self._root_identity[0]
+                or info.st_mode & 0o022
+            ):
+                raise ValueError("unsafe supervisor ancestry")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as source:
+            info = os.fstat(source.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != self._root_identity[0]
+                or info.st_mode & 0o022
+                or info.st_nlink != 1
+            ):
+                raise ValueError("unsafe supervisor projection")
+            content = source.read(SERVER_SUPERVISOR_PROJECTION_MAX_BYTES + 1)
+        if len(content) > SERVER_SUPERVISOR_PROJECTION_MAX_BYTES:
+            raise ValueError("supervisor projection exceeds bound")
+
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate projection field")
+                result[key] = value
+            return result
+
+        document = json.loads(content, object_pairs_hook=unique)
+        if not isinstance(document, dict):
+            raise ValueError("invalid supervisor projection")
+        return document
 
     def _resolve_service_identity(
         self,
@@ -701,8 +708,6 @@ class LinuxServerDoctorMachine:
             (self.layout.data_dir, "data directory"),
             (self.layout.projects_root, "projects root"),
             (self.layout.credentials_root, "credentials root"),
-            (self.layout.update_checkpoints_root, "update checkpoints root"),
-            (self.layout.restore_operations_root, "restore operations root"),
             (self.layout.codex_state_root, "Codex state root"),
             (self.layout.claude_state_root, "Claude state root"),
             (self.layout.ssh_state_root, "SSH state root"),
@@ -717,15 +722,6 @@ class LinuxServerDoctorMachine:
                 mode=0o700,
                 add_problem=add_problem,
             )
-        _check_path(
-            self.layout.source_checkout,
-            label="managed source checkout",
-            kind="directory",
-            uid=service_uid,
-            gid=service_gid,
-            mode=None,
-            add_problem=add_problem,
-        )
         _check_path(
             self.layout.config_path.parent,
             label="server configuration directory",
@@ -794,28 +790,6 @@ class LinuxServerDoctorMachine:
                     mode=0o600,
                     add_problem=add_problem,
                 )
-        if config is not None and config.source.authentication == "deploy_key":
-            for path, label, mode in (
-                (
-                    self.layout.credentials_root / "source_ed25519",
-                    "source private key",
-                    0o600,
-                ),
-                (
-                    self.layout.credentials_root / "source_ed25519.pub",
-                    "source public key",
-                    0o644,
-                ),
-            ):
-                _check_path(
-                    path,
-                    label=label,
-                    kind="file",
-                    uid=service_uid,
-                    gid=service_gid,
-                    mode=mode,
-                    add_problem=add_problem,
-                )
 
     def _inspect_source(
         self,
@@ -825,70 +799,50 @@ class LinuxServerDoctorMachine:
         service_gid: int,
         add_problem: Callable[[str], None],
     ) -> tuple[str | None, str | None, DoctorSourceState]:
-        if config is None:
+        self._selected = None
+        try:
+            selected = self._read_root_document(self.layout.selected_release_receipt)
+            required = {
+                "version",
+                "release_tag",
+                "version_string",
+                "build",
+                "commit",
+                "manifest_sha256",
+                "release_directory",
+                "supervisor_version",
+            }
+            if (
+                selected.keys() != required
+                or type(selected["version"]) is not int
+                or selected["version"] != 1
+                or type(selected["build"]) is not int
+                or selected["build"] < 1
+            ):
+                raise ValueError("invalid selected receipt")
+            for key, pattern in (
+                ("commit", r"[0-9a-f]{40}"),
+                ("manifest_sha256", r"[0-9a-f]{64}"),
+                ("release_tag", r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"),
+                ("supervisor_version", r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"),
+            ):
+                if (
+                    not isinstance(selected[key], str)
+                    or re.fullmatch(pattern, selected[key]) is None
+                ):
+                    raise ValueError("invalid selected identity")
+            if (
+                selected["version_string"]
+                != f"{selected['release_tag'][1:]}+build.{selected['build']}.g{selected['commit'][:7]}"
+                or selected["release_directory"]
+                != str(self.layout.releases_root / str(selected["build"]))
+            ):
+                raise ValueError("mismatched selected identity")
+            self._selected = selected
+            return selected["commit"], selected["commit"], "aligned"
+        except (OSError, ValueError):
+            add_problem("root-owned selected release receipt is unavailable or invalid")
             return None, None, "unavailable"
-        source = self.layout.source_checkout
-        safe = all(
-            (
-                _check_path(
-                    self.layout.service_home,
-                    label="service home",
-                    kind="directory",
-                    uid=service_uid,
-                    gid=service_gid,
-                    mode=0o700,
-                    add_problem=add_problem,
-                ),
-                _check_path(
-                    self.layout.server_root,
-                    label="server root",
-                    kind="directory",
-                    uid=service_uid,
-                    gid=service_gid,
-                    mode=0o700,
-                    add_problem=add_problem,
-                ),
-                _check_path(
-                    source,
-                    label="managed source checkout",
-                    kind="directory",
-                    uid=service_uid,
-                    gid=service_gid,
-                    mode=None,
-                    add_problem=add_problem,
-                ),
-            )
-        )
-        if not safe:
-            return None, None, "unavailable"
-        origin = self._git_text(source, ("remote", "get-url", "origin"))
-        branch = self._git_text(source, ("symbolic-ref", "--short", "HEAD"))
-        dirty = self._git_text(source, ("status", "--porcelain", "--untracked-files=all"))
-        managed = self._git_commit(source, "HEAD")
-        upstream = self._git_commit(source, "origin/main")
-        if origin is None or origin != config.source.origin:
-            add_problem(MANAGED_SOURCE_ORIGIN_MISMATCH)
-        if branch is None or branch != config.source.branch:
-            add_problem("managed source is not checked out on configured main")
-        if dirty is None:
-            add_problem("managed source cleanliness could not be read")
-        elif dirty:
-            add_problem("managed source has tracked or untracked changes")
-        if managed is None:
-            add_problem("managed source HEAD is unavailable or invalid")
-        if upstream is None:
-            add_problem("the last fetched origin/main identity is unavailable or invalid")
-        if managed is None or upstream is None:
-            return managed, upstream, "unavailable"
-        if managed == upstream:
-            return managed, upstream, "aligned"
-        if self._git_is_ancestor(source, managed, upstream):
-            return managed, upstream, "update_available"
-        if self._git_is_ancestor(source, upstream, managed):
-            add_problem("managed main is ahead of the last fetched origin/main")
-            return managed, upstream, "local_ahead"
-        add_problem("managed main and the last fetched origin/main have diverged")
-        return managed, upstream, "diverged"
 
     def _inspect_current_release(
         self,
@@ -899,66 +853,20 @@ class LinuxServerDoctorMachine:
         root_gid: int,
         add_problem: Callable[[str], None],
     ) -> str | None:
-        current = self.layout.current_release
+        if self._selected is None:
+            return None
         try:
-            info = current.lstat()
-            target = Path(os.readlink(current))
-        except (FileNotFoundError, OSError):
-            add_problem("current release pointer is missing or unreadable")
+            info = self.layout.current_release.lstat()
+            if (
+                not stat.S_ISLNK(info.st_mode)
+                or (info.st_uid, info.st_gid) != (root_uid, root_gid)
+                or os.readlink(self.layout.current_release) != self._selected["release_directory"]
+            ):
+                raise ValueError("mismatched pointer")
+            return self._selected["commit"]
+        except (OSError, ValueError):
+            add_problem("current release pointer disagrees with the root-owned selected receipt")
             return None
-        if not stat.S_ISLNK(info.st_mode) or (info.st_uid, info.st_gid) != (root_uid, root_gid):
-            add_problem("current release pointer has the wrong type or owner")
-            return None
-        if (
-            not target.is_absolute()
-            or target.parent != self.layout.releases_root
-            or _FULL_GIT_COMMIT.fullmatch(target.name) is None
-            or target != self.layout.release_dir(target.name)
-        ):
-            add_problem("current release pointer does not name one canonical release")
-            return None
-        if not all(
-            (
-                _check_path(
-                    self.layout.service_home,
-                    label="service home",
-                    kind="directory",
-                    uid=service_uid,
-                    gid=service_gid,
-                    mode=0o700,
-                    add_problem=add_problem,
-                ),
-                _check_path(
-                    self.layout.server_root,
-                    label="server root",
-                    kind="directory",
-                    uid=service_uid,
-                    gid=service_gid,
-                    mode=0o700,
-                    add_problem=add_problem,
-                ),
-                _check_path(
-                    self.layout.releases_root,
-                    label="releases root",
-                    kind="directory",
-                    uid=service_uid,
-                    gid=service_gid,
-                    mode=0o700,
-                    add_problem=add_problem,
-                ),
-                _check_path(
-                    target,
-                    label="current release directory",
-                    kind="directory",
-                    uid=service_uid,
-                    gid=service_gid,
-                    mode=None,
-                    add_problem=add_problem,
-                ),
-            )
-        ):
-            return None
-        return target.name
 
     def _inspect_release(
         self,
@@ -969,9 +877,9 @@ class LinuxServerDoctorMachine:
         service_gid: int,
         add_problem: Callable[[str], None],
     ) -> str | None:
-        if commit is None:
+        if commit is None or self._selected is None or commit != self._selected["commit"]:
             return None
-        release = self.layout.release_dir(commit)
+        release = Path(self._selected["release_directory"])
         if not _check_path(
             release,
             label=f"{label} release directory",
@@ -982,36 +890,23 @@ class LinuxServerDoctorMachine:
             add_problem=add_problem,
         ):
             return None
-        head = self._git_commit(release, "HEAD")
-        if head != commit:
-            add_problem(f"{label} release Git identity differs from its directory name")
-        dirty = self._git_text(release, ("status", "--porcelain", "--untracked-files=all"))
-        if dirty is None:
-            add_problem(f"{label} release cleanliness could not be read")
-        elif dirty:
-            add_problem(f"{label} release has tracked or untracked changes")
-        web_root = release / "web" / "dist"
-        artifacts_safe = True
+        web_root = release / ".venv/lib/python3.12/site-packages/rcp/web_dist"
         for path, artifact, kind in (
-            (release / ".venv" / "bin" / "rcp", "Python entry point", "file"),
+            (release / ".venv/bin/rcp", "Python entry point", "file"),
             (web_root, "Web bundle", "directory"),
             (web_root / "index.html", "Web entry point", "file"),
         ):
-            artifacts_safe = (
-                _check_descendant_path(
-                    path,
-                    root=release,
-                    label=f"{label} release {artifact}",
-                    kind=kind,
-                    uid=service_uid,
-                    gid=service_gid,
-                    mode=None,
-                    add_problem=add_problem,
-                )
-                and artifacts_safe
-            )
-        if not artifacts_safe:
-            return None
+            if not _check_descendant_path(
+                path,
+                root=release,
+                label=f"{label} release {artifact}",
+                kind=kind,
+                uid=service_uid,
+                gid=service_gid,
+                mode=None,
+                add_problem=add_problem,
+            ):
+                return None
         try:
             return web_build_identity(web_root)
         except ServerMetadataError:
@@ -1109,8 +1004,6 @@ class LinuxServerDoctorMachine:
     ) -> tuple[bool, str]:
         probes: tuple[tuple[str, tuple[str, ...], Callable[[str], bool]], ...] = (
             ("git", ("git", "--version"), lambda value: value.startswith("git version ")),
-            ("node", ("node", "--version"), lambda value: _major(value) == 24),
-            ("npm", ("npm", "--version"), lambda value: _major(value) is not None),
             ("uv", ("uv", "--version"), lambda value: value.startswith("uv ")),
             ("age", ("age", "--version"), lambda value: _major(value) == 1),
             ("ssh", ("ssh", "-V"), lambda value: value.startswith("OpenSSH_")),
@@ -1125,8 +1018,8 @@ class LinuxServerDoctorMachine:
             else:
                 versions.append(f"{name}={_version_token(value)}")
         python = (
-            self.layout.release_dir(current_commit) / ".venv" / "bin" / "python"
-            if current_commit is not None
+            Path(self._selected["release_directory"]) / ".venv" / "bin" / "python"
+            if current_commit is not None and self._selected is not None
             else None
         )
         python_value = self._version((str(python), "--version")) if python is not None else None
@@ -1225,39 +1118,6 @@ class LinuxServerDoctorMachine:
             failure=outcome.failure,
             **common,
         )
-
-    def _git_text(self, root: Path, argv: tuple[str, ...]) -> str | None:
-        result = self._runner(
-            ("git", "-c", f"safe.directory={root}", "-C", str(root), *argv),
-            cwd=root,
-        )
-        if result.returncode != 0:
-            return None
-        value = result.stdout.strip()
-        if any(ord(character) < 32 and character not in "\n\r\t" for character in value):
-            return None
-        return value
-
-    def _git_commit(self, root: Path, revision: str) -> str | None:
-        value = self._git_text(root, ("rev-parse", "--verify", f"{revision}^{{commit}}"))
-        return value if value is not None and _FULL_GIT_COMMIT.fullmatch(value) else None
-
-    def _git_is_ancestor(self, root: Path, first: str, second: str) -> bool:
-        result = self._runner(
-            (
-                "git",
-                "-c",
-                f"safe.directory={root}",
-                "-C",
-                str(root),
-                "merge-base",
-                "--is-ancestor",
-                first,
-                second,
-            ),
-            cwd=root,
-        )
-        return result.returncode == 0
 
     def _systemd_property(
         self,

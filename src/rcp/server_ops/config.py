@@ -18,7 +18,7 @@ from rcp.server_ops._local_primitives import fsync_directory as _fsync_directory
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import SERVER_CLI_MAX_FIELD_CHARS
 
-SERVER_CONFIG_SCHEMA_VERSION = 2
+SERVER_CONFIG_SCHEMA_VERSION = 3
 LEGACY_SERVER_CONFIG_SCHEMA_VERSION = 1
 SERVER_CONFIG_MODE = 0o640
 DEFAULT_BACKUP_SCHEDULE = "02:00"
@@ -68,6 +68,26 @@ class ServerSourceConfig(_StrictModel):
         if self.authentication == "deploy_key" and self.public_key_fingerprint is None:
             raise ValueError("a deploy-key source requires its public fingerprint")
         return self
+
+
+class ServerReleaseConfig(_StrictModel):
+    followed: Literal["stable"] = "stable"
+    pin: str | None = None
+
+    @field_validator("pin")
+    @classmethod
+    def validate_pin(cls, value: str | None) -> str | None:
+        if (
+            value is not None
+            and re.fullmatch(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", value)
+            is None
+        ):
+            raise ValueError("release pin must be an exact promoted vX.Y.Z release")
+        return value
+
+    @property
+    def selector(self) -> str:
+        return self.pin or self.followed
 
 
 class ServerPathsConfig(_StrictModel):
@@ -133,7 +153,8 @@ class InstalledServerConfig(_StrictModel):
     installation_id: str
     service_account: Literal["rcp"] = "rcp"
     service_unit: Literal["rcp.service"] = "rcp.service"
-    source: ServerSourceConfig
+    source: ServerSourceConfig | None = None
+    release: ServerReleaseConfig = ServerReleaseConfig()
     paths: ServerPathsConfig
     backup: ServerBackupConfig | None = None
 
@@ -151,7 +172,7 @@ class InstalledServerConfig(_StrictModel):
 
 def create_installed_server_config(
     *,
-    source: ServerSourceConfig,
+    source: ServerSourceConfig | None = None,
     installation_id: str | None = None,
 ) -> InstalledServerConfig:
     return InstalledServerConfig(
@@ -168,13 +189,21 @@ def render_installed_server_config(config: InstalledServerConfig) -> str:
     document.add("service_account", config.service_account)
     document.add("service_unit", config.service_unit)
 
-    source = tomlkit.table()
-    source.add("origin", config.source.origin)
-    source.add("branch", config.source.branch)
-    source.add("authentication", config.source.authentication)
-    if config.source.public_key_fingerprint is not None:
-        source.add("public_key_fingerprint", config.source.public_key_fingerprint)
-    document.add("source", source)
+    release = tomlkit.table()
+    release.add("followed", config.release.followed)
+    if config.release.pin is not None:
+        release.add("pin", config.release.pin)
+    document.add("release", release)
+    # Preserve shipped source metadata for explicit migration/revocation only.
+    # New installations never create a source checkout or source credential.
+    if config.source is not None:
+        source = tomlkit.table()
+        source.add("origin", config.source.origin)
+        source.add("branch", config.source.branch)
+        source.add("authentication", config.source.authentication)
+        if config.source.public_key_fingerprint is not None:
+            source.add("public_key_fingerprint", config.source.public_key_fingerprint)
+        document.add("source", source)
 
     paths = tomlkit.table()
     for name, value in config.paths.model_dump().items():
@@ -198,9 +227,16 @@ def parse_installed_server_config(content: str) -> InstalledServerConfig:
     try:
         data = tomlkit.parse(content).unwrap()
         schema_version = data.get("schema_version")
-        if type(schema_version) is int and schema_version == LEGACY_SERVER_CONFIG_SCHEMA_VERSION:
-            if "backup" in data:
+        if type(schema_version) is int and schema_version in (
+            LEGACY_SERVER_CONFIG_SCHEMA_VERSION,
+            2,
+        ):
+            if schema_version == LEGACY_SERVER_CONFIG_SCHEMA_VERSION and "backup" in data:
                 raise ValueError("legacy installed-server configuration cannot contain backup")
+            if "source" not in data:
+                raise ValueError("legacy installed-server configuration requires source metadata")
+            if "release" in data:
+                raise ValueError("legacy installed-server configuration cannot contain release")
             data["schema_version"] = SERVER_CONFIG_SCHEMA_VERSION
         return InstalledServerConfig.model_validate(data)
     except (tomlkit.exceptions.ParseError, ValidationError, ValueError) as exc:

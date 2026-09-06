@@ -66,6 +66,7 @@ _ROOT_COMMANDS: frozenset[ServerCommandName] = frozenset(
         "server restore",
         "server provider update",
         "server update",
+        "server supervisor update",
     }
 )
 _SERVICE_COMMANDS: frozenset[ServerCommandName] = frozenset(
@@ -113,17 +114,11 @@ ServerCommandHandler = Callable[
 def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.ArgumentParser:
     server = subcommands.add_parser(
         "server",
-        help="Install, inspect, and maintain a source-built RCP team server",
-    )
-    server.add_argument(
-        "--machine-readable",
-        action="store_true",
-        default=False,
-        help="Stream the same bounded progress as one JSON object per line",
+        help="Install, inspect, and maintain an RCP team server",
     )
     server_commands = server.add_subparsers(dest="server_group", required=True)
 
-    install = _leaf(server_commands, "install", "Install or converge the source-built service")
+    install = _leaf(server_commands, "install", "Install or converge the release-based service")
     install.add_argument(
         "--team-name",
         required=True,
@@ -281,14 +276,29 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
     )
     member_remove.set_defaults(server_operation="server member remove")
 
-    update = _leaf(server_commands, "update", "Prepare a source-built origin/main candidate")
+    update = _leaf(server_commands, "update", "Install the followed promoted release")
     update.add_argument(
         "--confirm-target",
-        dest="update_confirmed_commit",
-        type=_git_commit,
-        help="Confirm exactly the fetched 40-character origin/main commit shown by RCP",
+        dest="update_confirmed_target",
+        type=_release_target,
+        help="Confirm the exact vX.Y.Z:manifest-sha256 release target shown by RCP",
     )
     update.set_defaults(server_operation="server update")
+    supervisor = server_commands.add_parser(
+        "supervisor", help="Maintain the independent deployment supervisor"
+    )
+    supervisor_commands = supervisor.add_subparsers(dest="supervisor_command", required=True)
+    supervisor_update = _leaf(
+        supervisor_commands, "update", "Install the supervisor from the followed release"
+    )
+    supervisor_update.set_defaults(server_operation="server supervisor update")
+    for parser in (server, backup, project, provider, member, supervisor):
+        parser.add_argument(
+            "--machine-readable",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="Stream the same bounded progress as one JSON object per line",
+        )
     return server
 
 
@@ -347,10 +357,15 @@ def _team_name(value: str) -> str:
     return normalized
 
 
-def _git_commit(value: str) -> str:
-    if _FULL_GIT_COMMIT.fullmatch(value) is None:
+def _release_target(value: str) -> str:
+    if (
+        re.fullmatch(
+            r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*):[0-9a-f]{64}", value
+        )
+        is None
+    ):
         raise argparse.ArgumentTypeError(
-            "confirmed update target must be a full lowercase 40-character Git object id"
+            "confirmed update target must be the exact vX.Y.Z:manifest-sha256 shown by RCP"
         )
     return value
 
@@ -426,7 +441,7 @@ def request_from_namespace(args: argparse.Namespace) -> ServerCommandRequest:
             backup_retention=getattr(args, "backup_retention", None),
             backup_age_recipient=getattr(args, "backup_age_recipient", None),
             backup_confirmed=getattr(args, "backup_confirmed", None),
-            update_confirmed_commit=getattr(args, "update_confirmed_commit", None),
+            update_confirmed_target=getattr(args, "update_confirmed_target", None),
         )
     except (AttributeError, ValidationError) as exc:  # pragma: no cover - parser owns public input
         raise RuntimeError("argparse produced an invalid server command") from exc
@@ -521,6 +536,13 @@ def _continue_interactive_wizard(
     if not isinstance(final, ServerStepEvent):  # pragma: no cover - execution owns this
         return execution.exit_code
     step = final.step
+    commands = [action.argv for action in step.actions if action.kind == "command"]
+    if step.phase == "supervisor_restore" and len(commands) > 1:
+        print(
+            "Restore lists mutually exclusive authority choices. Run exactly one displayed confirmation command; the wizard will not execute both.",
+            file=output_stream,
+        )
+        return execution.exit_code
     output_stream.write("\nComplete the step above, then press Enter to continue (q quits): ")
     output_stream.flush()
     answer = input_stream.readline()
@@ -531,7 +553,8 @@ def _continue_interactive_wizard(
         )
         return execution.exit_code
     resume = step.resume_argv
-    commands = [action.argv for action in step.actions if action.kind == "command"]
+    if step.phase == "supervisor_restore" and len(commands) == 1:
+        return runner(_wizard_command_for_identity(commands[0], identity))
     for command in commands:
         if command != resume:
             runner(_wizard_command_for_identity(command, identity))
@@ -615,17 +638,17 @@ def _dispatch_server_command(
 
             return prepare_backup_run_command(request, identity)
         case "server restore":
-            from rcp.server_ops.restore import prepare_restore_command
+            from rcp.server_ops.supervisor_client import prepare_supervisor_command
 
-            return prepare_restore_command(request, identity)
+            return prepare_supervisor_command(request, identity)
         case "server member remove":
             from rcp.server_ops.members import prepare_member_remove_command
 
             return prepare_member_remove_command(request, identity)
-        case "server update":
-            from rcp.server_ops.update import prepare_update_command
+        case "server update" | "server supervisor update":
+            from rcp.server_ops.supervisor_client import prepare_supervisor_command
 
-            return prepare_update_command(request, identity)
+            return prepare_supervisor_command(request, identity)
     raise AssertionError(f"Unhandled server command {request.command!r}")
 
 

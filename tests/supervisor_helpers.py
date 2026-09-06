@@ -12,11 +12,19 @@ RCP_WHEEL = f"rcp-{VERSION}-py3-none-any.whl"
 SUPERVISOR_WHEEL = "rcp_supervisor-0.1.0-py3-none-any.whl"
 
 
-def wheel_bytes(distribution: str, version: str, *, metadata_version: str | None = None) -> bytes:
+def wheel_bytes(
+    distribution: str,
+    version: str,
+    *,
+    metadata_version: str | None = None,
+    raw_metadata: bytes | None = None,
+) -> bytes:
     info = f"{distribution}-{version}.dist-info"
     contents = {
         f"{distribution}/__init__.py": f'__version__ = "{version}"\n'.encode(),
-        f"{info}/METADATA": (
+        f"{info}/METADATA": raw_metadata
+        if raw_metadata is not None
+        else (
             f"Metadata-Version: 2.3\nName: {distribution}\nVersion: {metadata_version or version}\n"
         ).encode(),
         f"{info}/WHEEL": (

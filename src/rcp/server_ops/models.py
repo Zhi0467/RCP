@@ -47,6 +47,7 @@ ServerCommandName = Literal[
     "server restore",
     "server member remove",
     "server update",
+    "server supervisor update",
 ]
 ServerStepState = Literal[
     "pending",
@@ -173,7 +174,7 @@ class ServerCommandRequest(_StrictModel):
     backup_retention: int | None = None
     backup_age_recipient: str | None = None
     backup_confirmed: bool | None = None
-    update_confirmed_commit: str | None = None
+    update_confirmed_target: str | None = None
 
     @field_validator("request_id", "project_id", "member_id", "restore_stale_member_id")
     @classmethod
@@ -189,11 +190,19 @@ class ServerCommandRequest(_StrictModel):
             return None
         return absolute_path(value, label=info.field_name.replace("_", " "))
 
-    @field_validator("update_confirmed_commit")
+    @field_validator("update_confirmed_target")
     @classmethod
-    def validate_update_commit(cls, value: str | None) -> str | None:
-        if value is not None and _FULL_GIT_COMMIT.fullmatch(value) is None:
-            raise ValueError("update confirmed commit must be a full lowercase Git object id")
+    def validate_update_target(cls, value: str | None) -> str | None:
+        if (
+            value is not None
+            and re.fullmatch(
+                r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*):[0-9a-f]{64}", value
+            )
+            is None
+        ):
+            raise ValueError(
+                "update confirmation must name the exact vX.Y.Z:manifest-sha256 target"
+            )
         return value
 
     @field_validator(
@@ -266,7 +275,7 @@ class ServerCommandRequest(_StrictModel):
             "backup_retention": self.backup_retention,
             "backup_age_recipient": self.backup_age_recipient,
             "backup_confirmed": self.backup_confirmed,
-            "update_confirmed_commit": self.update_confirmed_commit,
+            "update_confirmed_target": self.update_confirmed_target,
         }
         expected: set[str]
         if self.command == "server install":
@@ -333,7 +342,7 @@ class ServerCommandRequest(_StrictModel):
                 raise ValueError("backup configure requires explicit confirmation")
         elif self.command == "server update":
             expected = (
-                {"update_confirmed_commit"} if self.update_confirmed_commit is not None else set()
+                {"update_confirmed_target"} if self.update_confirmed_target is not None else set()
             )
         else:
             expected = set()

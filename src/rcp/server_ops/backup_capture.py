@@ -458,7 +458,9 @@ class BackupCaptureCoordinator:
             raise BackupCaptureUnavailable("The SQLite snapshot is not one named team space.")
         records = tuple(sorted(snapshot_store.projects(), key=lambda item: item.project_id))
         projects = tuple(
-            self._project_inventory(snapshot_store, record, captured_at=captured_at)
+            inspect_snapshot_project_inventory(
+                snapshot_store, record, data_dir=self.data_dir, captured_at=captured_at
+            )
             for record in records
         )
         if len(projects) > BACKUP_INVENTORY_MAX_ENTRIES:
@@ -560,81 +562,82 @@ class BackupCaptureCoordinator:
             raise BackupCaptureUnavailable("The private backup capture boundary is unsafe.")
         return capture_root
 
-    def _project_inventory(
-        self,
-        snapshot_store: AppStore,
-        record: ProjectRecord,
-        *,
-        captured_at: datetime,
-    ) -> BackupSnapshotProjectInventory:
-        try:
-            if record.home_space_id != snapshot_store.space_id:
-                raise BackupProjectInventoryUnavailable(
-                    "The project home differs from the captured team space."
-                )
-            requests = snapshot_store.completed_project_provisioning_requests(record.project_id)
-            registration = inspect_backup_project_registration(
-                record,
-                data_dir=self.data_dir,
-                provisioning_requests=requests,
+
+def inspect_snapshot_project_inventory(
+    snapshot_store: AppStore,
+    record: ProjectRecord,
+    *,
+    captured_at: datetime,
+    data_dir: Path,
+) -> BackupSnapshotProjectInventory:
+    try:
+        if record.home_space_id != snapshot_store.space_id:
+            raise BackupProjectInventoryUnavailable(
+                "The project home differs from the captured team space."
             )
-            tasks = snapshot_store.all_project_agent_tasks(record.project_id)
-            task_ids = tuple(sorted(task.operation_id for task in tasks))
-            if len(task_ids) != len(set(task_ids)):
-                raise BackupProjectInventoryUnavailable(
-                    "The project task set repeats an operation identity."
-                )
-            unresolved_revisions = {
-                (candidate.source_operation_id, candidate.source_artifact_id): candidate
-                for candidate in snapshot_store.unresolved_project_artifact_revision_candidates(
-                    record.project_id
-                )
-            }
-            artifacts = _kept_artifact_references(tasks, unresolved_revisions)
-            views = tuple(
-                _kept_result_view_reference(view)
-                for view in snapshot_store.kept_result_views(record.project_id)
+        requests = snapshot_store.completed_project_provisioning_requests(record.project_id)
+        registration = inspect_backup_project_registration(
+            record,
+            data_dir=data_dir,
+            provisioning_requests=requests,
+        )
+        tasks = snapshot_store.all_project_agent_tasks(record.project_id)
+        task_ids = tuple(sorted(task.operation_id for task in tasks))
+        if len(task_ids) != len(set(task_ids)):
+            raise BackupProjectInventoryUnavailable(
+                "The project task set repeats an operation identity."
             )
-            return BackupSnapshotProjectInventory(
-                project_id=record.project_id,
-                home_space_id=record.home_space_id,
-                locator=record.locator,
-                status="capturable",
-                recovery=registration.recovery,
-                task_operation_ids=task_ids,
-                kept_artifacts=artifacts,
-                kept_result_views=views,
+        unresolved_revisions = {
+            (candidate.source_operation_id, candidate.source_artifact_id): candidate
+            for candidate in snapshot_store.unresolved_project_artifact_revision_candidates(
+                record.project_id
             )
-        except BackupProjectUnavailable as exc:
-            reason = str(exc)
-        except (
-            BackupProjectInventoryUnavailable,
-            OSError,
-            RuntimeError,
-            ValueError,
-            sqlite3.Error,
-        ) as exc:
-            # The receipt keeps one fixed operator-safe reason, so the concrete
-            # cause is only recoverable from this log line. Do not attach the
-            # traceback: validation errors repeat their rejected input value.
-            diagnostic = " ".join(redact_server_text(str(exc)).split())
-            if not diagnostic:
-                diagnostic = "no diagnostic detail"
-            logger.warning(
-                "Backup capture could not inventory project %s: %s: %s",
-                record.project_id,
-                type(exc).__name__,
-                diagnostic[:BACKUP_DIAGNOSTIC_MAX_CHARS],
-            )
-            reason = "The captured project inventory is invalid or unavailable."
+        }
+        artifacts = _kept_artifact_references(tasks, unresolved_revisions)
+        views = tuple(
+            _kept_result_view_reference(view)
+            for view in snapshot_store.kept_result_views(record.project_id)
+        )
         return BackupSnapshotProjectInventory(
             project_id=record.project_id,
             home_space_id=record.home_space_id,
-            locator=_safe_project_locator(record.locator),
-            status="uncaptured",
-            unavailable_reason=reason,
-            unavailable_at=captured_at,
+            locator=record.locator,
+            status="capturable",
+            recovery=registration.recovery,
+            task_operation_ids=task_ids,
+            kept_artifacts=artifacts,
+            kept_result_views=views,
         )
+    except BackupProjectUnavailable as exc:
+        reason = str(exc)
+    except (
+        BackupProjectInventoryUnavailable,
+        OSError,
+        RuntimeError,
+        ValueError,
+        sqlite3.Error,
+    ) as exc:
+        # The receipt keeps one fixed operator-safe reason, so the concrete
+        # cause is only recoverable from this log line. Do not attach the
+        # traceback: validation errors repeat their rejected input value.
+        diagnostic = " ".join(redact_server_text(str(exc)).split())
+        if not diagnostic:
+            diagnostic = "no diagnostic detail"
+        logger.warning(
+            "Backup capture could not inventory project %s: %s: %s",
+            record.project_id,
+            type(exc).__name__,
+            diagnostic[:BACKUP_DIAGNOSTIC_MAX_CHARS],
+        )
+        reason = "The captured project inventory is invalid or unavailable."
+    return BackupSnapshotProjectInventory(
+        project_id=record.project_id,
+        home_space_id=record.home_space_id,
+        locator=_safe_project_locator(record.locator),
+        status="uncaptured",
+        unavailable_reason=reason,
+        unavailable_at=captured_at,
+    )
 
 
 def _kept_artifact_references(

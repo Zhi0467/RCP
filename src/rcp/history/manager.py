@@ -564,7 +564,17 @@ class HistoryManager:
             )
         self._reload_manifest()
         result = self.initialize()
-        if self.head_ref(result) != expected_main_head:
+        observed_head = self.head_ref(result)
+        # Shipped protected archives recorded the revision but omitted the
+        # transition identity. Preserve that explicit older proof boundary.
+        if (
+            observed_head.target != expected_main_head.target
+            or observed_head.revision != expected_main_head.revision
+            or (
+                expected_main_head.transition_id is not None
+                and observed_head.transition_id != expected_main_head.transition_id
+            )
+        ):
             raise ValueError("restored main history does not replay to its captured head")
         for branch_id, expected in sorted(expected_branches.items()):
             branch = self.branch(

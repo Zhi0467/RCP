@@ -37,7 +37,7 @@ boundary: before enrollment, token exchange, project-card read, or browser-cooki
 installation, the source-built desktop and team server negotiate the highest
 overlap in one inclusive integer protocol range. No overlap or a missing or
 mismatched handshake answer refuses the connection and names both source commits
-so the stale side can be updated from `origin/main`.
+so the desktop can be rebuilt or the server updated to a compatible promoted release.
 
 A compatible browser host may expose a page-scoped WebMCP tool surface for
 reading projects, opening existing views, sending ordinary conversation turns,
@@ -45,7 +45,7 @@ and operating bounded Experiment controls. Those tools compose the same browser
 and API owners as visible controls; they add no backend shortcut, graph-change
 channel, provider capability, or human-judgment authority.
 
-The confirmed first team deployment is one lab using one source-built RCP server
+The confirmed first team deployment is one lab using one installed RCP server
 and desktop member clients. A dedicated Linux `rcp` account owns the control
 plane and every server-local team checkout; an explicitly configured remote
 execution account owns a team checkout on its SSH machine. Members remain
@@ -54,10 +54,9 @@ identity, process identity, SSH transport credentials, repository credentials,
 and provider-native authentication are separate authorities. RCP selects and
 readiness-checks a provider but never performs or stores its login; execution
 uses whatever the configured operating-system account has authenticated
-natively. The source server runs a built checkout of GitHub `main` as a
+natively. The server runs a verified promoted artifact built from human-merged GitHub `main` as a
 non-reloading service, and its commit and update lifecycle are managed by the
-server CLI. "Source-built" does not make live development reload part of team
-operation. The unfinished journeys that make this deployment usable remain
+server CLI. The unfinished journeys that make this deployment usable remain
 explicit pending acceptance work.
 
 ## Cross-cutting invariants
@@ -189,7 +188,7 @@ winner by timestamp or silently implement around it.
   durable identity, team enrollment, membership, project homes, setup, caches,
   and process ownership.
 - [Server and machine operations](specs/server-and-machine-operations.md) — the
-  source-built team server, machine authority, version and update lifecycle,
+  installed team server, machine authority, version and update lifecycle,
   central checkouts, provisioning, transfer, and backup and restore.
 - [API, Web, and desktop projections](specs/api-web-and-desktop-projections.md) —
   mutation envelopes, current application surfaces, revision reconciliation,

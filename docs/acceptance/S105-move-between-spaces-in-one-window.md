@@ -6,7 +6,7 @@ driver: desktop
 covered_by:
   - tests/test_api_health.py::test_team_shell_protocol_one_fixture_matches_the_advertised_contract
   - tests/test_team_authentication.py::test_native_team_handshake_echoes_one_protocol_and_rejects_another
-  - tests/test_server_install_live.py
+  - tests/supervisor_reboot_live.py
   - web/tests/api.test.mjs
   - web/src-tauri/src/team_connections.rs::tests::registry_v2_migrates_without_changing_routing_cards_or_credential_reference
   - web/src-tauri/src/team_session.rs::tests

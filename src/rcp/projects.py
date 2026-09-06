@@ -409,6 +409,7 @@ def restored_project_owners(
     archived_manifest: Path,
     data_dir: Path,
     local_home: Path,
+    local_workspace_root: Path | None = None,
 ) -> RestoredProjectOwners:
     """Construct the concrete canonical owners before a restored project is visible."""
 
@@ -438,6 +439,8 @@ def restored_project_owners(
             "The archived manifest, restored catalog, and recovery descriptor disagree."
         )
     if record.state_remote:
+        if local_workspace_root is not None:
+            raise RestoredProjectPublicationRefused("Remote publication cannot use a local root.")
         try:
             bootstrap = load_manifest(record.locator)
             workspace = state_workspace_for_probe(bootstrap, data_dir)
@@ -447,7 +450,9 @@ def restored_project_owners(
                 "The restored remote canonical checkout is unavailable."
             ) from exc
     else:
-        workspace = LocalStateWorkspace(Path(record.state_location), record.state_location)
+        workspace = LocalStateWorkspace(
+            local_workspace_root or Path(record.state_location), record.state_location
+        )
     history = HistoryManager(
         manifest,
         workspace,
@@ -477,7 +482,11 @@ def complete_restored_project_publication(
 ) -> ProjectRecord:
     """Make one replay-proven restored project readable in the stopped catalog."""
 
-    if capture.main_head is None or owners.history.head_ref(materialization) != capture.main_head:
+    observed = owners.history.head_ref(materialization)
+    if capture.main_head is not None and capture.main_head.transition_id is None:
+        # Older protected archives proved the revision without a transition id.
+        observed = observed.model_copy(update={"transition_id": None})
+    if capture.main_head is None or observed != capture.main_head:
         raise RestoredProjectPublicationRefused(
             "The restored project cannot be exposed at a different canonical head."
         )

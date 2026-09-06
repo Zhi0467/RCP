@@ -1,11 +1,8 @@
-"""Concrete, idempotent installation of one source-built RCP team server."""
+"""Host bootstrap for promoted release artifacts and an independent supervisor."""
 
 from __future__ import annotations
 
-import base64
 import grp
-import hashlib
-import http.client
 import json
 import os
 import platform
@@ -14,1051 +11,119 @@ import re
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
-import time
-import uuid
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Literal, Protocol, TypeVar
+from typing import BinaryIO, Literal
+from uuid import uuid4
 
 from rcp.limits import (
-    SERVER_HEALTH_REQUEST_TIMEOUT_SECONDS,
     SERVER_INSTALL_ACCOUNT_TIMEOUT_SECONDS,
     SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
-    SERVER_INSTALL_HEALTH_POLL_INTERVAL_SECONDS,
-    SERVER_INSTALL_HEALTH_RESPONSE_MAX_BYTES,
-    SERVER_INSTALL_HEALTH_TIMEOUT_SECONDS,
     SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
     SERVER_INSTALL_SERVICE_TIMEOUT_SECONDS,
     SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
 )
 from rcp.server_ops._local_primitives import fsync_directory as _fsync_directory
-from rcp.server_ops.cli import (
-    CallerIdentity,
-    PreparedServerCommand,
-    ServerEventEmitter,
-)
+from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.config import (
-    InstalledServerConfig,
-    ServerSourceConfig,
     create_installed_server_config,
     load_installed_server_config,
     write_installed_server_config,
 )
-from rcp.server_ops.github import parse_github_repository_ref
-from rcp.server_ops.layout import (
-    DEFAULT_SERVER_LAYOUT,
-    ServerLayout,
-    server_service_unit_text,
-)
-from rcp.server_ops.models import (
-    CommandAction,
-    ExternalAction,
-    ExternalServiceTarget,
-    MachineTarget,
-    NonsecretField,
-    ServerCommandRequest,
-    ServerPlanEvent,
-    ServerStep,
-)
+from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout, server_service_unit_text
+from rcp.server_ops.models import ServerCommandRequest, ServerPlanEvent
 
-_FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
-_OPENSSH_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{20,64}={0,2}")
 _VERSION = re.compile(r"(?:^|\s|v)(?P<major>\d+)\.(?P<minor>\d+)(?:\.\d+)?")
-_AUTH_FAILURE_MARKERS = (
-    "authentication failed",
-    "could not read username",
-    "permission denied (publickey)",
-    "repository not found",
-    "could not read from remote repository",
-    "host key verification failed",
-)
-_NETWORK_FAILURE_MARKERS = (
-    "could not resolve host",
-    "failed to connect",
-    "connection timed out",
-    "network is unreachable",
-    "connection refused",
-    "temporary failure in name resolution",
-    "command timed out",
-)
-_SOURCE_PRIVATE_KEY = "source_ed25519"
-_SOURCE_PUBLIC_KEY = "source_ed25519.pub"
 _WRAPPER_MODE = 0o755
 _UNIT_MODE = 0o644
 _SERVICE_DIRECTORY_MODE = 0o700
 _CONFIG_DIRECTORY_MODE = 0o750
-_PRIVATE_KEY_MODE = 0o600
-_PUBLIC_KEY_MODE = 0o644
-_PUBLIC_KEY_MAX_BYTES = 4096
 
 
 class InstallRefused(RuntimeError):
-    """A known, safe refusal whose message may be shown to the operator."""
-
-
-class _ReportedInstallFailure(RuntimeError):
-    pass
-
-
-@dataclass(frozen=True)
-class GitHubRepository:
-    slug: str
-    https_origin: str
-    ssh_origin: str
-    deploy_keys_url: str
-
-
-@dataclass(frozen=True)
-class SourceTransition:
-    retired_deploy_key_label: str
-    deploy_keys_url: str
-    source_origin: str
-
-
-@dataclass(frozen=True)
-class SourceProbeContext:
-    environment: dict[str, str]
-    working_directory: Path | None
+    """A safe bootstrap refusal suitable for operator output."""
 
 
 @dataclass(frozen=True)
 class HostFacts:
     ubuntu_release: Literal["22.04", "24.04"]
     architecture: Literal["x86_64"] = "x86_64"
-    node_major: Literal[24] = 24
-
-
-@dataclass(frozen=True)
-class SourceAccess:
-    config: InstalledServerConfig
-    repository: GitHubRepository
-    grant_needed: bool
-    deploy_key_label: str | None = None
-    public_key: str | None = None
-    source_transitioned: bool = False
-    retired_deploy_key_label: str | None = None
-
-
-@dataclass(frozen=True)
-class ManagedCheckout:
-    commit: str
-    is_current_release: bool
-
-
-@dataclass(frozen=True)
-class ServiceInstallState:
-    data_state: Literal["fresh", "initialized"]
-    service_state: str
-
-
-@dataclass(frozen=True)
-class ServiceHealth:
-    status: Literal["ok"]
-    space_kind: Literal["team"]
-    space_name: str
-
-
-class InstallMachine(Protocol):
-    def validate_host(self) -> HostFacts: ...
-
-    def converge_account_and_layout(self) -> None: ...
-
-    def prepare_source_access(self, repository: GitHubRepository) -> SourceAccess: ...
-
-    def converge_source_checkout(self, access: SourceAccess) -> ManagedCheckout: ...
-
-    def build_release(self, checkout: ManagedCheckout) -> Path: ...
-
-    def install_service(
-        self,
-        checkout: ManagedCheckout,
-        release: Path,
-    ) -> ServiceInstallState: ...
-
-    def activate_and_verify(self) -> ServiceHealth: ...
 
 
 def prepare_install_command(
     request: ServerCommandRequest,
     identity: CallerIdentity,
     *,
-    machine: InstallMachine | None = None,
-    repository: GitHubRepository | None = None,
-    bootstrap_root: Path | None = None,
-    resume_executable: Path | None = None,
+    machine: LinuxInstallMachine | None = None,
 ) -> PreparedServerCommand:
-    """Prepare the complete plan without beginning installation work."""
+    """Initial bootstrap explicitly carries both wheels from the same stable release."""
+    from rcp.server_ops.supervisor_client import execute_supervisor_command
 
-    if request.command != "server install" or request.team_name is None:
-        raise ValueError("prepare_install_command requires one server install request")
-    resolved_repository = repository or discover_bootstrap_repository(bootstrap_root)
-    resolved_executable = _absolute_invoked_executable(resume_executable)
-    resolved_machine = machine or LinuxInstallMachine()
-    plan = ServerPlanEvent(
-        command=request.command,
-        timestamp=datetime.now(UTC),
-        steps=_install_plan(identity, resolved_repository),
-    )
+    resolved = machine or LinuxInstallMachine()
+    try:
+        import rcp_supervisor
+        from rcp_supervisor.events import plan as supervisor_plan
+        from rcp_supervisor.releases import fetch_release
+    except ImportError as exc:
+        raise InstallRefused(
+            "Bootstrap requires the RCP and supervisor wheels from the same promoted release; use the documented two-wheel uv command."
+        ) from exc
+    plan = ServerPlanEvent.model_validate_json(json.dumps(supervisor_plan(request.command)))
 
     def execute(emitter: ServerEventEmitter, _input_stream: BinaryIO) -> None:
-        _execute_install(
-            request,
-            emitter,
-            resolved_machine,
-            resolved_repository,
-            bootstrap_executable=resolved_executable,
+        pending = plan.steps[0]
+        emitter.emit_step(
+            pending.model_copy(
+                update={
+                    "state": "running",
+                    "message": "Preparing the independent supervisor and dedicated service account.",
+                }
+            )
         )
+        try:
+            resolved.validate_host()
+            resolved.converge_account_and_layout()
+            for directory in (
+                resolved.layout.supervisor_root,
+                resolved.layout.supervisor_bundles_root,
+            ):
+                _converge_directory(directory, uid=0, gid=0, mode=0o755)
+            bundle = fetch_release(
+                "stable", resolved.layout.supervisor_bundles_root / f"bootstrap-{uuid4()}"
+            )
+            from rcp import __version__
+
+            if (
+                bundle.version != __version__
+                or bundle.supervisor_version != rcp_supervisor.__version__
+            ):
+                raise InstallRefused(
+                    "Bootstrap wheels no longer match the promoted release. Restart using the current paired release wheels."
+                )
+            resolved.bootstrap_supervisor(bundle)
+            initialized_source = (
+                resolved._data_state() == "initialized"
+                and not resolved.layout.selected_release_receipt.exists()
+            )
+            resolved.stage_supervisor_integration()
+            if not initialized_source:
+                if not resolved.layout.config_path.exists():
+                    write_installed_server_config(
+                        create_installed_server_config(), resolved.layout.config_path
+                    )
+                resolved.converge_supervisor_integration()
+            execute_supervisor_command(
+                request, emitter, layout=resolved.layout, already_running=True
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            emitter.emit_step(pending.model_copy(update={"state": "failed", "message": str(exc)}))
 
     return PreparedServerCommand(plan=plan, execute=execute)
 
 
-def normalize_github_repository(origin: str) -> GitHubRepository:
-    """Return the one credential-free repository identity accepted by install."""
-
-    try:
-        reference = parse_github_repository_ref(origin)
-    except ValueError as exc:
-        raise ValueError(
-            "the bootstrap origin must be an HTTPS or SSH github.com repository"
-        ) from exc
-    return GitHubRepository(
-        slug=reference.identity,
-        https_origin=reference.https_clone_url,
-        ssh_origin=reference.ssh_clone_url,
-        deploy_keys_url=reference.settings_url,
-    )
-
-
-def _is_repository_ssh_origin(origin: str, *, repository: GitHubRepository) -> bool:
-    if not origin.startswith("git@github.com:"):
-        return False
-    try:
-        return normalize_github_repository(origin).slug == repository.slug
-    except ValueError:
-        return False
-
-
-def source_transition_message(transition: SourceTransition) -> str:
-    return (
-        f"The source is now the public HTTPS origin {transition.source_origin}. "
-        "The local deploy key pair was retired. The operator should revoke deploy key "
-        f"{transition.retired_deploy_key_label} at {transition.deploy_keys_url} after this "
-        "update completes and server doctor shows the public origin."
-    )
-
-
-def finish_public_source_transition(
-    layout: ServerLayout,
-    config: InstalledServerConfig,
-    repository: GitHubRepository,
-    *,
-    service_uid: int,
-    service_gid: int,
-    run_git: Callable[..., None],
-    git_text: Callable[..., str],
-    refusal: type[RuntimeError],
-) -> SourceTransition | None:
-    """Finish any key or checkout work promised by a public source config."""
-
-    if config.source.authentication != "public":
-        return None
-
-    source = layout.source_checkout
-    source_exists = source.exists() or source.is_symlink()
-    if source_exists:
-        _require_managed_source_checkout(
-            source,
-            uid=service_uid,
-            gid=service_gid,
-            refusal=refusal,
-        )
-
-    private_path = layout.credentials_root / _SOURCE_PRIVATE_KEY
-    public_path = layout.credentials_root / _SOURCE_PUBLIC_KEY
-    removed_keys = any(path.exists() or path.is_symlink() for path in (private_path, public_path))
-    if removed_keys:
-        try:
-            _require_owned_directory(layout.credentials_root, uid=service_uid, gid=service_gid)
-        except InstallRefused as exc:
-            raise refusal(str(exc)) from exc
-        private_path.unlink(missing_ok=True)
-        public_path.unlink(missing_ok=True)
-        _fsync_directory(layout.credentials_root)
-
-    rewrote_origin = False
-    if source_exists:
-        environment = source_git_environment(config.source, layout)
-        origin = git_text(
-            source,
-            ("remote", "get-url", "origin"),
-            environment=environment,
-        )
-        if _is_repository_ssh_origin(origin, repository=repository):
-            run_git(
-                source,
-                ("remote", "set-url", "origin", config.source.origin),
-                environment=environment,
-                timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
-                error=(
-                    "The managed checkout origin could not be changed from the retired "
-                    "deploy-key SSH origin to the public HTTPS origin."
-                ),
-            )
-            rewrote_origin = True
-
-    if not removed_keys and not rewrote_origin:
-        return None
-    return SourceTransition(
-        retired_deploy_key_label=f"rcp-source:{config.installation_id}",
-        deploy_keys_url=repository.deploy_keys_url,
-        source_origin=config.source.origin,
-    )
-
-
-def converge_public_source(
-    layout: ServerLayout,
-    config: InstalledServerConfig,
-    repository: GitHubRepository,
-    *,
-    service_uid: int,
-    service_gid: int,
-    run_as_service: Callable[..., subprocess.CompletedProcess[str]],
-    run_git: Callable[..., None],
-    git_text: Callable[..., str],
-    refusal: type[RuntimeError],
-) -> SourceTransition | None:
-    """Converge one deploy-key source to its credential-free public origin."""
-
-    if config.source.authentication != "deploy_key":
-        return None
-    source = layout.source_checkout
-    source_exists = source.exists() or source.is_symlink()
-    if source_exists:
-        _require_managed_source_checkout(
-            source,
-            uid=service_uid,
-            gid=service_gid,
-            refusal=refusal,
-        )
-    public_probe = _probe_source_with_runner(
-        repository.https_origin,
-        source=None,
-        layout=layout,
-        service_uid=service_uid,
-        service_gid=service_gid,
-        run_as_service=run_as_service,
-        refusal=refusal,
-    )
-    if public_probe != "ready":
-        return None
-
-    if source_exists:
-        observed_origin = git_text(
-            source,
-            ("remote", "get-url", "origin"),
-            environment=source_git_environment(None, layout),
-        )
-        if not (
-            _is_repository_ssh_origin(observed_origin, repository=repository)
-            or observed_origin == repository.https_origin
-        ):
-            raise refusal(
-                f"The managed checkout origin {observed_origin!r} is not the matching SSH or "
-                "HTTPS origin. The deploy-key source was left unchanged, and the checkout "
-                "must be inspected by hand before rerunning."
-            )
-
-    transition = SourceTransition(
-        retired_deploy_key_label=f"rcp-source:{config.installation_id}",
-        deploy_keys_url=repository.deploy_keys_url,
-        source_origin=repository.https_origin,
-    )
-    transitioned_config = config.model_copy(
-        update={
-            "source": ServerSourceConfig(
-                origin=transition.source_origin,
-                authentication="public",
-            )
-        }
-    )
-    write_installed_server_config(transitioned_config, layout.config_path)
-
-    try:
-        finish_public_source_transition(
-            layout,
-            transitioned_config,
-            repository,
-            service_uid=service_uid,
-            service_gid=service_gid,
-            run_git=run_git,
-            git_text=git_text,
-            refusal=refusal,
-        )
-    except OSError as exc:
-        raise refusal(
-            "The installed source configuration now records the public HTTPS origin, but the "
-            "retired deploy-key pair could not be fully removed. Inspect the two source-key "
-            "paths and rerun server install or server update."
-        ) from exc
-    return transition
-
-
-@contextmanager
-def source_probe_environment(
-    source: ServerSourceConfig | None,
-    layout: ServerLayout,
-    *,
-    service_uid: int,
-    service_gid: int,
-) -> Iterator[SourceProbeContext]:
-    """Yield the Git environment for one source probe."""
-
-    if source is not None:
-        yield SourceProbeContext(
-            environment=source_git_environment(source, layout),
-            working_directory=None,
-        )
-        return
-
-    empty_home = Path(tempfile.mkdtemp(prefix="rcp-anonymous-source-probe-"))
-    try:
-        info = empty_home.stat()
-        if (info.st_uid, info.st_gid) != (service_uid, service_gid):
-            os.chown(empty_home, service_uid, service_gid)
-        os.chmod(empty_home, _SERVICE_DIRECTORY_MODE)
-        yield SourceProbeContext(
-            environment={
-                **source_git_environment(None, layout),
-                "GIT_CEILING_DIRECTORIES": str(empty_home.parent),
-                "HOME": str(empty_home),
-                "XDG_CONFIG_HOME": str(empty_home),
-            },
-            working_directory=empty_home,
-        )
-    finally:
-        shutil.rmtree(empty_home)
-
-
-def _probe_source_with_runner(
-    origin: str,
-    *,
-    source: ServerSourceConfig | None,
-    layout: ServerLayout,
-    service_uid: int,
-    service_gid: int,
-    run_as_service: Callable[..., subprocess.CompletedProcess[str]],
-    refusal: type[RuntimeError],
-) -> Literal["ready", "grant_needed", "unavailable"]:
-    with source_probe_environment(
-        source,
-        layout,
-        service_uid=service_uid,
-        service_gid=service_gid,
-    ) as context:
-        command = (
-            ("git", "-C", str(context.working_directory))
-            if context.working_directory is not None
-            else ("git",)
-        )
-        result = run_as_service(
-            (*command, "ls-remote", "--exit-code", origin, "refs/heads/main"),
-            environment=context.environment,
-            timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
-            capture_output=True,
-        )
-    if result.returncode == 0:
-        return "ready"
-    diagnostic = f"{result.stdout}\n{result.stderr}".lower()
-    if any(marker in diagnostic for marker in _NETWORK_FAILURE_MARKERS):
-        return "unavailable"
-    if result.returncode == 2:
-        raise refusal(
-            "The configured GitHub repository has no readable main branch. Create or restore "
-            "origin/main, then rerun install."
-        )
-    if any(marker in diagnostic for marker in _AUTH_FAILURE_MARKERS):
-        return "grant_needed"
-    raise refusal(
-        "The GitHub source probe failed without a recognized authentication or network "
-        "diagnostic. Run the same git ls-remote as rcp, correct the host issue, and rerun."
-    )
-
-
-def discover_bootstrap_repository(bootstrap_root: Path | None = None) -> GitHubRepository:
-    """Read origin from the checkout supplying this executable without adopting it."""
-
-    candidates = (
-        (bootstrap_root,) if bootstrap_root is not None else (Path.cwd(), Path(__file__).parents[3])
-    )
-    for candidate in candidates:
-        root = candidate.expanduser().resolve()
-        result = _run_process(
-            (
-                "git",
-                "-c",
-                f"safe.directory={root}",
-                "-C",
-                str(root),
-                "remote",
-                "get-url",
-                "origin",
-            ),
-            timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
-        )
-        if result.returncode != 0:
-            continue
-        try:
-            return normalize_github_repository(result.stdout.strip())
-        except ValueError:
-            continue
-    raise ValueError("server install must run from an RCP GitHub checkout with a supported origin")
-
-
-def _absolute_invoked_executable(value: Path | None) -> Path:
-    executable = value if value is not None else Path(sys.argv[0])
-    if value is None and not executable.is_absolute():
-        located = shutil.which(str(executable))
-        if located is not None:
-            executable = Path(located)
-    resolved = executable.expanduser().resolve()
-    if not resolved.is_absolute():  # pragma: no cover - Path.resolve owns this
-        raise ValueError("server install requires an absolute executable path")
-    if value is None and (not resolved.is_file() or not os.access(resolved, os.X_OK)):
-        raise ValueError(
-            "server install must be invoked through an executable RCP CLI so its resume command "
-            "is exact"
-        )
-    return resolved
-
-
-def _install_plan(
-    identity: CallerIdentity,
-    repository: GitHubRepository,
-) -> tuple[ServerStep, ...]:
-    root = MachineTarget(host=identity.host, os_account="root")
-    service = MachineTarget(host=identity.host, os_account="rcp")
-    github = ExternalServiceTarget(
-        service="github.com",
-        resource=repository.slug,
-        destination_url=repository.deploy_keys_url,
-        required_authority_role="repository administrator",
-    )
-    return (
-        ServerStep(
-            number=1,
-            title="Validate the supported Ubuntu host",
-            purpose="Prove the fixed host and tool prerequisites before changing machine state.",
-            performed_by="system",
-            target=root,
-            phase="host_preflight",
-            state="pending",
-            expected_success=(
-                "Ubuntu 22.04 or 24.04 x86-64 has systemd, Git, uv, Node.js 24/npm, "
-                "SSH, and age 1.x."
-            ),
-            message="RCP will validate the supported operating system and required tools.",
-        ),
-        ServerStep(
-            number=2,
-            title="Converge the dedicated service account and paths",
-            purpose=(
-                "Create or validate only the rcp identity and the fixed, conservatively owned "
-                "server layout."
-            ),
-            performed_by="system",
-            target=root,
-            phase="account_layout",
-            state="pending",
-            expected_success=(
-                "rcp has /home/rcp, /bin/bash, *NP*, no supplemental or general sudo "
-                "authority, the fixed owned layout, and an executable uv-managed Python 3.12."
-            ),
-            message="RCP will converge the dedicated account and fixed directories.",
-        ),
-        ServerStep(
-            number=3,
-            title="Prepare isolated source access",
-            purpose=(
-                "Prove public access or create one dedicated read-only source key without "
-                "borrowing the operator's GitHub credential."
-            ),
-            performed_by="system",
-            target=service,
-            phase="source_access_prepare",
-            state="pending",
-            expected_success=(
-                "The immutable installation id and credential-free source configuration are "
-                "recorded; only a private source has a dedicated key."
-            ),
-            message="RCP will prepare source access as the rcp account.",
-        ),
-        ServerStep(
-            number=4,
-            title="Confirm the GitHub source grant",
-            purpose=(
-                "Skip external work for a public repository or request the exact read-only "
-                "deploy-key grant for a private repository."
-            ),
-            performed_by="human",
-            target=github,
-            phase="source_grant",
-            state="pending",
-            expected_success=(
-                "rcp can read origin/main with no operator credential and any deploy key has "
-                "Allow write access disabled."
-            ),
-            message="RCP will determine whether the repository needs a human source grant.",
-        ),
-        ServerStep(
-            number=5,
-            title="Converge the managed main checkout",
-            purpose=(
-                "Fetch through the recorded source mode into the separate RCP-owned checkout "
-                "without adopting the bootstrap checkout."
-            ),
-            performed_by="system",
-            target=service,
-            phase="source_checkout",
-            state="pending",
-            expected_success=(
-                "The managed checkout is clean at the exact origin/main commit, or install "
-                "refuses a version change owned by server update."
-            ),
-            message="RCP will converge the separate managed source checkout.",
-        ),
-        ServerStep(
-            number=6,
-            title="Build the immutable release",
-            purpose=(
-                "Create the exact per-commit worktree and run npm ci, the Web build, and "
-                "uv sync --frozen as rcp."
-            ),
-            performed_by="system",
-            target=service,
-            phase="release_build",
-            state="pending",
-            expected_success="The exact commit has a clean Web build and Python 3.12 environment.",
-            message="RCP will build the source commit as the rcp account.",
-        ),
-        ServerStep(
-            number=7,
-            title="Install the stable wrapper and systemd unit",
-            purpose=(
-                "Install root-owned integration without reload mode and keep a fresh service "
-                "stopped and disabled."
-            ),
-            performed_by="system",
-            target=root,
-            phase="service_install",
-            state="pending",
-            expected_success=(
-                "The wrapper, current release, and non-reloading loopback unit are exact; a "
-                "fresh data directory remains stopped and disabled."
-            ),
-            message="RCP will install and validate the fixed service integration.",
-        ),
-        ServerStep(
-            number=8,
-            title="Initialize the team space in the operator terminal",
-            purpose=(
-                "Keep the one-time bootstrap code out of service logs by running the existing "
-                "interactive team initialization command as rcp."
-            ),
-            performed_by="human",
-            target=service,
-            phase="team_space_init",
-            state="pending",
-            expected_success=(
-                "The terminal reports the initialized team space and shows its one-time "
-                "bootstrap code exactly once."
-            ),
-            message="RCP will check whether the owned data directory is initialized.",
-        ),
-        ServerStep(
-            number=9,
-            title="Activate and read back the team service",
-            purpose=(
-                "Converge systemd only after initialization and verify the fixed loopback HTTP "
-                "health response."
-            ),
-            performed_by="system",
-            target=root,
-            phase="service_activate",
-            state="pending",
-            expected_success=(
-                "rcp.service is enabled and active, and 127.0.0.1:8421 reports status ok for a "
-                "team space."
-            ),
-            message="RCP will activate systemd and verify loopback health.",
-        ),
-    )
-
-
-def _execute_install(
-    request: ServerCommandRequest,
-    emitter: ServerEventEmitter,
-    machine: InstallMachine,
-    repository: GitHubRepository,
-    *,
-    bootstrap_executable: Path,
-) -> None:
-    planned = emitter.events[0]
-    if not isinstance(planned, ServerPlanEvent):  # pragma: no cover - emitter owns this
-        raise AssertionError("install execution requires its plan")
-    steps = planned.steps
-    retry = (
-        "sudo",
-        str(bootstrap_executable),
-        "server",
-        "install",
-        "--team-name",
-        request.team_name,
-    )
-    try:
-        _run_step(
-            emitter,
-            steps[0],
-            running="Validating Ubuntu, architecture, systemd, and required tool versions.",
-            operation=machine.validate_host,
-            succeeded="The host and every required tool match the supported installation contract.",
-            fields=lambda value: (
-                NonsecretField(name="ubuntu_release", value=value.ubuntu_release),
-                NonsecretField(name="architecture", value=value.architecture),
-                NonsecretField(name="node_major", value=value.node_major),
-            ),
-            recovery_argv=retry,
-        )
-        _run_step(
-            emitter,
-            steps[1],
-            running="Creating or validating the dedicated rcp account and fixed path ownership.",
-            operation=machine.converge_account_and_layout,
-            succeeded=(
-                "The dedicated rcp account and fixed server directories are present with the "
-                "required ownership and modes."
-            ),
-            recovery_argv=retry,
-        )
-        access = _run_step(
-            emitter,
-            steps[2],
-            running=f"Preparing credential-isolated read access for {repository.slug} as rcp.",
-            operation=lambda: machine.prepare_source_access(repository),
-            succeeded=_source_access_succeeded,
-            fields=_source_access_fields,
-            announce_success=lambda value: value.source_transitioned,
-            recovery_argv=retry,
-        )
-        if access.grant_needed:
-            _emit_source_grant_pause(
-                emitter,
-                steps[3],
-                access,
-                bootstrap_executable=bootstrap_executable,
-                team_name=request.team_name,
-            )
-            return
-        _complete_no_action_step(
-            emitter,
-            steps[3],
-            running="Checking that the recorded source mode can read origin/main as rcp.",
-            succeeded="No operator action is needed; isolated read access to origin/main passed.",
-            fields=(
-                NonsecretField(
-                    name="source_authentication",
-                    value=access.config.source.authentication,
-                ),
-            ),
-        )
-        checkout = _run_step(
-            emitter,
-            steps[4],
-            running="Fetching and validating the separate managed main checkout as rcp.",
-            operation=lambda: machine.converge_source_checkout(access),
-            succeeded="The managed checkout is clean at the exact install commit.",
-            fields=lambda value: (NonsecretField(name="release_commit", value=value.commit),),
-            recovery_argv=retry,
-        )
-        release = _run_step(
-            emitter,
-            steps[5],
-            running=(
-                "Creating the per-commit release and running npm ci, the Web build, and "
-                "uv sync --frozen as rcp."
-            ),
-            operation=lambda: machine.build_release(checkout),
-            succeeded="The immutable per-commit Web and Python release is ready.",
-            fields=lambda value: (NonsecretField(name="release_path", value=str(value)),),
-            recovery_argv=retry,
-        )
-        service_state = _run_step(
-            emitter,
-            steps[6],
-            running="Installing or validating the wrapper, current pointer, and systemd unit.",
-            operation=lambda: machine.install_service(checkout, release),
-            succeeded="The fixed service integration is installed in its safe pre-activation state.",
-            fields=lambda value: (
-                NonsecretField(name="data_state", value=value.data_state),
-                NonsecretField(name="service_state", value=value.service_state),
-            ),
-            recovery_argv=retry,
-        )
-        if service_state.data_state == "fresh":
-            _emit_team_init_pause(emitter, steps[7], request.team_name)
-            return
-        _complete_no_action_step(
-            emitter,
-            steps[7],
-            running="Confirming that the owned team data directory was initialized previously.",
-            succeeded="The owned data directory already contains the initialized database.",
-            fields=(NonsecretField(name="data_state", value="initialized"),),
-        )
-        _run_step(
-            emitter,
-            steps[8],
-            running="Enabling and starting rcp.service, then reading loopback HTTP health.",
-            operation=machine.activate_and_verify,
-            succeeded="The source-built team service is enabled, active, and healthy on loopback.",
-            fields=lambda value: (
-                NonsecretField(name="status", value=value.status),
-                NonsecretField(name="space_kind", value=value.space_kind),
-                NonsecretField(name="space_name", value=value.space_name),
-            ),
-            recovery_argv=retry,
-        )
-    except _ReportedInstallFailure:
-        return
-
-
-_T = TypeVar("_T")
-
-
-def _source_access_succeeded(access: SourceAccess) -> str:
-    if not access.source_transitioned:
-        return "The installed-server source identity and access mode are recorded."
-    if access.retired_deploy_key_label is None:
-        raise RuntimeError("a public source transition did not retain its deploy-key label")
-    return source_transition_message(
-        SourceTransition(
-            retired_deploy_key_label=access.retired_deploy_key_label,
-            deploy_keys_url=access.repository.deploy_keys_url,
-            source_origin=access.config.source.origin,
-        )
-    )
-
-
-def _source_access_fields(access: SourceAccess) -> tuple[NonsecretField, ...]:
-    fields = (
-        NonsecretField(name="installation_id", value=access.config.installation_id),
-        NonsecretField(name="source_repository", value=access.repository.slug),
-        NonsecretField(name="source_authentication", value=access.config.source.authentication),
-    )
-    if not access.source_transitioned:
-        return fields
-    if access.retired_deploy_key_label is None:
-        raise RuntimeError("a public source transition did not retain its deploy-key label")
-    return (
-        *fields,
-        NonsecretField(name="source_origin", value=access.config.source.origin),
-        NonsecretField(
-            name="retired_deploy_key_label",
-            value=access.retired_deploy_key_label,
-        ),
-        NonsecretField(name="deploy_keys_url", value=access.repository.deploy_keys_url),
-    )
-
-
-def _run_step(
-    emitter: ServerEventEmitter,
-    planned: ServerStep,
-    *,
-    running: str,
-    operation,
-    succeeded: str | Callable[[_T], str],
-    fields=lambda _value: (),
-    announce_success=lambda _value: False,
-    recovery_argv: tuple[str, ...] = (),
-) -> _T:
-    emitter.emit_step(planned.model_copy(update={"state": "running", "message": running}))
-    try:
-        value = operation()
-    except InstallRefused as exc:
-        recovery_actions: tuple[CommandAction | ExternalAction, ...] = ()
-        if recovery_argv:
-            recovery_actions = (
-                ExternalAction(
-                    instruction=(
-                        "Read the failure above and correct that cause. The diagnostic command "
-                        "below reruns the same convergent install with the complete bounded event "
-                        "record; the Continue command retries the normal wizard."
-                    )
-                ),
-                CommandAction(argv=(*recovery_argv, "--machine-readable")),
-                CommandAction(argv=recovery_argv),
-            )
-        emitter.emit_step(
-            planned.model_copy(
-                update={
-                    "state": "failed",
-                    "message": str(exc),
-                    "actions": recovery_actions,
-                    "resume_argv": recovery_argv,
-                }
-            )
-        )
-        raise _ReportedInstallFailure from exc
-    message = succeeded(value) if callable(succeeded) else succeeded
-    emitter.emit_step(
-        planned.model_copy(
-            update={
-                "state": "succeeded",
-                "message": message,
-                "fields": tuple(fields(value)),
-            }
-        ),
-        announce_success=bool(announce_success(value)),
-    )
-    return value
-
-
-def _complete_no_action_step(
-    emitter: ServerEventEmitter,
-    planned: ServerStep,
-    *,
-    running: str,
-    succeeded: str,
-    fields: tuple[NonsecretField, ...] = (),
-) -> None:
-    emitter.emit_step(planned.model_copy(update={"state": "running", "message": running}))
-    emitter.emit_step(
-        planned.model_copy(update={"state": "succeeded", "message": succeeded, "fields": fields})
-    )
-
-
-def _emit_source_grant_pause(
-    emitter: ServerEventEmitter,
-    planned: ServerStep,
-    access: SourceAccess,
-    *,
-    bootstrap_executable: Path,
-    team_name: str,
-) -> None:
-    if access.deploy_key_label is None or access.public_key is None:
-        raise RuntimeError("private source access did not provide its public grant material")
-    key_path = DEFAULT_SERVER_LAYOUT.credentials_root / _SOURCE_PRIVATE_KEY
-    trust_command = (
-        "sudo",
-        "-u",
-        "rcp",
-        "-H",
-        "ssh",
-        "-F",
-        "/dev/null",
-        "-i",
-        str(key_path),
-        "-o",
-        "IdentitiesOnly=yes",
-        "-o",
-        "StrictHostKeyChecking=ask",
-        "-o",
-        "GlobalKnownHostsFile=/dev/null",
-        "-o",
-        f"UserKnownHostsFile={DEFAULT_SERVER_LAYOUT.ssh_state_root / 'known_hosts'}",
-        "-T",
-        "git@github.com",
-    )
-    resume = (
-        "sudo",
-        str(bootstrap_executable),
-        "server",
-        "install",
-        "--team-name",
-        team_name,
-    )
-    emitter.emit_step(
-        planned.model_copy(
-            update={
-                "state": "operator_action_needed",
-                "message": (
-                    "This source is not publicly readable. Add the shown key as a read-only "
-                    "deploy key, confirm GitHub host trust as rcp, then rerun the exact command."
-                ),
-                "actions": (
-                    ExternalAction(
-                        instruction=(
-                            f"Open {access.repository.deploy_keys_url}; add the shown public key "
-                            f"with title {access.deploy_key_label!r}; leave Allow write access "
-                            "unchecked."
-                        )
-                    ),
-                    ExternalAction(
-                        instruction=(
-                            "Open "
-                            "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/"
-                            "githubs-ssh-key-fingerprints first. Run the next command by itself. "
-                            "When it pauses, compare the displayed Ed25519 fingerprint with "
-                            "GitHub's page; if it matches exactly, type yes in that same terminal "
-                            "and press Enter. GitHub then says the key authenticated successfully; "
-                            "ssh exit status 1 is expected."
-                        )
-                    ),
-                    CommandAction(argv=trust_command),
-                ),
-                "fields": (
-                    NonsecretField(name="deploy_key_label", value=access.deploy_key_label),
-                    NonsecretField(name="deploy_public_key", value=access.public_key),
-                    NonsecretField(
-                        name="public_key_fingerprint",
-                        value=access.config.source.public_key_fingerprint or "missing",
-                    ),
-                ),
-                "resume_argv": resume,
-            }
-        )
-    )
-
-
-def _emit_team_init_pause(
-    emitter: ServerEventEmitter,
-    planned: ServerStep,
-    team_name: str,
-) -> None:
-    wrapper = str(DEFAULT_SERVER_LAYOUT.cli_wrapper)
-    init = ("sudo", "-u", "rcp", "-H", wrapper, "space", "init", "--team", "--name", team_name)
-    resume = ("sudo", wrapper, "server", "install", "--team-name", team_name)
-    emitter.emit_step(
-        planned.model_copy(
-            update={
-                "state": "operator_action_needed",
-                "message": (
-                    "The release is installed and the fresh service is stopped and disabled. "
-                    "Initialize in this terminal and retain the one-time bootstrap code securely, "
-                    "then rerun install so RCP activates and verifies the service."
-                ),
-                "actions": (
-                    CommandAction(argv=init),
-                    ExternalAction(
-                        instruction=(
-                            "Success signal: the terminal names the initialized team space and "
-                            "shows one one-time bootstrap code. Do not paste that code into RCP "
-                            "logs or command arguments."
-                        )
-                    ),
-                ),
-                "fields": (NonsecretField(name="team_name", value=team_name),),
-                "resume_argv": resume,
-            }
-        )
-    )
-
-
 class LinuxInstallMachine:
-    """One concrete Ubuntu implementation behind the structured operation contract."""
+    """Converge host prerequisites; release transactions belong to the supervisor."""
 
     def __init__(self, layout: ServerLayout = DEFAULT_SERVER_LAYOUT) -> None:
         self.layout = layout
@@ -1086,8 +151,6 @@ class LinuxInstallMachine:
             "age-keygen",
             "curl",
             "git",
-            "node",
-            "npm",
             "runuser",
             "ssh",
             "ssh-keygen",
@@ -1112,13 +175,6 @@ class LinuxInstallMachine:
                 "The running systemd manager returned no version. Boot this Ubuntu host with "
                 "systemd as PID 1 and rerun the same install command."
             )
-        node = _require_command(("node", "--version"), "Node.js could not be executed").stdout
-        node_major = _leading_major(node)
-        if node_major != 24:
-            raise InstallRefused(
-                f"Node.js 24 is required, but the machine reports major {node_major}. Install "
-                "Node.js 24 for all users and rerun the same command."
-            )
         age = _require_command(("age", "--version"), "age could not be executed")
         age_version = _major_minor(f"{age.stdout} {age.stderr}")
         if age_version[0] != 1:
@@ -1140,13 +196,11 @@ class LinuxInstallMachine:
         )
         for path in (
             self.layout.server_root,
-            self.layout.source_checkout.parent,
             self.layout.releases_root,
             self.layout.data_dir,
             self.layout.projects_root,
             self.layout.credentials_root,
             self.layout.update_checkpoints_root,
-            self.layout.restore_operations_root,
             self.layout.codex_state_root,
             self.layout.claude_state_root,
             self.layout.ssh_state_root,
@@ -1164,497 +218,6 @@ class LinuxInstallMachine:
             mode=_CONFIG_DIRECTORY_MODE,
         )
         self._validate_service_tooling()
-
-    def prepare_source_access(self, repository: GitHubRepository) -> SourceAccess:
-        self._require_service_identity()
-        private_path = self.layout.credentials_root / _SOURCE_PRIVATE_KEY
-        public_path = self.layout.credentials_root / _SOURCE_PUBLIC_KEY
-        if self.layout.config_path.exists() or self.layout.config_path.is_symlink():
-            config = load_installed_server_config(self.layout.config_path)
-            configured_repository = normalize_github_repository(config.source.origin)
-            if configured_repository.slug != repository.slug:
-                raise InstallRefused(
-                    "The installed source repository differs from this executable's GitHub "
-                    "repository. Use the matching checkout or restore the recorded source."
-                )
-            if config.source.authentication == "public":
-                try:
-                    transition = finish_public_source_transition(
-                        self.layout,
-                        config,
-                        repository,
-                        service_uid=self._service_uid_value,
-                        service_gid=self._service_gid_value,
-                        run_git=self._run_git,
-                        git_text=self._git_text,
-                        refusal=InstallRefused,
-                    )
-                except OSError as exc:
-                    raise InstallRefused(
-                        "The public source transition could not remove its retired deploy-key "
-                        "pair. Inspect the two source-key paths and rerun server install."
-                    ) from exc
-                probe = self._probe_source(repository.https_origin, source=None)
-                if probe != "ready":
-                    raise InstallRefused(
-                        "The recorded public source is not readable from this host. Restore "
-                        "network access or repository visibility, then rerun."
-                    )
-                return SourceAccess(
-                    config=config,
-                    repository=repository,
-                    grant_needed=False,
-                    source_transitioned=transition is not None,
-                    retired_deploy_key_label=(
-                        transition.retired_deploy_key_label if transition is not None else None
-                    ),
-                )
-            transition = converge_public_source(
-                self.layout,
-                config,
-                repository,
-                service_uid=self._service_uid_value,
-                service_gid=self._service_gid_value,
-                run_as_service=lambda argv, **kwargs: self._run_as_service(
-                    argv,
-                    check=False,
-                    **kwargs,
-                ),
-                run_git=self._run_git,
-                git_text=self._git_text,
-                refusal=InstallRefused,
-            )
-            if transition is not None:
-                transitioned_config = load_installed_server_config(self.layout.config_path)
-                return SourceAccess(
-                    config=transitioned_config,
-                    repository=repository,
-                    grant_needed=False,
-                    source_transitioned=True,
-                    retired_deploy_key_label=transition.retired_deploy_key_label,
-                )
-            public_key = self._validate_source_key_pair(config, private_path, public_path)
-            probe = self._probe_source(repository.ssh_origin, source=config.source)
-            if probe == "unavailable":
-                raise InstallRefused(
-                    "GitHub source access is unreachable from the rcp account. Restore DNS and "
-                    "network access, then rerun without changing the recorded key."
-                )
-            return SourceAccess(
-                config=config,
-                repository=repository,
-                grant_needed=probe != "ready",
-                deploy_key_label=f"rcp-source:{config.installation_id}",
-                public_key=public_key,
-            )
-
-        private_exists = private_path.exists() or private_path.is_symlink()
-        public_exists = public_path.exists() or public_path.is_symlink()
-        if private_exists or public_exists:
-            if not private_exists or not public_exists:
-                raise InstallRefused(
-                    "An interrupted source-key creation left only one key half. Preserve and "
-                    "inspect both credential paths; install will not replace either side."
-                )
-            _require_owned_file(
-                private_path,
-                uid=self._service_uid_value,
-                gid=self._service_gid_value,
-                mode=_PRIVATE_KEY_MODE,
-                label="source private key",
-            )
-            _require_owned_file(
-                public_path,
-                uid=self._service_uid_value,
-                gid=self._service_gid_value,
-                mode=_PUBLIC_KEY_MODE,
-                label="source public key",
-            )
-            public_key, fingerprint = _read_public_key(public_path)
-            installation_id = _source_key_installation_id(public_key)
-            config = create_installed_server_config(
-                installation_id=installation_id,
-                source=ServerSourceConfig(
-                    origin=repository.ssh_origin,
-                    authentication="deploy_key",
-                    public_key_fingerprint=fingerprint,
-                ),
-            )
-            validated_public_key = self._validate_source_key_pair(
-                config,
-                private_path,
-                public_path,
-            )
-            probe = self._probe_source(repository.ssh_origin, source=config.source)
-            if probe == "unavailable":
-                raise InstallRefused(
-                    "GitHub source access is unreachable from the rcp account. Restore DNS and "
-                    "network access, then rerun without changing the recovered key."
-                )
-            write_installed_server_config(config, self.layout.config_path)
-            return SourceAccess(
-                config=config,
-                repository=repository,
-                grant_needed=probe != "ready",
-                deploy_key_label=f"rcp-source:{installation_id}",
-                public_key=validated_public_key,
-            )
-
-        public_probe = self._probe_source(repository.https_origin, source=None)
-        if public_probe == "ready":
-            config = create_installed_server_config(
-                source=ServerSourceConfig(
-                    origin=repository.https_origin,
-                    authentication="public",
-                )
-            )
-            write_installed_server_config(config, self.layout.config_path)
-            return SourceAccess(config=config, repository=repository, grant_needed=False)
-        if public_probe == "unavailable":
-            raise InstallRefused(
-                "GitHub is unreachable from the rcp account. Restore DNS and network access, "
-                "then rerun before creating a source credential."
-            )
-        installation_id = str(uuid.uuid4())
-        label = f"rcp-source:{installation_id}"
-        self._create_source_key_pair(private_path, public_path, label=label)
-        public_key, fingerprint = _read_public_key(public_path)
-        config = create_installed_server_config(
-            installation_id=installation_id,
-            source=ServerSourceConfig(
-                origin=repository.ssh_origin,
-                authentication="deploy_key",
-                public_key_fingerprint=fingerprint,
-            ),
-        )
-        write_installed_server_config(config, self.layout.config_path)
-        return SourceAccess(
-            config=config,
-            repository=repository,
-            grant_needed=True,
-            deploy_key_label=label,
-            public_key=public_key,
-        )
-
-    def converge_source_checkout(self, access: SourceAccess) -> ManagedCheckout:
-        self._require_service_identity()
-        self._require_no_unfinished_update()
-        self._require_no_unfinished_restore()
-        source = self.layout.source_checkout
-        environment = self._source_environment(access.config.source)
-        if not source.exists():
-            if source.is_symlink():
-                raise InstallRefused(
-                    "The managed source path is a symlink; install will not replace it."
-                )
-            self._run_as_service(
-                (
-                    "git",
-                    "clone",
-                    "--branch",
-                    "main",
-                    "--single-branch",
-                    access.config.source.origin,
-                    str(source),
-                ),
-                environment=environment,
-                timeout=SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
-                capture_output=True,
-                error=(
-                    "The managed source clone failed. Confirm the recorded GitHub source grant "
-                    "and network access, then rerun."
-                ),
-            )
-        _require_managed_source_checkout(
-            source,
-            uid=self._service_uid_value,
-            gid=self._service_gid_value,
-            refusal=InstallRefused,
-        )
-        finish_public_source_transition(
-            self.layout,
-            access.config,
-            access.repository,
-            service_uid=self._service_uid_value,
-            service_gid=self._service_gid_value,
-            run_git=self._run_git,
-            git_text=self._git_text,
-            refusal=InstallRefused,
-        )
-        origin = self._git_text(source, ("remote", "get-url", "origin"), environment=environment)
-        if origin != access.config.source.origin:
-            raise InstallRefused(
-                "The managed checkout origin differs from the installed source configuration; "
-                "install will not rewrite it."
-            )
-        if self._git_text(
-            source,
-            ("status", "--porcelain", "--untracked-files=all"),
-            environment=environment,
-        ):
-            raise InstallRefused(
-                "The managed source checkout has local changes. Preserve or inspect them; install "
-                "will not reset or clean this checkout."
-            )
-        self._run_git(
-            source,
-            ("fetch", "--prune", "origin", "main"),
-            environment=environment,
-            timeout=SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
-            error="Fetching origin/main failed. Restore source access and rerun install.",
-        )
-        upstream = self._git_text(source, ("rev-parse", "origin/main"), environment=environment)
-        _require_full_commit(upstream)
-        current = self._current_release_commit()
-        if current is not None:
-            head = self._git_text(source, ("rev-parse", "HEAD"), environment=environment)
-            if head != current:
-                raise InstallRefused(
-                    "The managed source HEAD does not match the current installed release. "
-                    "Use server update or restore the managed checkout; install will not reset it."
-                )
-            if upstream != current:
-                raise InstallRefused(
-                    "GitHub origin/main differs from the installed commit. Version changes belong "
-                    "to rcp server update; install will not switch releases."
-                )
-            return ManagedCheckout(commit=current, is_current_release=True)
-        self._run_git(
-            source,
-            ("checkout", "--force", "-B", "main", "origin/main"),
-            environment=environment,
-            timeout=SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
-            error="The clean managed checkout could not select origin/main. Inspect it and rerun.",
-        )
-        return ManagedCheckout(commit=upstream, is_current_release=False)
-
-    def build_release(self, checkout: ManagedCheckout) -> Path:
-        self._require_service_identity()
-        release = self.layout.release_dir(checkout.commit)
-        if release.exists() or release.is_symlink():
-            _require_owned_directory(
-                release,
-                uid=self._service_uid_value,
-                gid=self._service_gid_value,
-            )
-            head = self._git_text(release, ("rev-parse", "HEAD"))
-            if head != checkout.commit:
-                raise InstallRefused(
-                    "The per-commit release path contains a different Git commit; install will "
-                    "not replace it."
-                )
-            if self._git_text(release, ("status", "--porcelain", "--untracked-files=all")):
-                raise InstallRefused(
-                    "The per-commit release worktree has tracked or untracked changes; install "
-                    "will not clean it."
-                )
-        else:
-            self._run_as_service(
-                (
-                    "git",
-                    "-C",
-                    str(self.layout.source_checkout),
-                    "worktree",
-                    "add",
-                    "--detach",
-                    str(release),
-                    checkout.commit,
-                ),
-                timeout=SERVER_INSTALL_SOURCE_TIMEOUT_SECONDS,
-                capture_output=True,
-                error="Creating the clean per-commit release worktree failed. Inspect Git and rerun.",
-            )
-        if checkout.is_current_release:
-            self._validate_release_artifacts(release)
-            return release
-        self._run_as_service(
-            ("npm", "--prefix", "web", "ci"),
-            cwd=release,
-            timeout=SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
-            capture_output=True,
-            error="npm --prefix web ci failed in the managed release. Fix the source and rerun.",
-        )
-        self._run_as_service(
-            ("npm", "--prefix", "web", "run", "build"),
-            cwd=release,
-            timeout=SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
-            capture_output=True,
-            error="npm --prefix web run build failed in the managed release. Fix the source and rerun.",
-        )
-        self._run_as_service(
-            ("uv", "sync", "--frozen"),
-            cwd=release,
-            environment={"UV_MANAGED_PYTHON": "1", "UV_PYTHON": "3.12"},
-            timeout=SERVER_INSTALL_BUILD_TIMEOUT_SECONDS,
-            capture_output=True,
-            error="uv sync --frozen failed in the managed release. Fix the lock or runtime and rerun.",
-        )
-        self._validate_release_artifacts(release)
-        return release
-
-    def install_service(
-        self,
-        checkout: ManagedCheckout,
-        release: Path,
-    ) -> ServiceInstallState:
-        self._require_service_identity()
-        self._require_no_unfinished_update()
-        self._require_no_unfinished_restore()
-        if release != self.layout.release_dir(checkout.commit):
-            raise InstallRefused("The built release path does not match its exact commit.")
-        _install_root_file(
-            self.layout.cli_wrapper,
-            _wrapper_text(self.layout),
-            mode=_WRAPPER_MODE,
-        )
-        _install_root_file(
-            self.layout.systemd_unit,
-            server_service_unit_text(),
-            mode=_UNIT_MODE,
-        )
-        from rcp.server_ops.backup_config import (
-            backup_configuration_lock,
-            backup_service_unit_text,
-            recover_pending_backup_configuration,
-            render_backup_timer_unit,
-        )
-
-        with backup_configuration_lock(self.layout):
-            recover_pending_backup_configuration(self.layout)
-            installed_config = load_installed_server_config(self.layout.config_path)
-            backup_schedule = (
-                installed_config.backup.schedule if installed_config.backup is not None else None
-            )
-            fence_backup_timer_before_unit_change()
-            install_backup_unit_files(
-                service_content=backup_service_unit_text(),
-                timer_content=render_backup_timer_unit(backup_schedule),
-                layout=self.layout,
-            )
-            _converge_current_release(self.layout, release)
-            _require_command(
-                ("systemctl", "daemon-reload"),
-                "systemd could not reload the installed unit. Run systemctl daemon-reload, "
-                "inspect the unit, and rerun install.",
-                timeout=SERVER_INSTALL_SERVICE_TIMEOUT_SECONDS,
-            )
-            _fence_service_stopped_disabled("rcp-backup.timer")
-        data_state = self._data_state()
-        if data_state == "fresh":
-            _fence_service_stopped_disabled(self.layout.service_unit_name)
-            return ServiceInstallState(data_state="fresh", service_state="stopped_disabled")
-        active = _read_systemd_property(self.layout.service_unit_name, "ActiveState")
-        state = "active" if active == "active" else "initialized_stopped"
-        return ServiceInstallState(data_state="initialized", service_state=state)
-
-    def _require_no_unfinished_update(self) -> None:
-        from rcp.server_ops.update_checkpoint import (
-            UpdateCheckpointRefused,
-            unfinished_rollback_journals,
-        )
-        from rcp.server_ops.update_cutover import (
-            UpdateCutoverRefused,
-            update_operation_needing_recovery,
-        )
-
-        self._require_service_identity()
-        assert self._service_uid is not None
-        try:
-            pending = update_operation_needing_recovery(
-                self.layout.update_checkpoints_root,
-                expected_uid=self._service_uid,
-            )
-            journals = unfinished_rollback_journals(
-                self.layout.update_checkpoints_root,
-                expected_uid=self._service_uid,
-            )
-        except (OSError, UpdateCheckpointRefused, UpdateCutoverRefused) as exc:
-            with suppress(InstalledServiceControlRefused):
-                InstalledSystemServiceController(self.layout).stop()
-            raise InstallRefused(
-                "Update recovery state is unsafe. RCP kept the service stopped; run sudo rcp "
-                "server update to resume the exact durable operation."
-            ) from exc
-        if pending is None and not journals:
-            return
-        with suppress(InstalledServiceControlRefused):
-            InstalledSystemServiceController(self.layout).stop()
-        raise InstallRefused(
-            "An unfinished source update or rollback blocks install. RCP kept the service "
-            "stopped; run sudo rcp server update to resume it."
-        )
-
-    def _require_no_unfinished_restore(self) -> None:
-        from rcp.server_ops.restore import RestoreRefused, unfinished_restore_operation
-
-        self._require_service_identity()
-        assert self._service_uid is not None
-        try:
-            pending = unfinished_restore_operation(
-                self.layout,
-                expected_uid=self._service_uid,
-            )
-        except (OSError, RestoreRefused) as exc:
-            with suppress(InstalledServiceControlRefused):
-                InstalledSystemServiceController(self.layout).fence_stopped_disabled()
-            raise InstallRefused(
-                "Restore recovery state is unsafe. RCP kept the service stopped; preserve the "
-                "restore operations root and rerun sudo rcp server restore."
-            ) from exc
-        if pending is None:
-            return
-        with suppress(InstalledServiceControlRefused):
-            InstalledSystemServiceController(self.layout).fence_stopped_disabled()
-        raise InstallRefused(
-            "An unfinished replacement restore blocks install. RCP kept the service stopped; "
-            "re-enter sudo rcp server restore with its exact archive and identity."
-        )
-
-    def activate_and_verify(self) -> ServiceHealth:
-        self._require_no_unfinished_update()
-        self._require_no_unfinished_restore()
-        _require_command(
-            ("systemctl", "enable", "--now", self.layout.service_unit_name),
-            "systemd could not enable and start rcp.service. Run systemctl status --no-pager "
-            "rcp.service, correct the reported machine issue, and rerun install.",
-            timeout=SERVER_INSTALL_SERVICE_TIMEOUT_SECONDS,
-        )
-        enabled = _read_systemd_property(self.layout.service_unit_name, "UnitFileState")
-        active = _read_systemd_property(self.layout.service_unit_name, "ActiveState")
-        if enabled != "enabled" or active != "active":
-            raise InstallRefused(
-                "rcp.service is not both enabled and active. Run systemctl status --no-pager "
-                "rcp.service, correct the reported issue, and rerun install."
-            )
-        health = _read_team_health()
-        if health is None:
-            raise InstallRefused(
-                "The enabled service did not return valid loopback health within 15 seconds. Run "
-                "systemctl status --no-pager rcp.service and curl --fail --silent "
-                "http://127.0.0.1:8421/api/health, then rerun install."
-            )
-        if health.get("status") != "ok" or health.get("space_kind") != "team":
-            _fence_service_stopped_disabled(self.layout.service_unit_name)
-            raise InstallRefused(
-                "Loopback health did not identify an RCP team space, so RCP stopped and disabled "
-                "the service. Restore the intended owned team data before rerunning."
-            )
-        space_name = health.get("space_name")
-        if not isinstance(space_name, str) or not space_name.strip():
-            raise InstallRefused(
-                "Loopback health omitted the team-space name. Inspect the service and rerun install."
-            )
-        if self.layout.config_path.exists() or self.layout.config_path.is_symlink():
-            from rcp.server_ops.backup_config import (
-                BackupConfigurationRefused,
-                activate_configured_backup_timer,
-            )
-
-            try:
-                activate_configured_backup_timer(self.layout)
-            except BackupConfigurationRefused as exc:
-                raise InstallRefused(str(exc)) from exc
-        return ServiceHealth(status="ok", space_kind="team", space_name=space_name)
 
     def _converge_account(self) -> pwd.struct_passwd:
         try:
@@ -1751,8 +314,6 @@ class LinuxInstallMachine:
         account = pwd.getpwnam(self.layout.service_account)
         checks = (
             (("git", "--version"), "Git is not executable as rcp."),
-            (("node", "--version"), "Node.js is not executable as rcp."),
-            (("npm", "--version"), "npm is not executable as rcp."),
             (("ssh", "-V"), "SSH is not executable as rcp."),
             (("uv", "--version"), "uv is not executable as rcp."),
             (("age", "--version"), "age is not executable as rcp."),
@@ -1825,100 +386,6 @@ class LinuxInstallMachine:
                 "for rcp and rerun."
             )
 
-    def _probe_source(
-        self,
-        origin: str,
-        *,
-        source: ServerSourceConfig | None,
-    ) -> Literal["ready", "grant_needed", "unavailable"]:
-        return _probe_source_with_runner(
-            origin,
-            source=source,
-            layout=self.layout,
-            service_uid=self._service_uid_value,
-            service_gid=self._service_gid_value,
-            run_as_service=lambda argv, **kwargs: self._run_as_service(
-                argv,
-                check=False,
-                **kwargs,
-            ),
-            refusal=InstallRefused,
-        )
-
-    def _create_source_key_pair(self, private: Path, public: Path, *, label: str) -> None:
-        if private.exists() or private.is_symlink() or public.exists() or public.is_symlink():
-            raise InstallRefused(
-                "A source key exists without installed source configuration. Preserve and inspect "
-                "it; install will not adopt or replace it."
-            )
-        self._run_as_service(
-            ("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", label, "-f", str(private)),
-            timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
-            capture_output=True,
-            error="Creating the dedicated source key failed. Inspect the credential path and rerun.",
-        )
-        _set_owned_file_mode_no_follow(
-            private,
-            uid=self._service_uid_value,
-            gid=self._service_gid_value,
-            mode=_PRIVATE_KEY_MODE,
-            label="source private key",
-        )
-        _set_owned_file_mode_no_follow(
-            public,
-            uid=self._service_uid_value,
-            gid=self._service_gid_value,
-            mode=_PUBLIC_KEY_MODE,
-            label="source public key",
-        )
-
-    def _validate_source_key_pair(
-        self,
-        config: InstalledServerConfig,
-        private: Path,
-        public: Path,
-    ) -> str:
-        _require_owned_file(
-            private,
-            uid=self._service_uid_value,
-            gid=self._service_gid_value,
-            mode=_PRIVATE_KEY_MODE,
-            label="source private key",
-        )
-        _require_owned_file(
-            public,
-            uid=self._service_uid_value,
-            gid=self._service_gid_value,
-            mode=_PUBLIC_KEY_MODE,
-            label="source public key",
-        )
-        public_key, fingerprint = _read_public_key(public)
-        installation_id = _source_key_installation_id(public_key)
-        if installation_id != config.installation_id:
-            raise InstallRefused(
-                "The source public-key label differs from the installed configuration. Install "
-                "will not replace either side."
-            )
-        if fingerprint != config.source.public_key_fingerprint:
-            raise InstallRefused(
-                "The source public key fingerprint differs from the installed configuration. "
-                "Install will not replace either side."
-            )
-        derived = self._run_as_service(
-            ("ssh-keygen", "-y", "-f", str(private)),
-            timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
-            error="The source private key could not derive its public key. Install will not replace it.",
-        ).stdout.strip()
-        if derived.split()[:2] != public_key.split()[:2]:
-            raise InstallRefused(
-                "The installed source private and public keys are not one key pair. Install will "
-                "not replace either file."
-            )
-        return public_key
-
-    def _source_environment(self, source: ServerSourceConfig | None) -> dict[str, str]:
-        return source_git_environment(source, self.layout)
-
     def _run_as_service(
         self,
         argv: tuple[str, ...],
@@ -1942,96 +409,6 @@ class LinuxInstallMachine:
         if check and result.returncode != 0:
             raise InstallRefused(error or "A managed command failed; inspect the host and rerun.")
         return result
-
-    def _run_git(
-        self,
-        root: Path,
-        argv: tuple[str, ...],
-        *,
-        environment: dict[str, str] | None = None,
-        timeout: float = SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
-        error: str,
-    ) -> None:
-        self._run_as_service(
-            ("git", "-C", str(root), *argv),
-            environment=environment,
-            timeout=timeout,
-            capture_output=True,
-            error=error,
-        )
-
-    def _git_text(
-        self,
-        root: Path,
-        argv: tuple[str, ...],
-        *,
-        environment: dict[str, str] | None = None,
-    ) -> str:
-        result = self._run_as_service(
-            ("git", "-C", str(root), *argv),
-            environment=environment,
-            timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
-            error="The managed Git checkout could not be validated. Inspect it and rerun.",
-        )
-        return result.stdout.strip()
-
-    def _current_release_commit(self) -> str | None:
-        current = self.layout.current_release
-        if not current.exists() and not current.is_symlink():
-            return None
-        if not current.is_symlink():
-            raise InstallRefused(
-                "The current release path is not a symlink; install will not replace it."
-            )
-        info = current.lstat()
-        if info.st_uid != 0 or info.st_gid != 0:
-            raise InstallRefused("The current release symlink is not owned by root.")
-        target = Path(os.readlink(current))
-        if not target.is_absolute() or target.parent != self.layout.releases_root:
-            raise InstallRefused(
-                "The current release symlink does not target the fixed releases root."
-            )
-        commit = target.name
-        _require_full_commit(commit)
-        if target != self.layout.release_dir(commit):
-            raise InstallRefused("The current release symlink target is not canonical.")
-        if target.is_symlink() or not target.is_dir():
-            raise InstallRefused(
-                "The current release symlink target is missing or not a directory. Restore the "
-                "known release; install will not reconstruct active state."
-            )
-        return commit
-
-    def _validate_release_artifacts(self, release: Path) -> None:
-        executable = release / ".venv" / "bin" / "rcp"
-        python = release / ".venv" / "bin" / "python"
-        web_index = release / "web" / "dist" / "index.html"
-        for path, label in ((executable, "Python entry point"), (web_index, "Web build")):
-            if path.is_symlink() or not path.is_file():
-                raise InstallRefused(
-                    f"The current release is missing its {label}. Version repair belongs to "
-                    "server update; install will not mutate the active release."
-                )
-            info = path.stat()
-            if (info.st_uid, info.st_gid) != (self._service_uid_value, self._service_gid_value):
-                raise InstallRefused(
-                    f"The current release {label} has unexpected ownership. Install will not "
-                    "adopt or replace active artifacts."
-                )
-        if not python.exists() or not python.is_file():
-            raise InstallRefused(
-                "The current release is missing its Python runtime. Version repair belongs to "
-                "server update; install will not mutate the active release."
-            )
-        version = self._run_as_service(
-            (str(python), "--version"),
-            timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
-            error="The current release Python runtime could not execute.",
-        )
-        if not (version.stdout or version.stderr).startswith("Python 3.12."):
-            raise InstallRefused(
-                "The current release does not use the required Python 3.12 runtime."
-            )
 
     def _data_state(self) -> Literal["fresh", "initialized"]:
         _require_owned_directory(
@@ -2076,34 +453,132 @@ class LinuxInstallMachine:
         assert self._service_gid is not None
         return self._service_gid
 
+    def bootstrap_supervisor(self, bundle) -> Path:
+        from rcp_supervisor.install import install_operator_console, install_supervisor
 
-def source_git_environment(
-    source: ServerSourceConfig | None,
-    layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
-) -> dict[str, str]:
-    """Return the one credential-isolated Git environment shared by install and update."""
+        _converge_directory(self.layout.supervisor_root, uid=0, gid=0, mode=0o755)
+        previous_umask = os.umask(0o022)
+        try:
+            venv = install_supervisor(bundle.directory, self.layout.supervisor_root)
+            install_operator_console(bundle.directory, self.layout.supervisor_root)
+        finally:
+            os.umask(previous_umask)
+        pointer = self.layout.supervisor_current
+        if pointer.exists() or pointer.is_symlink():
+            if not pointer.is_symlink() or pointer.lstat().st_uid != 0:
+                raise InstallRefused("The supervisor current pointer is not root-owned.")
+            # Explicit self-update, never bootstrap, changes an existing pointer.
+        else:
+            temporary = pointer.with_name(".current.bootstrap")
+            temporary.symlink_to(venv)
+            os.replace(temporary, pointer)
+            _fsync_directory(pointer.parent)
+        _install_root_file(
+            self.layout.supervisor_wrapper,
+            "#!/bin/sh\nset -eu\numask 077\nexec "
+            + str(self.layout.supervisor_current / "bin/rcp-supervisor")
+            + ' "$@"\n',
+            mode=0o755,
+        )
+        lock = _run_as_account(
+            pwd.getpwnam(self.layout.service_account),
+            (
+                str(venv / "bin/python"),
+                "-I",
+                "-m",
+                "rcp_supervisor.fs_worker",
+                "prepare-deployment-lock",
+            ),
+            input_text=json.dumps({"directory": str(self.layout.server_root)}),
+            timeout=SERVER_INSTALL_PROBE_TIMEOUT_SECONDS,
+        )
+        if lock.returncode:
+            raise InstallRefused("The shared private backup/deployment lock could not be prepared.")
+        return venv
 
-    environment = {
-        "GIT_ASKPASS": "/bin/false",
-        "GIT_CONFIG_COUNT": "2",
-        "GIT_CONFIG_GLOBAL": "/dev/null",
-        "GIT_CONFIG_KEY_0": "credential.helper",
-        "GIT_CONFIG_KEY_1": "core.askPass",
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_VALUE_0": "",
-        "GIT_CONFIG_VALUE_1": "/bin/false",
-        "GIT_TERMINAL_PROMPT": "0",
-        "SSH_ASKPASS": "/bin/false",
-    }
-    if source is None or source.authentication == "public":
-        return environment
-    private = layout.credentials_root / _SOURCE_PRIVATE_KEY
-    command = (
-        f"ssh -F /dev/null -i {private} -o IdentitiesOnly=yes -o BatchMode=yes "
-        f"-o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null "
-        f"-o UserKnownHostsFile={layout.ssh_state_root / 'known_hosts'}"
+    def stage_supervisor_integration(self) -> None:
+        """Seal root-generated integration for the independent adoption coordinator."""
+        from rcp.server_ops.config import render_installed_server_config
+
+        config = (
+            load_installed_server_config(self.layout.config_path)
+            if self.layout.config_path.exists()
+            else create_installed_server_config()
+        )
+        files = {
+            "config": {
+                "text": render_installed_server_config(config),
+                "mode": 0o640,
+                "gid": self._service_gid_value,
+            },
+            "unit": {"text": server_service_unit_text(), "mode": 0o644, "gid": 0},
+            "wrapper": {"text": _wrapper_text(self.layout), "mode": 0o755, "gid": 0},
+        }
+        _install_root_file(
+            self.layout.supervisor_root / "integration.json",
+            json.dumps({"version": 1, "files": files}, sort_keys=True) + "\n",
+            mode=0o644,
+            replace_existing=True,
+        )
+
+    def converge_supervisor_integration(self) -> None:
+        """Converge launch files without selecting a release or starting a service."""
+        _install_root_file(
+            self.layout.cli_wrapper,
+            _wrapper_text(self.layout),
+            mode=_WRAPPER_MODE,
+            replace_existing=True,
+        )
+        _install_root_file(
+            self.layout.systemd_unit,
+            server_service_unit_text(),
+            mode=_UNIT_MODE,
+            replace_existing=True,
+        )
+        from rcp.server_ops.backup_config import (
+            backup_configuration_lock,
+            backup_service_unit_text,
+            recover_pending_backup_configuration,
+            render_backup_timer_unit,
+        )
+
+        with backup_configuration_lock(self.layout):
+            recover_pending_backup_configuration(self.layout)
+            config = load_installed_server_config(self.layout.config_path)
+            schedule = config.backup.schedule if config.backup is not None else None
+            fence_backup_timer_before_unit_change()
+            install_backup_unit_files(
+                service_content=backup_service_unit_text(),
+                timer_content=render_backup_timer_unit(schedule),
+                layout=self.layout,
+            )
+            _require_command(
+                ("systemctl", "daemon-reload"),
+                "systemd could not reload the supervisor integration.",
+                timeout=SERVER_INSTALL_SERVICE_TIMEOUT_SECONDS,
+            )
+            _fence_service_stopped_disabled("rcp-backup.timer")
+
+
+def _wrapper_text(layout: ServerLayout) -> str:
+    return (
+        "#!/bin/sh\nset -eu\numask 077\n"
+        f"export RCP_DATA_DIR={layout.data_dir}\n"
+        'route=""\ncount=0\n'
+        'for argument in "$@"; do\n'
+        '  case "$argument" in --machine-readable|--plan) continue;; esac\n'
+        '  route="${route}${route:+ }${argument}"\n'
+        "  count=$((count + 1))\n"
+        '  [ "$count" -lt 3 ] || break\n'
+        "done\n"
+        'case "$route" in\n'
+        '  "server backup configure"|"server provider update")\n'
+        f'    exec {layout.supervisor_wrapper} operator "$@";;\n'
+        '  "server install"|"server install "*|"server update"|"server update "*|"server restore"|"server restore "*|"server supervisor update")\n'
+        f'    exec {layout.supervisor_wrapper} "$@";;\n'
+        "esac\n"
+        f'exec {layout.supervisor_wrapper} launch "$@"\n'
     )
-    return {**environment, "GIT_SSH_COMMAND": command}
 
 
 def _read_os_release(path: Path) -> dict[str, str]:
@@ -2124,23 +599,11 @@ def _read_os_release(path: Path) -> dict[str, str]:
     return values
 
 
-def _leading_major(value: str) -> int:
-    match = re.search(r"v?(\d+)", value.strip())
-    if match is None:
-        raise InstallRefused("A required tool returned an unrecognized version.")
-    return int(match.group(1))
-
-
 def _major_minor(value: str) -> tuple[int, int]:
     match = _VERSION.search(value)
     if match is None:
         raise InstallRefused("A required tool returned an unrecognized semantic version.")
     return int(match.group("major")), int(match.group("minor"))
-
-
-def _require_full_commit(value: str) -> None:
-    if _FULL_GIT_COMMIT.fullmatch(value) is None:
-        raise InstallRefused("Git returned a non-canonical commit id; install stopped safely.")
 
 
 def _run_process(
@@ -2150,6 +613,7 @@ def _run_process(
     environment: dict[str, str] | None = None,
     timeout: float,
     capture_output: bool = True,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     merged_environment = os.environ.copy()
     for name in ("SUDO_COMMAND", "SUDO_GID", "SUDO_UID", "SUDO_USER"):
@@ -2165,6 +629,8 @@ def _run_process(
                 "stderr": subprocess.DEVNULL,
             }
         )
+        if input_text is not None:
+            output["input"] = input_text
         return subprocess.run(
             argv,
             cwd=cwd,
@@ -2232,6 +698,7 @@ def _run_as_account(
     environment: dict[str, str] | None = None,
     timeout: float,
     capture_output: bool = True,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     explicit_environment = {
         "HOME": account.pw_dir,
@@ -2247,11 +714,13 @@ def _run_as_account(
     if environment:
         explicit_environment.update(environment)
     env_argv = tuple(f"{name}={value}" for name, value in explicit_environment.items())
+    options = {} if input_text is None else {"input_text": input_text}
     return _run_process(
         ("runuser", "--user", account.pw_name, "--", "env", "-i", *env_argv, *argv),
         cwd=cwd or Path(account.pw_dir),
         timeout=timeout,
         capture_output=capture_output,
+        **options,
     )
 
 
@@ -2284,25 +753,6 @@ def _require_owned_directory(path: Path, *, uid: int, gid: int) -> None:
     info = path.stat()
     if (info.st_uid, info.st_gid) != (uid, gid):
         raise InstallRefused(f"Managed directory {path} has unexpected ownership.")
-
-
-def _require_managed_source_checkout(
-    source: Path,
-    *,
-    uid: int,
-    gid: int,
-    refusal: type[RuntimeError],
-) -> None:
-    try:
-        _require_owned_directory(source, uid=uid, gid=gid)
-    except InstallRefused as exc:
-        raise refusal(str(exc)) from exc
-    git_dir = source / ".git"
-    if git_dir.is_symlink() or not git_dir.is_dir():
-        raise refusal(
-            "The managed source path is not the RCP-owned Git checkout; install will not "
-            "replace or adopt it."
-        )
 
 
 def _require_owned_file(
@@ -2347,52 +797,6 @@ def _reject_symlink_ancestry(path: Path) -> None:
     for candidate in (path, *path.parents):
         if candidate.is_symlink():
             raise InstallRefused(f"Managed path ancestry contains a symlink at {candidate}.")
-
-
-def _read_public_key(path: Path) -> tuple[str, str]:
-    try:
-        if path.stat().st_size > _PUBLIC_KEY_MAX_BYTES:
-            raise ValueError
-        public_key = path.read_text(encoding="utf-8").strip()
-        parts = public_key.split()
-        if len(parts) < 2 or parts[0] != "ssh-ed25519":
-            raise ValueError
-        blob = base64.b64decode(parts[1], validate=True)
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise InstallRefused("The source public key is not a valid OpenSSH Ed25519 key.") from exc
-    fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode(
-        "ascii"
-    ).rstrip("=")
-    if _OPENSSH_FINGERPRINT.fullmatch(fingerprint) is None:
-        raise InstallRefused("The source public-key fingerprint is not canonical.")
-    return public_key, fingerprint
-
-
-def _source_key_installation_id(public_key: str) -> str:
-    parts = public_key.split()
-    if len(parts) != 3 or not parts[2].startswith("rcp-source:"):
-        raise InstallRefused(
-            "The source public key does not carry one exact RCP installation label."
-        )
-    installation_id = parts[2].removeprefix("rcp-source:")
-    try:
-        parsed = uuid.UUID(installation_id)
-    except ValueError as exc:
-        raise InstallRefused("The source public-key label has an invalid installation id.") from exc
-    if parsed.version != 4 or str(parsed) != installation_id:
-        raise InstallRefused("The source public-key label has an invalid installation id.")
-    return installation_id
-
-
-def _wrapper_text(layout: ServerLayout) -> str:
-    return (
-        "#!/bin/sh\n"
-        "set -eu\n"
-        "umask 077\n"
-        "export PYTHONDONTWRITEBYTECODE=1\n"
-        f"export RCP_DATA_DIR={layout.data_dir}\n"
-        f'exec {layout.current_release}/.venv/bin/rcp "$@"\n'
-    )
 
 
 def _install_root_file(
@@ -2523,327 +927,3 @@ def read_systemd_unit_state(unit: str) -> tuple[str, str]:
     return _read_systemd_property(unit, "ActiveState"), _read_systemd_property(
         unit, "UnitFileState"
     )
-
-
-class InstalledServiceControlRefused(RuntimeError):
-    """The narrow installed-service stop/start or pointer fence failed."""
-
-
-class InstalledSystemServiceController:
-    """Root-only stop/switch/start seam shared by install recovery and update."""
-
-    def __init__(
-        self,
-        layout: ServerLayout = DEFAULT_SERVER_LAYOUT,
-        *,
-        runner=None,
-        root_identity: tuple[int, int] = (0, 0),
-    ) -> None:
-        self.layout = layout
-        self.runner = runner or (
-            lambda argv: _run_process(
-                argv,
-                timeout=SERVER_INSTALL_SERVICE_TIMEOUT_SECONDS,
-            )
-        )
-        self.root_uid, self.root_gid = root_identity
-
-    def current_release(self) -> Path:
-        current = self.layout.current_release
-        try:
-            metadata = current.lstat()
-            target = Path(os.readlink(current))
-        except OSError as exc:
-            raise InstalledServiceControlRefused(
-                "The installed current release pointer is unavailable."
-            ) from exc
-        if (
-            not stat.S_ISLNK(metadata.st_mode)
-            or (metadata.st_uid, metadata.st_gid) != (self.root_uid, self.root_gid)
-            or not target.is_absolute()
-            or target.parent != self.layout.releases_root
-        ):
-            raise InstalledServiceControlRefused(
-                "The installed current release pointer is unsafe or unowned."
-            )
-        try:
-            if self.layout.release_dir(target.name) != target:
-                raise ValueError
-        except ValueError as exc:
-            raise InstalledServiceControlRefused(
-                "The installed current pointer does not name one exact release commit."
-            ) from exc
-        return target
-
-    def stop(self) -> None:
-        self._command(("systemctl", "stop", self.layout.service_unit_name))
-        if self._property("ActiveState") != "inactive" or self._property("MainPID") != "0":
-            raise InstalledServiceControlRefused(
-                "systemd did not prove the RCP service stopped with no main process."
-            )
-
-    def converge_service_unit(self, release: Path) -> None:
-        """Install and load the exact service unit shipped by one release."""
-
-        release = release.resolve(strict=False)
-        unit_source = release / "src" / "rcp" / "server_ops" / "assets" / "rcp.service"
-        try:
-            if (
-                self.layout.release_dir(release.name) != release
-                or not stat.S_ISDIR(release.lstat().st_mode)
-                or release.is_symlink()
-            ):
-                raise ValueError
-            source_info = unit_source.lstat()
-            if (
-                not stat.S_ISREG(source_info.st_mode)
-                or unit_source.is_symlink()
-                or source_info.st_size > 64 * 1024
-            ):
-                raise ValueError
-            content = unit_source.read_text(encoding="utf-8")
-        except (OSError, UnicodeError, ValueError) as exc:
-            raise InstalledServiceControlRefused(
-                "The selected release does not contain one safe RCP service unit."
-            ) from exc
-        try:
-            _install_root_file(
-                self.layout.systemd_unit,
-                content,
-                mode=_UNIT_MODE,
-                replace_existing=True,
-                owner_identity=(self.root_uid, self.root_gid),
-            )
-        except InstallRefused as exc:
-            raise InstalledServiceControlRefused(str(exc)) from exc
-        self._command(("systemctl", "daemon-reload"))
-        try:
-            installed = self.layout.systemd_unit.stat()
-            if (
-                not self.layout.systemd_unit.is_file()
-                or self.layout.systemd_unit.is_symlink()
-                or (installed.st_uid, installed.st_gid) != (self.root_uid, self.root_gid)
-                or stat.S_IMODE(installed.st_mode) != _UNIT_MODE
-                or self.layout.systemd_unit.read_text(encoding="utf-8") != content
-            ):
-                raise ValueError
-        except (OSError, UnicodeError, ValueError) as exc:
-            raise InstalledServiceControlRefused(
-                "The loaded RCP service unit differs from the selected release."
-            ) from exc
-
-    def fence_stopped_disabled(self) -> None:
-        self._command(("systemctl", "disable", "--now", self.layout.service_unit_name))
-        if (
-            self._property("ActiveState") != "inactive"
-            or self._property("MainPID") != "0"
-            or self._property("UnitFileState") != "disabled"
-        ):
-            raise InstalledServiceControlRefused(
-                "systemd did not prove the RCP service stopped and disabled with no main process."
-            )
-
-    def start(self) -> int:
-        self._command(("systemctl", "start", self.layout.service_unit_name))
-        active = self._property("ActiveState")
-        main_pid = self._property("MainPID")
-        try:
-            pid = int(main_pid)
-        except ValueError as exc:
-            raise InstalledServiceControlRefused(
-                "systemd returned an invalid RCP main process identity."
-            ) from exc
-        if active != "active" or pid <= 0:
-            raise InstalledServiceControlRefused(
-                "systemd did not prove the RCP service started with one main process."
-            )
-        return pid
-
-    def enable_and_start(self) -> int:
-        self._command(("systemctl", "enable", "--now", self.layout.service_unit_name))
-        if self._property("UnitFileState") != "enabled":
-            raise InstalledServiceControlRefused(
-                "systemd did not prove the RCP service enabled for replacement activation."
-            )
-        active = self._property("ActiveState")
-        main_pid = self._property("MainPID")
-        try:
-            pid = int(main_pid)
-        except ValueError as exc:
-            raise InstalledServiceControlRefused(
-                "systemd returned an invalid RCP replacement process identity."
-            ) from exc
-        if active != "active" or pid <= 0:
-            raise InstalledServiceControlRefused(
-                "systemd did not prove the RCP replacement service active."
-            )
-        return pid
-
-    def enable(self) -> int:
-        """Enable an already-running replacement without restarting it."""
-
-        self._command(("systemctl", "enable", self.layout.service_unit_name))
-        if self._property("UnitFileState") != "enabled":
-            raise InstalledServiceControlRefused(
-                "systemd did not prove the active RCP replacement enabled."
-            )
-        active = self._property("ActiveState")
-        main_pid = self._property("MainPID")
-        try:
-            pid = int(main_pid)
-        except ValueError as exc:
-            raise InstalledServiceControlRefused(
-                "systemd returned an invalid active RCP process identity."
-            ) from exc
-        if active != "active" or pid <= 0:
-            raise InstalledServiceControlRefused(
-                "systemd did not prove the enabled RCP replacement remained active."
-            )
-        return pid
-
-    def switch_current(self, *, expected: Path, target: Path) -> None:
-        expected = expected.resolve(strict=False)
-        target = target.resolve(strict=False)
-        if self.current_release() != expected:
-            raise InstalledServiceControlRefused(
-                "The installed current release changed before the atomic switch."
-            )
-        for release in (expected, target):
-            try:
-                if (
-                    self.layout.release_dir(release.name) != release
-                    or not stat.S_ISDIR(release.lstat().st_mode)
-                    or release.is_symlink()
-                ):
-                    raise ValueError
-            except (OSError, ValueError) as exc:
-                raise InstalledServiceControlRefused(
-                    "A release pointer target is missing, unsafe, or outside the release root."
-                ) from exc
-        current = self.layout.current_release
-        temporary = current.parent / f".{current.name}.update-{uuid.uuid4().hex}"
-        try:
-            os.symlink(target, temporary)
-            os.lchown(temporary, self.root_uid, self.root_gid)
-            os.replace(temporary, current)
-            _fsync_directory(current.parent)
-        except OSError as exc:
-            raise InstalledServiceControlRefused(
-                "The installed current release could not be switched atomically."
-            ) from exc
-        finally:
-            temporary.unlink(missing_ok=True)
-        if self.current_release() != target:
-            raise InstalledServiceControlRefused(
-                "The installed current release switch did not survive readback."
-            )
-
-    def _property(self, name: str) -> str:
-        completed = self.runner(
-            (
-                "systemctl",
-                "show",
-                f"--property={name}",
-                "--value",
-                self.layout.service_unit_name,
-            )
-        )
-        value = completed.stdout.strip()
-        if completed.returncode != 0 or not value or "\n" in value:
-            raise InstalledServiceControlRefused(f"systemd could not read the RCP service {name}.")
-        return value
-
-    def _command(self, argv: tuple[str, ...]) -> None:
-        completed = self.runner(argv)
-        if completed.returncode != 0:
-            raise InstalledServiceControlRefused(
-                "systemd refused the bounded RCP service lifecycle command."
-            )
-
-
-def _converge_current_release(layout: ServerLayout, release: Path) -> None:
-    current = layout.current_release
-    _reject_symlink_ancestry(current.parent)
-    if current.exists() or current.is_symlink():
-        if not current.is_symlink():
-            raise InstallRefused(
-                "The current release path is not a symlink; install will not replace it."
-            )
-        info = current.lstat()
-        if (info.st_uid, info.st_gid) != (0, 0) or Path(os.readlink(current)) != release:
-            raise InstallRefused(
-                "The current release pointer names another or unowned release. Version changes "
-                "belong to server update."
-            )
-        return
-    temporary = current.parent / f".{current.name}.{uuid.uuid4().hex}"
-    try:
-        os.symlink(release, temporary)
-        os.replace(temporary, current)
-        _fsync_directory(current.parent)
-    except OSError as exc:
-        raise InstallRefused(
-            "The current release pointer could not be installed atomically."
-        ) from exc
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _read_team_health() -> dict[str, object] | None:
-    deadline = time.monotonic() + SERVER_INSTALL_HEALTH_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        connection = http.client.HTTPConnection(
-            "127.0.0.1",
-            8421,
-            timeout=SERVER_HEALTH_REQUEST_TIMEOUT_SECONDS,
-        )
-        try:
-            connection.request(
-                "GET",
-                "/api/health",
-                headers={"Accept": "application/json", "Host": "127.0.0.1:8421"},
-            )
-            response = connection.getresponse()
-            if response.status != 200:
-                time.sleep(SERVER_INSTALL_HEALTH_POLL_INTERVAL_SECONDS)
-                continue
-            body = response.read(SERVER_INSTALL_HEALTH_RESPONSE_MAX_BYTES + 1)
-            if len(body) > SERVER_INSTALL_HEALTH_RESPONSE_MAX_BYTES:
-                return None
-            value = json.loads(body.decode("utf-8"))
-            return value if isinstance(value, dict) else None
-        except (OSError, UnicodeError, ValueError, http.client.HTTPException):
-            time.sleep(SERVER_INSTALL_HEALTH_POLL_INTERVAL_SECONDS)
-        finally:
-            connection.close()
-    return None
-
-
-__all__ = [
-    "GitHubRepository",
-    "HostFacts",
-    "InstallMachine",
-    "InstallRefused",
-    "InstalledServiceControlRefused",
-    "InstalledSystemServiceController",
-    "LinuxInstallMachine",
-    "ManagedCheckout",
-    "ServiceHealth",
-    "ServiceInstallState",
-    "SourceAccess",
-    "SourceTransition",
-    "converge_public_source",
-    "discover_bootstrap_repository",
-    "enable_backup_timer",
-    "fence_backup_timer_before_unit_change",
-    "finish_public_source_transition",
-    "install_backup_unit_files",
-    "normalize_github_repository",
-    "prepare_install_command",
-    "read_systemd_unit_state",
-    "reload_and_disable_backup_timer",
-    "run_backup_service_once",
-    "source_git_environment",
-    "source_probe_environment",
-    "source_transition_message",
-]

@@ -221,3 +221,34 @@ def test_asset_contract_refuses_incomplete_or_unrecognized_release(
 def test_promotion_rejects_supervisor_wheel_as_rcp_version() -> None:
     with pytest.raises(release_build.ReleaseBuildError, match="invalid wheel filename"):
         release_build.check_promotion(Path(SUPERVISOR_WHEEL), "v0.1.0")
+
+
+@pytest.mark.parametrize(
+    "wheel",
+    [
+        "rcp-0.3.2+build.0.gfe06636-py3-none-any.whl",
+        "rcp-0.3.2+build.01.gfe06636-py3-none-any.whl",
+        "rcp-01.3.2+build.412.gfe06636-py3-none-any.whl",
+        "rcp_supervisor-01.0.0-py3-none-any.whl",
+    ],
+)
+def test_asset_contract_refuses_noncanonical_version(tmp_path: Path, wheel: str) -> None:
+    supervisor = wheel.startswith("rcp_supervisor-")
+    names = [
+        RCP_WHEEL if supervisor else wheel,
+        wheel if supervisor else SUPERVISOR_WHEEL,
+        "requirements.lock.txt",
+        "supervisor-requirements.lock.txt",
+    ]
+    for name in names:
+        (tmp_path / name).touch()
+    release_build.write_manifest(tmp_path, Path("manifest.sha256"))
+    with pytest.raises(release_build.ReleaseBuildError, match="supervisor wheel|RCP wheel"):
+        release_build.check_assets(tmp_path, require_supervisor=True)
+
+
+def test_promotion_refuses_leading_zero_build() -> None:
+    with pytest.raises(release_build.ReleaseBuildError, match="does not contain a build version"):
+        release_build.check_promotion(
+            Path("rcp-0.3.2+build.01.gfe06636-py3-none-any.whl"), "v0.3.2"
+        )

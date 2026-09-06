@@ -211,3 +211,13 @@ def test_server_status_does_not_invent_a_restore_age() -> None:
 
     assert status.restore.status.label == "No restore drill recorded"
     assert status.restore.drill_age_days is None
+
+
+def test_server_status_names_selected_release_without_source_freshness_claim() -> None:
+    status = project_server_status(
+        _report(source_state="aligned"),
+        protected_backup=None,
+        restored_at=None,
+        now=NOW,
+    )
+    assert status.releases.status.label == "Running selected release"

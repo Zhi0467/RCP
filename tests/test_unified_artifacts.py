@@ -30,7 +30,7 @@ from rcp.runs.chat import (
     finalize_artifact_revision,
     stage_artifact_context,
 )
-from rcp.server_ops.update_checkpoint import _settle_accepting_artifact_replacements
+from rcp.server_ops.application_snapshot import _settle_accepting_artifact_replacements
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, ArtifactRevisionCandidateRecord
 from rcp.transport import LocalStateWorkspace, RemoteRunStage, StateUnavailable

@@ -24,7 +24,7 @@ from fastapi import FastAPI
 
 from rcp import __version__
 from rcp.api import create_app
-from rcp.api.app import default_data_dir, inspect_installed_replacement_startup
+from rcp.api.app import default_data_dir
 from rcp.limits import (
     BROWSER_OPEN_DELAY_SECONDS,
     SERVER_HEALTH_REQUEST_TIMEOUT_SECONDS,
@@ -35,6 +35,7 @@ from rcp.limits import (
 )
 from rcp.migrate_cli import _print_version, _run_migrate
 from rcp.server_ops.cli import add_server_parser, run_server_command
+from rcp.server_ops.maintenance import MaintenanceIdentity
 from rcp.server_runtime import (
     ServerMetadata,
     ServerMetadataError,
@@ -122,6 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
             help="Replace an existing server without asking about active work",
         )
         if name == "serve":
+            command.add_argument("--maintenance-id", help=argparse.SUPPRESS)
+            command.add_argument("--maintenance-boundary", help=argparse.SUPPRESS)
             command.add_argument(
                 "--acceptance-agent",
                 action="store_true",
@@ -226,10 +229,17 @@ def main() -> None:
     if args.command == "space":
         _run_space_command(args, data_dir)
         return
-    try:
-        inspect_installed_replacement_startup(data_dir)
-    except RuntimeError as exc:
-        raise SystemExit(str(exc)) from exc
+    maintenance_id = getattr(args, "maintenance_id", None)
+    maintenance_boundary = getattr(args, "maintenance_boundary", None)
+    if maintenance_id is not None or maintenance_boundary is not None:
+        if maintenance_id is None or maintenance_boundary is None:
+            parser.error("maintenance requires both identity and boundary")
+        try:
+            MaintenanceIdentity(maintenance_id, maintenance_boundary)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.force or args.reload or args.reuse_existing:
+            parser.error("maintenance cannot replace, reuse, or reload another process")
     _require_team_bind_is_loopback(args, data_dir)
     if args.command == "serve" and args.reuse_existing:
         if args.force:
@@ -357,7 +367,10 @@ def _require_team_bind_is_loopback(args: argparse.Namespace, data_dir: Path) -> 
     leave a healthy server running rather than shut it down and then refuse.
     """
     database_path = data_dir / "rcp.sqlite3"
-    if not database_path.exists() or AppStore(database_path).space_kind != "team":
+    if (
+        not database_path.exists()
+        or AppStore.open_read_only_snapshot(database_path).space_kind != "team"
+    ):
         return
     host = getattr(args, "host", None)
     if host is None:
@@ -452,6 +465,11 @@ def _run_server(
                 args.project,
                 instance_metadata=metadata,
                 acceptance_agent=getattr(args, "acceptance_agent", False),
+                maintenance_identity=(
+                    MaintenanceIdentity(args.maintenance_id, args.maintenance_boundary)
+                    if getattr(args, "maintenance_id", None) is not None
+                    else None
+                ),
             )
             if args.command == "open":
                 url = _project_url(args.host, args.port, app.state.default_project_id)

@@ -117,20 +117,15 @@ export function ServerSettings({ loadStatus = loadServerStatus }: Props) {
 
       {status ? (
         <div className="server-settings-body">
-          <section className="server-release-ledger" aria-label="Source and release commits">
+          <section className="server-release-ledger" aria-label="Selected release commits">
             <div className="server-settings-section-title">
               <GitCompareArrows size={15} />
-              <h3>Source and release</h3>
+              <h3>Selected release</h3>
               <StatusMark summary={status.releases.status} />
             </div>
             <dl className="server-commit-rail">
               <CommitRow label="Running" commit={status.releases.running_commit} />
               <CommitRow label="Installed" commit={status.releases.current_release_commit} />
-              <CommitRow label="Managed main" commit={status.releases.managed_source_commit} />
-              <CommitRow
-                label="Last fetched origin/main"
-                commit={status.releases.upstream_commit}
-              />
               {status.releases.candidate_commit ? (
                 <CommitRow label="Candidate" commit={status.releases.candidate_commit} />
               ) : null}

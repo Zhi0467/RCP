@@ -15,13 +15,14 @@ import os
 import re
 import stat
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
@@ -64,6 +65,8 @@ class VerifiedRelease:
     supervisor_wheel: Path
     supervisor_requirements: Path
     supervisor_version: str
+    release_tag: str | None = None
+    full_commit: str | None = None
 
 
 def _validate_url(url: str, *, metadata: bool = False) -> None:
@@ -109,6 +112,40 @@ def _open(request: urllib.request.Request, timeout: float):
     return urllib.request.build_opener(_GitHubRedirects()).open(request, timeout=timeout)
 
 
+def _open_with_deadline(request: urllib.request.Request, remaining: float):
+    lock = threading.Lock()
+    abandoned = False
+    response = None
+    error = None
+
+    def open_response() -> None:
+        nonlocal response, error
+        try:
+            opened = _open(request, timeout=min(limits.HTTP_TIMEOUT_SECONDS, remaining))
+        except Exception as exc:
+            with lock:
+                error = exc
+            return
+        with lock:
+            if not abandoned:
+                response = opened
+                return
+        opened.close()
+
+    thread = threading.Thread(target=open_response, daemon=True)
+    thread.start()
+    thread.join(timeout=remaining)
+    with lock:
+        if thread.is_alive():
+            abandoned = True
+            if response is not None:
+                response.close()
+            raise SupervisorError("release fetch exceeded its time limit")
+    if error is not None:
+        raise error
+    return response
+
+
 def _download(
     url: str,
     output: BinaryIO,
@@ -132,7 +169,7 @@ def _download(
         },
     )
     try:
-        with _open(request, timeout=min(limits.HTTP_TIMEOUT_SECONDS, remaining)) as response:
+        with _open_with_deadline(request, remaining) as response:
             _validate_url(response.geturl(), metadata=metadata)
             if response.status != 200:
                 raise SupervisorError(f"GitHub release download returned HTTP {response.status}")
@@ -195,7 +232,15 @@ def _maximum(name: str) -> int:
 
 
 def _read_regular(path: Path, maximum: int) -> bytes:
-    with path.open("rb") as stream:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise SupervisorError(f"release asset {path.name} must be a regular file")
+        stream = os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    with stream:
         data = stream.read(maximum + 1)
     if len(data) > maximum:
         raise SupervisorError(f"asset {path.name} exceeds its size limit")
@@ -261,8 +306,10 @@ def _wheel_version(path: Path, distribution: str, data: bytes) -> str:
             if len(raw) > limits.MAX_WHEEL_METADATA_BYTES:
                 raise SupervisorError(f"wheel {path.name} metadata exceeds its size limit")
             metadata = BytesParser().parsebytes(raw, headersonly=True)
-            names = metadata.get_all("Name", [])
-            versions = metadata.get_all("Version", [])
+            # Non-ASCII header values parse as Header objects; compare their text so a
+            # malformed wheel fails as a supervisor error, not a TypeError.
+            names = [str(name) for name in metadata.get_all("Name", [])]
+            versions = [str(value) for value in metadata.get_all("Version", [])]
             if (
                 len(names) != 1
                 or re.sub(r"[-_.]+", "_", names[0]).lower() != distribution
@@ -323,7 +370,7 @@ def verify_release(directory: Path) -> VerifiedRelease:
         raise SupervisorError(f"could not verify release bundle: {exc}") from exc
 
 
-def _release_metadata(selector: str, deadline: float) -> tuple[str, dict[str, dict]]:
+def _release_metadata(selector: str, deadline: float) -> tuple[str, dict[str, dict], str]:
     if selector != "stable" and not _TAG.fullmatch(selector):
         raise SupervisorError(
             "release selector must be stable or an exact vX.Y.Z; builds are not deployable"
@@ -347,6 +394,9 @@ def _release_metadata(selector: str, deadline: float) -> tuple[str, dict[str, di
         raise SupervisorError("GitHub release is not a published stable vX.Y.Z release")
     if selector != "stable" and tag != selector:
         raise SupervisorError("GitHub returned a different release than requested")
+    full_commit = release.get("target_commitish")
+    if not isinstance(full_commit, str) or re.fullmatch(r"[0-9a-f]{40}", full_commit) is None:
+        raise SupervisorError("GitHub release must name its exact promoted 40-character commit")
     assets = release.get("assets")
     if not isinstance(assets, list):
         raise SupervisorError("GitHub release metadata has no asset list")
@@ -378,7 +428,13 @@ def _release_metadata(selector: str, deadline: float) -> tuple[str, dict[str, di
             or parsed.query
         ):
             raise SupervisorError(f"GitHub release asset {name} URL does not match the release")
-    return tag, indexed
+    return tag, indexed, full_commit
+
+
+def _bind_origin(release: VerifiedRelease, tag: str, full_commit: str) -> VerifiedRelease:
+    if not full_commit.startswith(release.commit):
+        raise SupervisorError("GitHub release commit does not match the verified wheel build")
+    return replace(release, release_tag=tag, full_commit=full_commit)
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -397,7 +453,7 @@ def fetch_release(selector: str, destination: Path) -> VerifiedRelease:
     or replaces an existing directory. Offline recovery uses verify_release.
     """
     deadline = time.monotonic() + limits.FETCH_TIMEOUT_SECONDS
-    tag, assets = _release_metadata(selector, deadline)
+    tag, assets, full_commit = _release_metadata(selector, deadline)
     manifest = io.BytesIO()
     _download(
         assets["manifest.sha256"]["browser_download_url"],
@@ -428,7 +484,7 @@ def fetch_release(selector: str, destination: Path) -> VerifiedRelease:
                     raise SupervisorError(
                         "existing immutable release bundle differs from the selected release"
                     )
-                return verified
+                return _bind_origin(verified, tag, full_commit)
             with tempfile.TemporaryDirectory(
                 prefix=f".{destination.name}.fetch-", dir=destination.parent
             ) as staging:
@@ -450,9 +506,10 @@ def fetch_release(selector: str, destination: Path) -> VerifiedRelease:
                 verified = verify_release(directory)
                 if verified.version.split("+", 1)[0] != tag[1:]:
                     raise SupervisorError("release tag does not match the RCP wheel base version")
+                _bind_origin(verified, tag, full_commit)
                 _fsync_directory(directory)
                 directory.rename(destination)
                 _fsync_directory(destination.parent)
-            return verify_release(destination)
+            return _bind_origin(verify_release(destination), tag, full_commit)
     except OSError as exc:
         raise SupervisorError(f"could not publish release bundle: {exc}") from exc
