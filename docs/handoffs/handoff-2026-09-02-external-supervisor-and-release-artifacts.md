@@ -87,6 +87,15 @@ When those hold, archive this handoff.
    record redacted receipts here. Archive this handoff only after all closure
    conditions hold.
 
+Run [34050713688](https://github.com/Zhi0467/RCP/actions/runs/34050713688)
+at `bcc2fd6` passed both actual KVM preflights after renewing the runner ACL,
+but both first guest launches again failed with KVM permission denied. No guest
+boot or recovery was proved. The workflow now grants the hosted runner membership
+in the device's existing `kvm` group and enters that group for both preflight and
+the complete drive. This replaces the transient ACL grants; QEMU remains
+unprivileged, and all disposable-host and changed-boot gates remain required.
+A successful hosted rerun is still needed to verify this correction.
+
 ## Phases
 
 ### Phase 0 — contract the supervisor will rely on
