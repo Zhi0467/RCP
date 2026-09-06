@@ -28,9 +28,11 @@ _TRANSIENT_OPERATIONAL_FAILURE_RULES = """Transient operational-failure rule:
 - Capacity contention is not a fault and not a finding. A full cluster, busy queue, or occupied
   device means work has not started yet. Submit through `launch` and let the job wait in the queue,
   then arm a job observer and finish the turn. Never report contention as a limit you could not act on.
-- A scheduler or backend rejection (`unavailable`, refused submission, missing account or partition)
-  is a setup failure: stop with a Blocker naming the failure and required action from the response.
-  Do not find another execution path, run attached, or retry a rejected launch.
+- A scheduler or backend rejection (`unavailable` carrying a `required_action`, refused submission,
+  missing account or partition) is a setup failure: stop with a Blocker naming the failure and
+  required action from the response. Do not find another execution path, run attached, or retry a
+  rejected launch. An `unavailable` without a `required_action` is not a rejection; repeat that
+  command once with the same key, as the launch rules say.
 - Do not infer an external lifetime policy or authority gap from elapsed timing, repeated symptoms,
   or the absence of an application error or OOM record. Inspect authoritative evidence along the
   actual execution path: launch wrapper and process ancestry, scheduler or service unit and journal,
