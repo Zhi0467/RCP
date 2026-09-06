@@ -243,9 +243,29 @@ def test_ssh_session_ships_source_and_checks_identity():
 def test_process_identity_handles_parentheses_and_pid_reuse(monkeypatch):
     stat = "123 (worker (a b)) S 1 123 " + " ".join(["0"] * 16) + " 987 0\n"
     monkeypatch.setattr(Path, "read_text", lambda path: stat)
+    monkeypatch.setattr(remote_job_launch, "_group_alive", lambda pid: False)
     assert process_identity(123) == ("987", "S")
     assert alive("123:987") is True
     assert alive("123:986") is False
+
+
+def test_session_liveness_tracks_group_when_leader_identity_mismatches(monkeypatch):
+    if not Path("/proc/self/stat").is_file():
+        pytest.skip("SSH session process groups require Linux /proc")
+    with subprocess.Popen(
+        ["sh", "-c", "sleep 60 & echo $!"],
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    ) as leader:
+        try:
+            child = int(leader.stdout.readline())
+            leader.wait(timeout=5)
+            assert process_identity(child)[1] not in {"Z", "X"}
+            monkeypatch.setattr(remote_job_launch, "process_identity", lambda pid: ("988", "S"))
+            assert alive(f"{leader.pid}:987") is True
+        finally:
+            os.killpg(leader.pid, signal.SIGKILL)
 
 
 @pytest.mark.parametrize("leader_state", ["missing", "Z", "X"])

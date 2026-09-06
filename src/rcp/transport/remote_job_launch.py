@@ -32,7 +32,7 @@ def alive(handle: str) -> bool:
     except FileNotFoundError:
         return _group_alive(pid)
     if actual != expected:
-        return False
+        return _group_alive(pid)
     return state not in {"Z", "X"} or _group_alive(pid)
 
 
