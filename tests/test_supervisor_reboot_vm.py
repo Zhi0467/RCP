@@ -182,6 +182,79 @@ def test_only_baseline_preparation_flushes_the_guest(tmp_path, monkeypatch):
     assert calls == [("power_off",), ("start", {"offline": True})]
 
 
+@pytest.mark.parametrize("reboot_identity", ["valid", "same-boot", "wrong-marker", "wrong-os"])
+def test_reboot_observes_paused_startup_without_waiting_for_cloud_init(
+    tmp_path, monkeypatch, reboot_identity
+):
+    from tests import supervisor_reboot_vm as vm
+
+    first = "0d7ba3c5-d65f-4190-8274-1fe37d7b0a91"
+    second = first if reboot_identity == "same-boot" else "5d974c98-d926-48f5-872c-4bdc3d9203b6"
+    guest = object.__new__(Guest)
+    guest.directory = tmp_path
+    guest.port = 23456
+    guest.ubuntu = "24.04"
+    guest.token = "owned-disposable-guest"
+    guest.boot_ids = []
+    guest.process = None
+    guest.log = None
+    cloud_init_calls = []
+    identity_calls = []
+
+    class Process:
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout):
+            pass
+
+    monkeypatch.setattr(vm.subprocess, "Popen", lambda *args, **kwargs: Process())
+
+    def ssh(argv, **kwargs):
+        reboot = bool(guest.boot_ids)
+        if argv == ["cat", "/proc/sys/kernel/random/boot_id"]:
+            output = second if reboot else first
+        elif argv == ["cloud-init", "status", "--wait"]:
+            # A recovery pause can keep cloud-init finalization pending until
+            # the external controller interrupts again. It is not a reboot gate.
+            if reboot:
+                raise subprocess.TimeoutExpired(argv, vm.BOOT_TIMEOUT)
+            cloud_init_calls.append(argv)
+            output = "status: done"
+        elif argv == ["sudo", "-n", "cat", vm.GUEST_MARKER]:
+            identity_calls.append((reboot, "marker"))
+            output = (
+                "another-guest" if reboot and reboot_identity == "wrong-marker" else guest.token
+            )
+        elif argv == ["cat", "/etc/os-release"]:
+            identity_calls.append((reboot, "os"))
+            version = "22.04" if reboot and reboot_identity == "wrong-os" else "24.04"
+            output = f'ID=ubuntu\nVERSION_ID="{version}"\n'
+        else:
+            raise AssertionError(argv)
+        return subprocess.CompletedProcess(argv, 0, output, "")
+
+    guest.ssh = ssh
+    try:
+        assert guest.start() == first
+        if reboot_identity == "valid":
+            assert guest.power_cycle(offline=True) == second
+            assert json.loads((tmp_path / "guest.json").read_text())["boot_ids"] == [first, second]
+        else:
+            with pytest.raises((AssertionError, RuntimeError)):
+                guest.power_cycle(offline=True)
+            assert guest.boot_ids == [first]
+        assert len(cloud_init_calls) == 1
+        assert (True, "marker") in identity_calls
+        if reboot_identity != "wrong-marker":
+            assert (True, "os") in identity_calls
+    finally:
+        guest.power_off()
+
+
 def test_power_loss_only_kills_the_owned_child() -> None:
     class Process:
         killed = False

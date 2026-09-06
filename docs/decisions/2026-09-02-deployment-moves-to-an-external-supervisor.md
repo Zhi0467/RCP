@@ -5,9 +5,9 @@ retain the private CLI connection for non-deployment operations, and on
 2026-09-06 to require automatic recovery after interruption or reboot. Amends
 [the update-channel decision](2026-08-27-main-is-the-server-update-channel.md)
 and [the install-and-update privilege decision](2026-08-27-source-server-install-and-update-privilege.md)
-as stated at the end of this file. Implementation and outstanding operational
-qualification are tracked in
-[the supervisor handoff](../handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md).
+as stated at the end of this file. Implementation and normal production adoption
+are complete. Remaining disposable recovery qualification is tracked in
+[the qualification handoff](../handoffs/handoff-2026-09-06-disposable-supervisor-qualification.md).
 The [operations spec](../specs/server-and-machine-operations.md) describes the
 implemented supervisor path. Production cutover requires qualification and human
 promotion of a complete build.

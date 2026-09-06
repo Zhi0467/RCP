@@ -258,7 +258,7 @@ The human-confirmed one-lab closure condition is met. This handoff and its
 temporary surface freeze are archived; exhaustive unrun acceptance coverage
 remains explicitly pending.
 
-The [external-supervisor handoff](../../handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md)
+The [external-supervisor handoff](handoff-2026-09-02-external-supervisor-and-release-artifacts.md)
 is ready to dispatch: finish the remaining public-source cleanup, then implement
 the independent supervisor package, cutover, deletion, and lab qualification.
 Its predecessor gate is removed. Retain the private CLI connection for

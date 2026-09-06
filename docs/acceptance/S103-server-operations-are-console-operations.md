@@ -55,6 +55,13 @@ last_checked: >-
 
 # Dangerous operations need the machine, not a login
 
+The 2026-09-06 normal production subset passed: paired-wheel source adoption
+of promoted `v0.3.5`, complete protected backup for both projects, healthy doctor,
+and an idempotent supervisor update check. See the
+[redacted deployment receipt](../archive/handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md#production-closeout-2026-09-06).
+Production reboot, restore, and forced rollback were not driven. This subset
+does not complete the broader assertions below; the scenario remains pending.
+
 This scenario is human-confirmed and partially implemented. Its boundary is in
 [Server and machine operations](../specs/server-and-machine-operations.md).
 
