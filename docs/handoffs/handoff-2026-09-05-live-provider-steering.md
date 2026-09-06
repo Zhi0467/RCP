@@ -277,7 +277,10 @@ no live writer. These simulations do not establish remote behavior.
 
 A direct live Claude drive through `AgentLauncher.stream`, model `haiku`,
 `reasoning=low`, Discuss, and the throwaway probe directory stopped at readiness
-with `claude CLI is not authenticated.` (1.661s, driver exit 1). No Claude turn
+with `claude CLI is not authenticated. The same readiness refusal reproduced outside the sandbox on the
+committed branch, so the integrated Claude steer is blocked by this machine's
+RCP Claude readiness state, not by the sandbox; the Phase 1 direct protocol
+probe remains the real-Claude evidence.` (1.661s, driver exit 1). No Claude turn
 was started and credentials were not changed. Phase 1's real replay-echo probe
 remains valid evidence; live verification of the integrated launcher is open.
 
