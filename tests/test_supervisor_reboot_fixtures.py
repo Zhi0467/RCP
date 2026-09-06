@@ -48,6 +48,17 @@ def test_disposable_data_has_canonical_project_retained_stage_and_attachment(
     assert (Path(receipt["stage"]) / "retained.txt").is_file()
     assert (Path(receipt["research"]) / "manifest.toml").is_file()
     assert receipt["attachment_id"]
+    from tests.supervisor_reboot_guest import backup_inventory
+
+    inventory = backup_inventory(tmp_path / "data")
+    assert inventory["app_data_complete"] is True
+    assert inventory["projects"] == [{"status": "capturable", "reason": None}]
+    assert receipt["token"] not in json.dumps(inventory)
+    (tmp_path / "data" / "unknown-owner").write_text("private diagnostic sentinel")
+    inventory = backup_inventory(tmp_path / "data")
+    assert inventory["app_data_complete"] is False
+    assert inventory["unclassified_app_data"] == ["unknown-owner"]
+    assert "private diagnostic sentinel" not in json.dumps(inventory)
 
 
 def test_qualification_target_really_migrates_and_old_code_refuses_it(tmp_path: Path) -> None:

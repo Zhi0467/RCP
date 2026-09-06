@@ -149,6 +149,24 @@ refuse. The same private-umask defect in restore preparation is covered by a
 focused filesystem regression. These fixes require a hosted rerun. This run
 completed no recovery case, adopted installation, or changed-boot proof.
 
+Run [34055148444](https://github.com/Zhi0467/RCP/actions/runs/34055148444)
+at `cc7cdba` completed fresh-install setup and initial protected backups on both
+Ubuntu versions. The first recovery case after resetting the baseline refused a
+non-complete backup before reaching its armed interruption. Local application
+startup and checkpoint-restoration reproductions retained complete inventories,
+so they do not establish the cause of that hosted failure. Baseline preparation
+now flushes the externally seeded fixture before snapshotting; actual fault power
+cycles remain abrupt. Failed runs retain a read-only current backup inventory to
+identify omissions without exporting its data.
+
+Both adoption jobs reached post-adoption verification and then failed `server
+doctor`. The fixture had disabled its configured backup timer, which the real
+doctor correctly rejects; a local reproduction establishes that mismatch. The
+fixture now retains its healthy configured timer and exports bounded doctor
+problems plus verified committed-selection evidence if later checks fail. A
+hosted rerun must establish the complete result. This run completed no recovery
+case or offline changed-boot adoption proof.
+
 ## Phases
 
 ### Phase 0 — contract the supervisor will rely on

@@ -232,6 +232,11 @@ def drive(ubuntu: str, bundles: Path, output: Path) -> None:
     finally:
         try:
             if guest.process is not None and guest.process.poll() is None:
+                if receipt["status"] == "failed":
+                    try:
+                        receipt["failure_inventory"] = command("diagnostics", timeout=75)
+                    except Exception as diagnostic_error:
+                        receipt["diagnostic_collection_error"] = type(diagnostic_error).__name__
                 guest.collect(
                     "systemd.log",
                     [

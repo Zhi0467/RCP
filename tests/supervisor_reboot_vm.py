@@ -424,6 +424,9 @@ class Guest:
         return self.start(offline=offline)
 
     def save_baseline(self) -> None:
+        # Seal fixture files created by Git and the setup tools before snapshotting.
+        # Actual fault power cycles deliberately never request a guest sync.
+        self.ssh(["sudo", "-n", "sync"])
         self.power_off()
         run(
             [

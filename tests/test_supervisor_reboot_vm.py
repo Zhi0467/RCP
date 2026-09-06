@@ -158,6 +158,30 @@ def test_ubuntu_image_checksum_is_unambiguous_and_exact() -> None:
             image_checksum(value, filename)
 
 
+def test_only_baseline_preparation_flushes_the_guest(tmp_path, monkeypatch):
+    from tests import supervisor_reboot_vm as vm
+
+    guest = object.__new__(Guest)
+    guest.directory = tmp_path
+    calls = []
+    guest.ssh = lambda argv: calls.append(("ssh", argv))
+    guest.power_off = lambda: calls.append(("power_off",))
+    guest.start = lambda **kwargs: calls.append(("start", kwargs)) or "new-boot"
+    monkeypatch.setattr(vm, "run", lambda argv: calls.append(("run", argv)))
+    guest.save_baseline()
+    assert calls == [
+        ("ssh", ["sudo", "-n", "sync"]),
+        ("power_off",),
+        (
+            "run",
+            ["qemu-img", "snapshot", "-c", "qualification-baseline", str(tmp_path / "guest.qcow2")],
+        ),
+    ]
+    calls.clear()
+    assert guest.power_cycle(offline=True) == "new-boot"
+    assert calls == [("power_off",), ("start", {"offline": True})]
+
+
 def test_power_loss_only_kills_the_owned_child() -> None:
     class Process:
         killed = False

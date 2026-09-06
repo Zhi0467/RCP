@@ -229,3 +229,182 @@ def test_missing_failed_step_message_never_exports_raw_exit_text_or_event_fields
     assert diagnostic["exit_code"] == 1
     assert diagnostic["message"].startswith("No failed step message was emitted")
     assert "private-" not in json.dumps(diagnostic)
+
+
+@pytest.mark.parametrize("failed", [True, False])
+def test_doctor_diagnostics_retain_real_cli_report_and_preserve_failure(
+    tmp_path, monkeypatch, failed
+):
+    from tests.test_server_doctor import _report, _run_doctor
+
+    problem = "configured backup timer is not both active and enabled"
+    code, output, _calls = _run_doctor(
+        _report(problems=(problem,) if failed else ()), machine_readable=True
+    )
+    events = [json.loads(line) for line in output.splitlines()]
+    secret = "private-doctor-field-must-not-be-exported"
+    events[-1]["step"]["fields"].append({"name": "last_backup_failure", "value": secret})
+    output = "\n".join(json.dumps(event) for event in events) + "\n" + secret
+
+    def doctor(argv):
+        assert argv == ["/usr/local/bin/rcp", "server", "doctor", "--machine-readable"]
+        if failed:
+            raise subprocess.CalledProcessError(code, argv, output=output)
+        return subprocess.CompletedProcess(argv, code, stdout=output, stderr="")
+
+    monkeypatch.setattr(adoption.guest, "STATE", tmp_path)
+    monkeypatch.setattr(adoption.guest, "service", doctor)
+    if failed:
+        with pytest.raises(subprocess.CalledProcessError):
+            adoption.verify_doctor()
+    else:
+        adoption.verify_doctor()
+    receipt = adoption.diagnostics()["doctor"]
+    assert receipt == {
+        "exit_code": code,
+        "state": "failed" if failed else "succeeded",
+        "overall_state": "problems" if failed else "healthy",
+        "backup_status": "not_configured",
+        "backup_timer_active_state": "not_configured",
+        "backup_timer_unit_file_state": "not_configured",
+        "problems": problem if failed else "none",
+    }
+    assert secret not in json.dumps(adoption.diagnostics())
+    assert (tmp_path / "doctor.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_doctor_diagnostics_refuse_unrelated_malformed_and_oversized_output():
+    unavailable = {"exit_code": 1, "state": "unavailable"}
+    for output in ("private non-JSON output", "[]", "x" * (128 * 1024 + 1)):
+        assert adoption.doctor_diagnostic(output, 1) == unavailable
+    event = {
+        "version": 1,
+        "event": "step",
+        "command": "server doctor",
+        "step": {
+            "phase": "server_doctor",
+            "state": "failed",
+            "fields": [
+                {"name": "problems", "value": "x" * 2001},
+                {"name": "overall_state", "value": "problems\nprivate-terminal-output"},
+                {"name": ["unhashable"], "value": "private-value"},
+            ],
+        },
+    }
+    assert adoption.doctor_diagnostic(json.dumps(event), 1) == {**unavailable, "state": "failed"}
+    event["step"]["state"] = []
+    assert adoption.doctor_diagnostic(json.dumps(event), 1) == unavailable
+    event["command"] = "server backup run"
+    assert adoption.doctor_diagnostic(json.dumps(event), 1) == unavailable
+
+
+@pytest.fixture
+def adopted_journal(tmp_path, monkeypatch):
+    from rcp_supervisor import runtime
+    from rcp_supervisor.launch import validate_selected_receipt
+
+    paths = runtime.Paths(
+        supervisor=tmp_path / "supervisor",
+        releases_root=tmp_path / "releases",
+        checkpoints_root=tmp_path / "checkpoints",
+    )
+    paths.supervisor.mkdir()
+    selected = {
+        "version": 1,
+        "build": 900001,
+        "release_tag": "v0.3.5",
+        "version_string": "0.3.5+build.900001.g1111111",
+        "commit": "1" * 40,
+        "manifest_sha256": "a" * 64,
+        "release_directory": str(paths.releases_root / "900001"),
+        "supervisor_version": "0.1.3",
+    }
+    operation_id = "3b051624-4ffc-47bb-85bf-5dc1a4968e7d"
+    integration = {
+        key: {"text": "private integration text", "mode": 0o644, "gid": 0}
+        for key in ("config", "unit", "wrapper")
+    }
+    record = {
+        "version": 1,
+        "operation_id": operation_id,
+        "phase": "committed",
+        "nonce": "b" * 64,
+        "previous": {
+            "commit": adoption.SOURCE_COMMIT,
+            "release_directory": str(paths.releases_root / adoption.SOURCE_COMMIT),
+            "version_string": "0.3.4",
+        },
+        "target": selected,
+        "old": integration,
+        "integration": integration,
+        "target_proof": {"path": "/private/proof", "sha256": "c" * 64},
+        "legacy_backup": "unavailable",
+        "protected_backup": {
+            "receipt_path": "/private/receipt",
+            "receipt_sha256": "d" * 64,
+            "archive_path": "/private/archive",
+            "archive_sha256": "e" * 64,
+        },
+    }
+    for field, name in (("raw_checkpoint", "raw-checkpoint"), ("checkpoint", "checkpoint")):
+        record[field] = {
+            "directory": str(paths.checkpoints_root / operation_id / name),
+            "sha256": "f" * 64,
+            "boundary_sha256": "b" * 64,
+        }
+    instance = SimpleNamespace(
+        paths=paths,
+        selected_release=lambda: validate_selected_receipt(
+            selected, releases_root=paths.releases_root
+        ),
+    )
+    monkeypatch.setattr(runtime, "SystemRuntime", lambda: instance)
+    monkeypatch.setattr(adoption.guest, "release_receipt", lambda _path: selected)
+    monkeypatch.setattr(adoption.guest, "STATE", tmp_path)
+    adoption.guest.write_json(paths.supervisor / "adoption.json", record)
+    return paths.supervisor / "adoption.json", record
+
+
+def test_committed_selection_is_retained_without_exporting_private_journal(adopted_journal):
+    path, record = adopted_journal
+    adoption.record_adopted_selection()
+    receipt_path = path.parent.parent / "adopted-selection.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["private_field"] = "private-selection-token"
+    receipt["selected_release"]["private_field"] = "private-selection-token"
+    adoption.guest.write_json(receipt_path, receipt)
+    assert adoption.diagnostics() == {
+        "historical_install_completed": False,
+        "adopted_selection": {
+            "phase": "committed",
+            "operation_id": record["operation_id"],
+            "source_commit": adoption.SOURCE_COMMIT,
+            "selected_release": record["target"],
+        },
+    }
+    public = json.dumps(adoption.diagnostics())
+    assert "private integration text" not in public
+    assert "/private/proof" not in public and "/private/archive" not in public
+    assert "private-selection-token" not in public
+
+
+@pytest.mark.parametrize(
+    "defect", ["uncommitted", "wrong_source", "malformed_checkpoint", "wrong_target"]
+)
+def test_unproved_adoption_never_publishes_completed_selection(adopted_journal, defect):
+    from rcp_supervisor.errors import SupervisorError
+
+    path, record = adopted_journal
+    if defect == "uncommitted":
+        record["phase"] = "probing"
+    elif defect == "wrong_source":
+        record["previous"]["commit"] = "9" * 40
+        record["previous"]["release_directory"] = str(path.parent.parent / "releases" / ("9" * 40))
+    elif defect == "malformed_checkpoint":
+        record["checkpoint"]["sha256"] = "not-a-digest"
+    else:
+        record["target"] = {**record["target"], "manifest_sha256": "9" * 64}
+    adoption.guest.write_json(path, record)
+    with pytest.raises((AssertionError, SupervisorError)):
+        adoption.record_adopted_selection()
+    assert "adopted_selection" not in adoption.diagnostics()
