@@ -1,5 +1,7 @@
+import { AlertTriangle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { errorMessage } from "../errors";
 import type { ConversationWorktreeState, WorktreeIntegrationOption } from "../types";
 import "./WorktreeControls.css";
 
@@ -42,7 +44,7 @@ export function useConversationWorktree(
       },
       (error) => {
         if (id === request.current && !controller.signal.aborted) {
-          setResult({ url, state: null, error: String(error) });
+          setResult({ url, state: null, error: errorMessage(error) });
         }
       },
     );
@@ -111,7 +113,7 @@ export function WorktreeControls({
       await onPreviewRemove();
       setConfirmRemove(true);
     } catch (error) {
-      setRemoveError(error instanceof Error ? error.message : String(error));
+      setRemoveError(errorMessage(error));
     } finally {
       setPreviewingRemoval(false);
     }
@@ -124,7 +126,7 @@ export function WorktreeControls({
       await onRemove();
       setConfirmRemove(false);
     } catch (error) {
-      setRemoveError(error instanceof Error ? error.message : String(error));
+      setRemoveError(errorMessage(error));
     } finally {
       setRemoving(false);
     }
@@ -134,7 +136,10 @@ export function WorktreeControls({
     <section className="chat-worktree-controls" aria-label="Conversation worktree">
       {error ? (
         <>
-          <span role="alert">{error}</span>
+          <span className="worktree-failure" role="alert">
+            <AlertTriangle size={13} aria-hidden="true" />
+            This conversation&rsquo;s worktree could not be checked. {error}
+          </span>
           <button className="button compact" type="button" onClick={onRefresh}>
             Retry worktree check
           </button>

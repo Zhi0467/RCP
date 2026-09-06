@@ -8349,6 +8349,42 @@ button.relation-map-node:hover {
   margin: 0;
   min-width: 0;
 }
+/* A failure in a toolbar row reads as a label unless it is marked as one. */
+.inline-failure {
+  align-items: center;
+  background: color-mix(in srgb, var(--red-soft) 62%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--red) 34%, var(--line));
+  border-radius: 8px;
+  color: var(--ink);
+  display: flex;
+  flex: 1 0 100%;
+  font: 12px/1.45 var(--ui);
+  gap: 8px;
+  margin: 0;
+  padding: 8px 10px;
+}
+.inline-failure > svg {
+  color: var(--red);
+  flex: none;
+}
+.inline-failure > span {
+  flex: 1;
+  min-width: 0;
+}
+.inline-failure > button {
+  flex: none;
+}
+.worktree-failure {
+  align-items: center;
+  color: var(--ink);
+  display: inline-flex;
+  font: 12px/1.45 var(--ui);
+  gap: 6px;
+}
+.worktree-failure > svg {
+  color: var(--red);
+  flex: none;
+}
 .graph-connection-list {
   list-style: none;
   padding: 0;
