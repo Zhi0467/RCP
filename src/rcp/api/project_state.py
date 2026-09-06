@@ -21,9 +21,10 @@ from rcp.api.dependencies import (
 )
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
-from rcp.compute_jobs.jobs import cancel_compute_job, refresh_compute_job
+from rcp.compute_jobs.jobs import cancel_compute_job
 from rcp.compute_jobs.models import ComputeBackendProbe, ComputeJobRecord
 from rcp.compute_jobs.probe import probe_compute_backend
+from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.config import load_manifest
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import profile_for
@@ -362,9 +363,10 @@ def project_compute_jobs(
 ) -> list[ComputeJobRecord]:
     project_id = catalog.resolve_project_id(project_id)
     service = get_project_service(catalog, project_id)
-    for job in store.running_compute_jobs():
-        if job.project_id == project_id:
-            refresh_compute_job(store, service.manifest, job.job_id, data_dir=catalog.data_dir)
+    # One pass with the per-host short-circuit, so an unreachable host costs one timeout.
+    reconcile_compute_jobs(
+        store, service.manifest, project_id=project_id, data_dir=catalog.data_dir
+    )
     return store.compute_jobs(project_id)
 
 
