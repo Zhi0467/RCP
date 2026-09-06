@@ -165,6 +165,7 @@ def write_scope_section(scope: ProjectWriteScope) -> str:
     lines += [
         f"- writable, repository `{item.alias}`: `{item.path}`" for item in scope.repositories
     ]
+    lines += [f"- writable, repository Git metadata: `{path}`" for path in scope.git_metadata_roots]
     lines += [f"- denied inside the roots above: `{path}`" for path in scope.protected_write_paths]
     roots = "\n".join(lines)
     return f"""

@@ -200,6 +200,7 @@ class AgentTaskExecution:
     applied_revision: int | None = None
     applied_graph_state: GraphState | None = None
     armed_graph_watchers: bool = False
+    compatible_related_write_scope_fingerprints: frozenset[str] = frozenset()
 
     @property
     def reuses_native_checkpoint(self) -> bool:
@@ -241,6 +242,7 @@ class AgentTaskExecution:
                 stage_root=scope.stage_root,
                 workspace_root=scope.workspace_root,
                 repositories=scope.repositories,
+                git_metadata_roots=scope.git_metadata_roots,
                 protected_write_paths=[
                     path for path in scope.protected_write_paths if path != legacy_inputs
                 ],
@@ -252,6 +254,7 @@ class AgentTaskExecution:
             stage_root=scope.stage_root,
             fingerprint=scope.fingerprint,
             compatible_previous_fingerprint=compatible_previous_fingerprint,
+            compatible_related_fingerprints=self.compatible_related_write_scope_fingerprints,
         )
         self.write_scope_fingerprint = scope.fingerprint
 
