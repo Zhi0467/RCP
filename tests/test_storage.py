@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 import rcp.storage.base as storage_base_module
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, AuthorizedHuman
 from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.providers import ProviderUsage
@@ -32,6 +33,7 @@ from rcp.storage import (
 )
 
 from .helpers import NON_UUID4
+from .test_compute_jobs_storage import job_record
 
 
 def _project(project_id: str) -> ProjectRecord:
@@ -1022,6 +1024,8 @@ _PROJECT_ID_TABLES = (
     "graph_runs",
     "episodes",
     "agent_usage",
+    "compute_jobs",
+    "compute_backend_probes",
     "watchers",
 )
 
@@ -1048,6 +1052,20 @@ def _seed_project_identity_rows(
         error="saved diagnostic",
     )
     store.upsert_project(record)
+    store.create_compute_job(job_record(f"job-{label}", project_id=project_id))
+    store.record_compute_backend_probe(
+        project_id,
+        ComputeBackendProbe(
+            execution_machine="local",
+            backend_id="systemd_user",
+            state="ready",
+            ready=True,
+            diagnostic="Ready",
+            containment="mirrored",
+            status_label="Ready",
+            status_tone="ready",
+        ),
+    )
     with store.connection() as connection:
         connection.execute(
             """
@@ -1152,6 +1170,7 @@ def _insert_destination_conflict(
         "graph_runs": "operation_id",
         "episodes": "episode_id",
         "agent_usage": "usage_id",
+        "compute_jobs": "job_id",
         "watchers": "watcher_id",
     }
     with store.connection() as connection:

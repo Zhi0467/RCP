@@ -3385,6 +3385,8 @@ _PROJECT_ID_TABLES = (
     "graph_runs",
     "episodes",
     "agent_usage",
+    "compute_jobs",
+    "compute_backend_probes",
     "watchers",
     "graph_watcher_reconciliation",
     "auto_research_child_work",
