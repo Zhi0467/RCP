@@ -847,6 +847,17 @@ administrator.
 
 ## Personal-to-team transfer archive
 
+After both human confirmations and source-configuration revalidation, the source
+transfer owner closes paused standalone attempts as interrupted, with a
+request-bound event and receipt. It preserves their original output, session
+evidence, finish timestamp, and source scratch. This administrative closure does
+not broaden ordinary worker transitions or restart recovery. It never stops
+queued/running/pausing tasks or episode-owned attempts. Any remaining live task,
+episode, watcher, report, child, or delivery refuses the whole settlement
+transaction; those owners must settle through their normal lifecycle. The final
+desktop confirmation discloses this paused-attempt closure. Read-only history
+export does not mutate task state.
+
 After source work settles, transfer produces one versioned, checksummed project
 archive. It contains the durable project identity, accepted main and graph-branch
 canonical history and exact heads; typed canonical RCP chat transcripts; the
@@ -1028,6 +1039,13 @@ workspace transaction, including the remote advisory lease for SSH state.
 Source retirement hides the project from catalogs and
 active membership checks without deleting its retained membership or invitation
 audit rows.
+
+An interruption after release or the home-change fence remains resumable through
+the same source-release action. Backend projection advertises that action until
+archive binding completes; its read-only boundary endpoint returns the original
+confirmed configuration and head, not the later fenced head. Re-entry finishes
+settlement/capture using the existing receipt before the desktop attempts relay.
+It never needs a second transfer request or another ownership confirmation.
 
 The desktop is the transfer-byte relay for this first target. Its final review
 records target admission before source release through the two separate

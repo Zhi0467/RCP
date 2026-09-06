@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from rcp.api import create_app
 from rcp.project_transfer import capture_project_transfer_source
-from rcp.storage import AppStore
+from rcp.service import RunRequest
+from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage.models import AgentTaskStatus
 from rcp.transfer.source import (
     advance_source_project_transfer,
     complete_source_project_transfer,
@@ -16,6 +20,7 @@ from rcp.transfer.source import (
 )
 
 from .helpers import create_named_app
+from .test_episode_storage import _episode
 from .test_project_transfer_request_api import _set_origin, _source_project
 from .test_project_transfer_request_storage import (
     _activate_target,
@@ -26,7 +31,12 @@ from .test_project_transfer_request_storage import (
 )
 
 
-def _released_source(tmp_path: Path):
+def _released_source(
+    tmp_path: Path,
+    *,
+    task_statuses: tuple[AgentTaskStatus, ...] = (),
+    release_source: bool = True,
+):
     source_data = tmp_path / "personal"
     source_app = create_named_app(data_dir=source_data)
     source = source_app.state.background_tasks.store
@@ -71,12 +81,30 @@ def _released_source(tmp_path: Path):
         source_request.request_id,
         receipt=target_request.target_admission_receipt,
     )
-    source_request = source.record_source_project_transfer_release(
-        source_request.request_id,
-        released_by=source_actor,
-        revalidated_configuration=configuration,
-        source_head=source_head,
-    )
+    for task_status in task_statuses:
+        now = source.now()
+        source.create_agent_task(
+            AgentTaskRecord(
+                operation_id=str(uuid.uuid4()),
+                project_id=project_id,
+                kind="seed",
+                status=task_status,
+                request=RunRequest(provider="codex").model_dump(mode="json"),
+                created_at=now,
+                updated_at=now,
+                finished_at=now if task_status == "paused" else None,
+                status_message="Retained task",
+                authorized_by=source_actor,
+                stage_root=str(source_data / "retained-scratch"),
+            )
+        )
+    if release_source:
+        source_request = source.record_source_project_transfer_release(
+            source_request.request_id,
+            released_by=source_actor,
+            revalidated_configuration=configuration,
+            source_head=source_head,
+        )
     return (
         source_data,
         source_app,
@@ -86,6 +114,149 @@ def _released_source(tmp_path: Path):
         target_request,
         source_head,
     )
+
+
+def test_confirmed_source_transfer_closes_paused_attempt_without_losing_history(tmp_path: Path):
+    data, app, source, _target, request, _target_request, _head = _released_source(
+        tmp_path, task_statuses=("paused",)
+    )
+    scratch = data / "retained-scratch"
+    scratch.mkdir()
+    (scratch / "patch.json").write_text("retained draft")
+    with source.connection() as connection:
+        operation_id = connection.execute(
+            "SELECT operation_id FROM graph_runs WHERE project_id = ?", (request.project_id,)
+        ).fetchone()[0]
+    before = source.agent_task(operation_id)
+
+    completed = advance_source_project_transfer(source, app.state.catalog, request.request_id)
+    assert completed.phase == "archive_bound"
+    after = source.agent_task(operation_id)
+    assert before is not None and after is not None
+    assert after.status == "interrupted"
+    assert after.stage_root == before.stage_root
+    assert after.finished_at == before.finished_at
+    assert (scratch / "patch.json").read_text() == "retained draft"
+    with source.connection() as connection:
+        receipts = connection.execute(
+            "SELECT payload_json FROM graph_run_receipts WHERE operation_id = ? "
+            "AND category = 'operation_interrupted'",
+            (operation_id,),
+        ).fetchall()
+    assert len(receipts) == 1
+    assert request.request_id in receipts[0][0]
+    archive = source_transfer_export_path(data, request.request_id)
+    captured = archive.read_bytes()
+    assert (
+        advance_source_project_transfer(source, app.state.catalog, request.request_id) == completed
+    )
+    assert archive.read_bytes() == captured
+    assert source.agent_task(operation_id) == after
+
+
+@pytest.mark.parametrize("active_status", ["queued", "running", "pausing"])
+def test_source_settlement_never_interrupts_live_work(
+    tmp_path: Path, active_status: AgentTaskStatus
+):
+    _data, app, source, _target, request, _target_request, head = _released_source(
+        tmp_path, task_statuses=("paused", active_status)
+    )
+    with pytest.raises(ValueError, match="agent task to be settled"):
+        advance_source_project_transfer(source, app.state.catalog, request.request_id)
+    with source.connection() as connection:
+        statuses = {
+            row[0]
+            for row in connection.execute(
+                "SELECT status FROM graph_runs WHERE project_id = ?", (request.project_id,)
+            )
+        }
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM graph_run_receipts WHERE category = 'operation_interrupted'"
+            ).fetchone()[0]
+            == 0
+        )
+    assert statuses == {"paused", active_status}
+    assert app.state.catalog.open(request.project_id).history.head_ref() == head
+
+
+def test_source_task_settlement_requires_human_release(tmp_path: Path):
+    _data, _app, source, target, request, target_request, _head = _released_source(
+        tmp_path, release_source=False
+    )
+    with pytest.raises(ValueError, match="confirmed source release"):
+        target.settle_source_transfer_tasks(target_request.request_id)
+    with pytest.raises(ValueError, match="confirmed source release"):
+        source.settle_source_transfer_tasks(request.request_id)
+
+
+def test_source_settlement_preserves_paused_tasks_while_an_episode_is_live(tmp_path: Path):
+    _data, app, source, _target, request, _target_request, head = _released_source(
+        tmp_path, task_statuses=("paused",), release_source=False
+    )
+    episode = source.create_episode(
+        _episode(source, str(uuid.uuid4()), project_id=request.project_id)
+    )
+    configuration, _ = capture_project_transfer_source(app.state.catalog.open(request.project_id))
+    source.record_source_project_transfer_release(
+        request.request_id,
+        released_by=_actor(source, "Z"),
+        revalidated_configuration=configuration,
+        source_head=head,
+    )
+    with pytest.raises(ValueError, match="episode to be settled"):
+        advance_source_project_transfer(source, app.state.catalog, request.request_id)
+    assert source.episode(episode.episode_id) == episode
+    with source.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT status FROM graph_runs WHERE project_id = ?", (request.project_id,)
+            ).fetchone()[0]
+            == "paused"
+        )
+
+
+@pytest.mark.parametrize("boundary", ["source_released", "source_fenced"])
+def test_desktop_decisions_resume_an_interrupted_source_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+):
+    _data, app, source, _target, request, _target_request, head = _released_source(
+        tmp_path, task_statuses=("paused",)
+    )
+    if boundary == "source_fenced":
+        with monkeypatch.context() as patch:
+
+            def fail_binding(*args, **kwargs):
+                raise ValueError("simulated archive receipt interruption")
+
+            patch.setattr(source, "bind_project_transfer_archive", fail_binding)
+            with pytest.raises(ValueError, match="simulated archive receipt"):
+                advance_source_project_transfer(source, app.state.catalog, request.request_id)
+    with TestClient(app, base_url="https://personal.test") as client:
+        projected = client.get(f"/api/project-transfers/requests/{request.request_id}").json()
+        assert projected["phase"] == boundary
+        assert projected["can_release"] is True
+        assert projected["can_relay"] is False
+        original_receipt = projected["source_release_receipt"]
+        release_path = f"/api/project-transfers/source-requests/{request.request_id}/release"
+        saved_boundary = client.get(release_path + "-boundary")
+        assert saved_boundary.status_code == 200
+        assert saved_boundary.json()["source_head"] == head.model_dump(mode="json")
+        resumed = client.post(
+            release_path,
+            json={
+                "expected_source_configuration_sha256": saved_boundary.json()[
+                    "source_configuration_sha256"
+                ],
+                "expected_source_head": saved_boundary.json()["source_head"],
+            },
+        )
+        assert resumed.status_code == 200, resumed.text
+        assert resumed.json()["phase"] == "archive_bound"
+        assert resumed.json()["source_release_receipt"] == original_receipt
+        projected = client.get(f"/api/project-transfers/requests/{request.request_id}").json()
+        assert projected["can_release"] is False
+        assert projected["can_relay"] is True
 
 
 def _target_activation_proof(target, target_request, source_request) -> bytes:

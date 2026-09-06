@@ -1038,8 +1038,9 @@ export function TransferProjectSetup({
               <section className="provisioning-final-review">
                 <h2>Final review</h2>
                 <p>
-                  This one confirmation admits the prepared team copy, makes the personal project
-                  read-only, relays the sealed history, and activates the team project.
+                  This one confirmation closes paused standalone attempts while preserving their
+                  history and source files, admits the prepared team copy, makes the personal
+                  project read-only, relays the sealed history, and activates the team project.
                 </p>
                 <dl>
                   <div>

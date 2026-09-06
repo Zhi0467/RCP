@@ -1,4 +1,11 @@
-# Dev team space and source server completion handoff
+# Team-server qualification history before the final CoT transfer
+
+Status: archived evidence, superseded on 2026-09-05. This preserves the prior
+plan and dated receipts, including obsolete instructions, for audit only. The
+human revised closure to accept the existing two production members, skip the
+separate SSH qualification, and finish after a backed-up CoT project transfer.
+The final outcome is recorded in the [archived closure receipt](handoff-2026-08-27-dev-team-space-and-server.md).
+
 
 Date: 2026-08-27
 Status: active. Design, grilling, and all planned implementation packets are
@@ -93,7 +100,7 @@ What each open drive is waiting on:
 - Reopening retried an existing failed Experiment invocation, which failed
   with the same attribution error as before the update. Its active diagnosis
   and repair item belongs to
-  [S41](../acceptance/S41-bounded-experiment-control.md#open-live-failure--2026-09-04).
+  [S41](../../acceptance/S41-bounded-experiment-control.md#open-live-failure--2026-09-04).
   The server qualification proves record preservation and normal reopening,
   not successful scientific work; no real research state was manually edited.
 - Production `wth-gpu-01` and the source-built desktop were qualified at
@@ -215,7 +222,7 @@ What each open drive is waiting on:
   metadata; visual redesign is separate work, not part of this drive.
 
 The dated implementation log and the fifty-five completed packet sections moved
-to [the evidence archive](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-evidence.md)
+to [the evidence archive](../../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-evidence.md)
 on 2026-09-01; only packets with an open drive remain below. The table above and
 this opening status are the authoritative current summary.
 
@@ -448,18 +455,18 @@ by one lab operating one Linux server:
 
 Current product authority is in:
 
-- [Research Control Panel design](../design.md);
-- [Projects, spaces, and operations](../specs/projects-spaces-and-operations.md)
-  and [Server and machine operations](../specs/server-and-machine-operations.md);
-- [API, Web, and desktop projections](../specs/api-web-and-desktop-projections.md);
-- [Providers and containment](../specs/providers-and-containment.md); and
-- pending scenarios [S95](../acceptance/S95-durable-team-space.md),
-  [S98](../acceptance/S98-move-a-project-into-a-team-space.md),
-  [S102](../acceptance/S102-team-runs-execute-as-the-space-account.md),
-  [S103](../acceptance/S103-server-operations-are-console-operations.md),
-  [S104](../acceptance/S104-backups-never-pause-work.md),
-  [S105](../acceptance/S105-move-between-spaces-in-one-window.md), and
-  [S128](../acceptance/S128-provision-a-team-project-through-desktop-and-server-cli.md).
+- [Research Control Panel design](../../design.md);
+- [Projects, spaces, and operations](../../specs/projects-spaces-and-operations.md)
+  and [Server and machine operations](../../specs/server-and-machine-operations.md);
+- [API, Web, and desktop projections](../../specs/api-web-and-desktop-projections.md);
+- [Providers and containment](../../specs/providers-and-containment.md); and
+- pending scenarios [S95](../../acceptance/S95-durable-team-space.md),
+  [S98](../../acceptance/S98-move-a-project-into-a-team-space.md),
+  [S102](../../acceptance/S102-team-runs-execute-as-the-space-account.md),
+  [S103](../../acceptance/S103-server-operations-are-console-operations.md),
+  [S104](../../acceptance/S104-backups-never-pause-work.md),
+  [S105](../../acceptance/S105-move-between-spaces-in-one-window.md), and
+  [S128](../../acceptance/S128-provision-a-team-project-through-desktop-and-server-cli.md).
 
 This handoff scopes implementation. It does not override those documents.
 
@@ -609,7 +616,7 @@ workaround without explicit human approval.
 ### Order
 
 1. **Hosted CI first — complete at `112e0dc`.** The Ubuntu 22.04/24.04 matrix in
-   [`server-install-live.yml`](../../.github/workflows/server-install-live.yml)
+   [`server-install-live.yml`](../../../.github/workflows/server-install-live.yml)
    now proves the Linux source install, service, update, forced rollback, deploy
    keys, protected backup, and O4d fresh-host restore without using anyone's
    hardware. Run 33456906376 is green on both supported releases. Do not stack
@@ -636,7 +643,7 @@ so `rcp server update` will pull the same GitHub repository afterwards.
 
 If a host has to be torn down, RCP has no uninstall operation; the five-command
 operating-system sequence is in
-[the operations spec](../specs/server-and-machine-operations.md). On a
+[the operations spec](../../specs/server-and-machine-operations.md). On a
 disposable host, restoring the snapshot is faster and needs no teardown.
 
 ### Human-authority steps inside the drive
@@ -658,12 +665,12 @@ has a focused regression; do not carry the earlier substring concern forward.
 
 These record the drive-specific commitments for this slice. Where a dedicated
 decision record exists it owns the rationale and wins on any conflict:
-[source update channel](../decisions/2026-08-27-main-is-the-server-update-channel.md),
-[install and update privilege](../decisions/2026-08-27-source-server-install-and-update-privilege.md),
-[schema compatibility](../decisions/2026-08-27-server-schema-compatibility.md),
-[transfer archive](../decisions/2026-08-27-personal-to-team-transfer-archive.md),
-[desktop local HTTPS origins](../decisions/2026-08-30-desktop-local-https-origins.md),
-and [team-shell handshake compatibility](../decisions/2026-09-01-team-shell-handshake-compatibility.md).
+[source update channel](../../decisions/2026-08-27-main-is-the-server-update-channel.md),
+[install and update privilege](../../decisions/2026-08-27-source-server-install-and-update-privilege.md),
+[schema compatibility](../../decisions/2026-08-27-server-schema-compatibility.md),
+[transfer archive](../../decisions/2026-08-27-personal-to-team-transfer-archive.md),
+[desktop local HTTPS origins](../../decisions/2026-08-30-desktop-local-https-origins.md),
+and [team-shell handshake compatibility](../../decisions/2026-09-01-team-shell-handshake-compatibility.md).
 Keep the concrete matrix, account, and drive facts here; do not restate rationale
 that a record already owns.
 
@@ -878,7 +885,7 @@ that a record already owns.
   `*.rcp.localhost`; different ports on `127.0.0.1` are forbidden as isolation
   because cookies ignore ports. The exact hostname, certificate, and Keychain
   scheme are owned by
-  [the desktop origins decision](../decisions/2026-08-30-desktop-local-https-origins.md).
+  [the desktop origins decision](../../decisions/2026-08-30-desktop-local-https-origins.md).
 - The native shell owns SSH tunnel lifetime, health/`space_id` plus live
   team-shell protocol negotiation, token exchange, WebView session
   establishment, and origin navigation. It stores no compatibility floor.
@@ -1036,7 +1043,7 @@ that a record already owns.
   exact-file cleanup and source-row retirement; ordinary project Delete is
   unavailable while that recovery copy is needed.
 - The accepted rationale is recorded in the
-  [personal-to-team transfer decision](../decisions/2026-08-27-personal-to-team-transfer-archive.md).
+  [personal-to-team transfer decision](../../decisions/2026-08-27-personal-to-team-transfer-archive.md).
 
 ## Explicit non-goals
 
@@ -1048,7 +1055,7 @@ Do not add any of the following to finish this handoff:
   team serving;
 - multi-server authority, automatic failover, replicated SQLite, or automatic
   detection of an old restored authority; the latter remains
-  [Q10](../open-questions.md#q10--should-a-client-detect-rollback-of-a-familiar-space);
+  [Q10](../../open-questions.md#q10--should-a-client-detect-rollback-of-a-familiar-space);
 - per-member or per-project Linux service accounts;
 - member-laptop team execution or checkout discovery;
 - team-project machine deprovisioning, including checkout removal or Git-key
@@ -1209,7 +1216,7 @@ when the packet's file list does not repeat the shared CI paths.
 ## Completed packets and implementation evidence
 
 The dated implementation log and all fifty-five completed packet specifications
-moved to [the evidence archive](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-evidence.md) on 2026-09-01. Read them there for what a
+moved to [the evidence archive](../../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-evidence.md) on 2026-09-01. Read them there for what a
 finished packet built and how it was verified; they are evidence, not authority.
 The gate, server-foundation, backup/restore, member-removal, and server-settings
 lanes are complete in full and have no section below.
@@ -1635,7 +1642,7 @@ of real app data; never write to a researcher's real data directory.
 Update current specs and acceptance evidence/status as each promise lands. Remove
 the current unimplemented UI seam when D5 lands. When all closure conditions are
 met, archive this handoff in the same commit and change
-[`docs/handoffs/README.md`](README.md) back to no active handoffs.
+[`docs/handoffs/README.md`](../../handoffs/README.md) back to no active handoffs.
 
 ## Exact closure condition
 

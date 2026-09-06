@@ -111,6 +111,7 @@ def advance_source_project_transfer(
     if transfer.phase == "source_released":
         service = catalog.open_transfer_source(request_id)
         _require_reviewed_source_unchanged(service, transfer)
+        store.settle_source_transfer_tasks(request_id)
         attributions = _source_attributions(transfer)
         # This exact projection is the source-of-truth settlement check. It
         # refuses every live task, episode, watcher, report, child, or delivery.

@@ -2,7 +2,7 @@
 
 Archived 2026-09-01. This file is the dated implementation evidence and the
 completed packet specifications for
-[the active handoff](../../handoffs/handoff-2026-08-27-dev-team-space-and-server.md),
+[the archived closure receipt](handoff-2026-08-27-dev-team-space-and-server.md),
 moved here so that handoff stays an execution contract rather than a diary.
 
 This is historical evidence and never current authority. Current behavior is

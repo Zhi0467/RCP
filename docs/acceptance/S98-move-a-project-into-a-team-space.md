@@ -57,14 +57,30 @@ canonical hash comparison, and registration-only team deletion then passed.
 The wizard displayed Transfer complete and opened the team project at revision
 2. The source request completed at revision 10 with its proof consumed. The
 disposable registration is now deleted; do not resume its requests. See the
-[production qualification receipt](../handoffs/handoff-2026-08-27-dev-team-space-and-server.md#production-qualification-receipts-and-next-boundary--2026-09-04).
+[production qualification receipt](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-qualification-history.md#production-qualification-receipts-and-next-boundary--2026-09-04).
 
 This passed subset used a small unseeded project and an explicitly manual
 operator import because the saved SSH route lacks noninteractive sudo. It does
 not prove unattended relay, partial-stream recovery, the earlier confirmation
 interruption, or the richer retained-history fixtures below. Reopening used the
 saved wizard route; the native Resume saved archive picker left Open disabled
-for the selected file and was cancelled. Those UI paths remain unqualified.
+for the selected file and was cancelled. Saved-file selection was subsequently
+verified in the September 5 drive below; automatic saved-request discovery was not.
+
+The 2026-09-05 real-project drive for **Loop steer** exposed a paused standalone
+Seed attempt that export refused after source release. The human approved
+closing that dormant attempt with retained history/scratch. Focused regressions
+and a copy of the real database verify transactional settlement and recovery
+from the recorded release/fence boundary. The local desktop then sealed the
+real 465,561,600-byte archive, including 129 matched provider-history originals,
+and successfully saved and reselected that exact archive. After resumable SSH
+copying and exact checksum verification, manual operator import, target
+activation, native proof return, and source retirement all passed. Both requests
+are completed. The desktop opens the team project at revision 3 with 40 nodes;
+both original accepted Patches match byte-for-byte. RCP's inventory validator
+verified all 128 Codex and one Claude originals. The original checkout and
+independent backups remain. See the [completed production receipt](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server.md#completed-production-transfer--2026-09-05-evening).
+This proves the real project's populated history, not the broader matrix below.
 
 The implemented path now covers the canonical home-transfer Patch, linked
 cross-space requests, independent human receipts, strict repository/configuration

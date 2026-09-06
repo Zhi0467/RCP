@@ -36,7 +36,7 @@ file hashes, Git HEAD, and the deploy key remained unchanged. This small fixture
 does not prove the broader
 active-work refusal or nonempty app-file cleanup cases below; status stays
 pending. Exact receipts are in the
-[production qualification handoff](../handoffs/handoff-2026-08-27-dev-team-space-and-server.md#production-qualification-receipts-and-next-boundary--2026-09-04).
+[production qualification handoff](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-qualification-history.md#production-qualification-receipts-and-next-boundary--2026-09-04).
 
 Deleting a personal or team project removes it from that RCP space and erases
 the app-owned records that belong only to the registration. It never deletes or

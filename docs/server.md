@@ -695,12 +695,19 @@ drill.
 
 The terminal owners for install, doctor, provider readiness, project
 provisioning, backup, restore, update, and member removal are concrete. Their
-live qualification status is tracked in the active team-server handoff and
-acceptance scenarios. The unified desktop wizard, fixed operator bridge,
+live qualification status is tracked in the acceptance scenarios and
+[archived lab closure receipt](archive/handoffs/handoff-2026-08-27-dev-team-space-and-server.md).
+The unified desktop wizard, fixed operator bridge,
 personal-to-team transfer import, native archive relay, and crash-recovery
 coordinator are implemented and hermetically verified. The disposable two-
-release server lifecycle and fresh-host restore drive pass. The remaining work
-is the source-built desktop/SSH drive against real team spaces and the genuine
-one-lab collaboration, provider execution, concurrent/partial backup, and
-transfer qualification. Do not substitute manual Git pulls, service-file edits,
-or direct database access for any owner.
+release server lifecycle and fresh-host restore drive pass. One-lab closure now
+includes production provider maintenance, backup during active work, and a
+backed-up real-project desktop transfer with explicit manual operator import,
+verified history, and source retirement. Existing two-member use was accepted
+by the human; separate disposable-host SSH qualification was skipped. Broader
+interruption and isolation fixtures remain pending where their acceptance
+records lack evidence.
+
+The next deployment work is the [external supervisor plan](handoffs/handoff-2026-09-02-external-supervisor-and-release-artifacts.md),
+not an installed capability yet. Continue using the current CLI owners; do not
+substitute manual Git pulls, service-file edits, or direct database access.

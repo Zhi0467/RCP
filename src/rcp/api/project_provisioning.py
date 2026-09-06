@@ -765,6 +765,15 @@ def read_source_project_transfer_release_boundary(
                 raise ValueError("source release boundary belongs only to a source transfer")
             if not store.is_project_member(current.project_id, actor.user_id):
                 raise HTTPException(status_code=404, detail="Project not found")
+            if current.phase in {"source_released", "source_fenced"}:
+                receipt = current.source_release_receipt
+                if receipt is None:
+                    raise ValueError("source recovery requires its recorded release boundary")
+                return ProjectTransferSourceBoundaryResponse(
+                    source_configuration=current.source_configuration,
+                    source_configuration_sha256=receipt.source_configuration_sha256,
+                    source_head=receipt.source_head,
+                )
             if current.phase != "target_admitted":
                 raise ValueError("source transfer is not awaiting its release boundary")
             service = catalog.open(current.project_id)
@@ -1418,11 +1427,11 @@ def _project_transfer_response(
         and record.phase == "linked"
         and record.target_admission_receipt is None
     )
-    can_release = (
-        record.side == "source"
-        and record.phase == "target_admitted"
-        and record.source_release_receipt is None
-    )
+    can_release = record.side == "source" and record.phase in {
+        "target_admitted",
+        "source_released",
+        "source_fenced",
+    }
     can_accept_release = (
         record.side == "target"
         and record.phase == "target_admitted"
@@ -1451,8 +1460,8 @@ def _project_transfer_response(
             "awaiting_link": "Link the target transfer request.",
             "linked": "Wait for target preparation and admission.",
             "target_admitted": "Review and release the source project.",
-            "source_released": "Wait for source fencing and archive sealing.",
-            "source_fenced": "Bind and relay the sealed source archive.",
+            "source_released": "Continue source settlement and archive sealing.",
+            "source_fenced": "Finish sealing the source archive.",
             "archive_bound": "Relay the sealed source archive to the target.",
             "target_activated": "Wait for target cleanup confirmation.",
             "cleanup_acknowledged": "Finish source transfer cleanup.",

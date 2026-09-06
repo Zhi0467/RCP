@@ -1,6 +1,7 @@
 # Servers install promoted release artifacts through an external supervisor
 
-**Status:** accepted by the human on 2026-09-02. Amends
+**Status:** accepted by the human on 2026-09-02; clarified on 2026-09-05 to
+retain the private CLI connection for non-deployment operations. Amends
 [the update-channel decision](2026-08-27-main-is-the-server-update-channel.md)
 and [the install-and-update privilege decision](2026-08-27-source-server-install-and-update-privilege.md)
 as stated at the end of this file. Implementation is planned in
@@ -56,8 +57,9 @@ releases never force a supervisor release.
 The supervisor keeps the privilege split of the 2026-08-27 install decision. It
 is the narrow root coordinator for systemd and the current-release pointer. It
 installs each artifact into the `rcp` account's `releases/<build>/` as `rcp`.
-Node.js, npm, and Git leave the server prerequisites once the source path is
-deleted.
+Node.js and npm leave RCP's source-build prerequisites once the source path is
+deleted. Git remains necessary for research-project checkouts, provisioning,
+and repository restore; individual providers may still require Node.js.
 
 **Update sequence.** Download the release manifest and assets. Verify every
 hash. Create `releases/<build>/` with an isolated environment installed from
@@ -92,6 +94,11 @@ a mixed data directory.
   current schema or every pending migration is known; `rcp migrate` applies the
   ledger without serving.
 - Every server command emits the existing machine-readable event stream.
+- The application retains a narrow authenticated maintenance boundary that
+  closes new-work admission and proves existing work has settled before stop.
+  A health snapshot alone is not that fence. The supervisor owns release
+  selection, checkpoints, cutover journals, and rollback; the application owns
+  its live-task and mutation admission rules.
 
 ### Going public
 
@@ -107,9 +114,18 @@ without a token, so no server credential replaces the deploy key.
 ### What the application loses and keeps
 
 Deleted from the application when the supervisor owns cutover: the in-process
-update and restore coordinators, the private control socket and its versioned
-protocol, restore activation journals, deferred-start fences, and the fenced
-candidate rehearsal that ran a copy of the new release inside the old one.
+update and restore coordinators, their release-specific control messages,
+restore activation journals, deployment-specific deferred-start recovery, and
+the fenced candidate rehearsal that ran a copy of the new release inside the
+old one. Keep the safety fence until the supervisor path proves equivalent
+closed-admission and crash-recovery behavior; deletion is not permission to
+restart into partially migrated state.
+
+The human explicitly retained the private authenticated CLI connection on
+2026-09-05. Project provisioning, transfer upload/import, provider checks,
+backup capture, and member removal still use it. Neither the whole
+`server_ops/control.py` module nor its versioned protocol is a deletion target.
+This remains separate from the deliberately thin desktop/server handshake.
 
 Kept: forward-only migrations, the promise that every server-era database
 upgrades directly, the old-data CI job and its frozen fixtures, protected
@@ -134,10 +150,11 @@ in CI and promoting the tested artifact makes the deployed bytes the tested
 bytes, gives every server a version that is a name rather than a commit, and
 removes the JavaScript toolchain from the server.
 
-A separate supervisor cannot be broken by the release it is replacing. It speaks
-to any RCP version through three stable facts, so the cross-version protocol
-disappears. It can be tested against a fake service that fails health checks,
-without constructing a FastAPI application or the lock and admission machinery.
+A separate supervisor can recover when the replacement release fails to start.
+It relies on package identity, the migration CLI, health, and the narrow
+maintenance boundary, rather than a running release interpreting its successor's
+deployment journals. Fake-service tests cover coordinator failure behavior;
+real integration tests still prove admission, migration, and recovery safety.
 
 Artifacts were rejected on 2026-08-27 because the repository was private with no
 public transition scheduled and CI produced no artifacts. Going public is now
@@ -148,9 +165,9 @@ part of this work and CI already builds the wheel, so that reason has expired.
 - Keep in-app self-update and add tests: keeps the cross-version protocol and
   the app's ownership of its own replacement; the defect history says the seam
   itself is the problem.
-- An external orchestrator that still builds from source on the server: removes
-  the in-app coupling but keeps Node, npm, Git, and the "which commit" ambiguity
-  on every server.
+- An external orchestrator that still builds RCP from source on the server:
+  removes the in-app coupling but keeps the JavaScript build toolchain and the
+  "which commit" ambiguity on every server.
 - A tag or release per merge: turns ten merges a day into ten releases nobody
   chose; builds are cheap files, releases are decisions.
 - Servers that follow `main` or builds: reintroduces production configuration

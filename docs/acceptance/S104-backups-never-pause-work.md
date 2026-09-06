@@ -56,7 +56,7 @@ captured task `1c693966-5596-4cde-a5c4-2603509eefd4` running between its
 18:36:36 UTC start and 18:37:30 UTC success. Simple root CLI configuration
 created the retained identity and enabled the daily timer. Exact paths, times,
 and checks are in the
-[production qualification receipt](../handoffs/handoff-2026-08-27-dev-team-space-and-server.md#production-qualification-receipts-and-next-boundary--2026-09-04).
+[production qualification receipt](../archive/handoffs/handoff-2026-08-27-dev-team-space-and-server-qualification-history.md#production-qualification-receipts-and-next-boundary--2026-09-04).
 Unreachable-SSH qualification was explicitly skipped, not passed. This subset
 does not complete the other fixtures below.
 
