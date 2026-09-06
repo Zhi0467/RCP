@@ -12,6 +12,10 @@ export type AgentTaskKind = AgentSurface | "auto_research" | "branch_merge";
  */
 declare const OPAQUE_TASK_STATUS: unique symbol;
 export type AgentTaskStatus = { readonly [OPAQUE_TASK_STATUS]: "AgentTaskStatus" };
+declare const OPAQUE_STEER_RECEIPT_STATUS: unique symbol;
+export type SteerReceiptStatus = {
+  readonly [OPAQUE_STEER_RECEIPT_STATUS]: "SteerReceiptStatus";
+};
 export type ConversationMode = "discuss" | "work";
 export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher";
 export type GraphPatchKind = "work" | "experiment_loop";
@@ -672,6 +676,22 @@ export interface GraphNode {
   [key: string]: unknown;
 }
 
+/** Human-entered node fields; preview supplies materialized defaults and revisions. */
+export type NewNode = Pick<
+  GraphNode,
+  | "id"
+  | "type"
+  | "title"
+  | "extension_type"
+  | "extension_fields"
+  | "question"
+  | "statement"
+  | "objective"
+  | "observation"
+  | "description"
+  | "origin"
+>;
+
 export type ExtensionFieldValue = string | number | boolean | string[];
 
 export interface ExperimentAttempt {
@@ -900,14 +920,25 @@ export interface GraphWatcherRecord extends WatcherDeliveryRecord {
 
 export type WatcherRecord = ExternalWatcherRecord | GraphWatcherRecord;
 
-export interface Edge {
+export interface NewEdge {
   id: string;
   source: string;
   target: string;
   relation: string;
-  layer: "epistemic" | "action" | "seam" | "meta";
   explanation: string;
   assessment?: EvidenceAssessment | null;
+}
+
+export interface Edge extends NewEdge {
+  layer: "epistemic" | "action" | "seam" | "meta";
+}
+
+export interface GraphEditOptions {
+  node_prefixes: Record<BaseNodeType, string>;
+  relations: Array<{
+    name: string;
+    assessment_required_for: Array<{ source_type: string; target_type: string }>;
+  }>;
 }
 
 export interface EvidenceAssessment {
@@ -1678,6 +1709,8 @@ export interface AgentTaskContract {
 }
 
 export interface AgentTaskRequest {
+  worktree?: boolean;
+  worktree_integration?: WorktreeIntegrationOption["id"] | null;
   provider?: ProviderId | null;
   model?: string | null;
   reasoning?: string | null;
@@ -1709,6 +1742,45 @@ export interface AgentTaskRequest {
   resolved_skill_packages?: SkillReference[] | null;
   active_compute_ids?: string[];
   [key: string]: unknown;
+}
+
+export interface ConversationWorktreeBinding {
+  project_id: string;
+  chat_scope: "node" | "project";
+  node_id: string | null;
+  repository_alias: string;
+  machine: string;
+  execution_host: string;
+  shared_path: string;
+  worktree_path: string;
+  git_common_dir: string;
+  branch: string;
+  starting_branch: string;
+  starting_commit: string;
+  chat_id: string;
+  status: { readonly __conversationWorktreeStatus: unique symbol };
+}
+
+export interface WorktreeIntegrationOption {
+  id: "pull_request" | "starting_branch" | "default_branch";
+  label: string;
+  target_branch: string | null;
+  enabled: boolean;
+  reason: string | null;
+}
+
+export interface ConversationWorktreeState {
+  show_chooser: boolean;
+  can_choose: boolean;
+  unavailable_reason: string | null;
+  binding: ConversationWorktreeBinding | null;
+  integration_options: WorktreeIntegrationOption[];
+  can_remove: boolean;
+  remove_reason: string | null;
+  ahead_count: number | null;
+  remote_branch_exists: boolean | null;
+  remote_branch_evidence: string | null;
+  dirty_worktree: string[];
 }
 
 export type SkillKind = "skill" | "workflow";
@@ -1907,6 +1979,10 @@ export interface AgentTask {
   can_pause: boolean;
   can_resume: boolean;
   can_retry: boolean;
+  steer_visible: boolean;
+  can_steer: boolean;
+  steer_unavailable_reason: string | null;
+  steer_turn_id: string | null;
   active: boolean;
   queued: boolean;
   pausing: boolean;
@@ -2108,8 +2184,24 @@ export interface ChatSummaryPage {
   limit: number;
 }
 
+export interface SteerReceipt {
+  attempt: number;
+  turn_id: string;
+  status: SteerReceiptStatus;
+  label: string;
+  reason: string | null;
+}
+
+export interface SteerRequest {
+  message_id: string;
+  attempt: number;
+  expected_turn_id: string;
+  message: string;
+}
+
 export interface ChatMessage {
   message_id: string;
+  steering?: SteerReceipt | null;
   operation_id?: string | null;
   role: "user" | "assistant";
   text: string;

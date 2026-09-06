@@ -12,6 +12,7 @@ from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, invoked_package_poin
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
+from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.history import ReplayHalted
 from rcp.limits import RUN_STAGE_RETENTION_DAYS
 from rcp.runs.chat import (
@@ -179,6 +180,13 @@ async def stream_discuss_run(
     try:
         try:
             context = service.assemble_chat(request)
+            if execution is not None:
+                task = execution.store.agent_task(execution.operation_id)
+                if task is None:
+                    raise ValueError("The conversation task binding is unavailable.")
+                context = conversation_worktree_context(
+                    service, execution.store, task.project_id, request, context
+                )
             _record_chat_context_receipt(execution, context, surface=surface)
             # One scratch folder per conversation, not per turn. Resuming a native
             # session means resuming it in the directory it was given — Claude keys

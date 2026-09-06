@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from rcp.api.dependencies import (
     get_artifact_mutation_locks,
@@ -22,6 +22,7 @@ from rcp.api.dependencies import (
     get_project_service,
     get_result_view_keep_locks,
     get_store,
+    project_write_admission,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
@@ -41,15 +42,22 @@ from rcp.artifacts import (
 )
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskRequest, BackgroundAgentTasks
+from rcp.conversation_worktrees import admit_conversation_worktree, conversation_worktree_locks
 from rcp.core.models import Experiment
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
-from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
+from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.chat import _local_chat_artifact_directory, _logical_chat_turn_operation_id
+from rcp.runs.steering import (
+    begin_chat_steer,
+    chat_steering_state,
+    chat_steering_visible,
+    finish_chat_steer,
+)
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _resolved_coach_request
-from rcp.service import CoachRequest, ProjectService, RunRequest
+from rcp.service import ChatMessage, CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import (
     AgentTaskAdmissionConflict,
@@ -97,6 +105,22 @@ class RetryAgentTaskRequest(BaseModel):
     model: str | None = None
     reasoning: str | None = None
     run_on: str | None = None
+
+
+class SteerAgentTaskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: uuid.UUID
+    attempt: int = Field(ge=1, strict=True)
+    expected_turn_id: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=STEERING_MESSAGE_MAX_CHARS)
+
+    @field_validator("message")
+    @classmethod
+    def require_nonblank_message(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("A steering message must not be blank.")
+        return value
 
 
 class AgentArtifactResponse(AgentArtifactDescriptor):
@@ -174,8 +198,17 @@ def _agent_artifact_response_json(response: AgentArtifactResponse) -> dict[str, 
     return projected
 
 
-def _agent_task_response(store: AppStore, record: AgentTaskRecord) -> dict[str, object]:
+def _agent_task_response(
+    store: AppStore, record: AgentTaskRecord, background_tasks: BackgroundAgentTasks
+) -> dict[str, object]:
     response = record.model_dump(mode="json")
+    steering = chat_steering_state(background_tasks, record)
+    response.update(
+        steer_visible=chat_steering_visible(store, record),
+        can_steer=steering.can_steer,
+        steer_unavailable_reason=steering.reason,
+        steer_turn_id=steering.turn_id,
+    )
     result = response.get("result")
     stored_artifacts = record.result.get("artifacts") if record.result else None
     if not isinstance(result, dict):
@@ -239,6 +272,7 @@ def start_agent_task(
     authorized_by = identity_access.require_patch_capable_identity(http_request)
     service = get_project_service(catalog, project_id)
     admission_lock: threading.Lock | None = None
+    chat_admission_lock = None
     result_view_stage_host: str | None = None
     result_view_stage_root: str | None = None
     try:
@@ -282,6 +316,13 @@ def start_agent_task(
                         "starting a new turn."
                     ),
                 )
+        if kind in {"node_chat", "project_chat"}:
+            assert isinstance(request, RunRequest)
+            chat_admission_lock = conversation_worktree_locks(
+                f"{store.path}:{project_id}:{request.chat_id}"
+            )
+            chat_admission_lock.__enter__()
+            request = admit_conversation_worktree(service, store, project_id, request)
         operation_id = str(uuid.uuid4())
         claimed_set: tuple[str, str] | None = None
         if kind in {"node_chat", "project_chat"}:
@@ -328,9 +369,11 @@ def start_agent_task(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
+        if chat_admission_lock is not None:
+            chat_admission_lock.__exit__(None, None, None)
         if admission_lock is not None:
             admission_lock.release()
-    return record.model_dump(mode="json")
+    return _agent_task_response(store, record, background_tasks)
 
 
 @router.get("/api/projects/{project_id}/tasks")
@@ -339,9 +382,13 @@ def agent_tasks(
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
+    background_tasks: BackgroundTasksDependency,
 ) -> list[dict[str, object]]:
     require_registered_project(catalog, project_id)
-    return [_agent_task_response(store, record) for record in store.agent_tasks(project_id)]
+    return [
+        _agent_task_response(store, record, background_tasks)
+        for record in store.agent_tasks(project_id)
+    ]
 
 
 @router.get("/api/projects/{project_id}/tasks/{operation_id}")
@@ -351,12 +398,13 @@ def agent_task(
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
+    background_tasks: BackgroundTasksDependency,
 ) -> dict[str, object]:
     require_registered_project(catalog, project_id)
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
-    detail = _agent_task_response(store, record)
+    detail = _agent_task_response(store, record, background_tasks)
     detail["events"] = [
         event.model_dump(mode="json") for event in store.agent_task_events(operation_id)
     ]
@@ -367,6 +415,41 @@ def agent_task(
         contract.model_dump(mode="json") for contract in store.agent_task_contracts(operation_id)
     ]
     return detail
+
+
+@router.post("/api/projects/{project_id}/tasks/{operation_id}/steer")
+def steer_agent_task(
+    project_id: str,
+    operation_id: str,
+    body: SteerAgentTaskRequest,
+    http_request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    background_tasks: BackgroundTasksDependency,
+) -> ChatMessage:
+    identity_access.require_patch_capable_identity(http_request)
+    service = get_project_service(catalog, project_id)
+    record = store.agent_task(operation_id)
+    if record is None or record.project_id != project_id or not record.visible:
+        raise HTTPException(status_code=404, detail="Agent task not found")
+    try:
+        with project_write_admission(project_id, http_request):
+            delivery = begin_chat_steer(
+                service,
+                background_tasks,
+                record,
+                message_id=str(body.message_id),
+                attempt=body.attempt,
+                expected_turn_id=body.expected_turn_id,
+                text=body.message,
+            )
+        return finish_chat_steer(service, delivery)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (OSError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/content")
@@ -1393,6 +1476,7 @@ def _validated_task_request(
     # Resolved compute metadata is a server-owned admission snapshot. A client
     # may echo or forge this field, but it never participates in resolution.
     client_request.pop("resolved_compute_context", None)
+    client_request.pop("worktree_integration_target", None)
     request = RunRequest.model_validate(client_request).model_copy(
         update={
             "trigger": "human",
@@ -1415,6 +1499,8 @@ def _validated_task_request(
             "the artifact through the unified viewer."
         )
     if kind in {"seed", "refresh"}:
+        if request.worktree or request.worktree_integration:
+            raise ValueError("Only ordinary conversations can use worktrees.")
         if request.active_compute_ids:
             raise ValueError("Compute connections can be attached only to a chat turn.")
         service.history.require_writable()

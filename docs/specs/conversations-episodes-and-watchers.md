@@ -53,6 +53,53 @@ An exact conversation/native session cannot be reused across a different chat
 or graph target. Main and branch-bound stages fail closed instead of silently
 continuing with the other target's authority.
 
+## Conversation worktrees
+
+Before a conversation has a Work turn, its composer may select **Work in a
+worktree**. The first ticked Work turn binds exactly one run-scope repository on
+the execution machine. RCP persists an immutable binding before creation:
+project/chat/focus, repository alias, machine and execution host, canonical shared
+and worktree paths, Git common metadata directory, real worktree and starting
+branch names, and starting commit.
+The new branch starts at the shared checkout's captured commit; uncommitted
+shared edits are excluded. Detached starting HEAD is refused. A deterministic
+sibling path and branch derive from the chat id. No worktree belongs to an
+episode or worker, and a path alone never establishes a binding.
+
+Every later Discuss or Work turn uses the bound repository pointer. Discuss
+still has no repository write authority. Native continuation, Pause, Resume,
+Retry, and server restart retain this binding; missing or moved worktrees fail
+before launch without falling back to the shared checkout. A partially created
+binding can prove and finish its exact Git registration; an unregistered orphan
+branch requires explicit human repair. Worktree selection cannot change after
+any Work turn.
+
+**Integrate** starts an ordinary Work turn with an RCP-authored instruction and
+the execution account's own Git/GitHub credentials. The backend offers **Open a
+pull request**, **Merge into <starting branch>**, and **Merge into <default
+branch>**, hiding the duplicate branch. Default-branch identity comes from
+`origin/HEAD`; an unavailable default is explicit, never guessed as `main`.
+All integrations refuse dirty worktrees and show the tracked/untracked changes.
+Local merges also preflight a clean shared checkout and an existing local target
+branch. Pull requests keep worktree-only repository scope and do not require a
+clean destination. A local filesystem origin is pushed without invoking GitHub.
+The provider rechecks the preflight facts immediately before acting. If the
+target is checked out in the shared checkout, merge there; otherwise the provider
+may switch to the target inside the worktree and must restore the worktree
+branch afterwards, including after aborting its own failed merge. A saved
+integration Resume/Retry may find only that operation's exact admitted target
+checked out in the worktree; ordinary turns still require the bound branch. RCP never
+merges, commits dirty files, resets, stashes, or force-pushes. Task completion is
+not an integration receipt.
+
+**Remove worktree** is explicit, refuses an active/paused turn or dirty worktree,
+shows commits ahead of the current starting branch and an explicit `origin`
+branch lookup (unknown with a reason if unavailable),
+and removes only the checkout. The branch and unmerged commits remain. Binding
+removal has a durable intent and terminal tombstone; later turns in that chat
+fail clearly and require a new chat. Failed turns retain the worktree. Project
+record removal likewise never deletes repository worktrees.
+
 ## Conversation scratch and human input
 
 One conversation owns one reusable scratch stage because provider-native resume
@@ -61,6 +108,24 @@ depends on its original working directory. Each logical turn owns one exact
 cleared fail-closed before a new turn that could misattribute them. A committed
 native chat-session context retains that stage, including its immutable master
 context, even while no turn is active.
+
+While an ordinary human-triggered Discuss or Work turn runs, the human may send
+plain text through its live steering control. The backend supplies whether the
+exact attempt can receive input and its disabled reason, using the actual
+runtime, including a fallback to exec. Episode workers have no steering control;
+the human continues to message their orchestrator through the episode's ordinary
+mail path.
+
+Each steer is stored as the human's chat message with its addressed task attempt
+and a **delivered**, **refused**, or **unknown** receipt. A refused receipt retains
+the reason. Reload reads that stored record; it does not infer delivery from
+answer text or replay the input. Provider acknowledgment means delivery, not a
+promise that the model followed the instruction. The message remains human input,
+never an assistant answer, provider trace, or graph-change channel. It cannot
+upgrade Discuss to Work or change the active turn's scope, target, budget, or
+permission. Refused and unknown input is not silently sent as a subsequent turn.
+The [provider lifecycle](providers-and-containment.md#live-human-steering) owns
+acknowledgment, completion races, and disconnect handling.
 
 The desktop composer may turn one bounded macOS dictation segment into editable
 text. It never sends automatically or retains audio. Temporary input attachments

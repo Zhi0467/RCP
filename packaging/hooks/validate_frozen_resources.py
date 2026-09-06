@@ -29,6 +29,8 @@ for script_name, required in (
     ("remote_lock_holder.py", "def apply_staged"),
     ("remote_archive_research.py", "def retained_history_fingerprint"),
     ("remote_read_kept_view.py", "def main"),
+    ("conversation_worktree.py", "def execute"),
+    ("remote_terminate_provider.py", "def terminate_provider"),
 ):
     if required not in _remote_script(script_name):
         raise RuntimeError(f"The packaged remote script {script_name} is invalid.")

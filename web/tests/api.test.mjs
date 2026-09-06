@@ -15,6 +15,7 @@ import {
   registerIdentityNameRequiredHandler,
   registerMutationFailureHandler,
   removeChatAttachment,
+  steerChatTurn,
   TEAM_SHELL_PROTOCOL_HEADER,
   TEAM_SHELL_PROTOCOL_VERSION,
   uploadChatAttachment,
@@ -485,6 +486,67 @@ test("team invitation helpers use the member-scoped collection without code URLs
     assert.deepEqual(JSON.parse(requests[1].init.body), {});
     assert.ok(requests.every(({ path }) => !path.includes("rcp_invite-secret")));
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("steering sends the exact attempt once and returns its stored human receipt", async () => {
+  const originalFetch = globalThis.fetch;
+  const request = {
+    message_id: "steer-uuid",
+    attempt: 2,
+    expected_turn_id: "active-turn",
+    message: "Use the shorter explanation.",
+  };
+  const receipt = { message_id: request.message_id, steering: { label: "Delivered" } };
+  const calls = [];
+  globalThis.fetch = async (path, init) => {
+    calls.push({ path, init });
+    return new Response(JSON.stringify(receipt), { status: 200 });
+  };
+  try {
+    assert.deepEqual(await steerChatTurn("project/a", "attempt/b", request), receipt);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].path, "/api/projects/project%2Fa/tasks/attempt%2Fb/steer");
+    assert.equal(calls[0].init.method, "POST");
+    assert.deepEqual(JSON.parse(calls[0].init.body), request);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("steering never retries after identity refusal or a disconnected response", async () => {
+  const originalFetch = globalThis.fetch;
+  let identityPrompts = 0;
+  registerIdentityNameRequiredHandler(async () => {
+    identityPrompts += 1;
+    return true;
+  });
+  const request = {
+    message_id: "steer-uuid",
+    attempt: 1,
+    expected_turn_id: "turn",
+    message: "Hello",
+  };
+  try {
+    for (const disconnect of [false, true]) {
+      let calls = 0;
+      globalThis.fetch = async () => {
+        calls += 1;
+        if (disconnect) throw new TypeError("Network disconnected");
+        return new Response(
+          JSON.stringify({
+            detail: { code: "identity_name_required", message: "Choose a name." },
+          }),
+          { status: 428 },
+        );
+      };
+      await assert.rejects(steerChatTurn("project", "task", request));
+      assert.equal(calls, 1);
+    }
+    assert.equal(identityPrompts, 0);
+  } finally {
+    registerIdentityNameRequiredHandler(null);
     globalThis.fetch = originalFetch;
   }
 });

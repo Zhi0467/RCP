@@ -6183,6 +6183,44 @@ button.relation-map-node:hover {
   padding: 8px 5px;
 }
 
+/* Live input belongs to the running attempt; the ordinary composer remains a draft. */
+.chat-live-steering {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: grid;
+  flex: none;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 9px;
+}
+.chat-live-steering label,
+.chat-live-steering > strong {
+  font-size: 12px;
+  grid-column: 1 / -1;
+}
+.chat-live-steering textarea {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: 14px;
+  min-width: 0;
+  padding: 8px;
+  resize: vertical;
+}
+.chat-live-steering button {
+  gap: 6px;
+}
+.chat-live-steering > strong {
+  color: var(--oxblood);
+}
+.chat-steering-receipt {
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 4px 8px;
+  margin-top: 8px;
+}
+
 .chat-send {
   align-items: flex-end;
   display: flex;
@@ -8289,6 +8327,51 @@ button.relation-map-node:hover {
 .dag-panel {
   max-width: none;
   padding-bottom: 28px;
+}
+.graph-editing-controls {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.graph-editing-controls > .new-custom-node {
+  flex: 1 0 100%;
+  margin: 0;
+  min-width: 0;
+}
+.graph-connection-list {
+  list-style: none;
+  padding: 0;
+  margin: 14px 0 0;
+}
+.graph-connection-list li {
+  border-top: 1px solid var(--line);
+  padding: 8px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.graph-connection-list .is-removed > span {
+  text-decoration: line-through;
+}
+.dag-connect-handle {
+  position: absolute;
+  right: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  cursor: crosshair;
+  touch-action: none;
 }
 .dag-shell {
   background: var(--paper);

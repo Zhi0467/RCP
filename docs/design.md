@@ -165,8 +165,7 @@ path. They are subordinate to specifications and never define product behavior:
 when a guide and a specification disagree, the specification wins and the guide
 is the defect.
 
-[`open-questions.md`](open-questions.md) records unresolved questions. A
-contradiction among current sources is a documentation defect; do not choose a
+A contradiction among current sources is a documentation defect; do not choose a
 winner by timestamp or silently implement around it.
 
 ## Module specifications
@@ -206,8 +205,9 @@ winner by timestamp or silently implement around it.
 
 RCP has no general graph-branching product, branch editor, conflict viewer,
 repository rollback, orchestrator self-merge, frontend transition-rule engine,
-user-authored rule language, provider-neutral hostile-process sandbox, direct
-graph manipulation canvas, live output watcher, live provider interruption, or
-peer-to-peer agent mail. Confirmed but unimplemented product journeys remain
-explicitly `pending` in the active acceptance suite rather than being described
-as current behavior here.
+user-authored rule language, provider-neutral hostile-process sandbox,
+live output watcher, hard provider interruption,
+persistent provider daemon, or peer-to-peer agent mail. Human steering of an
+ordinary running chat uses only RCP's existing process for that exact attempt.
+Confirmed but unimplemented product journeys remain explicitly `pending` in the
+active acceptance suite rather than being described as current behavior here.

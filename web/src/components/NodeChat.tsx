@@ -110,6 +110,7 @@ import type {
   ProjectSnapshot,
   StartAgentTask,
   WatcherRecord,
+  WorktreeIntegrationOption,
 } from "../types";
 import {
   CHAT_SCROLL_BOTTOM_TOLERANCE_PX,
@@ -123,6 +124,8 @@ import {
 } from "./AutoResearchDialog";
 import { SkillPicker, useSkillPicker } from "./SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
+import { LiveSteering } from "./LiveSteering";
+import { WorktreeControls, useConversationWorktree } from "./WorktreeControls";
 
 interface Props {
   project: ProjectSnapshot;
@@ -397,12 +400,31 @@ export function NodeChat({
     () => relatedChatTasks(tasks, surface, node?.id, chatId),
     [chatId, node?.id, surface, tasks],
   );
+  const [steeringMessages, setSteeringMessages] = useState<{
+    chatId: string;
+    messages: ChatMessage[];
+  }>({ chatId, messages: [] });
+  const [steeringError, setSteeringError] = useState<{
+    chatId: string;
+    message: string | null;
+  }>({ chatId, message: null });
+  useEffect(() => {
+    setSteeringMessages({ chatId, messages: [] });
+    setSteeringError({ chatId, message: null });
+  }, [chatId]);
+  const displayedMessages = useMemo(() => {
+    const messages = new Map(historyMessages.map((message) => [message.message_id, message]));
+    if (steeringMessages.chatId === chatId) {
+      steeringMessages.messages.forEach((message) => messages.set(message.message_id, message));
+    }
+    return [...messages.values()];
+  }, [chatId, historyMessages, steeringMessages]);
   const [pendingTurn, setPendingTurn] = useState<PendingChatTurn | null>(null);
   const transcript = useMemo(
     () =>
       orderTranscriptLines([
-        ...reconcileChatHistoryArtifacts(historyMessages, relatedTasks),
-        ...reconstructTaskTranscript(chatTasksMissingFromHistory(relatedTasks, historyMessages)),
+        ...reconcileChatHistoryArtifacts(displayedMessages, relatedTasks),
+        ...reconstructTaskTranscript(chatTasksMissingFromHistory(relatedTasks, displayedMessages)),
         ...(pendingTurn
           ? [
               {
@@ -418,7 +440,7 @@ export function NodeChat({
             ]
           : []),
       ]),
-    [historyMessages, pendingTurn, relatedTasks],
+    [displayedMessages, pendingTurn, relatedTasks],
   );
   const config = useMemo(
     () =>
@@ -431,6 +453,16 @@ export function NodeChat({
   );
   const [scope, setScope] = useState(() =>
     reconcileChatRunScope([], runScope, project.project_truth_scope, true),
+  );
+  const worktree = useConversationWorktree(
+    project.id,
+    chatId,
+    node ? "node" : "project",
+    node?.id ?? null,
+    config.run_on,
+    scope,
+    relatedTasks.map((task) => `${task.operation_id}:${task.updated_at}`).join("\0"),
+    !readOnly,
   );
   const scopeIdentityRef = useRef(`${project.id}\0${chatId}`);
   const requestedScopeKey = runScope.join("\0");
@@ -532,6 +564,9 @@ export function NodeChat({
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
+  const steeringTask = [...relatedTasks]
+    .reverse()
+    .find((task) => task.active && task.steer_visible);
   const revisionReviewTask = revisionReview
     ? (relatedTasks.find((task) => task.operation_id === revisionReview.taskId) ?? null)
     : null;
@@ -1171,6 +1206,14 @@ export function NodeChat({
 
   const send = async () => {
     if (readOnly) return;
+    if (mode === "work" && worktree.chosen && !worktree.state?.can_choose) {
+      setSubmitError(
+        worktree.error ??
+          worktree.state?.unavailable_reason ??
+          "Worktree eligibility has not been confirmed.",
+      );
+      return;
+    }
     const draftMessage = message;
     const text = assembleChatTurn(message, annotations);
     if (!annotationsComplete) {
@@ -1217,7 +1260,9 @@ export function NodeChat({
         attachmentClientId: readyAttachments.length ? attachmentClientId : null,
         skills: skills.selection,
         providerSkillNames: skills.providerSkillNames,
+        worktree: mode === "work" && worktree.chosen,
       });
+      worktree.refresh();
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       skills.reset();
       setAttachments([]);
@@ -1235,6 +1280,40 @@ export function NodeChat({
       setSubmitError(error instanceof Error ? error.message : String(error));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const integrateWorktree = async (option: WorktreeIntegrationOption) => {
+    if (
+      readOnly ||
+      relatedActive ||
+      pausedAttempt ||
+      submitting ||
+      reviewPending ||
+      repairingTaskId
+    )
+      return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await startConversationTurn(onStartTask, {
+        kind: surface,
+        config,
+        runTruthScope: scope,
+        nodeId: node?.id ?? null,
+        message: option.label,
+        chatId,
+        sessionId,
+        mode: "work",
+        activeComputeIds: computeState.ids,
+        worktreeIntegration: option.id,
+      });
+      selectMode("work");
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmitting(false);
+      worktree.refresh();
     }
   };
 
@@ -1509,9 +1588,12 @@ export function NodeChat({
         {transcript.map((line) => {
           const messageId = line.lineId;
           const task = relatedTasks.find((candidate) => candidate.operation_id === line.taskId);
-          const activeLineTask = task && isActiveTask(task) ? task : null;
+          const activeLineTask = task && !line.steering && isActiveTask(task) ? task : null;
           const pausedLineTask =
-            task?.paused && task.can_resume && !continuedTaskIds.has(task.operation_id)
+            !line.steering &&
+            task?.paused &&
+            task.can_resume &&
+            !continuedTaskIds.has(task.operation_id)
               ? task
               : null;
           const pendingLine = pendingTurn?.clientId === line.taskId;
@@ -1585,6 +1667,12 @@ export function NodeChat({
                     >
                       {expanded ? "See less" : "See more"}
                     </button>
+                  )}
+                  {line.steering && (
+                    <div className="chat-steering-receipt" role="status">
+                      <strong>{line.steering.label}</strong>
+                      {line.steering.reason && <span>{line.steering.reason}</span>}
+                    </div>
                   )}
                   {line.attachments?.map((attachment) => {
                     const expired = Date.parse(attachment.expires_at) <= expiryClock;
@@ -1746,7 +1834,38 @@ export function NodeChat({
           );
         })}
         {submitError && <div className="node-chat-line error">{submitError}</div>}
+        {steeringError.chatId === chatId && steeringError.message && (
+          <div className="node-chat-line error" role="alert">
+            {steeringError.message}
+          </div>
+        )}
       </div>
+      {!readOnly && steeringTask && (
+        <LiveSteering
+          key={`${chatId}:${steeringTask.operation_id}:${steeringTask.attempt}:${steeringTask.steer_turn_id}`}
+          task={steeringTask}
+          onReceipt={(receipt) => {
+            setSteeringMessages((current) =>
+              current.chatId !== chatId
+                ? current
+                : {
+                    chatId,
+                    messages: [
+                      ...current.messages.filter(
+                        (message) => message.message_id !== receipt.message_id,
+                      ),
+                      receipt,
+                    ],
+                  },
+            );
+          }}
+          onError={(message) =>
+            setSteeringError((current) =>
+              current.chatId === chatId ? { chatId, message } : current,
+            )
+          }
+        />
+      )}
       {!readOnly && (
         <div
           className={`chat-composer${draggingFiles ? " is-dragging-files" : ""}`}
@@ -1771,6 +1890,20 @@ export function NodeChat({
           }}
         >
           <SkillPicker {...skills.props} />
+          <WorktreeControls
+            key={`${project.id}:${chatId}`}
+            state={worktree.state}
+            error={worktree.error}
+            chosen={worktree.chosen}
+            disabled={Boolean(
+              relatedActive || pausedAttempt || submitting || reviewPending || repairingTaskId,
+            )}
+            onChoose={worktree.choose}
+            onIntegrate={integrateWorktree}
+            onRemove={worktree.remove}
+            onPreviewRemove={worktree.previewRemoval}
+            onRefresh={worktree.refresh}
+          />
           {computeConnections.length > 0 && (
             <div className="chat-compute-picker">
               <button

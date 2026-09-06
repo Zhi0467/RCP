@@ -135,8 +135,8 @@ detect each other. That limitation is deliberate and operator-owned under the
 it is also what makes two simultaneously running copies indistinguishable.
 
 Detecting that a familiar `space_id` has been rolled back to an older archive is
-[Q10](../open-questions.md#q10--should-a-client-detect-rollback-of-a-familiar-space),
-not a promise here.
+explicitly excluded. Restore safety remains the operator's stopped-service and
+old-authority exclusion procedure, not client-side rollback detection.
 
 The service-account assertion is about ownership and mode, not about defending
 against machine privilege. Whoever can become that account, or root, is outside

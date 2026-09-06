@@ -27,6 +27,7 @@ from rcp.core.operations import (
     ProposalOperation,
     ProposalStatusChangeOperation,
     UpdateNodesOperation,
+    UpsertGlossaryOperation,
 )
 from rcp.core.validation.constants import LEGACY_COMPATIBILITY_UPDATE_FIELDS
 from rcp.core.validation.report import ValidationReport
@@ -96,6 +97,9 @@ def validate_experiment_loop_authority(
                 report,
                 revision,
             )
+        elif isinstance(op, UpsertGlossaryOperation):
+            # Definitions are project-wide explanatory text, not control-node edits.
+            continue
         else:
             report.reject(
                 "experiment-loop-operation",

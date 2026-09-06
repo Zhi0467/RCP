@@ -1,8 +1,13 @@
-# Open questions
+# Retired open questions — historical snapshot
+
+Archived 2026-09-05. All statuses and instructions below are historical, not
+active questions or implementation authority. The human settled these items in
+[the closure decision](../decisions/2026-09-05-graph-authoring-and-product-boundaries.md).
+Worktree execution and live steering continue only in their separate draft PRs.
 
 Design questions that are **raised and evidenced but not decided**. Current
-product authority lives in [`design.md`](design.md) and [`specs/`](specs/);
-[`acceptance/`](acceptance/README.md) records selected observable promises. This
+product authority lives in [`design.md`](../design.md) and [`specs/`](../specs/);
+[`acceptance/`](../acceptance/README.md) records selected observable promises. This
 file is deliberately non-normative.
 
 An entry stays here until it is decided and incorporated into the applicable
@@ -30,7 +35,7 @@ editing, or deletion path.
 
 **Status:** open. Raised 2026-08-01. V1 boundary decided; output-streaming and
 other v2 details are not.
-**Governing section:** [Watcher resources](specs/conversations-episodes-and-watchers.md#watcher-resources).
+**Governing section:** [Watcher resources](../specs/conversations-episodes-and-watchers.md#watcher-resources).
 
 ### Decided boundary
 
@@ -66,7 +71,7 @@ already treats human corrections as literal edits rather than agent requests.
 
 Keep it separate from Experiment belief acceptance. Direct manipulation is UI
 authority; belief acceptance is the settled Proposal path described in the
-[authority specification](specs/authority-and-proposals.md). Building the first
+[authority specification](../specs/authority-and-proposals.md). Building the first
 must not silently alter the second.
 
 ### Secondary v2 lifecycle questions
@@ -80,7 +85,7 @@ must not silently alter the second.
   either way.
 
 Graph-level scheduling across the research frontier is **no longer deferred**.
-It is the bounded [Auto-research episode](specs/auto-research-and-branch-merge.md#episode-scope-budget-and-authority)
+It is the bounded [Auto-research episode](../specs/auto-research-and-branch-merge.md#episode-scope-budget-and-authority)
 and remains outside this question—the two features share only the word
 "control."
 
@@ -91,7 +96,7 @@ and remains outside this question—the two features share only the word
 **Status:** open. Raised 2026-08-03. No decision.
 **Governing scenario:** [S59](acceptance/S59-staged-graph-audit-skills.md).
 The implemented package boundary is in
-[Official skills and workflows](specs/providers-and-containment.md#official-skills-and-workflows).
+[Official skills and workflows](../specs/providers-and-containment.md#official-skills-and-workflows).
 
 Settings-owned package selection, immutable staging, compact context pointers,
 and package receipts already ship under S64. What remains undecided is whether
@@ -117,8 +122,8 @@ question is decided.
 **Status:** open, and much narrower than when raised. The parent question —
 whether RCP shows the researcher their own data, and in what shape — was decided
 and now lives under
-[Unified artifact viewer](specs/paper-artifacts-and-result-views.md#unified-artifact-viewer), driven by
-[S114](acceptance/S114-see-your-results-without-leaving.md).
+[Unified artifact viewer](../specs/paper-artifacts-and-result-views.md#unified-artifact-viewer), driven by
+[S114](../acceptance/S114-see-your-results-without-leaving.md).
 **Related:** [Q7](#q7--which-domains-can-rcp-serve-and-where-must-it-link-instead-of-host)
 decides *for whom* this is worth building.
 
@@ -167,7 +172,7 @@ Do not build an action bar into a view before S114 has been used on real work.
 
 **Status:** open. Raised 2026-08-06. No decision.
 **Related:** the shape boundary this predicate leans on is now decided under
-[Unified artifact viewer](specs/paper-artifacts-and-result-views.md#unified-artifact-viewer);
+[Unified artifact viewer](../specs/paper-artifacts-and-result-views.md#unified-artifact-viewer);
 [Q6](#q6--may-an-artifact-selection-emit-a-research-action) is what remains open there.
 
 ### The question
@@ -267,8 +272,8 @@ videos fall on the array side.
 ## Q8 — Should RCP hold live provider sessions so a running turn can be interrupted?
 
 **Status:** open. Raised 2026-08-07. Deliberately deferred, not ruled out.
-**Governing section:** [Durable task lifecycle](specs/providers-and-containment.md#durable-task-lifecycle).
-**Related work:** [orchestrator handoff](archive/handoffs/handoff-2026-08-07-orchestrator.md).
+**Governing section:** [Durable task lifecycle](../specs/providers-and-containment.md#durable-task-lifecycle).
+**Related work:** [orchestrator handoff](handoffs/handoff-2026-08-07-orchestrator.md).
 
 ### The question
 
@@ -315,7 +320,7 @@ apart.
 ### The use case, if it is ever built
 
 Live messaging is not for coordination — turn-based handoff serves that fine,
-and the [graph-condition wake](archive/handoffs/handoff-2026-08-07-graph-condition-wake.md)
+and the [graph-condition wake](handoffs/handoff-2026-08-07-graph-condition-wake.md)
 covers the responsive cases through canonical state. It is for **interruption**:
 "stop, wrong approach," "the cluster died," "I changed the framing." Mail cannot
 do that, because it arrives at the next wake, and for a long turn that is an
@@ -337,8 +342,8 @@ one caller.
 ## Q9 — How does peer-to-peer agent mail work once RCP is multiplayer?
 
 **Status:** open. Raised 2026-08-07. Deferred until team spaces and orchestration land.
-**Governing section:** [Watcher resources](specs/conversations-episodes-and-watchers.md#watcher-resources).
-**Related work:** [orchestrator handoff](archive/handoffs/handoff-2026-08-07-orchestrator.md).
+**Governing section:** [Watcher resources](../specs/conversations-episodes-and-watchers.md#watcher-resources).
+**Related work:** [orchestrator handoff](handoffs/handoff-2026-08-07-orchestrator.md).
 
 The confirmed team-space design has no user-owned agent actors. Concrete tasks,
 workers, and episodes are addressable execution records; the ordinary and
@@ -404,8 +409,8 @@ consent questions above are the reason to wait.
 
 **Status:** open. Raised 2026-08-28. Explicitly outside the first team-server
 restore contract.
-**Governing scenarios:** [S95](acceptance/S95-durable-team-space.md) and
-[S104](acceptance/S104-backups-never-pause-work.md).
+**Governing scenarios:** [S95](../acceptance/S95-durable-team-space.md) and
+[S104](../acceptance/S104-backups-never-pause-work.md).
 
 ### Decided boundary
 

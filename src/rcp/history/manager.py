@@ -55,6 +55,7 @@ from rcp.core.transitions import (
     project_transition_projection,
 )
 from rcp.core.validation import ValidationReport, validate_patch
+from rcp.core.validation.quality import flag_introduced_quality_issues
 from rcp.history.delta import (
     RefreshDelta,
     RevisionSummary,
@@ -1279,10 +1280,21 @@ class HistoryManager:
                     failed_invariant=detail.invariant,
                 )
             return prepared_sources[0], aggregate, None
+        flag_introduced_quality_issues(
+            current.state, prepared.projection.graph, aggregate, revision
+        )
         transition_patch = prepared.patch.model_copy(
             update={"admission_messages": list(aggregate.messages)}
         )
-        return transition_patch, aggregate, prepared.projection.graph
+        candidate = prepared.projection.graph.model_copy(
+            update={
+                "validation_messages": [
+                    *current.state.validation_messages,
+                    *aggregate.messages,
+                ]
+            }
+        )
+        return transition_patch, aggregate, candidate
 
     def _stamp_attribution_for_admission(
         self,

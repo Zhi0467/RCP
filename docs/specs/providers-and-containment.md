@@ -76,6 +76,14 @@ whole user config file and its execpolicy `.rules` files with `--ignore-user-con
 and `--ignore-rules`. `app-server` accepts neither flag, so RCP names each
 capability-bearing config key instead, and cannot disable `.rules` at all.
 
+The recorded actual runtime also decides live human steering support. Codex
+app-server accepts `turn/steer` against the recorded thread and active turn id;
+`expectedTurnId` is the provider's precondition. Claude stream-json keeps stdin
+open and launches with `--replay-user-messages`; each steer is a user message
+with a unique UUID. Codex exec has no inbound channel, including when it was
+selected by the pre-prompt fallback. The backend publishes the disabled reason
+for an unsupported runtime instead of offering a send that cannot be delivered.
+
 ## Cooperative project write containment
 
 Work-like provider launches are guarded against accidental writes into another
@@ -123,6 +131,17 @@ exceptions; those exceptions are not general project roots.
 
 ## Provider enforcement
 
+A durable conversation worktree binding replaces exactly one registered alias's
+root with its validated worktree root on the same execution machine and host.
+Catalog ownership and overlap checks validate the registered checkout and
+the planned sibling before creation, and the replacement before launch. The
+binding also pins Git's canonical common metadata directory: it is admitted as
+an exact metadata write root so Git can update the branch and index without
+admitting shared checkout files. The scope prompt renders this same root. The shared checkout is excluded from ordinary Work scope;
+Discuss receives the same worktree pointer as read context only. A
+human-selected local integration turn alone admits both exact roots. Its target
+is backend-resolved and persisted, never taken from a client-supplied path.
+
 ### Codex
 
 Work and orchestrate use Codex's native noninteractive project permission
@@ -164,6 +183,13 @@ fingerprint with the durable binding. A cross-project session/stage, relocated
 repository, incompatible run-scope change, or missing root fails before provider
 launch. Legitimate relocation or scope change starts a fresh task/session; it
 does not widen an existing native session.
+
+Conversation-local merge integration and the following ordinary turn are the
+one explicit root-transition exception: their related-turn fingerprints may be
+the exactly recomputed worktree-only or worktree-plus-shared contracts for that
+same durable binding. An already-bound operation's Resume/Retry still requires
+its original fingerprint. This exception cannot admit a different repository,
+host, stage, or moved root.
 
 The same resolver covers ordinary Work, Auto-research root, child Work, child
 Experiment, watcher wake, and correction paths. There is no permissive fallback
@@ -228,6 +254,42 @@ instruction.
 Unrelated tasks may run concurrently. Turns in the same conversation and native
 stage do not overlap. Canonical append remains serialized by the graph target's
 state workspace.
+
+### Live human steering
+
+A human may steer the ordinary Discuss or Work turn they are watching only
+through RCP's live provider process for that exact task attempt. The route
+rechecks the addressed attempt and its live runtime; it cannot select a newer
+attempt, start a turn, wake a sleeping agent, or target an episode worker.
+Agent mail and lifecycle notices do not use this channel.
+
+Delivery has three receipts: **delivered** means the provider acknowledged the
+input; **refused** names why delivery was rejected; **unknown** means the write
+began or may have begun but no acknowledgment established its outcome. Codex
+acknowledges through the matching `turn/steer` response and rejects a stale or
+completed turn. Claude acknowledges only through a replayed user echo carrying
+the steer's UUID. RCP
+writes to Claude only while no `result` event has been observed, stops the
+process at the first `result`, and refuses a steer whose echo did not precede
+that result as completed before delivery. This completion fence prevents a
+racing input from starting a new Claude turn.
+
+A transport drop or process exit after a write began leaves an unacknowledged
+steer unknown, except for Claude's explicit result fence above. The durable
+message reservation immediately precedes the external write; those two effects
+cannot commit atomically. If RCP restarts before the acknowledgment is recorded,
+the reservation remains unknown: delivery acknowledgment was not recorded, and
+the write may have begun. A live refusal proved before writing remains refused.
+RCP never automatically retries or resends a steer, and never queues a refused
+steer as the next turn. SSH uses the same existing stdin pipe and receipt rules.
+
+The message and receipt belong to the
+[human chat record](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input).
+Steering changes no mode, scope, graph target, budget, or permission. It creates
+no persistent provider daemon and wires no hard interrupt. Each provider process
+still ends with its turn; Pause, Resume, Retry, graceful Stop, and restart
+recovery keep their existing attempt and durable-state contracts. A restart
+does not recover or resend an in-flight steer through a replacement process.
 
 ## Local and SSH execution
 
@@ -448,8 +510,11 @@ a per-turn invocation pointer. Packages cannot widen surface capability.
 
 The graph-authoring contract always includes the local causal check. Optional
 `graph-audit`, `experiment-causality`, and `evidence-triage` packages provide
-progressively deeper guidance. Requiring an executable graph scanner remains an
-open question, not current behavior.
+progressively deeper guidance. Programmatic quality advice belongs to the existing
+live Patch validator, not a separate mandatory scanner package or model call.
+Nonblocking flags return in a valid result's `messages` with exit code zero;
+blocking errors take priority while the Patch is invalid. Quality advice does
+not require another provider turn and cannot change acceptance or graph authority.
 
 ## Network behavior
 

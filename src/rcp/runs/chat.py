@@ -17,7 +17,11 @@ from pydantic import BaseModel, ConfigDict
 from rcp.agents import ChatContext, agent_output_schema
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION
-from rcp.agents.write_scope import ProjectWriteScope, resolve_project_write_scope
+from rcp.agents.write_scope import (
+    ProjectWriteScope,
+    WritableRepositoryRoot,
+    resolve_project_write_scope,
+)
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
     AgentArtifactDescriptor,
@@ -28,6 +32,7 @@ from rcp.artifacts import (
 )
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
+from rcp.conversation_worktrees import validate_worktree_binding
 from rcp.limits import (
     CHAT_ARTIFACT_MAX_COUNT,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
@@ -1207,7 +1212,21 @@ def _project_write_scope(
         if remote_stage is not None and remote_stage.root is not None
         else str(local_stage or workspace)
     )
-    return resolve_project_write_scope(
+    binding = None
+    include_shared = False
+    if task is not None and execution is not None and not stage_only:
+        chat_id = task.request.get("chat_id")
+        if isinstance(chat_id, str):
+            binding = execution.store.conversation_worktree(project_id, chat_id)
+        if binding is not None:
+            if task.kind not in {"node_chat", "project_chat"} or task.episode_id is not None:
+                raise ValueError("Episodes and workers cannot use conversation worktrees.")
+            request = RunRequest.model_validate(task.request)
+            validate_worktree_binding(service, request, binding, execution.store)
+            include_shared = request.worktree_integration in {"starting_branch", "default_branch"}
+            if include_shared and not request.worktree_integration_target:
+                raise ValueError("The integration turn has no admitted target branch.")
+    scope = resolve_project_write_scope(
         manifest=service.manifest,
         project_id=project_id,
         execution_machine=execution_machine,
@@ -1219,6 +1238,8 @@ def _project_write_scope(
         remote_stage=remote_stage,
         app_data_dir=data_dir,
         repository_inventory=service.repository_ownership_inventory(project_id=project_id),
+        conversation_worktree=binding,
+        include_shared_checkout=include_shared,
         additional_protected_write_paths=[
             *(
                 [str(local_stage / "inputs")]
@@ -1228,6 +1249,51 @@ def _project_write_scope(
             *(additional_protected_write_paths or []),
         ],
     )
+    if binding is not None and execution is not None:
+        # Human-authored local integration is the only related-turn root change.
+        # Derive both admissible fingerprints from this exact validated binding;
+        # a retry of an already-bound operation still requires its original scope.
+        repositories = [item for item in scope.repositories if item.path != binding.shared_path]
+        protected = [
+            path
+            for path in scope.protected_write_paths
+            if path != str(PurePosixPath(binding.shared_path) / ".research")
+        ]
+        # Canonical state is protected in both variants, including when stored in
+        # the shared checkout. Keep every ordinary deny in the derived variants.
+        state_repository = service.manifest.repository_map[service.manifest.state.repository]
+        if state_repository.alias == binding.repository_alias:
+            protected.append(str(PurePosixPath(binding.shared_path) / ".research"))
+        common = scope.model_dump(
+            exclude={
+                "schema_generation",
+                "fingerprint",
+                "repositories",
+                "protected_write_paths",
+            }
+        )
+        variants = []
+        for shared in (False, True):
+            roots = list(repositories)
+            denied = list(protected)
+            if shared:
+                roots.append(
+                    WritableRepositoryRoot(
+                        alias=binding.repository_alias,
+                        machine=binding.machine,
+                        path=binding.shared_path,
+                    )
+                )
+                denied.append(str(PurePosixPath(binding.shared_path) / ".research"))
+            variants.append(
+                ProjectWriteScope.create(
+                    **common,
+                    repositories=roots,
+                    protected_write_paths=denied,
+                ).fingerprint
+            )
+        execution.compatible_related_write_scope_fingerprints = frozenset(variants)
+    return scope
 
 
 def _chat_path(service: ProjectService, request: RunRequest) -> Path:
@@ -1296,18 +1362,7 @@ def _append_chat_exchange(
                 ),
             }
         )
-        lock_path = service.history.workspace.root / ".chat.lock"
-        with lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                with path.open("a", encoding="utf-8") as handle:
-                    for record in records:
-                        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-        service.history.workspace.publish([path.relative_to(service.history.workspace.root)])
+        _append_chat_records(service, path, records, reserve_prompt=True)
 
 
 def _append_chat_graph_receipt(
@@ -1345,15 +1400,44 @@ def _append_chat_graph_receipt(
             "appliedRevision": graph_update.applied_revision,
             "graphUpdate": graph_update.model_dump(mode="json"),
         }
-        lock_path = service.history.workspace.root / ".chat.lock"
-        with lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                with path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-        service.history.workspace.publish([path.relative_to(service.history.workspace.root)])
+        _append_chat_records(service, path, [record])
     service.invalidate_source_index()
+
+
+def _append_chat_records(
+    service: ProjectService,
+    path: Path,
+    records: list[dict[str, object]],
+    *,
+    reserve_prompt: bool = False,
+) -> None:
+    """Append under the chat lock; callers own the StateWorkspace transaction."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = service.history.workspace.root / ".chat.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            if reserve_prompt and path.exists():
+                # A live steer may already have recorded this attempt's original
+                # human prompt. Inspect only identity, never use transcript as input.
+                existing = [json.loads(line) for line in path.read_text().splitlines() if line]
+                recorded = {
+                    item.get("operationId")
+                    for item in existing
+                    if item.get("role") == "user" and item.get("steering") is None
+                }
+                records = [
+                    item
+                    for item in records
+                    if item.get("role") != "user"
+                    or not item.get("operationId")
+                    or item.get("operationId") not in recorded
+                ]
+            with path.open("a", encoding="utf-8") as handle:
+                for record in records:
+                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    service.history.workspace.publish([path.relative_to(service.history.workspace.root)])

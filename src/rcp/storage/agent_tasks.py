@@ -2822,6 +2822,7 @@ class AgentTaskStoreMixin:
         stage_root: str,
         fingerprint: str,
         compatible_previous_fingerprint: str | None = None,
+        compatible_related_fingerprints: frozenset[str] = frozenset(),
     ) -> None:
         """Compare-and-set the durable filesystem scope before provider launch."""
 
@@ -2867,7 +2868,7 @@ class AgentTaskStoreMixin:
             ).fetchall()
             inherited = {item["write_scope_fingerprint"] for item in related}
             incompatible = inherited - {fingerprint}
-            if incompatible - {compatible_previous_fingerprint}:
+            if incompatible - {compatible_previous_fingerprint} - compatible_related_fingerprints:
                 raise ValueError(
                     "agent task continuation conflicts with its saved project write scope"
                 )

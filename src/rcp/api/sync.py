@@ -15,8 +15,11 @@ from rcp.api.dependencies import (
     require_project_membership,
 )
 from rcp.api.identity import IdentityAccess
+from rcp.core.models import RELATION_SPEC
 from rcp.core.transition_models import GraphTargetRef
 from rcp.core.transitions import current_project_projection
+from rcp.core.validation.constants import NODE_PREFIXES
+from rcp.core.validation.ops import ASSESSMENT_REQUIRED_FOR
 from rcp.history import PatchRejected, RevisionConflict
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.service import GraphSyncRequest, NodeEditConflict
@@ -30,6 +33,23 @@ IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 DisplayCacheDependency = Annotated[ProjectDisplayCache, Depends(get_project_display_cache)]
 WatcherDeliveryDependency = Annotated[WatcherDelivery, Depends(get_watcher_delivery)]
+
+
+@router.get("/api/projects/{project_id}/graph-edit-options")
+def graph_edit_options(project_id: str):
+    return {
+        "node_prefixes": NODE_PREFIXES,
+        "relations": [
+            {
+                "name": name,
+                "assessment_required_for": [
+                    {"source_type": source, "target_type": target}
+                    for source, target in sorted(ASSESSMENT_REQUIRED_FOR.get(name, ()))
+                ],
+            }
+            for name in RELATION_SPEC
+        ],
+    }
 
 
 @router.post("/api/projects/{project_id}/sync")

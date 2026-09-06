@@ -12,7 +12,7 @@
 confirmed by the human 2026-08-12.
 **Design:** the blueprint's
 [Result views](../../research-control-panel-blueprint.md#result-views) section.
-What remains open is [Q6](../../open-questions.md), narrowed to one question this
+What remains open is [Q6](../open-questions-2026-09-05.md), narrowed to one question this
 work must not answer by accident.
 
 Read [`AGENTS.md`](../../../AGENTS.md) first, then the scenario, then the
@@ -104,7 +104,7 @@ outbound gesture message shape. Land those, then fan out.
 ## Out of scope
 
 - **Any control that turns a view into a research action** — selecting runs and
-  calling them evidence. That is the narrowed [Q6](../../open-questions.md), and it
+  calling them evidence. That is the narrowed [Q6](../open-questions-2026-09-05.md), and it
   must not be answered by accident here. A view is read-only.
 - A dashboard. Utilization, throughput, and scalar browsing answer *is my
   machinery working*, have incumbents, and stay out.

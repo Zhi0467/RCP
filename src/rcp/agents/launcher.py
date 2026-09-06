@@ -12,6 +12,7 @@ import stat
 import subprocess
 import threading
 from collections.abc import AsyncIterator
+from concurrent.futures import Future
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -20,18 +21,29 @@ from typing import Literal
 from pydantic import BaseModel, model_validator
 
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.steering import LiveProviderSteering
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.limits import (
+    REMOTE_PROVIDER_KILL_WAIT_SECONDS,
+    REMOTE_PROVIDER_PID_WAIT_SECONDS,
+    REMOTE_PROVIDER_STOP_POLL_SECONDS,
+    REMOTE_PROVIDER_STOP_TIMEOUT_SECONDS,
+    REMOTE_PROVIDER_TERM_WAIT_SECONDS,
+)
 from rcp.providers import (
     AgentCapability,
     ModelChoice,
     ProviderId,
     ProviderRuntimeChoice,
+    ProviderSteeringState,
+    ProviderSteerReceipt,
     ProviderTurnRequest,
     ProviderUsage,
     profile_for,
 )
 from rcp.transport.ssh import ssh_arguments
+from rcp.transport.state import _remote_script
 
 ProviderPathState = Literal[
     "resolved",
@@ -160,6 +172,34 @@ class AgentProcessControl:
         self._process: asyncio.subprocess.Process | None = None
         self._remote_host: str | None = None
         self._remote_pid_file: str | None = None
+        self._steering: LiveProviderSteering | None = None
+
+    def steering_state(self) -> ProviderSteeringState:
+        with self._lock:
+            steering = self._steering
+        if steering is None:
+            return ProviderSteeringState(False, "No live provider process owns this attempt.")
+        return steering.state()
+
+    def steer(
+        self, expected_turn_id: str, message_id: str, text: str
+    ) -> Future[ProviderSteerReceipt]:
+        with self._lock:
+            steering = self._steering
+            loop = self._loop
+            if steering is not None and loop is not None and not loop.is_closed():
+                return asyncio.run_coroutine_threadsafe(
+                    steering.send(expected_turn_id, message_id, text), loop
+                )
+        refused: Future[ProviderSteerReceipt] = Future()
+        refused.set_result(
+            ProviderSteerReceipt("refused", "No live provider process owns this attempt.")
+        )
+        return refused
+
+    def attach_steering(self, steering: LiveProviderSteering) -> None:
+        with self._lock:
+            self._steering = steering
 
     def configure_remote_termination(self, host: str, pid_file: str) -> None:
         with self._lock:
@@ -193,6 +233,7 @@ class AgentProcessControl:
     def detach(self, process: asyncio.subprocess.Process) -> None:
         with self._lock:
             if self._process is process:
+                self._steering = None
                 self._process = None
                 self._loop = None
 
@@ -212,29 +253,28 @@ class AgentProcessControl:
         await process.wait()
 
     @staticmethod
-    def _terminate_remote(host: str, pid_file: str) -> None:
-        script = (
-            "import os,signal,sys,time\n"
-            "path=sys.argv[1]\n"
-            "for _ in range(40):\n"
-            "    if os.path.isfile(path) and os.path.getsize(path):\n"
-            "        break\n"
-            "    time.sleep(0.05)\n"
-            "else:\n"
-            "    raise SystemExit(1)\n"
-            "pid=int(open(path, encoding='utf-8').read().strip())\n"
-            "os.killpg(pid, signal.SIGTERM)\n"
-        )
+    def _terminate_remote(host: str, pid_file: str) -> bool:
+        command = [
+            "python3",
+            "-c",
+            _remote_script("remote_terminate_provider.py"),
+            pid_file,
+            str(REMOTE_PROVIDER_PID_WAIT_SECONDS),
+            str(REMOTE_PROVIDER_TERM_WAIT_SECONDS),
+            str(REMOTE_PROVIDER_KILL_WAIT_SECONDS),
+            str(REMOTE_PROVIDER_STOP_POLL_SECONDS),
+        ]
         try:
-            subprocess.run(
-                ssh_arguments(host, shlex.join(["python3", "-c", script, pid_file])),
+            result = subprocess.run(
+                ssh_arguments(host, shlex.join(command)),
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=REMOTE_PROVIDER_STOP_TIMEOUT_SECONDS,
                 check=False,
             )
+            return result.returncode == 0
         except (OSError, subprocess.TimeoutExpired):
-            return
+            return False
 
 
 @dataclass
@@ -717,6 +757,11 @@ class AgentLauncher:
             raise _PrePromptRuntimeFailure(str(exc)) from exc
         if control is not None:
             control.attach(process)
+        steering = LiveProviderSteering(
+            process, turn, control.pause_requested if control is not None else threading.Event()
+        )
+        if control is not None:
+            control.attach_steering(steering)
         stdin_task: asyncio.Task[None] | None = None
         stderr_task: asyncio.Task[str] | None = None
         stdout_task: asyncio.Task[tuple[bytes | None, int]] | None = None
@@ -765,6 +810,8 @@ class AgentLauncher:
             protocol_complete = False
             event_counts: dict[str, int] = {}
             explicit_terminal_event = False
+            stopped_at_result = False
+            completion_stop_failed = False
             while stdout_task is not None:
                 monitored: set[asyncio.Task[object]] = {stdout_task}
                 if stdin_pending:
@@ -812,6 +859,20 @@ class AgentLauncher:
                     await stdin_task
                     stdin_pending = False
                 step = turn.receive_line(line)
+                steering.observe(step)
+                if step.stop_process:
+                    # Claude can interpret stdin as another turn after result.
+                    # Fence delivery and stop before yielding any result event.
+                    stopped_at_result = True
+                    process.stdin.close()
+                    if host and remote_pid_file:
+                        stopped_remote = await asyncio.to_thread(
+                            AgentProcessControl._terminate_remote, host, remote_pid_file
+                        )
+                        completion_stop_failed = not stopped_remote
+                    elif host:
+                        completion_stop_failed = True
+                    await AgentProcessControl._terminate(process)
                 if step.delivers_prompt:
                     if prompt_delivered:
                         raise RuntimeError(
@@ -841,6 +902,8 @@ class AgentLauncher:
                 protocol_complete = protocol_complete or step.complete
                 if step.complete and not process.stdin.is_closing():
                     process.stdin.close()
+                if stopped_at_result:
+                    break
             if stdin_pending:
                 await stdin_task
             return_code = await process.wait()
@@ -868,6 +931,7 @@ class AgentLauncher:
                         "return_code": return_code,
                         "event_counts": event_counts,
                         "explicit_terminal_event": explicit_terminal_event,
+                        **({"stopped_at_result": True} if stopped_at_result else {}),
                     },
                     sort_keys=True,
                     separators=(",", ":"),
@@ -875,7 +939,12 @@ class AgentLauncher:
             )
             if control is not None and control.pause_requested.is_set():
                 yield AgentEvent(event="paused", text="Provider process paused.")
-            elif return_code:
+            elif completion_stop_failed:
+                yield AgentEvent(
+                    event="error",
+                    text="The remote provider returned a result, but RCP could not confirm that its process stopped.",
+                )
+            elif return_code and not stopped_at_result:
                 self.invalidate_readiness(provider, host=host, binary=binary)
                 detail = stderr or _exit_reason(provider, return_code, host)
                 yield AgentEvent(event="error", text=detail)
@@ -890,6 +959,7 @@ class AgentLauncher:
             else:
                 yield AgentEvent(event="done")
         finally:
+            steering.close()
             cleanup_task = asyncio.create_task(
                 _cleanup_provider_process(
                     process,
@@ -1078,7 +1148,7 @@ async def _cleanup_provider_process(
 
     tasks = [
         task
-        for task in (stdin_task, stdout_drain_task, stderr_task, stderr_drain_task)
+        for task in (stdin_task, stdout_task, stdout_drain_task, stderr_task, stderr_drain_task)
         if task is not None
     ]
     try:

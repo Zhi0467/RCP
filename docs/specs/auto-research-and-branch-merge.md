@@ -110,8 +110,10 @@ work uses the real project repositories under exact provider-native write
 containment. Provider sessions, external jobs, artifacts, and files remain in
 their ordinary locations.
 
-There is no Git branch, worktree, repository rollback, branch discard, or
-whole-project sandbox. Merge neither copies nor replays repository files. A
+This graph branch creates no Git branch or worktree and provides no repository
+rollback, branch discard, or whole-project sandbox. Ordinary conversations may
+independently bind a [repository worktree](conversations-episodes-and-watchers.md#conversation-worktrees);
+episodes and workers do not. Graph merge neither copies nor replays repository files. A
 failed or merged graph branch persists as an audit trail even when its operational
 work already changed a repository.
 
@@ -125,8 +127,11 @@ only graph channel.
 RCP-authored lifecycle notices are separate authority facts: child settlement
 or recovery, child Experiment attention/ending, graph-condition readiness, and
 replacement progression. Source transition and deduplicated notice commit
-together. A busy actor receives the notice after its current turn; nothing is
-injected into a live provider process.
+together. A busy actor receives the notice after its current turn; neither mail
+nor lifecycle notices are injected into a live provider process. The separate
+[live human steering](providers-and-containment.md#live-human-steering) channel
+addresses only an ordinary human-triggered Discuss or Work turn. It does not
+address episode workers or give agents a live messaging channel.
 
 Sleeping-actor delivery claims a bounded notice batch atomically with one B
 allocation. A running orchestrator may harvest or clear its inbox without a

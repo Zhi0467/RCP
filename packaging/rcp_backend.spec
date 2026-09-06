@@ -14,6 +14,8 @@ TRANSPORT_ROOT = SOURCE_ROOT / "rcp" / "transport"
 REMOTE_LOCK_HOLDER = TRANSPORT_ROOT / "remote_lock_holder.py"
 REMOTE_ARCHIVE_RESEARCH = TRANSPORT_ROOT / "remote_archive_research.py"
 REMOTE_READ_KEPT_VIEW = TRANSPORT_ROOT / "remote_read_kept_view.py"
+CONVERSATION_WORKTREE = TRANSPORT_ROOT / "conversation_worktree.py"
+REMOTE_TERMINATE_PROVIDER = TRANSPORT_ROOT / "remote_terminate_provider.py"
 SKILL_ROOT = SOURCE_ROOT / "rcp" / "skills"
 SKILL_GRAPH_AUDIT = SKILL_ROOT / "graph-audit"
 SKILL_EVIDENCE_TRIAGE = SKILL_ROOT / "evidence-triage"
@@ -38,6 +40,8 @@ analysis = Analysis(
         (str(REMOTE_LOCK_HOLDER), "rcp/transport"),
         (str(REMOTE_ARCHIVE_RESEARCH), "rcp/transport"),
         (str(REMOTE_READ_KEPT_VIEW), "rcp/transport"),
+        (str(CONVERSATION_WORKTREE), "rcp/transport"),
+        (str(REMOTE_TERMINATE_PROVIDER), "rcp/transport"),
         (str(SKILL_GRAPH_AUDIT), "rcp/skills/graph-audit"),
         (str(SKILL_EVIDENCE_TRIAGE), "rcp/skills/evidence-triage"),
         (str(SKILL_EXPERIMENT_CAUSALITY), "rcp/skills/experiment-causality"),
