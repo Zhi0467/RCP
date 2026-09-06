@@ -3806,6 +3806,11 @@ export default function App() {
             className={
               view === item.view || (item.view === "scientific" && view === "dag") ? "active" : ""
             }
+            aria-current={
+              view === item.view || (item.view === "scientific" && view === "dag")
+                ? "page"
+                : undefined
+            }
             onClick={() =>
               item.view === "chats"
                 ? openChats()
@@ -3816,7 +3821,9 @@ export default function App() {
           >
             {item.icon}
             <span>{item.label}</span>
-            {item.view === "attention" && <small className="inbox-count">{attentionCount}</small>}
+            {item.view === "attention" && attentionCount > 0 && (
+              <small className="inbox-count">{attentionCount}</small>
+            )}
             {item.view === "paper" && paper.sync_state !== "synced" && <small>1</small>}
             {item.view === "chats" && chatsIndicator && (
               <small

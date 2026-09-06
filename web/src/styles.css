@@ -5444,13 +5444,16 @@ button.relation-map-node:hover {
   border-color: var(--line);
 }
 .experiment-gate-reasons {
-  color: var(--red);
+  color: var(--muted);
   display: grid;
-  font-size: 10px;
+  font-size: 12px;
   gap: 4px;
   line-height: 1.45;
   margin: 10px 0 0;
   padding-left: 17px;
+}
+.experiment-gate-reasons li::marker {
+  color: var(--mustard);
 }
 .experiment-stop-watchers {
   margin-top: 10px;
@@ -6855,7 +6858,7 @@ button.relation-map-node:hover {
 .chat-graph-receipt-actions strong {
   align-items: center;
   display: inline-flex;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 750;
   gap: 4px;
   line-height: 1.25;
@@ -6888,8 +6891,8 @@ button.relation-map-node:hover {
 }
 .chat-graph-change-summary li,
 .chat-graph-validation li {
-  font-size: 8px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.5;
 }
 .chat-graph-validation {
   color: var(--red);

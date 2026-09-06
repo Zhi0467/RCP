@@ -595,7 +595,7 @@ export function PaperWorkspace({
           <summary>
             <History size={14} />
             <strong>Chat history</strong>
-            <small>{sessions.length}</small>
+            {sessions.length > 0 && <small>{sessions.length}</small>}
           </summary>
           <div className="session-strip">
             {sessions.length === 0 ? (

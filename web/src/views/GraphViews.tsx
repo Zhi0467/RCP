@@ -1439,7 +1439,7 @@ export function AttentionOverview({
   return (
     <section className="view-panel">
       <ViewHeading
-        title="Attention view"
+        title="Inbox"
         aside={`${proposals.length + decisions.length + blockers.length} open`}
       />
       <div className="attention-overview-grid">
