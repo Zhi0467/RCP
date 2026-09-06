@@ -482,6 +482,7 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(manifest
     from fastapi.testclient import TestClient
 
     from rcp.api.app import create_app
+    from rcp.compute_jobs.models import ComputeBackendProbe
     from rcp.storage import ProjectActiveTaskConflict
     from tests.test_compute_jobs_storage import job_record
 
@@ -504,6 +505,18 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(manifest
             )
         )
     other = store.create_compute_job(job_record("other", project_id="other-project"))
+    probe = ComputeBackendProbe(
+        execution_machine="laptop",
+        backend_id="launchd",
+        state="ready",
+        ready=True,
+        diagnostic="ok",
+        containment="cooperative",
+        status_label="Ready",
+        status_tone="ready",
+    )
+    store.record_compute_backend_probe(project_id, probe)
+    store.record_compute_backend_probe("other-project", probe)
     client = TestClient(app)
     if status == "running":
         with pytest.raises(ProjectActiveTaskConflict, match="2 running compute job"):
@@ -516,11 +529,15 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(manifest
         )
         assert store.project(project_id) is not None
         assert len(store.compute_jobs(project_id)) == 2
+        assert store.compute_backend_probe(project_id, "laptop") == probe
     else:
         response = client.delete(f"/api/projects/{project_id}")
         assert response.status_code == 200
         assert response.json()["database_records"]["compute_jobs"] == 2
+        assert response.json()["database_records"]["compute_backend_probes"] == 1
         assert store.project(project_id) is None
         assert store.compute_jobs(project_id) == []
+        assert store.compute_backend_probe(project_id, "laptop") is None
     assert store.compute_job(other.job_id) == other
+    assert store.compute_backend_probe("other-project", "laptop") == probe
     assert all((root / "log").read_text() == "preserve compute output" for root in roots)

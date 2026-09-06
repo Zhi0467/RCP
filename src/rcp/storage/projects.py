@@ -439,6 +439,9 @@ class ProjectStoreMixin:
                     "compute_jobs": connection.execute(
                         "DELETE FROM compute_jobs WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "compute_backend_probes": connection.execute(
+                        "DELETE FROM compute_backend_probes WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                     "watchers": connection.execute(
                         "DELETE FROM watchers WHERE project_id = ?", (project_id,)
                     ).rowcount,

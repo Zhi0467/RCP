@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 
 from rcp.compute_jobs.backend_context import (
     ComputeLaunchUncertainError,
+    ComputeProbeStaleError,
     recorded_job_context,
     resolve_context,
 )
@@ -53,12 +54,10 @@ def launch_compute_job(
         )
     job_id = uuid.uuid4().hex
     if probe is not None:
-        if (
-            not probe.ready
-            or probe.execution_machine != execution_machine
-            or probe.backend_id != backend.id
-        ):
+        if not probe.ready:
             raise ValueError("Compute probe does not match the resolved ready backend.")
+        if probe.execution_machine != execution_machine or probe.backend_id != backend.id:
+            raise ComputeProbeStaleError("Compute probe does not match the resolved ready backend.")
         context.containment = probe.containment
     root = PurePosixPath(resolve_jobs_root(context, data_dir)) / job_id
     context.writable_roots = tuple(dict.fromkeys((*writable_roots, str(root))))
