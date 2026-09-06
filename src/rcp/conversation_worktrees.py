@@ -28,6 +28,7 @@ from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore
 from rcp.transport import conversation_worktree
 from rcp.transport.ssh import ssh_arguments
+from rcp.transport.state import _remote_script
 
 IntegrationChoice = Literal["pull_request", "starting_branch", "default_branch"]
 # The process owns its data directory. Serialize human admission/removal for one
@@ -75,7 +76,7 @@ def worktree_command(
     try:
         if not host:
             return conversation_worktree.execute(payload)
-        source = Path(conversation_worktree.__file__).read_text(encoding="utf-8")
+        source = _remote_script("conversation_worktree.py")
         completed = subprocess.run(
             ssh_arguments(host, shlex.join(["python3", "-c", source, json.dumps(payload)])),
             capture_output=True,

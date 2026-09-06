@@ -2,8 +2,10 @@
 
 Active:
 
+- [Live provider steering](handoff-2026-09-05-live-provider-steering.md) — Phase 2 implemented; local Codex API and browser-component receipts verified; full served-browser, Claude live and SSH verification open.
+
 - [Worktree execution](handoff-2026-09-05-worktree-execution.md)
-  — implemented, uncommitted; local API/Git verified, browser/provider/SSH/GitHub verification remains.
+  — implemented and merged; local API/Git, Codex Work/merge, and browser-component checks verified; full acceptance remains open.
 
 - [Dev team space and source server completion](handoff-2026-08-27-dev-team-space-and-server.md)
   — human-confirmed implementation through one genuinely usable lab/server

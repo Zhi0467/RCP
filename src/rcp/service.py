@@ -288,6 +288,16 @@ class GraphUpdateResult(BaseModel):
     repairable: bool = False
 
 
+class SteeringReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempt: int = Field(ge=1)
+    turn_id: str = Field(min_length=1)
+    status: Literal["delivered", "refused", "unknown"]
+    label: str
+    reason: str | None = None
+
+
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -305,6 +315,7 @@ class ChatMessage(BaseModel):
     mode: ConversationMode | None = None
     graph_update: GraphUpdateResult | None = None
     trigger: TaskTrigger = "human"
+    steering: SteeringReceipt | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
     active_compute_ids: list[str] = Field(
         default_factory=list,
@@ -364,12 +375,39 @@ class _StoredChatRecord(BaseModel):
     mode: ConversationMode | None = None
     graph_update: GraphUpdateResult | None = Field(default=None, alias="graphUpdate")
     trigger: TaskTrigger = "human"
+    steering: SteeringReceipt | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
     active_compute_ids: list[str] = Field(
         default_factory=list,
         alias="activeComputeIds",
         max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,
     )
+
+
+def _fold_chat_receipts(records: list[_StoredChatRecord]) -> list[_StoredChatRecord]:
+    """Fold append-only steering snapshots without changing the human message."""
+    result: list[_StoredChatRecord] = []
+    steering_positions: dict[str, int] = {}
+    for record in records:
+        if record.steering is None:
+            result.append(record)
+            continue
+        position = steering_positions.get(record.uuid)
+        if position is None:
+            steering_positions[record.uuid] = len(result)
+            result.append(record)
+            continue
+        previous = result[position]
+        assert previous.steering is not None
+        if (
+            previous.model_dump(exclude={"steering"}) != record.model_dump(exclude={"steering"})
+            or previous.steering.attempt != record.steering.attempt
+            or previous.steering.turn_id != record.steering.turn_id
+            or previous.steering.status != "unknown"
+        ):
+            raise ValueError("A steering receipt cannot change its human message or final outcome.")
+        result[position] = record
+    return result
 
 
 @dataclass(frozen=True)
@@ -612,6 +650,8 @@ def _validate_stored_chat_record(
         or record.type != record.role
     ):
         raise ValueError("canonical chat record identity is invalid")
+    if record.steering is not None and (record.role != "user" or record.trigger != "human"):
+        raise ValueError("A steering receipt must belong to a human message.")
     anchor = first or record
     if (
         record.session_id != anchor.session_id
@@ -1294,7 +1334,9 @@ class ProjectService:
                 if descriptor >= 0:
                     os.close(descriptor)
             raw_records = [json.loads(line) for line in lines if line.strip()]
-            records = [_StoredChatRecord.model_validate(record) for record in raw_records]
+            records = _fold_chat_receipts(
+                [_StoredChatRecord.model_validate(record) for record in raw_records]
+            )
         except (OSError, TypeError, ValueError):
             return None
         if not records:
@@ -1343,6 +1385,7 @@ class ProjectService:
                     mode=record.mode,
                     graph_update=record.graph_update,
                     trigger=record.trigger,
+                    steering=record.steering,
                     attachments=record.attachments,
                     active_compute_ids=record.active_compute_ids,
                 )

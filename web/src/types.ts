@@ -12,6 +12,10 @@ export type AgentTaskKind = AgentSurface | "auto_research" | "branch_merge";
  */
 declare const OPAQUE_TASK_STATUS: unique symbol;
 export type AgentTaskStatus = { readonly [OPAQUE_TASK_STATUS]: "AgentTaskStatus" };
+declare const OPAQUE_STEER_RECEIPT_STATUS: unique symbol;
+export type SteerReceiptStatus = {
+  readonly [OPAQUE_STEER_RECEIPT_STATUS]: "SteerReceiptStatus";
+};
 export type ConversationMode = "discuss" | "work";
 export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher";
 export type GraphPatchKind = "work" | "experiment_loop";
@@ -1975,6 +1979,10 @@ export interface AgentTask {
   can_pause: boolean;
   can_resume: boolean;
   can_retry: boolean;
+  steer_visible: boolean;
+  can_steer: boolean;
+  steer_unavailable_reason: string | null;
+  steer_turn_id: string | null;
   active: boolean;
   queued: boolean;
   pausing: boolean;
@@ -2176,8 +2184,24 @@ export interface ChatSummaryPage {
   limit: number;
 }
 
+export interface SteerReceipt {
+  attempt: number;
+  turn_id: string;
+  status: SteerReceiptStatus;
+  label: string;
+  reason: string | null;
+}
+
+export interface SteerRequest {
+  message_id: string;
+  attempt: number;
+  expected_turn_id: string;
+  message: string;
+}
+
 export interface ChatMessage {
   message_id: string;
+  steering?: SteerReceipt | null;
   operation_id?: string | null;
   role: "user" | "assistant";
   text: string;
