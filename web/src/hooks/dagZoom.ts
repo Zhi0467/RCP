@@ -10,7 +10,9 @@ export interface DagZoomResult {
 }
 
 /** Where the DAG was last looked at, so leaving and returning restores the view. */
-export type DagViewport = DagZoomResult;
+export interface DagViewport extends DagZoomResult {
+  floor?: number;
+}
 
 interface DagZoomInput extends DagZoomResult {
   deltaY: number;
@@ -74,7 +76,7 @@ export function fitDagToViewport({
   viewportWidth,
   viewportHeight,
   padding = 32,
-}: DagFitInput): DagZoomResult | null {
+}: DagFitInput): DagViewport | null {
   if (nodes.length === 0 || viewportWidth <= 0 || viewportHeight <= 0) return null;
   let minX = Infinity;
   let minY = Infinity;
@@ -98,6 +100,7 @@ export function fitDagToViewport({
   );
   return {
     zoom,
+    floor: Math.min(DAG_ZOOM_MIN, zoom),
     scrollLeft: Math.max(0, minX * zoom - (viewportWidth - contentWidth * zoom) / 2),
     scrollTop: Math.max(0, minY * zoom - (viewportHeight - contentHeight * zoom) / 2),
   };

@@ -62,6 +62,7 @@ test("fit frames a graph that overflows the pane and never magnifies a small one
     viewportWidth: 1200,
     viewportHeight: 800,
   });
+  assert.equal(small.floor, DAG_ZOOM_MIN);
   assert.equal(small.zoom, 1, "a graph that already fits keeps its authored size");
 });
 
@@ -76,6 +77,7 @@ test("fit reaches below the pinch floor so a large graph actually fits", () => {
     viewportHeight: 475,
   });
 
+  assert.equal(tall.floor, tall.zoom);
   assert.ok(tall.zoom < DAG_ZOOM_MIN, "the pinch floor cannot frame this graph");
   assert.ok(2090 * tall.zoom <= 475, "every node fits the pane at the fitted scale");
   assert.ok(1680 * tall.zoom <= 900);
@@ -92,6 +94,7 @@ test("fit still has a floor rather than collapsing to nothing", () => {
   });
 
   assert.equal(fitted.zoom, DAG_FIT_ZOOM_MIN);
+  assert.equal(fitted.floor, DAG_FIT_ZOOM_MIN);
 });
 
 test("fit reports nothing to frame instead of guessing", () => {
@@ -130,4 +133,29 @@ test("a fitted view stays reachable after zooming in and back out", () => {
 
   const back = zoomDagAtPoint({ ...base, zoom: inward.zoom, deltaY: 100_000 });
   assert.equal(back.zoom, fitted, "zooming out returns to the fitted scale");
+});
+
+test("a remembered viewport carries the fitted floor independently of its current zoom", () => {
+  const fitted = fitDagToViewport({
+    nodes: wideGraph,
+    viewportWidth: 800,
+    viewportHeight: 500,
+  });
+  assert.ok(fitted.floor < DAG_ZOOM_MIN);
+  const inward = zoomDagAtPoint({
+    ...base,
+    ...fitted,
+    minZoom: fitted.floor,
+    deltaY: -500,
+  });
+  assert.ok(inward.zoom > DAG_ZOOM_MIN);
+  const remembered = { ...inward, floor: fitted.floor };
+  const restored = { ...remembered };
+  const back = zoomDagAtPoint({
+    ...base,
+    ...restored,
+    minZoom: restored.floor,
+    deltaY: 100_000,
+  });
+  assert.equal(back.zoom, fitted.zoom);
 });

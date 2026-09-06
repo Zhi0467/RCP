@@ -240,9 +240,9 @@ export function DagView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef(zoom);
-  // The most zoomed-out scale this view has legitimately reached, so a gesture can
-  // always return to a fitted or remembered view. It only ever moves outward.
-  const gestureFloorRef = useRef(Math.min(DAG_ZOOM_MIN, zoom));
+  // The current fitted or remembered floor, so gestures can return to that view.
+  // Each Fit resets it for the current layout.
+  const gestureFloorRef = useRef(viewportRef.current?.floor ?? Math.min(DAG_ZOOM_MIN, zoom));
   const pendingZoomScrollRef = useRef<DagZoomResult | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const dragWatchdogRef = useRef<number | null>(null);
@@ -253,6 +253,7 @@ export function DagView({
     if (!scroller) return;
     viewportRef.current = {
       zoom: zoomRef.current,
+      floor: gestureFloorRef.current,
       scrollLeft: scroller.scrollLeft,
       scrollTop: scroller.scrollTop,
     };
@@ -327,7 +328,7 @@ export function DagView({
       });
       if (next.zoom === zoomRef.current) return;
       pendingZoomScrollRef.current = next;
-      viewportRef.current = next;
+      viewportRef.current = { ...next, floor: gestureFloorRef.current };
       zoomRef.current = next.zoom;
       setZoom(next.zoom);
     };
@@ -367,6 +368,7 @@ export function DagView({
     return () => {
       viewportRef.current = {
         zoom: zoomRef.current,
+        floor: gestureFloorRef.current,
         scrollLeft: scroller.scrollLeft,
         scrollTop: scroller.scrollTop,
       };
@@ -388,7 +390,7 @@ export function DagView({
       viewportHeight: scroller.clientHeight,
     });
     if (!next) return;
-    gestureFloorRef.current = Math.min(gestureFloorRef.current, next.zoom);
+    gestureFloorRef.current = Math.min(DAG_ZOOM_MIN, next.zoom);
     viewportRef.current = next;
     if (next.zoom === zoomRef.current) {
       scroller.scrollLeft = next.scrollLeft;
