@@ -104,6 +104,8 @@ def test_backup_root_classification_is_an_exact_closed_policy() -> None:
 
 def _completed_registration(
     tmp_path: Path,
+    *,
+    unused_machine: bool = False,
 ) -> tuple[ProjectRecord, ProjectProvisioningRequestRecord]:
     central_root = tmp_path / "remote-central"
     repository_path = central_root / PROJECT_ID / "repositories" / "paper"
@@ -176,6 +178,12 @@ def _completed_registration(
         "ready_at": checked_at,
         "completed_at": checked_at,
     }
+    if unused_machine:
+        base_values["machines"].append(
+            ProjectProvisioningMachineRecord(
+                alias="unused", location="ssh", host="unused.example", os_account="bob"
+            )
+        )
     draft = ProjectProvisioningRequestRecord.model_validate(base_values)
     request = ProjectProvisioningRequestRecord.model_validate(
         {
@@ -654,3 +662,45 @@ def test_locator_manifest_is_loaded_without_refreshing_remote_state(
 
     assert load_manifest(record.locator).name == "Shared paper"
     assert registration.workspace.remote is True
+
+
+def test_backup_preserves_unresolved_unused_machine(tmp_path: Path) -> None:
+    record, request = _completed_registration(tmp_path, unused_machine=True)
+    registration = inspect_backup_project_registration(
+        record, data_dir=tmp_path / "data", provisioning_requests=[request]
+    )
+    machines = {item.alias: item for item in registration.recovery.machines}
+    assert set(machines) == {"worker", "unused"}
+    assert machines["unused"].resolved_central_root is None
+    assert machines["unused"].host == "unused.example"
+    assert registration.recovery.configuration == BackupManifestConfiguration.from_manifest(
+        load_manifest(record.locator)
+    )
+    assert (
+        type(registration.recovery).model_validate_json(registration.recovery.model_dump_json())
+        == registration.recovery
+    )
+
+
+@pytest.mark.parametrize("change", ["missing-owner", "missing-root", "host", "account"])
+def test_unused_machine_does_not_weaken_checkout_recovery_proof(
+    tmp_path: Path, change: str
+) -> None:
+    record, request = _completed_registration(tmp_path, unused_machine=True)
+    recovery = inspect_backup_project_registration(
+        record, data_dir=tmp_path / "data", provisioning_requests=[request]
+    ).recovery
+    payload = recovery.model_dump(mode="python")
+    if change == "missing-owner":
+        payload["machines"] = tuple(
+            item for item in payload["machines"] if item["alias"] != "worker"
+        )
+    elif change == "missing-root":
+        payload["machines"][0]["resolved_central_root"] = None
+    else:
+        unused = next(item for item in payload["machines"] if item["alias"] == "unused")
+        unused["host" if change == "host" else "os_account"] = "changed"
+    with pytest.raises(
+        ValidationError, match="machines differ|no resolved central root|route differs"
+    ):
+        type(recovery).model_validate(payload)

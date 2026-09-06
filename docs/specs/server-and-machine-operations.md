@@ -1212,9 +1212,14 @@ descriptor from the same captured provisioning state: repository sources and
 aliases, resolved central paths and machine/SSH-route references, canonical
 manifest configuration, and old deploy-key labels/fingerprints. This descriptor
 is enough to reconstruct the checkout set without a member checkout or personal
-Git credential. A missing, stale, credential-bearing, or inconsistent descriptor
-makes that project uncaptured. The completed provisioning proof continues to bind
-project identity and checkout topology. Settings-owned provider paths, agent
+Git credential. Every configured machine remains in the descriptor and restored
+manifest, including execution machines with no checkout. A resolved central root
+is required only for a machine that owns a repository; an unused machine may
+retain an unresolved root without making the project uncapturable. Host/account
+bindings remain exact for every machine. A missing, stale, credential-bearing,
+or inconsistent descriptor makes that project uncaptured. The completed
+provisioning proof continues to bind project identity and checkout topology.
+Settings-owned provider paths, agent
 profiles, skill defaults, default run scope, and Experiment invocation ceiling
 may change afterward; backup captures their current canonical manifest values
 rather than treating those supported edits as stale provisioning.
