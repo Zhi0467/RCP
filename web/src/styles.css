@@ -747,8 +747,8 @@ button:disabled {
 .project-shelf {
   align-items: start;
   display: grid;
-  gap: 28px;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 236px));
+  gap: 20px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 176px));
 }
 .space-group-title,
 .team-space-groups h2,
@@ -997,9 +997,9 @@ button:disabled {
   color: var(--project-cover-ink);
   display: flex;
   flex-direction: column;
-  min-height: 292px;
+  min-height: 208px;
   overflow: hidden;
-  padding: 34px 26px 24px 40px;
+  padding: 20px 15px 15px 27px;
   position: relative;
   text-align: left;
   transition:
@@ -1269,7 +1269,7 @@ button:disabled {
   background: rgb(255 255 255 / 28%);
   bottom: 0;
   box-shadow: 5px 0 rgb(0 0 0 / 8%);
-  left: 19px;
+  left: 13px;
   position: absolute;
   top: 0;
   width: 1px;
@@ -1280,11 +1280,11 @@ button:disabled {
   align-self: flex-start;
   display: inline-flex;
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 750;
   gap: 5px;
-  letter-spacing: 0.07em;
-  margin-bottom: 24px;
+  letter-spacing: 0.06em;
+  margin-bottom: 12px;
   opacity: 0.82;
   text-transform: uppercase;
   position: relative;
@@ -1296,10 +1296,10 @@ button:disabled {
 .project-cover > strong {
   display: -webkit-box;
   font-family: var(--editorial);
-  font-size: 23px;
+  font-size: 17px;
   font-weight: 600;
-  letter-spacing: -0.025em;
-  line-height: 1.16;
+  letter-spacing: -0.02em;
+  line-height: 1.18;
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 4;
@@ -1308,9 +1308,9 @@ button:disabled {
 }
 .project-cover-meta {
   font-family: var(--mono);
-  font-size: 8px;
-  letter-spacing: 0.035em;
-  margin-top: 14px;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  margin-top: 8px;
   opacity: 0.7;
   position: relative;
   text-transform: uppercase;
@@ -1622,14 +1622,14 @@ button:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .project-cover {
-    min-height: 250px;
-    padding: 25px 18px 19px 31px;
+    min-height: 222px;
+    padding: 22px 16px 16px 29px;
   }
   .project-cover-spine {
     left: 14px;
   }
   .project-cover > strong {
-    font-size: 20px;
+    font-size: 19px;
   }
   .experiment-board {
     margin-top: 50px;
