@@ -72,10 +72,10 @@ class SystemdUserBackend:
                 raise ComputeLaunchUncertainError(
                     "Compute launch failed and stopping the possible job could not be confirmed"
                 ) from cleanup_error
-            if isinstance(exc, subprocess.TimeoutExpired):
+            if isinstance(exc, (subprocess.TimeoutExpired, ComputeTransportError)):
                 # A short unit may already have run and been collected; keep its receipts.
                 raise ComputeLaunchUncertainError(
-                    "Compute launch timed out after the manager may have run the unit"
+                    "Compute launch lost contact after the manager may have run the unit"
                 ) from exc
             raise
         return handle
